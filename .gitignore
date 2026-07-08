@@ -1,0 +1,30 @@
+node_modules
+dist
+.env
+.env.local
+*.log
+npm-debug.log*
+.DS_Store
+coverage
+
+# Private keys and credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.kubeconfig
+
+# Editor and IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Go workspace (applies to controllers/ subproject)
+go.work
+go.work.sum
+
+# Fetched Helm chart dependencies (run `helm dependency update` to refetch);
+# Chart.lock IS committed to pin versions, the downloaded .tgz artifacts are not.
+charts/*/charts/*.tgz

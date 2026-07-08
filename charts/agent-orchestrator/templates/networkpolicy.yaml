@@ -1,0 +1,56 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/*
+Consumer-facing invoke port: whoever calls the agent (ADR 0006). Default
+(empty invokeFrom) allows any pod in the namespace; set invokeFrom to
+restrict further (e.g. only an API gateway's pods).
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agent-orchestrator.fullname" . }}-invoke
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agent-orchestrator.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: {{ .Values.ports.http }}
+          protocol: TCP
+      {{- with .Values.networkPolicy.invokeFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+{{/*
+Job-callback port: in-cluster only, restricted to the tool/sub-agent Job
+pods this orchestrator itself launches (ADR 0006).
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agent-orchestrator.fullname" . }}-callback
+  namespace: {{ include "agent-orchestrator.toolNamespace" . }}
+  labels:
+    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agent-orchestrator.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: {{ .Values.ports.callback }}
+          protocol: TCP
+      {{- with .Values.networkPolicy.callbackFromPodSelector }}
+      from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+      {{- end }}
+{{- end }}

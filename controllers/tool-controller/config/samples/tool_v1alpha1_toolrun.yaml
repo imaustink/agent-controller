@@ -1,0 +1,9 @@
+apiVersion: tool.recipe-agent.dev/v1alpha1
+kind: ToolRun
+metadata:
+  labels:
+    app.kubernetes.io/name: tool-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: toolrun-sample
+spec:
+  # TODO(user): Add fields here

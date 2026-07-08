@@ -1,0 +1,30 @@
+{
+  "name": "recipe-publisher",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-contained subagent container: recipe envelope JSON in, committed to a GitHub repo.",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "recipe-publisher": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@recipe-agent/messaging": "0.1.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.5",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vitest": "^4.0.0"
+  }
+}

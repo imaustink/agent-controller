@@ -1,0 +1,43 @@
+{{- if .Values.rbac.create }}
+{{/*
+Namespace-scoped Role (never a ClusterRole, ADR 0005) granting exactly what
+the orchestrator's CRD-based registries/launcher use (ADR 0010):
+read-only access to the Tool/Skill catalog CRDs, and full CRUD on ToolRun
+(the CR it creates per invocation and polls for lifecycle). It no longer
+creates k8s Jobs directly -- that's the tool-controller's job now (see
+charts/tool-controller) -- so this Role has NO `batch/jobs` permissions at
+all, a meaningfully smaller blast radius than before ADR 0010. Bound in the
+tool/Job namespace, which may differ from the release namespace when
+`namespace` is set explicitly.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "agent-orchestrator.fullname" . }}
+  namespace: {{ include "agent-orchestrator.toolNamespace" . }}
+  labels:
+    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["tool.recipe-agent.dev"]
+    resources: ["tools", "skills"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["tool.recipe-agent.dev"]
+    resources: ["toolruns"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "agent-orchestrator.fullname" . }}
+  namespace: {{ include "agent-orchestrator.toolNamespace" . }}
+  labels:
+    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "agent-orchestrator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agent-orchestrator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

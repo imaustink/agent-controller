@@ -1,0 +1,22 @@
+{
+  "name": "@recipe-agent/messaging",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Transport-agnostic tool-call event protocol shared by recipe-agent tool containers.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.5",
+    "typescript": "^5.6.2",
+    "vitest": "^4.0.0"
+  }
+}

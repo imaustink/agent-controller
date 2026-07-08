@@ -1,0 +1,11 @@
+{
+  "id": "recipe-publisher",
+  "name": "recipe-publisher",
+  "description": "Publishes a finalized recipe to a Mealie instance: creates the recipe by name, then fills in the parsed ingredients, instructions, equipment, tips, and source URL. The target Mealie instance is fixed via this tool's own configuration, never taken from the caller's input.",
+  "input": "A full recipe as Markdown text (the same format recipe-scraper produces), serialized as a single string.",
+  "output": "Confirmation of the Mealie recipe (slug/name/url), or a failed event if the recipe could not be created/updated.",
+  "allowedRoles": ["reader"],
+  "tier": "standard",
+  "image": "recipe-publisher:latest",
+  "serviceAccountName": "recipe-publisher"
+}

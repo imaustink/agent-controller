@@ -1,0 +1,56 @@
+# Tool custom resource for recipe-publisher (ADR 0010) -- apply with:
+#   kubectl apply -n <namespace> -f tools/recipe-publisher/tool.yaml
+#
+# Replaces the old tools/recipe-publisher/manifest.json (ADR 0009), which is
+# no longer baked into the orchestrator image or read at startup. The
+# `recipe-publisher` ServiceAccount referenced below must already exist in
+# the same namespace (this CR/the tool-controller never creates it).
+apiVersion: tool.recipe-agent.dev/v1alpha1
+kind: Tool
+metadata:
+  name: recipe-publisher
+spec:
+  description: >-
+    Publishes (or updates) a finalized recipe on a Mealie instance: creates
+    the recipe by name, then fills in the parsed ingredients, instructions,
+    equipment, tips, and source URL. If the input Markdown is prefixed with a
+    `<!-- mealie-slug: <slug> -->` marker (from a previous publish of the same
+    recipe), updates that recipe in place instead of creating a new one. The
+    target Mealie instance is fixed via this tool's own configuration, never
+    taken from the caller's input.
+  input: >-
+    A full recipe as Markdown text (the same format recipe-scraper produces),
+    serialized as a single string, optionally prefixed with a
+    `<!-- mealie-slug: <slug> -->` marker to update that existing recipe
+    instead of creating a new one.
+  output: >-
+    The published/updated recipe Markdown, prefixed with a `mealie-slug`
+    marker for follow-up updates and followed by a Mealie link, or a failed
+    event if the recipe could not be created/updated.
+  # This tool WRITES (creates/updates recipes in Mealie), so it requires the
+  # writer role — note this makes the recipe-refining-skill writer-only, since
+  # a skill's audience is the intersection of its tools' roles (ADR 0011).
+  allowedRoles:
+    - writer
+  tier: standard
+  image: recipe-publisher:latest
+  serviceAccountName: recipe-publisher
+  # Mealie long-lived API token (create one in the Mealie UI at
+  # /user/profile/api-tokens, or via POST /api/users/api-tokens). This is THE
+  # secret; it comes from a Secret that must already exist:
+  #   kubectl -n <namespace> create secret generic recipe-publisher-secrets \
+  #     --from-literal=MEALIE_API_TOKEN=<your-mealie-api-token>
+  # EDIT the placeholder env value below before applying.
+  env:
+    - name: MEALIE_BASE_URL
+      value: "https://recipes.kurpuis.com"
+    # Which of Mealie's registered ingredient parsers to use (nlp | brute |
+    # openai) -- "nlp" works out of the box; "openai" needs an AI Provider
+    # configured in Mealie's own Settings.
+    - name: MEALIE_INGREDIENT_PARSER
+      value: "nlp"
+  secretEnv:
+    - name: MEALIE_API_TOKEN
+      secretRef:
+        name: recipe-publisher-secrets
+        key: MEALIE_API_TOKEN

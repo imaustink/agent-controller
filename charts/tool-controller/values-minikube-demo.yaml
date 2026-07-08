@@ -1,0 +1,20 @@
+# Values file for the local minikube demo deployment of the `tool-controller`
+# release (namespace `recipe-agent`). Same convention as
+# charts/agent-orchestrator/values-minikube-demo.yaml -- captures every
+# override applied to this release so future `helm upgrade`s don't
+# accidentally drop them.
+#
+# SAME LESSON AS THE ORCHESTRATOR'S VALUES FILE (learned the hard way there,
+# applying preemptively here): `helm upgrade` with only a FEW `--set` flags
+# and no `-f`/`--reuse-values` REPLACES the entire computed values tree with
+# just those flags layered on the chart's bare defaults -- it does NOT merge
+# with whatever the previous revision had. Always upgrade with:
+#   helm upgrade tool-controller charts/tool-controller -n recipe-agent -f charts/tool-controller/values-minikube-demo.yaml
+# (edit this file first for any new setting, then run the same command --
+# never hand-assemble a fresh pile of `--set` flags from memory).
+#
+# Not committed as chart defaults (values.yaml) because this is an exact
+# minikube-local-build image tag, not something every install should default to.
+
+image:
+  tag: latest

@@ -1,0 +1,70 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs/status
+  verbs:
+  - get
+- apiGroups:
+  - tool.recipe-agent.dev
+  resources:
+  - agentruns
+  - agents
+  - skills
+  - toolruns
+  - tools
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - tool.recipe-agent.dev
+  resources:
+  - agentruns/finalizers
+  - agents/finalizers
+  - skills/finalizers
+  - toolruns/finalizers
+  - tools/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - tool.recipe-agent.dev
+  resources:
+  - agentruns/status
+  - agents/status
+  - skills/status
+  - toolruns/status
+  - tools/status
+  verbs:
+  - get
+  - patch
+  - update

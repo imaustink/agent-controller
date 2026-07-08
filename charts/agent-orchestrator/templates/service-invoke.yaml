@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agent-orchestrator.fullname" . }}-invoke
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: invoke
+spec:
+  type: {{ .Values.service.invoke.type }}
+  ports:
+    - port: {{ .Values.service.invoke.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "agent-orchestrator.selectorLabels" . | nindent 4 }}

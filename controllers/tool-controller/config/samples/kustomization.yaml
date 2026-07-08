@@ -1,0 +1,8 @@
+## Append samples of your project ##
+resources:
+- tool_v1alpha1_tool.yaml
+- tool_v1alpha1_skill.yaml
+- tool_v1alpha1_toolrun.yaml
+- tool_v1alpha1_agent.yaml
+- tool_v1alpha1_agentrun.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

@@ -1,0 +1,44 @@
+# Tool custom resource for recipe-scraper (ADR 0010) -- apply with:
+#   kubectl apply -n <namespace> -f tools/recipe-scraper/tool.yaml
+#
+# Replaces the old tools/recipe-scraper/manifest.json (ADR 0009), which is
+# no longer baked into the orchestrator image or read at startup. The
+# `recipe-scraper` ServiceAccount referenced below must already exist in
+# the same namespace (this CR/the tool-controller never creates it).
+#
+# secretEnv.OPENAI_API_KEY below references a Secret that must already exist
+# in the same namespace (any Secret + key works -- this example reuses the
+# orchestrator's own `agent-orchestrator-secrets`/OPENAI_API_KEY, since
+# recipe-scraper's own OpenAI usage is the same account/key in this demo
+# setup; use a separate Secret if you want them decoupled).
+apiVersion: tool.recipe-agent.dev/v1alpha1
+kind: Tool
+metadata:
+  name: recipe-scraper
+spec:
+  description: >-
+    Scrapes and normalizes a recipe from a URL. Supports web pages,
+    YouTube/video URLs (via transcription), and image URLs (via OCR).
+    Guards against SSRF on the target URL and treats all fetched content as
+    untrusted.
+  input: A single recipe URL as a plain string (web page, video, or image).
+  output: >-
+    A recipe rendered as Markdown: a `# Title` heading, `## Ingredients` and
+    `## Directions` sections (each split into `###` subsections for
+    multi-component recipes, e.g. a topping made separately from the main
+    dish), `## Equipment`, `## Tips`, and a `[Source](<url>)` link at the
+    end. See docs/messaging.md for the full event contract.
+  # Read-only extraction — safe for both roles. Keeping writer here also keeps
+  # the recipe-refining-skill's derived audience (scraper ∩ publisher, ADR 0011)
+  # non-empty now that recipe-publisher is writer-only.
+  allowedRoles:
+    - reader
+    - writer
+  tier: standard
+  image: recipe-scraper:latest
+  serviceAccountName: recipe-scraper
+  secretEnv:
+    - name: OPENAI_API_KEY
+      secretRef:
+        name: agent-orchestrator-secrets
+        key: OPENAI_API_KEY

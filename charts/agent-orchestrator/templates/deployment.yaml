@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agent-orchestrator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "agent-orchestrator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "agent-orchestrator.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "agent-orchestrator.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: agent-orchestrator
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ports.http }}
+              protocol: TCP
+            - name: callback
+              containerPort: {{ .Values.ports.callback }}
+              protocol: TCP
+          env:
+            - name: AGENT_NAMESPACE
+              value: {{ include "agent-orchestrator.toolNamespace" . | quote }}
+            - name: AGENT_QDRANT_URL
+              value: {{ include "agent-orchestrator.qdrantUrl" . | quote }}
+            - name: AGENT_QDRANT_COLLECTION
+              value: {{ .Values.config.qdrantCollection | quote }}
+            - name: AGENT_QDRANT_VECTOR_SIZE
+              value: {{ .Values.config.qdrantVectorSize | quote }}
+            - name: AGENT_QDRANT_SKILLS_COLLECTION
+              value: {{ .Values.config.qdrantSkillsCollection | quote }}
+            - name: AGENT_EMBEDDING_MODEL
+              value: {{ .Values.config.embeddingModel | quote }}
+            - name: AGENT_SELECTION_MODEL
+              value: {{ .Values.config.selectionModel | quote }}
+            - name: AGENT_SKILL_TOP_K
+              value: {{ .Values.config.skillTopK | quote }}
+            - name: AGENT_CALLBACK_PORT
+              value: {{ .Values.ports.callback | quote }}
+            - name: AGENT_HTTP_PORT
+              value: {{ .Values.ports.http | quote }}
+            - name: AGENT_CALLBACK_BASE_URL
+              value: {{ include "agent-orchestrator.callbackBaseUrl" . | quote }}
+            - name: AGENT_CRD_GROUP
+              value: {{ .Values.config.crdGroup | quote }}
+            - name: AGENT_CRD_VERSION
+              value: {{ .Values.config.crdVersion | quote }}
+            {{- if .Values.config.staticIdentities }}
+            - name: AGENT_STATIC_IDENTITIES
+              value: {{ .Values.config.staticIdentities | quote }}
+            {{- end }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "agent-orchestrator.fullname" .) }}
+                  key: {{ .Values.secrets.openaiApiKeyKey }}
+            - name: AGENT_CALLBACK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "agent-orchestrator.fullname" .) }}
+                  key: {{ .Values.secrets.callbackSecretKey }}
+            {{/*
+            ToolRunLauncher never embeds the raw callback secret into a
+            ToolRun CR -- only its k8s Secret name/key (ADR 0010), so the
+            tool-controller can wire it into the launched Job via
+            secretKeyRef instead. These are the same Secret/key the
+            orchestrator itself uses above to verify inbound callbacks.
+            */}}
+            - name: AGENT_CALLBACK_SECRET_REF_NAME
+              value: {{ .Values.secrets.existingSecret | default (include "agent-orchestrator.fullname" .) | quote }}
+            - name: AGENT_CALLBACK_SECRET_REF_KEY
+              value: {{ .Values.secrets.callbackSecretKey | quote }}
+            {{- if or .Values.secrets.qdrantApiKey .Values.secrets.existingSecret }}
+            - name: AGENT_QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "agent-orchestrator.fullname" .) }}
+                  key: {{ .Values.secrets.qdrantApiKeyKey }}
+                  optional: true
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- with .Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agent-orchestrator.fullname" . }}-callback
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: callback
+spec:
+  type: {{ .Values.service.callback.type }}
+  ports:
+    - port: {{ .Values.service.callback.port }}
+      targetPort: callback
+      protocol: TCP
+      name: callback
+  selector:
+    {{- include "agent-orchestrator.selectorLabels" . | nindent 4 }}

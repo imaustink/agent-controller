@@ -1,0 +1,35 @@
+{
+  "name": "agent-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Parent agent: RAG-selects a tool/sub-agent and launches it as a Kubernetes Job on demand.",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "agent-orchestrator": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "^1.0.0",
+    "@langchain/core": "^0.3.40",
+    "@langchain/langgraph": "^0.2.44",
+    "@qdrant/js-client-rest": "^1.13.0",
+    "@recipe-agent/messaging": "0.1.0",
+    "openai": "^6.45.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.5",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vitest": "^4.0.0"
+  }
+}

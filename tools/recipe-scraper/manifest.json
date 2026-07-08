@@ -1,0 +1,11 @@
+{
+  "id": "recipe-scraper",
+  "name": "recipe-scraper",
+  "description": "Scrapes and normalizes a recipe from a URL. Supports web pages, YouTube/video URLs (via transcription), and image URLs (via OCR). Guards against SSRF on the target URL and treats all fetched content as untrusted.",
+  "input": "A single recipe URL as a plain string (web page, video, or image).",
+  "output": "A recipe envelope JSON: { source_type, url, title, recipe: { ingredients, directions, equipment, tips, tags }, provenance, warnings }. See docs/messaging.md for the full event contract.",
+  "allowedRoles": ["reader"],
+  "tier": "standard",
+  "image": "recipe-scraper:latest",
+  "serviceAccountName": "recipe-scraper"
+}
