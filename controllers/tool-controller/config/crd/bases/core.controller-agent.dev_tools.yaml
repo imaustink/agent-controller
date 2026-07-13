@@ -4,20 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: agents.tool.recipe-agent.dev
+  name: tools.core.controller-agent.dev
 spec:
-  group: tool.recipe-agent.dev
+  group: core.controller-agent.dev
   names:
-    kind: Agent
-    listKind: AgentList
-    plural: agents
-    singular: agent
+    kind: Tool
+    listKind: ToolList
+    plural: tools
+    singular: tool
   scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Agent is the Schema for the agents API
+        description: Tool is the Schema for the tools API
         properties:
           apiVersion:
             description: |-
@@ -37,18 +37,25 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of Agent
+            description: spec defines the desired state of Tool
             properties:
               allowedRoles:
-                description: allowedRoles gates RAG retrieval (RBAC filter), same
-                  semantics as Tool.
+                description: |-
+                  allowedRoles gates RAG retrieval (RBAC filter) — caller must have at least
+                  one of these roles for this Tool to be considered a candidate.
                 items:
                   type: string
                 minItems: 1
                 type: array
+              args:
+                description: args are static extra container args appended after the
+                  caller-supplied input.
+                items:
+                  type: string
+                type: array
               description:
                 description: description is fed to the orchestrator's embedder for
-                  RAG retrieval.
+                  RAG tool retrieval.
                 minLength: 1
                 type: string
               env:
@@ -72,27 +79,15 @@ spec:
                   type: object
                 type: array
               image:
-                description: |-
-                  image is the agent-loop container the AgentRun controller launches as a
-                  Job (e.g. the agent-orchestrator image running in scoped sub-agent mode).
+                description: image is the fully-qualified container image the ToolRun
+                  controller launches as a Job.
                 type: string
               input:
-                description: input describes the goal contract this agent expects,
-                  in plain language.
-                type: string
-              maxIterations:
-                description: maxIterations bounds the agent's internal loop as a cost/runaway
-                  guard.
-                format: int32
-                minimum: 1
-                type: integer
-              model:
-                description: |-
-                  model is the LLM model id the agent loop should use (advisory; the
-                  agent image decides how to interpret it).
+                description: input describes the expected argv[2]/stdin contract for
+                  the tool's container.
                 type: string
               output:
-                description: output describes the final response shape the agent reports.
+                description: output describes the tool's result envelope shape.
                 type: string
               resources:
                 description: resources are the Job container's compute resource requirements.
@@ -108,9 +103,9 @@ spec:
                 type: object
               secretEnv:
                 description: |-
-                  secretEnv are environment variables sourced from Secret keys (same
-                  namespace), resolved via secretKeyRef at Job-build time — same
-                  discipline as ToolSpec.SecretEnv (never a literal secret in the CR).
+                  secretEnv are environment variables for the Job container sourced from
+                  Secret keys in the same namespace (e.g. OPENAI_API_KEY, GITHUB_TOKEN) —
+                  never literal values, only name+key references.
                 items:
                   description: |-
                     SecretEnvVar names a Job container environment variable whose value comes
@@ -146,19 +141,24 @@ spec:
                   type: object
                 type: array
               serviceAccountName:
-                description: serviceAccountName the Job pod runs as. Must already
-                  exist in-cluster.
-                type: string
-              skillRefs:
                 description: |-
-                  skillRefs are the names of Skill CRs this agent may load into its own
-                  loop (same trust model as the parent orchestrator's skill layer).
-                items:
-                  type: string
-                type: array
-              tier:
-                description: tier is an operator-defined cost/trust classification.
+                  serviceAccountName the Job pod runs as. Must already exist in-cluster —
+                  this CRD/controller does not create tool ServiceAccounts.
                 type: string
+              tier:
+                description: tier is an operator-defined cost/trust classification
+                  (e.g. "standard", "privileged").
+                type: string
+              timeoutSeconds:
+                description: |-
+                  timeoutSeconds is the default bound on the launched Job's
+                  activeDeadlineSeconds, used when a ToolRun does not specify its own
+                  timeoutSeconds. Lets long-running tools (e.g. an agentic coding tool)
+                  raise the 300s default without every caller having to set it. When both
+                  are unset the controller falls back to 300s.
+                format: int32
+                minimum: 1
+                type: integer
             required:
             - allowedRoles
             - description
@@ -168,11 +168,11 @@ spec:
             - serviceAccountName
             type: object
           status:
-            description: status defines the observed state of Agent
+            description: status defines the observed state of Tool
             properties:
               conditions:
                 description: |-
-                  conditions represent the current state of the Agent resource.
+                  conditions represent the current state of the Tool resource.
                   Each condition has a unique type and reflects the status of a specific aspect of the resource.
 
                   Standard condition types include:

@@ -4,12 +4,12 @@ import {
   JobEmitter as BaseJobEmitter,
   StdoutSink,
   type Sink,
-} from "@recipe-agent/messaging";
+} from "@controller-agent/messaging";
 import type { AppConfig } from "../config.js";
 import type { PublishErrorCode, PublishStage } from "../schema.js";
 import { clip } from "../security/redact.js";
 
-export type { Sink } from "@recipe-agent/messaging";
+export type { Sink } from "@controller-agent/messaging";
 
 /**
  * This tool's concrete emitter: a plain Markdown string as the `succeeded`

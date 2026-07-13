@@ -11,7 +11,7 @@
 # orchestrator's own `agent-orchestrator-secrets`/OPENAI_API_KEY, since
 # recipe-scraper's own OpenAI usage is the same account/key in this demo
 # setup; use a separate Secret if you want them decoupled).
-apiVersion: tool.recipe-agent.dev/v1alpha1
+apiVersion: core.controller-agent.dev/v1alpha1
 kind: Tool
 metadata:
   name: recipe-scraper

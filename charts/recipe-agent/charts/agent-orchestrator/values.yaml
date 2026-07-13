@@ -51,7 +51,7 @@ config:
   callbackBaseUrl: ""
   # API group/version for the Tool/Skill/ToolRun CRDs (ADR 0010). Must match
   # charts/tool-controller's installed CRDs.
-  crdGroup: tool.recipe-agent.dev
+  crdGroup: core.controller-agent.dev
   crdVersion: v1alpha1
   # DEV/TEST ONLY (see src/rbac/static-identity-resolver.ts) — JSON map of
   # bearer token -> {subject, roles}. Leave unset in any real deployment;

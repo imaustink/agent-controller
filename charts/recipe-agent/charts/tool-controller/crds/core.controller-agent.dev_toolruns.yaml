@@ -4,14 +4,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: agentruns.tool.recipe-agent.dev
+  name: toolruns.core.controller-agent.dev
 spec:
-  group: tool.recipe-agent.dev
+  group: core.controller-agent.dev
   names:
-    kind: AgentRun
-    listKind: AgentRunList
-    plural: agentruns
-    singular: agentrun
+    kind: ToolRun
+    listKind: ToolRunList
+    plural: toolruns
+    singular: toolrun
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -27,7 +27,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: AgentRun is the Schema for the agentruns API
+        description: ToolRun is the Schema for the toolruns API
         properties:
           apiVersion:
             description: |-
@@ -47,16 +47,18 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of AgentRun
+            description: spec defines the desired state of ToolRun
             properties:
-              agentRef:
-                description: agentRef is the name of the Agent CR (same namespace)
-                  to launch.
-                type: string
-              callback:
+              args:
                 description: |-
-                  callback configures result/progress reporting for the launched Job,
-                  reusing the same HMAC callback protocol as ToolRun (ADR 0006/0010).
+                  args are the caller-supplied invocation arguments (e.g. the source URL),
+                  appended after the Tool's static args.
+                items:
+                  type: string
+                type: array
+              callback:
+                description: callback configures result/progress reporting for the
+                  launched Job.
                 properties:
                   secretRef:
                     description: |-
@@ -83,25 +85,23 @@ spec:
                 - secretRef
                 - url
                 type: object
-              goal:
-                description: |-
-                  goal is the scoped natural-language objective handed to the agent loop
-                  (passed as the Job container's argument).
-                minLength: 1
-                type: string
               timeoutSeconds:
                 description: timeoutSeconds bounds the Job's activeDeadlineSeconds.
                   Defaults to 300 if unset.
                 format: int32
                 minimum: 1
                 type: integer
+              toolRef:
+                description: |-
+                  toolRef is the name of the Tool CR (same namespace) describing the image/
+                  serviceAccount/args/env to launch.
+                type: string
             required:
-            - agentRef
             - callback
-            - goal
+            - toolRef
             type: object
           status:
-            description: status defines the observed state of AgentRun
+            description: status defines the observed state of ToolRun
             properties:
               completionTime:
                 description: completionTime is when the owned Job finished (succeeded
@@ -110,7 +110,7 @@ spec:
                 type: string
               conditions:
                 description: |-
-                  conditions represent the current state of the AgentRun resource.
+                  conditions represent the current state of the ToolRun resource.
                   Each condition has a unique type and reflects the status of a specific aspect of the resource.
 
                   Standard condition types include:
@@ -178,11 +178,11 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               jobName:
-                description: jobName is the name of the Job this AgentRun created.
+                description: jobName is the name of the Job this ToolRun created.
                 type: string
               message:
                 description: message is a human-readable explanation of the current
-                  phase.
+                  phase (e.g. failure reason).
                 type: string
               phase:
                 description: phase is the coarse lifecycle state, derived from the

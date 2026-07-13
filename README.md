@@ -42,7 +42,7 @@ graph TD
     Orchestrator[agent-orchestrator\nDeployment]
     Controller[agent-controller\nDeployment]
 
-    subgraph CRDs["Custom Resources (tool.recipe-agent.dev/v1alpha1)"]
+    subgraph CRDs["Custom Resources (core.controller-agent.dev/v1alpha1)"]
         ToolCR[Tool CR\nimage · SA · secretEnv · allowedRoles]
         SkillCR[Skill CR\nmarkdown · toolRefs]
         AgentCR[Agent CR\nimage · SA · skillRefs]
@@ -85,7 +85,7 @@ orchestrator service, and `controllers/` holds the Go controller.
 │   ├── orchestrator.md         # orchestrator architecture
 │   └── adr/                    # Architecture Decision Records
 ├── packages/
-│   └── messaging/              # @recipe-agent/messaging — shared event protocol
+│   └── messaging/              # @controller-agent/messaging — shared event protocol
 ├── tools/                      # on-demand tool containers (example implementations)
 │   ├── recipe-scraper/         # URL → recipe Markdown
 │   ├── recipe-publisher/       # recipe Markdown → Mealie instance
@@ -116,7 +116,7 @@ tools.
 | **agent-controller** | Go (kubebuilder) | [controllers/tool-controller/README.md](controllers/tool-controller/README.md) |
 
 The controller watches `Tool`, `Skill`, `Agent`, `ToolRun`, and `AgentRun` CRs
-(API group `tool.recipe-agent.dev/v1alpha1`) and manages all Job creation,
+(API group `core.controller-agent.dev/v1alpha1`) and manages all Job creation,
 secret injection, and lifecycle tracking.
 
 ### Orchestrator
@@ -144,7 +144,7 @@ Every tool container is expected to conform to these repo-wide standards:
 - **[Message passing](docs/messaging.md)** — the event protocol
   (`accepted → progress* / warning* → succeeded | failed`), the transports
   (stdout / file / HTTP callback), and the correlation/idempotency rules.
-  Implemented once as the [@recipe-agent/messaging](packages/messaging/) package.
+  Implemented once as the [@controller-agent/messaging](packages/messaging/) package.
 - **[Security model](docs/security.md)** — SSRF defense, prompt-injection
   containment, the hardened container run contract, and secret handling.
 
@@ -205,7 +205,7 @@ and must be re-created before running the script again.
 
 1. Create `tools/<tool-name>/` with its own `Dockerfile`, source, and `README.md`.
 2. Add it to the root `package.json` workspaces (covered by the `tools/*` glob)
-   and depend on [@recipe-agent/messaging](packages/messaging/) for the
+   and depend on [@controller-agent/messaging](packages/messaging/) for the
    [event protocol](docs/messaging.md) — see
    `tools/recipe-scraper/src/messaging/index.ts` for the wiring pattern.
 3. Follow the [security model](docs/security.md): treat all input as untrusted,

@@ -1,4 +1,4 @@
-module github.com/recipe-agent/tool-controller
+module github.com/controller-agent/tool-controller
 
 go 1.25.7
 

@@ -24,7 +24,7 @@ problem (no live Deployment to discover), but introduced its own frictions:
 
 ## Decision
 
-Introduce a set of CRDs under `tool.recipe-agent.dev/v1alpha1` — `Tool`,
+Introduce a set of CRDs under `core.controller-agent.dev/v1alpha1` — `Tool`,
 `ToolRun`, `Skill`, `Agent`, `AgentRun` — reconciled by a dedicated Go
 controller (`controllers/tool-controller/`, kubebuilder):
 

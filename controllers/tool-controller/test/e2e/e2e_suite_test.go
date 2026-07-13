@@ -28,7 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/recipe-agent/tool-controller/test/utils"
+	"github.com/controller-agent/tool-controller/test/utils"
 )
 
 var (

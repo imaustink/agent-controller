@@ -2,11 +2,11 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/tool.recipe-agent.dev_tools.yaml
-- bases/tool.recipe-agent.dev_skills.yaml
-- bases/tool.recipe-agent.dev_toolruns.yaml
-- bases/tool.recipe-agent.dev_agents.yaml
-- bases/tool.recipe-agent.dev_agentruns.yaml
+- bases/core.controller-agent.dev_tools.yaml
+- bases/core.controller-agent.dev_skills.yaml
+- bases/core.controller-agent.dev_toolruns.yaml
+- bases/core.controller-agent.dev_agents.yaml
+- bases/core.controller-agent.dev_agentruns.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

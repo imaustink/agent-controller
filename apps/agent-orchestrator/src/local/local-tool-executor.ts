@@ -2,7 +2,7 @@ import { request as httpRequest } from "node:http";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import * as k8s from "@kubernetes/client-node";
-import type { Event } from "@recipe-agent/messaging";
+import type { Event } from "@controller-agent/messaging";
 import type { LocalToolSpec, ToolDescriptor } from "../tool-descriptor.js";
 
 /**

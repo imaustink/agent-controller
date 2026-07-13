@@ -6,7 +6,7 @@ An instruction goes in; a pull request comes out.
 
 Like the other `tools/*` containers it is one-shot (launched as a k8s Job by
 the tool-controller, ADR 0010) and reports over the shared
-`@recipe-agent/messaging` callback protocol. Unlike them it is deliberately
+`@controller-agent/messaging` callback protocol. Unlike them it is deliberately
 more privileged — see [../../docs/security.md](../../docs/security.md).
 
 ## What it does
@@ -60,7 +60,7 @@ Defense in depth — no single layer is sufficient:
 ## Build & run
 
 ```sh
-# From the repo root (build context = repo root, for @recipe-agent/messaging):
+# From the repo root (build context = repo root, for @controller-agent/messaging):
 docker build -f tools/copilot-swe/Dockerfile -t copilot-swe:latest .
 
 # Local test (put credentials in tools/copilot-swe/.env — see .env.example):

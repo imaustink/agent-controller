@@ -15,7 +15,7 @@ const nodeTool: LocalToolCustomResource = {
     allowedRoles: ["reader"],
     tier: "standard",
     runtime: "node",
-    package: "@recipe-agent/http-get",
+    package: "@controller-agent/http-get",
     version: "1.0.0",
     env: [{ name: "FOO", value: "bar" }],
     secretEnv: [{ name: "TOKEN", secretRef: { name: "s", key: "k" } }],
@@ -43,12 +43,12 @@ describe("CrdLocalToolRegistry", () => {
   it("maps LocalTool custom resources to ToolDescriptors with a localExec spec", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [nodeTool] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdLocalToolRegistry("default", "tool.recipe-agent.dev", "v1alpha1", api);
+    const registry = new CrdLocalToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     const tools = await registry.listAll();
 
     expect(listNamespacedCustomObject).toHaveBeenCalledWith({
-      group: "tool.recipe-agent.dev",
+      group: "core.controller-agent.dev",
       version: "v1alpha1",
       namespace: "default",
       plural: "localtools",
@@ -61,7 +61,7 @@ describe("CrdLocalToolRegistry", () => {
       tier: "standard",
       localExec: {
         runtime: "node",
-        package: "@recipe-agent/http-get",
+        package: "@controller-agent/http-get",
         version: "1.0.0",
         env: { FOO: "bar" },
         secretEnv: [{ name: "TOKEN", secretRef: { name: "s", key: "k" } }],
@@ -108,7 +108,7 @@ describe("CrdLocalToolRegistry", () => {
       .fn()
       .mockResolvedValue({ items: [malformed as unknown as LocalToolCustomResource, nodeTool] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdLocalToolRegistry("default", "tool.recipe-agent.dev", "v1alpha1", api);
+    const registry = new CrdLocalToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     const tools = await registry.listAll();
 

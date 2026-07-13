@@ -9,7 +9,7 @@
 # `<!-- mealie-slug: ... -->` marker mechanism). toolRefs must name existing
 # Tool CRs in the same namespace (see tools/recipe-scraper/tool.yaml and
 # tools/recipe-publisher/tool.yaml).
-apiVersion: tool.recipe-agent.dev/v1alpha1
+apiVersion: core.controller-agent.dev/v1alpha1
 kind: Skill
 metadata:
   name: recipe-refining-skill

@@ -40,7 +40,7 @@ things called out as open questions in the design doc.
    hardened container contract as `recipe-scraper` (dropped capabilities,
    read-only root fs, non-root, no privilege escalation).
 8. Waits for the Job's result via the existing
-   [`@recipe-agent/messaging`](../../packages/messaging/) callback protocol,
+   [`@controller-agent/messaging`](../../packages/messaging/) callback protocol,
    then makes it available via `GET /invoke/:id`.
 
 Sub-agents are launched exactly the same way as tools (same code path), just
@@ -119,7 +119,7 @@ Apply a `LocalTool` CR (see the CRD in `controllers/tool-controller` and the
 reference tools under `tools-local/`):
 
 ```yaml
-apiVersion: tool.recipe-agent.dev/v1alpha1
+apiVersion: core.controller-agent.dev/v1alpha1
 kind: LocalTool
 metadata: { name: http-get-node }
 spec:
@@ -128,7 +128,7 @@ spec:
   output: "An envelope { status, body }."
   allowedRoles: ["reader"]
   runtime: node
-  package: "@recipe-agent/http-get"
+  package: "@controller-agent/http-get"
   version: "0.1.0"     # exact pin required
   network: true         # opt in to egress (default deny)
 ```
@@ -248,7 +248,7 @@ These are called out explicitly rather than silently glossed over — see
 
 ## Commands
 
-- Build: `npm run build` (run from repo root first: `npm run build --workspace=@recipe-agent/messaging`)
+- Build: `npm run build` (run from repo root first: `npm run build --workspace=@controller-agent/messaging`)
 - Typecheck: `npm run typecheck` | Test: `npm test` (vitest)
 - Docker build (from repo root): `docker build -f apps/agent-orchestrator/Dockerfile -t agent-orchestrator:latest .`
 - Hardened run: `OPENAI_API_KEY=... AGENT_CALLBACK_SECRET=... ./run.sh` (starts the service; see [Calling it](#calling-it) above)

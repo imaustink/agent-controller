@@ -31,7 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	toolv1alpha1 "github.com/recipe-agent/tool-controller/api/v1alpha1"
+	toolv1alpha1 "github.com/controller-agent/tool-controller/api/v1alpha1"
 )
 
 const (
@@ -45,9 +45,9 @@ type ToolReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=tools,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=tools/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=tools/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=tools,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=tools/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=tools/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch
 
 // Reconcile validates a Tool's referenced ServiceAccount exists in the same

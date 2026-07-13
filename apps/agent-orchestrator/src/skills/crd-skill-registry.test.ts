@@ -15,12 +15,12 @@ describe("CrdSkillRegistry", () => {
   it("maps Skill custom resources to SkillDescriptors", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [validSkill] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdSkillRegistry("default", "tool.recipe-agent.dev", "v1alpha1", api);
+    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     const skills = await registry.listAll();
 
     expect(listNamespacedCustomObject).toHaveBeenCalledWith({
-      group: "tool.recipe-agent.dev",
+      group: "core.controller-agent.dev",
       version: "v1alpha1",
       namespace: "default",
       plural: "skills",
@@ -43,7 +43,7 @@ describe("CrdSkillRegistry", () => {
     };
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [respondOnly] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdSkillRegistry("default", "tool.recipe-agent.dev", "v1alpha1", api);
+    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     const skills = await registry.listAll();
 
@@ -58,7 +58,7 @@ describe("CrdSkillRegistry", () => {
     } as SkillCustomResource;
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [malformed, validSkill] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdSkillRegistry("default", "tool.recipe-agent.dev", "v1alpha1", api);
+    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     const skills = await registry.listAll();
 
@@ -77,7 +77,7 @@ describe("CrdSkillRegistry", () => {
     };
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [withIo] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdSkillRegistry("default", "tool.recipe-agent.dev", "v1alpha1", api);
+    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     const skills = await registry.listAll();
 
@@ -89,7 +89,7 @@ describe("CrdSkillRegistry", () => {
   it("returns an empty catalog when there are zero Skill resources", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdSkillRegistry("default", "tool.recipe-agent.dev", "v1alpha1", api);
+    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     expect(await registry.listAll()).toEqual([]);
   });

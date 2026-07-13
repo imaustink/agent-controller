@@ -7,7 +7,7 @@
 # to it, carrying the `<!-- swe: ... -->` marker forward across turns so
 # follow-ups refine the same pull request. toolRefs must name an existing Tool
 # CR in the same namespace.
-apiVersion: tool.recipe-agent.dev/v1alpha1
+apiVersion: core.controller-agent.dev/v1alpha1
 kind: Skill
 metadata:
   name: software-engineering-skill

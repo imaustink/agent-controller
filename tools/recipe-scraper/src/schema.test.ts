@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { RecipeSchema, EnvelopeSchema, RECIPE_JSON_SCHEMA } from "./schema.js";
 
 // The event-protocol schema (EventSchema, ArtifactRefSchema) now lives in the
-// shared @recipe-agent/messaging package — see packages/messaging/src/emitter.test.ts.
+// shared @controller-agent/messaging package — see packages/messaging/src/emitter.test.ts.
 
 describe("RecipeSchema", () => {
   it("accepts a well-formed recipe with a single unnamed section", () => {

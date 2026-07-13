@@ -10,7 +10,7 @@
 #   kubectl -n <namespace> create serviceaccount copilot-swe
 #   kubectl -n <namespace> create secret generic copilot-swe-secrets \
 #     --from-literal=GITHUB_TOKEN=github_pat_...
-apiVersion: tool.recipe-agent.dev/v1alpha1
+apiVersion: core.controller-agent.dev/v1alpha1
 kind: Tool
 metadata:
   name: copilot-swe

@@ -18,10 +18,10 @@ metadata:
   labels:
     {{- include "agent-orchestrator.labels" . | nindent 4 }}
 rules:
-  - apiGroups: ["tool.recipe-agent.dev"]
+  - apiGroups: ["core.controller-agent.dev"]
     resources: ["tools", "skills"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: ["tool.recipe-agent.dev"]
+  - apiGroups: ["core.controller-agent.dev"]
     resources: ["toolruns"]
     verbs: ["create", "get", "list", "watch", "delete"]
   {{- if .Values.localTool.enabled }}
@@ -29,7 +29,7 @@ rules:
   # LocalTool's secretEnv before passing the values to the executor sidecar
   # (the sidecars have no k8s identity of their own). This `secrets: get` grant
   # widens the orchestrator's blast radius -- only added when LocalTools are on.
-  - apiGroups: ["tool.recipe-agent.dev"]
+  - apiGroups: ["core.controller-agent.dev"]
     resources: ["localtools"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]

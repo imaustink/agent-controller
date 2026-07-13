@@ -1,5 +1,5 @@
 {
-  "name": "@recipe-agent/messaging",
+  "name": "@controller-agent/messaging",
   "version": "0.1.0",
   "private": true,
   "type": "module",

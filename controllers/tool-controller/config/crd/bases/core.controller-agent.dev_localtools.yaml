@@ -4,20 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: tools.tool.recipe-agent.dev
+  name: localtools.core.controller-agent.dev
 spec:
-  group: tool.recipe-agent.dev
+  group: core.controller-agent.dev
   names:
-    kind: Tool
-    listKind: ToolList
-    plural: tools
-    singular: tool
+    kind: LocalTool
+    listKind: LocalToolList
+    plural: localtools
+    singular: localtool
   scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Tool is the Schema for the tools API
+        description: LocalTool is the Schema for the localtools API
         properties:
           apiVersion:
             description: |-
@@ -37,30 +37,35 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of Tool
+            description: spec defines the desired state of LocalTool
             properties:
               allowedRoles:
                 description: |-
                   allowedRoles gates RAG retrieval (RBAC filter) — caller must have at least
-                  one of these roles for this Tool to be considered a candidate.
+                  one of these roles for this LocalTool to be a candidate.
                 items:
                   type: string
                 minItems: 1
                 type: array
-              args:
-                description: args are static extra container args appended after the
-                  caller-supplied input.
-                items:
-                  type: string
-                type: array
+              checksum:
+                description: |-
+                  checksum is the lowercase hex sha256 digest of the fetched artifact,
+                  verified by the sidecar before execution. REQUIRED for shell (integrity
+                  of an arbitrary URL); recommended for the other runtimes.
+                type: string
               description:
                 description: description is fed to the orchestrator's embedder for
                   RAG tool retrieval.
                 minLength: 1
                 type: string
+              entry:
+                description: |-
+                  entry is the module/console-script/binary the sidecar invokes within the
+                  fetched package when it differs from the package's default. Optional.
+                type: string
               env:
-                description: env are static, non-secret environment variables for
-                  the Job container.
+                description: env are static, non-secret environment variables passed
+                  to the tool.
                 items:
                   description: |-
                     EnvVar is a plain name/value pair injected into the tool's Job container.
@@ -78,19 +83,32 @@ spec:
                   - value
                   type: object
                 type: array
-              image:
-                description: image is the fully-qualified container image the ToolRun
-                  controller launches as a Job.
-                type: string
               input:
-                description: input describes the expected argv[2]/stdin contract for
-                  the tool's container.
+                description: |-
+                  input describes the stdin contract for the tool (the ABI is: JSON/string
+                  on stdin -> one final JSON envelope on stdout; exit 0 = success).
                 type: string
+              network:
+                description: |-
+                  network opts this tool into egress. Default false: the sidecar runs the
+                  tool with its network namespace unshared (no network). Set true only for
+                  tools that must reach out (e.g. an HTTP fetcher) — those tools remain
+                  responsible for their own SSRF defenses.
+                type: boolean
               output:
                 description: output describes the tool's result envelope shape.
                 type: string
+              package:
+                description: |-
+                  package is the registry package coordinate the sidecar fetches — an npm
+                  package name (node), a PyPI distribution (python), or a Go module path
+                  including the command, e.g. example.com/x/cmd/tool (go). Required for
+                  node/python/go; ignored for shell (which uses sourceURL).
+                type: string
               resources:
-                description: resources are the Job container's compute resource requirements.
+                description: |-
+                  resources are the per-execution resource bounds (mapped to rlimits by the
+                  sidecar), mirroring the cpu/memory subset used elsewhere.
                 properties:
                   limits:
                     additionalProperties:
@@ -101,11 +119,23 @@ spec:
                       type: string
                     type: object
                 type: object
+              runtime:
+                description: |-
+                  runtime selects which executor sidecar runs this tool. Each runtime
+                  resolves `package`/`version` (or `sourceURL`/`checksum` for shell)
+                  against its own registry and toolchain.
+                enum:
+                - node
+                - python
+                - go
+                - shell
+                type: string
               secretEnv:
                 description: |-
-                  secretEnv are environment variables for the Job container sourced from
-                  Secret keys in the same namespace (e.g. OPENAI_API_KEY, GITHUB_TOKEN) —
-                  never literal values, only name+key references.
+                  secretEnv are environment variables sourced from Secret keys in the same
+                  namespace (never literal values). The ORCHESTRATOR resolves these (it
+                  holds the k8s identity; the sidecars deliberately do not) and passes the
+                  resolved values to the sidecar over the pod-local unix socket.
                 items:
                   description: |-
                     SecretEnvVar names a Job container environment variable whose value comes
@@ -140,10 +170,10 @@ spec:
                   - secretRef
                   type: object
                 type: array
-              serviceAccountName:
+              sourceURL:
                 description: |-
-                  serviceAccountName the Job pod runs as. Must already exist in-cluster —
-                  this CRD/controller does not create tool ServiceAccounts.
+                  sourceURL is the pinned https:// location of the script to run. Required
+                  for the shell runtime (which has no package registry); ignored otherwise.
                 type: string
               tier:
                 description: tier is an operator-defined cost/trust classification
@@ -151,36 +181,32 @@ spec:
                 type: string
               timeoutSeconds:
                 description: |-
-                  timeoutSeconds is the default bound on the launched Job's
-                  activeDeadlineSeconds, used when a ToolRun does not specify its own
-                  timeoutSeconds. Lets long-running tools (e.g. an agentic coding tool)
-                  raise the 300s default without every caller having to set it. When both
-                  are unset the controller falls back to 300s.
+                  timeoutSeconds bounds a single execution; the sidecar SIGKILLs past it.
+                  Falls back to the orchestrator/sidecar default (30s) when unset.
                 format: int32
                 minimum: 1
                 type: integer
+              version:
+                description: |-
+                  version is the EXACT pinned version to fetch (no ranges/tags like
+                  "latest" or "^1.2.0"). Required for node/python/go; the sidecar rejects
+                  unpinned versions fail-closed. Ignored for shell.
+                type: string
             required:
             - allowedRoles
             - description
-            - image
             - input
             - output
-            - serviceAccountName
+            - runtime
             type: object
           status:
-            description: status defines the observed state of Tool
+            description: status defines the observed state of LocalTool
             properties:
               conditions:
                 description: |-
-                  conditions represent the current state of the Tool resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                  conditions represent the current state of the LocalTool resource.
+                  Standard condition types include "Available"/"Progressing"/"Degraded";
+                  this controller uses "Ready" to report spec validity.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

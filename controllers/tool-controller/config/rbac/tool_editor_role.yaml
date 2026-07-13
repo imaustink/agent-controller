@@ -1,7 +1,7 @@
 # This rule is not used by the project tool-controller itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants permissions to create, update, and delete resources within the tool.recipe-agent.dev.
+# Grants permissions to create, update, and delete resources within the core.controller-agent.dev.
 # This role is intended for users who need to manage these resources
 # but should not control RBAC or manage permissions for others.
 
@@ -14,7 +14,7 @@ metadata:
   name: tool-editor-role
 rules:
 - apiGroups:
-  - tool.recipe-agent.dev
+  - core.controller-agent.dev
   resources:
   - tools
   verbs:
@@ -26,7 +26,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - tool.recipe-agent.dev
+  - core.controller-agent.dev
   resources:
   - tools/status
   verbs:

@@ -212,7 +212,7 @@ tools/recipe-publisher/
     mealie/client.ts             # Mealie create+patch publish logic
     mealie/markdown-parser.ts    # parses recipe-scraper's Markdown back into structured data
     security/redact.ts           # secret redaction (shared generic patterns)
-    messaging/index.ts           # @recipe-agent/messaging wiring (JobEmitter subclass, createSink)
+    messaging/index.ts           # @controller-agent/messaging wiring (JobEmitter subclass, createSink)
   Dockerfile
   tool.yaml                      # Tool custom resource (ADR 0010) — see "Deploying to Kubernetes"
 ```

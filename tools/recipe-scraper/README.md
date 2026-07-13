@@ -80,7 +80,7 @@ transcription, and recipe formatting).
 ### 2. Build the image
 
 From the **repo root** (this tool depends on the shared
-`@recipe-agent/messaging` workspace package, so the build context must include it):
+`@controller-agent/messaging` workspace package, so the build context must include it):
 
 ```bash
 docker build -f tools/recipe-scraper/Dockerfile -t recipe-scraper:latest .
@@ -135,7 +135,7 @@ Key modules:
 | [src/transcription/audio.ts](src/transcription/audio.ts) | Cloud audio transcription |
 | [src/llm/format.ts](src/llm/format.ts) | Injection-hardened, schema-constrained recipe formatting |
 | [src/schema.ts](src/schema.ts) | `RecipeSchema`, `EnvelopeSchema`, `EventSchema` (the wire contracts) |
-| [src/messaging/](src/messaging/) | Thin wiring over the shared [@recipe-agent/messaging](../../packages/messaging/) package (`createSink`, redaction-aware `JobEmitter`) |
+| [src/messaging/](src/messaging/) | Thin wiring over the shared [@controller-agent/messaging](../../packages/messaging/) package (`createSink`, redaction-aware `JobEmitter`) |
 | [src/util/](src/util/) | Safe subprocess exec + size-capped guarded download |
 
 ## Extractor lanes
@@ -282,14 +282,14 @@ Summary:
 ## Development
 
 This tool is part of an **npm workspace** rooted at the repo root (so it can
-share the [@recipe-agent/messaging](../../packages/messaging/) package). Install
+share the [@controller-agent/messaging](../../packages/messaging/) package). Install
 and build the shared package once from the repo root, then work in this
 directory as usual:
 
 ```bash
 # from the repo root
 npm install
-npm run build --workspace=@recipe-agent/messaging
+npm run build --workspace=@controller-agent/messaging
 
 # from tools/recipe-scraper/ (or add --workspace=recipe-scraper from the root)
 npm run typecheck   # tsc --noEmit
@@ -325,7 +325,7 @@ base).
 ├── Dockerfile              # multi-stage build; builds FROM THE REPO ROOT
 ├── run.sh                  # hardened `docker run` wrapper (auto-loads .env)
 ├── .env.example            # configuration template
-├── package.json            # pinned deps + @recipe-agent/messaging workspace dep
+├── package.json            # pinned deps + @controller-agent/messaging workspace dep
 └── src/
     ├── index.ts            # entrypoint / pipeline orchestration
     ├── config.ts           # env-driven configuration
@@ -334,7 +334,7 @@ base).
     ├── extractors/         # video, image, web
     ├── transcription/      # cloud audio transcription
     ├── llm/                # OpenAI client + formatting
-    ├── messaging/          # createSink() + JobEmitter wiring over @recipe-agent/messaging
+    ├── messaging/          # createSink() + JobEmitter wiring over @controller-agent/messaging
     ├── security/           # url-guard, redact
     └── util/               # exec, download
 ```

@@ -11,7 +11,7 @@ enabled: true
 
 # apiVersion of the Tool/Skill CRDs. Must match what charts/tool-controller
 # installs (config.crdGroup/crdVersion on the orchestrator side too).
-crdApiVersion: tool.recipe-agent.dev/v1alpha1
+crdApiVersion: core.controller-agent.dev/v1alpha1
 
 # Base Helm hook weight for the catalog CRs. Higher = applied later; kept
 # positive so they run after the (unweighted, weight 0) controller resources.

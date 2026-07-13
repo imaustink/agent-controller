@@ -6,7 +6,7 @@ npm workspaces monorepo, three kinds of members (see [README.md](../README.md)
 for the full layout and [docs/orchestrator.md](../docs/orchestrator.md) +
 [docs/adr/](../docs/adr/) for the orchestrator's design rationale):
 
-- `packages/*` — shared libraries (currently `@recipe-agent/messaging`, the
+- `packages/*` — shared libraries (currently `@controller-agent/messaging`, the
   transport-agnostic tool-call event protocol). Depend on these instead of
   copy-pasting logic between tools/apps.
 - `tools/*` — one Docker container per **on-demand, single-shot** tool call
@@ -27,7 +27,7 @@ contract) and never imports from a sibling tool/app directly — only from
   workspaces. Scope to one with `--workspace=<name>` (e.g.
   `--workspace=agent-orchestrator`).
 - Build the shared package before typechecking/testing a dependent workspace
-  if you've changed it: `npm run build --workspace=@recipe-agent/messaging`.
+  if you've changed it: `npm run build --workspace=@controller-agent/messaging`.
 - Docker builds use the **repo root** as build context (not the tool/app
   dir), because images need to COPY in `packages/messaging`:
   `docker build -f tools/recipe-scraper/Dockerfile -t recipe-scraper:latest .`
@@ -47,7 +47,7 @@ contract) and never imports from a sibling tool/app directly — only from
   follow the same discipline in new tools/apps rather than re-deriving it.
 - Tool/app-to-parent communication uses the shared event protocol
   (`accepted → progress* / warning* → succeeded | failed`) implemented once
-  in `@recipe-agent/messaging` — see [docs/messaging.md](../docs/messaging.md).
+  in `@controller-agent/messaging` — see [docs/messaging.md](../docs/messaging.md).
   Depend on the package; don't reimplement the protocol.
 - Never invent unverified auth/identity shortcuts. `apps/agent-orchestrator/src/rbac/static-identity-resolver.ts`
   is explicitly a DEV/TEST-ONLY stub (no signature verification) — treat it

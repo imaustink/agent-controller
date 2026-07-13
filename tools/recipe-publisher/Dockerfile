@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Build from the REPO ROOT (this tool depends on the shared
-# @recipe-agent/messaging workspace package):
+# @controller-agent/messaging workspace package):
 #
 #   docker build -f tools/recipe-publisher/Dockerfile -t recipe-publisher:latest .
 
@@ -11,7 +11,7 @@
 FROM node:20-bookworm-slim AS build
 WORKDIR /repo
 
-# Install across the whole workspace so the local @recipe-agent/messaging
+# Install across the whole workspace so the local @controller-agent/messaging
 # package resolves without hitting the registry.
 COPY package.json package-lock.json* ./
 COPY packages/messaging/package.json packages/messaging/package.json
@@ -22,15 +22,15 @@ COPY packages/messaging packages/messaging
 COPY tools/recipe-publisher/tsconfig.json tools/recipe-publisher/tsconfig.json
 COPY tools/recipe-publisher/src tools/recipe-publisher/src
 
-RUN npm run build --workspace=@recipe-agent/messaging \
+RUN npm run build --workspace=@controller-agent/messaging \
   && npm run build --workspace=recipe-publisher \
   && npm prune --omit=dev \
   # Materialize the workspace package into a real directory (not the npm-created
   # symlink) so it survives being copied into the runtime stage below.
-  && rm -rf node_modules/@recipe-agent/messaging \
-  && mkdir -p node_modules/@recipe-agent/messaging \
-  && cp -r packages/messaging/dist node_modules/@recipe-agent/messaging/dist \
-  && cp packages/messaging/package.json node_modules/@recipe-agent/messaging/package.json
+  && rm -rf node_modules/@controller-agent/messaging \
+  && mkdir -p node_modules/@controller-agent/messaging \
+  && cp -r packages/messaging/dist node_modules/@controller-agent/messaging/dist \
+  && cp packages/messaging/package.json node_modules/@controller-agent/messaging/package.json
 
 ############################
 # Runtime stage

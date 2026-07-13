@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { Sink } from "@recipe-agent/messaging";
+import type { Sink } from "@controller-agent/messaging";
 import { createSink, JobEmitter } from "./index.js";
 import type { AppConfig } from "../config.js";
 

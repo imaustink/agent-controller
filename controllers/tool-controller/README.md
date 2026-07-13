@@ -59,7 +59,7 @@ Deployment"]
     Controller["agent-controller
 Deployment"]
 
-    subgraph CRDs["Custom Resources (tool.recipe-agent.dev/v1alpha1)"]
+    subgraph CRDs["Custom Resources (core.controller-agent.dev/v1alpha1)"]
         ToolCR["Tool CR
 image · SA · env · secretEnv
 allowedRoles · description"]
@@ -116,7 +116,7 @@ The orchestrator discovers `Tool` CRs at startup, embeds their
 filters candidates by `allowedRoles` against the caller's identity.
 
 ```yaml
-apiVersion: tool.recipe-agent.dev/v1alpha1
+apiVersion: core.controller-agent.dev/v1alpha1
 kind: Tool
 metadata:
   name: recipe-scraper
@@ -165,7 +165,7 @@ positional args.
 ## Result reporting
 
 Tools and agents report results over the
-[@recipe-agent/messaging](../../packages/messaging/) HMAC callback protocol
+[@controller-agent/messaging](../../packages/messaging/) HMAC callback protocol
 (ADR 0006): the controller injects `RECIPE_CALLBACK_URL` and
 `RECIPE_CALLBACK_SECRET` into every Job, and the container POSTs signed
 event payloads back to the orchestrator's callback receiver on port 8080.
@@ -244,7 +244,7 @@ make undeploy
 make generate   # regenerate DeepCopy methods (zz_generated.deepcopy.go)
 make manifests  # regenerate CRDs + RBAC from kubebuilder markers
 # Then manually sync the CRD to the Helm chart:
-cp config/crd/bases/tool.recipe-agent.dev_tools.yaml    ../../charts/tool-controller/crds/
+cp config/crd/bases/core.controller-agent.dev_tools.yaml    ../../charts/tool-controller/crds/
 ```
 
 ### Running tests

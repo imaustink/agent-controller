@@ -29,7 +29,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	toolv1alpha1 "github.com/recipe-agent/tool-controller/api/v1alpha1"
+	toolv1alpha1 "github.com/controller-agent/tool-controller/api/v1alpha1"
 )
 
 var _ = Describe("AgentRun Controller", func() {

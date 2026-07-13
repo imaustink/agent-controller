@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
-import type { Event } from "@recipe-agent/messaging";
+import type { Event } from "@controller-agent/messaging";
 import type { CallbackReceiver } from "../callback/receiver.js";
 import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
 import type { LocalToolExecutor } from "../local/local-tool-executor.js";

@@ -21,12 +21,12 @@ describe("CrdToolRegistry", () => {
   it("maps Tool custom resources to ToolDescriptors", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [validTool] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdToolRegistry("default", "tool.recipe-agent.dev", "v1alpha1", api);
+    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     const tools = await registry.listAll();
 
     expect(listNamespacedCustomObject).toHaveBeenCalledWith({
-      group: "tool.recipe-agent.dev",
+      group: "core.controller-agent.dev",
       version: "v1alpha1",
       namespace: "default",
       plural: "tools",
@@ -57,7 +57,7 @@ describe("CrdToolRegistry", () => {
     };
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [malformed, validTool] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdToolRegistry("default", "tool.recipe-agent.dev", "v1alpha1", api);
+    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     const tools = await registry.listAll();
 
@@ -68,7 +68,7 @@ describe("CrdToolRegistry", () => {
   it("returns an empty catalog when there are zero Tool resources", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdToolRegistry("default", "tool.recipe-agent.dev", "v1alpha1", api);
+    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     expect(await registry.listAll()).toEqual([]);
   });

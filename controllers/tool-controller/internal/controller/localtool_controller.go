@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	toolv1alpha1 "github.com/recipe-agent/tool-controller/api/v1alpha1"
+	toolv1alpha1 "github.com/controller-agent/tool-controller/api/v1alpha1"
 )
 
 const localToolConditionReady = "Ready"
@@ -50,9 +50,9 @@ type LocalToolReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=localtools,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=localtools/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=localtools/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=localtools,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=localtools/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=localtools/finalizers,verbs=update
 
 // Reconcile validates that a LocalTool declares a coherent packaging coordinate
 // for its runtime (package+pinned version for node/python/go; sourceURL+sha256

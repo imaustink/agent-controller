@@ -1,4 +1,4 @@
-apiVersion: tool.recipe-agent.dev/v1alpha1
+apiVersion: core.controller-agent.dev/v1alpha1
 kind: Tool
 metadata:
   labels:

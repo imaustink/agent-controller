@@ -1,5 +1,5 @@
 {
-  "name": "@recipe-agent/http-get",
+  "name": "@controller-agent/http-get",
   "version": "0.1.0",
   "private": true,
   "type": "module",

@@ -5,7 +5,7 @@ container is one ephemeral tool call: some input goes in, a stream of
 structured events comes out.
 
 The protocol is implemented **once**, as the shared
-[@recipe-agent/messaging](../packages/messaging/) workspace package (`Sink`,
+[@controller-agent/messaging](../packages/messaging/) workspace package (`Sink`,
 `JobEmitter`, `StdoutSink`/`FileSink`/`CallbackSink`, `EventSchema`). Any tool
 depends on it rather than reimplementing the protocol; `recipe-scraper`
 ([tools/recipe-scraper/src/messaging/index.ts](../tools/recipe-scraper/src/messaging/index.ts))

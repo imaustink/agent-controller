@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	toolv1alpha1 "github.com/recipe-agent/tool-controller/api/v1alpha1"
+	toolv1alpha1 "github.com/controller-agent/tool-controller/api/v1alpha1"
 )
 
 const agentConditionReady = "Ready"
@@ -41,10 +41,10 @@ type AgentReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=agents,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=agents/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=agents/finalizers,verbs=update
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=skills,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agents,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agents/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agents/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=skills,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch
 
 // Reconcile validates an Agent's launch prerequisites and sets a Ready

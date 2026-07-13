@@ -4,30 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: toolruns.tool.recipe-agent.dev
+  name: skills.core.controller-agent.dev
 spec:
-  group: tool.recipe-agent.dev
+  group: core.controller-agent.dev
   names:
-    kind: ToolRun
-    listKind: ToolRunList
-    plural: toolruns
-    singular: toolrun
+    kind: Skill
+    listKind: SkillList
+    plural: skills
+    singular: skill
   scope: Namespaced
   versions:
-  - additionalPrinterColumns:
-    - jsonPath: .status.phase
-      name: Phase
-      type: string
-    - jsonPath: .status.jobName
-      name: Job
-      type: string
-    - jsonPath: .metadata.creationTimestamp
-      name: Age
-      type: date
-    name: v1alpha1
+  - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ToolRun is the Schema for the toolruns API
+        description: Skill is the Schema for the skills API
         properties:
           apiVersion:
             description: |-
@@ -47,70 +37,55 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of ToolRun
+            description: spec defines the desired state of Skill
             properties:
-              args:
+              description:
+                description: description is fed to the orchestrator's embedder for
+                  RAG skill retrieval.
+                minLength: 1
+                type: string
+              input:
                 description: |-
-                  args are the caller-supplied invocation arguments (e.g. the source URL),
-                  appended after the Tool's static args.
+                  input describes what a caller should provide when this skill applies,
+                  in plain language. Purely descriptive (better RAG matching, parity with
+                  Tool/Agent) — a Skill itself is never executed as a pod.
+                type: string
+              markdown:
+                description: |-
+                  markdown is injected as trusted system-prompt context for the action planner.
+                  Unlike tool descriptions (semi-trusted, catalog data), this is treated as
+                  operator-authored instructions.
+                type: string
+              output:
+                description: |-
+                  output describes what interactions under this skill produce, in plain
+                  language. Purely descriptive, like input.
+                type: string
+              toolRefs:
+                description: |-
+                  toolRefs are the names of Tool CRs this skill is permitted to invoke. The
+                  action planner's chosen toolId is re-validated against this list before
+                  a ToolRun is ever created. May be empty for respond-only skills (pure
+                  system-prompt knowledge, no tool calls).
+
+                  Note a Skill deliberately carries NO allowedRoles of its own (ADR 0011):
+                  skills are trusted markdown, not capability — all RBAC lives on the
+                  dangerous things (Tool/Agent). A skill's effective audience is derived
+                  by the orchestrator as the intersection of its tools' allowedRoles
+                  (unrestricted when toolRefs is empty).
                 items:
                   type: string
                 type: array
-              callback:
-                description: callback configures result/progress reporting for the
-                  launched Job.
-                properties:
-                  secretRef:
-                    description: |-
-                      secretRef selects the HMAC signing secret injected as AGENT_CALLBACK_SECRET
-                      (or equivalent) into the Job container's environment via secretKeyRef —
-                      never copied into the ToolRun spec/status in plaintext.
-                    properties:
-                      key:
-                        description: key within the Secret's data.
-                        type: string
-                      name:
-                        description: name of the Secret.
-                        type: string
-                    required:
-                    - key
-                    - name
-                    type: object
-                  url:
-                    description: |-
-                      url is the in-cluster callback receiver endpoint, e.g.
-                      http://agent-orchestrator-callback.recipe-agent.svc.cluster.local:8080
-                    type: string
-                required:
-                - secretRef
-                - url
-                type: object
-              timeoutSeconds:
-                description: timeoutSeconds bounds the Job's activeDeadlineSeconds.
-                  Defaults to 300 if unset.
-                format: int32
-                minimum: 1
-                type: integer
-              toolRef:
-                description: |-
-                  toolRef is the name of the Tool CR (same namespace) describing the image/
-                  serviceAccount/args/env to launch.
-                type: string
             required:
-            - callback
-            - toolRef
+            - description
+            - markdown
             type: object
           status:
-            description: status defines the observed state of ToolRun
+            description: status defines the observed state of Skill
             properties:
-              completionTime:
-                description: completionTime is when the owned Job finished (succeeded
-                  or failed).
-                format: date-time
-                type: string
               conditions:
                 description: |-
-                  conditions represent the current state of the ToolRun resource.
+                  conditions represent the current state of the Skill resource.
                   Each condition has a unique type and reflects the status of a specific aspect of the resource.
 
                   Standard condition types include:
@@ -177,26 +152,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              jobName:
-                description: jobName is the name of the Job this ToolRun created.
-                type: string
-              message:
-                description: message is a human-readable explanation of the current
-                  phase (e.g. failure reason).
-                type: string
-              phase:
-                description: phase is the coarse lifecycle state, derived from the
-                  owned Job's status.
-                enum:
-                - Pending
-                - Running
-                - Succeeded
-                - Failed
-                type: string
-              startTime:
-                description: startTime is when the owned Job started.
-                format: date-time
-                type: string
             type: object
         required:
         - spec

@@ -36,7 +36,7 @@ type SecretKeySelector struct {
 }
 
 // ToolRunCallback describes where/how the launched Job reports results, reusing
-// the existing @recipe-agent/messaging HMAC callback protocol unchanged (ADR 0006).
+// the existing @controller-agent/messaging HMAC callback protocol unchanged (ADR 0006).
 type ToolRunCallback struct {
 	// url is the in-cluster callback receiver endpoint, e.g.
 	// http://agent-orchestrator-callback.recipe-agent.svc.cluster.local:8080

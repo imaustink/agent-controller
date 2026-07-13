@@ -1,12 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { EventSchema, type Event } from "@recipe-agent/messaging";
+import { EventSchema, type Event } from "@controller-agent/messaging";
 
 export class CallbackAuthError extends Error {}
 
 /**
  * Verifies the `x-signature: sha256=<hmac>` header written by
- * `@recipe-agent/messaging`'s `CallbackSink`, then validates the body against
+ * `@controller-agent/messaging`'s `CallbackSink`, then validates the body against
  * the shared `EventSchema`. Kept as a pure function so it's testable without
  * binding a real socket.
  */

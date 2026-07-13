@@ -14,7 +14,7 @@ describe("ToolRunLauncher", () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
     const launcher = new ToolRunLauncher(
-      "tool.recipe-agent.dev",
+      "core.controller-agent.dev",
       "v1alpha1",
       { name: "agent-orchestrator-secrets", key: "AGENT_CALLBACK_SECRET" },
       api,
@@ -30,7 +30,7 @@ describe("ToolRunLauncher", () => {
     expect(createNamespacedCustomObject).toHaveBeenCalledTimes(1);
     const [request] = createNamespacedCustomObject.mock.calls[0] as [Record<string, unknown>];
     expect(request).toMatchObject({
-      group: "tool.recipe-agent.dev",
+      group: "core.controller-agent.dev",
       version: "v1alpha1",
       namespace: "default",
       plural: "toolruns",
@@ -50,7 +50,7 @@ describe("ToolRunLauncher", () => {
 
   it("throws if the template has no toolRef (i.e. was not resolved by CrdToolRegistry)", async () => {
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject: vi.fn() };
-    const launcher = new ToolRunLauncher("tool.recipe-agent.dev", "v1alpha1", { name: "s", key: "k" }, api);
+    const launcher = new ToolRunLauncher("core.controller-agent.dev", "v1alpha1", { name: "s", key: "k" }, api);
 
     await expect(
       launcher.launch(

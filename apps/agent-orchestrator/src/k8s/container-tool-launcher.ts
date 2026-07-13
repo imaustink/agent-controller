@@ -3,7 +3,7 @@ import type { JobTemplate } from "../tool-descriptor.js";
 export interface LaunchOptions {
   args?: string[];
   env?: Record<string, string>;
-  /** Result-callback URL, reusing the existing @recipe-agent/messaging callback protocol. */
+  /** Result-callback URL, reusing the existing @controller-agent/messaging callback protocol. */
   callbackUrl: string;
   callbackSecret: string;
   ttlSecondsAfterFinished?: number;

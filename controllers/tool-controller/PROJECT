@@ -3,64 +3,64 @@
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
 cliVersion: 4.14.0
-domain: recipe-agent.dev
+domain: controller-agent.dev
 layout:
 - go.kubebuilder.io/v4
 projectName: tool-controller
-repo: github.com/recipe-agent/tool-controller
+repo: github.com/controller-agent/tool-controller
 resources:
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: recipe-agent.dev
-  group: tool
+  domain: controller-agent.dev
+  group: core
   kind: Tool
-  path: github.com/recipe-agent/tool-controller/api/v1alpha1
+  path: github.com/controller-agent/tool-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: recipe-agent.dev
-  group: tool
+  domain: controller-agent.dev
+  group: core
   kind: Skill
-  path: github.com/recipe-agent/tool-controller/api/v1alpha1
+  path: github.com/controller-agent/tool-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: recipe-agent.dev
-  group: tool
+  domain: controller-agent.dev
+  group: core
   kind: ToolRun
-  path: github.com/recipe-agent/tool-controller/api/v1alpha1
+  path: github.com/controller-agent/tool-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: recipe-agent.dev
-  group: tool
+  domain: controller-agent.dev
+  group: core
   kind: Agent
-  path: github.com/recipe-agent/tool-controller/api/v1alpha1
+  path: github.com/controller-agent/tool-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: recipe-agent.dev
-  group: tool
+  domain: controller-agent.dev
+  group: core
   kind: AgentRun
-  path: github.com/recipe-agent/tool-controller/api/v1alpha1
+  path: github.com/controller-agent/tool-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: recipe-agent.dev
-  group: tool
+  domain: controller-agent.dev
+  group: core
   kind: LocalTool
-  path: github.com/recipe-agent/tool-controller/api/v1alpha1
+  path: github.com/controller-agent/tool-controller/api/v1alpha1
   version: v1alpha1
 version: "3"

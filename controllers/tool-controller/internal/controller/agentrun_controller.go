@@ -30,8 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	toolv1alpha1 "github.com/controller-agent/tool-controller/api/v1alpha1"
 	"github.com/go-logr/logr"
-	toolv1alpha1 "github.com/recipe-agent/tool-controller/api/v1alpha1"
 )
 
 // AgentRunReconciler reconciles a AgentRun object
@@ -40,10 +40,10 @@ type AgentRunReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=agentruns,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=agentruns/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=agentruns/finalizers,verbs=update
-// +kubebuilder:rbac:groups=tool.recipe-agent.dev,resources=agents,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agentruns,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agentruns/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agentruns/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agents,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get
 
@@ -90,8 +90,8 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 		jobName:   fmt.Sprintf("agentrun-%s", run.Name),
 		namespace: run.Namespace,
 		labels: map[string]string{
-			"tool.recipe-agent.dev/agentrun": run.Name,
-			"tool.recipe-agent.dev/agent":    agent.Name,
+			"core.controller-agent.dev/agentrun": run.Name,
+			"core.controller-agent.dev/agent":    agent.Name,
 		},
 		image:              agent.Spec.Image,
 		serviceAccountName: agent.Spec.ServiceAccountName,
