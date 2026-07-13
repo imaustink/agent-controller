@@ -29,17 +29,17 @@ describe("AgentUpMessageSchema", () => {
       { ...base, type: "ready" },
       { ...base, type: "progress", message: "cloning repo", pct: 10 },
       { ...base, type: "warning", message: "rate limited, retrying" },
-      { ...base, type: "ask", ask_id: "q1", prompt: "Which branch?" },
-      { ...base, type: "final", result: { pr: "https://example/pr/1" } },
+      { ...base, type: "reply", message: "Which branch?", final: false },
+      { ...base, type: "reply", message: "Opened PR #1", final: true, result: { pr: 1 } },
       { ...base, type: "failed", code: "clone_failed", message: "no such repo" },
     ]) {
       expect(AgentUpMessageSchema.safeParse(msg).success).toBe(true);
     }
   });
 
-  it("rejects an unknown type and a missing ask_id", () => {
+  it("rejects an unknown type and a reply missing final", () => {
     expect(AgentUpMessageSchema.safeParse({ ...base, type: "bogus" }).success).toBe(false);
-    expect(AgentUpMessageSchema.safeParse({ ...base, type: "ask", prompt: "no id" }).success).toBe(false);
+    expect(AgentUpMessageSchema.safeParse({ ...base, type: "reply", message: "no final" }).success).toBe(false);
   });
 });
 
@@ -49,7 +49,6 @@ describe("AgentDownMessageSchema", () => {
   it("accepts each down message type", () => {
     for (const msg of [
       { ...base, type: "prompt", message: "add a health check endpoint" },
-      { ...base, type: "answer", ask_id: "q1", answer: "the main branch" },
       { ...base, type: "cancel", reason: "user left" },
       { ...base, type: "signal", name: "pause" },
     ]) {
@@ -57,7 +56,7 @@ describe("AgentDownMessageSchema", () => {
     }
   });
 
-  it("rejects an answer missing its ask_id", () => {
+  it("rejects an unknown down type", () => {
     expect(AgentDownMessageSchema.safeParse({ ...base, type: "answer", answer: "x" }).success).toBe(false);
   });
 });

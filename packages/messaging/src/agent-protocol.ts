@@ -7,18 +7,24 @@ import { z } from "zod";
  * succeeded|failed` in a single direction, an agent holds a live, two-way
  * conversation with the orchestrator for the life of its Job:
  *
- * - **up** (agent -> orchestrator): `ready`, `progress`, `warning`, `ask`
- *   (a question routed to the human), `final` (done, about to exit), `failed`.
- * - **down** (orchestrator -> agent): `prompt` (a new/continued user turn),
- *   `answer` (the human's reply to a prior `ask`), `cancel`, `signal`.
+ * - **up** (agent -> orchestrator): `ready`, `progress`, `warning`,
+ *   `reply` (the concluding assistant message for the current turn), `failed`.
+ * - **down** (orchestrator -> agent): `prompt` (a user turn — the initial
+ *   goal or any follow-up), `cancel`, `signal`.
  *
  * The protocol is transport-agnostic (this package deliberately has no NATS
  * dependency): messages are plain JSON validated by the schemas below. The
  * concrete carrier is NATS — one subject per direction, keyed by the
- * `AgentRun` id (see {@link agentSubjects}). Human-in-the-loop `ask`/`answer`
- * is modeled as correlated messages (matched by `ask_id`), NOT NATS
- * request/reply, because a human may take arbitrarily long to answer and must
- * survive across chat turns — a synchronous reply timeout would be wrong.
+ * `AgentRun` id (see {@link agentSubjects}).
+ *
+ * Human-in-the-loop is expressed WITHOUT a dedicated ask/answer message pair:
+ * an agent asks the user a question simply by emitting a `reply` with
+ * `final: false` (the question text becomes the turn's assistant message); the
+ * user's answer arrives as the next `prompt`. The `@controller-agent/agent-runtime`
+ * SDK layers an ergonomic `askUser()` helper over exactly this. Modeling a
+ * question as "a non-final reply awaiting the next prompt" (rather than a
+ * synchronous request/reply) is deliberate: a human may take arbitrarily long
+ * and answer across chat turns, so no reply timeout can apply.
  */
 
 /** Fields present on every agent protocol message, both directions. */
@@ -44,17 +50,16 @@ export const AgentUpMessageSchema = z.discriminatedUnion("type", [
     pct: z.number().min(0).max(100).optional(),
   }),
   AgentMessageBaseSchema.extend({ type: z.literal("warning"), message: z.string() }),
-  // A question for the human. The orchestrator surfaces `prompt` to the user
-  // and later replies with a down `answer` carrying the same `ask_id`.
+  // The concluding assistant message for the current turn. `final: false`
+  // means the agent is awaiting a further `prompt` (including the case where
+  // `message` is a question to the user — HITL); `final: true` means the agent
+  // considers the whole task complete and is exiting after this.
   AgentMessageBaseSchema.extend({
-    type: z.literal("ask"),
-    ask_id: z.string(),
-    prompt: z.string(),
-  }),
-  // Terminal success: the agent's final response; it will exit after this.
-  AgentMessageBaseSchema.extend({
-    type: z.literal("final"),
-    result: z.unknown(),
+    type: z.literal("reply"),
+    message: z.string(),
+    final: z.boolean(),
+    // Optional structured result for non-chat consumers (AgentRun status, etc.).
+    result: z.unknown().optional(),
   }),
   // Terminal failure.
   AgentMessageBaseSchema.extend({
@@ -71,12 +76,6 @@ export const AgentDownMessageSchema = z.discriminatedUnion("type", [
   AgentMessageBaseSchema.extend({
     type: z.literal("prompt"),
     message: z.string(),
-  }),
-  // The human's reply to a prior up `ask` (matched by `ask_id`).
-  AgentMessageBaseSchema.extend({
-    type: z.literal("answer"),
-    ask_id: z.string(),
-    answer: z.string(),
   }),
   // Ask the agent to stop and exit (user abandoned the conversation, timeout, etc.).
   AgentMessageBaseSchema.extend({
@@ -96,14 +95,12 @@ export type AgentUpMessage<TResult = unknown> =
   | (AgentMessageBase & { type: "ready" })
   | (AgentMessageBase & { type: "progress"; stage?: string; message: string; pct?: number })
   | (AgentMessageBase & { type: "warning"; message: string })
-  | (AgentMessageBase & { type: "ask"; ask_id: string; prompt: string })
-  | (AgentMessageBase & { type: "final"; result: TResult })
+  | (AgentMessageBase & { type: "reply"; message: string; final: boolean; result?: TResult })
   | (AgentMessageBase & { type: "failed"; code: string; message: string });
 
 /** orchestrator -> agent message. */
 export type AgentDownMessage =
   | (AgentMessageBase & { type: "prompt"; message: string })
-  | (AgentMessageBase & { type: "answer"; ask_id: string; answer: string })
   | (AgentMessageBase & { type: "cancel"; reason?: string })
   | (AgentMessageBase & { type: "signal"; name: string; data?: unknown });
 
