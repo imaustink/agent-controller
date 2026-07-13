@@ -1,0 +1,78 @@
+{{- if .Values.redis.enabled }}
+{{- /*
+  Lightweight Redis instance for the conversation session store (docs/adr/0016).
+  Uses the official redis:alpine image (always available on Docker Hub) rather
+  than a Bitnami subchart — Bitnami periodically yanks old tags, causing
+  ErrImagePull failures on minikube. Session state is best-effort (a routing
+  hint, not durable data), so no persistence is needed and data loss on pod
+  restart is acceptable.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agent-orchestrator.fullname" . }}-redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agent-orchestrator.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        {{- include "agent-orchestrator.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+      containers:
+        - name: redis
+          image: "redis:{{ .Values.redis.image.tag | default "7-alpine" }}"
+          imagePullPolicy: {{ .Values.redis.image.pullPolicy | default "IfNotPresent" }}
+          args:
+            # No on-disk persistence: session records are best-effort routing hints.
+            - "--save"
+            - ""
+            - "--appendonly"
+            - "no"
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agent-orchestrator.fullname" . }}-redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6379
+      targetPort: redis
+      protocol: TCP
+      name: redis
+  selector:
+    {{- include "agent-orchestrator.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+{{- end }}

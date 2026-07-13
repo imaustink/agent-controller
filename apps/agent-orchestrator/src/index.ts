@@ -21,6 +21,8 @@ import { OpenAiResponseComposer } from "./agent/response-composer.js";
 import { OpenAiSkillFitChecker } from "./agent/skill-fit-checker.js";
 import { buildAgentGraph } from "./agent/graph.js";
 import { InMemorySessionStore } from "./session/in-memory-session-store.js";
+import { RedisSessionStore } from "./session/redis-session-store.js";
+import type { SessionStore } from "./session/types.js";
 import { InvokeServer } from "./server.js";
 import { retryWithBackoff } from "./retry.js";
 
@@ -208,13 +210,31 @@ async function main(): Promise<void> {
     callbackSecretRef: { name: config.callbackSecretRefName, key: config.callbackSecretRefKey },
   });
 
-  // Conversation-session store (docs/adr/0012): remembers each chat's active
-  // skill so follow-up turns skip RAG re-selection when the fit-check
-  // passes. In-memory -- assumes the chart's default single replica.
-  const sessionStore = new InMemorySessionStore({
-    ttlMs: config.sessionTtlSeconds * 1000,
-    maxEntries: config.sessionMaxEntries,
-  });
+  // Conversation-session store (docs/adr/0012, docs/adr/0016): remembers each
+  // chat's active skill and per-tool continuation tokens so follow-up turns
+  // skip RAG re-selection and re-inject stored tool state without it ever
+  // appearing in the chat transcript. Redis-backed when AGENT_REDIS_URL is
+  // set (multi-replica safe, survives restarts); in-memory otherwise (single-
+  // replica default, same behaviour as before ADR 0016).
+  let sessionStore: SessionStore;
+  if (config.redisUrl) {
+    const redisStore = new RedisSessionStore(config.redisUrl, { ttlSeconds: config.sessionTtlSeconds });
+    await retryWithBackoff("redis startup check", () => redisStore.ping(), {
+      attempts: 12,
+      initialDelayMs: 1_000,
+      maxDelayMs: 15_000,
+    });
+    sessionStore = redisStore;
+    console.error(`session store: Redis at ${config.redisUrl}`);
+    process.on("SIGTERM", () => void redisStore.close());
+    process.on("SIGINT", () => void redisStore.close());
+  } else {
+    sessionStore = new InMemorySessionStore({
+      ttlMs: config.sessionTtlSeconds * 1000,
+      maxEntries: config.sessionMaxEntries,
+    });
+    console.error("session store: in-memory (set AGENT_REDIS_URL to use Redis)");
+  }
   const invokeServer = new InvokeServer(graph, sessionStore);
 
   await callbackReceiver.listen(config.callbackPort);

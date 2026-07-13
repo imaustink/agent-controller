@@ -88,8 +88,7 @@ orchestrator service, and `controllers/` holds the Go controller.
 │   └── messaging/              # @controller-agent/messaging — shared event protocol
 ├── tools/                      # on-demand tool containers (example implementations)
 │   ├── recipe-scraper/         # URL → recipe Markdown
-│   ├── recipe-publisher/       # recipe Markdown → Mealie instance
-│   └── copilot-swe/            # SWE task → GitHub pull request (privileged)
+│   └── recipe-publisher/       # recipe Markdown → Mealie instance
 ├── apps/
 │   └── agent-orchestrator/     # RAG skill selection + ToolRun/AgentRun creator
 ├── controllers/
@@ -135,7 +134,6 @@ identity, selects a Skill via RAG, plans an action, and creates a `ToolRun` or
 | ---- | ----- | ------ | ---- |
 | **recipe-scraper** | any recipe URL (web page, video, or image) | recipe Markdown | [tools/recipe-scraper/README.md](tools/recipe-scraper/README.md) |
 | **recipe-publisher** | recipe Markdown | published/updated recipe in a Mealie instance | [tools/recipe-publisher/README.md](tools/recipe-publisher/README.md) |
-| **copilot-swe** _(privileged)_ | a software-engineering instruction | an opened/updated GitHub pull request | [tools/copilot-swe/README.md](tools/copilot-swe/README.md) |
 
 ## Shared standards
 

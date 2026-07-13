@@ -25,17 +25,17 @@ export class InMemorySessionStore implements SessionStore {
     this.now = opts.now ?? Date.now;
   }
 
-  get(sessionId: string): SessionRecord | undefined {
+  get(sessionId: string): Promise<SessionRecord | undefined> {
     const record = this.sessions.get(sessionId);
-    if (!record) return undefined;
+    if (!record) return Promise.resolve(undefined);
     if (this.now() - record.updatedAt > this.opts.ttlMs) {
       this.sessions.delete(sessionId);
-      return undefined;
+      return Promise.resolve(undefined);
     }
-    return record;
+    return Promise.resolve(record);
   }
 
-  set(sessionId: string, record: Omit<SessionRecord, "updatedAt">): void {
+  set(sessionId: string, record: Omit<SessionRecord, "updatedAt">): Promise<void> {
     // Delete-then-set keeps Map insertion order = least-recently-updated
     // order, so eviction below can just take the first key.
     this.sessions.delete(sessionId);
@@ -45,5 +45,6 @@ export class InMemorySessionStore implements SessionStore {
       if (oldest === undefined) break;
       this.sessions.delete(oldest);
     }
+    return Promise.resolve();
   }
 }

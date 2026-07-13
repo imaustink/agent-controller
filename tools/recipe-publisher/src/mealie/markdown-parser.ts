@@ -104,34 +104,23 @@ export function parseRecipeMarkdown(markdown: string): ParsedRecipeMarkdown {
 
 /**
  * Round-trips the identity of an already-published Mealie recipe through the
- * chat transcript itself (this orchestrator is deliberately stateless per
- * request, see docs/adr/0008 -- there is no session store to remember "which
- * Mealie recipe is this conversation about"). A leading HTML comment is
- * invisible in a rendered chat message but still present in the raw text, so
- * it survives the orchestrator's `<conversation_history>` fold
- * (apps/agent-orchestrator/src/openai/chat-completions.ts) into the next
- * turn without the user ever seeing or having to repeat it.
- *
- * SECURITY NOTE: the slug extracted here is only as trustworthy as the chat
- * history it came from, which can include untrusted scraped recipe content
- * earlier in the same conversation. A sufficiently effective prompt
- * injection could in principle cause the assistant to echo back a
- * different, attacker-chosen slug, causing this tool to PATCH (overwrite) a
- * different existing recipe instead of the one actually being discussed.
- * Blast radius is bounded to recipes within the same authenticated Mealie
- * account/group (MEALIE_API_TOKEN can't reach other tenants) -- documented
- * as a known risk in docs/security.md, not silently accepted.
+ * session store (docs/adr/0016). The orchestrator strips the
+ * `<!-- continuation: <slug> -->` marker from the tool's success output,
+ * stores the slug server-side keyed by tool id, and re-injects it at the
+ * front of tool_args on the next turn. The token never appears in the chat
+ * transcript the LLM planner sees, removing the prior prompt-injection risk
+ * (docs/security.md).
  */
-const MEALIE_SLUG_MARKER = /^<!--\s*mealie-slug:\s*([a-z0-9-]+)\s*-->\n*/i;
+const CONTINUATION_MARKER = /^<!--\s*continuation:\s*([a-z0-9-]+)\s*-->\r?\n*/i;
 
-/** Strips a leading `<!-- mealie-slug: <slug> -->` marker if present, returning it separately from the rest of the markdown. */
+/** Strips a leading `<!-- continuation: <slug> -->` marker if present, returning it separately from the rest of the markdown. */
 export function extractMealieSlugMarker(markdown: string): { slug: string | null; markdown: string } {
-  const match = markdown.match(MEALIE_SLUG_MARKER);
+  const match = markdown.match(CONTINUATION_MARKER);
   if (!match) return { slug: null, markdown };
   return { slug: match[1]!.toLowerCase(), markdown: markdown.slice(match[0].length) };
 }
 
-/** Renders the marker to prepend to a published/updated recipe's chat response, so the next turn can read it back. */
+/** Renders the generic continuation marker to prepend to a published/updated recipe's output, so the orchestrator can extract and store the slug. */
 export function renderMealieSlugMarker(slug: string): string {
-  return `<!-- mealie-slug: ${slug} -->\n\n`;
+  return `<!-- continuation: ${slug} -->\n\n`;
 }

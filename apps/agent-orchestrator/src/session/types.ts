@@ -38,6 +38,16 @@ export interface SessionRecord {
    * Agent id, since one Agent can have many concurrent runs.
    */
   activeAgentRunId?: string;
+  /**
+   * Per-tool continuation tokens for this conversation, keyed by tool id
+   * (docs/adr/0016). When the orchestrator's `runTool` node extracts a
+   * `<!-- continuation: ... -->` marker from a tool's success output, the
+   * opaque token is stored here and re-injected into tool_args on the next
+   * turn for that same tool. The orchestrator stores/forwards the token
+   * without ever parsing its content — each tool encodes its own state
+   * (e.g. copilot-swe: repo/branch/pr/session; recipe-publisher: slug).
+   */
+  toolContinuations?: Record<string, string>;
   /** Last touch time (ms since epoch); used for sliding TTL expiry. */
   updatedAt: number;
 }
@@ -49,6 +59,6 @@ export interface SessionRecord {
  * is the follow-up if the deployment ever scales out (docs/adr/0012).
  */
 export interface SessionStore {
-  get(sessionId: string): SessionRecord | undefined;
-  set(sessionId: string, record: Omit<SessionRecord, "updatedAt">): void;
+  get(sessionId: string): Promise<SessionRecord | undefined>;
+  set(sessionId: string, record: Omit<SessionRecord, "updatedAt">): Promise<void>;
 }

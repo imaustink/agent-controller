@@ -16,6 +16,7 @@ import type { ActionPlanner } from "./action-planner.js";
 import type { DelegateSelector } from "./delegate-selector.js";
 import type { ResponseComposer } from "./response-composer.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
+import { extractContinuationToken, prependContinuationToken } from "../continuation.js";
 
 /**
  * Agent state threaded through the graph (docs/adr/0008, docs/adr/0012,
@@ -125,6 +126,27 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => undefined,
   }),
   error: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * Per-tool continuation tokens from the session store (docs/adr/0016),
+   * keyed by tool id. The `runTool` node prepends the stored token to the
+   * tool's input before launch so the tool can resume multi-turn state
+   * without it ever appearing in the chat transcript the LLM sees.
+   */
+  toolContinuations: Annotation<Record<string, string>>({
+    reducer: (_current, update) => update,
+    default: () => ({}),
+  }),
+  /**
+   * Continuation token extracted from the tool's success output this turn
+   * (docs/adr/0016). Set by `runTool` when the result begins with a
+   * `<!-- continuation: ... -->` marker; the token is stripped from `result`
+   * before it is surfaced to the user. The server persists this back into the
+   * session store after a successful turn.
+   */
+  extractedContinuation: Annotation<{ toolId: string; token: string } | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
@@ -350,7 +372,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (!tool) {
         return { error: "no tool selected" };
       }
-      const input = state.toolArgs ?? state.request;
+      const rawInput = state.toolArgs ?? state.request;
+      // Inject any stored continuation token for this tool (docs/adr/0016):
+      // prepend as a `<!-- continuation: ... -->` marker so the tool can
+      // resume multi-turn state without the token ever appearing in the chat
+      // transcript that the LLM planner sees.
+      const storedToken = state.toolContinuations[tool.id];
+      const input = storedToken ? prependContinuationToken(storedToken, rawInput) : rawInput;
 
       let jobId: string;
       let event: Event;
@@ -400,6 +428,17 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (event.type !== "succeeded") {
         return { jobId, result: undefined };
       }
+      // Extract and strip a leading `<!-- continuation: ... -->` marker from
+      // the tool's success output (docs/adr/0016). The token is stored in the
+      // session by the server after this turn; the stripped result is surfaced
+      // to the user so the token never appears in the chat transcript.
+      const rawResult = typeof event.result === "string" ? event.result : null;
+      if (rawResult !== null) {
+        const { token, text: strippedResult } = extractContinuationToken(rawResult);
+        if (token) {
+          return { jobId, result: strippedResult, extractedContinuation: { toolId: tool.id, token } };
+        }
+      }
       // The tool output is surfaced to the user verbatim; any follow-up
       // narration is added by the composeResponse node (docs/adr/0015), not
       // hard-coded here.
@@ -409,9 +448,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // Post-tool response composition (docs/adr/0015): the active skill's own
       // instructions decide whether to wrap the tool's result with a follow-up
       // (e.g. "reply to confirm publishing"). The tool output is preserved
-      // byte-for-byte — the composer only produces optional surrounding text —
-      // so the recipe Markdown and its `<!-- mealie-slug: ... -->` marker
-      // survive verbatim for next-turn intent detection.
+      // byte-for-byte — the composer only produces optional surrounding text.
       //
       // Only string results can be narrated in place; a structured (JSON)
       // result is passed straight through, so the node is a safe no-op outside

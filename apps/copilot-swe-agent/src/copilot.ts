@@ -112,6 +112,12 @@ export function buildPrompt(instruction: string, marker: SweMarker | null): stri
 export interface CopilotSignal {
   /** Human-readable text to narrate as progress. */
   progress?: string;
+  /**
+   * True when `progress` is a streaming token delta (e.g. `assistant.reasoning_delta`
+   * / `assistant.message_delta`). Callers should accumulate these into a buffer
+   * and flush as a single chunk rather than forwarding each token individually.
+   */
+  isDelta?: boolean;
   /** Content of an assistant message (the final summary is the last of these). */
   finalMessage?: string;
   /** Output of a tool execution that failed (non-zero exit / success:false). */
@@ -145,7 +151,7 @@ export function parseCopilotLine(line: string): CopilotSignal | null {
       return str(data["content"]) ? { progress: str(data["content"])! } : null;
     case "assistant.reasoning_delta":
     case "assistant.message_delta":
-      return str(data["deltaContent"]) ? { progress: str(data["deltaContent"])! } : null;
+      return str(data["deltaContent"]) ? { progress: str(data["deltaContent"])!, isDelta: true } : null;
     case "tool.execution_start": {
       const name = str(data["toolName"]) ?? str(data["name"]);
       const desc = str(data["description"]) ?? str(data["intentionSummary"]);

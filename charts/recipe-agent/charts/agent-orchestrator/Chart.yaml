@@ -35,3 +35,7 @@ dependencies:
     version: "2.14.2"
     repository: https://nats-io.github.io/k8s/helm/charts/
     condition: nats.enabled
+  # Redis for the conversation session store (docs/adr/0016) is provided by
+  # a simple custom Deployment + Service template in templates/redis.yaml
+  # (NOT a Bitnami subchart, to avoid Bitnami image-registry availability
+  # issues). Enable with redis.enabled=true.

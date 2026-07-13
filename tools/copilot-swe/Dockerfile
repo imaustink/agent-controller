@@ -42,14 +42,19 @@ FROM node:20-bookworm-slim AS runtime
 
 ARG GH_VERSION=2.63.2
 
+ARG GO_VERSION=1.24.5
+
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git \
+  && apt-get install -y --no-install-recommends ca-certificates curl git python3 python3-pip make \
   # GitHub CLI (`gh`) — installed from the official release tarball rather than
   # adding an apt repo, to keep the image build hermetic.
   && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
      | tar -xz -C /tmp \
   && mv "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
   && rm -rf "/tmp/gh_${GH_VERSION}_linux_amd64" \
+  # Go toolchain -- installed from the official tarball; arch is detected at build time.
+  && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-$(dpkg --print-architecture).tar.gz" \
+     | tar -xz -C /usr/local \
   # Agentic GitHub Copilot CLI.
   && npm install -g @github/copilot \
   && npm cache clean --force \
@@ -60,6 +65,8 @@ RUN apt-get update \
 
 WORKDIR /app
 ENV NODE_ENV=production
+ENV PATH="/usr/local/go/bin:$PATH"
+ENV GOPATH="/tmp/go"
 
 COPY --from=build /repo/node_modules ./node_modules
 COPY --from=build /repo/tools/copilot-swe/dist ./dist

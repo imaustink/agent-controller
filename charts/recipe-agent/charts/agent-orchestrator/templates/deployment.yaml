@@ -85,6 +85,10 @@ spec:
               value: {{ .Values.config.crdVersion | quote }}
             - name: AGENT_NATS_URL
               value: {{ include "agent-orchestrator.natsUrl" . | quote }}
+            {{- if or .Values.redis.enabled .Values.config.redisUrl }}
+            - name: AGENT_REDIS_URL
+              value: {{ include "agent-orchestrator.redisUrl" . | quote }}
+            {{- end }}
             {{- if .Values.localTool.enabled }}
             - name: AGENT_LOCALTOOL_SOCKET_DIR
               value: {{ .Values.localTool.socketDir | quote }}

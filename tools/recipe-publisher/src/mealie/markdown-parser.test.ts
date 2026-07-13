@@ -101,12 +101,12 @@ describe("extractMealieSlugMarker / renderMealieSlugMarker", () => {
   });
 
   it("is case-insensitive on the marker keyword but lowercases the extracted slug", () => {
-    const { slug } = extractMealieSlugMarker("<!-- Mealie-Slug: Birria-Tacos -->\n\n# Birria Tacos");
+    const { slug } = extractMealieSlugMarker("<!-- Continuation: Birria-Tacos -->\n\n# Birria Tacos");
     expect(slug).toBe("birria-tacos");
   });
 
   it("ignores a marker that isn't at the very start of the text", () => {
-    const markdown = "# Pancakes\n\n<!-- mealie-slug: pancakes -->\n\n## Ingredients";
+    const markdown = "# Pancakes\n\n<!-- continuation: pancakes -->\n\n## Ingredients";
     expect(extractMealieSlugMarker(markdown).slug).toBeNull();
   });
 });

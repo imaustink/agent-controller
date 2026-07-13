@@ -30,6 +30,19 @@ function runCopilot(
     const parts: string[] = [];
     let transcriptLen = 0;
     let rawOut = "";
+    /** Accumulates streaming token deltas before flushing as a single chunk. */
+    let deltaBuffer = "";
+
+    const flushDelta = (): void => {
+      if (!deltaBuffer) return;
+      const text = deltaBuffer;
+      deltaBuffer = "";
+      onProgress(text);
+      if (transcriptLen < 8000) {
+        parts.push(text);
+        transcriptLen += text.length + 1;
+      }
+    };
 
     const handleLine = (line: string): void => {
       const sig = parseCopilotLine(line);
@@ -37,10 +50,17 @@ function runCopilot(
       if (sig.finalMessage) finalMessage = sig.finalMessage;
       if (sig.toolFailure) toolFailures.push(sig.toolFailure);
       if (sig.progress) {
-        onProgress(sig.progress);
-        if (transcriptLen < 8000) {
-          parts.push(sig.progress);
-          transcriptLen += sig.progress.length + 1;
+        if (sig.isDelta) {
+          deltaBuffer += sig.progress;
+          // Flush early if the buffer has grown to a reasonable sentence chunk.
+          if (deltaBuffer.length >= 500) flushDelta();
+        } else {
+          flushDelta();
+          onProgress(sig.progress);
+          if (transcriptLen < 8000) {
+            parts.push(sig.progress);
+            transcriptLen += sig.progress.length + 1;
+          }
         }
       }
     };
@@ -59,6 +79,7 @@ function runCopilot(
     child.on("error", reject);
     child.on("close", (code) => {
       if (buffer.trim()) handleLine(buffer);
+      flushDelta();
       process.stderr.write(`--- copilot raw stdout (exit ${code}) ---\n${clip(rawOut, 20000)}\n--- end raw ---\n`);
       resolve({ code: code ?? 1, finalMessage, toolFailures, transcript: parts.join("\n") });
     });
@@ -116,13 +137,8 @@ async function runOneTurn(
   const prompt = buildPrompt(instruction, marker);
   const args = buildCopilotArgs({ prompt, workdir: toolConfig.workdir, model: toolConfig.copilotModel });
 
-  let lastThrottle = 0;
   const result = await runCopilot(args, childEnv, toolConfig.workdir, (text) => {
-    const now = Date.now();
-    if (now - lastThrottle > 2000) {
-      lastThrottle = now;
-      void session.progress(clip(text, 200), { stage: "agent" });
-    }
+    void session.progress(clip(text, 500), { stage: "agent" });
   });
 
   if (result.code !== 0) {

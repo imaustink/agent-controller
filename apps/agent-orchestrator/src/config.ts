@@ -66,6 +66,14 @@ export interface AppConfig {
   localToolTimeoutSeconds: number;
   /** JSON map of dev/test bearer tokens -> identity; see StaticIdentityResolver. */
   staticIdentities: string | undefined;
+  /**
+   * Redis connection URL for the session store (docs/adr/0016). When set, the
+   * orchestrator uses a Redis-backed session store instead of the default
+   * in-memory store, which allows multi-replica deployments and survives
+   * restarts. When unset (the default), falls back to `InMemorySessionStore`
+   * (single-replica only, same as before ADR 0016).
+   */
+  redisUrl: string | undefined;
   requestId: string;
 }
 
@@ -103,5 +111,6 @@ export const config: AppConfig = {
   localToolSocketDir: process.env.AGENT_LOCALTOOL_SOCKET_DIR ?? "/run/localtool",
   localToolTimeoutSeconds: num(process.env.AGENT_LOCALTOOL_TIMEOUT_SECONDS, 30),
   staticIdentities: process.env.AGENT_STATIC_IDENTITIES,
+  redisUrl: process.env.AGENT_REDIS_URL,
   requestId: process.env.AGENT_REQUEST_ID ?? randomUUID(),
 };

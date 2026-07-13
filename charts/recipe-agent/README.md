@@ -35,9 +35,8 @@ charts/recipe-agent/
 - Secrets created out-of-band (never via `--set`), e.g. for the demo:
   - `agent-orchestrator-secrets` with `OPENAI_API_KEY` + `AGENT_CALLBACK_SECRET`
   - `recipe-publisher-secrets` with `MEALIE_API_TOKEN`
-  - (optional) `copilot-swe-secrets` for the privileged `copilot-swe` tool
 - The tool ServiceAccounts referenced by the catalog CRs must exist
-  (`recipe-scraper`, `recipe-publisher`, and `copilot-swe` if enabled) — this
+  (`recipe-scraper`, `recipe-publisher`) — this
   chart never creates tool ServiceAccounts.
 
 ## Fetching dependencies

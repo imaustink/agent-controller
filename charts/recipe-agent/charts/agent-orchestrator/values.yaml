@@ -41,8 +41,14 @@ config:
   # existing/external Qdrant instance otherwise.
   qdrantUrl: "http://qdrant:6333"
   # Ignored when nats.enabled=true below (the in-cluster NATS Service URL is
+  # Ignored when nats.enabled=true below (the in-cluster NATS Service URL is
   # derived automatically). Set to point at an existing/external NATS otherwise.
   natsUrl: "nats://nats:4222"
+  # Redis URL for the conversation session store (docs/adr/0016). Ignored when
+  # redis.enabled=true below (the in-cluster URL is derived automatically).
+  # Set to an external Redis URL (e.g. rediss://user:pass@host:6380) otherwise.
+  # Unset by default: uses in-memory store (single-replica only).
+  redisUrl: ""
   qdrantCollection: tools
   qdrantVectorSize: 1536
   qdrantSkillsCollection: skills
@@ -267,3 +273,20 @@ qdrant:
 nats:
   enabled: false
 
+# Optional in-cluster Redis for the conversation session store (docs/adr/0016).
+# Off by default (sessions are stored in-memory, single-replica only).
+# Enable for multi-replica deployments or to survive orchestrator restarts.
+# Uses the official redis:alpine image via a custom Deployment + Service
+# (templates/redis.yaml) rather than the Bitnami subchart.
+redis:
+  enabled: false
+  image:
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi

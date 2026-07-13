@@ -123,3 +123,16 @@ use config.natsUrl as-is (an existing/external server).
 {{- end }}
 {{- end }}
 
+{{/*
+Redis URL: when redis.enabled, derive the in-cluster Service DNS name for the
+custom Redis Deployment + Service created by templates/redis.yaml. The Service
+is named "<fullname>-redis" (using fullnameOverride when set, so it stays
+stable regardless of release name). Otherwise use config.redisUrl as-is.
+*/}}
+{{- define "agent-orchestrator.redisUrl" -}}
+{{- if .Values.redis.enabled }}
+{{- printf "redis://%s-redis.%s.svc.cluster.local:6379" (include "agent-orchestrator.fullname" .) .Release.Namespace }}
+{{- else }}
+{{- .Values.config.redisUrl }}
+{{- end }}
+{{- end }}
