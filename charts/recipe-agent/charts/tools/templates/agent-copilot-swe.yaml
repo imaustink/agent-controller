@@ -1,0 +1,67 @@
+{{- if .Values.copilotSweAgent.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: Agent
+metadata:
+  name: copilot-swe-agent
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+  annotations:
+    {{- include "tools.hookAnnotations" . | nindent 4 }}
+spec:
+  description: >-
+    Performs software-engineering work on GitHub end-to-end: creates or
+    clones repositories, implements features and fixes, writes code and
+    tests, and opens or updates pull requests. Handles multi-turn
+    refinement and supports human-in-the-loop clarifying questions when
+    the task needs more context before it can proceed.
+  input: >-
+    A natural-language software-engineering instruction (e.g. "create a
+    repo called hello-svc with a Node HTTP server and open a PR"), or a
+    follow-up refinement instruction for a session that is already in
+    progress.
+  output: >-
+    A summary of the changes plus a link to the opened/updated pull
+    request; or a mid-turn clarifying question to the user if more
+    context is needed before work can begin.
+  allowedRoles:
+    - writer
+  tier: privileged
+  image: {{ .Values.copilotSweAgent.image }}
+  serviceAccountName: {{ .Values.copilotSweAgent.serviceAccountName }}
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+      ephemeral-storage: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+      ephemeral-storage: "8Gi"
+  orchestratorPrompt: |
+    Delegate to this agent for any software-engineering request: creating
+    or cloning repositories, implementing features, fixing bugs, writing
+    tests, and opening or updating pull requests on GitHub.
+
+    Pass the user's request verbatim as the goal.
+
+    If the previous assistant message starts with an HTML comment like
+    <!-- swe: repo=... branch=... pr=... session=... -->, the agent is
+    continuing an existing session. Include that FULL text at the start
+    of the goal so the agent can resume the same pull request.
+
+    The agent may pause mid-task to ask you a clarifying question (a
+    non-final reply in the chat). Answer naturally; the conversation
+    will resume automatically.
+  agentPrompt: |
+    You are a software-engineering sub-agent. Implement the requested
+    coding task using the GitHub Copilot CLI and the gh/git CLIs, then
+    return a summary and PR link. Only ask the user a question if you
+    genuinely cannot proceed without their answer; otherwise use sensible
+    defaults. Never perform irreversible operations (force-push, delete
+    branches/repos).
+  secretEnv:
+    - name: GITHUB_TOKEN
+      secretRef:
+        name: {{ .Values.copilotSweAgent.secretName }}
+        key: {{ .Values.copilotSweAgent.secretKey }}
+{{- end }}

@@ -42,6 +42,8 @@ recipePublisher:
 # copilot-swe: PRIVILEGED GitHub coding agent. Off by default -- needs a
 # Copilot-entitled fine-grained PAT + ServiceAccount + Secret set up first
 # (see tools/copilot-swe/tool.yaml and docs/security.md).
+# NOTE: SUPERSEDED by copilotSweAgent below -- if copilotSweAgent.enabled=true
+# keep this false to avoid registering the old Tool CR alongside the new Agent.
 copilotSwe:
   enabled: false
   image: copilot-swe:latest
@@ -53,13 +55,27 @@ copilotSwe:
   secretName: copilot-swe-secrets
   secretKey: GITHUB_TOKEN
 
+# copilot-swe-agent: Agent-SDK port of copilot-swe (bidirectional NATS, HITL).
+# Replaces the old copilotSwe Tool + softwareEngineering Skill when enabled.
+# Prerequisites (out-of-band):
+#   kubectl -n <ns> create serviceaccount copilot-swe-agent
+#   kubectl -n <ns> create secret generic copilot-swe-secrets \
+#     --from-literal=GITHUB_TOKEN=github_pat_...
+copilotSweAgent:
+  enabled: false
+  image: copilot-swe-agent:latest
+  serviceAccountName: copilot-swe-agent
+  # Same secret shape as the old copilot-swe tool: a single fine-grained PAT.
+  secretName: copilot-swe-secrets
+  secretKey: GITHUB_TOKEN
+
 skills:
   # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +
   # recipe-publisher). Enable both those tools above for its derived audience
   # (ADR 0011) to be non-empty.
   recipeRefining:
     enabled: true
-  # software-engineering: routes coding requests to copilot-swe. Off by
-  # default (matches copilotSwe.enabled).
+  # software-engineering: SUPERSEDED by copilotSweAgent Agent CR above.
+  # Keep disabled when copilotSweAgent.enabled=true.
   softwareEngineering:
     enabled: false

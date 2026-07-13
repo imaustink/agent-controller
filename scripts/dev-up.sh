@@ -81,7 +81,7 @@ fi
 
 # ── 4. ServiceAccounts ───────────────────────────────────────────────────────
 step "Ensuring tool ServiceAccounts..."
-for sa in recipe-scraper recipe-publisher; do
+for sa in recipe-scraper recipe-publisher copilot-swe-agent; do
   kubectl -n "$NS" get serviceaccount "$sa" >/dev/null 2>&1 \
     || kubectl -n "$NS" create serviceaccount "$sa"
 done
@@ -116,6 +116,10 @@ if [[ "$SKIP_BUILD" == "false" ]]; then
   echo "  Building recipe-publisher..."
   docker build -f "$REPO_ROOT/tools/recipe-publisher/Dockerfile" \
     -t recipe-publisher:latest "$REPO_ROOT" --quiet
+
+  echo "  Building copilot-swe-agent..."
+  docker build -f "$REPO_ROOT/apps/copilot-swe-agent/Dockerfile" \
+    -t copilot-swe-agent:latest "$REPO_ROOT" --quiet
 
   # Return to the host daemon so subsequent docker commands work normally.
   eval "$(minikube docker-env --unset)"
