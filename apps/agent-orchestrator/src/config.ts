@@ -8,6 +8,10 @@ export interface AppConfig {
   crdGroup: string;
   /** API version for the Tool/Skill/ToolRun CRDs (ADR 0010), e.g. `v1alpha1`. */
   crdVersion: string;
+  /** NATS server URL for the bidirectional agent control protocol (Phase 7). */
+  natsUrl: string;
+  /** Subject prefix for agent up/down subjects (see @controller-agent/messaging agentSubjects). */
+  natsSubjectPrefix: string;
   qdrantUrl: string;
   qdrantApiKey: string | undefined;
   qdrantCollection: string;
@@ -69,6 +73,8 @@ export const config: AppConfig = {
   namespace: process.env.AGENT_NAMESPACE ?? "default",
   crdGroup: process.env.AGENT_CRD_GROUP ?? "core.controller-agent.dev",
   crdVersion: process.env.AGENT_CRD_VERSION ?? "v1alpha1",
+  natsUrl: process.env.AGENT_NATS_URL ?? "nats://localhost:4222",
+  natsSubjectPrefix: process.env.AGENT_NATS_SUBJECT_PREFIX ?? "agent",
   qdrantUrl: process.env.AGENT_QDRANT_URL ?? "http://localhost:6333",
   qdrantApiKey: process.env.AGENT_QDRANT_API_KEY,
   qdrantCollection: process.env.AGENT_QDRANT_COLLECTION ?? "tools",

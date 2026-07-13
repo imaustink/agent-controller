@@ -2,5 +2,8 @@ dependencies:
 - name: qdrant
   repository: https://qdrant.github.io/qdrant-helm
   version: 1.18.2
-digest: sha256:58075d794b2c0ca22c6638b0450b85aaa0f07093d15987a1251b2b9724438c9f
-generated: "2026-07-12T17:47:56.588971-07:00"
+- name: nats
+  repository: https://nats-io.github.io/k8s/helm/charts/
+  version: 2.14.2
+digest: sha256:fe6f6893d3c48ff0aa2dd357b1a2d706b185864e9526e4e322e70ba5d97c003a
+generated: "2026-07-13T06:53:18.569008-07:00"

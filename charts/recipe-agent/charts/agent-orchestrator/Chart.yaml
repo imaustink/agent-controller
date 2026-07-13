@@ -27,3 +27,11 @@ dependencies:
     version: "1.18.2"
     repository: https://qdrant.github.io/qdrant-helm
     condition: qdrant.enabled
+  # Optional NATS server (bidirectional agent control protocol,
+  # @controller-agent/messaging agent-protocol). Off by default like qdrant;
+  # enable for the sub-agent feature. Pinned exact -- bump deliberately with
+  # `helm dependency update` after reviewing the nats-helm changelog.
+  - name: nats
+    version: "2.14.2"
+    repository: https://nats-io.github.io/k8s/helm/charts/
+    condition: nats.enabled

@@ -22,6 +22,8 @@ agent-orchestrator:
     tag: latest
   qdrant:
     enabled: true
+  nats:
+    enabled: true
   secrets:
     existingSecret: agent-orchestrator-secrets
   # DEV/TEST ONLY -- maps the Open WebUI bearer token to a reader+writer

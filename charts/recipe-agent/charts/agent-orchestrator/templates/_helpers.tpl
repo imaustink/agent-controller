@@ -102,3 +102,24 @@ Otherwise use config.qdrantUrl as-is (an existing/external instance).
 {{- end }}
 {{- end }}
 
+{{/*
+NATS URL: when nats.enabled, derive the in-cluster Service DNS name for the
+bundled subchart (same fullname pattern as qdrant: release name as-is if it
+already contains "nats", else "<release>-nats"; client port 4222). Otherwise
+use config.natsUrl as-is (an existing/external server).
+*/}}
+{{- define "agent-orchestrator.natsUrl" -}}
+{{- if .Values.nats.enabled }}
+{{- $name := "nats" }}
+{{- $fullname := "" }}
+{{- if contains $name .Release.Name }}
+{{- $fullname = .Release.Name }}
+{{- else }}
+{{- $fullname = printf "%s-%s" .Release.Name $name }}
+{{- end }}
+{{- printf "nats://%s.%s.svc.cluster.local:4222" $fullname .Release.Namespace }}
+{{- else }}
+{{- .Values.config.natsUrl }}
+{{- end }}
+{{- end }}
+

@@ -40,6 +40,9 @@ config:
   # Service URL is derived automatically instead). Set this to point at an
   # existing/external Qdrant instance otherwise.
   qdrantUrl: "http://qdrant:6333"
+  # Ignored when nats.enabled=true below (the in-cluster NATS Service URL is
+  # derived automatically). Set to point at an existing/external NATS otherwise.
+  natsUrl: "nats://nats:4222"
   qdrantCollection: tools
   qdrantVectorSize: 1536
   qdrantSkillsCollection: skills
@@ -252,4 +255,10 @@ qdrant:
   # simple -- enable both sides together for anything less trusted than a
   # single-tenant dev cluster.
   apiKey: false
+
+# Optional in-cluster NATS server for the bidirectional agent protocol
+# (@controller-agent/messaging). Off by default; enable for the sub-agent
+# feature. Values here pass through to the upstream nats chart.
+nats:
+  enabled: false
 

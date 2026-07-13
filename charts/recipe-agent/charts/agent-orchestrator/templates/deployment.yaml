@@ -77,6 +77,8 @@ spec:
               value: {{ .Values.config.crdGroup | quote }}
             - name: AGENT_CRD_VERSION
               value: {{ .Values.config.crdVersion | quote }}
+            - name: AGENT_NATS_URL
+              value: {{ include "agent-orchestrator.natsUrl" . | quote }}
             {{- if .Values.localTool.enabled }}
             - name: AGENT_LOCALTOOL_SOCKET_DIR
               value: {{ .Values.localTool.socketDir | quote }}
