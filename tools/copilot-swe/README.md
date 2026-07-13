@@ -11,25 +11,37 @@ more privileged — see [../../docs/security.md](../../docs/security.md).
 
 ## What it does
 
-1. Mints a short-lived **GitHub App installation token** from the App id +
-   private key. This authenticates all `git`/`gh` operations and bounds which
-   repositories the tool can touch (to the App's installations).
+1. Uses a single **fine-grained GitHub PAT** for both Copilot model auth and
+   all `git`/`gh` operations (`GH_TOKEN`/`COPILOT_GITHUB_TOKEN` are set to the
+   same token).
 2. Runs the **Copilot CLI** headless (`copilot -p … --allow-all-tools
    --no-ask-user`) in a writable workspace, driving `git` and `gh` itself to
    create/clone a repo, branch, commit, push, and open a pull request.
 3. Reports a summary + the PR link, prefixed with an `<!-- swe: … -->` marker
    so a follow-up turn continues the same pull request.
 
-## Two credentials (on purpose)
+## Credential & required permissions
 
-| Purpose | Credential | Env var |
+One **fine-grained (v2) personal access token** does everything. It must belong
+to an account with a **Copilot subscription** and be granted:
+
+| Purpose | Permission | Level |
 | --- | --- | --- |
-| Copilot **model** access | Fine-grained (v2) PAT with the **Copilot Requests** permission, from a Copilot-subscribed account (classic `ghp_` not accepted) | `COPILOT_GITHUB_TOKEN` |
-| **git / GitHub** operations | A **GitHub App** (id + private key) → installation token, minted at run time | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, optional `GITHUB_APP_INSTALLATION_ID` |
+| Copilot model | **Copilot Requests** (account permission) | Read-only |
+| clone / push / commit / branches | **Contents** | Read and write |
+| open / update pull requests | **Pull requests** | Read and write |
+| baseline (auto-selected) | **Metadata** | Read-only |
+| create repositories (optional) | **Administration** | Read and write |
+| edit `.github/workflows` (optional) | **Workflows** | Read and write |
 
-Keeping them separate is why the built-in Copilot GitHub MCP server is disabled
-(`--disable-builtin-mcps`): git auth uses the App token via `GH_TOKEN`, model
-auth uses the Copilot PAT.
+Also set the token's **repository access** to the specific repos it may touch
+(or “All repositories” if it should create new ones). Repo creation with
+fine-grained PATs can be finicky — if it fails, create repos manually or scope
+the token to an org where it has org **Administration** write.
+
+The token is passed to the Copilot model via `COPILOT_GITHUB_TOKEN` and to git/
+`gh` via `GH_TOKEN` (the built-in Copilot GitHub MCP server is disabled with
+`--disable-builtin-mcps` so `git`/`gh` are the only GitHub path).
 
 ## Guardrails (no irreversible actions)
 
@@ -39,9 +51,9 @@ Defense in depth — no single layer is sufficient:
   force-push variants, `git reset --hard`, branch/ref deletion, `rm -rf`,
   `gh repo delete`, `gh api -X DELETE`. Deny rules always win, even under
   `--allow-all-tools`.
-- **GitHub App permissions**: grant only Contents/Pull requests/Metadata (plus
-  Administration only if repo creation is needed). Installation scope bounds
-  the blast radius.
+- **Least-privilege token**: grant only the permissions above, and scope the
+  token's repository access to the intended repos. Note the PAT can reach every
+  repo it's granted — a broad token is a broad blast radius.
 - **Server-side** branch protection / rulesets on the target repos to block
   force-push and deletion regardless of the client.
 
@@ -60,7 +72,6 @@ docker build -f tools/copilot-swe/Dockerfile -t copilot-swe:latest .
 | Code | Meaning |
 | --- | --- |
 | 2 | usage / missing configuration |
-| 3 | GitHub App authentication failure |
 | 4 | the Copilot CLI process failed |
 | 5 | no pushable result (no repo/branch/PR produced) |
 | 1 | general error |

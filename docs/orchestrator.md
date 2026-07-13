@@ -125,19 +125,19 @@ only ever sees a short list of *relevant* tools, not the full catalog:
   description (what gets embedded, including its input/output shape), the
   k8s Job template needed to run it, and **metadata used as a Qdrant payload
   filter**: required role(s)/scope(s), namespace, cost/risk tier.
-- **Discovery is a static, build-time manifest per tool** (ADR 0009 —
-  supersedes the dynamic cluster-discovery decision in ADR 0004): each tool
-  ships a `manifest.json` (id/name/description/input/output/allowedRoles/
-  tier/Job template) that gets baked into the orchestrator image at build
-  time and loaded once at startup (`ManifestToolRegistry`). This was chosen
-  after realizing dynamic Deployment-based discovery had a chicken-and-egg
-  problem: tools are only ever launched on demand as one-shot Jobs (ADR
-  0005), so there is no live, always-running Deployment to discover in the
-  first place — annotating a Deployment would have meant keeping a
-  perpetual `replicas: 0` Deployment around purely as discoverable metadata,
-  never actually serving traffic. "Register a tool" is now: add
-  `tools/<name>/manifest.json`, add one `COPY` line to the orchestrator's
-  Dockerfile, rebuild the image.
+- **Discovery is a catalog of `Tool` custom resources** (ADR 0010 —
+  supersedes the static build-time manifests of ADR 0009, which themselves
+  superseded the dynamic Deployment discovery of ADR 0004): each tool ships a
+  `Tool` CR (id/name/description/input/output/allowedRoles/tier plus
+  image/serviceAccount/env/resources). `CrdToolRegistry` lists every `Tool`
+  CR once at startup and upserts it into the RAG index; the Go tool-controller
+  reconciles each invocation's `ToolRun` CR into a hardened one-shot Job, so
+  the orchestrator itself never creates a Job. Dynamic Deployment-based
+  discovery had been rejected earlier for a chicken-and-egg problem: tools are
+  only ever launched on demand as one-shot Jobs (ADR 0005), so there is no
+  live, always-running Deployment to discover. "Register a tool" is now: add
+  `tools/<name>/tool.yaml`, `kubectl apply` it, restart the orchestrator so it
+  re-reads the catalog (one-shot-at-startup, no watch loop yet).
 
 ### 3. RBAC-scoped tool discovery
 
@@ -154,23 +154,28 @@ Which tools even show up as retrieval candidates depends on **who is asking**:
   permissions the launched Job itself runs with (defense in depth — RBAC is
   checked at retrieval time *and* enforced again at launch time).
 
-### 4. Kubernetes Job launcher
+### 4. Container tool launcher
 
-- Uses `@kubernetes/client-node` in-process (`BatchV1Api`) — no shelling out to
-  `kubectl`. In-cluster config (mounted ServiceAccount token) in production,
-  kubeconfig for local dev.
-- One **Job** per tool/sub-agent invocation (not a bare Pod), so retry/backoff
-  and TTL cleanup (`ttlSecondsAfterFinished`) come for free.
-- Job spec = tool's Job template (image, resource requests/limits, the
-  existing hardened container contract from [security.md](security.md): drop
-  all capabilities, read-only root filesystem, non-root, no
-  privilege-escalation) plus per-call overrides: args/env, and a
-  result-callback URL + HMAC secret so the tool container reports back via the
-  existing [`@recipe-agent/messaging`](../packages/messaging/) callback sink —
-  the orchestrator doesn't need a new result channel, it reuses the protocol
-  documented in [messaging.md](messaging.md).
-- The orchestrator watches Job/Pod status for completion as a fallback to the
-  callback stream (covers crashes that never emit a `failed` event).
+- One **`ToolRun` custom resource** per tool/sub-agent invocation (ADR 0010).
+  The orchestrator's `ContainerToolLauncher` port — implemented by
+  `ToolRunLauncher` — creates the `ToolRun` via `@kubernetes/client-node`
+  (`CustomObjectsApi`, no shelling out to `kubectl`); it **never creates a Job
+  itself**.
+- The Go **tool-controller** (`controllers/tool-controller/`) reconciles each
+  `ToolRun` into a hardened one-shot **Job** — image + ServiceAccount from the
+  referenced `Tool` CR, plus the existing hardened container contract from
+  [security.md](security.md) (drop all capabilities, read-only root filesystem,
+  non-root, no privilege-escalation). This is the **only** place a Job is
+  created, so the orchestrator needs no `batch/jobs` RBAC.
+- The `ToolRun` carries the per-call args and a result-callback URL; the HMAC
+  callback secret travels by `secretRef` (never plaintext in the CR) and is
+  wired into the Job by the controller. The tool container reports back over
+  the existing [`@recipe-agent/messaging`](../packages/messaging/) callback
+  protocol ([messaging.md](messaging.md)) — the orchestrator reuses that
+  channel rather than adding a new one.
+- Job retry/backoff and TTL cleanup (`ttlSecondsAfterFinished`) are owned by the
+  controller, which also mirrors terminal Job state onto the `ToolRun` as a
+  fallback for crashes that never emit a `failed` callback event.
 
 ### 4b. LocalTool executor sidecars (ADR 0014)
 
@@ -192,7 +197,7 @@ rather than as a Job:
 - The tool speaks the same stdio ABI as any LocalTool (input on stdin, one JSON
   envelope on stdout); the executor maps that envelope onto the same
   [`@recipe-agent/messaging`](../packages/messaging/) `Event` the Job path
-  produces, so the graph's `launchJob` node treats both identically.
+  produces, so the graph's `runTool` node treats both identically.
 
 See [ADR 0014](adr/0014-local-tool-sidecar-execution.md) and the
 [security.md](security.md) LocalTool section for the isolation trade-offs
@@ -213,7 +218,7 @@ How a caller actually reaches the agent (ADR 0006):
 
 - `POST /invoke` (body `{ request }`, `Authorization: Bearer <token>`)
   returns `202 { id, status: "pending" }` immediately rather than blocking —
-  the `launchJob` graph step can take as long as the launched tool takes
+  the `runTool` graph step can take as long as the launched tool takes
   (minutes, for something like video transcription), which is a poor fit for
   holding an HTTP connection open.
 - `GET /invoke/:id` polls for the current `{ status, result?, error? }`.
@@ -232,9 +237,10 @@ A second, thin translation layer on the same port as component 6 (ADR 0007):
 chat client (e.g. Open WebUI) call the agent as if it were a chat model,
 without changing the agent graph itself. Streaming (`stream: true`) narrates
 LangGraph node transitions (`resolveIdentity → checkActiveSkill →
-retrieveSkills → selectSkill → loadSkillTools → planAction → launchJob`) as
+retrieveSkills → selectSkill → loadSkillTools → planAction → runTool →
+composeResponse`) as
 chat deltas via `stream(..., { streamMode: "updates" })`, with
-an SSE heartbeat filling the gap while `launchJob` blocks on the tool Job;
+an SSE heartbeat filling the gap while `runTool` blocks on the tool Job;
 non-streaming blocks like a plain `/invoke` call would. See ADR 0007 for why
 this needed resolving rather than being a drop-in: no multi-turn memory, no
 tool-internal progress, structured JSON rendered as a fenced code block, and

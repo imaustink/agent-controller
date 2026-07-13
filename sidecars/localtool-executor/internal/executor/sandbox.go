@@ -19,34 +19,50 @@ type Command struct {
 
 // buildBwrapArgs assembles the bubblewrap argv that wraps a tool invocation
 // (ADR 0014). Pure/deterministic so it can be unit-tested without bwrap:
-//   - --unshare-all: new user/ipc/pid/uts/cgroup/net namespaces (needs
-//     unprivileged user namespaces on the node — a documented prerequisite).
-//   - --share-net is added ONLY when the tool opted into network; otherwise the
-//     unshared net namespace enforces default-deny egress.
+//   - unshares the user namespace (required for unprivileged sandboxing) plus
+//     ipc/uts/cgroup. Deliberately NOT --unshare-all / --unshare-pid: unsharing
+//     the PID namespace forces mounting a fresh /proc, which a container
+//     runtime's masked /proc makes the kernel reject (the "fully visible proc"
+//     check). We reuse the bound /proc via --ro-bind / / instead; the tool can
+//     see the container's PIDs but still cannot write the fs, escalate, or
+//     (unless opted in) use the network.
+//   - --unshare-net is added when the tool did NOT opt into network, so the
+//     unshared (interface-less) net namespace enforces default-deny egress.
 //   - --clearenv + explicit --setenv: the tool sees ONLY its declared env
 //     (plus HOME=/tmp), never the sidecar's or orchestrator's environment.
 //   - read-only root + tmpfs /tmp: no filesystem writes outside scratch.
+//
+// Requires the sidecar to run with seccompProfile: Unconfined (the default
+// RuntimeDefault profile filters the namespace-creation clone flags once all
+// capabilities are dropped) — see the Helm chart's localTool.securityContext.
 func buildBwrapArgs(cfg Config, network bool, env map[string]string, cmd Command) []string {
 	dir := cmd.Dir
 	if dir == "" {
 		dir = "/tmp"
 	}
 	args := []string{
-		"--unshare-all",
+		"--unshare-user",
+		"--unshare-ipc",
+		"--unshare-uts",
+		"--unshare-cgroup",
 		"--die-with-parent",
-		"--new-session",
 		"--clearenv",
 		"--ro-bind", "/", "/",
 		"--tmpfs", "/tmp",
-		"--proc", "/proc",
 		"--dev", "/dev",
 		"--chdir", dir,
 	}
-	if network {
-		args = append(args, "--share-net")
+	if !network {
+		args = append(args, "--unshare-net")
 	}
 
-	merged := map[string]string{"HOME": "/tmp"}
+	// --clearenv wipes PATH too, so seed a sane default (and HOME); the tool's
+	// declared env may override either. Without PATH, bwrap's execvp can't
+	// resolve bare command names like "node" or "sh".
+	merged := map[string]string{
+		"HOME": "/tmp",
+		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	}
 	for k, v := range cmd.Env {
 		merged[k] = v
 	}

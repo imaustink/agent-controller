@@ -30,25 +30,49 @@ export function runCommand(
   });
 }
 
+export interface GitIdentity {
+  name: string;
+  email: string;
+}
+
 /**
- * Configures git to authenticate to GitHub with the installation token, via a
- * global `insteadOf` rewrite, plus a committer identity for the App bot. The
- * token lives only in this ephemeral container's HOME/.gitconfig (readable
- * solely by the job's uid) and expires in ~1h. `gh` picks up the same token
- * from the GH_TOKEN environment variable, set by the caller.
+ * Resolves the committer identity from the token's own GitHub user (via
+ * `gh api user`), so commits attribute to the token owner. Best-effort: on
+ * failure the caller falls back to a generic identity. This doubles as a
+ * lightweight token sanity check (a bad token makes `gh api user` fail).
+ */
+export async function resolveGitIdentity(env: NodeJS.ProcessEnv): Promise<GitIdentity | null> {
+  const res = await runCommand("gh", ["api", "user"], { env });
+  if (res.code !== 0) return null;
+  try {
+    const user = JSON.parse(res.stdout) as { login?: string; id?: number; name?: string };
+    if (!user.login || typeof user.id !== "number") return null;
+    return { name: user.name || user.login, email: `${user.id}+${user.login}@users.noreply.github.com` };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Configures git to authenticate to GitHub with the PAT, via a global
+ * `insteadOf` rewrite, plus the committer identity. The token lives only in
+ * this ephemeral container's HOME/.gitconfig (readable solely by the job's
+ * uid). `gh` picks up the same token from the GH_TOKEN environment variable,
+ * set by the caller. (GitHub git-over-HTTPS accepts any username with the PAT
+ * as the password, so `x-access-token` is fine here.)
  */
 export async function setupGitAuth(opts: {
   homeDir: string;
   token: string;
-  appId: string;
   apiHost: string;
+  identity: GitIdentity;
 }): Promise<void> {
   const gitconfig = join(opts.homeDir, ".gitconfig");
   const host = opts.apiHost;
   const content =
     `[user]\n` +
-    `\tname = copilot-swe[bot]\n` +
-    `\temail = ${opts.appId}+copilot-swe[bot]@users.noreply.github.com\n` +
+    `\tname = ${opts.identity.name}\n` +
+    `\temail = ${opts.identity.email}\n` +
     `[url "https://x-access-token:${opts.token}@${host}/"]\n` +
     `\tinsteadOf = https://${host}/\n` +
     `[init]\n` +
@@ -77,22 +101,30 @@ export function parseOwnerRepoFromRemote(remoteUrl: string): string | null {
   return null;
 }
 
-/** Finds the git working tree the agent produced: the workdir itself, else the first immediate subdir with a .git entry. */
-export async function findRepoDir(workdir: string): Promise<string | null> {
-  if (await hasGit(workdir)) return workdir;
-  let entries: string[];
-  try {
-    entries = await readdir(workdir);
-  } catch {
-    return null;
-  }
-  for (const entry of entries.sort()) {
-    const candidate = join(workdir, entry);
-    try {
-      if ((await stat(candidate)).isDirectory() && (await hasGit(candidate))) return candidate;
-    } catch {
-      // ignore unreadable entries
+/** Finds the git working tree the agent produced: searches the workdir and its descendants (bounded depth) for a directory containing a `.git` entry. */
+export async function findRepoDir(workdir: string, maxDepth = 3): Promise<string | null> {
+  let level = [workdir];
+  for (let depth = 0; depth <= maxDepth && level.length > 0; depth++) {
+    const next: string[] = [];
+    for (const dir of level.sort()) {
+      if (await hasGit(dir)) return dir;
+      let entries: string[];
+      try {
+        entries = await readdir(dir);
+      } catch {
+        continue;
+      }
+      for (const entry of entries.sort()) {
+        if (entry === ".git" || entry === "node_modules") continue;
+        const candidate = join(dir, entry);
+        try {
+          if ((await stat(candidate)).isDirectory()) next.push(candidate);
+        } catch {
+          // ignore unreadable entries
+        }
+      }
     }
+    level = next;
   }
   return null;
 }

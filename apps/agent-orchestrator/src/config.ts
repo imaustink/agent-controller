@@ -4,15 +4,6 @@ import { randomUUID } from "node:crypto";
 export interface AppConfig {
   /** k8s namespace tool/sub-agent Jobs are launched into. */
   namespace: string;
-  /**
-   * Directory containing one subfolder per tool, each with a `manifest.json`
-   * describing it (id/name/description/input/output/allowedRoles/tier/Job
-   * template) -- baked into this image at build time (see the Dockerfile
-   * and ADR 0009). NOT WIRED BY DEFAULT since ADR 0010 -- superseded by
-   * `CrdToolRegistry` (crdGroup/crdVersion below). Kept for the unwired
-   * `ManifestToolRegistry`.
-   */
-  manifestsDir: string;
   /** API group for the Tool/Skill/ToolRun CRDs (ADR 0010), e.g. `tool.recipe-agent.dev`. */
   crdGroup: string;
   /** API version for the Tool/Skill/ToolRun CRDs (ADR 0010), e.g. `v1alpha1`. */
@@ -76,7 +67,6 @@ function num(raw: string | undefined, fallback: number): number {
 
 export const config: AppConfig = {
   namespace: process.env.AGENT_NAMESPACE ?? "default",
-  manifestsDir: process.env.AGENT_MANIFESTS_DIR ?? "manifests",
   crdGroup: process.env.AGENT_CRD_GROUP ?? "tool.recipe-agent.dev",
   crdVersion: process.env.AGENT_CRD_VERSION ?? "v1alpha1",
   qdrantUrl: process.env.AGENT_QDRANT_URL ?? "http://localhost:6333",

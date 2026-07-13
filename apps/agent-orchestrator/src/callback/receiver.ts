@@ -32,7 +32,7 @@ type PendingJob = {
 
 /**
  * HTTP receiver for the Job -> orchestrator result channel (docs/messaging.md,
- * reused rather than reinvented per docs/orchestrator.md#4-kubernetes-job-launcher).
+ * reused rather than reinvented per docs/orchestrator.md#4-container-tool-launcher).
  * `awaitJob` resolves once a terminal (`succeeded`/`failed`) event arrives for
  * a given `job_id`; intermediate `progress`/`warning` events are currently
  * dropped (no streaming consumer yet — see open questions in

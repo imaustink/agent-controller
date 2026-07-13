@@ -296,7 +296,8 @@ describe("InvokeServer OpenAI-compatible chat completions (ADR 0007)", () => {
           { selectSkill: { selectedSkill: { id: "recipe-publisher-skill", name: "Recipe Extraction & Publishing" } as AgentState["selectedSkill"] } },
           { loadSkillTools: { skillTools: [{ id: "recipe-scraper", name: "recipe-scraper" }] as AgentState["skillTools"] } },
           { planAction: { selectedTool: { id: "recipe-scraper", name: "recipe-scraper" } as AgentState["selectedTool"] } },
-          { launchJob: { result: { title: "Pancakes" } } },
+          { runTool: { result: { title: "Pancakes" } } },
+          { composeResponse: {} },
         ]),
       ),
     };
@@ -369,7 +370,7 @@ describe("InvokeServer OpenAI-compatible chat completions (ADR 0007)", () => {
           { selectSkill: { selectedSkill: { id: "recipe-refining-skill", name: "Recipe Refining" } as AgentState["selectedSkill"] } },
           { loadSkillTools: { skillTools: [{ id: "recipe-publisher", name: "recipe-publisher" }] as AgentState["skillTools"] } },
           // Planner chose to respond directly (e.g. "publish it!" with no recipe Markdown
-          // included) -- no selectedTool, so the graph never reaches launchJob.
+          // included) -- no selectedTool, so the graph never reaches runTool.
           { planAction: { result: "I don't see a recipe to publish -- please paste it back in." } },
         ]),
       ),

@@ -3,32 +3,21 @@ import { randomUUID } from "node:crypto";
 /**
  * Central configuration for the copilot-swe tool.
  *
- * There are TWO distinct GitHub credentials here, on purpose:
+ * A SINGLE fine-grained (v2) GitHub PAT authenticates everything:
+ *   - the Copilot *model* (the token needs the "Copilot Requests" account
+ *     permission, from an account with a Copilot subscription), and
+ *   - all git/`gh` operations (the token needs Contents + Pull requests write,
+ *     plus Administration write if it should be able to create repos).
  *
- *   1. COPILOT_GITHUB_TOKEN — a fine-grained (v2) PAT with the "Copilot
- *      Requests" permission, belonging to an account with a Copilot
- *      subscription. This authenticates the Copilot *model* only. (Classic
- *      `ghp_` tokens and GitHub App installation tokens are NOT accepted by
- *      the Copilot CLI for model auth.)
- *
- *   2. A GitHub App (GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY) — used to mint a
- *      short-lived *installation* token at run time, which authenticates all
- *      git/`gh` operations (clone, push, PR, repo create). The App install is
- *      what bounds which repos this tool can touch.
- *
- * Everything security-relevant (both tokens, target hosts) is fixed via env,
- * never derived from the caller's instruction — same "trusted config,
- * untrusted input" discipline as the other tools in this repo.
+ * The token is fixed via env, never derived from the caller's instruction —
+ * same "trusted config, untrusted input" discipline as the other tools.
  */
 export interface AppConfig {
-  /** GitHub App id (numeric, as a string). Not secret. */
-  githubAppId: string;
-  /** GitHub App installation id, if known ahead of time. Otherwise discovered at run time. */
-  githubAppInstallationId: string | undefined;
-  /** GitHub App private key (PEM). THE app secret; inject via secretEnv/secretKeyRef. May be base64-encoded. */
-  githubAppPrivateKey: string;
-  /** Fine-grained PAT with "Copilot Requests" for the Copilot model. THE copilot secret; inject via secretEnv. */
-  copilotGithubToken: string;
+  /**
+   * The fine-grained PAT used for BOTH the Copilot model and git/gh. THE
+   * secret; inject via secretEnv/secretKeyRef.
+   */
+  githubToken: string;
   /** GitHub REST API base (override for GitHub Enterprise Server). */
   githubApiUrl: string;
   /** Copilot model id to pin (COPILOT_MODEL); empty => let Copilot choose. */
@@ -85,28 +74,8 @@ function trimTrailingSlash(url: string): string {
   return url.endsWith("/") ? url.slice(0, -1) : url;
 }
 
-/**
- * The private key may be provided as raw PEM (with real newlines) or, for
- * environments where multi-line env vars are awkward, base64-encoded. Detect
- * PEM by its header and base64-decode otherwise.
- */
-function decodePrivateKey(raw: string): string {
-  const value = raw.trim();
-  if (value.includes("-----BEGIN")) return value;
-  if (value === "") return "";
-  try {
-    const decoded = Buffer.from(value, "base64").toString("utf8");
-    return decoded.includes("-----BEGIN") ? decoded : value;
-  } catch {
-    return value;
-  }
-}
-
 export const config: AppConfig = {
-  githubAppId: process.env.GITHUB_APP_ID ?? "",
-  githubAppInstallationId: process.env.GITHUB_APP_INSTALLATION_ID || undefined,
-  githubAppPrivateKey: decodePrivateKey(process.env.GITHUB_APP_PRIVATE_KEY ?? ""),
-  copilotGithubToken: process.env.COPILOT_GITHUB_TOKEN ?? "",
+  githubToken: process.env.GITHUB_TOKEN ?? "",
   githubApiUrl: trimTrailingSlash(process.env.GITHUB_API_URL ?? "https://api.github.com"),
   copilotModel: process.env.COPILOT_MODEL ?? "",
   workdir: process.env.COPILOT_SWE_WORKDIR ?? "/tmp/work",

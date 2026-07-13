@@ -20,10 +20,11 @@ This is a different shape of workload:
 - It needs outbound network to GitHub and the Copilot API, a writable
   workspace, more memory, and a much longer deadline than 300s.
 - It needs write credentials to GitHub, which is a large blast radius.
-- Copilot's *model* auth and GitHub's *git/API* auth are distinct: the Copilot
-  CLI accepts only a fine-grained PAT with the "Copilot Requests" permission
-  (or a Copilot/gh OAuth token) for the model — **not** a GitHub App
-  installation token — while we want repo access governed by a GitHub App.
+- Copilot's *model* auth and GitHub's *git/API* auth are distinct concerns, but
+  a single fine-grained PAT can satisfy both: the Copilot CLI accepts a
+  fine-grained PAT with the "Copilot Requests" permission (or a Copilot/gh
+  OAuth token) for the model — **not** a GitHub App installation token — and
+  the same PAT (with Contents/Pull requests write) covers git/GitHub.
 
 The repo already has an `Agent`/`AgentRun` CRD for "a full agent loop as a
 Job", but the orchestrator does not wire Agents into its skill→planner→run
@@ -38,18 +39,22 @@ Add `tools/copilot-swe` as a **`Tool`** (using the fully-wired path), classified
    orchestrator it is one tool call — matching how recipe-scraper's internal
    stages are opaque. Reusing the wired `Tool` path avoids building
    orchestrator-side `Agent` retrieval/launch plumbing.
-2. **Two credentials, kept separate.** `COPILOT_GITHUB_TOKEN` (Copilot PAT)
-   authenticates the model only. A **GitHub App** (`GITHUB_APP_ID` +
-   `GITHUB_APP_PRIVATE_KEY`) mints a short-lived installation token at run time
-   for all git/`gh` operations. The built-in Copilot GitHub MCP server is
-   disabled (`--disable-builtin-mcps`) so the two never mix; the tool drives
-   GitHub via `git` + `gh` under the App token.
-3. **Guardrails via deny rules + server-side protection.** Since a GitHub App's
-   `Administration:write` cannot separate repo create from delete, "no
-   irreversible actions" is enforced in depth: baked-in Copilot `--deny-tool`
-   rules (force-push, `git reset --hard`, ref/branch deletion, `rm -rf`,
+2. **A single fine-grained PAT for everything.** One PAT authenticates the
+   Copilot model (via `COPILOT_GITHUB_TOKEN`) and all git/`gh` operations (via
+   `GH_TOKEN`). The built-in Copilot GitHub MCP server is disabled
+   (`--disable-builtin-mcps`) so `git`/`gh` are the only GitHub path. Required
+   token permissions: Copilot Requests (account), Contents write, Pull requests
+   write, Metadata read, and Administration write only for repo creation.
+   _(A GitHub App was considered for per-repo governance and short-lived
+   tokens, but rejected for this deployment because the App installation token
+   cannot authenticate the Copilot model, forcing a second credential for no
+   benefit at homelab scale. See the git history of this ADR.)_
+3. **Guardrails via deny rules + server-side protection.** Since a PAT with
+   `Administration` write can both create and delete repos, "no irreversible
+   actions" is enforced in depth: baked-in Copilot `--deny-tool` rules
+   (force-push, `git reset --hard`, ref/branch deletion, `rm -rf`,
    `gh repo delete`, `gh api -X DELETE` — deny always wins over `--allow-all`),
-   least-privilege App permissions, and repo rulesets blocking force-push and
+   least-privilege token scope, and repo rulesets blocking force-push and
    deletion.
 4. **Branch-as-state multi-turn (Phase A).** Each turn re-clones; durable state
    lives on the pushed branch/PR plus an `<!-- swe: repo=… branch=… pr=… -->`
@@ -68,8 +73,8 @@ writes only to a writable `emptyDir`/tmpfs under `$HOME`.
 ## Consequences
 
 - A single tool call can now produce real, externally-visible side effects
-  (commits, PRs) against any repository the GitHub App is installed on. The
-  trust boundary is documented in [../security.md](../security.md).
+  (commits, PRs) against any repository the PAT's fine-grained access selects.
+  The trust boundary is documented in [../security.md](../security.md).
 - The privileged posture (network egress, write credentials, longer runtime)
   diverges from the recipe tools; `tier: privileged` marks it, and an egress
   NetworkPolicy is a recommended follow-up (tool Jobs currently have none).

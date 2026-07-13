@@ -47,16 +47,12 @@ spec:
       cpu: "2"
       memory: "2Gi"
       ephemeral-storage: "8Gi"
-  env:
-    - name: GITHUB_APP_ID
-      value: {{ .Values.copilotSwe.githubAppId | quote }}
   secretEnv:
-    - name: COPILOT_GITHUB_TOKEN
+    # A single fine-grained PAT authenticates BOTH the Copilot model and all
+    # git/gh operations (Copilot Requests + Contents/Pull requests write;
+    # Administration write only if it should create repos). See docs/security.md.
+    - name: GITHUB_TOKEN
       secretRef:
         name: {{ .Values.copilotSwe.secretName | quote }}
-        key: COPILOT_GITHUB_TOKEN
-    - name: GITHUB_APP_PRIVATE_KEY
-      secretRef:
-        name: {{ .Values.copilotSwe.secretName | quote }}
-        key: GITHUB_APP_PRIVATE_KEY
+        key: {{ .Values.copilotSwe.secretKey | quote }}
 {{- end }}

@@ -105,10 +105,10 @@ export interface NodeStatusContext {
 /**
  * Human-readable status line for a LangGraph "updates"-mode stream chunk,
  * keyed by node name. Reflects agent-graph node transitions (skill check ->
- * retrieve/select skill -> load skill tools -> plan action -> launch), NOT
- * the launched tool's own internal stages (e.g. recipe-scraper's
- * extract/transcribe) — those aren't currently plumbed out of the Job
- * callback protocol (known gap).
+ * retrieve/select skill -> load skill tools -> plan action -> run tool ->
+ * compose response), NOT the launched tool's own internal stages (e.g.
+ * recipe-scraper's extract/transcribe) — those aren't currently plumbed out
+ * of the Job callback protocol (known gap).
  */
 const NODE_STATUS: Record<string, (update: Record<string, unknown>, ctx?: NodeStatusContext) => string | undefined> = {
   checkActiveSkill: (update) => {

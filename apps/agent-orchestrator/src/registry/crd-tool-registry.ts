@@ -38,11 +38,11 @@ export const TOOL_PLURAL = "tools";
 
 /**
  * Discovers the tool catalog from `Tool` custom resources (ADR 0010) —
- * supersedes both the annotated-Deployment discovery (`k8s-discovery.ts`,
- * ADR 0004) and the static build-time manifest approach (`manifest-tool-
- * registry.ts`, ADR 0009). A `Tool` CR is pure metadata (no image rebuild,
- * no dummy Deployment needed just to be discoverable) validated/reconciled
- * by the Go tool-controller, which also confirms the referenced
+ * supersedes both the earlier annotated-Deployment discovery (ADR 0004) and
+ * the static build-time manifest approach (ADR 0009). A `Tool` CR is pure
+ * metadata (no image rebuild, no dummy Deployment needed just to be
+ * discoverable) validated/reconciled by the Go tool-controller, which also
+ * confirms the referenced
  * ServiceAccount exists.
  *
  * This is a one-shot `listAll()` read at startup, same shape as the

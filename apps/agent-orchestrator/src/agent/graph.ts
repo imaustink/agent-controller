@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import type { Event } from "@recipe-agent/messaging";
 import type { CallbackReceiver } from "../callback/receiver.js";
-import type { JobLauncher } from "../k8s/job-launcher.js";
+import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
 import type { LocalToolExecutor } from "../local/local-tool-executor.js";
 import type { IdentityResolver, Identity } from "../rbac/types.js";
 import type { SkillDescriptor, SkillSearchResult, SkillStore } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { VectorStore } from "../vector-store/types.js";
 import type { ActionPlanner } from "./action-planner.js";
+import type { ResponseComposer } from "./response-composer.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
 
@@ -18,8 +19,10 @@ import type { SkillSelector } from "./skill-selector.js";
  * active skill if one exists (fit-check first, RAG on miss) -> otherwise
  * retrieve candidate skills (RAG, RBAC-filtered) and select one -> load the
  * tools that skill declares -> plan an action (respond directly, or call one
- * of those tools) -> if a tool was chosen, launch it as a k8s Job and await
- * its result.
+ * of those tools) -> if a tool was chosen, run it (a container tool via a
+ * ToolRun CR + callback, or a LocalTool in-pod) and await its result ->
+ * compose the final turn, letting the skill's own instructions add any
+ * follow-up narration around the tool's verbatim output (docs/adr/0015).
  */
 export const AgentStateAnnotation = Annotation.Root({
   request: Annotation<string>,
@@ -90,7 +93,8 @@ export interface AgentGraphDeps {
   skillFitChecker: SkillFitChecker;
   vectorStore: VectorStore;
   actionPlanner: ActionPlanner;
-  jobLauncher: JobLauncher;
+  responseComposer: ResponseComposer;
+  containerToolLauncher: ContainerToolLauncher;
   callbackReceiver: CallbackReceiver;
   /**
    * Executor for LocalTools (ADR 0014) — tools run in-pod by a per-language
@@ -107,20 +111,6 @@ export interface AgentGraphDeps {
 function afterOrEnd(next: string) {
   return (state: AgentState): string => (state.error ? END : next);
 }
-
-/**
- * After a successful `recipe-scraper` call, an explicit prompt is appended
- * to the raw extracted Markdown asking the user to confirm before the first
- * Mealie publish -- tool results are otherwise the final, unembellished
- * answer for the turn (see server.ts's streaming handler), so without this
- * nudge the user would never be asked. This is a narrow, skill-specific
- * exception (the recipe-refining-skill's own two tools are the only ones
- * this graph currently wires up), not a generic mechanism -- revisit if
- * more skills need similar post-tool narration.
- */
-const RECIPE_SCRAPER_TOOL_ID = "recipe-scraper";
-const CONFIRM_PUBLISH_PROMPT =
-  "\n\n---\nReply to confirm publishing this to Mealie, or tell me what you'd like to change first.";
 
 /** Builds and compiles the LangGraph.js agent graph (docs/adr/0008, superseding the earlier flat tool-RAG flow). */
 export function buildAgentGraph(deps: AgentGraphDeps) {
@@ -204,7 +194,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       }
       return { selectedTool: tool, toolArgs: planned.toolArgs };
     })
-    .addNode("launchJob", async (state) => {
+    .addNode("runTool", async (state) => {
       const tool = state.selectedTool;
       if (!tool) {
         return { error: "no tool selected" };
@@ -223,11 +213,14 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         event = await deps.localToolExecutor.run(tool, input);
         jobId = event.job_id;
       } else if (tool.jobTemplate) {
+        // Container tool (ADR 0010): create a ToolRun CR — the Go
+        // tool-controller reconciles it into a hardened Job. The orchestrator
+        // itself never creates a Job.
         jobId = randomUUID();
         const callbackUrl = `${deps.callbackBaseUrl}/callback/${jobId}`;
         const awaitResult = deps.callbackReceiver.awaitJob(jobId);
 
-        await deps.jobLauncher.launch(tool.jobTemplate, {
+        await deps.containerToolLauncher.launch(tool.jobTemplate, {
           args: [input],
           env: { JOB_ID: jobId },
           callbackUrl,
@@ -245,11 +238,33 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (event.type !== "succeeded") {
         return { jobId, result: undefined };
       }
-      const result =
-        tool.id === RECIPE_SCRAPER_TOOL_ID && typeof event.result === "string"
-          ? `${event.result}${CONFIRM_PUBLISH_PROMPT}`
-          : event.result;
-      return { jobId, result };
+      // The tool output is surfaced to the user verbatim; any follow-up
+      // narration is added by the composeResponse node (docs/adr/0015), not
+      // hard-coded here.
+      return { jobId, result: event.result };
+    })
+    .addNode("composeResponse", async (state) => {
+      // Post-tool response composition (docs/adr/0015): the active skill's own
+      // instructions decide whether to wrap the tool's result with a follow-up
+      // (e.g. "reply to confirm publishing"). The tool output is preserved
+      // byte-for-byte — the composer only produces optional surrounding text —
+      // so the recipe Markdown and its `<!-- mealie-slug: ... -->` marker
+      // survive verbatim for next-turn intent detection.
+      //
+      // Only string results can be narrated in place; a structured (JSON)
+      // result is passed straight through, so the node is a safe no-op outside
+      // the string path.
+      if (!state.selectedSkill || !state.selectedTool || typeof state.result !== "string") {
+        return {};
+      }
+      const { prefix, suffix } = await deps.responseComposer.compose(
+        state.request,
+        state.selectedSkill,
+        state.selectedTool,
+        state.result,
+      );
+      if (!prefix && !suffix) return {};
+      return { result: `${prefix ?? ""}${state.result}${suffix ?? ""}` };
     })
     .addEdge(START, "resolveIdentity")
     .addConditionalEdges("resolveIdentity", afterOrEnd("checkActiveSkill"))
@@ -262,11 +277,14 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     .addConditionalEdges("selectSkill", afterOrEnd("loadSkillTools"))
     .addConditionalEdges("loadSkillTools", afterOrEnd("planAction"))
     // planAction branches three ways: error -> END, "respond" (result set,
-    // no tool) -> END, "call_tool" (selectedTool set) -> launchJob. A single
-    // condition covers all three: only proceed to launchJob when a tool was
+    // no tool) -> END, "call_tool" (selectedTool set) -> runTool. A single
+    // condition covers all three: only proceed to runTool when a tool was
     // actually selected.
-    .addConditionalEdges("planAction", (state) => (state.error || !state.selectedTool ? END : "launchJob"))
-    .addEdge("launchJob", END);
+    .addConditionalEdges("planAction", (state) => (state.error || !state.selectedTool ? END : "runTool"))
+    // A failed/empty tool run ends the turn; a successful one flows into
+    // composeResponse so the skill can add any follow-up (docs/adr/0015).
+    .addConditionalEdges("runTool", (state) => (state.error || state.result === undefined ? END : "composeResponse"))
+    .addEdge("composeResponse", END);
 
   return graph.compile();
 }

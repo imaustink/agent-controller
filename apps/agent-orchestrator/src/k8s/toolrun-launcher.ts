@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as k8s from "@kubernetes/client-node";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import type { JobTemplate } from "../tool-descriptor.js";
-import type { JobLauncher, LaunchedJob, LaunchOptions } from "./job-launcher.js";
+import type { ContainerToolLauncher, LaunchedJob, LaunchOptions } from "./container-tool-launcher.js";
 
 /** Plural resource name used by the `ToolRun` CRD (matches `config/crd/bases` in controllers/tool-controller). */
 export const TOOLRUN_PLURAL = "toolruns";
@@ -28,7 +28,7 @@ export interface SecretKeySelector {
  * created container gets the value via `secretKeyRef`, not via this
  * process re-embedding it into a CR.
  */
-export class ToolRunLauncher implements JobLauncher {
+export class ToolRunLauncher implements ContainerToolLauncher {
   constructor(
     private readonly group: string,
     private readonly version: string,

@@ -31,6 +31,13 @@ agent-orchestrator:
   # a reader-only token returns 0 candidate skills.
   config:
     staticIdentities: '{"openwebui-dev-token":{"subject":"open-webui","roles":["reader","writer"]}}'
+  # LocalTool executor sidecars (ADR 0014): node/python/go/shell executors run
+  # in the orchestrator pod and run LocalTool CRs in a bubblewrap sandbox.
+  # Images built into minikube by dev-up.sh / manual `docker build` of
+  # sidecars/localtool-executor (one per runtime). Requires unprivileged user
+  # namespaces on the node for the per-tool network sandbox.
+  localTool:
+    enabled: true
 
 tool-controller:
   enabled: true
@@ -39,8 +46,15 @@ tool-controller:
 
 tools:
   enabled: true
-  # recipe-scraper + recipe-publisher are on by default; copilot-swe and the
-  # software-engineering skill stay off (need a GitHub App + PAT set up first).
+  # recipe-scraper + recipe-publisher are on by default. copilot-swe (the
+  # privileged GitHub coding agent) + its skill are enabled here; they need the
+  # copilot-swe ServiceAccount + copilot-swe-secrets (key GITHUB_TOKEN, a
+  # fine-grained PAT) to already exist in-cluster.
+  copilotSwe:
+    enabled: true
+  skills:
+    softwareEngineering:
+      enabled: true
 
 openwebui:
   enabled: true

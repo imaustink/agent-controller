@@ -62,16 +62,15 @@ src/
 │   ├── types.ts
 │   ├── qdrant-store.ts           # tool index; also exposes getByIds() for skill-scoped lookup (ADR 0008)
 │   └── openai-embedder.ts
-├── skills/                       # Skill layer: static catalog + Qdrant collection (ADR 0008)
+├── skills/                       # Skill layer: Skill CRDs + Qdrant collection (ADR 0008, 0010)
 │   ├── types.ts                  # SkillDescriptor / SkillAccess / SkillStore port
 │   ├── derive-access.ts          # skill audience = ∩ of its tools' allowedRoles (ADR 0011)
 │   ├── crd-skill-registry.ts     # reads Skill custom resources (ADR 0010)
-│   ├── qdrant-skill-store.ts
-│   └── catalog.ts                # legacy hand-authored skill list (unwired since ADR 0010)
-├── registry/                     # Static tool catalog (ADR 0009)
+│   └── qdrant-skill-store.ts
+├── registry/                     # Tool catalog discovered from CRDs (ADR 0010)
 │   ├── types.ts
-│   ├── manifest-tool-registry.ts # reads tools/<name>/manifest.json baked into this image (the wired default)
-│   └── k8s-discovery.ts          # NOT wired by default -- superseded annotation-based approach, see ADR 0009
+│   ├── crd-tool-registry.ts      # reads Tool custom resources (the wired default, ADR 0010)
+│   └── crd-local-tool-registry.ts # reads LocalTool custom resources (ADR 0014)
 ├── rbac/                         # Identity resolution (ADR 0004)
 │   ├── types.ts
 │   └── static-identity-resolver.ts  # DEV/TEST ONLY — see file header
@@ -79,45 +78,34 @@ src/
 │   ├── types.ts                  # SessionStore port + SessionRecord
 │   └── in-memory-session-store.ts # sliding-TTL Map; single-replica only
 ├── k8s/
-│   └── job-launcher.ts           # @kubernetes/client-node Job create/watch/delete (ADR 0005)
+│   ├── container-tool-launcher.ts # ContainerToolLauncher port (launch a container tool, ADR 0010)
+│   └── toolrun-launcher.ts       # creates a ToolRun CR; the Go controller reconciles the Job (ADR 0010)
 ├── callback/
 │   └── receiver.ts                # HTTP receiver for Job -> orchestrator results
 └── agent/
     ├── graph.ts                  # LangGraph.js agent loop (ADR 0002, restructured for skills in ADR 0008)
     ├── skill-selector.ts         # LLM skill selection (Structured Outputs, ADR 0008)
     ├── skill-fit-checker.ts      # per-turn active-skill fit-check (Structured Outputs, ADR 0012)
-    └── action-planner.ts         # skill markdown -> system prompt; decides respond vs. call_tool (ADR 0008)
+    ├── action-planner.ts         # skill markdown -> system prompt; decides respond vs. call_tool (ADR 0008)
+    └── response-composer.ts      # post-tool narration around the verbatim result (ADR 0015)
 ```
 
 ## Registering a tool
 
-Tools are a **static, build-time manifest** (ADR 0009), not something
-discovered live from the cluster — there's no always-running Deployment to
-discover in the first place, since every invocation is a one-shot Job (ADR
-0005). To register a tool:
+Tools are **`Tool` custom resources** discovered from the cluster (ADR 0010),
+not baked into this image. `CrdToolRegistry` lists every `Tool` CR once at
+startup and upserts it into the RAG index; the Go tool-controller
+(`controllers/tool-controller/`) reconciles each invocation's `ToolRun` CR into
+a hardened one-shot Job — the orchestrator itself never creates a Job. To
+register a container tool:
 
-1. Add `tools/<name>/manifest.json` describing it:
-
-   ```json
-   {
-     "id": "recipe-scraper",
-     "name": "recipe-scraper",
-     "description": "Scrapes a recipe from a URL (web/video/image).",
-     "input": "A single recipe URL as a plain string.",
-     "output": "A recipe envelope JSON (source_type/url/title/recipe/provenance/warnings).",
-     "allowedRoles": ["reader", "writer"],
-     "tier": "standard",
-     "image": "recipe-scraper:latest",
-     "serviceAccountName": "recipe-scraper"
-   }
-   ```
-
-2. Add one `COPY tools/<name>/manifest.json manifests/<name>/manifest.json`
-   line to this app's [Dockerfile](Dockerfile) (only the manifest is copied
-   in, never the tool's source/dependencies).
-3. Rebuild the orchestrator image. `ManifestToolRegistry` reads every
-   `manifests/<name>/manifest.json` once at startup and upserts it into the
-   RAG index.
+1. Add `tools/<name>/tool.yaml` — a `Tool` CR with its
+   description/input/output/allowedRoles/tier plus the launch metadata
+   (image, serviceAccountName, env/secretEnv, resources). See
+   [tools/recipe-scraper/tool.yaml](../../tools/recipe-scraper/tool.yaml).
+2. `kubectl apply` it into the orchestrator's namespace, then restart the
+   orchestrator so it re-reads the catalog (one-shot-at-startup, no watch loop
+   yet — ADR 0010).
 
 The target namespace's `serviceAccountName` (e.g. `recipe-scraper`) still
 needs to actually exist in the cluster — this app doesn't create tool
@@ -247,12 +235,12 @@ These are called out explicitly rather than silently glossed over — see
   skill (ADR 0012), never accumulates several.
 - **Streamed progress narrates agent graph steps, not tool-internal stages.**
   `POST /v1/chat/completions` with `stream: true` narrates
-  resolveIdentity/checkActiveSkill/retrieveSkills/selectSkill/loadSkillTools/planAction/launchJob
+  resolveIdentity/checkActiveSkill/retrieveSkills/selectSkill/loadSkillTools/planAction/runTool/composeResponse
   transitions, not a launched tool's own internal stages (e.g.
   recipe-scraper's extract/transcribe) — those aren't observable outside the
   Job callback protocol today.
 - **Job launch RBAC is not yet scoped per-tool** — every launched Job uses the
-  `serviceAccountName` named in that tool's `manifest.json` (ADR 0009); that
+  `serviceAccountName` named in that tool's `Tool` CR (ADR 0010); that
   ServiceAccount must already exist in the target namespace (this app doesn't
   create tool ServiceAccounts, only its own — see
   [charts/recipe-agent/charts/agent-orchestrator](../../charts/recipe-agent/charts/agent-orchestrator/) for the

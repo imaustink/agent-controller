@@ -7,7 +7,8 @@ import type { SkillDescriptor } from "../skills/types.js";
 import type { SkillSelector } from "./skill-selector.js";
 import type { VectorStore } from "../vector-store/types.js";
 import type { ActionPlanner, PlannedAction } from "./action-planner.js";
-import type { JobLauncher } from "../k8s/job-launcher.js";
+import type { ResponseComposer } from "./response-composer.js";
+import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
 import type { CallbackReceiver } from "../callback/receiver.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
@@ -64,7 +65,10 @@ function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
       toolArgs: "https://example.com/recipe",
     } satisfies PlannedAction),
   };
-  const jobLauncher = { launch: vi.fn().mockResolvedValue({ name: "tool-1", namespace: "default" }) } as unknown as JobLauncher;
+  const containerToolLauncher = { launch: vi.fn().mockResolvedValue({ name: "tool-1", namespace: "default" }) } as unknown as ContainerToolLauncher;
+  const responseComposer: ResponseComposer = {
+    compose: vi.fn().mockResolvedValue({ prefix: null, suffix: null }),
+  };
   const callbackReceiver = {
     awaitJob: vi.fn().mockResolvedValue({
       type: "succeeded",
@@ -82,7 +86,8 @@ function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
     skillFitChecker,
     vectorStore,
     actionPlanner,
-    jobLauncher,
+    responseComposer,
+    containerToolLauncher,
     callbackReceiver,
     callbackBaseUrl: "http://orchestrator",
     callbackSecret: "s3cret",
@@ -102,7 +107,7 @@ describe("buildAgentGraph", () => {
     expect(final.selectedSkill?.id).toBe("recipe-publisher-skill");
     expect(final.selectedTool?.id).toBe("recipe-scraper");
     expect(final.result).toEqual({ title: "Pancakes" });
-    expect(deps.jobLauncher.launch).toHaveBeenCalledWith(
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
       scraperTool.jobTemplate,
       expect.objectContaining({ callbackSecret: "s3cret", args: ["https://example.com/recipe"] }),
     );
@@ -124,7 +129,7 @@ describe("buildAgentGraph", () => {
     expect(final.error).toBeUndefined();
     expect(final.selectedTool).toBeUndefined();
     expect(final.result).toBe('{"recipe":{"tags":["vegetarian"]}}');
-    expect(deps.jobLauncher.launch).not.toHaveBeenCalled();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
 
   it("supports a respond-only skill (no toolIds, ADR 0011) without hitting the tool store", async () => {
@@ -148,10 +153,41 @@ describe("buildAgentGraph", () => {
     expect(final.error).toBeUndefined();
     expect(final.result).toBe("Here's how it works.");
     expect(deps.vectorStore.getByIds).not.toHaveBeenCalled();
-    expect(deps.jobLauncher.launch).not.toHaveBeenCalled();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
 
-  it("appends a publish-confirmation prompt to a successful recipe-scraper string result", async () => {
+  it("wraps a string tool result with the skill's composed narration, preserving the output verbatim (ADR 0015)", async () => {
+    const deps = baseDeps({
+      responseComposer: {
+        compose: vi.fn().mockResolvedValue({ prefix: null, suffix: "\n\n---\nConfirm to publish?" }),
+      },
+      callbackReceiver: {
+        awaitJob: vi.fn().mockResolvedValue({
+          type: "succeeded",
+          job_id: "job-1",
+          seq: 1,
+          ts: new Date().toISOString(),
+          result: "# Pancakes\n\n## Ingredients\n\n1. 2 eggs",
+        } satisfies Event),
+      } as unknown as CallbackReceiver,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).toBe("# Pancakes\n\n## Ingredients\n\n1. 2 eggs\n\n---\nConfirm to publish?");
+    // The tool output is passed to the composer verbatim, and the composer's
+    // narration is only appended around it (never a rewrite of the Markdown).
+    expect(deps.responseComposer.compose).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ id: "recipe-publisher-skill" }),
+      scraperTool,
+      "# Pancakes\n\n## Ingredients\n\n1. 2 eggs",
+    );
+  });
+
+  it("leaves a string tool result verbatim when the composer adds no narration", async () => {
     const deps = baseDeps({
       callbackReceiver: {
         awaitJob: vi.fn().mockResolvedValue({
@@ -168,38 +204,18 @@ describe("buildAgentGraph", () => {
     const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
 
     expect(final.error).toBeUndefined();
-    expect(final.result).toBe(
-      "# Pancakes\n\n## Ingredients\n\n1. 2 eggs\n\n---\nReply to confirm publishing this to Mealie, or tell me what you'd like to change first.",
-    );
+    expect(final.result).toBe("# Pancakes\n\n## Ingredients\n\n1. 2 eggs");
   });
 
-  it("does NOT append the publish-confirmation prompt to a successful recipe-publisher result", async () => {
-    const deps = baseDeps({
-      actionPlanner: {
-        plan: vi.fn().mockResolvedValue({
-          action: "call_tool",
-          toolId: "recipe-publisher",
-          toolArgs: "# Pancakes\n\n## Ingredients\n\n1. 2 eggs",
-        } satisfies PlannedAction),
-      },
-      callbackReceiver: {
-        awaitJob: vi.fn().mockResolvedValue({
-          type: "succeeded",
-          job_id: "job-1",
-          seq: 1,
-          ts: new Date().toISOString(),
-          result: "# Pancakes\n\n## Ingredients\n\n1. 2 eggs\n\n---\n✅ Published on Mealie: [Pancakes](https://recipes.example.com/g/home/r/pancakes)",
-        } satisfies Event),
-      } as unknown as CallbackReceiver,
-    });
+  it("does not invoke the composer for a non-string (structured) tool result", async () => {
+    const deps = baseDeps();
     const graph = buildAgentGraph(deps);
 
-    const final = await graph.invoke({ request: "publish it", authToken: "tok" });
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
 
     expect(final.error).toBeUndefined();
-    expect(final.result).toBe(
-      "# Pancakes\n\n## Ingredients\n\n1. 2 eggs\n\n---\n✅ Published on Mealie: [Pancakes](https://recipes.example.com/g/home/r/pancakes)",
-    );
+    expect(final.result).toEqual({ title: "Pancakes" });
+    expect(deps.responseComposer.compose).not.toHaveBeenCalled();
   });
 
   it("fails closed when identity cannot be resolved, without ever querying the skill store", async () => {
@@ -221,7 +237,7 @@ describe("buildAgentGraph", () => {
     const final = await graph.invoke({ request: "do a thing", authToken: "tok" });
 
     expect(final.error).toMatch(/no matching skill/);
-    expect(deps.jobLauncher.launch).not.toHaveBeenCalled();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
 
   it("stops with an error when the skill selector picks none of the candidates", async () => {
@@ -242,7 +258,7 @@ describe("buildAgentGraph", () => {
     const final = await graph.invoke({ request: "do a thing", authToken: "tok" });
 
     expect(final.error).toMatch(/no usable tools/);
-    expect(deps.jobLauncher.launch).not.toHaveBeenCalled();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
 
   it("stops with an error when the planner selects a tool outside the skill's scope", async () => {
@@ -260,7 +276,7 @@ describe("buildAgentGraph", () => {
     const final = await graph.invoke({ request: "do a thing", authToken: "tok" });
 
     expect(final.error).toMatch(/outside the skill's scope/);
-    expect(deps.jobLauncher.launch).not.toHaveBeenCalled();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
 
   it("surfaces a failed tool-Job result as a graph error", async () => {
@@ -332,7 +348,7 @@ describe("buildAgentGraph", () => {
     expect(final.result).toEqual({ status: 200, body: "hi" });
     expect(localToolExecutor.run).toHaveBeenCalledWith(localTool, "https://example.com");
     // A LocalTool must never take the Job path.
-    expect(deps.jobLauncher.launch).not.toHaveBeenCalled();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
 
   it("fails gracefully when a LocalTool is selected but no executor is configured", async () => {
@@ -372,7 +388,7 @@ describe("buildAgentGraph", () => {
     const final = await graph.invoke({ request: "fetch https://example.com", authToken: "tok" });
 
     expect(final.error).toMatch(/local execution is not configured/);
-    expect(deps.jobLauncher.launch).not.toHaveBeenCalled();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
 });
 

@@ -51,7 +51,6 @@ export function buildCopilotArgs(opts: CopilotArgsOptions): string[] {
     "--no-ask-user",
     "--no-auto-update",
     "--no-color",
-    "--no-banner",
     "--disable-builtin-mcps",
     "--log-level",
     "error",
@@ -105,12 +104,22 @@ export function buildPrompt(instruction: string, marker: SweMarker | null): stri
 }
 
 /**
- * Best-effort extraction of a human-readable snippet from one line of
- * Copilot's `--output-format json` (JSONL) stream, for progress narration.
- * Unknown or unparseable shapes yield null (we simply don't narrate them) so
- * this never throws on schema drift.
+ * A parsed signal from one line of Copilot's `--output-format json` (JSONL)
+ * stream. Copilot CLI 1.0.70 emits typed events (`assistant.message`,
+ * `assistant.reasoning_delta`, `tool.execution_start/complete`, ...); we pull
+ * out narratable progress, the final assistant message, and any tool failure.
  */
-export function extractProgressText(line: string): string | null {
+export interface CopilotSignal {
+  /** Human-readable text to narrate as progress. */
+  progress?: string;
+  /** Content of an assistant message (the final summary is the last of these). */
+  finalMessage?: string;
+  /** Output of a tool execution that failed (non-zero exit / success:false). */
+  toolFailure?: string;
+}
+
+/** Parses one JSONL line from Copilot into a {@link CopilotSignal}. Never throws; unknown shapes yield null. */
+export function parseCopilotLine(line: string): CopilotSignal | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
   let obj: unknown;
@@ -121,13 +130,40 @@ export function extractProgressText(line: string): string | null {
   }
   if (typeof obj !== "object" || obj === null) return null;
   const rec = obj as Record<string, unknown>;
+  const type = typeof rec["type"] === "string" ? (rec["type"] as string) : "";
+  const data = (typeof rec["data"] === "object" && rec["data"] !== null ? rec["data"] : {}) as Record<string, unknown>;
 
-  // Prefer an explicit assistant/text field; fall back to a tool/command name.
-  for (const key of ["text", "content", "message", "delta"]) {
-    const v = rec[key];
-    if (typeof v === "string" && v.trim()) return v.trim();
+  const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+
+  switch (type) {
+    case "assistant.message": {
+      const content = str(data["content"]);
+      // The tool-request message has empty content; only real text is a summary.
+      return content ? { finalMessage: content, progress: content.slice(0, 200) } : null;
+    }
+    case "assistant.reasoning":
+      return str(data["content"]) ? { progress: str(data["content"])! } : null;
+    case "assistant.reasoning_delta":
+    case "assistant.message_delta":
+      return str(data["deltaContent"]) ? { progress: str(data["deltaContent"])! } : null;
+    case "tool.execution_start": {
+      const name = str(data["toolName"]) ?? str(data["name"]);
+      const desc = str(data["description"]) ?? str(data["intentionSummary"]);
+      return name ? { progress: `running ${name}${desc ? `: ${desc}` : ""}` } : null;
+    }
+    case "tool.execution_complete": {
+      const result = (typeof data["result"] === "object" && data["result"] !== null ? data["result"] : {}) as Record<string, unknown>;
+      const content = str(result["content"]) ?? "";
+      const failed = data["success"] === false || /exit code [1-9]/.test(content) || /Resource not accessible/i.test(content);
+      return failed && content ? { toolFailure: content } : null;
+    }
+    default: {
+      // Fallback for older/other shapes.
+      for (const key of ["text", "content", "message", "delta"]) {
+        const v = str(rec[key]);
+        if (v) return { progress: v };
+      }
+      return null;
+    }
   }
-  const tool = rec["tool"] ?? rec["name"];
-  if (typeof tool === "string" && tool.trim()) return `running ${tool.trim()}`;
-  return null;
 }

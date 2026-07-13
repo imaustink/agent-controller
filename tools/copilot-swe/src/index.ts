@@ -4,15 +4,9 @@ import { config } from "./config.js";
 import {
   buildCopilotArgs,
   buildPrompt,
-  extractProgressText,
+  parseCopilotLine,
 } from "./copilot.js";
-import {
-  createAppJwt,
-  GitHubAppError,
-  mintInstallationToken,
-  resolveInstallationId,
-} from "./github-app.js";
-import { discoverResult, ensureDir, findRepoDir, runCommand, setupGitAuth } from "./git.js";
+import { discoverResult, ensureDir, findRepoDir, resolveGitIdentity, runCommand, setupGitAuth } from "./git.js";
 import { parseSweMarker, renderSweMarker, type SweMarker } from "./marker.js";
 import { createSink, JobEmitter } from "./messaging/index.js";
 import { InstructionSchema, type SweErrorCode } from "./schema.js";
@@ -41,28 +35,40 @@ function fail(code: SweErrorCode, exitCode: number, message: string): never {
   throw new PipelineError(code, exitCode, clip(message, 2000));
 }
 
-/** Spawns the Copilot CLI, streaming its JSONL output into progress events. Returns the last human-readable line. */
+/** Spawns the Copilot CLI, streaming its JSONL output into progress events. Returns the final assistant message, any tool failures, and a bounded transcript. */
 function runCopilot(
   args: string[],
   env: NodeJS.ProcessEnv,
   cwd: string,
-  onText: (text: string) => void,
-): Promise<{ code: number; lastText: string | null }> {
+  onProgress: (text: string) => void,
+): Promise<{ code: number; finalMessage: string | null; toolFailures: string[]; transcript: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn("copilot", args, { cwd, env });
     let buffer = "";
-    let lastText: string | null = null;
+    let finalMessage: string | null = null;
+    const toolFailures: string[] = [];
+    const parts: string[] = [];
+    let transcriptLen = 0;
+    let rawOut = "";
 
     const handleLine = (line: string): void => {
-      const text = extractProgressText(line);
-      if (text) {
-        lastText = text;
-        onText(text);
+      const sig = parseCopilotLine(line);
+      if (!sig) return;
+      if (sig.finalMessage) finalMessage = sig.finalMessage;
+      if (sig.toolFailure) toolFailures.push(sig.toolFailure);
+      if (sig.progress) {
+        onProgress(sig.progress);
+        if (transcriptLen < 8000) {
+          parts.push(sig.progress);
+          transcriptLen += sig.progress.length + 1;
+        }
       }
     };
 
     child.stdout.on("data", (chunk: Buffer) => {
-      buffer += chunk.toString();
+      const s = chunk.toString();
+      if (rawOut.length < 20000) rawOut += s;
+      buffer += s;
       let idx: number;
       while ((idx = buffer.indexOf("\n")) >= 0) {
         handleLine(buffer.slice(0, idx));
@@ -70,11 +76,13 @@ function runCopilot(
       }
     });
     // Copilot logs diagnostics to stderr; keep them out of stdout but visible in pod logs.
-    child.stderr.on("data", (chunk: Buffer) => process.stderr.write(clip(chunk.toString(), 500)));
+    child.stderr.on("data", (chunk: Buffer) => process.stderr.write(clip(chunk.toString(), 2000)));
     child.on("error", reject);
     child.on("close", (code) => {
       if (buffer.trim()) handleLine(buffer);
-      resolve({ code: code ?? 1, lastText });
+      // Echo the agent's raw stdout to pod logs for debuggability (bounded + redacted).
+      process.stderr.write(`--- copilot raw stdout (exit ${code}) ---\n${clip(rawOut, 20000)}\n--- end raw ---\n`);
+      resolve({ code: code ?? 1, finalMessage, toolFailures, transcript: parts.join("\n") });
     });
   });
 }
@@ -90,56 +98,43 @@ async function run(emitter: JobEmitter, rawInput: string): Promise<void> {
     fail("usage", EXIT.usage, "Instruction must not be empty after removing the marker");
   }
 
-  if (!config.githubAppId || !config.githubAppPrivateKey) {
-    fail("usage", EXIT.usage, "GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY must be configured");
-  }
-  if (!config.copilotGithubToken) {
-    fail("usage", EXIT.usage, "COPILOT_GITHUB_TOKEN (a Copilot-entitled fine-grained PAT) must be configured");
+  if (!config.githubToken) {
+    fail(
+      "usage",
+      EXIT.usage,
+      "GITHUB_TOKEN (a fine-grained PAT with Copilot Requests + Contents/Pull requests write) must be configured",
+    );
   }
 
-  // --- Authenticate: mint a short-lived GitHub App installation token. ---
+  const token = config.githubToken;
+
+  // --- Authenticate & prepare credentials. ---
+  // One PAT authenticates BOTH the Copilot model (COPILOT_GITHUB_TOKEN) and
+  // all git/gh operations (GH_TOKEN) — see docs/security.md.
   await emitter.progress("authenticate");
-  let token: string;
-  try {
-    const jwt = createAppJwt(config.githubAppId, config.githubAppPrivateKey);
-    const installationId = await resolveInstallationId(jwt, {
-      apiUrl: config.githubApiUrl,
-      timeoutMs: config.fetchTimeoutMs,
-      configuredId: config.githubAppInstallationId,
-      repo: marker?.repo,
-    });
-    const minted = await mintInstallationToken(jwt, installationId, {
-      apiUrl: config.githubApiUrl,
-      timeoutMs: config.fetchTimeoutMs,
-    });
-    token = minted.token;
-  } catch (err) {
-    if (err instanceof GitHubAppError) {
-      fail("auth", EXIT.auth, `GitHub App authentication failed: ${err.message}`);
-    }
-    fail("auth", EXIT.auth, `GitHub App authentication failed: ${(err as Error).message}`);
-  }
-
-  // --- Prepare the workspace and credentials. ---
-  await emitter.progress("prepare");
   await ensureDir(config.homeDir);
   await ensureDir(config.workdir);
   const apiHost = new URL(config.githubApiUrl).host === "api.github.com" ? "github.com" : new URL(config.githubApiUrl).host;
-  await setupGitAuth({ homeDir: config.homeDir, token, appId: config.githubAppId, apiHost });
 
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: config.homeDir,
     COPILOT_HOME: `${config.homeDir}/.copilot`,
-    // Model auth for Copilot uses the Copilot-entitled PAT; all git/gh
-    // operations use the App installation token via GH_TOKEN. Keeping these
-    // two separate is the whole point (see docs/security.md).
-    COPILOT_GITHUB_TOKEN: config.copilotGithubToken,
+    COPILOT_GITHUB_TOKEN: token,
     GH_TOKEN: token,
     GITHUB_TOKEN: token,
     GIT_TERMINAL_PROMPT: "0",
     COPILOT_AUTO_UPDATE: "false",
   };
+
+  const identity = (await resolveGitIdentity(childEnv)) ?? {
+    name: "copilot-swe",
+    email: "copilot-swe@users.noreply.github.com",
+  };
+  await setupGitAuth({ homeDir: config.homeDir, token, apiHost, identity });
+
+  // --- Prepare the workspace. ---
+  await emitter.progress("prepare");
 
   // On a continuation turn, pre-clone the known repo so Copilot resumes in the
   // right place. Best-effort: if it fails, Copilot is instructed to clone itself.
@@ -165,18 +160,25 @@ async function run(emitter: JobEmitter, rawInput: string): Promise<void> {
     }
   });
   if (result.code !== 0) {
-    fail("agent", EXIT.agent, `The coding agent exited with code ${result.code}`);
+    const detail = result.toolFailures.length ? `: ${clip(result.toolFailures[result.toolFailures.length - 1]!, 800)}` : "";
+    fail("agent", EXIT.agent, `The coding agent exited with code ${result.code}${detail}`);
   }
 
   // --- Finalize: discover the repo/branch/PR the agent produced. ---
   await emitter.progress("finalize");
+
+  const summary = clip(result.finalMessage || result.transcript || "The coding agent finished without a summary.", 4000);
+
   const repoDir = await findRepoDir(config.workdir);
-  if (!repoDir) {
-    fail("git", EXIT.git, "The agent finished but produced no git repository to report on");
-  }
-  const discovered = await discoverResult(repoDir, childEnv);
+  const discovered = repoDir ? await discoverResult(repoDir, childEnv) : null;
   if (!discovered || !discovered.repo || !discovered.branch) {
-    fail("git", EXIT.git, "Could not determine the repository/branch the agent worked on");
+    // No verifiable repository/branch was produced. Treat as a FAILURE and
+    // surface the real cause (a failed tool command, e.g. a permission error)
+    // rather than the agent's own — possibly hallucinated — success summary.
+    const cause = result.toolFailures.length
+      ? clip(result.toolFailures[result.toolFailures.length - 1]!, 1200)
+      : clip(summary, 1200);
+    fail("git", EXIT.git, `The agent produced no pushable repository or pull request. Details: ${cause}`);
   }
 
   const nextMarker: SweMarker = {
@@ -186,12 +188,11 @@ async function run(emitter: JobEmitter, rawInput: string): Promise<void> {
     session: marker?.session ?? randomUUID(),
   };
 
-  const summary = result.lastText ? clip(result.lastText, 1500) : "The coding agent completed the task.";
   const prLine = discovered.prUrl
     ? `\n\n---\n✅ ${marker?.pr ? "Updated" : "Opened"} pull request: [${discovered.repo}#${discovered.pr}](${discovered.prUrl})`
-    : `\n\n---\n⚠️ Work pushed to \`${discovered.repo}\` branch \`${discovered.branch}\`, but no open pull request was found.`;
+    : `\n\n---\n⚠️ Work is on \`${discovered.repo}\` branch \`${discovered.branch}\`, but no open pull request was found.`;
 
-  await emitter.succeeded(`${renderSweMarker(nextMarker)}${summary}${prLine}`);
+  await emitter.succeeded(`${renderSweMarker(nextMarker)}${clip(summary, 1500)}${prLine}`);
 }
 
 async function main(): Promise<void> {

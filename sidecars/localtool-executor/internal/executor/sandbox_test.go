@@ -10,13 +10,13 @@ func TestBuildBwrapArgs(t *testing.T) {
 	cfg := Config{Runtime: "node", BwrapPath: "bwrap"}
 	cmd := Command{Name: "node", Args: []string{"/cache/tool/index.js"}, Dir: "/cache/tool"}
 
-	t.Run("network denied by default", func(t *testing.T) {
+	t.Run("network denied by default via --unshare-net", func(t *testing.T) {
 		args := buildBwrapArgs(cfg, false, map[string]string{"FOO": "bar"}, cmd)
-		if !slices.Contains(args, "--unshare-all") {
-			t.Fatal("expected --unshare-all")
+		if !slices.Contains(args, "--unshare-user") {
+			t.Fatal("expected --unshare-user")
 		}
-		if slices.Contains(args, "--share-net") {
-			t.Fatal("must NOT share net when network=false")
+		if !slices.Contains(args, "--unshare-net") {
+			t.Fatal("expected --unshare-net when network=false")
 		}
 		if !slices.Contains(args, "--clearenv") {
 			t.Fatal("expected --clearenv")
@@ -27,8 +27,8 @@ func TestBuildBwrapArgs(t *testing.T) {
 
 	t.Run("network shared when opted in", func(t *testing.T) {
 		args := buildBwrapArgs(cfg, true, nil, cmd)
-		if !slices.Contains(args, "--share-net") {
-			t.Fatal("expected --share-net when network=true")
+		if slices.Contains(args, "--unshare-net") {
+			t.Fatal("must NOT unshare net when network=true")
 		}
 	})
 

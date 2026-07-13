@@ -174,23 +174,26 @@ requests) is intentionally more privileged than the recipe tools, so it is
 classified `tier: privileged` and its trust boundary is documented here rather
 than assumed away.
 
-- **Two separate credentials, kept apart on purpose.** The Copilot *model* is
-  authenticated with `COPILOT_GITHUB_TOKEN` (a fine-grained PAT with the
-  "Copilot Requests" permission); all *git/GitHub* operations use a short-lived
-  **GitHub App installation token** minted at run time from
-  `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY`. The built-in Copilot GitHub MCP
-  server is disabled (`--disable-builtin-mcps`) so git auth never rides on the
-  model credential. The App's installation scope bounds which repositories the
-  tool can touch.
+- **A single fine-grained PAT authenticates everything.** The Copilot *model*
+  and all *git/GitHub* operations use one fine-grained (v2) PAT: the Copilot
+  CLI reads it from `COPILOT_GITHUB_TOKEN` and `git`/`gh` read it from
+  `GH_TOKEN` (both set to the same token). The built-in Copilot GitHub MCP
+  server is disabled (`--disable-builtin-mcps`) so `git`/`gh` are the only
+  GitHub path. The token must have: **Copilot Requests** (account),
+  **Contents** write, **Pull requests** write, **Metadata** read, and
+  **Administration** write only if it should create repositories. Its blast
+  radius is exactly the repositories its fine-grained access selects — keep it
+  scoped.
 - **No irreversible actions — defense in depth, because no single layer
-  suffices.** A GitHub App's `Administration:write` permission conflates repo
-  *create* and *delete*, so App permissions alone cannot forbid deletion.
-  Therefore: (1) Copilot deny rules baked into every run (`src/copilot.ts`
-  `DENY_TOOLS`: force-push variants, `git reset --hard`, branch/ref deletion,
-  `rm -rf`, `gh repo delete`, `gh api -X DELETE`) — deny rules always take
-  precedence over `--allow-all-tools`; (2) least-privilege App permissions;
-  (3) server-side branch-protection/rulesets on the target repos blocking
-  force-push and deletion regardless of the client.
+  suffices.** A PAT with `Administration` write can both create and delete
+  repos, so token permissions alone cannot forbid deletion. Therefore:
+  (1) Copilot deny rules baked into every run (`src/copilot.ts` `DENY_TOOLS`:
+  force-push variants, `git reset --hard`, branch/ref deletion, `rm -rf`,
+  `gh repo delete`, `gh api -X DELETE`) — deny rules always take precedence over
+  `--allow-all-tools`; (2) least-privilege token scope (only the repos it needs,
+  no `Administration` unless repo-create is wanted); (3) server-side
+  branch-protection/rulesets on the target repos blocking force-push and
+  deletion regardless of the client.
 - **Relaxed hardening, scoped.** Unlike the recipe tools it needs outbound
   network (GitHub + the Copilot API), a larger writable workspace, more memory,
   and a longer deadline (`Tool.spec.timeoutSeconds`, e.g. 1800). The k8s
@@ -221,33 +224,37 @@ trade and the highest-trust surface in the repo. Threats and mitigations:
   fail-closed: exact version pinning (ranges/tags rejected), sha256 checksum
   verification (required for shell `sourceURL`), and a registry-host allowlist.
 - **Install-time code execution.** `npm install` / `pip install` / `go install`
-  run untrusted code *during fetch*, before the tool ever executes. This is
-  confined to the sidecar's own container (separate FS/memory/identity from the
+  run untrusted code *during fetch*, before the tool executes. This is confined
+  to the sidecar's own container (separate FS/memory/identity from the
   orchestrator) and run with script suppression where possible
   (`npm --ignore-scripts`, `pip --only-binary=:all:`).
-- **Filesystem + privileges.** Each invocation runs under bubblewrap:
-  `--unshare-all`, read-only root + tmpfs `/tmp`, `--clearenv` with only the
-  tool's declared env re-injected. The tool never sees the orchestrator's env or
-  secrets; it sees only its own `env` plus `secretEnv` values resolved by the
-  orchestrator and passed over the pod-local unix socket.
+- **Filesystem + privileges.** Each invocation runs under bubblewrap: new
+  user/ipc/uts/cgroup namespaces, read-only root + tmpfs `/tmp`, `--clearenv`
+  with only the tool's declared env (plus a default HOME/PATH) re-injected. The
+  tool never sees the orchestrator's env or secrets; `secretEnv` values are
+  resolved by the orchestrator and passed over the pod-local unix socket. (The
+  PID namespace is deliberately not unshared — a fresh `/proc` mount is rejected
+  under a container runtime's masked `/proc`; the bound `/proc` is reused.)
 - **Network is default-deny, per-tool opt-in** (`spec.network`). Enforced by the
-  sidecar's own network namespace (bwrap `--unshare-net`, re-shared only when
-  opted in). **Caveat:** sidecars share the *pod's* network namespace with the
-  orchestrator, so a k8s `NetworkPolicy` cannot distinguish them — the bwrap
-  namespace is the real per-tool control, not NetworkPolicy. Network-enabled
-  tools remain responsible for their own SSRF defenses (the reference `http-get`
-  tools carry an SSRF guard mirroring §1).
-- **Node prerequisite.** bwrap's per-invocation network namespace requires
-  **unprivileged user namespaces enabled on the node**. Where unavailable the
-  sandbox fails closed (the run fails) rather than degrading to no isolation.
+  sidecar's own network namespace (unshared, interface-less, unless opted in).
+  **Caveat:** sidecars share the *pod's* network namespace with the orchestrator,
+  so a k8s `NetworkPolicy` cannot distinguish them — the bwrap namespace is the
+  real per-tool control. Network-enabled tools remain responsible for their own
+  SSRF defenses (the reference `http-get` tools carry an SSRF guard like §1).
+- **Node prerequisites.** bwrap's per-invocation namespaces require
+  **unprivileged user namespaces enabled on the node** and the sidecar running
+  with **`seccompProfile: Unconfined`** — the `RuntimeDefault` profile filters
+  the namespace-creation clone flags once all capabilities are dropped, so bwrap
+  fails with "No permissions to create new namespace". The sidecar stays
+  otherwise hardened (non-root, cap-drop ALL, read-only rootfs). Where userns is
+  unavailable the sandbox fails closed (the run fails) rather than degrading.
 - **No k8s identity for sidecars.** The pod sets
   `automountServiceAccountToken: false` and projects the ServiceAccount token
   only into the orchestrator container, so a compromised tool/sidecar cannot use
-  the orchestrator's cluster credentials. The orchestrator's own Role gains only
-  `secrets: get` (for `secretEnv` resolution) when LocalTools are enabled.
+  the orchestrator's cluster credentials. The orchestrator's Role gains only
+  `secrets: get` (for `secretEnv`) when LocalTools are enabled.
 - **Disabled by default.** The Helm feature (`localTool.enabled`) is off unless
-  explicitly turned on, and operators trim `localTool.runtimes` to the languages
-  they actually use.
+  turned on, and operators trim `localTool.runtimes` to the languages they use.
 
 ## Reporting
 

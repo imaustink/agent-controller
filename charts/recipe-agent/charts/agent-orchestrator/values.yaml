@@ -207,10 +207,12 @@ localTool:
     persistentVolumeClaimName: ""
     sizeLimit: 1Gi
   resources: {}
-  # bubblewrap creates a user + network namespace per invocation, which needs
-  # unprivileged user namespaces enabled on the node. Keep this hardened
-  # context; if bwrap cannot unshare, your node/seccomp policy may need
-  # adjusting (see docs/security.md).
+  # bubblewrap creates user/network namespaces per invocation. That needs
+  # unprivileged user namespaces on the node AND an Unconfined seccomp profile:
+  # the RuntimeDefault profile filters the namespace-creation clone flags once
+  # all capabilities are dropped, so bwrap fails with "No permissions to create
+  # new namespace". Unconfined is safe here — the container keeps non-root +
+  # cap-drop-ALL + read-only rootfs, and the sidecar has no k8s identity.
   securityContext:
     runAsNonRoot: true
     runAsUser: 10001
@@ -218,7 +220,7 @@ localTool:
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: true
     seccompProfile:
-      type: RuntimeDefault
+      type: Unconfined
     capabilities:
       drop: ["ALL"]
 

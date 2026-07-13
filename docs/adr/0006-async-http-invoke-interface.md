@@ -20,7 +20,7 @@ requests flow through over its lifetime.
 
 **What should the consumer-facing protocol be?** The orchestrator's
 `launchJob` step blocks on the launched tool Job's terminal callback event
-(docs/orchestrator.md#4-kubernetes-job-launcher), which can take minutes for
+(docs/orchestrator.md#4-container-tool-launcher), which can take minutes for
 slow tools (e.g. `recipe-scraper` transcribing a long video). Options
 considered for exposing that to a consumer over HTTP:
 

@@ -12,6 +12,7 @@ import { QdrantSkillStore } from "./skills/qdrant-skill-store.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { QdrantToolStore } from "./vector-store/qdrant-store.js";
 import { OpenAiActionPlanner } from "./agent/action-planner.js";
+import { OpenAiResponseComposer } from "./agent/response-composer.js";
 import { OpenAiSkillFitChecker } from "./agent/skill-fit-checker.js";
 import { OpenAiSkillSelector } from "./agent/skill-selector.js";
 import { buildAgentGraph } from "./agent/graph.js";
@@ -67,7 +68,7 @@ async function main(): Promise<void> {
     config.crdVersion,
     kubeConfig,
   );
-  const jobLauncher = ToolRunLauncher.fromKubeConfig(
+  const containerToolLauncher = ToolRunLauncher.fromKubeConfig(
     config.crdGroup,
     config.crdVersion,
     { name: config.callbackSecretRefName, key: config.callbackSecretRefKey },
@@ -138,6 +139,10 @@ async function main(): Promise<void> {
   const skillSelector = new OpenAiSkillSelector({ model: config.selectionModel });
   const skillFitChecker = new OpenAiSkillFitChecker({ model: config.selectionModel });
   const actionPlanner = new OpenAiActionPlanner({ model: config.selectionModel });
+  // Post-tool response composition (ADR 0015): lets the active skill's own
+  // instructions add any follow-up around a tool's verbatim output, so no
+  // per-tool prompt lives in the agent graph.
+  const responseComposer = new OpenAiResponseComposer({ model: config.selectionModel });
 
   // Executes LocalTools by RPC to the per-language sidecars over the shared
   // unix-socket dir (ADR 0014). Secret-backed env is resolved here (the
@@ -155,7 +160,8 @@ async function main(): Promise<void> {
     skillFitChecker,
     vectorStore,
     actionPlanner,
-    jobLauncher,
+    responseComposer,
+    containerToolLauncher,
     callbackReceiver,
     localToolExecutor,
     callbackBaseUrl: config.callbackBaseUrl,

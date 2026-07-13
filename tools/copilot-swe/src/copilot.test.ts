@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCopilotArgs, buildPrompt, DENY_TOOLS, extractProgressText } from "./copilot.js";
+import { buildCopilotArgs, buildPrompt, DENY_TOOLS, parseCopilotLine } from "./copilot.js";
 
 describe("DENY_TOOLS", () => {
   it("blocks irreversible actions", () => {
@@ -48,18 +48,42 @@ describe("buildPrompt", () => {
   });
 });
 
-describe("extractProgressText", () => {
-  it("pulls a text field from a JSON line", () => {
-    expect(extractProgressText('{"text":"editing app.ts"}')).toBe("editing app.ts");
+describe("parseCopilotLine", () => {
+  it("extracts an assistant final message", () => {
+    const sig = parseCopilotLine('{"type":"assistant.message","data":{"content":"Opened PR #3"}}');
+    expect(sig?.finalMessage).toBe("Opened PR #3");
   });
 
-  it("falls back to a tool name", () => {
-    expect(extractProgressText('{"tool":"bash"}')).toBe("running bash");
+  it("ignores an assistant message with empty content (a tool-request message)", () => {
+    const sig = parseCopilotLine('{"type":"assistant.message","data":{"content":"","toolRequests":[{}]}}');
+    expect(sig).toBeNull();
   });
 
-  it("returns null for non-JSON or empty lines", () => {
-    expect(extractProgressText("not json")).toBeNull();
-    expect(extractProgressText("")).toBeNull();
-    expect(extractProgressText("{}")).toBeNull();
+  it("narrates reasoning deltas as progress", () => {
+    const sig = parseCopilotLine('{"type":"assistant.reasoning_delta","data":{"deltaContent":"Let me start"}}');
+    expect(sig?.progress).toBe("Let me start");
+  });
+
+  it("narrates a tool execution start", () => {
+    const sig = parseCopilotLine('{"type":"tool.execution_start","data":{"toolName":"bash","description":"create repo"}}');
+    expect(sig?.progress).toBe("running bash: create repo");
+  });
+
+  it("flags a failed tool execution (success:false)", () => {
+    const sig = parseCopilotLine('{"type":"tool.execution_complete","data":{"success":false,"result":{"content":"boom"}}}');
+    expect(sig?.toolFailure).toBe("boom");
+  });
+
+  it("flags a non-zero shell exit as a tool failure", () => {
+    const sig = parseCopilotLine(
+      '{"type":"tool.execution_complete","data":{"success":true,"result":{"content":"Resource not accessible by personal access token (createRepository)\\n<shellId: 0 completed with exit code 1>"}}}',
+    );
+    expect(sig?.toolFailure).toContain("createRepository");
+  });
+
+  it("returns null for non-JSON, empty, or unrecognized lines", () => {
+    expect(parseCopilotLine("not json")).toBeNull();
+    expect(parseCopilotLine("")).toBeNull();
+    expect(parseCopilotLine('{"type":"session.tools_updated","data":{}}')).toBeNull();
   });
 });

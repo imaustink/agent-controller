@@ -1,6 +1,6 @@
 /**
  * k8s Job template needed to run a tool/sub-agent — everything the launcher
- * needs beyond the per-call args/env (see docs/orchestrator.md#4-kubernetes-job-launcher).
+ * needs beyond the per-call args/env (see docs/orchestrator.md#4-container-tool-launcher).
  */
 export interface JobTemplate {
   image: string;
@@ -17,8 +17,7 @@ export interface JobTemplate {
    * 0010). Only populated by `CrdToolRegistry` — required by
    * `ToolRunLauncher` (which creates a ToolRun CR referencing a Tool by
    * name, rather than embedding image/serviceAccount directly into a Job
-   * itself). `ManifestToolRegistry`/`K8sAnnotationToolRegistry` leave this
-   * undefined since they're paired with `K8sJobLauncher`, which ignores it.
+   * itself).
    */
   toolRef?: string;
 }

@@ -40,16 +40,18 @@ recipePublisher:
   secretKey: MEALIE_API_TOKEN
 
 # copilot-swe: PRIVILEGED GitHub coding agent. Off by default -- needs a
-# GitHub App + Copilot-entitled PAT + ServiceAccount + Secret set up first
+# Copilot-entitled fine-grained PAT + ServiceAccount + Secret set up first
 # (see tools/copilot-swe/tool.yaml and docs/security.md).
 copilotSwe:
   enabled: false
   image: copilot-swe:latest
   serviceAccountName: copilot-swe
-  githubAppId: "REPLACE_WITH_YOUR_APP_ID"
   timeoutSeconds: 1800
-  # Secret (must already exist) with COPILOT_GITHUB_TOKEN + GITHUB_APP_PRIVATE_KEY.
+  # Secret (must already exist) holding a single fine-grained PAT. PAT perms:
+  # Copilot Requests (account) + Contents/Pull requests write (+ Administration
+  # write to create repos). See docs/security.md.
   secretName: copilot-swe-secrets
+  secretKey: GITHUB_TOKEN
 
 skills:
   # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +

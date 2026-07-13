@@ -63,10 +63,13 @@ container-level isolation.
    a **unix socket** on a shared `emptyDir` (`POST /run`, HTTP-over-unix-socket
    — off the network entirely). It fetches+caches the pinned package (with
    integrity guardrails, below), then runs it under a **per-invocation
-   bubblewrap sandbox**: `--unshare-all` (new user/pid/net/… namespaces),
-   `--share-net` **only** when the tool set `network: true`, `--clearenv` +
-   explicit `--setenv` (the tool sees only its declared env), read-only root +
-   tmpfs `/tmp`, and a wall-clock timeout.
+   bubblewrap sandbox**: new user/ipc/uts/cgroup namespaces (plus a new,
+   interface-less **network namespace** unless the tool set `network: true`),
+   `--clearenv` + explicit `--setenv` (the tool sees only its declared env +
+   a default HOME/PATH), read-only root + tmpfs `/tmp`, and a wall-clock
+   timeout. It deliberately does **not** unshare the PID namespace: that would
+   force mounting a fresh `/proc`, which a container runtime's masked `/proc`
+   makes the kernel reject — so the bound `/proc` is reused instead.
 
 4. **Orchestrator integration** (`apps/agent-orchestrator/src/local/`). A
    `CrdLocalToolRegistry` reads `LocalTool` CRs into `ToolDescriptor`s carrying a
@@ -99,9 +102,14 @@ container-level isolation.
   `NetworkPolicy` is pod-level and cannot distinguish sidecar from orchestrator,
   so per-tool egress control is provided by the sidecar's own bwrap network
   namespace, **not** by NetworkPolicy.
-- **New hard prerequisite**: bubblewrap's per-invocation network namespace needs
-  **unprivileged user namespaces enabled on the node**. Where unavailable, the
-  sandbox fails closed (the run fails) — documented in `docs/security.md`.
+- **New hard prerequisites**: bubblewrap's per-invocation namespaces need
+  **unprivileged user namespaces enabled on the node** AND the sidecar running
+  with **`seccompProfile: Unconfined`** — the `RuntimeDefault` profile filters
+  the namespace-creation `clone`/`unshare` flags once all capabilities are
+  dropped, so bwrap fails with "No permissions to create new namespace". The
+  sidecar otherwise stays hardened (non-root, cap-drop ALL, read-only rootfs)
+  and has no k8s identity. Where userns is unavailable the sandbox fails closed
+  (the run fails) — documented in `docs/security.md`.
 - **Executing registry code inside the orchestrator pod is a real posture
   shift** for this repo. Creating a `LocalTool` CR is therefore a privileged
   operation (arbitrary third-party code execution) and must be gated by k8s RBAC.

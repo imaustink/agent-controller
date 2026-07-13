@@ -48,7 +48,7 @@ describe("ToolRunLauncher", () => {
     expect(JSON.stringify(body)).not.toContain("raw-secret-that-must-not-appear-in-the-cr");
   });
 
-  it("throws if the template has no toolRef (e.g. came from ManifestToolRegistry, not CrdToolRegistry)", async () => {
+  it("throws if the template has no toolRef (i.e. was not resolved by CrdToolRegistry)", async () => {
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject: vi.fn() };
     const launcher = new ToolRunLauncher("tool.recipe-agent.dev", "v1alpha1", { name: "s", key: "k" }, api);
 

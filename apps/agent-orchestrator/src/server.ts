@@ -319,6 +319,11 @@ export class InvokeServer {
       let identity: { subject: string } | undefined;
       let selectedSkill: { id: string } | undefined;
       let skillContinuation = false; // true when checkActiveSkill confirmed an existing session skill
+      // The tool result is produced by `runTool` and may then be left as-is or
+      // wrapped by `composeResponse` (docs/adr/0015). composeResponse emits an
+      // empty update when it adds no narration, so track the latest result
+      // rather than reading it off the terminal node's update alone.
+      let result: unknown;
       for await (const item of withHeartbeat(source, HEARTBEAT_MS)) {
         if (item.type === "heartbeat") {
           writeSseComment(res, "keep-alive");
@@ -328,20 +333,21 @@ export class InvokeServer {
         if (update.identity) identity = update.identity as { subject: string };
         if (update.selectedSkill) selectedSkill = update.selectedSkill as { id: string };
         if (nodeName === "checkActiveSkill" && update.selectedSkill) skillContinuation = true;
+        if ("result" in update) result = update.result;
 
         if (typeof update.error === "string") {
           finish(`❌ ${update.error}`);
           return;
         }
-        if (nodeName === "launchJob") {
+        if (nodeName === "composeResponse") {
           this.persistSession(sessionId, identity, selectedSkill);
-          finish(renderResult(update.result));
+          finish(renderResult(result));
           return;
         }
         // planAction is also terminal when the planner chose "respond"
         // (no tool call, e.g. asking the user to paste the recipe back) —
         // `result` is set and the graph routes straight to END without ever
-        // reaching launchJob, so this must be treated as terminal here too.
+        // reaching runTool, so this must be treated as terminal here too.
         if (nodeName === "planAction" && update.result !== undefined) {
           this.persistSession(sessionId, identity, selectedSkill);
           finish(renderResult(update.result));

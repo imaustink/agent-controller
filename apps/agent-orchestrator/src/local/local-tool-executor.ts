@@ -78,7 +78,7 @@ export interface LocalToolExecutorOptions {
  * Client for the per-language executor sidecars (ADR 0014). Resolves a
  * LocalTool's `secretEnv` from k8s Secrets, then POSTs a run request to the
  * matching sidecar over its unix socket and maps the returned stdio envelope
- * onto a messaging {@link Event}, so the agent graph's `launchJob` node treats
+ * onto a messaging {@link Event}, so the agent graph's `runTool` node treats
  * a local run exactly like a Job callback result.
  *
  * The orchestrator never spawns a runtime itself and carries no language

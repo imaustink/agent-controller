@@ -90,23 +90,15 @@ orchestrator service, and `controllers/` holds the Go controller.
 │   ├── recipe-scraper/         # URL → recipe Markdown
 │   ├── recipe-publisher/       # recipe Markdown → Mealie instance
 │   └── copilot-swe/            # SWE task → GitHub pull request (privileged)
-├── tools-local/                # reference LocalTools (ADR 0014), fetched from registries
-│   ├── http-get-node/          # URL → HTTP response (node); + python/go/shell siblings
-│   └── ...
-├── sidecars/
-│   └── localtool-executor/     # per-language sandboxed executor sidecar (ADR 0014)
 ├── apps/
 │   └── agent-orchestrator/     # RAG skill selection + ToolRun/AgentRun creator
 ├── controllers/
 │   └── tool-controller/        # Go controller — watches CRDs, launches Jobs
-│       ├── api/v1alpha1/        # Tool, Skill, Agent, ToolRun, AgentRun, LocalTool types
+│       ├── api/v1alpha1/        # Tool, Skill, Agent, ToolRun, AgentRun types
 │       └── internal/controller/ # reconciliation logic
 └── charts/                     # Helm charts
-    └── recipe-agent/           # umbrella chart (single release, 4 subcharts)
-        └── charts/
-            ├── agent-orchestrator/  # orchestrator Deployment/Services/RBAC (+ qdrant)
-            ├── tool-controller/     # controller Deployment + bundled CRDs
-            └── tools/               # Tool + Skill catalog (custom resources)
+    ├── agent-orchestrator/     # orchestrator Deployment/Services/RBAC
+    └── tool-controller/        # controller Deployment + bundled CRDs
 ```
 
 General, cross-cutting documentation lives at the repo root (`README.md` and
@@ -123,9 +115,9 @@ tools.
 | --------- | -------- | ---- |
 | **agent-controller** | Go (kubebuilder) | [controllers/tool-controller/README.md](controllers/tool-controller/README.md) |
 
-The controller watches `Tool`, `Skill`, `Agent`, `ToolRun`, `AgentRun`, and
-`LocalTool` CRs (API group `tool.recipe-agent.dev/v1alpha1`) and manages all Job
-creation, secret injection, and lifecycle tracking.
+The controller watches `Tool`, `Skill`, `Agent`, `ToolRun`, and `AgentRun` CRs
+(API group `tool.recipe-agent.dev/v1alpha1`) and manages all Job creation,
+secret injection, and lifecycle tracking.
 
 ### Orchestrator
 
@@ -145,16 +137,6 @@ identity, selects a Skill via RAG, plans an action, and creates a `ToolRun` or
 | **recipe-publisher** | recipe Markdown | published/updated recipe in a Mealie instance | [tools/recipe-publisher/README.md](tools/recipe-publisher/README.md) |
 | **copilot-swe** _(privileged)_ | a software-engineering instruction | an opened/updated GitHub pull request | [tools/copilot-swe/README.md](tools/copilot-swe/README.md) |
 
-### LocalTools (ADR 0014)
-
-`LocalTool` CRs run **in-pod** by per-language executor **sidecars**
-(node/python/go/shell) instead of as k8s Jobs — lower latency, code pulled from
-the language registry and run in a bubblewrap sandbox. See
-[docs/adr/0014-local-tool-sidecar-execution.md](docs/adr/0014-local-tool-sidecar-execution.md),
-the executor in [sidecars/localtool-executor/](sidecars/localtool-executor/), and
-the reference `http-get` tools in [tools-local/](tools-local/). Enable via the
-chart's `agent-orchestrator.localTool.enabled` value.
-
 ## Shared standards
 
 Every tool container is expected to conform to these repo-wide standards:
@@ -170,30 +152,24 @@ Every tool container is expected to conform to these repo-wide standards:
 
 ## Deploying
 
-One umbrella Helm chart — [charts/recipe-agent](charts/recipe-agent/) — deploys
-the whole system as a single release, with each component as a subchart you can
-toggle independently:
+Two Helm charts cover the full system:
 
-| Subchart | What it installs | Default |
-| -------- | ---------------- | ------- |
-| `tool-controller` | CRDs + controller Deployment/RBAC | on |
-| `agent-orchestrator` | Orchestrator Deployment, invoke/callback Services, optional Qdrant | on |
-| `tools` | Tool + Skill catalog (custom resources) | on |
-| `openwebui` | Optional Open WebUI chat UI | off |
+| Chart | What it installs |
+| ----- | ---------------- |
+| [charts/tool-controller](charts/tool-controller/) | CRDs + controller Deployment/RBAC |
+| [charts/agent-orchestrator](charts/agent-orchestrator/) | Orchestrator Deployment, invoke/callback Services, optional Qdrant + Open WebUI |
 
-The controller owns the CRDs (installed first from its `crds/` dir); the tools
-catalog is applied as post-install hooks after it. See the
-[chart README](charts/recipe-agent/README.md) for prerequisites, dependency
-fetching, and values. Tools are never deployed as long-running pods — the
-controller launches them as one-shot Jobs via `ToolRun`/`AgentRun` CRs.
+Install the controller first (it owns the CRDs), then the orchestrator. See
+each chart's README for prerequisites and values. Tools are never deployed as
+long-running pods — the controller launches them as one-shot Jobs via
+`ToolRun`/`AgentRun` CRs.
 
 ### Minikube quick-start
 
 [scripts/dev-up.sh](scripts/dev-up.sh) automates the full local deploy (start
-minikube, build images, install/upgrade the single `recipe-agent` release —
-whose `tools` subchart applies the Tool/Skill CRs). The only step it can't do
-for you is creating secrets — do this once per fresh cluster, in your own
-terminal (never paste real secrets into chat or files):
+minikube, build images, install/upgrade both Helm releases, apply CRs). The
+only step it can't do for you is creating secrets — do this once per fresh
+cluster, in your own terminal (never paste real secrets into chat or files):
 
 ```bash
 # Generate a random callback HMAC secret
@@ -211,7 +187,7 @@ kubectl -n recipe-agent create secret generic recipe-publisher-secrets \
   --from-literal=MEALIE_API_TOKEN=<your-mealie-api-token>
 
 # Google OAuth client secret (from Google Cloud Console)
-kubectl -n recipe-agent create secret generic recipe-agent-openwebui-google-oauth \
+kubectl -n recipe-agent create secret generic agent-orchestrator-openwebui-google-oauth \
   --from-literal=client-secret=<your-google-oauth-client-secret>
 ```
 
@@ -238,11 +214,9 @@ and must be re-created before running the script again.
 4. If the Dockerfile depends on a `packages/*` library, build from the **repo
    root**: `docker build -f tools/<tool-name>/Dockerfile -t <name>:latest .`
 5. Create a `Tool` CR in `tools/<tool-name>/tool.yaml` referencing the image
-   and any required `secretEnv` entries, then `kubectl apply -f` it (or add it
-   to the [tools subchart](charts/recipe-agent/charts/tools/) so it deploys
-   with the release) — the controller picks it up immediately, and the
-   orchestrator indexes it on next restart. No manifest file, no orchestrator
-   rebuild required (ADR 0010).
+   and any required `secretEnv` entries, then `kubectl apply -f` it — the
+   controller picks it up immediately, and the orchestrator indexes it on next
+   restart. No manifest file, no orchestrator rebuild required (ADR 0010).
 6. Document tool-specific inputs, config, and build/run steps in the tool's
    `README.md`.
 

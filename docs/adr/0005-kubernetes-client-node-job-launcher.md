@@ -23,7 +23,7 @@ Options considered:
 The orchestrator talks to the k8s API in-process via `@kubernetes/client-node`
 (`BatchV1Api` for Job create/get/delete, plus watching Job/Pod status for
 completion as a fallback to the callback-based result channel — see
-[orchestrator.md](../orchestrator.md#4-kubernetes-job-launcher)). In-cluster
+[orchestrator.md](../orchestrator.md#4-container-tool-launcher)). In-cluster
 config (mounted ServiceAccount token) is used in production; kubeconfig is
 used for local development. No `kubectl` binary is needed in the orchestrator
 image.
