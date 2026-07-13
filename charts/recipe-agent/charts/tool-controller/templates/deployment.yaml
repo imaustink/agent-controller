@@ -50,6 +50,11 @@ spec:
               containerPort: {{ .Values.metrics.port }}
               protocol: TCP
             {{- end }}
+          env:
+            - name: AGENT_NATS_URL
+              value: {{ .Values.nats.agentUrl | quote }}
+            - name: AGENT_NATS_SUBJECT_PREFIX
+              value: {{ .Values.nats.subjectPrefix | quote }}
           livenessProbe:
             httpGet:
               path: /healthz

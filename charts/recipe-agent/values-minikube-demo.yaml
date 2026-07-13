@@ -45,6 +45,12 @@ tool-controller:
   enabled: true
   image:
     tag: latest
+  # Point the controller at the same in-cluster NATS instance the orchestrator
+  # uses (deployed as the agent-orchestrator subchart's NATS dependency).
+  # With the umbrella release named "recipe-agent" and namespace "recipe-agent",
+  # the NATS Service is "recipe-agent-nats.recipe-agent.svc.cluster.local".
+  nats:
+    agentUrl: "nats://recipe-agent-nats.recipe-agent.svc.cluster.local:4222"
 
 tools:
   enabled: true

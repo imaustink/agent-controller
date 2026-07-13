@@ -40,6 +40,14 @@ metrics:
   port: 8443
   secure: true
 
+# NATS settings propagated into every AgentRun Job by the controller
+# (injected as AGENT_NATS_URL / AGENT_NATS_SUBJECT_PREFIX env vars).
+# Must match the NATS Service the orchestrator connects to; override in
+# values-minikube-demo.yaml once a concrete NATS URL is known.
+nats:
+  agentUrl: "nats://nats:4222"
+  subjectPrefix: "agent"
+
 leaderElection:
   # Only matters when replicaCount > 1.
   enabled: false

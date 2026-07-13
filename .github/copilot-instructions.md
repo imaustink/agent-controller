@@ -11,9 +11,13 @@ for the full layout and [docs/orchestrator.md](../docs/orchestrator.md) +
   copy-pasting logic between tools/apps.
 - `tools/*` — one Docker container per **on-demand, single-shot** tool call
   (e.g. `recipe-scraper`: URL in, recipe JSON out, process exits).
-- `apps/*` — **long-lived services**, currently just `agent-orchestrator` (the
-  parent agent: RAG-selects a tool, launches it as a k8s Job, awaits its
-  result). Don't confuse this with `tools/*` — it's not an on-demand container.
+- `apps/*` — **long-lived services** and **sub-agent containers**:
+  `agent-orchestrator` (the parent agent: RAG-selects a skill/sub-agent,
+  launches it, awaits its result) and `copilot-swe-agent` (the first concrete
+  sub-agent on the `@controller-agent/agent-runtime` SDK: a GitHub Copilot
+  coding agent that communicates bidirectionally with the orchestrator over
+  NATS). Don't confuse with `tools/*` — apps are not on-demand single-shot
+  containers.
 
 Every tool/app is self-contained (own deps, own image, own hardened run
 contract) and never imports from a sibling tool/app directly — only from

@@ -38,6 +38,20 @@ import (
 type AgentRunReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// NatsConfig holds the NATS connection settings injected into every agent
+	// Job so the @controller-agent/agent-runtime SDK can connect on startup.
+	// Set from the controller manager's own env at startup (cmd/main.go).
+	NatsConfig AgentNatsConfig
+}
+
+// AgentNatsConfig is the NATS connection config injected into every agent Job.
+// Values come from the controller's OWN environment, not from the AgentRun CR.
+type AgentNatsConfig struct {
+	// NatsURL is the NATS server URL (AGENT_NATS_URL env on the controller pod).
+	NatsURL string
+	// SubjectPrefix is the NATS subject prefix (AGENT_NATS_SUBJECT_PREFIX env,
+	// default "agent").
+	SubjectPrefix string
 }
 
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agentruns,verbs=get;list;watch;create;update;patch;delete
@@ -95,12 +109,14 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 		},
 		image:              agent.Spec.Image,
 		serviceAccountName: agent.Spec.ServiceAccountName,
-		args:               []string{run.Spec.Goal},
-		staticEnv:          agent.Spec.Env,
-		secretEnv:          agent.Spec.SecretEnv,
-		resources:          agent.Spec.Resources,
-		callback:           run.Spec.Callback,
-		timeoutSeconds:     run.Spec.TimeoutSeconds,
+		// The agent-runtime SDK reads the goal from AGENT_GOAL env (not argv),
+		// to avoid shell escaping issues with arbitrary natural-language goals.
+		args:           nil,
+		staticEnv:      append(agent.Spec.Env, r.agentRuntimeEnv(run.Name, run.Spec.Goal)...),
+		secretEnv:      agent.Spec.SecretEnv,
+		resources:      agent.Spec.Resources,
+		callback:       run.Spec.Callback,
+		timeoutSeconds: run.Spec.TimeoutSeconds,
 	})
 	if err != nil {
 		return r.markFailed(ctx, run, "InvalidAgentRun", err.Error())
@@ -183,4 +199,24 @@ func (r *AgentRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&batchv1.Job{}).
 		Named("agentrun").
 		Complete(r)
+}
+
+// agentRuntimeEnv returns the env vars the @controller-agent/agent-runtime SDK
+// needs to boot: the run's own identity (AGENT_RUN_ID, AGENT_GOAL) and the
+// NATS connection details (AGENT_NATS_URL, AGENT_NATS_SUBJECT_PREFIX).
+func (r *AgentRunReconciler) agentRuntimeEnv(runName, goal string) []toolv1alpha1.EnvVar {
+	prefix := r.NatsConfig.SubjectPrefix
+	if prefix == "" {
+		prefix = "agent"
+	}
+	natsURL := r.NatsConfig.NatsURL
+	if natsURL == "" {
+		natsURL = "nats://nats:4222"
+	}
+	return []toolv1alpha1.EnvVar{
+		{Name: "AGENT_RUN_ID", Value: runName},
+		{Name: "AGENT_GOAL", Value: goal},
+		{Name: "AGENT_NATS_URL", Value: natsURL},
+		{Name: "AGENT_NATS_SUBJECT_PREFIX", Value: prefix},
+	}
 }

@@ -1,3 +1,16 @@
+# Tool custom resource for copilot-swe (ADR 0010) -- SUPERSEDED.
+#
+# NOT WIRED BY DEFAULT -- the copilot-swe tool has been reimplemented as a
+# full sub-agent on the @controller-agent/agent-runtime SDK (see
+# apps/copilot-swe-agent/). Apply the Agent CR instead:
+#   kubectl apply -n <namespace> -f apps/copilot-swe-agent/agent.yaml
+#
+# This file is kept in place because this repo uses mv/cp not git rm --
+# deleting it without a safety net is riskier than leaving it with a clear
+# notice. Do NOT apply this alongside the Agent CR.
+#
+# Original documentation below:
+#
 # Tool custom resource for copilot-swe (ADR 0010) -- apply with:
 #   kubectl apply -n <namespace> -f tools/copilot-swe/tool.yaml
 #

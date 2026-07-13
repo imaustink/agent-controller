@@ -110,7 +110,7 @@ var _ = Describe("AgentRun Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("creating an owned Job with the goal as the container argument")
+			By("creating an owned Job with the goal injected as AGENT_GOAL env and NATS env wired in")
 			var updated toolv1alpha1.AgentRun
 			Expect(k8sClient.Get(ctx, typeNamespacedName, &updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal(toolv1alpha1.ToolRunPhasePending))
@@ -123,7 +123,20 @@ var _ = Describe("AgentRun Controller", func() {
 			Expect(job.OwnerReferences[0].Name).To(Equal(resourceName))
 
 			container := job.Spec.Template.Spec.Containers[0]
-			Expect(container.Args).To(Equal([]string{"extract and refine the recipe at https://example.com/recipe"}))
+			// The goal is delivered via AGENT_GOAL env, not container args.
+			expectEnv := func(name, value string) {
+				for _, e := range container.Env {
+					if e.Name == name {
+						Expect(e.Value).To(Equal(value), "env var %s", name)
+						return
+					}
+				}
+				Fail("env var not found: " + name)
+			}
+			expectEnv("AGENT_GOAL", "extract and refine the recipe at https://example.com/recipe")
+			expectEnv("AGENT_RUN_ID", resourceName)
+			expectEnv("AGENT_NATS_URL", "nats://nats:4222") // default when controller env unset
+			expectEnv("AGENT_NATS_SUBJECT_PREFIX", "agent") // default when controller env unset
 			Expect(*container.SecurityContext.ReadOnlyRootFilesystem).To(BeTrue())
 			Expect(*container.SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
 		})

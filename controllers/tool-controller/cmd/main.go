@@ -52,6 +52,22 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+// agentNatsConfigFromEnv reads the NATS connection settings the controller
+// manager should propagate into every agent Job it launches. The controller
+// reads these from its OWN pod's environment (set by the Helm chart's
+// deployment.yaml, mirrors how the orchestrator reads them).
+func agentNatsConfigFromEnv() controller.AgentNatsConfig {
+	natsURL := os.Getenv("AGENT_NATS_URL")
+	if natsURL == "" {
+		natsURL = "nats://nats:4222"
+	}
+	prefix := os.Getenv("AGENT_NATS_SUBJECT_PREFIX")
+	if prefix == "" {
+		prefix = "agent"
+	}
+	return controller.AgentNatsConfig{NatsURL: natsURL, SubjectPrefix: prefix}
+}
+
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
@@ -207,8 +223,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.AgentRunReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		NatsConfig: agentNatsConfigFromEnv(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "agentrun")
 		os.Exit(1)

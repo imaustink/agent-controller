@@ -1,0 +1,99 @@
+# Agent custom resource for the copilot-swe-agent -- apply with:
+#   kubectl apply -n <namespace> -f apps/copilot-swe-agent/agent.yaml
+#
+# Replaces both the old `copilot-swe` Tool CR (tools/copilot-swe/tool.yaml)
+# and the `software-engineering-skill` Skill CR
+# (apps/agent-orchestrator/config/samples/software-engineering-skill.yaml).
+# When applying this, delete the old Tool and Skill CRs:
+#   kubectl -n <namespace> delete tool copilot-swe
+#   kubectl -n <namespace> delete skill software-engineering-skill
+#
+# Prerequisites:
+#   kubectl -n <namespace> create serviceaccount copilot-swe-agent
+#   kubectl -n <namespace> create secret generic copilot-swe-secrets \
+#     --from-literal=GITHUB_TOKEN=github_pat_...
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Agent
+metadata:
+  name: copilot-swe-agent
+spec:
+  description: >-
+    Performs software-engineering work on GitHub end-to-end: creates or
+    clones repositories, implements features and fixes, writes code and
+    tests, and opens or updates pull requests. Handles multi-turn
+    refinement — follow-up instructions push more commits to the same
+    pull request. Supports human-in-the-loop clarifying questions when
+    the task needs more context before it can proceed.
+  input: >-
+    A natural-language software-engineering instruction (e.g. "create a
+    repo called hello-svc with a Node HTTP server and open a PR"), or a
+    follow-up refinement instruction (e.g. "add a health check endpoint")
+    for a session that is already in progress.
+  output: >-
+    A summary of the changes plus a link to the opened/updated pull
+    request; or a mid-turn clarifying question to the user if more
+    context is needed before work can begin.
+  # Coding work WRITES to GitHub, so writer role is required.
+  allowedRoles:
+    - writer
+  tier: privileged
+  image: copilot-swe-agent:latest
+  serviceAccountName: copilot-swe-agent
+  # -- Orchestrator prompt (injected into the PARENT orchestrator's planner) --
+  # Explains how and when to delegate to this agent, and how to interpret
+  # the swe marker it embeds in its replies.
+  orchestratorPrompt: |
+    Delegate to this agent for any software-engineering request: creating
+    or cloning repositories, implementing features, fixing bugs, writing
+    tests, and opening or updating pull requests on GitHub.
+
+    Pass the user's request verbatim as the goal.
+
+    If the previous assistant message starts with an HTML comment like
+    <!-- swe: repo=... branch=... pr=... session=... -->, the agent is
+    continuing an existing session. Include that FULL text at the start
+    of the goal so the agent can resume the same pull request.
+
+    The agent may pause mid-task to ask you a clarifying question (a
+    non-final reply in the chat). Answer naturally; the conversation
+    will resume automatically.
+  # -- Agent prompt (the sub-agent's own internal system prompt) --
+  # Loaded by the agent-runtime SDK at startup from AGENT_PROMPT env
+  # (injected by the controller from this field in Phase 7).
+  agentPrompt: |
+    You are a software-engineering sub-agent that writes code and manages
+    GitHub repositories using the GitHub Copilot CLI and the gh/git CLIs.
+    You are spawned for a single coding task and communicate with the
+    orchestrator over NATS.
+
+    Your job:
+    1. Authenticate with the provided GITHUB_TOKEN.
+    2. Run the GitHub Copilot CLI to implement the requested changes.
+    3. Report progress to the orchestrator as you go.
+    4. When you have a result, return the PR link and a summary.
+    5. If the task is genuinely ambiguous and you cannot proceed without
+       clarification, ask the user exactly ONE question using the ask()
+       mechanism, wait for their answer, then proceed.
+
+    Never ask for clarification if you can make a reasonable default
+    choice. Never perform irreversible operations (force-push, delete
+    branches/repos).
+  # Coding tasks take much longer than the 300s default.
+  # agentRunTimeoutSeconds (1800) set at the orchestrator level covers this,
+  # but the Go controller also reads timeoutSeconds here to set the Job's
+  # activeDeadlineSeconds (when that field is added to AgentSpec -- for now
+  # the orchestrator-level agentRunTimeoutSeconds applies).
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+      ephemeral-storage: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+      ephemeral-storage: "8Gi"
+  secretEnv:
+    - name: GITHUB_TOKEN
+      secretRef:
+        name: copilot-swe-secrets
+        key: GITHUB_TOKEN

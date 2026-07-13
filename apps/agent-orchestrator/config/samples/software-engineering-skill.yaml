@@ -1,5 +1,13 @@
-# Skill custom resource for software-engineering-skill (ADR 0010) -- apply with:
-#   kubectl apply -n <namespace> -f config/samples/software-engineering-skill.yaml
+# Skill custom resource for software-engineering-skill -- SUPERSEDED.
+#
+# NOT WIRED BY DEFAULT -- the copilot-swe tool and this skill have been
+# replaced by the copilot-swe-agent Agent CR (apps/copilot-swe-agent/agent.yaml)
+# which is a top-level delegation target retrieved alongside skills by the
+# unified DelegateSelector. Apply the Agent CR instead:
+#   kubectl apply -n <namespace> -f apps/copilot-swe-agent/agent.yaml
+#
+# This file is kept in place (same convention as superseded code in this repo).
+# Original documentation below:
 #
 # Groups the single `copilot-swe` tool (tools/copilot-swe/tool.yaml) into the
 # orchestrator's skill layer. The tool IS a full coding agent (the GitHub
