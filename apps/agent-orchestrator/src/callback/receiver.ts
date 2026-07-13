@@ -4,6 +4,9 @@ import { EventSchema, type Event } from "@controller-agent/messaging";
 
 export class CallbackAuthError extends Error {}
 
+/** Handler called for each `progress` or `warning` event received for a specific job. */
+export type ProgressHandler = (stage: string, message: string | undefined) => void;
+
 /**
  * Verifies the `x-signature: sha256=<hmac>` header written by
  * `@controller-agent/messaging`'s `CallbackSink`, then validates the body against
@@ -34,13 +37,15 @@ type PendingJob = {
  * HTTP receiver for the Job -> orchestrator result channel (docs/messaging.md,
  * reused rather than reinvented per docs/orchestrator.md#4-container-tool-launcher).
  * `awaitJob` resolves once a terminal (`succeeded`/`failed`) event arrives for
- * a given `job_id`; intermediate `progress`/`warning` events are currently
- * dropped (no streaming consumer yet — see open questions in
- * docs/orchestrator.md).
+ * a given `job_id`; intermediate `progress`/`warning` events are forwarded to
+ * any handler registered via `onJobProgress` before the terminal event arrives.
+ * The streaming SSE handler uses this to emit Open WebUI status events while
+ * the tool Job is running (see `server.ts`).
  */
 export class CallbackReceiver {
   private server: Server | undefined;
   private readonly pending = new Map<string, PendingJob>();
+  private readonly progressHandlers = new Map<string, ProgressHandler>();
 
   constructor(private readonly secret: string) {}
 
@@ -48,6 +53,18 @@ export class CallbackReceiver {
     return new Promise((resolve, reject) => {
       this.pending.set(jobId, { resolve, reject });
     });
+  }
+
+  /**
+   * Registers a handler to receive `progress`/`warning` events for `jobId`.
+   * Returns an unsubscribe function — always call it when the job is done to
+   * avoid leaking the handler map entry.
+   */
+  onJobProgress(jobId: string, handler: ProgressHandler): () => void {
+    this.progressHandlers.set(jobId, handler);
+    return () => {
+      this.progressHandlers.delete(jobId);
+    };
   }
 
   listen(port: number): Promise<void> {
@@ -99,7 +116,17 @@ export class CallbackReceiver {
       const pending = this.pending.get(jobId);
       if (pending) {
         this.pending.delete(jobId);
+        this.progressHandlers.delete(jobId);
         pending.resolve(event);
+      }
+    } else if (jobId && (event.type === "progress" || event.type === "warning")) {
+      const handler = this.progressHandlers.get(jobId);
+      if (handler) {
+        if (event.type === "progress") {
+          handler(event.stage, event.message);
+        } else {
+          handler("warning", event.message);
+        }
       }
     }
     res.writeHead(202).end();

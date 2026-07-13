@@ -52,6 +52,15 @@ export interface AgentGraphInput {
   activeAgentRunId?: string;
   /** Identity subject the session record was created under (docs/adr/0012). */
   sessionSubject?: string;
+  /**
+   * Per-request progress listener — set by the SSE streaming handler to
+   * forward tool Job progress/warning events as Open WebUI status steps.
+   * Absent on non-streaming paths (fire-and-forget /invoke, tests) — in
+   * which case progress events are silently dropped, same as before.
+   * Carried in state rather than graph `deps` so concurrent requests each
+   * have their own handler (deps is shared across all requests).
+   */
+  progressListener?: (stage: string, message: string | undefined) => void;
 }
 
 /** The slice of the compiled LangGraph agent this server needs — kept small and mockable for tests. */
@@ -105,8 +114,14 @@ export class InvokeServer {
   ) {}
 
   /** Builds the graph input for one turn, folding in any session-scoped active skill or agent run (docs/adr/0012). */
-  private buildGraphInput(request: string, authToken: string, sessionId: string | undefined): AgentGraphInput {
+  private buildGraphInput(
+    request: string,
+    authToken: string,
+    sessionId: string | undefined,
+    progressListener?: (stage: string, message: string | undefined) => void,
+  ): AgentGraphInput {
     const input: AgentGraphInput = { request, authToken };
+    if (progressListener) input.progressListener = progressListener;
     if (!sessionId || !this.sessionStore) return input;
     const record = this.sessionStore.get(sessionId);
     if (!record) return input;
@@ -352,9 +367,17 @@ export class InvokeServer {
     };
 
     try {
-      const source = await this.graph.stream(this.buildGraphInput(request, authToken, sessionId), {
-        streamMode: "updates",
-      });
+      const source = await this.graph.stream(
+        this.buildGraphInput(request, authToken, sessionId, (stage, message) => {
+          // Forward each tool progress/warning event as an Open WebUI status
+          // step (collapsible StatusHistory spinner) while the Job runs.
+          const label = message
+            ? `${stage ? `${stage}: ` : ""}${message.slice(0, 120)}`
+            : stage || "working…";
+          writeSseStatus(res, label, false);
+        }),
+        { streamMode: "updates" },
+      );
       // Accumulated across updates so the session can be persisted once the
       // turn reaches a successful terminal node (docs/adr/0012).
       let identity: { subject: string } | undefined;

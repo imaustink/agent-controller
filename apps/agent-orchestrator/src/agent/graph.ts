@@ -128,6 +128,17 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
+  /**
+   * Per-request progress listener — set by the SSE streaming path so tool
+   * Job progress/warning callback events are forwarded as Open WebUI status
+   * steps while the Job runs. Absent on non-streaming paths; keeping it in
+   * state (not in deps) guarantees concurrent requests each have their own
+   * handler without shared-mutable-state races.
+   */
+  progressListener: Annotation<((stage: string, message: string | undefined) => void) | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
 });
 
 export type AgentState = typeof AgentStateAnnotation.State;
@@ -360,14 +371,25 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         const callbackUrl = `${deps.callbackBaseUrl}/callback/${jobId}`;
         const awaitResult = deps.callbackReceiver.awaitJob(jobId);
 
-        await deps.containerToolLauncher.launch(tool.jobTemplate, {
-          args: [input],
-          env: { JOB_ID: jobId },
-          callbackUrl,
-          callbackSecret: deps.callbackSecret,
-        });
+        // Register the per-request progress handler (if any) before launching
+        // so no early events are missed. The handler lives in state — not in
+        // shared deps — so concurrent requests never cross-contaminate.
+        const unsubscribeProgress = state.progressListener
+          ? deps.callbackReceiver.onJobProgress(jobId, state.progressListener)
+          : () => undefined;
 
-        event = await awaitResult;
+        try {
+          await deps.containerToolLauncher.launch(tool.jobTemplate, {
+            args: [input],
+            env: { JOB_ID: jobId },
+            callbackUrl,
+            callbackSecret: deps.callbackSecret,
+          });
+
+          event = await awaitResult;
+        } finally {
+          unsubscribeProgress();
+        }
       } else {
         return { error: `tool ${tool.id} has neither a jobTemplate nor a localExec spec` };
       }

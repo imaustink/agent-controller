@@ -316,7 +316,7 @@ describe("InvokeServer OpenAI-compatible chat completions (ADR 0007)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/event-stream");
     expect(graph.stream).toHaveBeenCalledWith(
-      { request: "scrape https://example.com", authToken: "tok-1" },
+      expect.objectContaining({ request: "scrape https://example.com", authToken: "tok-1" }),
       { streamMode: "updates" },
     );
 
@@ -546,19 +546,19 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     await (await send("extract https://example.com")).text();
     expect(graph.stream).toHaveBeenNthCalledWith(
       1,
-      { request: "extract https://example.com", authToken: "tok-1" },
+      expect.objectContaining({ request: "extract https://example.com", authToken: "tok-1" }),
       { streamMode: "updates" },
     );
 
     const res = await send("make it spicier");
     expect(graph.stream).toHaveBeenNthCalledWith(
       2,
-      {
+      expect.objectContaining({
         request: "make it spicier",
         authToken: "tok-1",
         activeSkillId: "recipe-skill",
         sessionSubject: "open-webui",
-      },
+      }),
       { streamMode: "updates" },
     );
     const chunks = (await readSse(res)) as { event?: { type?: string; data?: { description?: string } }; choices?: { delta: { content?: string } }[] }[];
