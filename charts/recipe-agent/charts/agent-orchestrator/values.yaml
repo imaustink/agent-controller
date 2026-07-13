@@ -46,9 +46,14 @@ config:
   qdrantCollection: tools
   qdrantVectorSize: 1536
   qdrantSkillsCollection: skills
+  qdrantAgentsCollection: agents
   embeddingModel: text-embedding-3-small
   selectionModel: gpt-4o-2024-08-06
   skillTopK: 3
+  agentTopK: 3
+  # Bounds an AgentRun's activeDeadlineSeconds; longer than a tool's default
+  # since an agent may be waiting on a human mid-conversation.
+  agentRunTimeoutSeconds: 1800
   # Base URL Job pods use to reach the callback receiver. Leave empty to
   # default to the in-cluster callback Service DNS name (ADR 0006).
   callbackBaseUrl: ""

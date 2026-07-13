@@ -18,10 +18,16 @@ export interface AppConfig {
   qdrantVectorSize: number;
   /** Collection name for the skills catalog (docs/adr/0008) - same Qdrant instance, separate collection. */
   skillsQdrantCollection: string;
+  /** Collection name for the agent catalog, same Qdrant instance, separate collection from tools/skills. */
+  agentsQdrantCollection: string;
   embeddingModel: string;
   selectionModel: string;
   /** Max candidate skills retrieved per request, before skill selection (docs/adr/0008). */
   skillTopK: number;
+  /** Max candidate agents retrieved per request, before delegate selection (mirrors skillTopK). */
+  agentTopK: number;
+  /** Bounds an AgentRun's activeDeadlineSeconds; longer than a tool's default since an agent may wait on a human. */
+  agentRunTimeoutSeconds: number;
   /**
    * Sliding idle TTL (seconds) for conversation-session records — how long
    * a chat's active skill is remembered between turns (docs/adr/0012).
@@ -80,9 +86,12 @@ export const config: AppConfig = {
   qdrantCollection: process.env.AGENT_QDRANT_COLLECTION ?? "tools",
   qdrantVectorSize: num(process.env.AGENT_QDRANT_VECTOR_SIZE, 1536),
   skillsQdrantCollection: process.env.AGENT_QDRANT_SKILLS_COLLECTION ?? "skills",
+  agentsQdrantCollection: process.env.AGENT_QDRANT_AGENTS_COLLECTION ?? "agents",
   embeddingModel: process.env.AGENT_EMBEDDING_MODEL ?? "text-embedding-3-small",
   selectionModel: process.env.AGENT_SELECTION_MODEL ?? "gpt-4o-2024-08-06",
   skillTopK: num(process.env.AGENT_SKILL_TOP_K, 3),
+  agentTopK: num(process.env.AGENT_TOP_K, 3),
+  agentRunTimeoutSeconds: num(process.env.AGENT_RUN_TIMEOUT_SECONDS, 1800),
   sessionTtlSeconds: num(process.env.AGENT_SESSION_TTL_SECONDS, 1800),
   sessionMaxEntries: num(process.env.AGENT_SESSION_MAX_ENTRIES, 1000),
   callbackPort: num(process.env.AGENT_CALLBACK_PORT, 8080),

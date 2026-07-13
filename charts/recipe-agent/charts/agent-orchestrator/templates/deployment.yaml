@@ -61,12 +61,18 @@ spec:
               value: {{ .Values.config.qdrantVectorSize | quote }}
             - name: AGENT_QDRANT_SKILLS_COLLECTION
               value: {{ .Values.config.qdrantSkillsCollection | quote }}
+            - name: AGENT_QDRANT_AGENTS_COLLECTION
+              value: {{ .Values.config.qdrantAgentsCollection | quote }}
             - name: AGENT_EMBEDDING_MODEL
               value: {{ .Values.config.embeddingModel | quote }}
             - name: AGENT_SELECTION_MODEL
               value: {{ .Values.config.selectionModel | quote }}
             - name: AGENT_SKILL_TOP_K
               value: {{ .Values.config.skillTopK | quote }}
+            - name: AGENT_TOP_K
+              value: {{ .Values.config.agentTopK | quote }}
+            - name: AGENT_RUN_TIMEOUT_SECONDS
+              value: {{ .Values.config.agentRunTimeoutSeconds | quote }}
             - name: AGENT_CALLBACK_PORT
               value: {{ .Values.ports.callback | quote }}
             - name: AGENT_HTTP_PORT

@@ -1,6 +1,10 @@
 import * as k8s from "@kubernetes/client-node";
 import { config } from "./config.js";
 import { CallbackReceiver } from "./callback/receiver.js";
+import { AgentRunLauncher } from "./k8s/agentrun-launcher.js";
+import { NatsAgentChannel } from "./agents/nats-agent-channel.js";
+import { CrdAgentRegistry } from "./agents/crd-agent-registry.js";
+import { QdrantAgentStore } from "./agents/qdrant-agent-store.js";
 import { ToolRunLauncher } from "./k8s/toolrun-launcher.js";
 import { LocalToolExecutor, K8sSecretReader } from "./local/local-tool-executor.js";
 import { CrdToolRegistry } from "./registry/crd-tool-registry.js";
@@ -12,9 +16,9 @@ import { QdrantSkillStore } from "./skills/qdrant-skill-store.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { QdrantToolStore } from "./vector-store/qdrant-store.js";
 import { OpenAiActionPlanner } from "./agent/action-planner.js";
+import { OpenAiDelegateSelector } from "./agent/delegate-selector.js";
 import { OpenAiResponseComposer } from "./agent/response-composer.js";
 import { OpenAiSkillFitChecker } from "./agent/skill-fit-checker.js";
-import { OpenAiSkillSelector } from "./agent/skill-selector.js";
 import { buildAgentGraph } from "./agent/graph.js";
 import { InMemorySessionStore } from "./session/in-memory-session-store.js";
 import { InvokeServer } from "./server.js";
@@ -132,11 +136,33 @@ async function main(): Promise<void> {
   // after the next restart, same staleness as the rest of the catalog.
   await skillStore.upsert(deriveSkillAccess(skills, allTools));
 
+  // Agent catalog: discovered from `Agent` custom resources, upserted into
+  // its own Qdrant collection at startup -- same one-shot-at-startup shape
+  // as tools/skills/LocalTools. Agents carry their OWN allowedRoles (unlike
+  // skills, no derivation needed).
+  const agentRegistry = CrdAgentRegistry.fromKubeConfig(
+    config.namespace,
+    config.crdGroup,
+    config.crdVersion,
+    kubeConfig,
+  );
+  const agentStore = new QdrantAgentStore(
+    {
+      url: config.qdrantUrl,
+      apiKey: config.qdrantApiKey,
+      collection: config.agentsQdrantCollection,
+      vectorSize: config.qdrantVectorSize,
+    },
+    embedder,
+  );
+  await agentStore.ensureCollection();
+  const agents = await agentRegistry.listAll();
+  await agentStore.upsert(agents);
+
   const identities = loadStaticIdentitiesFromEnv(config.staticIdentities);
   const identityResolver = new StaticIdentityResolver(identities);
 
   const callbackReceiver = new CallbackReceiver(config.callbackSecret);
-  const skillSelector = new OpenAiSkillSelector({ model: config.selectionModel });
   const skillFitChecker = new OpenAiSkillFitChecker({ model: config.selectionModel });
   const actionPlanner = new OpenAiActionPlanner({ model: config.selectionModel });
   // Post-tool response composition (ADR 0015): lets the active skill's own
@@ -153,10 +179,16 @@ async function main(): Promise<void> {
     secretReader: K8sSecretReader.fromKubeConfig(config.namespace, kubeConfig),
   });
 
+  // Agent delegation (bidirectional NATS protocol): one shared connection for
+  // the whole process (long-lived service), agent-scoped subjects derived
+  // per run id -- see src/agents/nats-agent-channel.ts.
+  const agentChannel = await NatsAgentChannel.connect(config.natsUrl, config.natsSubjectPrefix);
+  const agentRunLauncher = AgentRunLauncher.fromKubeConfig(config.crdGroup, config.crdVersion, kubeConfig);
+  const delegateSelector = new OpenAiDelegateSelector({ model: config.selectionModel });
+
   const graph = buildAgentGraph({
     identityResolver,
     skillStore,
-    skillSelector,
     skillFitChecker,
     vectorStore,
     actionPlanner,
@@ -167,6 +199,13 @@ async function main(): Promise<void> {
     callbackBaseUrl: config.callbackBaseUrl,
     callbackSecret: config.callbackSecret,
     skillTopK: config.skillTopK,
+    agentStore,
+    delegateSelector,
+    agentRunLauncher,
+    agentChannel,
+    agentTopK: config.agentTopK,
+    agentRunTimeoutSeconds: config.agentRunTimeoutSeconds,
+    callbackSecretRef: { name: config.callbackSecretRefName, key: config.callbackSecretRefKey },
   });
 
   // Conversation-session store (docs/adr/0012): remembers each chat's active
@@ -186,7 +225,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string): Promise<void> => {
     console.error(`${signal} received, shutting down`);
-    await Promise.all([invokeServer.close(), callbackReceiver.close()]);
+    await Promise.all([invokeServer.close(), callbackReceiver.close(), agentChannel.close()]);
     process.exit(0);
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));

@@ -114,17 +114,30 @@ const NODE_STATUS: Record<string, (update: Record<string, unknown>, ctx?: NodeSt
   checkActiveSkill: (update) => {
     // Only narrate when the session's active skill was confirmed for this
     // turn (docs/adr/0012) — a fall-through to full retrieval is silent
-    // (retrieveSkills/selectSkill produce their own lines).
+    // (retrieveSkills/selectDelegate produce their own lines).
     const skill = update.selectedSkill as { name?: string } | undefined;
     return skill?.name ? `Continuing with skill: ${skill.name}.` : undefined;
+  },
+  checkActiveAgentRun: (update) => {
+    // Same continuity narration for a running agent (question already
+    // asked, this turn's message is its answer) — a fall-through is silent.
+    const agent = update.selectedAgent as { name?: string } | undefined;
+    return agent?.name ? `Continuing with agent: ${agent.name}.` : undefined;
   },
   retrieveSkills: (update) => {
     const candidates = Array.isArray(update.skillCandidates) ? update.skillCandidates : [];
     return `Found ${candidates.length} candidate skill(s).`;
   },
-  selectSkill: (update) => {
+  retrieveAgents: (update) => {
+    const candidates = Array.isArray(update.agentCandidates) ? update.agentCandidates : [];
+    return `Found ${candidates.length} candidate agent(s).`;
+  },
+  selectDelegate: (update) => {
     const skill = update.selectedSkill as { name?: string } | undefined;
-    return skill?.name ? `Selected skill: ${skill.name}.` : undefined;
+    if (skill?.name) return `Selected skill: ${skill.name}.`;
+    const agent = update.selectedAgent as { name?: string } | undefined;
+    if (agent?.name) return `Delegating to agent: ${agent.name}.`;
+    return undefined;
   },
   loadSkillTools: (update, ctx) => {
     // Suppress on continuation turns: the skill (and its tools) didn't change,

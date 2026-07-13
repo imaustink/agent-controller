@@ -5,6 +5,11 @@
  * best-effort routing hint, never correctness-critical state — losing it
  * (restart, TTL, eviction) just means the next turn falls back to full
  * retrieval + selection.
+ *
+ * Extended for agent delegation: at most ONE of `activeSkillId` /
+ * `activeAgentRunId` is ever set for a given conversation at a time (a turn
+ * either continues a skill or continues a running agent, never both) —
+ * persisting one clears the other.
  */
 export interface SessionRecord {
   /**
@@ -19,7 +24,20 @@ export interface SessionRecord {
    * skill content is re-fetched under the caller's CURRENT roles each turn
    * (fail-closed), so role revocation takes effect on the next message.
    */
-  activeSkillId: string;
+  activeSkillId?: string;
+  /**
+   * Id of the Agent CR the conversation delegated to. Re-fetched under the
+   * caller's CURRENT roles each turn (fail-closed), same discipline as
+   * `activeSkillId` — needed to re-verify access before continuing the run.
+   */
+  activeAgentId?: string;
+  /**
+   * Name of the specific `AgentRun` CR the conversation is continuing. This
+   * (not `activeAgentId`) is what a follow-up turn's `prompt` is published
+   * to — the run's NATS subjects are keyed by this id, not by the catalog
+   * Agent id, since one Agent can have many concurrent runs.
+   */
+  activeAgentRunId?: string;
   /** Last touch time (ms since epoch); used for sliding TTL expiry. */
   updatedAt: number;
 }
