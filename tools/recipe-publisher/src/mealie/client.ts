@@ -98,6 +98,102 @@ async function parseIngredientTexts(
  * parser call itself failed) fall back to a plain `note`/`disableAmount`
  * entry with no structured quantity/unit/food.
  */
+
+/**
+ * Looks up an existing IngredientFood by name (case-insensitive) or creates
+ * one if not found. Returns the full food object with a valid `id`, or
+ * `undefined` if both calls fail (caller falls back to unparsed text).
+ * Best-effort; never throws.
+ */
+async function resolveIngredientFood(
+  cfg: MealieConfig,
+  fetchImpl: FetchLike,
+  name: string,
+): Promise<Record<string, unknown> | undefined> {
+  try {
+    const searchRes = await fetchWithTimeout(
+      fetchImpl,
+      `${cfg.baseUrl}/api/foods?search=${encodeURIComponent(name)}&perPage=10`,
+      { method: "GET", headers: mealieHeaders(cfg.token) },
+      cfg.fetchTimeoutMs,
+    );
+    if (searchRes.ok) {
+      const page = (await searchRes.json()) as { items?: Record<string, unknown>[] };
+      const match = page.items?.find(
+        (f) => typeof f.name === "string" && f.name.toLowerCase() === name.toLowerCase(),
+      );
+      if (match) return match;
+    }
+    const createRes = await fetchWithTimeout(
+      fetchImpl,
+      `${cfg.baseUrl}/api/foods`,
+      { method: "POST", headers: mealieHeaders(cfg.token), body: JSON.stringify({ name }) },
+      cfg.fetchTimeoutMs,
+    );
+    if (createRes.ok) return (await createRes.json()) as Record<string, unknown>;
+  } catch (err) {
+    console.error(`Failed to resolve Mealie food "${name}": ${(err as Error).message}`);
+  }
+  return undefined;
+}
+
+/**
+ * Looks up an existing IngredientUnit by name (case-insensitive) or creates
+ * one if not found. Returns the full unit object with a valid `id`, or
+ * `undefined` if both calls fail. Best-effort; never throws.
+ */
+async function resolveIngredientUnit(
+  cfg: MealieConfig,
+  fetchImpl: FetchLike,
+  name: string,
+): Promise<Record<string, unknown> | undefined> {
+  try {
+    const searchRes = await fetchWithTimeout(
+      fetchImpl,
+      `${cfg.baseUrl}/api/units?search=${encodeURIComponent(name)}&perPage=10`,
+      { method: "GET", headers: mealieHeaders(cfg.token) },
+      cfg.fetchTimeoutMs,
+    );
+    if (searchRes.ok) {
+      const page = (await searchRes.json()) as { items?: Record<string, unknown>[] };
+      const match = page.items?.find(
+        (u) => typeof u.name === "string" && u.name.toLowerCase() === name.toLowerCase(),
+      );
+      if (match) return match;
+    }
+    const createRes = await fetchWithTimeout(
+      fetchImpl,
+      `${cfg.baseUrl}/api/units`,
+      { method: "POST", headers: mealieHeaders(cfg.token), body: JSON.stringify({ name }) },
+      cfg.fetchTimeoutMs,
+    );
+    if (createRes.ok) return (await createRes.json()) as Record<string, unknown>;
+  } catch (err) {
+    console.error(`Failed to resolve Mealie unit "${name}": ${(err as Error).message}`);
+  }
+  return undefined;
+}
+
+/**
+ * Returns true when the NLP parser's `display` field is a faithful
+ * representation of the original ingredient `item` text. Guards against two
+ * known Mealie NLP parser failure modes:
+ *
+ * 1. Empty display (e.g. "pepper" → display:"pepper" but qty:0 + empty unit
+ *    causes Mealie to render a blank row). We require a non-empty display.
+ * 2. Dropped food-name words (e.g. "onion powder" → unit:"onion", food:"powder",
+ *    display:"powder" — "onion" is silently lost). We check that the last two
+ *    alphabetic words of `item` all appear in `display`.
+ */
+function nlpDisplayMatchesItem(parsed: Record<string, unknown>, item: string): boolean {
+  const display = typeof parsed.display === "string" ? parsed.display.trim() : "";
+  if (!display) return false;
+  // Extract the last 1–2 alphabetic words of the item (≥ 3 chars) — these
+  // are typically the food name (e.g. "onion", "powder" from "onion powder").
+  const itemWords = (item.toLowerCase().match(/\b[a-z]{3,}\b/g) ?? []).slice(-2);
+  return itemWords.length === 0 || itemWords.every((w) => display.toLowerCase().includes(w));
+}
+
 async function toMealieIngredients(
   cfg: MealieConfig,
   fetchImpl: FetchLike,
@@ -106,16 +202,83 @@ async function toMealieIngredients(
   const allItems = sections.flatMap((section) => section.items);
   const parsedIngredients = await parseIngredientTexts(cfg, fetchImpl, allItems);
 
+  // For any parsed ingredient whose food or unit has id: null (not yet in
+  // Mealie's database), pre-resolve them — search by name first, create if
+  // absent — so the PATCH body contains only valid UUIDs. Deduplicate by name
+  // and run all resolutions in parallel to keep the extra round-trips fast.
+  //
+  // Skip empty-named food/unit entries: Mealie's NLP parser sometimes returns
+  // unit: { name: "", id: null } for ingredients without a unit (e.g. "pepper",
+  // "salt"). Attempting to create an empty-named unit in Mealie either fails or
+  // produces a garbage entity. If we leave unit.id null for those, the
+  // ingredient falls back to plain-text (disableAmount: true) below.
+  if (parsedIngredients) {
+    const nullFoodNames = new Set<string>();
+    const nullUnitNames = new Set<string>();
+    for (const ing of parsedIngredients) {
+      const food = ing.food as Record<string, unknown> | null | undefined;
+      const unit = ing.unit as Record<string, unknown> | null | undefined;
+      if (food != null && food.id == null && typeof food.name === "string" && food.name.trim()) nullFoodNames.add(food.name);
+      if (unit != null && unit.id == null && typeof unit.name === "string" && unit.name.trim()) nullUnitNames.add(unit.name);
+    }
+    const [resolvedFoods, resolvedUnits] = await Promise.all([
+      Promise.all([...nullFoodNames].map(async (name) => [name, await resolveIngredientFood(cfg, fetchImpl, name)] as const)),
+      Promise.all([...nullUnitNames].map(async (name) => [name, await resolveIngredientUnit(cfg, fetchImpl, name)] as const)),
+    ]);
+    const foodMap = new Map(resolvedFoods.filter(([, v]) => v != null) as [string, Record<string, unknown>][]);
+    const unitMap = new Map(resolvedUnits.filter(([, v]) => v != null) as [string, Record<string, unknown>][]);
+
+    // Patch null-id food/unit references in-place with the resolved objects.
+    for (const ing of parsedIngredients) {
+      const food = ing.food as Record<string, unknown> | null | undefined;
+      const unit = ing.unit as Record<string, unknown> | null | undefined;
+      if (food != null && food.id == null && typeof food.name === "string") {
+        const resolved = foodMap.get(food.name);
+        if (resolved) ing.food = resolved;
+      }
+      if (unit != null && unit.id == null && typeof unit.name === "string") {
+        const resolved = unitMap.get(unit.name);
+        if (resolved) ing.unit = resolved;
+      }
+    }
+  }
+
   const result: Record<string, unknown>[] = [];
   let cursor = 0;
   for (const section of sections) {
-    if (section.name) {
-      result.push({ title: section.name, note: "", originalText: "", display: "", disableAmount: true });
-    }
+    // Mealie groups consecutive ingredients that share a `title` into a visual
+    // section. Set `title: section.name` on the FIRST ingredient of each named
+    // section — no separate empty header entry (that creates a blank checkbox row).
+    let isFirstInSection = true;
     for (const item of section.items) {
+      // Skip items that are blank after trimming — these can slip through when the
+      // markdown has whitespace-only list entries (e.g. " " rendered as "3.  ").
+      if (!item.trim()) {
+        cursor++;
+        continue;
+      }
       const parsed = parsedIngredients?.[cursor];
       cursor++;
-      result.push(parsed ? { ...parsed, title: null } : { title: null, note: item, originalText: item, display: item, disableAmount: true });
+      const title: string | null = isFirstInSection ? section.name : null;
+      isFirstInSection = false;
+      if (parsed) {
+        const food = parsed.food as Record<string, unknown> | null | undefined;
+        const unit = parsed.unit as Record<string, unknown> | null | undefined;
+        const foodOk = food == null || food.id != null;
+        const unitOk = unit == null || unit.id != null;
+        if (foodOk && unitOk && nlpDisplayMatchesItem(parsed, item)) {
+          result.push({ ...parsed, title });
+        } else {
+          // Fall back to plain text when:
+          // - food or unit still has null id (PATCH would 500 on UUID validation)
+          // - NLP display is empty (renders as blank row in Mealie's UI)
+          // - NLP display drops part of a compound food name, e.g.
+          //   "onion powder" → display "powder" (NLP treated "onion" as a unit)
+          result.push({ title, note: item, originalText: item, display: item, disableAmount: true });
+        }
+      } else {
+        result.push({ title, note: item, originalText: item, display: item, disableAmount: true });
+      }
     }
   }
   return result;
@@ -264,12 +427,17 @@ export async function publishRecipe(
   ]);
 
   const patchBody: Record<string, unknown> = {
-    name,
     recipeIngredient,
     recipeInstructions: toMealieInstructions(parsed.directionSections),
     notes: toMealieNotes(unresolvedEquipment, parsed.tips),
     tools,
   };
+  // Only re-assert the name when updating an existing recipe in place (so title
+  // edits during refinement take effect). On the create path Mealie already set
+  // the name during POST -- and if a recipe with that name already existed it
+  // de-duplicated to e.g. "Foo (1)" (slug "foo-1"); re-sending the original name
+  // here would trip Mealie's name-uniqueness check ("Recipe already exists", 400).
+  if (existingSlug) patchBody.name = name;
   if (parsed.sourceUrl) patchBody.orgURL = parsed.sourceUrl;
 
   const patchRes = await fetchWithTimeout(

@@ -24,12 +24,40 @@ function normalizeHost(hostname: string): string {
   return hostname.toLowerCase().replace(/^www\./, "");
 }
 
+function isTikTokHost(host: string): boolean {
+  return host === "tiktok.com" || host.endsWith(".tiktok.com");
+}
+
+/**
+ * TikTok photo (slideshow) posts live under `/photo/` and are NOT handled by
+ * yt-dlp (it reports "Unsupported URL"); everything else on TikTok is a video.
+ * Short links (`/t/…`, `vm.`/`vt.` hosts) don't reveal which in the path, so
+ * we resolve the redirect chain to find out. Any failure falls back to the
+ * video lane, preserving prior behavior.
+ */
+async function classifyTikTok(safe: SafeUrl): Promise<SourceType> {
+  let pathname = safe.url.pathname;
+  if (!/\/(photo|video)\//.test(pathname)) {
+    try {
+      const res = await guardedFetch(safe.url.toString(), { method: "HEAD" });
+      pathname = new URL(res.url).pathname;
+    } catch {
+      // Fall through to the video default below.
+    }
+  }
+  return /\/photo\//.test(pathname) ? "tiktok_photo" : "video";
+}
+
 /**
  * Classifies a URL into an extractor lane. Domain and extension checks are
  * purely local; only truly ambiguous URLs incur a guarded HEAD request.
  */
 export async function classify(safe: SafeUrl): Promise<SourceType> {
   const host = normalizeHost(safe.url.hostname);
+
+  if (isTikTokHost(host)) {
+    return classifyTikTok(safe);
+  }
 
   if (VIDEO_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))) {
     return "video";

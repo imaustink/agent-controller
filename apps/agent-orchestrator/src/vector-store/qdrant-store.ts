@@ -1,5 +1,5 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
-import type { JobTemplate, ToolDescriptor } from "../tool-descriptor.js";
+import type { JobTemplate, LocalToolSpec, ToolDescriptor } from "../tool-descriptor.js";
 import { toQdrantPointId } from "./qdrant-id.js";
 import type { Embedder, ToolQueryFilter, ToolSearchResult, VectorStore } from "./types.js";
 
@@ -22,7 +22,10 @@ interface ToolPayload {
   name: string;
   description: string;
   allowedRoles: string[];
-  jobTemplate: JobTemplate;
+  /** Job launch template for container tools; null for LocalTools (ADR 0014). */
+  jobTemplate: JobTemplate | null;
+  /** Local execution spec for LocalTools; null for container/Job tools (ADR 0014). */
+  localExec: LocalToolSpec | null;
   tier: string | null;
 }
 
@@ -71,7 +74,8 @@ export class QdrantToolStore implements VectorStore {
           name: tool.name,
           description: tool.description,
           allowedRoles: tool.allowedRoles,
-          jobTemplate: tool.jobTemplate,
+          jobTemplate: tool.jobTemplate ?? null,
+          localExec: tool.localExec ?? null,
           tier: tool.tier ?? null,
         } satisfies ToolPayload,
       })),
@@ -99,7 +103,8 @@ export class QdrantToolStore implements VectorStore {
         name: payload.name,
         description: payload.description,
         allowedRoles: payload.allowedRoles,
-        jobTemplate: payload.jobTemplate,
+        jobTemplate: payload.jobTemplate ?? undefined,
+        localExec: payload.localExec ?? undefined,
         tier: payload.tier ?? undefined,
       };
       return { tool, score: point.score };
@@ -125,7 +130,8 @@ export class QdrantToolStore implements VectorStore {
         name: payload.name,
         description: payload.description,
         allowedRoles: payload.allowedRoles,
-        jobTemplate: payload.jobTemplate,
+        jobTemplate: payload.jobTemplate ?? undefined,
+        localExec: payload.localExec ?? undefined,
         tier: payload.tier ?? undefined,
       };
       results.push({ tool, score: 1 });

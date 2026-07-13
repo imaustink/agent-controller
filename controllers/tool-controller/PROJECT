@@ -54,4 +54,13 @@ resources:
   kind: AgentRun
   path: github.com/recipe-agent/tool-controller/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: recipe-agent.dev
+  group: tool
+  kind: LocalTool
+  path: github.com/recipe-agent/tool-controller/api/v1alpha1
+  version: v1alpha1
 version: "3"

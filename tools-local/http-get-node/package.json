@@ -1,0 +1,27 @@
+{
+  "name": "@recipe-agent/http-get",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reference LocalTool (ADR 0013): reads a URL on stdin, HTTP GETs it (behind an SSRF guard), emits a stdio-ABI envelope.",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "http-get": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.5",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vitest": "^4.0.0"
+  }
+}

@@ -1,11 +1,13 @@
 import { classify } from "./classify.js";
 import { config } from "./config.js";
 import { extractImage } from "./extractors/image.js";
+import { extractTikTokPhoto } from "./extractors/tiktok-photo.js";
 import { extractVideo } from "./extractors/video.js";
 import { extractWeb } from "./extractors/web.js";
 import { formatRecipe } from "./llm/format.js";
 import { renderMarkdown } from "./markdown.js";
 import { createSink, JobEmitter } from "./messaging/index.js";
+import { sanitizeTitle } from "./sanitize-title.js";
 import { EnvelopeSchema, type ErrorCode } from "./schema.js";
 import { clip } from "./security/redact.js";
 import { assertUrlAllowed, UrlGuardError } from "./security/url-guard.js";
@@ -58,6 +60,9 @@ async function run(emitter: JobEmitter, rawUrl: string): Promise<void> {
       case "web":
         extraction = await extractWeb(safe);
         break;
+      case "tiktok_photo":
+        extraction = await extractTikTokPhoto(safe);
+        break;
     }
   } catch (err) {
     fail("extraction", EXIT.extraction, `Extraction failed: ${(err as Error).message}`);
@@ -82,7 +87,7 @@ async function run(emitter: JobEmitter, rawUrl: string): Promise<void> {
   const envelope = EnvelopeSchema.parse({
     source_type: sourceType,
     url: rawUrl,
-    title: extraction.title,
+    title: recipe.name ?? sanitizeTitle(extraction.title),
     recipe,
     provenance: { ...extraction.provenance, sourceType },
     warnings,

@@ -5,7 +5,8 @@
   "workspaces": [
     "packages/*",
     "apps/*",
-    "tools/*"
+    "tools/*",
+    "tools-local/http-get-node"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",

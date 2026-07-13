@@ -97,43 +97,54 @@ export function renderResult(result: unknown): string {
   return `\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
 }
 
+export interface NodeStatusContext {
+  /** True when checkActiveSkill confirmed the session skill for this turn. */
+  skillContinuation?: boolean;
+}
+
 /**
  * Human-readable status line for a LangGraph "updates"-mode stream chunk,
- * keyed by node name. Reflects agent-graph node transitions (identity ->
+ * keyed by node name. Reflects agent-graph node transitions (skill check ->
  * retrieve/select skill -> load skill tools -> plan action -> launch), NOT
  * the launched tool's own internal stages (e.g. recipe-scraper's
  * extract/transcribe) — those aren't currently plumbed out of the Job
  * callback protocol (known gap).
  */
-const NODE_STATUS: Record<string, (update: Record<string, unknown>) => string | undefined> = {
-  resolveIdentity: (update) => (update.error ? undefined : "🔧 Resolved caller identity.\n"),
+const NODE_STATUS: Record<string, (update: Record<string, unknown>, ctx?: NodeStatusContext) => string | undefined> = {
   checkActiveSkill: (update) => {
     // Only narrate when the session's active skill was confirmed for this
     // turn (docs/adr/0012) — a fall-through to full retrieval is silent
     // (retrieveSkills/selectSkill produce their own lines).
     const skill = update.selectedSkill as { name?: string } | undefined;
-    return skill?.name ? `🔧 Continuing with skill: ${skill.name}.\n` : undefined;
+    return skill?.name ? `Continuing with skill: ${skill.name}.` : undefined;
   },
   retrieveSkills: (update) => {
     const candidates = Array.isArray(update.skillCandidates) ? update.skillCandidates : [];
-    return `🔧 Found ${candidates.length} candidate skill(s).\n`;
+    return `Found ${candidates.length} candidate skill(s).`;
   },
   selectSkill: (update) => {
     const skill = update.selectedSkill as { name?: string } | undefined;
-    return skill?.name ? `🔧 Selected skill: ${skill.name}.\n` : undefined;
+    return skill?.name ? `Selected skill: ${skill.name}.` : undefined;
   },
-  loadSkillTools: (update) => {
+  loadSkillTools: (update, ctx) => {
+    // Suppress on continuation turns: the skill (and its tools) didn't change,
+    // so reporting the same tool count again is noise (docs/adr/0012).
+    if (ctx?.skillContinuation) return undefined;
     const tools = Array.isArray(update.skillTools) ? update.skillTools : [];
-    return `🔧 Loaded ${tools.length} tool(s) for this skill.\n`;
+    return `Loaded ${tools.length} tool(s) for this skill.`;
   },
   planAction: (update) => {
     const tool = update.selectedTool as { name?: string } | undefined;
-    return tool?.name ? `🔧 Calling tool: ${tool.name}.\n` : undefined;
+    return tool?.name ? `Calling tool: ${tool.name}.` : undefined;
   },
 };
 
-export function nodeStatusText(nodeName: string, update: Record<string, unknown>): string | undefined {
-  return NODE_STATUS[nodeName]?.(update);
+export function nodeStatusText(
+  nodeName: string,
+  update: Record<string, unknown>,
+  ctx?: NodeStatusContext,
+): string | undefined {
+  return NODE_STATUS[nodeName]?.(update, ctx);
 }
 
 export function chatCompletionId(): string {
@@ -176,6 +187,20 @@ export function openAiError(message: string, code: string): unknown {
 
 export function writeSseChunk(res: ServerResponse, payload: unknown): void {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+/**
+ * Writes an Open WebUI status event. These render as a collapsible
+ * StatusHistory indicator above the assistant message rather than as inline
+ * text in the response — the proper way to surface agent progress steps.
+ * `done: true` means the step completed; use `false` for an in-progress spinner.
+ *
+ * Format: Open WebUI's middleware (utils/middleware.py) checks for a top-level
+ * `"event"` key in each SSE chunk and forwards it to the browser via socket.io,
+ * which populates `message.statusHistory` and renders <StatusHistory>.
+ */
+export function writeSseStatus(res: ServerResponse, description: string, done = true): void {
+  res.write(`data: ${JSON.stringify({ event: { type: "status", data: { description, done } } })}\n\n`);
 }
 
 export function writeSseComment(res: ServerResponse, comment: string): void {

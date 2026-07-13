@@ -61,6 +61,7 @@ describe("QdrantToolStore", () => {
             description: tool.description,
             allowedRoles: ["reader"],
             jobTemplate: tool.jobTemplate,
+            localExec: null,
             tier: null,
           },
         },

@@ -1,0 +1,15 @@
+dependencies:
+- name: agent-orchestrator
+  repository: file://charts/agent-orchestrator
+  version: 0.1.0
+- name: tool-controller
+  repository: file://charts/tool-controller
+  version: 0.1.0
+- name: tools
+  repository: file://charts/tools
+  version: 0.1.0
+- name: open-webui
+  repository: https://helm.openwebui.com/
+  version: 15.2.0
+digest: sha256:4648f4166918affd6938646fe3998c642378cc93f61ee1e74cc5ab3578d3bea1
+generated: "2026-07-12T17:48:06.009329-07:00"

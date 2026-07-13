@@ -1,0 +1,91 @@
+{{- if .Values.rbac.create }}
+{{/*
+ClusterRole granting exactly what internal/controller/*.go's
++kubebuilder:rbac markers declare -- kept in lockstep with
+controllers/tool-controller/config/rbac/role.yaml (regenerate both via
+`make manifests` in that module after changing any marker). This is the
+ONLY place in the system with `batch/jobs` create/delete permissions now
+(ADR 0010) -- the orchestrator's own Role (charts/agent-orchestrator) no
+longer has them.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "tool-controller.fullname" . }}
+  labels:
+    {{- include "tool-controller.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs/status"]
+    verbs: ["get"]
+  - apiGroups: ["tool.recipe-agent.dev"]
+    resources: ["tools", "skills", "agents", "toolruns", "agentruns", "localtools"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["tool.recipe-agent.dev"]
+    resources: ["tools/finalizers", "skills/finalizers", "agents/finalizers", "toolruns/finalizers", "agentruns/finalizers", "localtools/finalizers"]
+    verbs: ["update"]
+  - apiGroups: ["tool.recipe-agent.dev"]
+    resources: ["tools/status", "skills/status", "agents/status", "toolruns/status", "agentruns/status", "localtools/status"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "tool-controller.fullname" . }}
+  labels:
+    {{- include "tool-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "tool-controller.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tool-controller.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.leaderElection.enabled }}
+---
+{{/*
+Leader election needs Lease objects, namespace-scoped to wherever the
+controller itself runs (not the CR/Job namespaces above).
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "tool-controller.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tool-controller.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "tool-controller.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tool-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "tool-controller.fullname" . }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tool-controller.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}

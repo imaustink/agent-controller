@@ -1,0 +1,63 @@
+# The Tool + Skill catalog custom resources. Each entry can be toggled off.
+#
+# These are applied as post-install/post-upgrade Helm hooks so they land after
+# the tool-controller Deployment is created (their CRDs are installed first,
+# from charts/tool-controller/crds/, before any templated resource in the
+# release). Because they are hooks, `helm uninstall` will NOT delete them --
+# remove them by hand (`kubectl delete tool,skill -l ...`) or delete the CRDs
+# if you want them gone. See templates/_helpers.tpl for the hook annotations.
+
+enabled: true
+
+# apiVersion of the Tool/Skill CRDs. Must match what charts/tool-controller
+# installs (config.crdGroup/crdVersion on the orchestrator side too).
+crdApiVersion: tool.recipe-agent.dev/v1alpha1
+
+# Base Helm hook weight for the catalog CRs. Higher = applied later; kept
+# positive so they run after the (unweighted, weight 0) controller resources.
+hookWeight: 5
+
+# recipe-scraper: read-only URL -> recipe Markdown extraction.
+recipeScraper:
+  enabled: true
+  image: recipe-scraper:latest
+  serviceAccountName: recipe-scraper
+  # Secret (must already exist) supplying the tool's OPENAI_API_KEY.
+  openai:
+    secretName: agent-orchestrator-secrets
+    secretKey: OPENAI_API_KEY
+
+# recipe-publisher: publishes/updates a recipe on a Mealie instance.
+recipePublisher:
+  enabled: true
+  image: recipe-publisher:latest
+  serviceAccountName: recipe-publisher
+  # Target Mealie instance (not a secret) + which ingredient parser to use.
+  mealieBaseUrl: "https://recipes.kurpuis.com"
+  ingredientParser: "nlp"
+  # Secret (must already exist) supplying MEALIE_API_TOKEN.
+  secretName: recipe-publisher-secrets
+  secretKey: MEALIE_API_TOKEN
+
+# copilot-swe: PRIVILEGED GitHub coding agent. Off by default -- needs a
+# GitHub App + Copilot-entitled PAT + ServiceAccount + Secret set up first
+# (see tools/copilot-swe/tool.yaml and docs/security.md).
+copilotSwe:
+  enabled: false
+  image: copilot-swe:latest
+  serviceAccountName: copilot-swe
+  githubAppId: "REPLACE_WITH_YOUR_APP_ID"
+  timeoutSeconds: 1800
+  # Secret (must already exist) with COPILOT_GITHUB_TOKEN + GITHUB_APP_PRIVATE_KEY.
+  secretName: copilot-swe-secrets
+
+skills:
+  # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +
+  # recipe-publisher). Enable both those tools above for its derived audience
+  # (ADR 0011) to be non-empty.
+  recipeRefining:
+    enabled: true
+  # software-engineering: routes coding requests to copilot-swe. Off by
+  # default (matches copilotSwe.enabled).
+  softwareEngineering:
+    enabled: false

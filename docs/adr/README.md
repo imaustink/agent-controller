@@ -18,5 +18,7 @@ See [../orchestrator.md](../orchestrator.md) for how these fit together.
 | [0010](0010-crd-catalog-and-tool-controller.md) | Tool/Skill catalogs and Job launching move to CRDs (`Tool`/`ToolRun`/`Skill`/`Agent`/`AgentRun`) reconciled by a Go controller |
 | [0011](0011-skill-access-derived-from-tools.md) | Skills carry no RBAC of their own — a skill's audience is derived as the intersection of its tools' `allowedRoles` |
 | [0012](0012-session-scoped-skill-lifecycle.md) | Conversations keep one session-scoped active skill (keyed by the caller's chat id), re-evaluated per turn by a fit-check — full RAG re-selection only on a miss |
+| [0013](0013-copilot-swe-privileged-coding-tool.md) | A privileged `copilot-swe` tool wraps the agentic Copilot CLI to open pull requests; GitHub App token for git, Copilot PAT for the model, deny-rule guardrails |
+| [0014](0014-local-tool-sidecar-execution.md) | `LocalTool` CRD: multi-runtime (node/python/go/shell) tools pulled from registries and run in-pod by per-language bubblewrap executor sidecars — lower latency than a Job, reached over a unix socket |
 
 Status values: `proposed` | `accepted` | `superseded by NNNN`.

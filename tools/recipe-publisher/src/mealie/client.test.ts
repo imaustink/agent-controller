@@ -46,6 +46,17 @@ function defaultFetchImpl(overrides: Partial<Record<string, (url: string, init: 
       const body = JSON.parse(init!.body as string) as { name: string };
       return jsonResponse({ id: "tool-1", groupId: "g", name: body.name, slug: body.name.toLowerCase(), householdsWithTool: [] }, { status: 201 });
     }
+    // Default: food/unit search returns no existing match; create returns a new entity with an id.
+    if (method === "GET" && u.includes("/api/foods?")) return jsonResponse({ items: [] });
+    if (method === "POST" && u.endsWith("/api/foods")) {
+      const body = JSON.parse(init!.body as string) as { name: string };
+      return jsonResponse({ id: `food-${body.name}`, name: body.name });
+    }
+    if (method === "GET" && u.includes("/api/units?")) return jsonResponse({ items: [] });
+    if (method === "POST" && u.endsWith("/api/units")) {
+      const body = JSON.parse(init!.body as string) as { name: string };
+      return jsonResponse({ id: `unit-${body.name}`, name: body.name });
+    }
     if (method === "PATCH") return jsonResponse({});
     if (method === "GET" && u.endsWith("/api/groups/self")) return jsonResponse({ slug: "home" });
     throw new Error(`unexpected request: ${method} ${u}`);
@@ -72,7 +83,9 @@ describe("publishRecipe", () => {
     const patchCall = calls.find(([, init]) => init.method === "PATCH")!;
     expect(patchCall[0]).toBe("https://recipes.example.com/api/recipes/pancakes");
     const patchBody = JSON.parse(patchCall[1].body as string);
-    expect(patchBody.name).toBe("Pancakes");
+    // On the create path the name is NOT re-sent -- Mealie already assigned it during
+    // POST, and re-asserting it trips Mealie's name-uniqueness check ("Recipe already exists").
+    expect(patchBody.name).toBeUndefined();
     expect(patchBody.orgURL).toBe("https://example.com/recipe");
     // The mock parser returned no matches, so ingredients fall back to unparsed notes.
     expect(patchBody.recipeIngredient).toEqual([
@@ -89,11 +102,12 @@ describe("publishRecipe", () => {
   });
 
   it("uses Mealie's own ingredient parser output when it successfully parses a line", async () => {
+    // Simulate realistic parser response: unit has a real id (known unit), food has a real id (known food).
     const fetchImpl = defaultFetchImpl({
       "POST https://recipes.example.com/api/parser/ingredients": () =>
         jsonResponse([
-          { input: "2 eggs", confidence: {}, ingredient: { quantity: 2, unit: null, food: { name: "eggs" }, note: "", display: "2 eggs", title: null, originalText: "2 eggs" } },
-          { input: "1 cup flour", confidence: {}, ingredient: { quantity: 1, unit: { name: "cup" }, food: { name: "flour" }, note: "", display: "1 cup flour", title: null, originalText: "1 cup flour" } },
+          { input: "2 eggs", confidence: {}, ingredient: { quantity: 2, unit: null, food: { id: "food-eggs", name: "eggs" }, note: "", display: "2 eggs", title: null, originalText: "2 eggs", referenceId: "ref-1" } },
+          { input: "1 cup flour", confidence: {}, ingredient: { quantity: 1, unit: { id: "unit-cup", name: "cup" }, food: { id: "food-flour", name: "flour" }, note: "", display: "1 cup flour", title: null, originalText: "1 cup flour", referenceId: "ref-2" } },
         ]),
     });
 
@@ -102,8 +116,68 @@ describe("publishRecipe", () => {
     const patchCall = (fetchImpl.mock.calls as [string, RequestInit][]).find(([, init]) => init.method === "PATCH")!;
     const patchBody = JSON.parse(patchCall[1].body as string);
     expect(patchBody.recipeIngredient).toEqual([
-      { quantity: 2, unit: null, food: { name: "eggs" }, note: "", display: "2 eggs", title: null, originalText: "2 eggs" },
-      { quantity: 1, unit: { name: "cup" }, food: { name: "flour" }, note: "", display: "1 cup flour", title: null, originalText: "1 cup flour" },
+      { quantity: 2, unit: null, food: { id: "food-eggs", name: "eggs" }, note: "", display: "2 eggs", title: null, originalText: "2 eggs", referenceId: "ref-1" },
+      { quantity: 1, unit: { id: "unit-cup", name: "cup" }, food: { id: "food-flour", name: "flour" }, note: "", display: "1 cup flour", title: null, originalText: "1 cup flour", referenceId: "ref-2" },
+    ]);
+  });
+
+  it("resolves foods/units with null IDs by creating them in Mealie before the PATCH", async () => {
+    // Mealie's parser returns food/unit with id: null when not in its database yet.
+    // The resolution step (search + create) runs before the PATCH so all ingredients
+    // end up with valid UUIDs and Mealie's full quantity/unit/food structure is used.
+    const fetchImpl = defaultFetchImpl({
+      "POST https://recipes.example.com/api/parser/ingredients": () =>
+        jsonResponse([
+          { input: "2 eggs", confidence: {}, ingredient: { quantity: 2, unit: { id: "unit-each", name: "each" }, food: { id: null, name: "eggs" }, note: "", display: "2 eggs", title: null, originalText: "2 eggs", referenceId: "ref-1", disableAmount: null } },
+          { input: "1 cup flour", confidence: {}, ingredient: { quantity: 1, unit: { id: null, name: "cup" }, food: { id: "food-flour", name: "flour" }, note: "", display: "1 cup flour", title: null, originalText: "1 cup flour", referenceId: "ref-2", disableAmount: null } },
+        ]),
+      // food "eggs": no existing match → create returns a new ID
+      "GET https://recipes.example.com/api/foods?search=eggs&perPage=10": () => jsonResponse({ items: [] }),
+      "POST https://recipes.example.com/api/foods": () => jsonResponse({ id: "created-food-eggs", name: "eggs" }),
+      // unit "cup": existing match found → reuse its ID
+      "GET https://recipes.example.com/api/units?search=cup&perPage=10": () => jsonResponse({ items: [{ id: "existing-unit-cup", name: "cup" }] }),
+    });
+
+    await publishRecipe(CFG, MARKDOWN, fetchImpl as unknown as typeof fetch);
+
+    const patchCall = (fetchImpl.mock.calls as [string, RequestInit][]).find(([, init]) => init.method === "PATCH")!;
+    const patchBody = JSON.parse(patchCall[1].body as string);
+    // Both ingredients now use the structured format with valid IDs (no fallback to plain text)
+    expect(patchBody.recipeIngredient).toEqual([
+      { quantity: 2, unit: { id: "unit-each", name: "each" }, food: { id: "created-food-eggs", name: "eggs" }, note: "", display: "2 eggs", title: null, originalText: "2 eggs", referenceId: "ref-1", disableAmount: null },
+      { quantity: 1, unit: { id: "existing-unit-cup", name: "cup" }, food: { id: "food-flour", name: "flour" }, note: "", display: "1 cup flour", title: null, originalText: "1 cup flour", referenceId: "ref-2", disableAmount: null },
+    ]);
+    // resolution creates food but reuses existing unit — no POST to /api/units
+    const calls = fetchImpl.mock.calls as [string, RequestInit][];
+    expect(calls.some(([u, i]) => i.method === "POST" && u.endsWith("/api/foods"))).toBe(true);
+    expect(calls.some(([u, i]) => i.method === "POST" && u.endsWith("/api/units"))).toBe(false);
+  });
+
+  it("falls back to unparsed text when food/unit resolution also fails, without failing the publish", async () => {
+    // If the parser returns null IDs AND the resolve/create calls also fail, the ingredient
+    // gracefully falls back to plain text so the publish itself still succeeds.
+    const fetchImpl = defaultFetchImpl({
+      "POST https://recipes.example.com/api/parser/ingredients": () =>
+        jsonResponse([
+          { input: "2 eggs", confidence: {}, ingredient: { quantity: 2, unit: { id: "unit-each", name: "each" }, food: { id: null, name: "eggs" }, note: "", display: "2 eggs", title: null, originalText: "2 eggs", referenceId: "ref-1", disableAmount: null } },
+          { input: "1 cup flour", confidence: {}, ingredient: { quantity: 1, unit: { id: null, name: "cup" }, food: { id: "food-flour", name: "flour" }, note: "", display: "1 cup flour", title: null, originalText: "1 cup flour", referenceId: "ref-2", disableAmount: null } },
+        ]),
+      // Both resolution calls fail
+      "GET https://recipes.example.com/api/foods?search=eggs&perPage=10": () => new Response("err", { status: 500 }),
+      "POST https://recipes.example.com/api/foods": () => new Response("err", { status: 500 }),
+      "GET https://recipes.example.com/api/units?search=cup&perPage=10": () => new Response("err", { status: 500 }),
+      "POST https://recipes.example.com/api/units": () => new Response("err", { status: 500 }),
+    });
+
+    const result = await publishRecipe(CFG, MARKDOWN, fetchImpl as unknown as typeof fetch);
+    expect(result.slug).toBe("pancakes"); // publish succeeded despite resolution failures
+
+    const patchCall = (fetchImpl.mock.calls as [string, RequestInit][]).find(([, init]) => init.method === "PATCH")!;
+    const patchBody = JSON.parse(patchCall[1].body as string);
+    // Both fall back to unparsed plain text (full ingredient text preserved)
+    expect(patchBody.recipeIngredient).toEqual([
+      { title: null, note: "2 eggs", originalText: "2 eggs", display: "2 eggs", disableAmount: true },
+      { title: null, note: "1 cup flour", originalText: "1 cup flour", display: "1 cup flour", disableAmount: true },
     ]);
   });
 
@@ -157,7 +231,7 @@ describe("publishRecipe", () => {
     ]);
   });
 
-  it("emits a header-only ingredient entry and a shared step title for named sections", async () => {
+  it("sets title on the first ingredient of each named section (no separate header row)", async () => {
     const markdown = [
       "# Birria Tacos",
       "",
@@ -165,6 +239,10 @@ describe("publishRecipe", () => {
       "",
       "### Birria",
       "1. Beef chuck",
+      "2. Dried chiles",
+      "",
+      "### Quesa Tacos",
+      "1. Corn tortillas",
       "",
       "## Directions",
       "",
@@ -178,17 +256,23 @@ describe("publishRecipe", () => {
       if (method === "POST" && u.endsWith("/api/recipes")) return jsonResponse("birria-tacos");
       if (method === "POST" && u.endsWith("/api/parser/ingredients")) return jsonResponse([]);
       if (method === "PATCH") return jsonResponse({});
-      if (method === "GET") return jsonResponse({}); // no slug -> url falls back; no tool matches
+      if (method === "GET") return jsonResponse({});
       throw new Error("unexpected request");
     });
 
-    const result = await publishRecipe(CFG, markdown, fetchImpl as unknown as typeof fetch);
-    expect(result.url).toBe("https://recipes.example.com/recipe/birria-tacos");
+    await publishRecipe(CFG, markdown, fetchImpl as unknown as typeof fetch);
 
     const patchCall = (fetchImpl.mock.calls as [string, RequestInit][]).find(([, init]) => init.method === "PATCH")!;
     const patchBody = JSON.parse(patchCall[1].body as string);
-    expect(patchBody.recipeIngredient[0]).toEqual({ title: "Birria", note: "", originalText: "", display: "", disableAmount: true });
-    expect(patchBody.recipeIngredient[1]).toMatchObject({ note: "Beef chuck" });
+    // title: "Birria" on the FIRST ingredient of that section → Mealie section header
+    // title: null on subsequent items in the same section
+    // title: "Quesa Tacos" on the first ingredient of the next section
+    // No separate empty header-only entry — that would render as a blank checkbox row
+    expect(patchBody.recipeIngredient).toEqual([
+      { title: "Birria", note: "Beef chuck", originalText: "Beef chuck", display: "Beef chuck", disableAmount: true },
+      { title: null, note: "Dried chiles", originalText: "Dried chiles", display: "Dried chiles", disableAmount: true },
+      { title: "Quesa Tacos", note: "Corn tortillas", originalText: "Corn tortillas", display: "Corn tortillas", disableAmount: true },
+    ]);
     expect(patchBody.recipeInstructions).toEqual([{ title: "Birria", text: "Braise the beef" }]);
   });
 
@@ -216,6 +300,8 @@ describe("publishRecipe", () => {
 
     const patchCall = calls.find(([, init]) => init.method === "PATCH")!;
     expect(patchCall[0]).toBe("https://recipes.example.com/api/recipes/birria-tacos");
+    // The update path DOES re-send the name so title edits during refinement take effect.
+    expect(JSON.parse(patchCall[1].body as string).name).toBe("Pancakes");
   });
 });
 

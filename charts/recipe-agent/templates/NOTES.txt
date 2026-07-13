@@ -1,0 +1,55 @@
+{{- $ao := index .Values "agent-orchestrator" -}}
+recipe-agent ({{ .Chart.Version }}) has been deployed as a single release.
+
+Components enabled in this release:
+  - orchestrator:    {{ if $ao.enabled }}yes{{ else }}no{{ end }}
+  - tool-controller: {{ if (index .Values "tool-controller").enabled }}yes{{ else }}no{{ end }}
+  - tool/skill catalog: {{ if .Values.tools.enabled }}yes{{ else }}no{{ end }}
+  - Open WebUI:      {{ if .Values.openwebui.enabled }}yes{{ else }}no{{ end }}
+
+{{- if $ao.enabled }}
+
+Consumer-facing invoke API (ADR 0006):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/agent-orchestrator-invoke 8081:8081
+  curl -s -X POST http://localhost:8081/invoke \
+    -H 'authorization: Bearer <token>' -H 'content-type: application/json' \
+    -d '{"request": "scrape https://example.com/some-recipe"}'
+
+Job callback receiver (in-cluster only, never exposed via Ingress):
+  agent-orchestrator-callback.{{ .Release.Namespace }}.svc.cluster.local:8080
+{{- end }}
+
+{{- if .Values.openwebui.enabled }}
+
+Open WebUI (chat UI):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-openwebui 8080:80
+  open http://localhost:8080
+{{- if not .Values.openwebui.openaiApiKey }}
+
+WARNING: openwebui.openaiApiKey is empty. Open WebUI will send an empty/
+placeholder bearer token, which the orchestrator's StaticIdentityResolver
+will reject (401) unless agent-orchestrator.config.staticIdentities has a
+matching entry. Set openwebui.openaiApiKey AND add the same value as a key in
+that map, e.g.:
+  agent-orchestrator.config.staticIdentities='{"<same value>": {"subject": "open-webui", "roles": ["reader","writer"]}}'
+{{- end }}
+{{- end }}
+
+{{- if $ao.enabled }}
+{{- if $ao.config }}
+{{- if $ao.config.staticIdentities }}
+
+WARNING: agent-orchestrator.config.staticIdentities is set. StaticIdentityResolver
+is a DEV/TEST-ONLY stub with no real token verification — do not use it in
+production (see apps/agent-orchestrator/src/rbac/static-identity-resolver.ts).
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.tools.enabled }}
+
+Tool/Skill catalog CRs are applied as Helm hooks AFTER the tool-controller.
+Note: because they are hooks, `helm uninstall` will NOT remove them --
+delete them by hand if needed:
+  kubectl -n {{ .Release.Namespace }} delete tool,skill -l app.kubernetes.io/part-of=recipe-agent
+{{- end }}

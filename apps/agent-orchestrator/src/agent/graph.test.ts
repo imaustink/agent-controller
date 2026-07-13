@@ -282,6 +282,98 @@ describe("buildAgentGraph", () => {
 
     expect(final.error).toMatch(/tool failed \(extraction\)/);
   });
+
+  it("runs a LocalTool via the executor sidecar instead of launching a Job (ADR 0014)", async () => {
+    const localTool: ToolDescriptor = {
+      id: "http-get-node",
+      name: "http-get-node",
+      description: "Fetches a URL",
+      allowedRoles: ["reader"],
+      localExec: { runtime: "node", package: "http-get", version: "1.0.0", network: true },
+    };
+    const localSkill: SkillDescriptor = { ...skill, id: "fetch-skill", toolIds: ["http-get-node"] };
+    const localToolExecutor = {
+      run: vi.fn().mockResolvedValue({
+        type: "succeeded",
+        job_id: "local-1",
+        seq: 0,
+        ts: new Date().toISOString(),
+        result: { status: 200, body: "hi" },
+      } satisfies Event),
+    };
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: localSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([localSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(localSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn(),
+        getByIds: vi.fn().mockResolvedValue([{ tool: localTool, score: 1 }]),
+      },
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "http-get-node",
+          toolArgs: "https://example.com",
+        } satisfies PlannedAction),
+      },
+      localToolExecutor: localToolExecutor as unknown as AgentGraphDeps["localToolExecutor"],
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fetch https://example.com", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).toEqual({ status: 200, body: "hi" });
+    expect(localToolExecutor.run).toHaveBeenCalledWith(localTool, "https://example.com");
+    // A LocalTool must never take the Job path.
+    expect(deps.jobLauncher.launch).not.toHaveBeenCalled();
+  });
+
+  it("fails gracefully when a LocalTool is selected but no executor is configured", async () => {
+    const localTool: ToolDescriptor = {
+      id: "http-get-node",
+      name: "http-get-node",
+      description: "Fetches a URL",
+      allowedRoles: ["reader"],
+      localExec: { runtime: "node", package: "http-get", version: "1.0.0", network: true },
+    };
+    const localSkill: SkillDescriptor = { ...skill, id: "fetch-skill", toolIds: ["http-get-node"] };
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: localSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([localSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(localSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn(),
+        getByIds: vi.fn().mockResolvedValue([{ tool: localTool, score: 1 }]),
+      },
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "http-get-node",
+          toolArgs: "https://example.com",
+        } satisfies PlannedAction),
+      },
+      localToolExecutor: undefined,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fetch https://example.com", authToken: "tok" });
+
+    expect(final.error).toMatch(/local execution is not configured/);
+    expect(deps.jobLauncher.launch).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildAgentGraph session-scoped active skill (ADR 0012)", () => {

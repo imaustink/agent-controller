@@ -319,11 +319,12 @@ describe("InvokeServer OpenAI-compatible chat completions (ADR 0007)", () => {
       { streamMode: "updates" },
     );
 
-    const chunks = (await readSse(res)) as { choices: { delta: { content?: string }; finish_reason: string | null }[] }[];
-    const allContent = chunks.map((c) => c.choices[0]?.delta.content ?? "").join("");
-    expect(allContent).toContain("Calling tool: recipe-scraper");
+    const chunks = (await readSse(res)) as { event?: { type?: string; data?: { description?: string } }; choices?: { delta: { content?: string }; finish_reason: string | null }[] }[];
+    const statusDescriptions = chunks.filter((c) => c.event?.type === "status").map((c) => c.event?.data?.description ?? "");
+    const allContent = chunks.filter((c) => c.choices).map((c) => c.choices![0]?.delta.content ?? "").join("");
+    expect(statusDescriptions).toContain("Calling tool: recipe-scraper.");
     expect(allContent).toContain("Pancakes");
-    expect(chunks.at(-1)?.choices[0]?.finish_reason).toBe("stop");
+    expect(chunks.filter((c) => c.choices).at(-1)?.choices![0]?.finish_reason).toBe("stop");
 
     await server.close();
   });
@@ -383,11 +384,11 @@ describe("InvokeServer OpenAI-compatible chat completions (ADR 0007)", () => {
     });
 
     expect(res.status).toBe(200);
-    const chunks = (await readSse(res)) as { choices: { delta: { content?: string }; finish_reason: string | null }[] }[];
-    const allContent = chunks.map((c) => c.choices[0]?.delta.content ?? "").join("");
+    const chunks = (await readSse(res)) as { type?: string; choices?: { delta: { content?: string }; finish_reason: string | null }[] }[];
+    const allContent = chunks.filter((c) => c.choices).map((c) => c.choices![0]?.delta.content ?? "").join("");
     expect(allContent).toContain("please paste it back in");
     expect(allContent).not.toContain("agent stream ended unexpectedly");
-    expect(chunks.at(-1)?.choices[0]?.finish_reason).toBe("stop");
+    expect(chunks.filter((c) => c.choices).at(-1)?.choices![0]?.finish_reason).toBe("stop");
 
     await server.close();
   });
@@ -559,10 +560,11 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
       },
       { streamMode: "updates" },
     );
-    const chunks = (await readSse(res)) as { choices: { delta: { content?: string } }[] }[];
-    const allContent = chunks.map((c) => c.choices[0]?.delta.content ?? "").join("");
-    expect(allContent).toContain("Continuing with skill: Recipe Skill");
-    expect(allContent).not.toContain("Selected skill");
+    const chunks = (await readSse(res)) as { event?: { type?: string; data?: { description?: string } }; choices?: { delta: { content?: string } }[] }[];
+    const statusDescriptions = chunks.filter((c) => c.event?.type === "status").map((c) => c.event?.data?.description ?? "");
+    const allContent = chunks.filter((c) => c.choices).map((c) => c.choices![0]?.delta.content ?? "").join("");
+    expect(statusDescriptions.some((d) => d.startsWith("Continuing with skill: Recipe Skill"))).toBe(true);
+    expect(statusDescriptions.every((d) => !d.startsWith("Selected skill"))).toBe(true);
 
     await server.close();
   });

@@ -8,12 +8,11 @@ const OCR_PROMPT =
   "This may be a recipe (ingredients, steps, notes). Output only the transcribed text, no commentary.";
 
 /**
- * Downloads an image (size-capped, SSRF-guarded) and uses a vision model as an
- * OCR engine to recover its text. The recovered text then flows through the
- * same formatting stage as every other source type.
+ * Runs a single image (already in memory) through the vision model as an OCR
+ * engine, returning the recovered text. Shared by the single-image lane and
+ * the TikTok photo (slideshow) lane so both use identical OCR behavior.
  */
-export async function extractImage(rawUrl: string): Promise<Extraction> {
-  const { bytes, contentType } = await downloadBytes(rawUrl, config.maxImageBytes);
+export async function ocrImage(bytes: Buffer, contentType: string | undefined): Promise<string> {
   const mime = contentType && contentType.startsWith("image/") ? contentType : "image/jpeg";
   const dataUrl = `data:${mime};base64,${bytes.toString("base64")}`;
 
@@ -32,7 +31,18 @@ export async function extractImage(rawUrl: string): Promise<Extraction> {
     ],
   });
 
-  const text = response.choices[0]?.message?.content ?? "";
+  return response.choices[0]?.message?.content ?? "";
+}
+
+/**
+ * Downloads an image (size-capped, SSRF-guarded) and uses a vision model as an
+ * OCR engine to recover its text. The recovered text then flows through the
+ * same formatting stage as every other source type.
+ */
+export async function extractImage(rawUrl: string): Promise<Extraction> {
+  const { bytes, contentType } = await downloadBytes(rawUrl, config.maxImageBytes);
+  const mime = contentType && contentType.startsWith("image/") ? contentType : "image/jpeg";
+  const text = await ocrImage(bytes, mime);
 
   return {
     text,

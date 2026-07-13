@@ -25,6 +25,8 @@ coverage
 go.work
 go.work.sum
 
-# Fetched Helm chart dependencies (run `helm dependency update` to refetch);
+# Fetched Helm chart dependencies (run `helm dependency build` to refetch);
 # Chart.lock IS committed to pin versions, the downloaded .tgz artifacts are not.
-charts/*/charts/*.tgz
+# Recursive so the umbrella chart's nested subchart deps are covered too
+# (e.g. charts/recipe-agent/charts/agent-orchestrator/charts/qdrant-*.tgz).
+charts/**/charts/*.tgz

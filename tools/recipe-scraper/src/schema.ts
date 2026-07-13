@@ -8,13 +8,14 @@ import { z } from "zod";
  */
 export const RecipeSectionSchema = z.object({
   name: z.string().nullable(),
-  items: z.array(z.string()),
+  items: z.array(z.string().min(1)),
 });
 
 export type RecipeSection = z.infer<typeof RecipeSectionSchema>;
 
 /** The normalized recipe artifact this subagent produces. */
 export const RecipeSchema = z.object({
+  name: z.string().nullable(),
   ingredientSections: z.array(RecipeSectionSchema),
   directionSections: z.array(RecipeSectionSchema),
   equipment: z.array(z.string()),
@@ -36,15 +37,16 @@ const RECIPE_SECTION_JSON_SCHEMA = {
   required: ["name", "items"],
   properties: {
     name: { type: ["string", "null"] },
-    items: { type: "array", items: { type: "string" } },
+    items: { type: "array", items: { type: "string", minLength: 1 } },
   },
 } as const;
 
 export const RECIPE_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["ingredientSections", "directionSections", "equipment", "tips"],
+  required: ["name", "ingredientSections", "directionSections", "equipment", "tips"],
   properties: {
+    name: { type: ["string", "null"] },
     ingredientSections: { type: "array", items: RECIPE_SECTION_JSON_SCHEMA },
     directionSections: { type: "array", items: RECIPE_SECTION_JSON_SCHEMA },
     equipment: { type: "array", items: { type: "string" } },
@@ -52,7 +54,7 @@ export const RECIPE_JSON_SCHEMA = {
   },
 } as const;
 
-export const SourceTypeSchema = z.enum(["video", "image", "web"]);
+export const SourceTypeSchema = z.enum(["video", "image", "web", "tiktok_photo"]);
 export type SourceType = z.infer<typeof SourceTypeSchema>;
 
 /** The recipe artifact + provenance — the payload of a successful tool call. */

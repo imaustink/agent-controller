@@ -1,0 +1,29 @@
+apiVersion: v2
+name: agent-orchestrator
+description: >-
+  Helm chart for the recipe-agent parent orchestrator: RAG-based skill/tool
+  selection and Kubernetes Job launcher (see apps/agent-orchestrator).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/bitovi/recipe-agent
+sources:
+  - https://github.com/bitovi/recipe-agent
+keywords:
+  - agent
+  - orchestrator
+  - llm
+  - langgraph
+maintainers:
+  - name: recipe-agent
+dependencies:
+  # Optional Qdrant instance (config.qdrantUrl's backing store), off by
+  # default (see values.yaml `qdrant.enabled`) -- most deployments should
+  # point at an existing Qdrant instead. Pinned to an exact version
+  # (matching this repo's convention of exact-pinning infra versions, see
+  # apps/recipe-scraper's playwright/Dockerfile pinning) -- bump deliberately
+  # with `helm dependency update` after reviewing the qdrant-helm changelog.
+  - name: qdrant
+    version: "1.18.2"
+    repository: https://qdrant.github.io/qdrant-helm
+    condition: qdrant.enabled

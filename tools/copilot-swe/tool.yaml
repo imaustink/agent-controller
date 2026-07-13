@@ -1,0 +1,75 @@
+# Tool custom resource for copilot-swe (ADR 0010) -- apply with:
+#   kubectl apply -n <namespace> -f tools/copilot-swe/tool.yaml
+#
+# This is a PRIVILEGED tool (tier: privileged). It authenticates git/gh with a
+# short-lived GitHub App installation token and the Copilot model with a
+# Copilot-entitled fine-grained PAT. The `copilot-swe` ServiceAccount and the
+# `copilot-swe-secrets` Secret referenced below must already exist in the same
+# namespace (this CR/the tool-controller never creates them):
+#
+#   kubectl -n <namespace> create serviceaccount copilot-swe
+#   kubectl -n <namespace> create secret generic copilot-swe-secrets \
+#     --from-literal=COPILOT_GITHUB_TOKEN=github_pat_... \
+#     --from-file=GITHUB_APP_PRIVATE_KEY=/path/to/app-private-key.pem
+apiVersion: tool.recipe-agent.dev/v1alpha1
+kind: Tool
+metadata:
+  name: copilot-swe
+spec:
+  description: >-
+    Performs a software-engineering task on GitHub end-to-end using the
+    agentic GitHub Copilot CLI: creates or clones a repository, works on a
+    dedicated branch, commits and pushes the changes, and opens (or updates) a
+    pull request. Handles multi-turn refinement -- follow-up instructions push
+    more commits to the same pull request. Cannot perform irreversible actions
+    (no force-push, no branch/repository deletion).
+  input: >-
+    A natural-language software-engineering instruction serialized as a single
+    string (e.g. "create a repo called hello-svc with a Node HTTP server and
+    open a PR", or "add a health check endpoint"). May be prefixed with a
+    `<!-- swe: repo=owner/name branch=... pr=... session=... -->` marker
+    carried forward from a previous turn to continue the same pull request.
+  output: >-
+    A summary of the changes plus a link to the opened/updated pull request,
+    prefixed with an `swe` marker so a follow-up turn can keep refining the
+    same PR; or a failed event if no pull request could be produced.
+  # This tool WRITES to GitHub, so it requires the writer role. A skill's
+  # audience is the intersection of its tools' roles (ADR 0011).
+  allowedRoles:
+    - writer
+  tier: privileged
+  image: copilot-swe:latest
+  serviceAccountName: copilot-swe
+  # Coding tasks take much longer than the 300s default -- bound at 30 minutes
+  # (Tool.spec.timeoutSeconds, honored by the tool-controller as the Job's
+  # activeDeadlineSeconds when the ToolRun doesn't override it).
+  timeoutSeconds: 1800
+  # Privileged tools get a bigger writable workspace + more headroom than the
+  # 256Mi recipe tools.
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+      ephemeral-storage: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+      ephemeral-storage: "8Gi"
+  env:
+    - name: GITHUB_APP_ID
+      value: "REPLACE_WITH_YOUR_APP_ID"
+    # Optional: pin the installation id to skip lookup.
+    # - name: GITHUB_APP_INSTALLATION_ID
+    #   value: "12345678"
+    # Optional: pin a Copilot model (empty => Copilot chooses).
+    # - name: COPILOT_MODEL
+    #   value: "claude-sonnet-4.6"
+  secretEnv:
+    - name: COPILOT_GITHUB_TOKEN
+      secretRef:
+        name: copilot-swe-secrets
+        key: COPILOT_GITHUB_TOKEN
+    - name: GITHUB_APP_PRIVATE_KEY
+      secretRef:
+        name: copilot-swe-secrets
+        key: GITHUB_APP_PRIVATE_KEY

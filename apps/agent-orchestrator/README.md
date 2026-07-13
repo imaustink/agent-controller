@@ -123,6 +123,33 @@ The target namespace's `serviceAccountName` (e.g. `recipe-scraper`) still
 needs to actually exist in the cluster — this app doesn't create tool
 ServiceAccounts, only its own (see the Helm chart).
 
+## Registering a LocalTool (ADR 0014)
+
+A `LocalTool` runs **in-pod** by a per-language executor sidecar instead of as a
+Job — lower latency, code pulled from a registry and sandboxed with bubblewrap.
+Apply a `LocalTool` CR (see the CRD in `controllers/tool-controller` and the
+reference tools under `tools-local/`):
+
+```yaml
+apiVersion: tool.recipe-agent.dev/v1alpha1
+kind: LocalTool
+metadata: { name: http-get-node }
+spec:
+  description: "HTTP GET a URL and return status + body."
+  input: "A URL on stdin."
+  output: "An envelope { status, body }."
+  allowedRoles: ["reader"]
+  runtime: node
+  package: "@recipe-agent/http-get"
+  version: "0.1.0"     # exact pin required
+  network: true         # opt in to egress (default deny)
+```
+
+Enable the executor sidecars via the chart's
+`agent-orchestrator.localTool.enabled` value and list the runtimes you use. The
+orchestrator discovers `LocalTool` CRs at startup and indexes them into the same
+RAG catalog as container tools, so a skill's `toolRefs` can name either kind.
+
 ## Calling it
 
 ```bash
@@ -228,7 +255,7 @@ These are called out explicitly rather than silently glossed over — see
   `serviceAccountName` named in that tool's `manifest.json` (ADR 0009); that
   ServiceAccount must already exist in the target namespace (this app doesn't
   create tool ServiceAccounts, only its own — see
-  [charts/agent-orchestrator](../../charts/agent-orchestrator/) for the
+  [charts/recipe-agent/charts/agent-orchestrator](../../charts/recipe-agent/charts/agent-orchestrator/) for the
   orchestrator's own ServiceAccount/Role/RoleBinding).
 
 ## Commands

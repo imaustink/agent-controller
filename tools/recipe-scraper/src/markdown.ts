@@ -11,7 +11,10 @@ import type { Envelope, RecipeSection } from "./schema.js";
  */
 
 function renderNumberedList(items: string[]): string {
-  return items.map((item, i) => `${i + 1}. ${item}`).join("\n");
+  return items
+    .filter((item) => item.trim().length > 0)
+    .map((item, i) => `${i + 1}. ${item}`)
+    .join("\n");
 }
 
 /**

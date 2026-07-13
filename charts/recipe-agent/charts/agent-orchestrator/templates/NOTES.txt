@@ -1,0 +1,31 @@
+agent-orchestrator ({{ .Chart.Name }}-{{ .Chart.Version }}) has been deployed.
+
+Consumer-facing invoke API (ADR 0006):
+{{- if .Values.ingress.enabled }}
+  http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "agent-orchestrator.fullname" . }}-invoke {{ .Values.service.invoke.port }}:{{ .Values.service.invoke.port }}
+  curl -s -X POST http://localhost:{{ .Values.service.invoke.port }}/invoke \
+    -H 'authorization: Bearer <token>' -H 'content-type: application/json' \
+    -d '{"request": "scrape https://example.com/some-recipe"}'
+{{- end }}
+
+Job callback receiver (in-cluster only, never exposed via Ingress):
+  {{ include "agent-orchestrator.fullname" . }}-callback.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.callback.port }}
+
+{{- if not .Values.secrets.existingSecret }}
+{{- if not .Values.secrets.create }}
+
+WARNING: no Secret configured (secrets.create=false and secrets.existingSecret
+is empty). Set one of them — OPENAI_API_KEY and AGENT_CALLBACK_SECRET are
+required for the container to start.
+{{- end }}
+{{- end }}
+
+{{- if .Values.config.staticIdentities }}
+
+WARNING: config.staticIdentities is set. StaticIdentityResolver is a
+DEV/TEST-ONLY stub with no real token verification — do not use this in
+production (see apps/agent-orchestrator/src/rbac/static-identity-resolver.ts).
+{{- end }}
+

@@ -2,7 +2,9 @@ import * as k8s from "@kubernetes/client-node";
 import { config } from "./config.js";
 import { CallbackReceiver } from "./callback/receiver.js";
 import { ToolRunLauncher } from "./k8s/toolrun-launcher.js";
+import { LocalToolExecutor, K8sSecretReader } from "./local/local-tool-executor.js";
 import { CrdToolRegistry } from "./registry/crd-tool-registry.js";
+import { CrdLocalToolRegistry } from "./registry/crd-local-tool-registry.js";
 import { loadStaticIdentitiesFromEnv, StaticIdentityResolver } from "./rbac/static-identity-resolver.js";
 import { CrdSkillRegistry } from "./skills/crd-skill-registry.js";
 import { deriveSkillAccess } from "./skills/derive-access.js";
@@ -55,6 +57,16 @@ async function main(): Promise<void> {
   // (controllers/tool-controller/), which is also the only thing that ever
   // creates a k8s Job now.
   const registry = CrdToolRegistry.fromKubeConfig(config.namespace, config.crdGroup, config.crdVersion, kubeConfig);
+  // LocalTools (ADR 0014): tools executed in-pod by a per-language executor
+  // sidecar instead of as a k8s Job. Discovered from LocalTool CRs and unioned
+  // with the container-tool catalog below, so skills reference either kind
+  // transparently by CR name.
+  const localToolRegistry = CrdLocalToolRegistry.fromKubeConfig(
+    config.namespace,
+    config.crdGroup,
+    config.crdVersion,
+    kubeConfig,
+  );
   const jobLauncher = ToolRunLauncher.fromKubeConfig(
     config.crdGroup,
     config.crdVersion,
@@ -86,7 +98,11 @@ async function main(): Promise<void> {
   // watch loop; same documented limitation as the superseded ADR 0009
   // manifest approach, just against CRDs instead of files).
   const tools = await registry.listAll();
-  await vectorStore.upsert(tools);
+  const localTools = await localToolRegistry.listAll();
+  // One RAG index over both kinds; getByIds/query return whichever descriptor
+  // shape (jobTemplate vs localExec) the tool was registered with.
+  const allTools = [...tools, ...localTools];
+  await vectorStore.upsert(allTools);
 
   // Skill catalog (ADR 0010, supersedes the static src/skills/catalog.ts
   // array from ADR 0008): Skill custom resources, upserted into their own
@@ -113,7 +129,7 @@ async function main(): Promise<void> {
   // unrestricted when a skill declares no tools) before indexing. Note this
   // happens at startup only: a Tool CR role change affects skill visibility
   // after the next restart, same staleness as the rest of the catalog.
-  await skillStore.upsert(deriveSkillAccess(skills, tools));
+  await skillStore.upsert(deriveSkillAccess(skills, allTools));
 
   const identities = loadStaticIdentitiesFromEnv(config.staticIdentities);
   const identityResolver = new StaticIdentityResolver(identities);
@@ -122,6 +138,15 @@ async function main(): Promise<void> {
   const skillSelector = new OpenAiSkillSelector({ model: config.selectionModel });
   const skillFitChecker = new OpenAiSkillFitChecker({ model: config.selectionModel });
   const actionPlanner = new OpenAiActionPlanner({ model: config.selectionModel });
+
+  // Executes LocalTools by RPC to the per-language sidecars over the shared
+  // unix-socket dir (ADR 0014). Secret-backed env is resolved here (the
+  // orchestrator holds the k8s identity; the sidecars deliberately do not).
+  const localToolExecutor = new LocalToolExecutor({
+    socketDir: config.localToolSocketDir,
+    defaultTimeoutSeconds: config.localToolTimeoutSeconds,
+    secretReader: K8sSecretReader.fromKubeConfig(config.namespace, kubeConfig),
+  });
 
   const graph = buildAgentGraph({
     identityResolver,
@@ -132,6 +157,7 @@ async function main(): Promise<void> {
     actionPlanner,
     jobLauncher,
     callbackReceiver,
+    localToolExecutor,
     callbackBaseUrl: config.callbackBaseUrl,
     callbackSecret: config.callbackSecret,
     skillTopK: config.skillTopK,

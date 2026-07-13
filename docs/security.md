@@ -167,6 +167,88 @@ addition specific to it:
   server-side per-conversation slug allowlist) if this proves exploitable in
   practice.
 
+## copilot-swe: a deliberately privileged tool
+
+`tools/copilot-swe` (an agentic GitHub Copilot CLI wrapper that opens pull
+requests) is intentionally more privileged than the recipe tools, so it is
+classified `tier: privileged` and its trust boundary is documented here rather
+than assumed away.
+
+- **Two separate credentials, kept apart on purpose.** The Copilot *model* is
+  authenticated with `COPILOT_GITHUB_TOKEN` (a fine-grained PAT with the
+  "Copilot Requests" permission); all *git/GitHub* operations use a short-lived
+  **GitHub App installation token** minted at run time from
+  `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY`. The built-in Copilot GitHub MCP
+  server is disabled (`--disable-builtin-mcps`) so git auth never rides on the
+  model credential. The App's installation scope bounds which repositories the
+  tool can touch.
+- **No irreversible actions — defense in depth, because no single layer
+  suffices.** A GitHub App's `Administration:write` permission conflates repo
+  *create* and *delete*, so App permissions alone cannot forbid deletion.
+  Therefore: (1) Copilot deny rules baked into every run (`src/copilot.ts`
+  `DENY_TOOLS`: force-push variants, `git reset --hard`, branch/ref deletion,
+  `rm -rf`, `gh repo delete`, `gh api -X DELETE`) — deny rules always take
+  precedence over `--allow-all-tools`; (2) least-privilege App permissions;
+  (3) server-side branch-protection/rulesets on the target repos blocking
+  force-push and deletion regardless of the client.
+- **Relaxed hardening, scoped.** Unlike the recipe tools it needs outbound
+  network (GitHub + the Copilot API), a larger writable workspace, more memory,
+  and a longer deadline (`Tool.spec.timeoutSeconds`, e.g. 1800). The k8s
+  securityContext is unchanged: it still runs non-root (uid 10001), with a
+  read-only root filesystem and all capabilities dropped — every write goes to
+  a writable `emptyDir`/tmpfs under `$HOME`. An egress NetworkPolicy limiting
+  the Job to GitHub + Copilot hosts is a recommended additional control (tool
+  Jobs currently have none).
+- **The `swe` marker is repo/branch/PR identity round-tripped through chat
+  history, not a verified capability.** Like recipe-publisher's `mealie-slug`
+  marker, a `<!-- swe: repo=… branch=… -->` marker survives the orchestrator's
+  `<conversation_history>` fold to continue the same PR across turns. It can
+  ride on untrusted content, so a prompt injection could in principle redirect
+  work to a different repo/branch — blast radius is bounded to the App's
+  installed repositories, and the skill markdown instructs the model to only
+  ever copy a marker forward verbatim, never fabricate one.
+
+## LocalTool: registry code execution inside the orchestrator pod (ADR 0014)
+
+`LocalTool` CRs run tool code **inside the orchestrator pod** — pulled from a
+language registry at runtime and executed by a per-language bubblewrap sidecar —
+instead of as an isolated k8s Job. This is a deliberate isolation-for-latency
+trade and the highest-trust surface in the repo. Threats and mitigations:
+
+- **Arbitrary registry code execution.** Creating a `LocalTool` causes
+  third-party code to be fetched and run in-pod. Treat CR create/update as a
+  **privileged operation** and gate it with k8s RBAC. Integrity is enforced
+  fail-closed: exact version pinning (ranges/tags rejected), sha256 checksum
+  verification (required for shell `sourceURL`), and a registry-host allowlist.
+- **Install-time code execution.** `npm install` / `pip install` / `go install`
+  run untrusted code *during fetch*, before the tool ever executes. This is
+  confined to the sidecar's own container (separate FS/memory/identity from the
+  orchestrator) and run with script suppression where possible
+  (`npm --ignore-scripts`, `pip --only-binary=:all:`).
+- **Filesystem + privileges.** Each invocation runs under bubblewrap:
+  `--unshare-all`, read-only root + tmpfs `/tmp`, `--clearenv` with only the
+  tool's declared env re-injected. The tool never sees the orchestrator's env or
+  secrets; it sees only its own `env` plus `secretEnv` values resolved by the
+  orchestrator and passed over the pod-local unix socket.
+- **Network is default-deny, per-tool opt-in** (`spec.network`). Enforced by the
+  sidecar's own network namespace (bwrap `--unshare-net`, re-shared only when
+  opted in). **Caveat:** sidecars share the *pod's* network namespace with the
+  orchestrator, so a k8s `NetworkPolicy` cannot distinguish them — the bwrap
+  namespace is the real per-tool control, not NetworkPolicy. Network-enabled
+  tools remain responsible for their own SSRF defenses (the reference `http-get`
+  tools carry an SSRF guard mirroring §1).
+- **Node prerequisite.** bwrap's per-invocation network namespace requires
+  **unprivileged user namespaces enabled on the node**. Where unavailable the
+  sandbox fails closed (the run fails) rather than degrading to no isolation.
+- **No k8s identity for sidecars.** The pod sets
+  `automountServiceAccountToken: false` and projects the ServiceAccount token
+  only into the orchestrator container, so a compromised tool/sidecar cannot use
+  the orchestrator's cluster credentials. The orchestrator's own Role gains only
+  `secrets: get` (for `secretEnv` resolution) when LocalTools are enabled.
+- **Disabled by default.** The Helm feature (`localTool.enabled`) is off unless
+  explicitly turned on, and operators trim `localTool.runtimes` to the languages
+  they actually use.
+
 ## Reporting
 
 This is a component of a larger system; treat the scraper container as

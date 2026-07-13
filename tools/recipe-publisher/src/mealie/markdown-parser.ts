@@ -49,7 +49,8 @@ function parseNumberedList(text: string): string[] {
     .split("\n")
     .map((line) => line.match(/^\d+\.\s+(.+)$/))
     .filter((match): match is RegExpMatchArray => match !== null)
-    .map((match) => match[1]!.trim());
+    .map((match) => match[1]!.trim())
+    .filter((item) => item.length > 0);
 }
 
 /** Parses a `## Ingredients`/`## Directions` block body, splitting on `### ` subsections if present. */
@@ -59,7 +60,14 @@ function parseSectionGroup(body: string): ParsedSection[] {
   }
   const sections: ParsedSection[] = [];
   const parts = body.split(/^###\s+(.+)$/m);
-  // parts alternates [preamble (ignored), name, content, name, content, ...]
+  // parts alternates [preamble, name, content, name, content, ...]
+  // Include any numbered items that appear before the first ### header (e.g. when
+  // the orchestrator LLM edits a recipe and mixes flat items with subsections)
+  // rather than silently discarding them.
+  const preambleItems = parseNumberedList(parts[0] ?? "");
+  if (preambleItems.length > 0) {
+    sections.push({ name: null, items: preambleItems });
+  }
   for (let i = 1; i < parts.length; i += 2) {
     const name = parts[i]!.trim();
     sections.push({ name, items: parseNumberedList(parts[i + 1] ?? "") });

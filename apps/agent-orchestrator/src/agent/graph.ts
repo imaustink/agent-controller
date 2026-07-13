@@ -3,6 +3,7 @@ import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import type { Event } from "@recipe-agent/messaging";
 import type { CallbackReceiver } from "../callback/receiver.js";
 import type { JobLauncher } from "../k8s/job-launcher.js";
+import type { LocalToolExecutor } from "../local/local-tool-executor.js";
 import type { IdentityResolver, Identity } from "../rbac/types.js";
 import type { SkillDescriptor, SkillSearchResult, SkillStore } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
@@ -91,6 +92,12 @@ export interface AgentGraphDeps {
   actionPlanner: ActionPlanner;
   jobLauncher: JobLauncher;
   callbackReceiver: CallbackReceiver;
+  /**
+   * Executor for LocalTools (ADR 0014) — tools run in-pod by a per-language
+   * sidecar instead of as a k8s Job. Optional: when absent, a selected
+   * LocalTool fails gracefully rather than crashing the graph.
+   */
+  localToolExecutor?: LocalToolExecutor;
   /** Base URL the launched Job's callback should target, e.g. http://agent-orchestrator.default.svc:8080 */
   callbackBaseUrl: string;
   callbackSecret: string;
@@ -198,21 +205,40 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       return { selectedTool: tool, toolArgs: planned.toolArgs };
     })
     .addNode("launchJob", async (state) => {
-      if (!state.selectedTool) {
+      const tool = state.selectedTool;
+      if (!tool) {
         return { error: "no tool selected" };
       }
-      const jobId = randomUUID();
-      const callbackUrl = `${deps.callbackBaseUrl}/callback/${jobId}`;
-      const awaitResult = deps.callbackReceiver.awaitJob(jobId);
+      const input = state.toolArgs ?? state.request;
 
-      await deps.jobLauncher.launch(state.selectedTool.jobTemplate, {
-        args: [state.toolArgs ?? state.request],
-        env: { JOB_ID: jobId },
-        callbackUrl,
-        callbackSecret: deps.callbackSecret,
-      });
+      let jobId: string;
+      let event: Event;
+      if (tool.localExec) {
+        // LocalTool (ADR 0014): run in-pod via the executor sidecar. No k8s
+        // Job, no callback round-trip — the executor returns the tool's stdio
+        // envelope as an Event directly, so the mapping below is identical.
+        if (!deps.localToolExecutor) {
+          return { error: `tool ${tool.id} is a LocalTool but local execution is not configured` };
+        }
+        event = await deps.localToolExecutor.run(tool, input);
+        jobId = event.job_id;
+      } else if (tool.jobTemplate) {
+        jobId = randomUUID();
+        const callbackUrl = `${deps.callbackBaseUrl}/callback/${jobId}`;
+        const awaitResult = deps.callbackReceiver.awaitJob(jobId);
 
-      const event: Event = await awaitResult;
+        await deps.jobLauncher.launch(tool.jobTemplate, {
+          args: [input],
+          env: { JOB_ID: jobId },
+          callbackUrl,
+          callbackSecret: deps.callbackSecret,
+        });
+
+        event = await awaitResult;
+      } else {
+        return { error: `tool ${tool.id} has neither a jobTemplate nor a localExec spec` };
+      }
+
       if (event.type === "failed") {
         return { jobId, error: `tool failed (${event.code}): ${event.message}` };
       }
@@ -220,7 +246,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         return { jobId, result: undefined };
       }
       const result =
-        state.selectedTool.id === RECIPE_SCRAPER_TOOL_ID && typeof event.result === "string"
+        tool.id === RECIPE_SCRAPER_TOOL_ID && typeof event.result === "string"
           ? `${event.result}${CONFIRM_PUBLISH_PROMPT}`
           : event.result;
       return { jobId, result };

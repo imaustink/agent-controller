@@ -55,6 +55,14 @@ export interface AppConfig {
   callbackSecretRefKey: string;
   /** HTTP port the consumer-facing invoke API listens on (ADR 0006). */
   httpPort: number;
+  /**
+   * Directory holding one `<runtime>.sock` per LocalTool executor sidecar
+   * (ADR 0014), shared with the sidecars via an emptyDir. The orchestrator
+   * POSTs run requests here over unix sockets — never over the network.
+   */
+  localToolSocketDir: string;
+  /** Fallback per-execution timeout (seconds) for LocalTools that set none. */
+  localToolTimeoutSeconds: number;
   /** JSON map of dev/test bearer tokens -> identity; see StaticIdentityResolver. */
   staticIdentities: string | undefined;
   requestId: string;
@@ -87,6 +95,8 @@ export const config: AppConfig = {
   callbackSecret: process.env.AGENT_CALLBACK_SECRET ?? "",
   callbackSecretRefName: process.env.AGENT_CALLBACK_SECRET_REF_NAME,
   callbackSecretRefKey: process.env.AGENT_CALLBACK_SECRET_REF_KEY ?? "AGENT_CALLBACK_SECRET",
+  localToolSocketDir: process.env.AGENT_LOCALTOOL_SOCKET_DIR ?? "/run/localtool",
+  localToolTimeoutSeconds: num(process.env.AGENT_LOCALTOOL_TIMEOUT_SECONDS, 30),
   staticIdentities: process.env.AGENT_STATIC_IDENTITIES,
   requestId: process.env.AGENT_REQUEST_ID ?? randomUUID(),
 };

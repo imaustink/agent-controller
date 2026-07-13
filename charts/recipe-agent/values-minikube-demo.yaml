@@ -1,0 +1,62 @@
+# Values file for the local minikube demo of the single `recipe-agent`
+# umbrella release (namespace `recipe-agent`). Merges the two former
+# per-chart demo files (charts/agent-orchestrator/values-minikube-demo.yaml
+# and charts/tool-controller/values-minikube-demo.yaml) under their subchart
+# keys, now that both are subcharts of one release.
+#
+# IMPORTANT LESSON (hit for real): `helm upgrade` with only a FEW `--set`
+# flags and no `-f`/`--reuse-values` REPLACES the entire computed values tree
+# with just those flags on the chart defaults -- it does NOT merge with the
+# previous revision. Always upgrade with:
+#   helm upgrade recipe-agent charts/recipe-agent -n recipe-agent -f charts/recipe-agent/values-minikube-demo.yaml
+# (edit this file first for any new setting, then run the same command --
+# never hand-assemble a fresh pile of `--set` flags from memory).
+#
+# Nothing here is a real secret: the Google client ID is public-by-design in
+# the OAuth flow, and `openwebui-dev-token` is the pre-existing dev/test-only
+# fake-auth stub. Real secrets stay in k8s Secrets referenced by name.
+
+agent-orchestrator:
+  enabled: true
+  image:
+    tag: latest
+  qdrant:
+    enabled: true
+  secrets:
+    existingSecret: agent-orchestrator-secrets
+  # DEV/TEST ONLY -- maps the Open WebUI bearer token to a reader+writer
+  # identity so the StaticIdentityResolver stub accepts it. Must include
+  # "writer" because recipe-publisher's allowedRoles=["writer"], making the
+  # recipe-refining-skill's derived effectiveRoles=["writer"] (ADR 0011) --
+  # a reader-only token returns 0 candidate skills.
+  config:
+    staticIdentities: '{"openwebui-dev-token":{"subject":"open-webui","roles":["reader","writer"]}}'
+
+tool-controller:
+  enabled: true
+  image:
+    tag: latest
+
+tools:
+  enabled: true
+  # recipe-scraper + recipe-publisher are on by default; copilot-swe and the
+  # software-engineering skill stay off (need a GitHub App + PAT set up first).
+
+openwebui:
+  enabled: true
+  # Must match a key in agent-orchestrator.config.staticIdentities above.
+  openaiApiKey: openwebui-dev-token
+  extraEnvVars:
+    - name: GOOGLE_REDIRECT_URI
+      value: "http://localhost:8080/oauth/google/login/callback"
+    - name: ENABLE_FORWARD_USER_INFO_HEADERS
+      value: "true"
+  sso:
+    enabled: true
+    google:
+      enabled: true
+      clientId: 916932714292-6900thjm1dq3e4fnqrcj3ipe4iud70o8.apps.googleusercontent.com
+      # Secret created out-of-band (never via --set/chat):
+      #   kubectl create secret generic recipe-agent-openwebui-google-oauth \
+      #     -n recipe-agent --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
+      clientExistingSecret: recipe-agent-openwebui-google-oauth

@@ -1,0 +1,15 @@
+# Patterns to ignore when building packages.
+*.tmpl
+*.orig
+*.bak
+# OS/editor cruft
+.DS_Store
+.vscode/
+# VCS dirs
+.git/
+.gitignore
+# CI/test artifacts
+.github/
+tests/
+# Environment-specific values are not packaged
+values-minikube-demo.yaml

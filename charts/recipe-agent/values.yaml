@@ -1,0 +1,118 @@
+# Umbrella values for the whole recipe-agent system. Each top-level key maps to
+# a subchart (by its dependency name/alias in Chart.yaml); set `<key>.enabled`
+# to toggle that component. Anything nested under a key is passed straight
+# through to that subchart -- see each subchart's own values.yaml for the full
+# set of knobs (charts/agent-orchestrator, charts/tool-controller, charts/tools,
+# and the upstream open-webui chart).
+
+# ---------------------------------------------------------------------------
+# Parent orchestrator (charts/agent-orchestrator). Bundles an optional Qdrant
+# under agent-orchestrator.qdrant.* (off by default).
+# ---------------------------------------------------------------------------
+agent-orchestrator:
+  enabled: true
+  # Pin the resource names to `agent-orchestrator-*` regardless of the umbrella
+  # release name, so the invoke/callback Service names stay stable -- the
+  # openwebui.openaiBaseApiUrl below and the in-cluster callback URL both
+  # depend on `agent-orchestrator-invoke` / `agent-orchestrator-callback`.
+  fullnameOverride: agent-orchestrator
+  # Common overrides live under here, e.g.:
+  #   image: { tag: latest }
+  #   qdrant: { enabled: true }
+  #   secrets: { existingSecret: agent-orchestrator-secrets }
+  #   config: { staticIdentities: "..." }
+
+# ---------------------------------------------------------------------------
+# Tool-controller operator (charts/tool-controller). Installs the Tool/Skill/
+# ToolRun/Agent/AgentRun/LocalTool CRDs (from its crds/ dir) before anything
+# else in the release.
+# ---------------------------------------------------------------------------
+tool-controller:
+  enabled: true
+  # Pin the resource names to `tool-controller-*` regardless of the umbrella
+  # release name, keeping the Deployment named `tool-controller` (rollout
+  # scripts and docs reference it directly).
+  fullnameOverride: tool-controller
+
+# ---------------------------------------------------------------------------
+# Tool + Skill catalog (charts/tools). Applied as post-install/post-upgrade
+# hooks after the controller. See charts/tools/values.yaml for per-Tool and
+# per-Skill toggles + image/secret settings.
+# ---------------------------------------------------------------------------
+tools:
+  enabled: true
+
+# ---------------------------------------------------------------------------
+# Optional Open WebUI chat UI (upstream open-webui chart, aliased `openwebui`)
+# in front of the orchestrator's OpenAI-compatible facade (ADR 0007). Off by
+# default. Run `helm dependency update charts/recipe-agent` once so the
+# subchart tarball is fetched.
+#
+# IMPORTANT auth caveat: Open WebUI sends `openaiApiKey` as a plain
+# `Authorization: Bearer <key>` header on every request, and the
+# orchestrator's StaticIdentityResolver (dev/test-only) rejects any token not
+# in agent-orchestrator.config.staticIdentities. Set `openwebui.openaiApiKey`
+# AND add the same value as a key in that map.
+# ---------------------------------------------------------------------------
+openwebui:
+  enabled: false
+  openaiApiKey: ""
+  # Base URL Open WebUI targets for the OpenAI-compatible API. Points at the
+  # orchestrator's invoke Service (pinned to `agent-orchestrator-invoke` via
+  # agent-orchestrator.fullnameOverride above), same namespace as this release.
+  openaiBaseApiUrl: "http://agent-orchestrator-invoke:8081/v1"
+  # No local model runner / Pipelines needed -- Open WebUI only talks to the
+  # orchestrator's OpenAI-compatible facade above.
+  ollama:
+    enabled: false
+  pipelines:
+    enabled: false
+  persistence:
+    size: 2Gi
+  service:
+    type: ClusterIP
+  # Open WebUI loads a sentence-transformers embedding model at startup for
+  # its (unused-by-us) local RAG feature even when it's otherwise idle --
+  # 1Gi was observed OOMKilling the container (exit 137) in a live minikube
+  # deploy. 2Gi request / 3Gi limit is comfortable headroom.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 2Gi
+    limits:
+      cpu: "1"
+      memory: 3Gi
+  # Optional Google OAuth login (adds a "Continue with Google" button; does
+  # NOT disable local email/password accounts). Disabled by default.
+  #
+  # Setup (do this yourself, never paste the client secret in chat):
+  # 1. Google Cloud Console -> APIs & Services -> Credentials -> Create
+  #    Credentials -> OAuth client ID -> Application type "Web application".
+  # 2. Authorized redirect URI must exactly match how you reach Open WebUI.
+  #    For the documented port-forward workflow:
+  #      http://localhost:8080/oauth/google/login/callback
+  # 3. Create the client secret as a k8s Secret yourself:
+  #      kubectl create secret generic recipe-agent-openwebui-google-oauth \
+  #        -n <namespace> --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
+  # 4. Set sso.google.enabled=true, sso.google.clientId=<GOOGLE_CLIENT_ID>
+  #    and sso.google.clientExistingSecret to the Secret name above.
+  sso:
+    enabled: false
+    enableSignup: true
+    google:
+      enabled: false
+      clientId: ""
+      clientExistingSecret: ""
+      clientExistingSecretKey: "client-secret"
+  # GOOGLE_REDIRECT_URI isn't a first-class field in the open-webui chart, so
+  # set it explicitly. ENABLE_FORWARD_USER_INFO_HEADERS makes Open WebUI
+  # forward X-OpenWebUI-Chat-Id (used for the orchestrator's session-scoped
+  # active-skill continuity, ADR 0012).
+  #
+  # NOTE: Helm replaces arrays wholesale -- if you override extraEnvVars in
+  # your own values file, re-specify BOTH entries.
+  extraEnvVars:
+    - name: GOOGLE_REDIRECT_URI
+      value: "http://localhost:8080/oauth/google/login/callback"
+    - name: ENABLE_FORWARD_USER_INFO_HEADERS
+      value: "true"

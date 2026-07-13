@@ -1,0 +1,253 @@
+replicaCount: 1
+
+image:
+  repository: agent-orchestrator
+  # Defaults to .Chart.AppVersion if empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Creates the ServiceAccount the orchestrator runs as (see rbac.create
+  # below for the permissions bound to it: read the Tool/Skill CRD catalog,
+  # create/watch/delete ToolRun CRs -- it never talks to batch/jobs
+  # directly, that's charts/tool-controller's job, ADR 0010).
+  create: true
+  annotations: {}
+  name: ""
+  automount: true
+
+rbac:
+  # Namespace-scoped Role + RoleBinding (never a ClusterRole — the
+  # orchestrator only needs to read the Tool/Skill catalog and manage
+  # ToolRun CRs in one namespace, see docs/orchestrator.md and ADR 0010).
+  create: true
+
+# Namespace the orchestrator discovers Tool/Skill CRs in and creates ToolRun
+# CRs into (AGENT_NAMESPACE). Defaults to the release namespace when empty.
+namespace: ""
+
+ports:
+  http: 8081
+  callback: 8080
+
+config:
+  # Ignored when qdrant.enabled=true below (the in-cluster subchart's
+  # Service URL is derived automatically instead). Set this to point at an
+  # existing/external Qdrant instance otherwise.
+  qdrantUrl: "http://qdrant:6333"
+  qdrantCollection: tools
+  qdrantVectorSize: 1536
+  qdrantSkillsCollection: skills
+  embeddingModel: text-embedding-3-small
+  selectionModel: gpt-4o-2024-08-06
+  skillTopK: 3
+  # Base URL Job pods use to reach the callback receiver. Leave empty to
+  # default to the in-cluster callback Service DNS name (ADR 0006).
+  callbackBaseUrl: ""
+  # API group/version for the Tool/Skill/ToolRun CRDs (ADR 0010). Must match
+  # charts/tool-controller's installed CRDs.
+  crdGroup: tool.recipe-agent.dev
+  crdVersion: v1alpha1
+  # DEV/TEST ONLY (see src/rbac/static-identity-resolver.ts) — JSON map of
+  # bearer token -> {subject, roles}. Leave unset in any real deployment;
+  # prefer a real OIDC/JWT identity resolver instead (not implemented yet).
+  staticIdentities: ""
+
+# Secrets: OPENAI_API_KEY (required), AGENT_CALLBACK_SECRET (required, no
+# default — must not be guessable), AGENT_QDRANT_API_KEY (optional).
+#
+# By default the chart does NOT create a Secret — bring your own via
+# `existingSecret` (e.g. populated by an external-secrets operator / sealed
+# secrets / `kubectl create secret`). Setting `create: true` and passing
+# values here is provided for local/dev convenience only: those values land
+# in plaintext in the Helm release's stored values, which is not appropriate
+# for production secrets.
+secrets:
+  create: false
+  existingSecret: ""
+  openaiApiKeyKey: OPENAI_API_KEY
+  callbackSecretKey: AGENT_CALLBACK_SECRET
+  qdrantApiKeyKey: AGENT_QDRANT_API_KEY
+  # Only read when secrets.create=true.
+  openaiApiKey: ""
+  callbackSecret: ""
+  qdrantApiKey: ""
+
+service:
+  invoke:
+    type: ClusterIP
+    port: 8081
+  callback:
+    type: ClusterIP
+    port: 8080
+
+ingress:
+  # Exposes only the invoke Service (consumer-facing /invoke, /v1/*) — the
+  # callback Service is deliberately never routed through an Ingress; it's
+  # in-cluster-only for Job pods (ADR 0006).
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  path: /
+  pathType: Prefix
+  tls: []
+
+networkPolicy:
+  # Mirrors the network-boundary separation documented in ADR 0006: the
+  # invoke port is for whoever calls the agent, the callback port is for
+  # Job pods only, in-cluster. Disabled by default; enable once you know
+  # your cluster's CNI supports NetworkPolicy and you've set the selectors
+  # below.
+  enabled: false
+  # NetworkPolicyPeer list for the invoke port. Empty = allow from anywhere
+  # in the cluster (still namespaced to this policy's namespace unless a
+  # namespaceSelector is given in a peer).
+  invokeFrom: []
+  # podSelector.matchLabels identifying the Job pods allowed to reach the
+  # callback port (e.g. labels applied by job-launcher.ts to launched Jobs).
+  callbackFromPodSelector: {}
+
+resources:
+  limits:
+    cpu: "1"
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+# Matches the hardened run contract in run.sh / docs/security.md.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# The runtime image's root filesystem is read-only; only /tmp needs to be
+# writable (matches --tmpfs /tmp in run.sh).
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+
+podAnnotations: {}
+podLabels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# GET /v1/models needs no auth, so it's a safe, cheap probe target.
+livenessProbe:
+  httpGet:
+    path: /v1/models
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /v1/models
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+extraEnv: []
+
+# LocalTool executor sidecars (ADR 0014). When enabled, one sidecar container
+# per listed runtime runs in this pod and executes LocalTool CRs inside a
+# bubblewrap sandbox, reached by the orchestrator over a shared unix socket.
+# Disabled by default: it adds always-on sidecar containers and requires
+# UNPRIVILEGED USER NAMESPACES on the node (for the per-tool network sandbox).
+localTool:
+  enabled: false
+  # Shared emptyDir directory holding one <runtime>.sock per sidecar.
+  socketDir: /run/localtool
+  # Comma-separated fetch-registry allowlist enforced by every sidecar
+  # (fail-closed). Also the only hosts a shell tool's sourceURL may target.
+  allowedRegistryHosts: "registry.npmjs.org,pypi.org,files.pythonhosted.org,proxy.golang.org,sum.golang.org"
+  defaultTimeoutSeconds: 30
+  pullPolicy: IfNotPresent
+  # One sidecar container per entry. Trim to only the languages you use —
+  # each is an always-on container with its own image + cache.
+  runtimes:
+    - name: node
+      image: localtool-executor-node:latest
+    - name: python
+      image: localtool-executor-python:latest
+    - name: go
+      image: localtool-executor-go:latest
+    - name: shell
+      image: localtool-executor-shell:latest
+  # Per-runtime fetch cache. emptyDir (default) re-fetches after every restart;
+  # set persistentVolumeClaimName to use pre-created PVCs named
+  # "<persistentVolumeClaimName>-<runtime>" for a warm cache (recommended for
+  # production).
+  cache:
+    persistentVolumeClaimName: ""
+    sizeLimit: 1Gi
+  resources: {}
+  # bubblewrap creates a user + network namespace per invocation, which needs
+  # unprivileged user namespaces enabled on the node. Keep this hardened
+  # context; if bwrap cannot unshare, your node/seccomp policy may need
+  # adjusting (see docs/security.md).
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop: ["ALL"]
+
+# Optional bundled Qdrant instance (github.com/qdrant/qdrant-helm). Disabled
+# by default -- most real deployments should point config.qdrantUrl at an
+# existing Qdrant (managed, shared, or deployed separately) instead of
+# coupling its lifecycle to this release. Enabling this is meant for
+# local/dev/single-cluster-demo convenience only: it's a single replica with
+# no backup/disaster-recovery story (see the subchart's own README for its
+# production limitations).
+#
+# Run `helm dependency update charts/agent-orchestrator` once before
+# `helm install`/`helm package` so the subchart is fetched.
+qdrant:
+  enabled: false
+  replicaCount: 1
+  persistence:
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  # Set to true (or a string) to require an API key; then also set it as
+  # config.qdrantApiKey / secrets.qdrantApiKey above so the orchestrator
+  # sends the same key. Left disabled by default to keep the local/dev path
+  # simple -- enable both sides together for anything less trusted than a
+  # single-tenant dev cluster.
+  apiKey: false
+

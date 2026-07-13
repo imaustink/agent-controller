@@ -7,6 +7,7 @@ import { RecipeSchema, EnvelopeSchema, RECIPE_JSON_SCHEMA } from "./schema.js";
 describe("RecipeSchema", () => {
   it("accepts a well-formed recipe with a single unnamed section", () => {
     const recipe = {
+      name: "Scrambled Eggs",
       ingredientSections: [{ name: null, items: ["2 eggs"] }],
       directionSections: [{ name: null, items: ["Beat eggs"] }],
       equipment: ["whisk"],
@@ -17,6 +18,7 @@ describe("RecipeSchema", () => {
 
   it("accepts multiple named sections", () => {
     const recipe = {
+      name: "Layered Cake",
       ingredientSections: [
         { name: "Topping", items: ["1 cup sugar"] },
         { name: "Filling", items: ["2 cups flour"] },
@@ -31,6 +33,17 @@ describe("RecipeSchema", () => {
     expect(RecipeSchema.parse(recipe)).toEqual(recipe);
   });
 
+  it("accepts name: null", () => {
+    const recipe = {
+      name: null,
+      ingredientSections: [{ name: null, items: ["2 eggs"] }],
+      directionSections: [{ name: null, items: ["Beat eggs"] }],
+      equipment: [],
+      tips: [],
+    };
+    expect(RecipeSchema.parse(recipe)).toEqual(recipe);
+  });
+
   it("rejects missing fields", () => {
     expect(() => RecipeSchema.parse({ ingredientSections: [] })).toThrow();
   });
@@ -38,6 +51,7 @@ describe("RecipeSchema", () => {
   it("rejects wrong types", () => {
     expect(() =>
       RecipeSchema.parse({
+        name: null,
         ingredientSections: "not-an-array",
         directionSections: [],
         equipment: [],
@@ -62,6 +76,7 @@ describe("EnvelopeSchema", () => {
       url: "https://example.com/recipe",
       title: "Test",
       recipe: {
+        name: "Test Recipe",
         ingredientSections: [],
         directionSections: [],
         equipment: [],
@@ -79,7 +94,7 @@ describe("EnvelopeSchema", () => {
         source_type: "pdf",
         url: "https://example.com",
         title: null,
-        recipe: { ingredientSections: [], directionSections: [], equipment: [], tips: [] },
+        recipe: { name: null, ingredientSections: [], directionSections: [], equipment: [], tips: [] },
         provenance: {},
         warnings: [],
       }),

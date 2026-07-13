@@ -12,6 +12,8 @@ export interface AppConfig {
   maxTextChars: number;
   /** Max bytes accepted when downloading an image. */
   maxImageBytes: number;
+  /** Max number of slides OCR'd from a TikTok photo (slideshow) post, to bound vision cost. */
+  maxTikTokImages: number;
   /** Max bytes accepted when downloading audio for transcription. */
   maxAudioBytes: number;
   /** Playwright navigation timeout. */
@@ -76,6 +78,7 @@ export const config: AppConfig = {
   transcribeModel: process.env.RECIPE_TRANSCRIBE_MODEL ?? "whisper-1",
   maxTextChars: num(process.env.RECIPE_MAX_TEXT_CHARS, 100_000),
   maxImageBytes: num(process.env.RECIPE_MAX_IMAGE_BYTES, 15 * 1024 * 1024),
+  maxTikTokImages: num(process.env.RECIPE_MAX_TIKTOK_IMAGES, 12),
   maxAudioBytes: num(process.env.RECIPE_MAX_AUDIO_BYTES, 25 * 1024 * 1024),
   navTimeoutMs: num(process.env.RECIPE_NAV_TIMEOUT_MS, 30_000),
   subprocessTimeoutMs: num(process.env.RECIPE_SUBPROCESS_TIMEOUT_MS, 180_000),

@@ -172,6 +172,33 @@ Which tools even show up as retrieval candidates depends on **who is asking**:
 - The orchestrator watches Job/Pod status for completion as a fallback to the
   callback stream (covers crashes that never emit a `failed` event).
 
+### 4b. LocalTool executor sidecars (ADR 0014)
+
+An alternative, lower-latency execution path for lightweight tools that trades
+some isolation for speed. A `LocalTool` CR carries a `localExec` spec (runtime +
+pinned package coordinate) instead of a Job template, and is executed **in-pod**
+rather than as a Job:
+
+- One **executor sidecar per language** (node/python/go/shell) runs alongside the
+  orchestrator, reached over a **unix socket** on a shared `emptyDir`
+  (`POST /run`, off the network). The orchestrator carries no language toolchains.
+- The sidecar fetches+caches the pinned package (integrity-checked, registry
+  allowlisted), then runs it under a **per-invocation bubblewrap sandbox**:
+  unshared network unless `spec.network` is set, read-only fs + tmpfs `/tmp`,
+  cleared env with only the tool's declared env re-injected.
+- `secretEnv` is resolved by the orchestrator (which holds the k8s identity) and
+  passed to the sidecar over the socket — the sidecars have
+  `automountServiceAccountToken: false` and no cluster credentials.
+- The tool speaks the same stdio ABI as any LocalTool (input on stdin, one JSON
+  envelope on stdout); the executor maps that envelope onto the same
+  [`@recipe-agent/messaging`](../packages/messaging/) `Event` the Job path
+  produces, so the graph's `launchJob` node treats both identically.
+
+See [ADR 0014](adr/0014-local-tool-sidecar-execution.md) and the
+[security.md](security.md) LocalTool section for the isolation trade-offs
+(shared pod network namespace, node user-namespace prerequisite, registry code
+execution).
+
 ### 5. Sub-agents
 
 A sub-agent is the **same orchestrator image**, launched as a Job with a

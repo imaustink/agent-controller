@@ -35,6 +35,7 @@ rules:
   resources:
   - agentruns
   - agents
+  - localtools
   - skills
   - toolruns
   - tools
@@ -51,6 +52,7 @@ rules:
   resources:
   - agentruns/finalizers
   - agents/finalizers
+  - localtools/finalizers
   - skills/finalizers
   - toolruns/finalizers
   - tools/finalizers
@@ -61,6 +63,7 @@ rules:
   resources:
   - agentruns/status
   - agents/status
+  - localtools/status
   - skills/status
   - toolruns/status
   - tools/status

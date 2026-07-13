@@ -190,6 +190,14 @@ func buildJob(run *toolv1alpha1.ToolRun, tool *toolv1alpha1.Tool) (*batchv1.Job,
 		args = run.Spec.Args
 	}
 
+	// A per-invocation timeout on the ToolRun wins; otherwise fall back to the
+	// Tool's own default (buildRunJob applies the global 300s default when both
+	// are 0).
+	timeoutSeconds := run.Spec.TimeoutSeconds
+	if timeoutSeconds == 0 {
+		timeoutSeconds = tool.Spec.TimeoutSeconds
+	}
+
 	return buildRunJob(runJobParams{
 		jobName:   fmt.Sprintf("toolrun-%s", run.Name),
 		namespace: run.Namespace,
@@ -204,7 +212,7 @@ func buildJob(run *toolv1alpha1.ToolRun, tool *toolv1alpha1.Tool) (*batchv1.Job,
 		secretEnv:          tool.Spec.SecretEnv,
 		resources:          tool.Spec.Resources,
 		callback:           run.Spec.Callback,
-		timeoutSeconds:     run.Spec.TimeoutSeconds,
+		timeoutSeconds:     timeoutSeconds,
 	})
 }
 

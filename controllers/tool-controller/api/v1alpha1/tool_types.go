@@ -115,6 +115,15 @@ type ToolSpec struct {
 	// resources are the Job container's compute resource requirements.
 	// +optional
 	Resources ResourceRequirements `json:"resources,omitempty"`
+
+	// timeoutSeconds is the default bound on the launched Job's
+	// activeDeadlineSeconds, used when a ToolRun does not specify its own
+	// timeoutSeconds. Lets long-running tools (e.g. an agentic coding tool)
+	// raise the 300s default without every caller having to set it. When both
+	// are unset the controller falls back to 300s.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
 }
 
 // ToolStatus defines the observed state of Tool.

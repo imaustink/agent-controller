@@ -16,6 +16,7 @@ import {
   writeSseChunk,
   writeSseComment,
   writeSseDone,
+  writeSseStatus,
 } from "./openai/chat-completions.js";
 import { withHeartbeat } from "./openai/with-heartbeat.js";
 
@@ -317,6 +318,7 @@ export class InvokeServer {
       // turn reaches a successful terminal node (docs/adr/0012).
       let identity: { subject: string } | undefined;
       let selectedSkill: { id: string } | undefined;
+      let skillContinuation = false; // true when checkActiveSkill confirmed an existing session skill
       for await (const item of withHeartbeat(source, HEARTBEAT_MS)) {
         if (item.type === "heartbeat") {
           writeSseComment(res, "keep-alive");
@@ -325,6 +327,7 @@ export class InvokeServer {
         const [nodeName, update] = Object.entries(item.value)[0] as [string, Record<string, unknown>];
         if (update.identity) identity = update.identity as { subject: string };
         if (update.selectedSkill) selectedSkill = update.selectedSkill as { id: string };
+        if (nodeName === "checkActiveSkill" && update.selectedSkill) skillContinuation = true;
 
         if (typeof update.error === "string") {
           finish(`❌ ${update.error}`);
@@ -344,8 +347,8 @@ export class InvokeServer {
           finish(renderResult(update.result));
           return;
         }
-        const text = nodeStatusText(nodeName, update);
-        if (text) writeSseChunk(res, chatCompletionChunk(id, model, { content: text }, null));
+        const text = nodeStatusText(nodeName, update, { skillContinuation });
+        if (text) writeSseStatus(res, text);
       }
       // Stream ended without a terminal node update — shouldn't normally
       // happen, but close the SSE stream gracefully rather than hanging.
