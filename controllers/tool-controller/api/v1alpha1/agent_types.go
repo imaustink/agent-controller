@@ -44,6 +44,23 @@ type AgentSpec struct {
 	// +required
 	Output string `json:"output"`
 
+	// orchestratorPrompt is guidance injected into the PARENT orchestrator's
+	// planner when this agent is a retrieval candidate — how and when to
+	// delegate to it, what to pass as the goal, how to interpret its replies.
+	// It shapes the orchestrator's behavior, NOT the sub-agent's own loop
+	// (that's agentPrompt below). Trusted, catalog-authored (same trust model
+	// as a Skill's markdown). Optional: absent -> the orchestrator relies on
+	// description/input/output alone.
+	// +optional
+	OrchestratorPrompt string `json:"orchestratorPrompt,omitempty"`
+
+	// agentPrompt is the system prompt the SUB-AGENT's own internal loop runs
+	// with (loaded by the agent process itself, not the orchestrator). Defines
+	// the agent's persona, method, and constraints. Optional: absent -> the
+	// agent image's built-in default prompt applies.
+	// +optional
+	AgentPrompt string `json:"agentPrompt,omitempty"`
+
 	// allowedRoles gates RAG retrieval (RBAC filter), same semantics as Tool.
 	// +required
 	// +kubebuilder:validation:MinItems=1
