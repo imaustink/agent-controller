@@ -23,7 +23,7 @@ function runOpencode(
   args: string[],
   env: NodeJS.ProcessEnv,
   cwd: string,
-  onProgress: (text: string) => void,
+  onProgress: (text: string, kind: "narrative" | "status") => void,
 ): Promise<{ code: number; finalMessage: string | null; toolFailures: string[]; transcript: string }> {
   return new Promise((resolve, reject) => {
     // stdin MUST be closed (not the default open pipe): opencode probes for
@@ -41,15 +41,27 @@ function runOpencode(
     let rawOut = "";
     /** Accumulates streaming token deltas before flushing as a single chunk. */
     let deltaBuffer = "";
+    // Whether the in-flight delta buffer is a continuation of the same
+    // narrative unit as the last emission (no separator needed) versus the
+    // start of a fresh one (opencode emits a burst of deltas per message/tool
+    // cycle, back-to-back with no whitespace of its own between cycles).
+    let deltaBufferOpen = false;
+    let pendingPrefix = "";
+    let anyNarrativeEmitted = false;
 
+    // Deltas only ever come from narrative signals (text-delta/reasoning-delta,
+    // see opencode.ts) — the buffer never mixes in mechanical tool-call text.
     const flushDelta = (): void => {
       if (!deltaBuffer) return;
-      const text = deltaBuffer;
+      const raw = deltaBuffer;
       deltaBuffer = "";
-      onProgress(text);
+      const text = pendingPrefix ? `${pendingPrefix}${raw}` : raw;
+      pendingPrefix = "";
+      anyNarrativeEmitted = true;
+      onProgress(text, "narrative");
       if (transcriptLen < 8000) {
-        parts.push(text);
-        transcriptLen += text.length + 1;
+        parts.push(raw);
+        transcriptLen += raw.length + 1;
       }
     };
 
@@ -58,18 +70,33 @@ function runOpencode(
       if (!sig) return;
       if (sig.finalMessage) finalMessage = sig.finalMessage;
       if (sig.toolFailure) toolFailures.push(sig.toolFailure);
+
+      if (sig.progress && sig.isDelta) {
+        // Continuation of the same in-flight message -- no unit boundary.
+        if (!deltaBufferOpen && anyNarrativeEmitted) pendingPrefix = "\n\n";
+        deltaBufferOpen = true;
+        deltaBuffer += sig.progress;
+        // Flush early if the buffer has grown to a reasonable sentence chunk.
+        if (deltaBuffer.length >= 500) flushDelta();
+        return;
+      }
+
+      // Anything else (a whole message, a tool call/failure, an unrecognized
+      // shape) ends whatever delta run was in progress and starts a fresh unit.
+      flushDelta();
+      deltaBufferOpen = false;
+
       if (sig.progress) {
-        if (sig.isDelta) {
-          deltaBuffer += sig.progress;
-          // Flush early if the buffer has grown to a reasonable sentence chunk.
-          if (deltaBuffer.length >= 500) flushDelta();
-        } else {
-          flushDelta();
-          onProgress(sig.progress);
-          if (transcriptLen < 8000) {
-            parts.push(sig.progress);
-            transcriptLen += sig.progress.length + 1;
-          }
+        const kind = sig.progressKind ?? "status";
+        let text = sig.progress;
+        if (kind === "narrative") {
+          if (anyNarrativeEmitted) text = `\n\n${text}`;
+          anyNarrativeEmitted = true;
+        }
+        onProgress(text, kind);
+        if (transcriptLen < 8000) {
+          parts.push(sig.progress);
+          transcriptLen += sig.progress.length + 1;
         }
       }
     };
@@ -162,8 +189,10 @@ async function runOneTurn(
   const prompt = buildPrompt(instruction, marker);
   const args = buildOpencodeArgs({ prompt, workdir: toolConfig.workdir, model: toolConfig.model });
 
-  const result = await runOpencode(args, childEnv, toolConfig.workdir, (text) => {
-    void session.progress(clip(text, 500), { stage: "agent" });
+  const result = await runOpencode(args, childEnv, toolConfig.workdir, (text, kind) => {
+    // "agent-text" is a contract with the orchestrator (server.ts): it streams
+    // that stage's message as real chat content instead of a status spinner.
+    void session.progress(clip(text, 500), { stage: kind === "narrative" ? "agent-text" : "agent" });
   });
 
   if (result.code !== 0) {

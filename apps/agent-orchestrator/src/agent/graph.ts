@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import type { Event } from "@controller-agent/messaging";
-import type { AgentOrchestratorChannel } from "../agents/nats-agent-channel.js";
+import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-agent-channel.js";
 import { AgentTurnFailedError, AgentTurnTimeoutError } from "../agents/nats-agent-channel.js";
 import type { AgentDescriptor, AgentSearchResult, AgentStore } from "../agents/types.js";
 import type { JobResultReceiver } from "../callback/receiver.js";
@@ -231,6 +231,53 @@ function agentTurnErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * When a live progress listener is attached (the SSE streaming path), the
+ * delegated agent's narrative was already streamed to the user as it was
+ * generated (server.ts's "agent-text" content-delta handling). The agent's
+ * final `message` — `<!-- swe: ... --> + summary + "---" PR footer`
+ * (apps/opencode-swe-agent/src/index.ts) — would duplicate that narrative if
+ * returned whole, so keep only the parts that were NOT already streamed: the
+ * leading marker (invisible, needed for next-turn continuity) and the
+ * trailing "---" footer (the PR link). Falls back to the full message if the
+ * expected shape isn't found, so a format drift shows the user something
+ * rather than silently dropping the PR link.
+ */
+function dropStreamedNarrative(message: string): string {
+  const markerMatch = message.match(/^<!--[\s\S]*?-->\n*/);
+  const marker = markerMatch?.[0] ?? "";
+  const rest = message.slice(marker.length);
+  const footerIdx = rest.lastIndexOf("\n\n---\n");
+  if (footerIdx < 0) return message;
+  return `${marker}${rest.slice(footerIdx)}`;
+}
+
+/**
+ * Composes the visible message for a finished (or paused) agent turn.
+ * Non-streaming callers (no progress listener) never saw any of this live,
+ * so they get the collected narration prepended as a fallback transcript.
+ * Streaming callers already watched the narrative go by as content deltas,
+ * so duplicating it here would repeat the whole summary in the chat.
+ */
+function composeAgentTurnMessage(state: Pick<AgentState, "progressListener">, reply: AgentTurnResult): string {
+  if (state.progressListener) return dropStreamedNarrative(reply.message);
+  return reply.narration.length > 0 ? `${reply.narration.join("\n")}\n\n${reply.message}` : reply.message;
+}
+
+/**
+ * How long the orchestrator waits on NATS for an agent's reply. Must be at
+ * least as long as the k8s Job's own `activeDeadlineSeconds`
+ * (`deps.agentRunTimeoutSeconds`) plus a grace period, so a run that hits its
+ * own deadline gets the chance to publish a `failed` event (a clear, specific
+ * error) before the orchestrator's client-side wait gives up first with a
+ * generic "produced no reply" timeout. Falls back to nats-agent-channel.ts's
+ * own default when no deadline is configured.
+ */
+const AGENT_TIMEOUT_GRACE_MS = 60_000;
+function agentAwaitReplyTimeoutMs(agentRunTimeoutSeconds: number | undefined): number | undefined {
+  return agentRunTimeoutSeconds ? agentRunTimeoutSeconds * 1000 + AGENT_TIMEOUT_GRACE_MS : undefined;
+}
+
 /** Builds and compiles the LangGraph.js agent graph (docs/adr/0008, superseding the earlier flat tool-RAG flow). */
 export function buildAgentGraph(deps: AgentGraphDeps) {
   const graph = new StateGraph(AgentStateAnnotation)
@@ -279,11 +326,12 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
 
       try {
         const awaitReply = deps.agentChannel.awaitReply(state.activeAgentRunId, {
+          timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
           onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
         });
         await deps.agentChannel.sendPrompt(state.activeAgentRunId, state.request);
         const reply = await awaitReply;
-        const message = reply.narration.length > 0 ? `${reply.narration.join("\n")}\n\n${reply.message}` : reply.message;
+        const message = composeAgentTurnMessage(state, reply);
         return {
           selectedAgent: found.agent,
           agentRunId: state.activeAgentRunId,
@@ -356,6 +404,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // Subscribe BEFORE creating the AgentRun CR so a fast-replying agent
         // can never publish before our subscription exists.
         const awaitReply = deps.agentChannel.awaitReply(runId, {
+          timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
           onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
         });
         await deps.agentRunLauncher.launch(agent.agentRunTemplate, runId, {
@@ -365,7 +414,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           timeoutSeconds: deps.agentRunTimeoutSeconds,
         });
         const reply = await awaitReply;
-        const message = reply.narration.length > 0 ? `${reply.narration.join("\n")}\n\n${reply.message}` : reply.message;
+        const message = composeAgentTurnMessage(state, reply);
         return {
           agentRunId: runId,
           agentAwaitingReply: !reply.final,
