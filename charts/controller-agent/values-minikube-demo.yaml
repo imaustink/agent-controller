@@ -24,6 +24,10 @@ agent-orchestrator:
     enabled: true
   nats:
     enabled: true
+  # Redis-backed conversation-session store (docs/adr/0016), tested here
+  # against the chart's bundled Redis Deployment (templates/redis.yaml).
+  redis:
+    enabled: true
   secrets:
     existingSecret: agent-orchestrator-secrets
   # DEV/TEST ONLY -- maps the Open WebUI bearer token to a reader+writer

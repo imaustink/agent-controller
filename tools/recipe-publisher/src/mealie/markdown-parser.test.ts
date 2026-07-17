@@ -85,6 +85,26 @@ describe("parseRecipeMarkdown", () => {
   it("returns a null title when there is no H1 heading", () => {
     expect(parseRecipeMarkdown("## Ingredients\n\n1. Eggs").title).toBeNull();
   });
+
+  it.each(["-", "*", "•"])("parses %s-bulleted lists the same as numbered lists", (marker) => {
+    const markdown = [
+      "# Pancakes",
+      "",
+      "## Ingredients",
+      "",
+      `${marker} 2 eggs`,
+      `${marker} 1 cup flour`,
+      "",
+      "## Directions",
+      "",
+      `${marker} Mix`,
+      `${marker} Cook`,
+    ].join("\n");
+
+    const parsed = parseRecipeMarkdown(markdown);
+    expect(parsed.ingredientSections).toEqual([{ name: null, items: ["2 eggs", "1 cup flour"] }]);
+    expect(parsed.directionSections).toEqual([{ name: null, items: ["Mix", "Cook"] }]);
+  });
 });
 
 describe("extractMealieSlugMarker / renderMealieSlugMarker", () => {

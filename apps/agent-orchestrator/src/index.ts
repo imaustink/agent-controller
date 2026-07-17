@@ -25,6 +25,8 @@ import { OpenAiSkillSelector } from "./agent/skill-selector.js";
 import { buildAgentGraph } from "./agent/graph.js";
 import { OpenAiTaskCompleter } from "./openai/task-completer.js";
 import { InMemorySessionStore } from "./session/in-memory-session-store.js";
+import { RedisSessionStore } from "./session/redis-session-store.js";
+import type { SessionStore } from "./session/types.js";
 import { InvokeServer } from "./server.js";
 import { retryWithBackoff } from "./retry.js";
 
@@ -255,11 +257,28 @@ async function main(): Promise<void> {
 
   // Conversation-session store (docs/adr/0012): remembers each chat's active
   // skill so follow-up turns skip RAG re-selection when the fit-check
-  // passes. In-memory -- assumes the chart's default single replica.
-  const sessionStore = new InMemorySessionStore({
-    ttlMs: config.sessionTtlSeconds * 1000,
-    maxEntries: config.sessionMaxEntries,
-  });
+  // passes. Redis-backed (docs/adr/0016) when AGENT_REDIS_URL is set, so
+  // sessions survive restarts and are shared across replicas; otherwise
+  // falls back to the single-replica in-memory adapter.
+  let redisSessionStore: RedisSessionStore | undefined;
+  let sessionStore: SessionStore;
+  if (config.redisUrl) {
+    redisSessionStore = new RedisSessionStore(config.redisUrl, {
+      ttlSeconds: config.sessionTtlSeconds,
+    });
+    await retryWithBackoff("redis startup check", () => redisSessionStore!.connect(), {
+      attempts: 12,
+      initialDelayMs: 1_000,
+      maxDelayMs: 15_000,
+    });
+    console.error(`Using Redis session store: ${config.redisUrl}`);
+    sessionStore = redisSessionStore;
+  } else {
+    sessionStore = new InMemorySessionStore({
+      ttlMs: config.sessionTtlSeconds * 1000,
+      maxEntries: config.sessionMaxEntries,
+    });
+  }
   // Answers Open WebUI's internal housekeeping completions (title/tags/query
   // generation) directly, bypassing the agent graph -- see server.ts's
   // handleInternalUiTask and isInternalUiTaskRequest.
@@ -286,6 +305,7 @@ async function main(): Promise<void> {
       closers.push((jobResultReceiver as NatsJobReceiver).close());
     }
     if (agentDelegation) closers.push(agentDelegation.agentChannel.close());
+    if (redisSessionStore) closers.push(redisSessionStore.close());
     await Promise.all(closers);
     process.exit(0);
   };

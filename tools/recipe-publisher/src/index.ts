@@ -1,7 +1,7 @@
 import { config } from "./config.js";
 import { createSink, JobEmitter } from "./messaging/index.js";
 import { MealiePublishError, publishRecipe } from "./mealie/client.js";
-import { extractMealieSlugMarker, renderMealieSlugMarker } from "./mealie/markdown-parser.js";
+import { extractMealieSlugMarker, parseRecipeMarkdown, renderMealieSlugMarker } from "./mealie/markdown-parser.js";
 import { MarkdownInputSchema, type PublishErrorCode } from "./schema.js";
 import { clip } from "./security/redact.js";
 
@@ -48,6 +48,24 @@ async function run(emitter: JobEmitter, rawInput: string): Promise<void> {
   // this call should UPDATE that recipe in place rather than create a new
   // one. Stripped before parsing so it never leaks into the recipe title.
   const { slug: existingSlug, markdown: recipeMarkdown } = extractMealieSlugMarker(markdown.data);
+
+  // Guard against silently publishing an empty recipe: markdown-parser.ts
+  // only recognizes numbered/bulleted list items, so input in an
+  // unsupported shape (e.g. a plain paragraph, or a marker the parser
+  // doesn't handle) parses to zero items -- previously this still reported
+  // success with an empty recipe on Mealie's side.
+  const parsedForValidation = parseRecipeMarkdown(recipeMarkdown);
+  const hasIngredients = parsedForValidation.ingredientSections.some((s) => s.items.length > 0);
+  const hasDirections = parsedForValidation.directionSections.some((s) => s.items.length > 0);
+  if (!hasIngredients || !hasDirections) {
+    const missing = [!hasIngredients && "ingredients", !hasDirections && "directions"].filter(Boolean).join(" and ");
+    fail(
+      "invalid_recipe",
+      EXIT.invalidRecipe,
+      `Parsed recipe markdown has no ${missing} -- expected numbered (1. item) or bulleted (-/*/• item) ` +
+        `lists under "## Ingredients"/"## Directions" headings`,
+    );
+  }
 
   await emitter.progress("publish");
   let result;
