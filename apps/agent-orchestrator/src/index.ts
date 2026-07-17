@@ -11,6 +11,7 @@ import { loadStaticIdentitiesFromEnv, StaticIdentityResolver } from "./rbac/stat
 import { CrdSkillRegistry } from "./skills/crd-skill-registry.js";
 import { deriveSkillAccess } from "./skills/derive-access.js";
 import { QdrantSkillStore } from "./skills/qdrant-skill-store.js";
+import type { AgentDescriptor } from "./agents/types.js";
 import { CrdAgentRegistry } from "./agents/crd-agent-registry.js";
 import { QdrantAgentStore } from "./agents/qdrant-agent-store.js";
 import { NatsAgentChannel } from "./agents/nats-agent-channel.js";
@@ -164,6 +165,7 @@ async function main(): Promise<void> {
         delegateSelector: OpenAiDelegateSelector;
         agentRunLauncher: AgentRunLauncher;
         agentChannel: NatsAgentChannel;
+        fallbackAgent: AgentDescriptor | undefined;
       }
     | undefined;
   if (config.natsUrl) {
@@ -191,6 +193,10 @@ async function main(): Promise<void> {
       delegateSelector: new OpenAiDelegateSelector({ model: config.selectionModel }),
       agentRunLauncher: AgentRunLauncher.fromKubeConfig(config.crdGroup, config.crdVersion, kubeConfig),
       agentChannel: await NatsAgentChannel.connect(config.natsUrl),
+      // Best-effort delegation target for a turn matching no Skill/Agent at
+      // all (graph.ts's selectDelegate). Empty AGENT_FALLBACK_AGENT_NAME
+      // disables the fallback and keeps today's fail-closed behavior.
+      fallbackAgent: config.fallbackAgentName ? agents.find((a) => a.name === config.fallbackAgentName) : undefined,
     };
   }
 
@@ -249,6 +255,7 @@ async function main(): Promise<void> {
           agentTopK: config.agentTopK,
           agentRunTimeoutSeconds: config.agentRunTimeoutSeconds,
           callbackSecretRef: { name: config.callbackSecretRefName ?? "", key: config.callbackSecretRefKey },
+          fallbackAgent: agentDelegation.fallbackAgent,
         }
       : {}),
   });

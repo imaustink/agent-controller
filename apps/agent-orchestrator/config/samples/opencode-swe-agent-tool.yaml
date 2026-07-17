@@ -1,0 +1,35 @@
+# Tool custom resource for opencode-swe-agent-tool -- apply with:
+#   kubectl apply -n <namespace> -f config/samples/opencode-swe-agent-tool.yaml
+#
+# An agent-backed Tool (spec.agentRef, new field): wraps the opencode-swe-agent
+# Agent CR (apps/opencode-swe-agent/agent.yaml) so a Skill's toolRefs can
+# delegate to it via the ordinary tool-call path, instead of only reaching it
+# as a peer-level DelegateSelector candidate. The orchestrator dispatches a
+# call to this Tool as an AgentRun against opencode-swe-agent (graph.ts's
+# runTool), the same mechanism the peer-level delegation path uses.
+#
+# v1 scope cut: agent-backed tools support single-turn/final-reply only -- a
+# clarifying (non-final) reply from the agent is reported back as an error
+# rather than resumed, since there is no session slot for a tool-launched
+# AgentRun the way checkActiveAgentRun has for peer-level agent delegation.
+#
+# Prerequisite: apply apps/opencode-swe-agent/agent.yaml first (this Tool's
+# agentRef must resolve to an existing Agent CR in the same namespace, or the
+# tool-controller reports this Tool as Degraded/AgentRefMissing).
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Tool
+metadata:
+  name: opencode-swe-agent-tool
+spec:
+  description: >-
+    Delegates a software-engineering task to the opencode SWE agent: create
+    or clone a repository, implement a change, and open a pull request. Use
+    for any single-turn request to make and PR a code change on GitHub.
+  input: >-
+    A natural-language software-engineering instruction, e.g. "add a Skill
+    custom resource for this and open a PR against imaustink/agent-controller".
+  output: >-
+    A summary of the changes plus a link to the opened/updated pull request.
+  allowedRoles:
+    - writer
+  agentRef: opencode-swe-agent

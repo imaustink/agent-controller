@@ -745,3 +745,201 @@ describe("buildAgentGraph agent delegation continuation tokens (ADR 0017)", () =
   });
 });
 
+describe("buildAgentGraph agent-backed Tool (runTool via AgentRun)", () => {
+  const agentBackedTool: ToolDescriptor = {
+    id: "opencode-swe-agent-tool",
+    name: "opencode-swe-agent-tool",
+    description: "Delegates to the opencode SWE agent",
+    allowedRoles: ["reader"],
+    agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
+  };
+
+  const agentToolSkill: SkillDescriptor = {
+    id: "self-improvement-skill",
+    name: "Self Improvement",
+    description: "Drafts and PRs a new skill",
+    markdown: "# instructions",
+    toolIds: ["opencode-swe-agent-tool"],
+  };
+
+  function agentBackedToolDeps(overrides: Partial<AgentGraphDeps> = {}, reply: Partial<AgentTurnResult> = {}) {
+    const skillStore: SkillStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ skill: agentToolSkill, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([agentToolSkill]),
+    };
+    const vectorStore: VectorStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn(),
+      getByIds: vi.fn().mockResolvedValue([{ tool: agentBackedTool, score: 1 }]),
+    };
+    const actionPlanner: ActionPlanner = {
+      plan: vi.fn().mockResolvedValue({
+        action: "call_tool",
+        toolId: "opencode-swe-agent-tool",
+        toolArgs: "open a PR adding this skill",
+      } satisfies PlannedAction),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened https://github.com/imaustink/agent-controller/pull/42",
+        final: true,
+        narration: [],
+        ...reply,
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      skillStore,
+      vectorStore,
+      actionPlanner,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("dispatches an agent-backed tool as an AgentRun and surfaces the final reply as the tool result", async () => {
+    const deps = agentBackedToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedTool?.id).toBe("opencode-swe-agent-tool");
+    expect(final.result).toBe("Opened https://github.com/imaustink/agent-controller/pull/42");
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      agentBackedTool.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ goal: "open a PR adding this skill" }),
+    );
+  });
+
+  it("errors when the agent-backed tool's reply is non-final (v1 scope cut: single-turn only)", async () => {
+    const deps = agentBackedToolDeps({}, { final: false });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+    expect(final.error).toMatch(/single-turn/);
+    expect(final.result).toBeUndefined();
+  });
+
+  it("errors when agent delegation is not configured for an agent-backed tool", async () => {
+    const deps = agentBackedToolDeps({ agentRunLauncher: undefined, agentChannel: undefined, callbackSecretRef: undefined });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+    expect(final.error).toMatch(/agent delegation is not configured/);
+  });
+});
+
+describe("buildAgentGraph fallback delegation on no match", () => {
+  const fallbackAgent: AgentDescriptor = {
+    id: "opencode-swe-agent",
+    name: "opencode-swe-agent",
+    description: "General-purpose coding agent, best-effort fallback",
+    allowedRoles: ["reader"],
+    agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
+  };
+
+  function noMatchDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    const skillStore: SkillStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn(),
+    };
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn(),
+    };
+    const delegateSelector: DelegateSelector = { select: vi.fn().mockResolvedValue(null) };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Did the best-effort task",
+        final: true,
+        narration: [],
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      skillStore,
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("delegates to the configured fallback agent when no skill/agent candidates exist at all", async () => {
+    const deps = noMatchDeps({ fallbackAgent });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "do something niche", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      fallbackAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ goal: "do something niche" }),
+    );
+    expect(final.result).toContain("Did the best-effort task");
+    expect(final.result).toContain("self-improvement");
+  });
+
+  it("delegates to the fallback agent when the delegate selector picks no candidate", async () => {
+    const deps = noMatchDeps({ fallbackAgent });
+    (deps.skillStore.query as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { skill: { id: "unrelated", name: "unrelated", description: "x", markdown: "x", toolIds: [] }, score: 0.1 },
+    ]);
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "do something niche", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalled();
+    expect(final.result).toContain("self-improvement");
+  });
+
+  it("still fails closed when no fallback agent is configured (unchanged behavior)", async () => {
+    const deps = noMatchDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "do something niche", authToken: "tok" });
+
+    expect(final.error).toBe("no matching skill or agent for this request");
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
+  it("does not append the self-improvement suggestion for an ordinary (non-fallback) agent delegation", async () => {
+    const deps = noMatchDeps({});
+    (deps.skillStore.query as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (deps.agentStore!.query as ReturnType<typeof vi.fn>).mockResolvedValue([{ agent: fallbackAgent, score: 0.9 }]);
+    (deps.delegateSelector!.select as ReturnType<typeof vi.fn>).mockResolvedValue({ type: "agent", agent: fallbackAgent });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "do something niche", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).not.toContain("self-improvement");
+  });
+});
+

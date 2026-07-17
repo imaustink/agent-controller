@@ -195,6 +195,17 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
+  /**
+   * True when `selectDelegate` found no matching Skill/Agent candidate at
+   * all and fell back to `deps.fallbackAgent` as a best-effort attempt,
+   * rather than a request that genuinely matched an agent. Read by
+   * `delegateToAgent` to append a self-improvement suggestion onto the
+   * composed message.
+   */
+  wasFallback: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
+  }),
 });
 
 export type AgentState = typeof AgentStateAnnotation.State;
@@ -261,6 +272,15 @@ export interface AgentGraphDeps {
    * whenever `agentRunLauncher` is set.
    */
   callbackSecretRef?: SecretKeySelector;
+  /**
+   * Best-effort delegation target for a turn that matches no Skill/Agent
+   * candidate at all — instead of failing closed, `selectDelegate` hands the
+   * raw request to this agent, and `delegateToAgent` marks the resulting
+   * message with a self-improvement suggestion (a permanent skill can be
+   * authored for it next time). Absent -> today's fail-closed behavior is
+   * unchanged. Only meaningful alongside `agentRunLauncher`/`agentChannel`.
+   */
+  fallbackAgent?: AgentDescriptor;
 }
 
 function afterOrEnd(next: string) {
@@ -319,6 +339,15 @@ function composeAgentTurnMessage(state: Pick<AgentState, "progressListener">, re
 const AGENT_TIMEOUT_GRACE_MS = 60_000;
 function agentAwaitReplyTimeoutMs(agentRunTimeoutSeconds: number | undefined): number | undefined {
   return agentRunTimeoutSeconds ? agentRunTimeoutSeconds * 1000 + AGENT_TIMEOUT_GRACE_MS : undefined;
+}
+
+/**
+ * Appended to a fallback delegation's final reply (`state.wasFallback`) so
+ * the caller knows this turn was handled ad-hoc — no Skill or Agent matched
+ * it — and can ask for a permanent skill to be authored for next time.
+ */
+function appendSelfImprovementSuggestion(message: string): string {
+  return `${message}\n\n---\nNo existing skill or agent matched this request, so it was handled ad-hoc. Ask me to run the self-improvement skill if you'd like a permanent skill added for this next time.`;
 }
 
 /** Builds and compiles the LangGraph.js agent graph (docs/adr/0008, superseding the earlier flat tool-RAG flow). */
@@ -417,10 +446,12 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // otherwise, so the graph degrades gracefully without NATS.
       if (deps.delegateSelector) {
         if (state.skillCandidates.length === 0 && state.agentCandidates.length === 0) {
+          if (deps.fallbackAgent) return { selectedAgent: deps.fallbackAgent, wasFallback: true };
           return { error: "no matching skill or agent for this request" };
         }
         const choice = await deps.delegateSelector.select(state.request, state.skillCandidates, state.agentCandidates);
         if (!choice) {
+          if (deps.fallbackAgent) return { selectedAgent: deps.fallbackAgent, wasFallback: true };
           return { error: "no matching skill or agent for this request" };
         }
         if (choice.type === "agent") {
@@ -474,7 +505,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         return {
           agentRunId: runId,
           agentAwaitingReply: !reply.final,
-          result: message,
+          result: state.wasFallback && reply.final ? appendSelfImprovementSuggestion(message) : message,
           // Only a FINAL reply concludes an episode, so only then is
           // `reply.result` the continuation token for the NEXT episode — a
           // non-final reply (HITL question) continues this SAME run via
@@ -538,6 +569,45 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       const priorToken = state.toolContinuations?.[continuationKey];
       const input = priorToken ? prependContinuationToken(priorToken, rawInput) : rawInput;
 
+      if (tool.agentRunTemplate) {
+        // Agent-backed tool: dispatch as an AgentRun over NATS, the same
+        // mechanism the peer-level delegateToAgent path uses, instead of a
+        // ToolRun Job. Lets a Skill's toolRefs reach a full agent loop (e.g.
+        // a coding agent that opens PRs) via the ordinary tool-call path.
+        if (!deps.agentRunLauncher || !deps.agentChannel || !deps.callbackSecretRef) {
+          return { error: `tool ${tool.id} is agent-backed but agent delegation is not configured` };
+        }
+        const runId = randomUUID();
+        const callbackUrl = `${deps.callbackBaseUrl}/callback/${randomUUID()}`;
+        try {
+          const awaitReply = deps.agentChannel.awaitReply(runId, {
+            timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
+            onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+          });
+          await deps.agentRunLauncher.launch(tool.agentRunTemplate, runId, {
+            goal: input,
+            callbackUrl,
+            callbackSecretRef: deps.callbackSecretRef,
+            timeoutSeconds: deps.agentRunTimeoutSeconds,
+          });
+          const reply = await awaitReply;
+          // v1 scope cut: agent-backed tools support single-turn/final-reply
+          // only — runTool has no session slot to resume a specific
+          // tool-launched AgentRun the way checkActiveAgentRun does for
+          // peer-level agent delegation. A clarifying (non-final) reply is
+          // therefore reported as a clean error rather than silently
+          // dropped or half-handled.
+          if (!reply.final) {
+            return { jobId: runId, error: `tool ${tool.id} (agent-backed) requires a single-turn agent — got a non-final reply` };
+          }
+          const message = composeAgentTurnMessage(state, reply);
+          const { token, text } = extractContinuationToken(message);
+          return { jobId: runId, result: text, extractedContinuation: { toolId: continuationKey, token: token ?? "" } };
+        } catch (err) {
+          return { jobId: runId, error: agentTurnErrorMessage(err) };
+        }
+      }
+
       let jobId: string;
       let event: Event;
       if (tool.localExec) {
@@ -586,7 +656,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           unsubscribeProgress();
         }
       } else {
-        return { error: `tool ${tool.id} has neither a jobTemplate nor a localExec spec` };
+        return { error: `tool ${tool.id} has neither a jobTemplate, localExec, nor agentRunTemplate spec` };
       }
 
       if (event.type === "failed") {

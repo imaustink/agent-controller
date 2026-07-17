@@ -75,6 +75,14 @@ export interface AppConfig {
    * callback path is used (backward-compatible default).
    */
   natsUrl: string | undefined;
+  /**
+   * Name of the Agent CR delegated to when a turn matches no Skill/Agent
+   * candidate at all — instead of failing closed, the request is handed to
+   * this agent as a best-effort attempt. Only takes effect when agent
+   * delegation itself is configured (NATS deployments); set to an empty
+   * string to disable the fallback and keep today's fail-closed behavior.
+   */
+  fallbackAgentName: string;
   requestId: string;
 }
 
@@ -111,5 +119,6 @@ export const config: AppConfig = {
   localToolTimeoutSeconds: num(process.env.AGENT_LOCALTOOL_TIMEOUT_SECONDS, 30),
   staticIdentities: process.env.AGENT_STATIC_IDENTITIES,
   natsUrl: process.env.AGENT_NATS_URL,
+  fallbackAgentName: process.env.AGENT_FALLBACK_AGENT_NAME ?? "opencode-swe-agent",
   requestId: process.env.AGENT_REQUEST_ID ?? randomUUID(),
 };
