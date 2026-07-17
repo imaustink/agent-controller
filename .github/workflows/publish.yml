@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   publish:
-    runs-on: arc-runner-set
+    runs-on: arc-runner-set-agent-controller
     # Self-hosted runner: only ever reachable via push to main (collaborators only).
     # Guard so a fork that somehow re-targets this job cannot run it on our infra.
     if: github.repository == 'imaustink/agent-controller'
