@@ -65,6 +65,14 @@ type ResourceRequirements struct {
 
 // ToolSpec defines the desired state of Tool. Fields mirror the JS orchestrator's
 // former manifest.json (ADR 0009) which this CRD supersedes (ADR 0010).
+//
+// A Tool is either a container Tool (image + serviceAccountName, launched as a
+// ToolRun Job) or an agent-backed Tool (agentRef, dispatched by the
+// orchestrator as an AgentRun instead) — exactly one of the two shapes, never
+// both, enforced by the CEL rule below so a Skill's toolRefs can name either
+// kind interchangeably without the orchestrator guessing which launch path
+// applies.
+// +kubebuilder:validation:XValidation:rule="(has(self.agentRef) && !has(self.image) && !has(self.serviceAccountName)) || (!has(self.agentRef) && has(self.image) && has(self.serviceAccountName))",message="exactly one of agentRef or (image and serviceAccountName) must be set"
 type ToolSpec struct {
 	// description is fed to the orchestrator's embedder for RAG tool retrieval.
 	// +required
@@ -89,14 +97,23 @@ type ToolSpec struct {
 	// +optional
 	Tier string `json:"tier,omitempty"`
 
+	// agentRef names an Agent CR (same namespace) this Tool wraps — the
+	// orchestrator dispatches calls to this Tool as an AgentRun against that
+	// Agent instead of launching a container Job. Mutually exclusive with
+	// image/serviceAccountName (see the CEL rule on ToolSpec).
+	// +optional
+	AgentRef string `json:"agentRef,omitempty"`
+
 	// image is the fully-qualified container image the ToolRun controller launches as a Job.
-	// +required
-	Image string `json:"image"`
+	// Required unless agentRef is set.
+	// +optional
+	Image string `json:"image,omitempty"`
 
 	// serviceAccountName the Job pod runs as. Must already exist in-cluster —
-	// this CRD/controller does not create tool ServiceAccounts.
-	// +required
-	ServiceAccountName string `json:"serviceAccountName"`
+	// this CRD/controller does not create tool ServiceAccounts. Required
+	// unless agentRef is set.
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
 
 	// args are static extra container args appended after the caller-supplied input.
 	// +optional

@@ -12,8 +12,10 @@ export interface ToolCustomResource {
     output: string;
     allowedRoles: string[];
     tier?: string;
-    image: string;
-    serviceAccountName: string;
+    /** Names an Agent CR this Tool wraps — mutually exclusive with image/serviceAccountName. */
+    agentRef?: string;
+    image?: string;
+    serviceAccountName?: string;
     args?: string[];
     env?: { name: string; value: string }[];
     resources?: {
@@ -85,7 +87,19 @@ export class CrdToolRegistry implements ToolRegistry {
 function toToolDescriptor(cr: ToolCustomResource, namespace: string): ToolDescriptor | undefined {
   const name = cr.metadata?.name;
   const spec = cr.spec;
-  if (!name || !spec?.image || !spec?.serviceAccountName) return undefined;
+  if (!name) return undefined;
+
+  if (spec?.agentRef) {
+    return {
+      id: name,
+      name,
+      description: `${spec.description}\n\nInput: ${spec.input}\nOutput: ${spec.output}`,
+      allowedRoles: spec.allowedRoles ?? [],
+      tier: spec.tier,
+      agentRunTemplate: { namespace, agentRef: spec.agentRef },
+    };
+  }
+  if (!spec?.image || !spec?.serviceAccountName) return undefined;
 
   return {
     id: name,

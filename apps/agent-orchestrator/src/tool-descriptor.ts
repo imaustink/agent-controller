@@ -1,3 +1,5 @@
+import type { AgentRunTemplate } from "./agents/types.js";
+
 /**
  * k8s Job template needed to run a tool/sub-agent — everything the launcher
  * needs beyond the per-call args/env (see docs/orchestrator.md#4-container-tool-launcher).
@@ -81,15 +83,25 @@ export interface ToolDescriptor {
   allowedRoles: string[];
   /**
    * Job launch template (container tools, ADR 0010). Set for tools launched
-   * as k8s Jobs; absent for LocalTools (which set `localExec` instead).
+   * as k8s Jobs; absent for LocalTools/agent-backed tools.
    */
   jobTemplate?: JobTemplate;
   /**
    * Local execution spec (LocalTools, ADR 0014). Set for tools run in-pod by
-   * an executor sidecar; absent for container/Job tools. Exactly one of
-   * `jobTemplate` / `localExec` is present.
+   * an executor sidecar; absent otherwise. Exactly one of `jobTemplate` /
+   * `localExec` / `agentRunTemplate` is present.
    */
   localExec?: LocalToolSpec;
+  /**
+   * Agent-backed tool template (`Tool.spec.agentRef`) — set when this Tool
+   * wraps an `Agent` CR instead of launching its own container/Job. The
+   * orchestrator dispatches a call to this tool as an `AgentRun` against the
+   * referenced Agent (same mechanism the peer-level Agent-delegation path
+   * uses), letting a Skill's `toolRefs` reach a full agent loop (e.g. a
+   * coding agent that opens PRs) without the Skill/Agent catalogs needing to
+   * merge. Absent for container/LocalTools.
+   */
+  agentRunTemplate?: AgentRunTemplate;
   /** Optional coarse risk/cost tier, for future quota/authorization use. */
   tier?: string;
 }

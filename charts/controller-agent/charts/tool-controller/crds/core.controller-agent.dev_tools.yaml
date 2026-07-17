@@ -39,6 +39,13 @@ spec:
           spec:
             description: spec defines the desired state of Tool
             properties:
+              agentRef:
+                description: |-
+                  agentRef names an Agent CR (same namespace) this Tool wraps — the
+                  orchestrator dispatches calls to this Tool as an AgentRun against that
+                  Agent instead of launching a container Job. Mutually exclusive with
+                  image/serviceAccountName (see the CEL rule on ToolSpec).
+                type: string
               allowedRoles:
                 description: |-
                   allowedRoles gates RAG retrieval (RBAC filter) — caller must have at least
@@ -79,8 +86,9 @@ spec:
                   type: object
                 type: array
               image:
-                description: image is the fully-qualified container image the ToolRun
-                  controller launches as a Job.
+                description: |-
+                  image is the fully-qualified container image the ToolRun controller launches as a Job.
+                  Required unless agentRef is set.
                 type: string
               input:
                 description: input describes the expected argv[2]/stdin contract for
@@ -143,7 +151,8 @@ spec:
               serviceAccountName:
                 description: |-
                   serviceAccountName the Job pod runs as. Must already exist in-cluster —
-                  this CRD/controller does not create tool ServiceAccounts.
+                  this CRD/controller does not create tool ServiceAccounts. Required
+                  unless agentRef is set.
                 type: string
               tier:
                 description: tier is an operator-defined cost/trust classification
@@ -162,11 +171,14 @@ spec:
             required:
             - allowedRoles
             - description
-            - image
             - input
             - output
-            - serviceAccountName
             type: object
+            x-kubernetes-validations:
+            - message: exactly one of agentRef or (image and serviceAccountName) must
+                be set
+              rule: (has(self.agentRef) && !has(self.image) && !has(self.serviceAccountName))
+                || (!has(self.agentRef) && has(self.image) && has(self.serviceAccountName))
           status:
             description: status defines the observed state of Tool
             properties:
