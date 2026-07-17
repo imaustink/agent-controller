@@ -42,12 +42,11 @@ spec:
     or cloning repositories, implementing features, fixing bugs, writing
     tests, and opening or updating pull requests on GitHub.
 
-    Pass the user's request verbatim as the goal.
-
-    If the previous assistant message starts with an HTML comment like
-    <!-- swe: repo=... branch=... pr=... session=... -->, the agent is
-    continuing an existing session. Include that FULL text at the start
-    of the goal so the agent can resume the same pull request.
+    Pass the user's request verbatim as the goal. Continuing a pull request
+    across separate turns needs no special handling from you: the
+    orchestrator itself carries the repo/branch/PR/session forward
+    server-side (docs/adr/0017) and prepends it to the goal automatically
+    whenever this agent already has one in progress for the conversation.
 
     The agent may pause mid-task to ask you a clarifying question (a
     non-final reply in the chat). Answer naturally; the conversation

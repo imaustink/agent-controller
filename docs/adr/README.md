@@ -21,6 +21,7 @@ See [../orchestrator.md](../orchestrator.md) for how these fit together.
 | [0013](0013-copilot-swe-privileged-coding-tool.md) | ~~A privileged `copilot-swe` tool wraps the agentic Copilot CLI to open pull requests; GitHub App token for git, Copilot PAT for the model, deny-rule guardrails~~ (model/auth mechanism superseded by 0016) |
 | [0014](0014-local-tool-sidecar-execution.md) | `LocalTool` CRD + per-language executor sidecar run lightweight tools in-pod (stdio ABI), trading some isolation for lower latency than a k8s Job |
 | [0015](0015-post-tool-response-composition.md) | A generic `composeResponse` node lets the active skill's markdown add follow-up narration around a tool's verbatim result, replacing the hard-coded recipe-scraper prompt in the agent graph |
-| [0016](0016-opencode-anthropic-direct-swe-agent.md) | `opencode-swe-agent` replaces the Copilot CLI with the opencode CLI calling Anthropic (Claude Sonnet 5) directly; `GITHUB_TOKEN` and `ANTHROPIC_API_KEY` are now independent secrets |
+| [0016](0016-opencode-anthropic-direct-swe-agent.md) | `opencode-swe-agent` replaces the Copilot CLI with the opencode CLI calling Anthropic (Claude Sonnet 5) directly; `GITHUB_TOKEN` and `ANTHROPIC_API_KEY` are now independent secrets (its `<!-- swe: ... -->` marker choice superseded by 0017) |
+| [0017](0017-continuation-tokens-via-session-store.md) | Per-tool/per-agent continuation tokens (Mealie slug, opencode-swe repo/branch/PR/session) move from an in-transcript HTML-comment marker to the session store, closing the prompt-injection surface that marker was a documented risk for |
 
 Status values: `proposed` | `accepted` | `superseded by NNNN`.

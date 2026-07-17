@@ -82,9 +82,12 @@ without inventing a custom protocol.
 - The orchestrator is no longer fully stateless — but the state is a
   best-effort routing hint, not correctness-critical data: losing it (restart,
   TTL expiry, eviction) silently degrades to the old per-turn selection.
-  Recipe state itself still round-trips through chat history (the
-  `<previous_assistant_response>` fold and the `mealie-slug` marker), not
-  through this store.
+  Recipe/agent continuation state (the Mealie slug, opencode-swe's
+  repo/branch/PR) now also lives in this same store rather than round-tripping
+  through chat history — see
+  [ADR 0017](0017-continuation-tokens-via-session-store.md), which superseded
+  the original `mealie-slug`/`swe` marker design described when this record
+  was written.
 - The in-memory adapter assumes a single orchestrator replica (the Helm
   chart's default). With multiple replicas sessions would fragment across
   pods — worst case is harmless re-selection, but a shared store (e.g. Redis)

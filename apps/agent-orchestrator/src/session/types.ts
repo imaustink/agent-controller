@@ -48,6 +48,16 @@ export interface SessionRecord {
    * (e.g. opencode-swe: repo/branch/pr/session; recipe-publisher: slug).
    */
   toolContinuations?: Record<string, string>;
+  /**
+   * Per-agent continuation tokens for this conversation, keyed by agent id
+   * (docs/adr/0017) — the AgentRun analogue of `toolContinuations`. An
+   * agent's `reply.result` (a structured, out-of-band field on the NATS
+   * `reply` message, never part of the chat transcript) carries the opaque
+   * token for the NEXT episode's `delegateToAgent` to prepend onto the new
+   * AgentRun's goal. Replaces the old `<!-- swe: ... -->` marker that used
+   * to round-trip this state through the conversation history itself.
+   */
+  agentContinuations?: Record<string, string>;
   /** Last touch time (ms since epoch); used for sliding TTL expiry. */
   updatedAt: number;
 }
