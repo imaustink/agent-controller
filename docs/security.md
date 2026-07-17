@@ -149,23 +149,25 @@ addition specific to it:
   revoked independently.
 - Requests target a single fixed host (`MEALIE_BASE_URL`) with
   `redirect: "error"` — no redirects are ever followed.
-- **The `mealie-slug` update marker is a recipe-identity round-tripped
-  through chat history, not a capability we independently verify.** Since
-  2026-07-04, recipe-publisher is an upsert: a `<!-- mealie-slug: <slug> -->`
+- **The `mealie-slug` update marker is a recipe-identity token, now round-tripped
+  through the orchestrator's session store, not chat history.** Since
+  2026-07-04, recipe-publisher is an upsert: a `<!-- continuation: <slug> -->`
   marker prefixed onto its input causes it to `PATCH` (overwrite) that
-  existing recipe instead of creating a new one. That marker is carried
-  forward via the orchestrator's `<conversation_history>` fold
-  (docs/orchestrator.md), which can include untrusted scraped recipe content
-  earlier in the same conversation. A sufficiently effective prompt
-  injection could in principle cause the assistant to echo back a
-  different, attacker-chosen slug, causing an unintended overwrite of a
-  different existing recipe. This is a known, accepted risk, not silently
-  ignored — blast radius is bounded to recipes within the same authenticated
-  Mealie account/group (`MEALIE_API_TOKEN` can't reach other tenants), and
-  the skill markdown explicitly instructs the model to only ever copy a
-  marker forward verbatim, never fabricate one. Worth revisiting (e.g. a
-  server-side per-conversation slug allowlist) if this proves exploitable in
-  practice.
+  existing recipe instead of creating a new one. Previously that marker
+  survived in the tool's own reply text and was carried forward via the
+  orchestrator's `<conversation_history>` fold (docs/orchestrator.md), which
+  could include untrusted scraped recipe content earlier in the same
+  conversation — a sufficiently effective prompt injection could in
+  principle cause the assistant to echo back a different, attacker-chosen
+  slug. [ADR 0017](adr/0017-continuation-tokens-via-session-store.md) closed
+  that off: `graph.ts`'s `runTool` now strips the marker from the tool's
+  result before it ever reaches the transcript, storing the slug
+  server-side (`SessionRecord.toolContinuations`, keyed by tool id) and
+  re-injecting it directly into the tool's next-turn input — the value never
+  passes through anything the LLM planner reads or writes. Blast radius, if
+  the session store itself were compromised, remains bounded to recipes
+  within the same authenticated Mealie account/group (`MEALIE_API_TOKEN`
+  can't reach other tenants).
 
 ## opencode-swe-agent: a deliberately privileged agent
 
@@ -206,14 +208,24 @@ Copilot-CLI-based `copilot-swe`/`copilot-swe-agent` (see
   a writable `emptyDir`/tmpfs under `$HOME`. An egress NetworkPolicy limiting
   the Job to GitHub + Anthropic hosts is a recommended additional control
   (tool/agent Jobs currently have none).
-- **The `swe` marker is repo/branch/PR identity round-tripped through chat
-  history, not a verified capability.** Like recipe-publisher's `mealie-slug`
-  marker, a `<!-- swe: repo=… branch=… -->` marker survives the orchestrator's
-  `<conversation_history>` fold to continue the same PR across turns. It can
-  ride on untrusted content, so a prompt injection could in principle redirect
-  work to a different repo/branch — blast radius is bounded to the App's
-  installed repositories, and the skill markdown instructs the model to only
-  ever copy a marker forward verbatim, never fabricate one.
+- **The former `swe` marker is repo/branch/PR identity, now round-tripped
+  through the orchestrator's session store instead of chat history.**
+  Continuing the same PR across separate coding-task turns needs this
+  agent's repo/branch/PR/session to survive between `AgentRun` episodes.
+  Originally (ADR 0013, ADR 0016) this rode as a `<!-- swe: repo=… branch=…
+  -->` marker embedded in the agent's own chat reply, carried forward via the
+  orchestrator's `<conversation_history>` fold — the same shape of risk as
+  recipe-publisher's `mealie-slug` marker: a prompt injection earlier in the
+  conversation could in principle redirect work to a different repo/branch.
+  [ADR 0017](adr/0017-continuation-tokens-via-session-store.md) replaced
+  this: the agent now returns the encoded marker as `reply.result`, a
+  structured field on the NATS `reply` message
+  (`packages/messaging/src/agent-protocol.ts`) that is never part of the chat
+  `message` text. The orchestrator stores it server-side
+  (`SessionRecord.agentContinuations`, keyed by agent id) and re-injects it as
+  a goal prefix on the next episode — the value never appears in anything the
+  user or the LLM planner reads. Blast radius, if the session store itself
+  were compromised, remains bounded to the App's installed repositories.
 
 ## LocalTool: registry code execution inside the orchestrator pod (ADR 0014)
 

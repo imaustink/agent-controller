@@ -4,7 +4,7 @@ import type { ToolDescriptor } from "../tool-descriptor.js";
 
 export type PlannedAction =
   | { action: "respond"; response: string }
-  | { action: "call_tool"; toolId: string; toolArgs: string };
+  | { action: "call_tool"; toolId: string; toolArgs: string; toolInstanceKey?: string };
 
 export interface ActionPlanner {
   plan(request: string, skill: SkillDescriptor, tools: ToolDescriptor[]): Promise<PlannedAction>;
@@ -30,8 +30,18 @@ const PLAN_SCHEMA = {
       type: ["string", "null"],
       description: "The exact string argument to pass to the chosen tool. Required when action is \"call_tool\", otherwise null.",
     },
+    tool_instance_key: {
+      type: ["string", "null"],
+      description:
+        "For a multi-instance tool (one whose skill instructions describe distinguishing separate " +
+        "'instances' across a conversation, e.g. a recipe's source URL for recipe-publisher — see the " +
+        "skill instructions for whether/how this applies), a stable identifier for WHICH instance this " +
+        "call is about, so the orchestrator's own per-instance continuation state (docs/adr/0017) isn't " +
+        "conflated across distinct instances. Null when the tool doesn't need this or there is only one " +
+        "instance in play this conversation.",
+    },
   },
-  required: ["action", "response", "tool_id", "tool_args"],
+  required: ["action", "response", "tool_id", "tool_args", "tool_instance_key"],
   additionalProperties: false,
 } as const;
 
@@ -88,7 +98,13 @@ export class OpenAiActionPlanner implements ActionPlanner {
     });
 
     const raw = response.choices[0]?.message?.content ?? "{}";
-    let parsed: { action: string; response: string | null; tool_id: string | null; tool_args: string | null };
+    let parsed: {
+      action: string;
+      response: string | null;
+      tool_id: string | null;
+      tool_args: string | null;
+      tool_instance_key: string | null;
+    };
     try {
       parsed = JSON.parse(raw) as typeof parsed;
     } catch {
@@ -96,7 +112,12 @@ export class OpenAiActionPlanner implements ActionPlanner {
     }
 
     if (parsed.action === "call_tool" && parsed.tool_id && parsed.tool_args !== null) {
-      return { action: "call_tool", toolId: parsed.tool_id, toolArgs: parsed.tool_args };
+      return {
+        action: "call_tool",
+        toolId: parsed.tool_id,
+        toolArgs: parsed.tool_args,
+        ...(parsed.tool_instance_key ? { toolInstanceKey: parsed.tool_instance_key } : {}),
+      };
     }
     return { action: "respond", response: parsed.response ?? "I couldn't process that request." };
   }

@@ -75,3 +75,10 @@ fallback branch — tighten it against real output once observed.
   the defensive parser matches opencode's real event stream; verify against
   actual `opencode run --format json` output before relying on rich
   progress narration in production.
+
+## Amendment (0017)
+
+Point 5 above kept the `<!-- swe: ... -->` continuation marker unchanged from
+0013. [0017](0017-continuation-tokens-via-session-store.md) later replaced it:
+the marker no longer appears in the chat transcript. Everything else in this
+record stands.

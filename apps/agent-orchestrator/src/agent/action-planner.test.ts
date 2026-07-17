@@ -49,6 +49,42 @@ describe("OpenAiActionPlanner", () => {
     expect(result).toEqual({ action: "call_tool", toolId: "recipe-scraper", toolArgs: "https://example.com/recipe" });
   });
 
+  it("returns a call_tool action with a toolInstanceKey when the model sets one (ADR 0017)", async () => {
+    const client = fakeClient({
+      action: "call_tool",
+      response: null,
+      tool_id: "recipe-scraper",
+      tool_args: "some full recipe markdown",
+      tool_instance_key: "https://example.com/recipe",
+    });
+    const planner = new OpenAiActionPlanner({ client });
+
+    const result = await planner.plan("publish this", skill, tools);
+
+    expect(result).toEqual({
+      action: "call_tool",
+      toolId: "recipe-scraper",
+      toolArgs: "some full recipe markdown",
+      toolInstanceKey: "https://example.com/recipe",
+    });
+  });
+
+  it("omits toolInstanceKey when the model leaves it null", async () => {
+    const client = fakeClient({
+      action: "call_tool",
+      response: null,
+      tool_id: "recipe-scraper",
+      tool_args: "https://example.com/recipe",
+      tool_instance_key: null,
+    });
+    const planner = new OpenAiActionPlanner({ client });
+
+    const result = await planner.plan("extract https://example.com/recipe", skill, tools);
+
+    expect(result).toEqual({ action: "call_tool", toolId: "recipe-scraper", toolArgs: "https://example.com/recipe" });
+    expect(result).not.toHaveProperty("toolInstanceKey");
+  });
+
   it("returns a respond action with the model's direct reply", async () => {
     const client = fakeClient({
       action: "respond",

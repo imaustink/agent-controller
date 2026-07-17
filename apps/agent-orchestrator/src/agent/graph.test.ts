@@ -12,6 +12,10 @@ import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
 import type { JobResultReceiver } from "../callback/receiver.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
+import type { AgentDescriptor, AgentStore } from "../agents/types.js";
+import type { DelegateSelector } from "./delegate-selector.js";
+import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-agent-channel.js";
+import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 
 const scraperTool: ToolDescriptor = {
   id: "recipe-scraper",
@@ -484,6 +488,260 @@ describe("buildAgentGraph session-scoped active skill (ADR 0012)", () => {
     expect(deps.skillStore.getByIds).not.toHaveBeenCalled();
     expect(deps.skillFitChecker.fits).not.toHaveBeenCalled();
     expect(deps.skillStore.query).toHaveBeenCalled();
+  });
+});
+
+describe("buildAgentGraph tool continuation tokens (ADR 0017)", () => {
+  it("strips a leading continuation marker from a string tool result and stashes the token for the server to persist", async () => {
+    const deps = baseDeps({
+      jobResultReceiver: {
+        awaitJob: vi.fn().mockResolvedValue({
+          type: "succeeded",
+          job_id: "job-1",
+          seq: 1,
+          ts: new Date().toISOString(),
+          result: "<!-- continuation: abc-123 -->\n\n# Pancakes",
+        } satisfies Event),
+        onJobProgress: vi.fn().mockReturnValue(() => {}),
+      } as unknown as JobResultReceiver,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    // Never reaches composeResponse/the caller with the marker attached.
+    expect(final.result).toBe("# Pancakes");
+    expect(final.extractedContinuation).toEqual({ toolId: "recipe-scraper", token: "abc-123" });
+  });
+
+  it("records an empty token (clearing any stored continuation) when a string result carries no marker", async () => {
+    const deps = baseDeps({
+      jobResultReceiver: {
+        awaitJob: vi.fn().mockResolvedValue({
+          type: "succeeded",
+          job_id: "job-1",
+          seq: 1,
+          ts: new Date().toISOString(),
+          result: "# Pancakes",
+        } satisfies Event),
+        onJobProgress: vi.fn().mockReturnValue(() => {}),
+      } as unknown as JobResultReceiver,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).toBe("# Pancakes");
+    expect(final.extractedContinuation).toEqual({ toolId: "recipe-scraper", token: "" });
+  });
+
+  it("does not attempt continuation extraction on a non-string (structured) tool result", async () => {
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.extractedContinuation).toBeUndefined();
+  });
+
+  it("prepends a saved continuation token onto tool_args on a repeat call for the same tool", async () => {
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "extract the recipe at https://example.com/recipe",
+      authToken: "tok",
+      toolContinuations: { "recipe-scraper": "abc-123" },
+    });
+
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
+      scraperTool.jobTemplate,
+      expect.objectContaining({ args: ["<!-- continuation: abc-123 -->\n\nhttps://example.com/recipe"] }),
+    );
+  });
+
+  it("does not prefix tool_args when no continuation token is saved for this tool", async () => {
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "extract the recipe at https://example.com/recipe",
+      authToken: "tok",
+      toolContinuations: { "some-other-tool": "xyz" },
+    });
+
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
+      scraperTool.jobTemplate,
+      expect.objectContaining({ args: ["https://example.com/recipe"] }),
+    );
+  });
+
+  it("scopes the stored continuation to the planner's toolInstanceKey, so distinct instances of a multi-instance tool never share state", async () => {
+    const deps = baseDeps({
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "recipe-publisher",
+          toolArgs: "# Tacos\n\n## Ingredients\n\n1. tortillas",
+          toolInstanceKey: "https://example.com/tacos",
+        } satisfies PlannedAction),
+      },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn(),
+        getByIds: vi.fn().mockResolvedValue([{ tool: publisherTool, score: 1 }]),
+      },
+    });
+    const graph = buildAgentGraph(deps);
+
+    // A prior recipe's slug is stored under a DIFFERENT instance key (a
+    // different source URL) -- it must never be prepended onto this call.
+    await graph.invoke({
+      request: "publish it",
+      authToken: "tok",
+      toolContinuations: { "recipe-publisher::https://example.com/pancakes": "pancakes-slug" },
+    });
+
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
+      publisherTool.jobTemplate,
+      expect.objectContaining({ args: ["# Tacos\n\n## Ingredients\n\n1. tortillas"] }),
+    );
+  });
+
+  it("prepends the saved continuation for a matching toolInstanceKey", async () => {
+    const deps = baseDeps({
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "recipe-publisher",
+          toolArgs: "# Tacos\n\n## Ingredients\n\n1. tortillas",
+          toolInstanceKey: "https://example.com/tacos",
+        } satisfies PlannedAction),
+      },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn(),
+        getByIds: vi.fn().mockResolvedValue([{ tool: publisherTool, score: 1 }]),
+      },
+    });
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "make it spicier",
+      authToken: "tok",
+      toolContinuations: { "recipe-publisher::https://example.com/tacos": "tacos-slug" },
+    });
+
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
+      publisherTool.jobTemplate,
+      expect.objectContaining({
+        args: ["<!-- continuation: tacos-slug -->\n\n# Tacos\n\n## Ingredients\n\n1. tortillas"],
+      }),
+    );
+  });
+});
+
+describe("buildAgentGraph agent delegation continuation tokens (ADR 0017)", () => {
+  const codingAgent: AgentDescriptor = {
+    id: "opencode-swe",
+    name: "opencode-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    agentRunTemplate: { namespace: "default", agentRef: "opencode-swe" },
+  };
+
+  function agentDelegationDeps(overrides: Partial<AgentGraphDeps> = {}, reply: Partial<AgentTurnResult> = {}) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: codingAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([codingAgent]),
+    };
+    const delegateSelector: DelegateSelector = {
+      select: vi.fn().mockResolvedValue({ type: "agent", agent: codingAgent }),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened a pull request",
+        final: true,
+        narration: [],
+        ...reply,
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("prepends a saved agent continuation token onto the new episode's goal", async () => {
+    const deps = agentDelegationDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "keep working on the same PR",
+      authToken: "tok",
+      agentContinuations: { "opencode-swe": "repo=owner/repo branch=feature session=abc" },
+    });
+
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      codingAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({
+        goal: "<!-- continuation: repo=owner/repo branch=feature session=abc -->\n\nkeep working on the same PR",
+      }),
+    );
+  });
+
+  it("does not prefix the goal when no continuation token is saved for this agent", async () => {
+    const deps = agentDelegationDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "build me a hello world server", authToken: "tok" });
+
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      codingAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ goal: "build me a hello world server" }),
+    );
+  });
+
+  it("stashes the agent's structured reply.result as the continuation token for the NEXT episode, on a final reply", async () => {
+    const deps = agentDelegationDeps({}, { final: true, result: "repo=owner/repo branch=feature session=abc" });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "build me a hello world server", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.extractedAgentContinuation).toEqual({
+      agentId: "opencode-swe",
+      token: "repo=owner/repo branch=feature session=abc",
+    });
+  });
+
+  it("does not stash a continuation token on a non-final reply (mid-episode HITL question)", async () => {
+    const deps = agentDelegationDeps({}, { final: false, result: "repo=owner/repo branch=feature session=abc" });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "build me a hello world server", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.agentAwaitingReply).toBe(true);
+    expect(final.extractedAgentContinuation).toBeUndefined();
   });
 });
 
