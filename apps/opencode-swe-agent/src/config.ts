@@ -18,6 +18,16 @@ export interface AgentToolConfig {
    */
   githubToken: string;
   /**
+   * GitHub App credentials, used instead of `githubToken` when all three are
+   * set: a short-lived installation access token is minted per run (see
+   * ./githubApp.ts) rather than using a long-lived static PAT. Empty strings
+   * when unset — `resolveGithubToken` falls back to `githubToken` in that
+   * case, so existing PAT-based deployments keep working unmodified.
+   */
+  githubAppId: string;
+  githubAppPrivateKey: string;
+  githubAppInstallationId: string;
+  /**
    * Anthropic API key opencode uses to call Claude directly (no GitHub
    * Copilot model proxy involved). Inject via secretEnv/secretKeyRef.
    */
@@ -40,9 +50,23 @@ export interface AgentToolConfig {
   homeDir: string;
 }
 
+/**
+ * k8s Secret values often store multi-line PEM keys with literal `\n`
+ * escapes rather than real newlines (depends how the Secret was created);
+ * normalize both forms so `createSign(...).sign(privateKeyPem)` gets valid
+ * PEM either way.
+ */
+function normalizePem(value: string | undefined): string {
+  if (!value) return "";
+  return value.includes("\\n") ? value.replace(/\\n/g, "\n") : value;
+}
+
 export function loadToolConfig(env: NodeJS.ProcessEnv = process.env): AgentToolConfig {
   return {
     githubToken: env.GITHUB_TOKEN ?? "",
+    githubAppId: env.GITHUB_APP_ID ?? "",
+    githubAppPrivateKey: normalizePem(env.GITHUB_APP_PRIVATE_KEY),
+    githubAppInstallationId: env.GITHUB_APP_INSTALLATION_ID ?? "",
     anthropicApiKey: env.ANTHROPIC_API_KEY ?? "",
     model: env.OPENCODE_MODEL ?? "anthropic/claude-sonnet-5",
     githubApiUrl: env.GITHUB_API_URL ?? "https://api.github.com",

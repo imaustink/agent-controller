@@ -13,6 +13,7 @@ import { discoverResult, ensureDir, findRepoDir, resolveGitIdentity, runCommand,
 import { extractContinuationToken } from "./continuation.js";
 import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./marker.js";
 import { loadToolConfig } from "./config.js";
+import { resolveGithubToken } from "./githubApp.js";
 import { clip } from "./security/redact.js";
 
 const toolConfig = loadToolConfig();
@@ -265,10 +266,10 @@ async function runOneTurn(
  * `session.ask()` to pause and resume instead.
  */
 runAgent(async (session) => {
-  const token = toolConfig.githubToken;
-  if (!token) {
-    throw new Error("GITHUB_TOKEN is required — inject via secretEnv/secretKeyRef on the Agent CR");
-  }
+  // Prefers a freshly minted GitHub App installation token when App
+  // credentials are configured; falls back to the static GITHUB_TOKEN PAT
+  // otherwise. See ./githubApp.ts for the precedence/validation rules.
+  const token = await resolveGithubToken(toolConfig);
   const anthropicApiKey = toolConfig.anthropicApiKey;
   if (!anthropicApiKey) {
     throw new Error("ANTHROPIC_API_KEY is required — inject via secretEnv/secretKeyRef on the Agent CR");
