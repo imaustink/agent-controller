@@ -54,6 +54,10 @@ export interface AgentGraphInput {
   activeAgentRunId?: string;
   /** Identity subject the session record was created under (docs/adr/0012). */
   sessionSubject?: string;
+  /** Per-tool continuation tokens from the caller's session, keyed by tool id (docs/adr/0017). */
+  toolContinuations?: Record<string, string>;
+  /** Per-agent continuation tokens from the caller's session, keyed by agent id (docs/adr/0017). */
+  agentContinuations?: Record<string, string>;
   /**
    * Per-request progress listener — set by the SSE streaming handler to
    * forward tool Job progress/warning events as Open WebUI status steps.
@@ -139,6 +143,8 @@ export class InvokeServer {
     input.activeAgentId = record.activeAgentId;
     input.activeAgentRunId = record.activeAgentRunId;
     input.sessionSubject = record.subject;
+    input.toolContinuations = record.toolContinuations;
+    input.agentContinuations = record.agentContinuations;
     return input;
   }
 
@@ -151,8 +157,13 @@ export class InvokeServer {
    * (a question) — once it gives its final reply (or fails), the record is
    * cleared to just the subject so the NEXT unrelated turn doesn't try to
    * continue a run that's already exited.
+   *
+   * Also merges in any tool/agent continuation token extracted THIS turn
+   * (docs/adr/0017) on top of whatever was already stored for other tools/
+   * agents — re-fetches the current record first since `SessionStore.set`
+   * replaces the whole record rather than patching it.
    */
-  private persistSession(
+  private async persistSession(
     sessionId: string | undefined,
     identity: { subject: string } | undefined,
     outcome: {
@@ -160,24 +171,57 @@ export class InvokeServer {
       selectedAgent?: { id: string };
       agentRunId?: string;
       agentAwaitingReply?: boolean;
+      extractedContinuation?: { toolId: string; token: string };
+      extractedAgentContinuation?: { agentId: string; token: string };
     },
-  ): void {
+  ): Promise<void> {
     if (!sessionId || !this.sessionStore || !identity) return;
+
+    const existing = await this.sessionStore.get(sessionId);
+    const toolContinuations = { ...existing?.toolContinuations };
+    if (outcome.extractedContinuation) {
+      const { toolId, token } = outcome.extractedContinuation;
+      if (token) toolContinuations[toolId] = token;
+      else delete toolContinuations[toolId];
+    }
+    const agentContinuations = { ...existing?.agentContinuations };
+    if (outcome.extractedAgentContinuation) {
+      const { agentId, token } = outcome.extractedAgentContinuation;
+      if (token) agentContinuations[agentId] = token;
+      else delete agentContinuations[agentId];
+    }
+    // Omit empty maps rather than persisting `{}` -- keeps a plain session
+    // record (no continuations in play) identical to how it looked before
+    // this feature existed.
+    const base = {
+      subject: identity.subject,
+      ...(Object.keys(toolContinuations).length > 0 ? { toolContinuations } : {}),
+      ...(Object.keys(agentContinuations).length > 0 ? { agentContinuations } : {}),
+    };
+
     if (outcome.selectedSkill) {
-      this.sessionStore.set(sessionId, { subject: identity.subject, activeSkillId: outcome.selectedSkill.id });
+      await this.sessionStore.set(sessionId, { ...base, activeSkillId: outcome.selectedSkill.id });
       return;
     }
     if (outcome.agentRunId) {
       if (outcome.agentAwaitingReply && outcome.selectedAgent) {
-        this.sessionStore.set(sessionId, {
-          subject: identity.subject,
+        await this.sessionStore.set(sessionId, {
+          ...base,
           activeAgentId: outcome.selectedAgent.id,
           activeAgentRunId: outcome.agentRunId,
         });
       } else {
-        // Agent finished or failed -- clear any prior continuation state.
-        this.sessionStore.set(sessionId, { subject: identity.subject });
+        // Agent finished or failed -- clear active-run state, but keep any
+        // continuation tokens just merged in.
+        await this.sessionStore.set(sessionId, base);
       }
+      return;
+    }
+    // Neither branch fired (e.g. tool ran under a fresh/unrelated skill
+    // that didn't set selectedSkill for some reason) -- still persist any
+    // continuation tokens merged in above rather than silently dropping them.
+    if (outcome.extractedContinuation || outcome.extractedAgentContinuation) {
+      await this.sessionStore.set(sessionId, base);
     }
   }
 
@@ -261,12 +305,14 @@ export class InvokeServer {
     void this.buildGraphInput(request, authToken, sessionId).then((graphInput) =>
       this.graph
         .invoke(graphInput)
-        .then((state) => {
-          this.persistSession(sessionId, state.identity, {
+        .then(async (state) => {
+          await this.persistSession(sessionId, state.identity, {
             selectedSkill: state.selectedSkill,
             selectedAgent: state.selectedAgent,
             agentRunId: state.agentRunId,
             agentAwaitingReply: state.agentAwaitingReply,
+            extractedContinuation: state.extractedContinuation,
+            extractedAgentContinuation: state.extractedAgentContinuation,
           });
           this.invocations.set(id, {
             id,
@@ -391,11 +437,13 @@ export class InvokeServer {
       res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(openAiError(state.error, code)));
       return;
     }
-    this.persistSession(sessionId, state.identity, {
+    await this.persistSession(sessionId, state.identity, {
       selectedSkill: state.selectedSkill,
       selectedAgent: state.selectedAgent,
       agentRunId: state.agentRunId,
       agentAwaitingReply: state.agentAwaitingReply,
+      extractedContinuation: state.extractedContinuation,
+      extractedAgentContinuation: state.extractedAgentContinuation,
     });
     const id = chatCompletionId();
     const content = renderResult(state.result);
@@ -459,8 +507,17 @@ export class InvokeServer {
       // empty update when it adds no narration, so track the latest result
       // rather than reading it off the terminal node's update alone.
       let result: unknown;
-      const persist = (): void =>
-        this.persistSession(sessionId, identity, { selectedSkill, selectedAgent, agentRunId, agentAwaitingReply });
+      let extractedContinuation: { toolId: string; token: string } | undefined;
+      let extractedAgentContinuation: { agentId: string; token: string } | undefined;
+      const persist = (): Promise<void> =>
+        this.persistSession(sessionId, identity, {
+          selectedSkill,
+          selectedAgent,
+          agentRunId,
+          agentAwaitingReply,
+          extractedContinuation,
+          extractedAgentContinuation,
+        });
       for await (const item of withHeartbeat(source, HEARTBEAT_MS)) {
         if (item.type === "heartbeat") {
           writeSseComment(res, "keep-alive");
@@ -474,13 +531,21 @@ export class InvokeServer {
         if ("agentAwaitingReply" in update) agentAwaitingReply = update.agentAwaitingReply as boolean | undefined;
         if (nodeName === "checkActiveSkill" && update.selectedSkill) skillContinuation = true;
         if ("result" in update) result = update.result;
+        if ("extractedContinuation" in update) {
+          extractedContinuation = update.extractedContinuation as { toolId: string; token: string } | undefined;
+        }
+        if ("extractedAgentContinuation" in update) {
+          extractedAgentContinuation = update.extractedAgentContinuation as
+            | { agentId: string; token: string }
+            | undefined;
+        }
 
         if (typeof update.error === "string") {
           finish(`❌ ${update.error}`);
           return;
         }
         if (nodeName === "composeResponse") {
-          persist();
+          await persist();
           finish(renderResult(result));
           return;
         }
@@ -489,7 +554,7 @@ export class InvokeServer {
         // `result` is set and the graph routes straight to END without ever
         // reaching runTool, so this must be treated as terminal here too.
         if (nodeName === "planAction" && update.result !== undefined) {
-          persist();
+          await persist();
           finish(renderResult(update.result));
           return;
         }
@@ -497,7 +562,7 @@ export class InvokeServer {
         // terminal for this graph invocation when they set an agentRunId — a
         // question, a final reply, or a failure all end the turn.
         if ((nodeName === "delegateToAgent" || nodeName === "checkActiveAgentRun") && update.agentRunId) {
-          persist();
+          await persist();
           finish(renderResult(result));
           return;
         }

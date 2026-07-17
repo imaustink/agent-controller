@@ -1,20 +1,28 @@
 /**
- * Round-trips the identity of the repository/branch/pull-request a coding
- * conversation is about, through the chat transcript itself. This
- * orchestrator is stateless per request (docs/adr/0008) — there is no
- * server-side memory of "which PR is this chat about". A leading HTML comment
- * is invisible in a rendered chat message but present in the raw text, so it
- * survives the orchestrator's `<conversation_history>` fold
- * (apps/agent-orchestrator/src/openai/chat-completions.ts) into the next turn
- * without the user ever seeing or having to repeat it. Same technique as
- * recipe-publisher's `<!-- mealie-slug: ... -->` marker.
+ * Encodes/decodes this agent's cross-episode continuation state — which
+ * repository/branch/PR/session a coding task is about — into the opaque
+ * token carried by the generic continuation mechanism (docs/adr/0017):
  *
- * SECURITY NOTE: values extracted here are only as trustworthy as the chat
- * history they came from, which can include untrusted content. A sufficiently
- * effective prompt injection could cause the assistant to echo back a
- * different repo/branch. Blast radius is bounded to the repositories the
- * GitHub App is installed on (the installation token cannot reach others) —
- * documented as a known risk in docs/security.md, not silently accepted.
+ *  - Outgoing: the agent returns `{ message, result: encodeSweContinuation(marker) }`
+ *    from its `runAgent` handler. `result` is a structured field on the
+ *    NATS `reply` message (packages/messaging/src/agent-protocol.ts),
+ *    separate from `message` — it never appears in the chat transcript the
+ *    user or the orchestrator's LLM planner sees. The orchestrator stores it
+ *    server-side, keyed by this agent's id (SessionRecord.agentContinuations).
+ *  - Incoming: on the NEXT episode for the same conversation, the
+ *    orchestrator's `delegateToAgent` node prepends
+ *    `<!-- continuation: <token> -->` to the new AgentRun's goal (see
+ *    ./continuation.ts for stripping that wrapper); `decodeSweContinuation`
+ *    turns the resulting token back into a `SweMarker`.
+ *
+ * This replaces the prior design, where the agent embedded a
+ * `<!-- swe: ... -->` marker directly in its chat reply and relied on the
+ * orchestrator's conversation-history fold to carry it into the next turn's
+ * `session.goal` — a documented prompt-injection surface (docs/security.md):
+ * a sufficiently effective injection earlier in the transcript could forge a
+ * different repo/branch. Routing the same data through the orchestrator's
+ * session store instead of the transcript closes that off — the value never
+ * passes through anything an LLM reads or writes.
  */
 
 export interface SweMarker {
@@ -28,11 +36,6 @@ export interface SweMarker {
   session: string;
 }
 
-// Only matches at the very start of the string. Fields are whitespace-
-// separated `key=value` pairs with tightly constrained value character sets
-// (no spaces, no shell metacharacters) so a marker can never smuggle an
-// argument into a later git/gh command.
-const SWE_MARKER = /^<!--\s*swe:\s*([^>]*?)\s*-->\n*/i;
 const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const REF_RE = /^[A-Za-z0-9._/-]+$/;
 const PR_RE = /^\d+$/;
@@ -49,38 +52,34 @@ function parseFields(body: string): Record<string, string> {
 }
 
 /**
- * Strips a leading `<!-- swe: ... -->` marker if present and well-formed,
- * returning it separately from the rest of the instruction text. A malformed
- * marker (bad repo/branch/etc.) is treated as absent and left in the text
- * rather than trusted — fail closed.
+ * Decodes a continuation token (whitespace-separated `key=value` pairs, no
+ * shell metacharacters allowed in values) back into a `SweMarker`. A
+ * malformed or absent token decodes to `null` — treated as "no continuation"
+ * rather than trusted partial data, fail closed.
  */
-export function parseSweMarker(input: string): { marker: SweMarker | null; instruction: string } {
-  const match = input.match(SWE_MARKER);
-  if (!match) return { marker: null, instruction: input };
+export function decodeSweContinuation(token: string | null): SweMarker | null {
+  if (!token) return null;
 
-  const fields = parseFields(match[1] ?? "");
+  const fields = parseFields(token);
   const repo = fields.repo ?? "";
   const branch = fields.branch ?? "";
   const pr = fields.pr ?? "";
   const session = fields.session ?? "";
 
   if (!REPO_RE.test(repo) || !REF_RE.test(branch) || !SESSION_RE.test(session)) {
-    return { marker: null, instruction: input };
+    return null;
   }
   if (pr !== "" && !PR_RE.test(pr)) {
-    return { marker: null, instruction: input };
+    return null;
   }
 
-  return {
-    marker: { repo, branch, pr: pr === "" ? null : pr, session },
-    instruction: input.slice(match[0].length),
-  };
+  return { repo, branch, pr: pr === "" ? null : pr, session };
 }
 
-/** Renders the marker to prepend to the agent's response so the next turn can read it back. */
-export function renderSweMarker(marker: SweMarker): string {
+/** Encodes a `SweMarker` as the opaque continuation token for the NEXT episode. */
+export function encodeSweContinuation(marker: SweMarker): string {
   const parts = [`repo=${marker.repo}`, `branch=${marker.branch}`];
   if (marker.pr) parts.push(`pr=${marker.pr}`);
   parts.push(`session=${marker.session}`);
-  return `<!-- swe: ${parts.join(" ")} -->\n\n`;
+  return parts.join(" ");
 }

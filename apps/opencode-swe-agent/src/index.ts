@@ -10,7 +10,8 @@ import {
   parseOpencodeLine,
 } from "./opencode.js";
 import { discoverResult, ensureDir, findRepoDir, resolveGitIdentity, runCommand, setupGitAuth } from "./git.js";
-import { parseSweMarker, renderSweMarker, type SweMarker } from "./marker.js";
+import { extractContinuationToken } from "./continuation.js";
+import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./marker.js";
 import { loadToolConfig } from "./config.js";
 import { clip } from "./security/redact.js";
 
@@ -235,7 +236,7 @@ async function runOneTurn(
     : `\n\n---\n⚠️ Work is on \`${discovered.repo}\` branch \`${discovered.branch}\`, but no open pull request was found.`;
 
   return {
-    reply: `${renderSweMarker(nextMarker)}${clip(summary, 1500)}${prLine}`,
+    reply: `${clip(summary, 1500)}${prLine}`,
     nextMarker,
     succeeded: true,
   };
@@ -251,11 +252,15 @@ async function runOneTurn(
  * reply and the next turn calls `runAgent` again via the orchestrator's
  * `checkActiveAgentRun` node.
  *
- * Multi-turn continuity across separate AgentRun invocations is maintained by
- * the `<!-- swe: ... -->` marker the agent embeds in its reply, the same way
- * the original one-shot tool did — the orchestrator's conversation history fold
- * carries it forward. Within a single AgentRun episode (i.e. for HITL during
- * one coding task) we use native `session.ask()` to pause and resume.
+ * Multi-turn continuity across separate AgentRun invocations (docs/adr/0017)
+ * is maintained via the orchestrator's session store, not the chat
+ * transcript: this agent's `reply.result` carries the encoded repo/branch/
+ * pr/session as an opaque token (see ./marker.ts), and on the NEXT episode
+ * the orchestrator prepends `<!-- continuation: <token> -->` to `goal` (see
+ * ./continuation.ts for stripping it back off) — the value never appears in
+ * anything the user or the orchestrator's LLM planner reads. Within a single
+ * AgentRun episode (i.e. for HITL during one coding task) we use native
+ * `session.ask()` to pause and resume instead.
  */
 runAgent(async (session) => {
   const token = toolConfig.githubToken;
@@ -272,11 +277,12 @@ runAgent(async (session) => {
 
   await session.progress("Authenticating…", { stage: "authenticate" });
 
-  // Parse the SWE marker from the goal if it's a continuation turn (the
-  // orchestrator folds it from the conversation history).
-  const { marker, instruction } = parseSweMarker(session.goal);
+  // Strip the generic continuation marker (if this is a continuation
+  // episode) and decode it back into repo/branch/pr/session.
+  const { token: continuationToken, text: instruction } = extractContinuationToken(session.goal);
+  const marker = decodeSweContinuation(continuationToken);
   if (!instruction.trim()) {
-    throw new Error("Goal must not be empty after removing any swe marker");
+    throw new Error("Goal must not be empty after removing any continuation marker");
   }
 
   // If the instruction is genuinely ambiguous (e.g. no target repo specified
@@ -284,11 +290,11 @@ runAgent(async (session) => {
   // Note: this is currently a simple heuristic — a more sophisticated agent
   // would use an LLM pre-flight check here. For now, always proceed to the
   // coding turn and let the opencode CLI surface missing-context errors.
-  const { reply, succeeded } = await runOneTurn(session, instruction, marker, token, anthropicApiKey);
+  const { reply, nextMarker, succeeded } = await runOneTurn(session, instruction, marker, token, anthropicApiKey);
 
   if (!succeeded) {
     throw new Error(reply);
   }
 
-  return { message: reply };
+  return { message: reply, result: nextMarker ? encodeSweContinuation(nextMarker) : undefined };
 });

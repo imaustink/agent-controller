@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import type { Event } from "@controller-agent/messaging";
+import { extractContinuationToken, prependContinuationToken } from "../continuation.js";
 import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-agent-channel.js";
 import { AgentTurnFailedError, AgentTurnTimeoutError } from "../agents/nats-agent-channel.js";
 import type { AgentDescriptor, AgentSearchResult, AgentStore } from "../agents/types.js";
@@ -66,6 +67,25 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
+  /**
+   * Per-tool continuation tokens from the caller's session, keyed by tool id
+   * (docs/adr/0017). Set by the server from the session store, consumed by
+   * `runTool` to prefix the tool's args on a repeat call for the same tool.
+   */
+  toolContinuations: Annotation<Record<string, string> | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * Per-agent continuation tokens from the caller's session, keyed by agent
+   * id (docs/adr/0017) — the AgentRun analogue of `toolContinuations`. Set
+   * by the server from the session store, consumed by `delegateToAgent` to
+   * prefix the goal of a NEW AgentRun episode for the same agent.
+   */
+  agentContinuations: Annotation<Record<string, string> | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
   identity: Annotation<Identity | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
@@ -92,6 +112,17 @@ export const AgentStateAnnotation = Annotation.Root({
   }),
   /** The exact argument string to pass to `selectedTool`, distinct from the raw `request` (docs/adr/0008). */
   toolArgs: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * For a multi-instance tool, the planner's stable identifier for WHICH
+   * instance this call is about (docs/adr/0017), e.g. a recipe's source URL
+   * for recipe-publisher — keeps that tool's per-instance continuation
+   * state from being conflated across distinct instances in one
+   * conversation. Absent for tools that don't need instance-scoping.
+   */
+  toolInstanceKey: Annotation<string | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
@@ -135,8 +166,20 @@ export const AgentStateAnnotation = Annotation.Root({
    * Opaque continuation token extracted from the tool's succeeded result
    * (e.g. `<!-- continuation: <slug> -->`). Stored in the session store and
    * re-injected into tool_args on the next turn for the same tool (ADR 0016).
+   * An empty-string token means "clear the stored continuation for this
+   * tool id" (the tool ran but returned no marker this time).
    */
   extractedContinuation: Annotation<{ toolId: string; token: string } | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * Opaque continuation token from the agent's structured `reply.result`
+   * (docs/adr/0017) — the AgentRun analogue of `extractedContinuation`.
+   * Stored in the session store and re-injected as a goal prefix on the
+   * NEXT episode's `delegateToAgent` call for the same agent.
+   */
+  extractedAgentContinuation: Annotation<{ agentId: string; token: string } | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
@@ -337,6 +380,12 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           agentRunId: state.activeAgentRunId,
           agentAwaitingReply: !reply.final,
           result: message,
+          // Same rule as delegateToAgent: only a FINAL reply concludes the
+          // episode, at which point `reply.result` becomes the continuation
+          // token for whatever NEW episode comes next (ADR 0017).
+          ...(reply.final
+            ? { extractedAgentContinuation: { agentId: found.agent.id, token: typeof reply.result === "string" ? reply.result : "" } }
+            : {}),
         };
       } catch (err) {
         return { agentRunId: state.activeAgentRunId, error: agentTurnErrorMessage(err) };
@@ -399,6 +448,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       const runId = randomUUID();
       const jobId = randomUUID();
       const callbackUrl = `${deps.callbackBaseUrl}/callback/${jobId}`;
+      // Re-inject this agent's saved continuation token (if any) onto the new
+      // episode's goal — e.g. opencode-swe's repo/branch/pr/session, so a
+      // follow-up coding task resumes the same branch without that state ever
+      // having round-tripped through the chat transcript (ADR 0017,
+      // superseding the old `<!-- swe: ... -->` marker).
+      const priorToken = state.agentContinuations?.[agent.id];
+      const goal = priorToken ? prependContinuationToken(priorToken, state.request) : state.request;
 
       try {
         // Subscribe BEFORE creating the AgentRun CR so a fast-replying agent
@@ -408,7 +464,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
         });
         await deps.agentRunLauncher.launch(agent.agentRunTemplate, runId, {
-          goal: state.request,
+          goal,
           callbackUrl,
           callbackSecretRef: deps.callbackSecretRef,
           timeoutSeconds: deps.agentRunTimeoutSeconds,
@@ -419,6 +475,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           agentRunId: runId,
           agentAwaitingReply: !reply.final,
           result: message,
+          // Only a FINAL reply concludes an episode, so only then is
+          // `reply.result` the continuation token for the NEXT episode — a
+          // non-final reply (HITL question) continues this SAME run via
+          // `checkActiveAgentRun`, which needs no continuation token at all.
+          ...(reply.final
+            ? { extractedAgentContinuation: { agentId: agent.id, token: typeof reply.result === "string" ? reply.result : "" } }
+            : {}),
         };
       } catch (err) {
         return { agentRunId: runId, error: agentTurnErrorMessage(err) };
@@ -456,14 +519,24 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (!tool) {
         return { error: "planner selected a tool outside the skill's scope" };
       }
-      return { selectedTool: tool, toolArgs: planned.toolArgs };
+      return { selectedTool: tool, toolArgs: planned.toolArgs, toolInstanceKey: planned.toolInstanceKey };
     })
     .addNode("runTool", async (state) => {
       const tool = state.selectedTool;
       if (!tool) {
         return { error: "no tool selected" };
       }
-      const input = state.toolArgs ?? state.request;
+      const rawInput = state.toolArgs ?? state.request;
+      // Scope the stored continuation to the planner's declared instance (if
+      // any) so a multi-instance tool's state for one instance (e.g. one
+      // recipe's Mealie slug) is never conflated with another instance's
+      // (a different recipe) within the same conversation (ADR 0017).
+      const continuationKey = state.toolInstanceKey ? `${tool.id}::${state.toolInstanceKey}` : tool.id;
+      // Re-inject this tool's saved continuation token (if any), so the tool
+      // can resume state (e.g. an existing Mealie slug to update) without it
+      // ever having round-tripped through the chat transcript.
+      const priorToken = state.toolContinuations?.[continuationKey];
+      const input = priorToken ? prependContinuationToken(priorToken, rawInput) : rawInput;
 
       let jobId: string;
       let event: Event;
@@ -522,6 +595,15 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (event.type !== "succeeded") {
         return { jobId, result: undefined };
       }
+      // A string result may carry a leading `<!-- continuation: ... -->`
+      // marker (ADR 0017): strip it here so it never reaches the chat
+      // transcript or the composeResponse/planner, and stash the token for
+      // the server to persist against this call's (possibly instance-scoped)
+      // key. Non-string (structured) results have no such marker.
+      if (typeof event.result === "string") {
+        const { token, text } = extractContinuationToken(event.result);
+        return { jobId, result: text, extractedContinuation: { toolId: continuationKey, token: token ?? "" } };
+      }
       // The tool output is surfaced to the user verbatim; any follow-up
       // narration is added by the composeResponse node (docs/adr/0015), not
       // hard-coded here.
@@ -531,9 +613,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // Post-tool response composition (docs/adr/0015): the active skill's own
       // instructions decide whether to wrap the tool's result with a follow-up
       // (e.g. "reply to confirm publishing"). The tool output is preserved
-      // byte-for-byte — the composer only produces optional surrounding text —
-      // so the recipe Markdown and its `<!-- mealie-slug: ... -->` marker
-      // survive verbatim for next-turn intent detection.
+      // byte-for-byte — the composer only produces optional surrounding text.
+      // Any `<!-- continuation: ... -->` marker was already stripped by
+      // runTool and handed off server-side (ADR 0017), so the recipe
+      // Markdown the user sees (and the next turn's intent detection over
+      // it) never carries that marker at all.
       //
       // Only string results can be narrated in place; a structured (JSON)
       // result is passed straight through, so the node is a safe no-op outside

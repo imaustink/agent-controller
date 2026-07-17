@@ -23,7 +23,7 @@ Given a recipe Markdown document (as a single CLI argument), the container:
 1. **Validates** the input is non-empty text — treated as untrusted input
    even though it comes from the parent agent (defense in depth, same
    discipline as recipe-scraper's own inputs).
-2. **Strips a leading `<!-- mealie-slug: <slug> -->` marker**, if present
+2. **Strips a leading `<!-- continuation: <slug> -->` marker**, if present
    (carried forward from a previous publish's own response — see "Updating
    an already-published recipe" below), then **parses** the remaining
    Markdown back into structured data (title, ingredient/direction sections,
@@ -44,7 +44,7 @@ Given a recipe Markdown document (as a single CLI argument), the container:
      anything that can't be resolved falls back to an "Equipment" note;
    - instructions, tips (as notes), and the source URL.
 4. **Emits** the result as a plain Markdown string: the recipe content that
-   was just pushed, prefixed with a `<!-- mealie-slug: ... -->` marker
+   was just pushed, prefixed with a `<!-- continuation: ... -->` marker
    (invisible when rendered) and followed by a confirmation + Mealie link
    (`✅ Published`/`✅ Updated on Mealie: [Title](url)`), or a `failed` event
    on error — see [docs/messaging.md](../../docs/messaging.md).
@@ -65,7 +65,7 @@ creating a duplicate, prefix the input Markdown with the exact marker line
 this tool emitted the first time it published that recipe:
 
 ```
-<!-- mealie-slug: birria-tacos -->
+<!-- continuation: birria-tacos -->
 
 # Birria Tacos
 ...
@@ -73,8 +73,14 @@ this tool emitted the first time it published that recipe:
 
 The marker is stripped before parsing and is never itself part of the recipe
 content. The orchestrator's recipe-refining skill handles this automatically
-(the marker round-trips through the chat's `<conversation_history>`
-fold), so this only matters if you're calling the tool directly.
+and no longer via the chat transcript: the agent graph's `runTool` node
+(docs/adr/0017) strips this marker from the tool's own success output before
+it ever reaches a chat message, stores the slug server-side keyed by
+`recipe-publisher` + the recipe's source URL (so distinct recipes in one
+conversation don't collide), and re-prepends it automatically on the next
+call for that same recipe — the model driving the skill never sees or
+handles the marker at all. This only matters if you're calling the tool
+directly.
 
 ## Deploying to Kubernetes
 
@@ -177,15 +183,19 @@ description/input/output text changes, since those feed the RAG index.
   configuration, never derived from the input Markdown or caller/LLM input.
 - Container hardening matches recipe-scraper's: non-root user, dropped
   capabilities, read-only root filesystem, resource limits (see `run.sh`).
-- **The `mealie-slug` update marker is only as trustworthy as the chat
-  history it round-trips through**, which can include untrusted scraped
-  recipe content earlier in the same conversation. A sufficiently effective
-  prompt injection could in principle cause the assistant to echo back a
-  different, attacker-chosen slug, causing an unintended overwrite of a
-  different existing recipe. Blast radius is bounded to recipes within the
-  same authenticated Mealie account/group (`MEALIE_API_TOKEN` can't reach
-  other tenants) — a known, accepted risk, not silently ignored (see
-  `mealie/markdown-parser.ts`).
+- **The update marker no longer round-trips through chat history** (see
+  [docs/adr/0017](../../docs/adr/0017-continuation-tokens-via-session-store.md)):
+  the orchestrator strips it from this tool's own output before it reaches
+  the transcript and re-injects it directly from its session store on the
+  next call for the same recipe (keyed by source URL, not just tool id, so
+  distinct recipes in one conversation can't collide). Previously the marker
+  survived in the visible chat reply and was carried forward by the model,
+  which was a documented, accepted risk (a sufficiently effective prompt
+  injection could in principle cause the assistant to echo back a different
+  slug); that surface is now closed. Blast radius, if the session store
+  itself were compromised, remains bounded to recipes within the same
+  authenticated Mealie account/group (`MEALIE_API_TOKEN` can't reach other
+  tenants).
 
 ## Known gaps
 
@@ -196,10 +206,11 @@ description/input/output text changes, since those feed the RAG index.
 - Equipment/tool matching is name-based (case-insensitive exact match) — near
   duplicates ("stand mixer" vs "stand-mixer") will create separate tools
   rather than being merged.
-- Update-in-place relies on the caller (the orchestrator's skill, or whoever
-  invokes this tool directly) correctly carrying the `mealie-slug` marker
-  forward verbatim — losing or corrupting it results in a duplicate recipe
-  being created instead of the existing one being updated.
+- Update-in-place relies on the orchestrator's session store still holding
+  this recipe's continuation token (or, when calling the tool directly,
+  on the caller correctly carrying the marker forward verbatim) — losing it
+  (session TTL/eviction, or a direct caller dropping it) results in a
+  duplicate recipe being created instead of the existing one being updated.
 
 ## Project layout
 
