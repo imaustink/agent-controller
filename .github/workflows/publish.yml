@@ -1,0 +1,77 @@
+name: Publish images
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: arc-runner-set
+    # Self-hosted runner: only ever reachable via push to main (collaborators only).
+    # Guard so a fork that somehow re-targets this job cannot run it on our infra.
+    if: github.repository == 'imaustink/agent-controller'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker login
+        run: |
+          echo "$REGISTRY_PASSWORD" | docker login registry.kurpuis.com:5000 \
+            -u "$REGISTRY_USERNAME" --password-stdin
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build & push agent-orchestrator
+        run: |
+          docker build \
+            -t registry.kurpuis.com:5000/agent-orchestrator:latest \
+            -f apps/agent-orchestrator/Dockerfile .
+          docker push registry.kurpuis.com:5000/agent-orchestrator:latest
+
+      - name: Build & push copilot-swe-agent
+        run: |
+          docker build \
+            -t registry.kurpuis.com:5000/copilot-swe-agent:latest \
+            -f apps/copilot-swe-agent/Dockerfile .
+          docker push registry.kurpuis.com:5000/copilot-swe-agent:latest
+
+      - name: Build & push recipe-scraper
+        run: |
+          docker build \
+            -t registry.kurpuis.com:5000/recipe-scraper:latest \
+            -f tools/recipe-scraper/Dockerfile .
+          docker push registry.kurpuis.com:5000/recipe-scraper:latest
+
+      - name: Build & push recipe-publisher
+        run: |
+          docker build \
+            -t registry.kurpuis.com:5000/recipe-publisher:latest \
+            -f tools/recipe-publisher/Dockerfile .
+          docker push registry.kurpuis.com:5000/recipe-publisher:latest
+
+      - name: Build & push tool-controller
+        run: |
+          docker build \
+            -t registry.kurpuis.com:5000/tool-controller:latest \
+            -f controllers/tool-controller/Dockerfile controllers/tool-controller
+          docker push registry.kurpuis.com:5000/tool-controller:latest
+
+      - name: Build & push localtool-executor (node, python, go, shell)
+        run: |
+          declare -A base_images=(
+            [node]=node:24-bookworm-slim
+            [python]=python:3.12-slim-bookworm
+            [go]=golang:1.24-bookworm
+            [shell]=debian:bookworm-slim
+          )
+          for runtime in "${!base_images[@]}"; do
+            docker build \
+              --build-arg BASE_IMAGE="${base_images[$runtime]}" \
+              --build-arg RUNTIME="$runtime" \
+              -t registry.kurpuis.com:5000/localtool-executor-"$runtime":latest \
+              -f sidecars/localtool-executor/Dockerfile sidecars/localtool-executor
+            docker push registry.kurpuis.com:5000/localtool-executor-"$runtime":latest
+          done
