@@ -6,25 +6,38 @@
   ErrImagePull failures on minikube. Session state is best-effort (a routing
   hint, not durable data), so no persistence is needed and data loss on pod
   restart is acceptable.
+
+  IMPORTANT: this pod's labels/selector use an explicitly DISTINCT
+  app.kubernetes.io/name ("...-redis"), not agent-orchestrator.selectorLabels
+  (which yields plain "agent-orchestrator"). The main Deployment and its
+  Services (service-invoke.yaml, service-callback.yaml) select on exactly
+  that base name+instance pair with no further narrowing — reusing it here
+  (as a previous revision of this file did, only adding component: redis on
+  top, which those Services' selectors never check) made every one of them
+  ambiguously match this pod too, and gave the two Deployments overlapping
+  pod selectors (a real k8s anti-pattern, not just a cosmetic label mismatch).
 */}}
+{{- $redisName := printf "%s-redis" (include "agent-orchestrator.name" .) }}
+{{- $redisSelectorLabels := printf "app.kubernetes.io/name: %s\napp.kubernetes.io/instance: %s" $redisName .Release.Name }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "agent-orchestrator.fullname" . }}-redis
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+    {{- $redisSelectorLabels | nindent 4 }}
+    helm.sh/chart: {{ include "agent-orchestrator.chart" . }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
     app.kubernetes.io/component: redis
 spec:
   replicas: 1
   selector:
     matchLabels:
-      {{- include "agent-orchestrator.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: redis
+      {{- $redisSelectorLabels | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "agent-orchestrator.selectorLabels" . | nindent 8 }}
+        {{- $redisSelectorLabels | nindent 8 }}
         app.kubernetes.io/component: redis
     spec:
       securityContext:
@@ -63,7 +76,9 @@ metadata:
   name: {{ include "agent-orchestrator.fullname" . }}-redis
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "agent-orchestrator.labels" . | nindent 4 }}
+    {{- $redisSelectorLabels | nindent 4 }}
+    helm.sh/chart: {{ include "agent-orchestrator.chart" . }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
     app.kubernetes.io/component: redis
 spec:
   type: ClusterIP
@@ -73,6 +88,5 @@ spec:
       protocol: TCP
       name: redis
   selector:
-    {{- include "agent-orchestrator.selectorLabels" . | nindent 4 }}
-    app.kubernetes.io/component: redis
+    {{- $redisSelectorLabels | nindent 4 }}
 {{- end }}
