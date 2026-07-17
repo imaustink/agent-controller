@@ -38,6 +38,13 @@ export interface AppConfig {
   /** Hard cap on stored conversation sessions; least-recently-updated evicted first (docs/adr/0012). */
   sessionMaxEntries: number;
   /**
+   * Redis URL for the conversation-session store (docs/adr/0016). When set,
+   * the orchestrator uses `RedisSessionStore` instead of `InMemorySessionStore`
+   * so sessions survive restarts and are shared across replicas. Leave unset
+   * for the single-replica in-memory default.
+   */
+  redisUrl: string | undefined;
+  /**
    * HTTP port the callback receiver listens on for Job -> orchestrator
    * results. Deliberately separate from `httpPort` below so a NetworkPolicy
    * can expose them differently: this one only needs to be reachable from
@@ -115,6 +122,7 @@ export const config: AppConfig = {
   agentRunTimeoutSeconds: num(process.env.AGENT_RUN_TIMEOUT_SECONDS, 3600),
   sessionTtlSeconds: num(process.env.AGENT_SESSION_TTL_SECONDS, 1800),
   sessionMaxEntries: num(process.env.AGENT_SESSION_MAX_ENTRIES, 1000),
+  redisUrl: process.env.AGENT_REDIS_URL,
   callbackPort: num(process.env.AGENT_CALLBACK_PORT, 8080),
   callbackBaseUrl: process.env.AGENT_CALLBACK_BASE_URL ?? "http://localhost:8080",
   httpPort: num(process.env.AGENT_HTTP_PORT, 8081),

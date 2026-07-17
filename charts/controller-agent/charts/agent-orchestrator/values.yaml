@@ -64,6 +64,11 @@ config:
   # are no longer required in that case. Leave empty to use the HTTP callback
   # path (backward-compatible default).
   natsUrl: ""
+  # Redis URL for the conversation-session store (docs/adr/0016). Ignored
+  # when redis.enabled=true below (the in-cluster Service URL is derived
+  # automatically). When non-empty the orchestrator uses RedisSessionStore
+  # instead of the single-replica in-memory default.
+  redisUrl: ""
 
 # Secrets: OPENAI_API_KEY (required), AGENT_CALLBACK_SECRET (required, no
 # default — must not be guessable), AGENT_QDRANT_API_KEY (optional).
@@ -267,6 +272,9 @@ qdrant:
 # only; a shared Redis store is the scale-out path).
 redis:
   enabled: false
+  image:
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
   storageClass: ""
   storageSize: 1Gi
   resources:
