@@ -39,7 +39,6 @@ function runOpencode(
     const toolFailures: string[] = [];
     const parts: string[] = [];
     let transcriptLen = 0;
-    let rawOut = "";
     /** Accumulates streaming token deltas before flushing as a single chunk. */
     let deltaBuffer = "";
     // Whether the in-flight delta buffer is a continuation of the same
@@ -104,7 +103,11 @@ function runOpencode(
 
     child.stdout.on("data", (chunk: Buffer) => {
       const s = chunk.toString();
-      if (rawOut.length < 20000) rawOut += s;
+      // Mirror raw opencode output to our own stdout as it arrives so
+      // `kubectl logs -f` shows progress live instead of only at process
+      // exit (previously this was only ever written once, in the `close`
+      // handler below, which made the pod look hung until the job finished).
+      process.stdout.write(s);
       buffer += s;
       let idx: number;
       while ((idx = buffer.indexOf("\n")) >= 0) {
@@ -117,7 +120,6 @@ function runOpencode(
     child.on("close", (code) => {
       if (buffer.trim()) handleLine(buffer);
       flushDelta();
-      process.stderr.write(`--- opencode raw stdout (exit ${code}) ---\n${clip(rawOut, 20000)}\n--- end raw ---\n`);
       resolve({ code: code ?? 1, finalMessage, toolFailures, transcript: parts.join("\n") });
     });
   });
