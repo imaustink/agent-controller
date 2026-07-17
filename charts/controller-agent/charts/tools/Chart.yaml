@@ -2,9 +2,9 @@ apiVersion: v2
 name: tools
 description: >-
   The controller-agent Tool + Skill catalog: the Tool and Skill custom resources
-  (ADR 0010/0011) the tool-controller reconciles and the orchestrator
+  (ADR 0010/0011) the core-controller reconciles and the orchestrator
   RAG-selects. Applied as post-install/post-upgrade hooks so they land after
-  the tool-controller Deployment (their CRDs ship in that chart's crds/ dir).
+  the core-controller Deployment (their CRDs ship in that chart's crds/ dir).
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

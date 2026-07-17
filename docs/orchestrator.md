@@ -130,7 +130,7 @@ only ever sees a short list of *relevant* tools, not the full catalog:
   superseded the dynamic Deployment discovery of ADR 0004): each tool ships a
   `Tool` CR (id/name/description/input/output/allowedRoles/tier plus
   image/serviceAccount/env/resources). `CrdToolRegistry` lists every `Tool`
-  CR once at startup and upserts it into the RAG index; the Go tool-controller
+  CR once at startup and upserts it into the RAG index; the Go core-controller
   reconciles each invocation's `ToolRun` CR into a hardened one-shot Job, so
   the orchestrator itself never creates a Job. Dynamic Deployment-based
   discovery had been rejected earlier for a chicken-and-egg problem: tools are
@@ -161,7 +161,7 @@ Which tools even show up as retrieval candidates depends on **who is asking**:
   `ToolRunLauncher` — creates the `ToolRun` via `@kubernetes/client-node`
   (`CustomObjectsApi`, no shelling out to `kubectl`); it **never creates a Job
   itself**.
-- The Go **tool-controller** (`controllers/tool-controller/`) reconciles each
+- The Go **core-controller** (`controllers/core-controller/`) reconciles each
   `ToolRun` into a hardened one-shot **Job** — image + ServiceAccount from the
   referenced `Tool` CR, plus the existing hardened container contract from
   [security.md](security.md) (drop all capabilities, read-only root filesystem,

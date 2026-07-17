@@ -15,7 +15,7 @@
 #
 # Prerequisite: apply apps/opencode-swe-agent/agent.yaml first (this Tool's
 # agentRef must resolve to an existing Agent CR in the same namespace, or the
-# tool-controller reports this Tool as Degraded/AgentRefMissing).
+# core-controller reports this Tool as Degraded/AgentRefMissing).
 apiVersion: core.controller-agent.dev/v1alpha1
 kind: Tool
 metadata:

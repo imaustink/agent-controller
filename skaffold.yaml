@@ -21,7 +21,7 @@ metadata:
 #   - `helm dependency update` on the agent-orchestrator subchart itself
 #     (its own qdrant dependency; Helm doesn't recurse into file:// subcharts,
 #     so skipBuildDependencies below only covers the umbrella chart's direct deps)
-#   - applying charts/.../tool-controller/crds/*.yaml --server-side (Helm's
+#   - applying charts/.../core-controller/crds/*.yaml --server-side (Helm's
 #     crds/ dir is install-only; upgrades never touch it)
 
 build:
@@ -40,8 +40,8 @@ build:
     - image: agent-orchestrator
       docker:
         dockerfile: apps/agent-orchestrator/Dockerfile
-    - image: tool-controller
-      context: controllers/tool-controller
+    - image: core-controller
+      context: controllers/core-controller
       docker:
         dockerfile: Dockerfile
     - image: recipe-scraper
@@ -107,8 +107,8 @@ deploy:
         setValueTemplates:
           agent-orchestrator.image.repository: "{{.IMAGE_REPO_agent_orchestrator}}"
           agent-orchestrator.image.tag: "{{.IMAGE_TAG_agent_orchestrator}}"
-          tool-controller.image.repository: "{{.IMAGE_REPO_tool_controller}}"
-          tool-controller.image.tag: "{{.IMAGE_TAG_tool_controller}}"
+          core-controller.image.repository: "{{.IMAGE_REPO_core_controller}}"
+          core-controller.image.tag: "{{.IMAGE_TAG_core_controller}}"
           tools.recipeScraper.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_scraper}}"
           tools.recipePublisher.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_publisher}}"
           tools.opencodeSweAgent.image: "{{.IMAGE_FULLY_QUALIFIED_opencode_swe_agent}}"

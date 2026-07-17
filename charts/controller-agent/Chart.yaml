@@ -3,7 +3,7 @@ name: controller-agent
 description: >-
   Umbrella Helm chart for the whole controller-agent system: the parent
   orchestrator (RAG skill/tool selection + ToolRun launcher), the
-  tool-controller operator (Tool/Skill/ToolRun CRDs), the Tool/Skill
+  core-controller operator (Tool/Skill/ToolRun CRDs), the Tool/Skill
   catalog, and an optional Open WebUI chat front-end -- each a subchart so
   they can be enabled/disabled independently while deploying as one release.
 type: application
@@ -28,16 +28,16 @@ dependencies:
     version: "0.1.0"
     repository: "file://charts/agent-orchestrator"
     condition: agent-orchestrator.enabled
-  # The Go/kubebuilder operator (controllers/tool-controller). Its CRDs ship
+  # The Go/kubebuilder operator (controllers/core-controller). Its CRDs ship
   # in the subchart's crds/ dir, which Helm installs before any templated
   # resources in the whole release -- so the catalog subchart's Tool/Skill
   # CRs below always have their CRD present.
-  - name: tool-controller
+  - name: core-controller
     version: "0.1.0"
-    repository: "file://charts/tool-controller"
-    condition: tool-controller.enabled
+    repository: "file://charts/core-controller"
+    condition: core-controller.enabled
   # The app's Tool + Skill catalog (Tool/Skill custom resources). Applied as
-  # post-install/post-upgrade hooks so they land after the tool-controller
+  # post-install/post-upgrade hooks so they land after the core-controller
   # Deployment is created (see the subchart's templates for the hook weights).
   - name: tools
     version: "0.1.0"

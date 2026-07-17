@@ -8,7 +8,7 @@ app.kubernetes.io/part-of: controller-agent
 {{- end }}
 
 {{/*
-Hook annotations so catalog CRs apply after the tool-controller Deployment
+Hook annotations so catalog CRs apply after the core-controller Deployment
 (post-install/post-upgrade), re-apply cleanly on upgrade, and are ordered by
 weight. Call with the root context: {{- include "tools.hookAnnotations" . | nindent 4 }}
 */}}

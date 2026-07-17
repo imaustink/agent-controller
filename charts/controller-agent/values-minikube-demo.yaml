@@ -1,7 +1,7 @@
 # Values file for the local minikube demo of the single `controller-agent`
 # umbrella release (namespace `controller-agent`). Merges the two former
 # per-chart demo files (charts/agent-orchestrator/values-minikube-demo.yaml
-# and charts/tool-controller/values-minikube-demo.yaml) under their subchart
+# and charts/core-controller/values-minikube-demo.yaml) under their subchart
 # keys, now that both are subcharts of one release.
 #
 # IMPORTANT LESSON (hit for real): `helm upgrade` with only a FEW `--set`
@@ -41,7 +41,7 @@ agent-orchestrator:
   localTool:
     enabled: true
 
-tool-controller:
+core-controller:
   enabled: true
   image:
     tag: latest

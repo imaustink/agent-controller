@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
  * Tool-specific configuration for the opencode-swe-agent. The generic agent
  * runtime config (NATS connection, run id, goal) is handled by
  * `@controller-agent/agent-runtime`'s `loadConfig()` and injected by the Go
- * tool-controller into the Job's environment (Phase 7). This only covers the
+ * core-controller into the Job's environment (Phase 7). This only covers the
  * tool-specific settings that are fixed via the Agent CR's `env`/`secretEnv`.
  */
 export interface AgentToolConfig {
@@ -29,7 +29,7 @@ export interface AgentToolConfig {
   /**
    * Writable workspace root. Under the hardened securityContext
    * (readOnlyRootFilesystem=true) this MUST be under /tmp which is mounted as
-   * an emptyDir by the tool-controller.
+   * an emptyDir by the core-controller.
    */
   workdir: string;
   /**

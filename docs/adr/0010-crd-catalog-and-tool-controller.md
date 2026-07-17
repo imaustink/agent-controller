@@ -6,6 +6,13 @@
 > revert lost the original (2026-07-04); the decision itself has been live
 > since 2026-07-03 and is reflected throughout the code (`CrdToolRegistry`,
 > `CrdSkillRegistry`, `ToolRunLauncher`, `controllers/tool-controller/`).
+>
+> **Editorial note (2026-07-17):** the controller introduced here was later
+> renamed `controllers/core-controller` (Helm subchart `charts/core-controller`,
+> image `core-controller`) — by then it reconciled `Tool`, `Skill`, `Agent`,
+> `ToolRun`, `AgentRun`, and `LocalTool` CRs, not just tools, so "tool-controller"
+> no longer described what it did. This ADR's body below is left as originally
+> written and still says `tool-controller` throughout.
 
 ## Context
 

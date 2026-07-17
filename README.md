@@ -19,7 +19,7 @@ been doing.
 
 Modelling tools and agents as custom resources flips this:
 
-| Concern | Baked into orchestrator | With agent-controller |
+| Concern | Baked into orchestrator | With core-controller |
 | ------- | ----------------------- | ---------------------- |
 | Tool definition | Config files / env vars | `Tool` CR — live-editable, `kubectl`-discoverable |
 | Secret injection | Orchestrator builds the full Job spec | Declared once on the CR; controller injects at run time |
@@ -40,7 +40,7 @@ Modelling tools and agents as custom resources flips this:
 graph TD
     User([User / Chat client])
     Orchestrator[agent-orchestrator\nDeployment]
-    Controller[agent-controller\nDeployment]
+    Controller[core-controller\nDeployment]
 
     subgraph CRDs["Custom Resources (core.controller-agent.dev/v1alpha1)"]
         ToolCR[Tool CR\nimage · SA · secretEnv · allowedRoles]
@@ -92,12 +92,12 @@ orchestrator service, and `controllers/` holds the Go controller.
 ├── apps/
 │   └── agent-orchestrator/     # RAG skill selection + ToolRun/AgentRun creator
 ├── controllers/
-│   └── tool-controller/        # Go controller — watches CRDs, launches Jobs
+│   └── core-controller/        # Go controller — watches CRDs, launches Jobs
 │       ├── api/v1alpha1/        # Tool, Skill, Agent, ToolRun, AgentRun types
 │       └── internal/controller/ # reconciliation logic
 └── charts/                     # Helm charts
     ├── agent-orchestrator/     # orchestrator Deployment/Services/RBAC
-    └── tool-controller/        # controller Deployment + bundled CRDs
+    └── core-controller/        # controller Deployment + bundled CRDs
 ```
 
 General, cross-cutting documentation lives at the repo root (`README.md` and
@@ -112,7 +112,7 @@ tools.
 
 | Component | Language | Docs |
 | --------- | -------- | ---- |
-| **agent-controller** | Go (kubebuilder) | [controllers/tool-controller/README.md](controllers/tool-controller/README.md) |
+| **core-controller** | Go (kubebuilder) | [controllers/core-controller/README.md](controllers/core-controller/README.md) |
 
 The controller watches `Tool`, `Skill`, `Agent`, `ToolRun`, and `AgentRun` CRs
 (API group `core.controller-agent.dev/v1alpha1`) and manages all Job creation,
@@ -154,7 +154,7 @@ Two Helm charts cover the full system:
 
 | Chart | What it installs |
 | ----- | ---------------- |
-| [charts/tool-controller](charts/tool-controller/) | CRDs + controller Deployment/RBAC |
+| [charts/core-controller](charts/core-controller/) | CRDs + controller Deployment/RBAC |
 | [charts/agent-orchestrator](charts/agent-orchestrator/) | Orchestrator Deployment, invoke/callback Services, optional Qdrant + Open WebUI |
 
 Install the controller first (it owns the CRDs), then the orchestrator. See

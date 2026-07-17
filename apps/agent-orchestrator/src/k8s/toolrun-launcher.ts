@@ -4,7 +4,7 @@ import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import type { JobTemplate } from "../tool-descriptor.js";
 import type { ContainerToolLauncher, LaunchedJob, LaunchOptions } from "./container-tool-launcher.js";
 
-/** Plural resource name used by the `ToolRun` CRD (matches `config/crd/bases` in controllers/tool-controller). */
+/** Plural resource name used by the `ToolRun` CRD (matches `config/crd/bases` in controllers/core-controller). */
 export const TOOLRUN_PLURAL = "toolruns";
 
 /** Reference to a single key in a k8s Secret, in the same namespace as the ToolRun. */
@@ -15,8 +15,8 @@ export interface SecretKeySelector {
 
 /**
  * Creates one `ToolRun` custom resource per tool/sub-agent invocation (ADR
- * 0010) instead of creating a k8s Job directly — the Go tool-controller
- * (controllers/tool-controller/) is the ONLY thing that creates Jobs now.
+ * 0010) instead of creating a k8s Job directly — the Go core-controller
+ * (controllers/core-controller/) is the ONLY thing that creates Jobs now.
  * This is why the orchestrator's own RBAC no longer needs `batch/jobs`
  * permissions at all (see charts/controller-agent/charts/agent-orchestrator/templates/rbac.yaml).
  *
@@ -69,7 +69,7 @@ export class ToolRunLauncher implements ContainerToolLauncher {
 
     // Build the callback block: NATS mode when natsSubject is set, HTTP mode
     // otherwise (backward compatible). Both paths are mutually exclusive —
-    // the tool-controller inspects which fields are present to decide which
+    // the core-controller inspects which fields are present to decide which
     // env vars to inject into the launched Job.
     const callback = options.natsSubject
       ? { natsSubject: options.natsSubject, natsUrl: options.natsUrl }

@@ -70,8 +70,8 @@ async function main(): Promise<void> {
   // Tool catalog discovered from `Tool` custom resources (ADR 0010) --
   // supersedes the static build-time manifest catalog (ADR 0009), which
   // itself superseded annotated-Deployment discovery (ADR 0004). A Tool CR
-  // is pure metadata, reconciled/validated by the Go tool-controller
-  // (controllers/tool-controller/), which is also the only thing that ever
+  // is pure metadata, reconciled/validated by the Go core-controller
+  // (controllers/core-controller/), which is also the only thing that ever
   // creates a k8s Job now.
   const registry = CrdToolRegistry.fromKubeConfig(config.namespace, config.crdGroup, config.crdVersion, kubeConfig);
   // LocalTools (ADR 0014): tools executed in-pod by a per-language executor

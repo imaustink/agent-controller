@@ -258,7 +258,7 @@ export interface AgentGraphDeps {
   agentStore?: AgentStore;
   /** Picks ONE delegation target — a skill or an agent — from both candidate lists at once. */
   delegateSelector?: DelegateSelector;
-  /** Creates the AgentRun CR the tool-controller reconciles into a hardened Job. */
+  /** Creates the AgentRun CR the core-controller reconciles into a hardened Job. */
   agentRunLauncher?: AgentRunLauncherPort;
   /** Bidirectional NATS channel to a running agent (progress, human-in-the-loop questions, final reply). */
   agentChannel?: AgentOrchestratorChannel;
@@ -701,7 +701,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         jobId = event.job_id;
       } else if (tool.jobTemplate) {
         // Container tool (ADR 0010): create a ToolRun CR — the Go
-        // tool-controller reconciles it into a hardened Job. The orchestrator
+        // core-controller reconciles it into a hardened Job. The orchestrator
         // itself never creates a Job.
         jobId = randomUUID();
         const awaitResult = deps.jobResultReceiver.awaitJob(jobId);

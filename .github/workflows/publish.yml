@@ -52,12 +52,12 @@ jobs:
             -f tools/recipe-publisher/Dockerfile .
           docker push registry.kurpuis.com:5000/recipe-publisher:latest
 
-      - name: Build & push tool-controller
+      - name: Build & push core-controller
         run: |
           docker build \
-            -t registry.kurpuis.com:5000/tool-controller:latest \
-            -f controllers/tool-controller/Dockerfile controllers/tool-controller
-          docker push registry.kurpuis.com:5000/tool-controller:latest
+            -t registry.kurpuis.com:5000/core-controller:latest \
+            -f controllers/core-controller/Dockerfile controllers/core-controller
+          docker push registry.kurpuis.com:5000/core-controller:latest
 
       - name: Build & push localtool-executor (node, python, go, shell)
         run: |

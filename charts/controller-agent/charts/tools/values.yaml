@@ -1,15 +1,15 @@
 # The Tool + Skill catalog custom resources. Each entry can be toggled off.
 #
 # These are applied as post-install/post-upgrade Helm hooks so they land after
-# the tool-controller Deployment is created (their CRDs are installed first,
-# from charts/tool-controller/crds/, before any templated resource in the
+# the core-controller Deployment is created (their CRDs are installed first,
+# from charts/core-controller/crds/, before any templated resource in the
 # release). Because they are hooks, `helm uninstall` will NOT delete them --
 # remove them by hand (`kubectl delete tool,skill -l ...`) or delete the CRDs
 # if you want them gone. See templates/_helpers.tpl for the hook annotations.
 
 enabled: true
 
-# apiVersion of the Tool/Skill CRDs. Must match what charts/tool-controller
+# apiVersion of the Tool/Skill CRDs. Must match what charts/core-controller
 # installs (config.crdGroup/crdVersion on the orchestrator side too).
 crdApiVersion: core.controller-agent.dev/v1alpha1
 

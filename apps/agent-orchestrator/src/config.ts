@@ -50,7 +50,7 @@ export interface AppConfig {
   callbackSecret: string;
   /**
    * Name of the k8s Secret containing the callback HMAC secret, referenced
-   * (never copied as plaintext) by ToolRun CRs so the Go tool-controller can
+   * (never copied as plaintext) by ToolRun CRs so the Go core-controller can
    * wire it into the launched Job via `secretKeyRef` (ADR 0010).
    */
   callbackSecretRefName: string | undefined;

@@ -105,7 +105,7 @@ helm dependency update "$REPO_ROOT/charts/controller-agent/charts/agent-orchestr
 step "Applying CRDs..."
 # Helm's crds/ dir is install-only; upgrades never touch them. Apply manually
 # every time so CRD schema changes are always current.
-for crd in "$REPO_ROOT"/charts/controller-agent/charts/tool-controller/crds/*.yaml; do
+for crd in "$REPO_ROOT"/charts/controller-agent/charts/core-controller/crds/*.yaml; do
   kubectl apply -f "$crd" --server-side >/dev/null
 done
 

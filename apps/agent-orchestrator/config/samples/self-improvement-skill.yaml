@@ -74,7 +74,7 @@ spec:
          `opencode-swe-agent` or another Agent CR directly) the new skill
          needs — inspect the existing catalog under
          `apps/agent-orchestrator/config/samples/` and
-         `controllers/tool-controller/config/samples/` for what already
+         `controllers/core-controller/config/samples/` for what already
          exists before inventing a new Tool.
        - `spec.markdown`: the new skill's own system prompt, written the same
          way as this file's — classify the user's request, call the right

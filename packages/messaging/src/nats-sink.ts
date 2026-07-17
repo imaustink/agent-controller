@@ -35,7 +35,7 @@ export class NatsSink<TResult = unknown> implements Sink<TResult> {
       this.nc = await connect({ servers: this.opts.natsUrl });
     }
     // publish is fire-and-forget at the nats.js layer; the tool's
-    // activeDeadlineSeconds (set by the tool-controller) bounds the worst
+    // activeDeadlineSeconds (set by the core-controller) bounds the worst
     // case if the message is never received.
     this.nc.publish(this.opts.subject, this.codec.encode(event as Event));
   }

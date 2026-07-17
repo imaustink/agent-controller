@@ -1,0 +1,9 @@
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: AgentRun
+metadata:
+  labels:
+    app.kubernetes.io/name: core-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: agentrun-sample
+spec:
+  # TODO(user): Add fields here

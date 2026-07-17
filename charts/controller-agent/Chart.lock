@@ -2,8 +2,8 @@ dependencies:
 - name: agent-orchestrator
   repository: file://charts/agent-orchestrator
   version: 0.1.0
-- name: tool-controller
-  repository: file://charts/tool-controller
+- name: core-controller
+  repository: file://charts/core-controller
   version: 0.1.0
 - name: tools
   repository: file://charts/tools
@@ -14,5 +14,5 @@ dependencies:
 - name: nats
   repository: https://nats-io.github.io/k8s/helm/charts/
   version: 2.14.2
-digest: sha256:9ec53ab3e7c04e4acf7a901175350745113744d0b1b7c0897b2214546c04aebd
-generated: "2026-07-14T08:41:02.165393-07:00"
+digest: sha256:d86631569db4142d9d55a17608b535c407f799c4f848565ca32b109f9495c2a2
+generated: "2026-07-17T06:58:57.352165-07:00"

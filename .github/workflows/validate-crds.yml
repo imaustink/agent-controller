@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - "apps/agent-orchestrator/config/samples/**"
-      - "controllers/tool-controller/config/crd/**"
+      - "controllers/core-controller/config/crd/**"
 
 permissions:
   contents: read
@@ -28,9 +28,9 @@ jobs:
         uses: helm/kind-action@v1
 
       - name: Install CRDs
-        run: kubectl apply -f controllers/tool-controller/config/crd/bases/
+        run: kubectl apply -f controllers/core-controller/config/crd/bases/
 
-      # controllers/tool-controller/config/samples/ is deliberately excluded:
+      # controllers/core-controller/config/samples/ is deliberately excluded:
       # it's kubebuilder's scaffolded "TODO(user): Add fields here"
       # placeholders, never filled in as real CRs, not this repo's actual
       # sample catalog.

@@ -94,8 +94,8 @@ src/
 
 Tools are **`Tool` custom resources** discovered from the cluster (ADR 0010),
 not baked into this image. `CrdToolRegistry` lists every `Tool` CR once at
-startup and upserts it into the RAG index; the Go tool-controller
-(`controllers/tool-controller/`) reconciles each invocation's `ToolRun` CR into
+startup and upserts it into the RAG index; the Go core-controller
+(`controllers/core-controller/`) reconciles each invocation's `ToolRun` CR into
 a hardened one-shot Job — the orchestrator itself never creates a Job. To
 register a container tool:
 
@@ -115,7 +115,7 @@ ServiceAccounts, only its own (see the Helm chart).
 
 A `LocalTool` runs **in-pod** by a per-language executor sidecar instead of as a
 Job — lower latency, code pulled from a registry and sandboxed with bubblewrap.
-Apply a `LocalTool` CR (see the CRD in `controllers/tool-controller` and the
+Apply a `LocalTool` CR (see the CRD in `controllers/core-controller` and the
 reference tools under `tools-local/`):
 
 ```yaml

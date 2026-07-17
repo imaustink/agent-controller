@@ -7,12 +7,12 @@ independently:
 | Subchart (values key) | What it deploys | Default |
 | --------------------- | --------------- | ------- |
 | `agent-orchestrator` | Parent orchestrator Deployment, invoke/callback Services, RBAC; bundles an optional [Qdrant](charts/agent-orchestrator/) under `agent-orchestrator.qdrant.*` | on |
-| `tool-controller` | The Go/kubebuilder operator + the Tool/Skill/ToolRun/Agent/AgentRun/LocalTool CRDs (from its `crds/` dir) | on |
+| `core-controller` | The Go/kubebuilder operator + the Tool/Skill/ToolRun/Agent/AgentRun/LocalTool CRDs (from its `crds/` dir) | on |
 | `tools` | The Tool + Skill catalog (custom resources) — applied as post-install/post-upgrade hooks so they land after the controller | on |
 | `openwebui` | Optional [Open WebUI](https://github.com/open-webui/open-webui) chat UI in front of the orchestrator's OpenAI-compatible facade | off |
 
 This replaces the two previously-separate releases (`agent-orchestrator` and
-`tool-controller`) with one `controller-agent` release.
+`core-controller`) with one `controller-agent` release.
 
 ## Layout
 
@@ -24,7 +24,7 @@ charts/controller-agent/
 ├── templates/NOTES.txt         # aggregate post-install guidance
 └── charts/
     ├── agent-orchestrator/     # local subchart (with its own qdrant dependency)
-    ├── tool-controller/        # local subchart (ships the CRDs)
+    ├── core-controller/        # local subchart (ships the CRDs)
     ├── tools/                  # local subchart (Tool/Skill CRs)
     └── open-webui-*.tgz        # fetched remote dependency (gitignored)
 ```
@@ -76,8 +76,8 @@ helm upgrade controller-agent charts/controller-agent -n controller-agent \
 ## Notable behaviors
 
 - **Stable Service/Deployment names.** `agent-orchestrator.fullnameOverride` and
-  `tool-controller.fullnameOverride` pin the orchestrator's
-  `agent-orchestrator-invoke`/`-callback` Services and the `tool-controller` /
+  `core-controller.fullnameOverride` pin the orchestrator's
+  `agent-orchestrator-invoke`/`-callback` Services and the `core-controller` /
   `agent-orchestrator` Deployment names regardless of the release name — the
   Open WebUI base URL and the in-cluster callback URL depend on those names.
 - **Ordering.** The controller's CRDs install first (Helm processes every
