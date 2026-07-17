@@ -1,11 +1,13 @@
 {{- $ao := index .Values "agent-orchestrator" -}}
-controller-agent ({{ .Chart.Version }}) has been deployed as a single release.
+agent-controller ({{ .Chart.Version }}) has been deployed as a single release.
 
 Components enabled in this release:
   - orchestrator:    {{ if $ao.enabled }}yes{{ else }}no{{ end }}
   - tool-controller: {{ if (index .Values "tool-controller").enabled }}yes{{ else }}no{{ end }}
-  - tool/skill catalog: {{ if .Values.tools.enabled }}yes{{ else }}no{{ end }}
   - Open WebUI:      {{ if .Values.openwebui.enabled }}yes{{ else }}no{{ end }}
+
+Install the community-components chart next to populate the Tool/Skill/Agent
+catalog: helm install community-components charts/community-components -n {{ .Release.Namespace }}
 
 {{- if $ao.enabled }}
 
@@ -44,12 +46,4 @@ is a DEV/TEST-ONLY stub with no real token verification — do not use it in
 production (see apps/agent-orchestrator/src/rbac/static-identity-resolver.ts).
 {{- end }}
 {{- end }}
-{{- end }}
-
-{{- if .Values.tools.enabled }}
-
-Tool/Skill catalog CRs are applied as Helm hooks AFTER the tool-controller.
-Note: because they are hooks, `helm uninstall` will NOT remove them --
-delete them by hand if needed:
-  kubectl -n {{ .Release.Namespace }} delete tool,skill -l app.kubernetes.io/part-of=controller-agent
 {{- end }}

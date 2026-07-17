@@ -1,0 +1,14 @@
+# Values file for the local minikube demo of the `community-components`
+# release (namespace `controller-agent`). Install AFTER the agent-controller
+# chart's release -- see ../agent-controller/values-minikube-demo.yaml --
+# since the CRDs it depends on ship with that chart.
+
+enabled: true
+
+# recipe-scraper + recipe-publisher are on by default (see values.yaml).
+# opencode-swe (the privileged GitHub coding agent, calling Anthropic
+# directly) is enabled here; it needs the opencode-swe-agent ServiceAccount +
+# opencode-swe-secrets (keys GITHUB_TOKEN and ANTHROPIC_API_KEY) to already
+# exist in-cluster.
+opencodeSweAgent:
+  enabled: true
