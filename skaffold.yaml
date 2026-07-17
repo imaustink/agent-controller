@@ -115,7 +115,17 @@ deploy:
           # FRAGILE: index must match agent-orchestrator/values.yaml's
           # localTool.runtimes order (node, python, go, shell). Reorder both
           # together if you ever change it.
+          #
+          # `.name` must be set explicitly alongside `.image`: Helm replaces
+          # array values wholesale rather than merging them, so setting only
+          # `[i].image` via --set-string silently drops the chart default's
+          # `.name` field (which the deployment/volume names are built from),
+          # producing an invalid empty-suffix name like "localtool-executor-".
+          agent-orchestrator.localTool.runtimes[0].name: "node"
           agent-orchestrator.localTool.runtimes[0].image: "{{.IMAGE_FULLY_QUALIFIED_localtool_executor_node}}"
+          agent-orchestrator.localTool.runtimes[1].name: "python"
           agent-orchestrator.localTool.runtimes[1].image: "{{.IMAGE_FULLY_QUALIFIED_localtool_executor_python}}"
+          agent-orchestrator.localTool.runtimes[2].name: "go"
           agent-orchestrator.localTool.runtimes[2].image: "{{.IMAGE_FULLY_QUALIFIED_localtool_executor_go}}"
+          agent-orchestrator.localTool.runtimes[3].name: "shell"
           agent-orchestrator.localTool.runtimes[3].image: "{{.IMAGE_FULLY_QUALIFIED_localtool_executor_shell}}"
