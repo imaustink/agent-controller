@@ -1,5 +1,6 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
 import type { JobTemplate, LocalToolSpec, ToolDescriptor } from "../tool-descriptor.js";
+import type { AgentRunTemplate } from "../agents/types.js";
 import { toQdrantPointId } from "./qdrant-id.js";
 import type { Embedder, ToolQueryFilter, ToolSearchResult, VectorStore } from "./types.js";
 
@@ -22,10 +23,12 @@ interface ToolPayload {
   name: string;
   description: string;
   allowedRoles: string[];
-  /** Job launch template for container tools; null for LocalTools (ADR 0014). */
+  /** Job launch template for container tools; null for LocalTools/agent-backed tools (ADR 0014). */
   jobTemplate: JobTemplate | null;
-  /** Local execution spec for LocalTools; null for container/Job tools (ADR 0014). */
+  /** Local execution spec for LocalTools; null otherwise (ADR 0014). */
   localExec: LocalToolSpec | null;
+  /** Agent-backed tool template (Tool.spec.agentRef); null otherwise. */
+  agentRunTemplate: AgentRunTemplate | null;
   tier: string | null;
 }
 
@@ -76,6 +79,7 @@ export class QdrantToolStore implements VectorStore {
           allowedRoles: tool.allowedRoles,
           jobTemplate: tool.jobTemplate ?? null,
           localExec: tool.localExec ?? null,
+          agentRunTemplate: tool.agentRunTemplate ?? null,
           tier: tool.tier ?? null,
         } satisfies ToolPayload,
       })),
@@ -105,6 +109,7 @@ export class QdrantToolStore implements VectorStore {
         allowedRoles: payload.allowedRoles,
         jobTemplate: payload.jobTemplate ?? undefined,
         localExec: payload.localExec ?? undefined,
+        agentRunTemplate: payload.agentRunTemplate ?? undefined,
         tier: payload.tier ?? undefined,
       };
       return { tool, score: point.score };
@@ -132,6 +137,7 @@ export class QdrantToolStore implements VectorStore {
         allowedRoles: payload.allowedRoles,
         jobTemplate: payload.jobTemplate ?? undefined,
         localExec: payload.localExec ?? undefined,
+        agentRunTemplate: payload.agentRunTemplate ?? undefined,
         tier: payload.tier ?? undefined,
       };
       results.push({ tool, score: 1 });
