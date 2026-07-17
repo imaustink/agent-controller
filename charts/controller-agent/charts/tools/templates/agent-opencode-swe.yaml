@@ -1,8 +1,8 @@
-{{- if .Values.copilotSweAgent.enabled }}
+{{- if .Values.opencodeSweAgent.enabled }}
 apiVersion: {{ .Values.crdApiVersion }}
 kind: Agent
 metadata:
-  name: copilot-swe-agent
+  name: opencode-swe-agent
   labels:
     {{- include "tools.labels" . | nindent 4 }}
   annotations:
@@ -26,8 +26,8 @@ spec:
   allowedRoles:
     - writer
   tier: privileged
-  image: {{ .Values.copilotSweAgent.image }}
-  serviceAccountName: {{ .Values.copilotSweAgent.serviceAccountName }}
+  image: {{ .Values.opencodeSweAgent.image }}
+  serviceAccountName: {{ .Values.opencodeSweAgent.serviceAccountName }}
   resources:
     requests:
       cpu: "500m"
@@ -54,14 +54,18 @@ spec:
     will resume automatically.
   agentPrompt: |
     You are a software-engineering sub-agent. Implement the requested
-    coding task using the GitHub Copilot CLI and the gh/git CLIs, then
-    return a summary and PR link. Only ask the user a question if you
-    genuinely cannot proceed without their answer; otherwise use sensible
-    defaults. Never perform irreversible operations (force-push, delete
-    branches/repos).
+    coding task using the opencode CLI (Claude Sonnet 5 via the Anthropic
+    API) and the gh/git CLIs, then return a summary and PR link. Only ask
+    the user a question if you genuinely cannot proceed without their
+    answer; otherwise use sensible defaults. Never perform irreversible
+    operations (force-push, delete branches/repos).
   secretEnv:
     - name: GITHUB_TOKEN
       secretRef:
-        name: {{ .Values.copilotSweAgent.secretName }}
-        key: {{ .Values.copilotSweAgent.secretKey }}
+        name: {{ .Values.opencodeSweAgent.secretName }}
+        key: {{ .Values.opencodeSweAgent.secretKey }}
+    - name: ANTHROPIC_API_KEY
+      secretRef:
+        name: {{ .Values.opencodeSweAgent.secretName }}
+        key: {{ .Values.opencodeSweAgent.anthropicSecretKey }}
 {{- end }}

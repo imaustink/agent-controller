@@ -1,9 +1,9 @@
 {
-  "name": "copilot-swe-agent",
+  "name": "opencode-swe-agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "GitHub Copilot software-engineering sub-agent: multi-turn coding tasks with HITL clarification, launched as a k8s Job via AgentRun and communicating bidirectionally with the orchestrator over NATS.",
+  "description": "opencode-powered software-engineering sub-agent (Anthropic Claude Sonnet 5 directly): multi-turn coding tasks with HITL clarification, launched as a k8s Job via AgentRun and communicating bidirectionally with the orchestrator over NATS.",
   "engines": {
     "node": ">=20"
   },

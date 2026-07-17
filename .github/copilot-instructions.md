@@ -13,11 +13,11 @@ for the full layout and [docs/orchestrator.md](../docs/orchestrator.md) +
   (e.g. `recipe-scraper`: URL in, recipe JSON out, process exits).
 - `apps/*` — **long-lived services** and **sub-agent containers**:
   `agent-orchestrator` (the parent agent: RAG-selects a skill/sub-agent,
-  launches it, awaits its result) and `copilot-swe-agent` (the first concrete
-  sub-agent on the `@controller-agent/agent-runtime` SDK: a GitHub Copilot
-  coding agent that communicates bidirectionally with the orchestrator over
-  NATS). Don't confuse with `tools/*` — apps are not on-demand single-shot
-  containers.
+  launches it, awaits its result) and `opencode-swe-agent` (the first concrete
+  sub-agent on the `@controller-agent/agent-runtime` SDK: an opencode-CLI
+  coding agent, calling Anthropic Claude directly, that communicates
+  bidirectionally with the orchestrator over NATS). Don't confuse with
+  `tools/*` — apps are not on-demand single-shot containers.
 
 Every tool/app is self-contained (own deps, own image, own hardened run
 contract) and never imports from a sibling tool/app directly — only from

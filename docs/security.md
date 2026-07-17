@@ -167,41 +167,45 @@ addition specific to it:
   server-side per-conversation slug allowlist) if this proves exploitable in
   practice.
 
-## copilot-swe: a deliberately privileged tool
+## opencode-swe-agent: a deliberately privileged agent
 
-`tools/copilot-swe` (an agentic GitHub Copilot CLI wrapper that opens pull
-requests) is intentionally more privileged than the recipe tools, so it is
-classified `tier: privileged` and its trust boundary is documented here rather
-than assumed away.
+`apps/opencode-swe-agent` (an agentic opencode CLI wrapper, calling Anthropic
+directly, that opens pull requests) is intentionally more privileged than the
+recipe tools, so it is classified `tier: privileged` and its trust boundary is
+documented here rather than assumed away. It replaces the earlier
+Copilot-CLI-based `copilot-swe`/`copilot-swe-agent` (see
+[ADR 0013](adr/0013-copilot-swe-privileged-coding-tool.md), superseded by
+[ADR 0016](adr/0016-opencode-anthropic-direct-swe-agent.md)).
 
-- **A single fine-grained PAT authenticates everything.** The Copilot *model*
-  and all *git/GitHub* operations use one fine-grained (v2) PAT: the Copilot
-  CLI reads it from `COPILOT_GITHUB_TOKEN` and `git`/`gh` read it from
-  `GH_TOKEN` (both set to the same token). The built-in Copilot GitHub MCP
-  server is disabled (`--disable-builtin-mcps`) so `git`/`gh` are the only
-  GitHub path. The token must have: **Copilot Requests** (account),
-  **Contents** write, **Pull requests** write, **Metadata** read, and
-  **Administration** write only if it should create repositories. Its blast
-  radius is exactly the repositories its fine-grained access selects — keep it
-  scoped.
+- **Two independent credentials, not one shared PAT.** Unlike the Copilot CLI
+  (which required a single GitHub PAT to authenticate both the model and
+  git/GitHub operations), opencode's Anthropic provider takes a plain
+  `ANTHROPIC_API_KEY` with no GitHub dependency. `GITHUB_TOKEN` (a
+  fine-grained PAT for `git`/`gh`) and `ANTHROPIC_API_KEY` (the model) are
+  separate keys in the `opencode-swe-secrets` k8s Secret, each scoped to only
+  what it needs. The GitHub PAT needs: **Contents** write, **Pull requests**
+  write, **Metadata** read, and **Administration** write only if it should
+  create repositories. Its blast radius is exactly the repositories its
+  fine-grained access selects — keep it scoped.
 - **No irreversible actions — defense in depth, because no single layer
   suffices.** A PAT with `Administration` write can both create and delete
   repos, so token permissions alone cannot forbid deletion. Therefore:
-  (1) Copilot deny rules baked into every run (`src/copilot.ts` `DENY_TOOLS`:
+  (1) opencode `permission.bash` deny rules baked into every run
+  (`src/opencode.ts` `DENY_BASH_PATTERNS`, written into `opencode.json`:
   force-push variants, `git reset --hard`, branch/ref deletion, `rm -rf`,
-  `gh repo delete`, `gh api -X DELETE`) — deny rules always take precedence over
-  `--allow-all-tools`; (2) least-privilege token scope (only the repos it needs,
-  no `Administration` unless repo-create is wanted); (3) server-side
+  `gh repo delete`, `gh api -X DELETE`) — explicit deny rules always take
+  precedence over `--auto`; (2) least-privilege token scope (only the repos it
+  needs, no `Administration` unless repo-create is wanted); (3) server-side
   branch-protection/rulesets on the target repos blocking force-push and
   deletion regardless of the client.
 - **Relaxed hardening, scoped.** Unlike the recipe tools it needs outbound
-  network (GitHub + the Copilot API), a larger writable workspace, more memory,
-  and a longer deadline (`Tool.spec.timeoutSeconds`, e.g. 1800). The k8s
+  network (GitHub + the Anthropic API), a larger writable workspace, more
+  memory, and a longer deadline (`AgentRun` timeout, e.g. 1800s). The k8s
   securityContext is unchanged: it still runs non-root (uid 10001), with a
   read-only root filesystem and all capabilities dropped — every write goes to
   a writable `emptyDir`/tmpfs under `$HOME`. An egress NetworkPolicy limiting
-  the Job to GitHub + Copilot hosts is a recommended additional control (tool
-  Jobs currently have none).
+  the Job to GitHub + Anthropic hosts is a recommended additional control
+  (tool/agent Jobs currently have none).
 - **The `swe` marker is repo/branch/PR identity round-tripped through chat
   history, not a verified capability.** Like recipe-publisher's `mealie-slug`
   marker, a `<!-- swe: repo=… branch=… -->` marker survives the orchestrator's

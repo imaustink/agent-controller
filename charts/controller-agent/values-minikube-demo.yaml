@@ -54,15 +54,12 @@ nats:
 
 tools:
   enabled: true
-  # recipe-scraper + recipe-publisher are on by default. copilot-swe (the
-  # privileged GitHub coding agent) + its skill are enabled here; they need the
-  # copilot-swe ServiceAccount + copilot-swe-secrets (key GITHUB_TOKEN, a
-  # fine-grained PAT) to already exist in-cluster.
-  copilotSwe:
+  # recipe-scraper + recipe-publisher are on by default. opencode-swe (the
+  # privileged GitHub coding agent, calling Anthropic directly) is enabled
+  # here; it needs the opencode-swe-agent ServiceAccount + opencode-swe-secrets
+  # (keys GITHUB_TOKEN and ANTHROPIC_API_KEY) to already exist in-cluster.
+  opencodeSweAgent:
     enabled: true
-  skills:
-    softwareEngineering:
-      enabled: true
 
 openwebui:
   enabled: true
