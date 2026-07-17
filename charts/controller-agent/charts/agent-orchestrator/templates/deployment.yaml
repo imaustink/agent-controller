@@ -91,6 +91,10 @@ spec:
             - name: AGENT_NATS_URL
               value: {{ include "agent-orchestrator.natsUrl" . | quote }}
             {{- end }}
+            {{- if or .Values.config.redisUrl .Values.redis.enabled }}
+            - name: AGENT_REDIS_URL
+              value: {{ include "agent-orchestrator.redisUrl" . | quote }}
+            {{- end }}
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
