@@ -16,6 +16,8 @@ import type { AgentDescriptor, AgentStore } from "../agents/types.js";
 import type { DelegateSelector } from "./delegate-selector.js";
 import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-agent-channel.js";
 import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
+import type { ToolFitChecker } from "./tool-fit-checker.js";
+import type { BestEffortResponder } from "./best-effort-responder.js";
 
 const scraperTool: ToolDescriptor = {
   id: "recipe-scraper",
@@ -85,6 +87,10 @@ function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
       result: { title: "Pancakes" },
     } satisfies Event),
   } as unknown as JobResultReceiver;
+  // Defaults to "fits" so tests exercising the fallback-tool path don't need
+  // to mock this explicitly; override per-test to exercise a rejection.
+  const toolFitChecker: ToolFitChecker = { fits: vi.fn().mockResolvedValue(true) };
+  const bestEffortResponder: BestEffortResponder = { respond: vi.fn().mockResolvedValue("best-effort answer") };
 
   return {
     identityResolver,
@@ -96,6 +102,8 @@ function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
     responseComposer,
     containerToolLauncher,
     jobResultReceiver: callbackReceiver,
+    toolFitChecker,
+    bestEffortResponder,
     callbackBaseUrl: "http://orchestrator",
     callbackSecret: "s3cret",
     ...overrides,
@@ -237,7 +245,7 @@ describe("buildAgentGraph", () => {
     expect(deps.skillStore.query).not.toHaveBeenCalled();
   });
 
-  it("stops with an error when no candidate skills are retrieved", async () => {
+  it("falls through to a best-effort LLM answer (no error) when no candidate skills are retrieved", async () => {
     const deps = baseDeps({
       skillStore: { upsert: vi.fn(), delete: vi.fn(), query: vi.fn().mockResolvedValue([]), getByIds: vi.fn().mockResolvedValue([]) },
     });
@@ -245,17 +253,19 @@ describe("buildAgentGraph", () => {
 
     const final = await graph.invoke({ request: "do a thing", authToken: "tok" });
 
-    expect(final.error).toMatch(/no matching skill/);
+    expect(final.error).toBeUndefined();
+    expect(final.result).toContain("best-effort answer");
     expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
 
-  it("stops with an error when the skill selector picks none of the candidates", async () => {
+  it("falls through to a best-effort LLM answer (no error) when the skill selector picks none of the candidates", async () => {
     const deps = baseDeps({ skillSelector: { select: vi.fn().mockResolvedValue(undefined) } });
     const graph = buildAgentGraph(deps);
 
     const final = await graph.invoke({ request: "do a thing", authToken: "tok" });
 
-    expect(final.error).toMatch(/no matching skill/);
+    expect(final.error).toBeUndefined();
+    expect(final.result).toContain("best-effort answer");
   });
 
   it("stops with an error when the selected skill has no usable tools for this caller", async () => {
@@ -846,11 +856,11 @@ describe("buildAgentGraph agent-backed Tool (runTool via AgentRun)", () => {
   });
 });
 
-describe("buildAgentGraph fallback delegation on no match", () => {
-  const fallbackAgent: AgentDescriptor = {
+describe("buildAgentGraph best-effort LLM answer on no match (no hardcoded fallback agent)", () => {
+  const realAgent: AgentDescriptor = {
     id: "opencode-swe-agent",
     name: "opencode-swe-agent",
-    description: "General-purpose coding agent, best-effort fallback",
+    description: "General-purpose coding agent",
     allowedRoles: ["reader"],
     agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
   };
@@ -868,23 +878,11 @@ describe("buildAgentGraph fallback delegation on no match", () => {
       getByIds: vi.fn(),
     };
     const delegateSelector: DelegateSelector = { select: vi.fn().mockResolvedValue(null) };
-    const agentChannel: AgentOrchestratorChannel = {
-      awaitReply: vi.fn().mockResolvedValue({
-        message: "Did the best-effort task",
-        final: true,
-        narration: [],
-      } satisfies AgentTurnResult),
-      sendPrompt: vi.fn(),
-      close: vi.fn(),
-    };
-    const agentRunLauncher: AgentRunLauncherPort = {
-      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
-    };
+    const agentRunLauncher: AgentRunLauncherPort = { launch: vi.fn() };
     return baseDeps({
       skillStore,
       agentStore,
       delegateSelector,
-      agentChannel,
       agentRunLauncher,
       callbackBaseUrl: "http://orchestrator",
       callbackSecretRef: { name: "secret", key: "token" },
@@ -892,24 +890,21 @@ describe("buildAgentGraph fallback delegation on no match", () => {
     });
   }
 
-  it("delegates to the configured fallback agent when no skill/agent candidates exist at all", async () => {
-    const deps = noMatchDeps({ fallbackAgent });
+  it("gives a bare best-effort LLM answer, never launching an agent, when no skill/agent candidates exist at all", async () => {
+    const deps = noMatchDeps();
     const graph = buildAgentGraph(deps);
 
     const final = await graph.invoke({ request: "do something niche", authToken: "tok" });
 
     expect(final.error).toBeUndefined();
-    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
-      fallbackAgent.agentRunTemplate,
-      expect.any(String),
-      expect.objectContaining({ goal: "do something niche" }),
-    );
-    expect(final.result).toContain("Did the best-effort task");
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(deps.bestEffortResponder.respond).toHaveBeenCalledWith("do something niche");
+    expect(final.result).toContain("best-effort answer");
     expect(final.result).toContain("self-improvement");
   });
 
-  it("delegates to the fallback agent when the delegate selector picks no candidate", async () => {
-    const deps = noMatchDeps({ fallbackAgent });
+  it("gives a bare best-effort LLM answer when the delegate selector picks no candidate", async () => {
+    const deps = noMatchDeps();
     (deps.skillStore.query as ReturnType<typeof vi.fn>).mockResolvedValue([
       { skill: { id: "unrelated", name: "unrelated", description: "x", markdown: "x", toolIds: [] }, score: 0.1 },
     ]);
@@ -918,25 +913,22 @@ describe("buildAgentGraph fallback delegation on no match", () => {
     const final = await graph.invoke({ request: "do something niche", authToken: "tok" });
 
     expect(final.error).toBeUndefined();
-    expect(deps.agentRunLauncher!.launch).toHaveBeenCalled();
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
     expect(final.result).toContain("self-improvement");
   });
 
-  it("still fails closed when no fallback agent is configured (unchanged behavior)", async () => {
-    const deps = noMatchDeps();
-    const graph = buildAgentGraph(deps);
-
-    const final = await graph.invoke({ request: "do something niche", authToken: "tok" });
-
-    expect(final.error).toBe("no matching skill or agent for this request");
-    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
-  });
-
   it("does not append the self-improvement suggestion for an ordinary (non-fallback) agent delegation", async () => {
-    const deps = noMatchDeps({});
+    const deps = noMatchDeps({
+      agentChannel: {
+        awaitReply: vi.fn().mockResolvedValue({ message: "Opened a pull request", final: true, narration: [] } satisfies AgentTurnResult),
+        sendPrompt: vi.fn(),
+        close: vi.fn(),
+      },
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+    });
     (deps.skillStore.query as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-    (deps.agentStore!.query as ReturnType<typeof vi.fn>).mockResolvedValue([{ agent: fallbackAgent, score: 0.9 }]);
-    (deps.delegateSelector!.select as ReturnType<typeof vi.fn>).mockResolvedValue({ type: "agent", agent: fallbackAgent });
+    (deps.agentStore!.query as ReturnType<typeof vi.fn>).mockResolvedValue([{ agent: realAgent, score: 0.9 }]);
+    (deps.delegateSelector!.select as ReturnType<typeof vi.fn>).mockResolvedValue({ type: "agent", agent: realAgent });
     const graph = buildAgentGraph(deps);
 
     const final = await graph.invoke({ request: "do something niche", authToken: "tok" });
@@ -946,7 +938,7 @@ describe("buildAgentGraph fallback delegation on no match", () => {
   });
 });
 
-describe("buildAgentGraph fallback tool-fit (tried before the fallback agent)", () => {
+describe("buildAgentGraph fallback tool-fit (tried before the best-effort LLM answer)", () => {
   function noMatchWithToolDeps(overrides: Partial<AgentGraphDeps> = {}) {
     const skillStore: SkillStore = {
       upsert: vi.fn(),
@@ -1017,39 +1009,42 @@ describe("buildAgentGraph fallback tool-fit (tried before the fallback agent)", 
     expect(final.result).toContain("self-improvement");
   });
 
-  it("falls through to the fallback agent when the fallback tool planner declines (no clear fit)", async () => {
+  it("falls through to a bare best-effort LLM answer when the fallback tool planner declines (no clear fit)", async () => {
     const actionPlanner: ActionPlanner = {
       plan: vi.fn().mockResolvedValue({ action: "respond", response: "not a clear fit" } satisfies PlannedAction),
     };
-    const agentChannel: AgentOrchestratorChannel = {
-      awaitReply: vi.fn().mockResolvedValue({ message: "did the best-effort task", final: true, narration: [] } satisfies AgentTurnResult),
-      sendPrompt: vi.fn(),
-      close: vi.fn(),
-    };
-    const agentRunLauncher: AgentRunLauncherPort = { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) };
-    const fallbackAgent: AgentDescriptor = {
-      id: "opencode-swe-agent",
-      name: "opencode-swe-agent",
-      description: "fallback",
-      allowedRoles: ["reader"],
-      agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
-    };
-    const deps = noMatchWithToolDeps({
-      actionPlanner,
-      agentChannel,
-      agentRunLauncher,
-      fallbackAgent,
-      callbackBaseUrl: "http://orchestrator",
-      callbackSecretRef: { name: "secret", key: "token" },
-    });
+    const agentRunLauncher: AgentRunLauncherPort = { launch: vi.fn() };
+    const deps = noMatchWithToolDeps({ actionPlanner, agentRunLauncher });
     const graph = buildAgentGraph(deps);
 
     const final = await graph.invoke({ request: "do something niche", authToken: "tok" });
 
     expect(final.error).toBeUndefined();
     expect(final.selectedTool).toBeUndefined();
-    expect(agentRunLauncher.launch).toHaveBeenCalled();
+    expect(agentRunLauncher.launch).not.toHaveBeenCalled();
+    expect(deps.bestEffortResponder.respond).toHaveBeenCalledWith("do something niche");
     expect(final.result).toContain("self-improvement");
+  });
+
+  it("rejects a tool that only surfaces via loose embedding overlap (toolFitChecker), falling through to a best-effort answer", async () => {
+    // Mirrors the real incident this cascade was built to prevent: a request
+    // to "create a recipe" surfacing an unrelated "create a repository" tool
+    // by embedding similarity alone. toolFitChecker is the second, narrower
+    // check that must reject it before the action planner ever sees it.
+    const toolFitChecker: ToolFitChecker = { fits: vi.fn().mockResolvedValue(false) };
+    const actionPlanner: ActionPlanner = { plan: vi.fn() };
+    const agentRunLauncher: AgentRunLauncherPort = { launch: vi.fn() };
+    const deps = noMatchWithToolDeps({ toolFitChecker, actionPlanner, agentRunLauncher });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "help me create a recipe from scratch", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.toolFitChecker.fits).toHaveBeenCalledWith("help me create a recipe from scratch", scraperTool);
+    // The rejected candidate never reaches the action planner at all.
+    expect(actionPlanner.plan).not.toHaveBeenCalled();
+    expect(agentRunLauncher.launch).not.toHaveBeenCalled();
+    expect(final.result).toContain("best-effort answer");
   });
 
   it("does not attempt a fallback tool call when the caller has no resolved identity", async () => {

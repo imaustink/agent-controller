@@ -11,7 +11,6 @@ import { loadStaticIdentitiesFromEnv, StaticIdentityResolver } from "./rbac/stat
 import { CrdSkillRegistry } from "./skills/crd-skill-registry.js";
 import { deriveSkillAccess } from "./skills/derive-access.js";
 import { QdrantSkillStore } from "./skills/qdrant-skill-store.js";
-import type { AgentDescriptor } from "./agents/types.js";
 import { CrdAgentRegistry } from "./agents/crd-agent-registry.js";
 import { QdrantAgentStore } from "./agents/qdrant-agent-store.js";
 import { NatsAgentChannel } from "./agents/nats-agent-channel.js";
@@ -19,6 +18,8 @@ import { AgentRunLauncher } from "./k8s/agentrun-launcher.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { QdrantToolStore } from "./vector-store/qdrant-store.js";
 import { OpenAiActionPlanner } from "./agent/action-planner.js";
+import { OpenAiToolFitChecker } from "./agent/tool-fit-checker.js";
+import { OpenAiBestEffortResponder } from "./agent/best-effort-responder.js";
 import { OpenAiDelegateSelector } from "./agent/delegate-selector.js";
 import { OpenAiResponseComposer } from "./agent/response-composer.js";
 import { OpenAiSkillFitChecker } from "./agent/skill-fit-checker.js";
@@ -167,7 +168,6 @@ async function main(): Promise<void> {
         delegateSelector: OpenAiDelegateSelector;
         agentRunLauncher: AgentRunLauncher;
         agentChannel: NatsAgentChannel;
-        fallbackAgent: AgentDescriptor | undefined;
       }
     | undefined;
   if (config.natsUrl) {
@@ -195,10 +195,6 @@ async function main(): Promise<void> {
       delegateSelector: new OpenAiDelegateSelector({ model: config.selectionModel }),
       agentRunLauncher: AgentRunLauncher.fromKubeConfig(config.crdGroup, config.crdVersion, kubeConfig),
       agentChannel: await NatsAgentChannel.connect(config.natsUrl),
-      // Best-effort delegation target for a turn matching no Skill/Agent at
-      // all (graph.ts's selectDelegate). Empty AGENT_FALLBACK_AGENT_NAME
-      // disables the fallback and keeps today's fail-closed behavior.
-      fallbackAgent: config.fallbackAgentName ? agents.find((a) => a.name === config.fallbackAgentName) : undefined,
     };
   }
 
@@ -219,6 +215,12 @@ async function main(): Promise<void> {
   const skillSelector = new OpenAiSkillSelector({ model: config.selectionModel });
   const skillFitChecker = new OpenAiSkillFitChecker({ model: config.selectionModel });
   const actionPlanner = new OpenAiActionPlanner({ model: config.selectionModel });
+  // Fallback cascade for a turn matching no Skill/Agent (graph.ts's
+  // noMatchFallback): toolFitChecker gates the full-catalog fallback tool
+  // call, bestEffortResponder is the true last resort (a plain LLM answer,
+  // never a hardcoded fallback agent).
+  const toolFitChecker = new OpenAiToolFitChecker({ model: config.selectionModel });
+  const bestEffortResponder = new OpenAiBestEffortResponder({ model: config.selectionModel });
   // Post-tool response composition (ADR 0015): lets the active skill's own
   // instructions add any follow-up around a tool's verbatim output, so no
   // per-tool prompt lives in the agent graph.
@@ -249,6 +251,8 @@ async function main(): Promise<void> {
     natsUrl: config.natsUrl,
     skillTopK: config.skillTopK,
     fallbackToolTopK: config.fallbackToolTopK,
+    toolFitChecker,
+    bestEffortResponder,
     ...(agentDelegation
       ? {
           agentStore: agentDelegation.agentStore,
@@ -258,7 +262,6 @@ async function main(): Promise<void> {
           agentTopK: config.agentTopK,
           agentRunTimeoutSeconds: config.agentRunTimeoutSeconds,
           callbackSecretRef: { name: config.callbackSecretRefName ?? "", key: config.callbackSecretRefKey },
-          fallbackAgent: agentDelegation.fallbackAgent,
         }
       : {}),
   });

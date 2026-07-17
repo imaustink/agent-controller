@@ -2,13 +2,16 @@
 #   kubectl apply -n <namespace> -f config/samples/self-improvement-skill.yaml
 #
 # Lets the catalog grow itself: when a turn matched no existing Skill/Agent at
-# all, graph.ts's selectDelegate falls back to a best-effort delegation
-# (AGENT_FALLBACK_AGENT_NAME, default opencode-swe-agent) and appends a
-# suggestion to the reply inviting the user to ask for a permanent skill. This
-# Skill is what that follow-up ask routes to: it drafts a new Skill/Tool CR
-# YAML from the prior ad-hoc turn and delegates opening a PR against
-# github.com/imaustink/agent-controller to the opencode-swe-agent-tool
-# (config/samples/opencode-swe-agent-tool.yaml), an agent-backed Tool.
+# all, graph.ts's noMatchFallback tries a relevance-gated direct tool call
+# first (selectFallbackTool), and otherwise gives a bare best-effort LLM
+# answer -- never a hardcoded fallback agent (delegating an unrelated request
+# to a general-purpose agent caused it to take real, unwanted side effects).
+# Either way the reply gets a suggestion inviting the user to ask for a
+# permanent skill. This Skill is what that follow-up ask routes to: it drafts
+# a new Skill/Tool CR YAML from the prior ad-hoc turn and delegates opening a
+# PR against github.com/imaustink/agent-controller to the
+# opencode-swe-agent-tool (config/samples/opencode-swe-agent-tool.yaml), an
+# agent-backed Tool.
 #
 # Prerequisites: apply apps/opencode-swe-agent/agent.yaml and
 # config/samples/opencode-swe-agent-tool.yaml first.
