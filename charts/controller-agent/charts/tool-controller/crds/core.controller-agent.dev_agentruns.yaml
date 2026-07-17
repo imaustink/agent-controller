@@ -77,7 +77,7 @@ spec:
                   url:
                     description: |-
                       url is the in-cluster callback receiver endpoint, e.g.
-                      http://agent-orchestrator-callback.recipe-agent.svc.cluster.local:8080
+                      http://agent-orchestrator-callback.controller-agent.svc.cluster.local:8080
                     type: string
                 required:
                 - secretRef

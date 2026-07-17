@@ -49,16 +49,17 @@ type runJobParams struct {
 }
 
 // buildRunJob builds the hardened one-shot Job every run kind launches
-// (ADR 0010). Mirrors the JS orchestrator's former job-launcher.ts contract,
-// with two corrections found while porting: (1) tools actually read
-// RECIPE_TRANSPORT / RECIPE_CALLBACK_URL / RECIPE_CALLBACK_SECRET (see
-// tools/*/src/config.ts), not CALLBACK_URL/CALLBACK_SECRET as the JS
-// launcher injected; (2) adds runAsUser/runAsGroup 10001 + seccompProfile
-// RuntimeDefault + an emptyDir /tmp mount, matching the Helm chart's pod
-// securityContext (which the JS launcher never carried).
+// (ADR 0010). Supports two result-delivery modes:
+//   - HTTP callback (callback.URL set): injects RECIPE_TRANSPORT=callback,
+//     RECIPE_CALLBACK_URL, and RECIPE_CALLBACK_SECRET (secretKeyRef).
+//   - NATS (callback.NatsSubject set): injects RECIPE_TRANSPORT=nats,
+//     RECIPE_NATS_SUBJECT, and RECIPE_NATS_URL. No HMAC secret required.
+//
+// Exactly one of the two modes must be configured; an error is returned if
+// neither URL nor NatsSubject is non-empty.
 func buildRunJob(p runJobParams) (*batchv1.Job, error) {
-	if p.callback.URL == "" {
-		return nil, fmt.Errorf("job %s/%s: callback.url is required", p.namespace, p.jobName)
+	if p.callback.URL == "" && p.callback.NatsSubject == "" {
+		return nil, fmt.Errorf("job %s/%s: callback must set either url or natsSubject", p.namespace, p.jobName)
 	}
 
 	timeout := defaultTimeoutSeconds
@@ -81,19 +82,30 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 			},
 		})
 	}
-	env = append(env,
-		corev1.EnvVar{Name: "RECIPE_TRANSPORT", Value: "callback"},
-		corev1.EnvVar{Name: "RECIPE_CALLBACK_URL", Value: p.callback.URL},
-		corev1.EnvVar{
-			Name: "RECIPE_CALLBACK_SECRET",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: p.callback.SecretRef.Name},
-					Key:                  p.callback.SecretRef.Key,
+
+	if p.callback.NatsSubject != "" {
+		// NATS delivery mode: no HMAC secret needed; subject is the capability.
+		env = append(env,
+			corev1.EnvVar{Name: "RECIPE_TRANSPORT", Value: "nats"},
+			corev1.EnvVar{Name: "RECIPE_NATS_SUBJECT", Value: p.callback.NatsSubject},
+			corev1.EnvVar{Name: "RECIPE_NATS_URL", Value: p.callback.NatsUrl},
+		)
+	} else {
+		// HTTP callback mode (backward-compatible default).
+		env = append(env,
+			corev1.EnvVar{Name: "RECIPE_TRANSPORT", Value: "callback"},
+			corev1.EnvVar{Name: "RECIPE_CALLBACK_URL", Value: p.callback.URL},
+			corev1.EnvVar{
+				Name: "RECIPE_CALLBACK_SECRET",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: p.callback.SecretRef.Name},
+						Key:                  p.callback.SecretRef.Key,
+					},
 				},
 			},
-		},
-	)
+		)
+	}
 
 	resources, err := toCoreResourceRequirements(p.resources)
 	if err != nil {

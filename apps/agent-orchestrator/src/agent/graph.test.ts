@@ -1,19 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Event } from "@controller-agent/messaging";
 import { buildAgentGraph, type AgentGraphDeps } from "./graph.js";
-import type { AgentOrchestratorChannel } from "../agents/nats-agent-channel.js";
-import { AgentTurnFailedError } from "../agents/nats-agent-channel.js";
-import type { AgentDescriptor, AgentStore } from "../agents/types.js";
-import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { IdentityResolver } from "../rbac/types.js";
 import type { SkillStore } from "../skills/types.js";
 import type { SkillDescriptor } from "../skills/types.js";
-import type { DelegateSelector } from "./delegate-selector.js";
+import type { SkillSelector } from "./skill-selector.js";
 import type { VectorStore } from "../vector-store/types.js";
 import type { ActionPlanner, PlannedAction } from "./action-planner.js";
 import type { ResponseComposer } from "./response-composer.js";
 import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
-import type { CallbackReceiver } from "../callback/receiver.js";
+import type { JobResultReceiver } from "../callback/receiver.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 
@@ -41,14 +37,6 @@ const skill: SkillDescriptor = {
   toolIds: ["recipe-scraper", "recipe-publisher"],
 };
 
-const agent: AgentDescriptor = {
-  id: "software-engineering-agent",
-  name: "Software Engineering Agent",
-  description: "Performs software-engineering work on GitHub",
-  allowedRoles: ["writer"],
-  agentRunTemplate: { namespace: "default", agentRef: "software-engineering-agent" },
-};
-
 function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
   const identityResolver: IdentityResolver = {
     resolve: vi.fn().mockResolvedValue({ subject: "alice", roles: ["reader"] }),
@@ -59,6 +47,7 @@ function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
     query: vi.fn().mockResolvedValue([{ skill, score: 0.9 }]),
     getByIds: vi.fn().mockResolvedValue([skill]),
   };
+  const skillSelector: SkillSelector = { select: vi.fn().mockResolvedValue(skill) };
   const skillFitChecker: SkillFitChecker = { fits: vi.fn().mockResolvedValue(true) };
   const vectorStore: VectorStore = {
     upsert: vi.fn(),
@@ -88,41 +77,20 @@ function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
       ts: new Date().toISOString(),
       result: { title: "Pancakes" },
     } satisfies Event),
-  } as unknown as CallbackReceiver;
-  const agentStore: AgentStore = {
-    upsert: vi.fn(),
-    delete: vi.fn(),
-    query: vi.fn().mockResolvedValue([]),
-    getByIds: vi.fn().mockResolvedValue([]),
-  };
-  const delegateSelector: DelegateSelector = {
-    select: vi.fn().mockResolvedValue({ type: "skill", skill }),
-  };
-  const agentRunLauncher: AgentRunLauncherPort = {
-    launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
-  };
-  const agentChannel: AgentOrchestratorChannel = {
-    awaitReply: vi.fn().mockResolvedValue({ message: "Opened PR #1", final: true, narration: [] }),
-    sendPrompt: vi.fn(),
-    close: vi.fn(),
-  };
+  } as unknown as JobResultReceiver;
 
   return {
     identityResolver,
     skillStore,
+    skillSelector,
     skillFitChecker,
     vectorStore,
     actionPlanner,
     responseComposer,
     containerToolLauncher,
-    callbackReceiver,
+    jobResultReceiver: callbackReceiver,
     callbackBaseUrl: "http://orchestrator",
     callbackSecret: "s3cret",
-    agentStore,
-    delegateSelector,
-    agentRunLauncher,
-    agentChannel,
-    callbackSecretRef: { name: "callback-secret", key: "AGENT_CALLBACK_SECRET" },
     ...overrides,
   };
 }
@@ -174,7 +142,6 @@ describe("buildAgentGraph", () => {
         getByIds: vi.fn().mockResolvedValue([]),
       },
       skillSelector: { select: vi.fn().mockResolvedValue(respondOnlySkill) },
-      delegateSelector: { select: vi.fn().mockResolvedValue({ type: "skill", skill: respondOnlySkill }) },
       actionPlanner: {
         plan: vi.fn().mockResolvedValue({ action: "respond", response: "Here's how it works." } satisfies PlannedAction),
       },
@@ -194,7 +161,7 @@ describe("buildAgentGraph", () => {
       responseComposer: {
         compose: vi.fn().mockResolvedValue({ prefix: null, suffix: "\n\n---\nConfirm to publish?" }),
       },
-      callbackReceiver: {
+      jobResultReceiver: {
         awaitJob: vi.fn().mockResolvedValue({
           type: "succeeded",
           job_id: "job-1",
@@ -202,7 +169,8 @@ describe("buildAgentGraph", () => {
           ts: new Date().toISOString(),
           result: "# Pancakes\n\n## Ingredients\n\n1. 2 eggs",
         } satisfies Event),
-      } as unknown as CallbackReceiver,
+        onJobProgress: vi.fn().mockReturnValue(() => {}),
+      } as unknown as JobResultReceiver,
     });
     const graph = buildAgentGraph(deps);
 
@@ -222,7 +190,7 @@ describe("buildAgentGraph", () => {
 
   it("leaves a string tool result verbatim when the composer adds no narration", async () => {
     const deps = baseDeps({
-      callbackReceiver: {
+      jobResultReceiver: {
         awaitJob: vi.fn().mockResolvedValue({
           type: "succeeded",
           job_id: "job-1",
@@ -230,7 +198,8 @@ describe("buildAgentGraph", () => {
           ts: new Date().toISOString(),
           result: "# Pancakes\n\n## Ingredients\n\n1. 2 eggs",
         } satisfies Event),
-      } as unknown as CallbackReceiver,
+        onJobProgress: vi.fn().mockReturnValue(() => {}),
+      } as unknown as JobResultReceiver,
     });
     const graph = buildAgentGraph(deps);
 
@@ -274,7 +243,7 @@ describe("buildAgentGraph", () => {
   });
 
   it("stops with an error when the skill selector picks none of the candidates", async () => {
-    const deps = baseDeps({ delegateSelector: { select: vi.fn().mockResolvedValue(undefined) } });
+    const deps = baseDeps({ skillSelector: { select: vi.fn().mockResolvedValue(undefined) } });
     const graph = buildAgentGraph(deps);
 
     const final = await graph.invoke({ request: "do a thing", authToken: "tok" });
@@ -314,7 +283,7 @@ describe("buildAgentGraph", () => {
 
   it("surfaces a failed tool-Job result as a graph error", async () => {
     const deps = baseDeps({
-      callbackReceiver: {
+      jobResultReceiver: {
         awaitJob: vi.fn().mockResolvedValue({
           type: "failed",
           job_id: "job-1",
@@ -323,7 +292,8 @@ describe("buildAgentGraph", () => {
           code: "extraction",
           message: "could not extract",
         } satisfies Event),
-      } as unknown as CallbackReceiver,
+        onJobProgress: vi.fn().mockReturnValue(() => {}),
+      } as unknown as JobResultReceiver,
     });
     const graph = buildAgentGraph(deps);
 
@@ -443,7 +413,7 @@ describe("buildAgentGraph session-scoped active skill (ADR 0012)", () => {
     expect(deps.skillFitChecker.fits).toHaveBeenCalledWith("yes, publish it", skill);
     // The whole point: no RAG retrieval, no selection LLM call.
     expect(deps.skillStore.query).not.toHaveBeenCalled();
-    expect(deps.delegateSelector.select).not.toHaveBeenCalled();
+    expect(deps.skillSelector.select).not.toHaveBeenCalled();
   });
 
   it("falls back to full retrieval + selection when the fit-check rejects the turn", async () => {
@@ -459,7 +429,7 @@ describe("buildAgentGraph session-scoped active skill (ADR 0012)", () => {
 
     expect(final.error).toBeUndefined();
     expect(deps.skillStore.query).toHaveBeenCalled();
-    expect(deps.delegateSelector.select).toHaveBeenCalled();
+    expect(deps.skillSelector.select).toHaveBeenCalled();
     expect(final.selectedSkill?.id).toBe(skill.id);
   });
 
@@ -514,144 +484,6 @@ describe("buildAgentGraph session-scoped active skill (ADR 0012)", () => {
     expect(deps.skillStore.getByIds).not.toHaveBeenCalled();
     expect(deps.skillFitChecker.fits).not.toHaveBeenCalled();
     expect(deps.skillStore.query).toHaveBeenCalled();
-  });
-});
-
-describe("buildAgentGraph agent delegation", () => {
-  it("delegates to an agent when the delegate selector picks one, and returns its final reply", async () => {
-    const deps = baseDeps({
-      delegateSelector: { select: vi.fn().mockResolvedValue({ type: "agent", agent }) },
-    });
-    const graph = buildAgentGraph(deps);
-
-    const final = await graph.invoke({ request: "build a feature and open a PR", authToken: "tok" });
-
-    expect(final.error).toBeUndefined();
-    expect(final.selectedAgent?.id).toBe(agent.id);
-    expect(final.agentAwaitingReply).toBe(false);
-    expect(final.result).toBe("Opened PR #1");
-    expect(deps.agentRunLauncher.launch).toHaveBeenCalledWith(
-      agent.agentRunTemplate,
-      expect.any(String),
-      expect.objectContaining({ goal: "build a feature and open a PR" }),
-    );
-    // Subscribed before launching, so a fast reply can never be missed.
-    const channelCalls = (deps.agentChannel.awaitReply as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
-    const launchCalls = (deps.agentRunLauncher.launch as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
-    expect(channelCalls).toBeLessThan(launchCalls);
-  });
-
-  it("returns a non-final agent reply (a question) as the result and marks the session for continuation", async () => {
-    const deps = baseDeps({
-      delegateSelector: { select: vi.fn().mockResolvedValue({ type: "agent", agent }) },
-      agentChannel: {
-        awaitReply: vi.fn().mockResolvedValue({ message: "Which branch should I target?", final: false, narration: [] }),
-        sendPrompt: vi.fn(),
-        close: vi.fn(),
-      },
-    });
-    const graph = buildAgentGraph(deps);
-
-    const final = await graph.invoke({ request: "build a feature", authToken: "tok" });
-
-    expect(final.error).toBeUndefined();
-    expect(final.agentAwaitingReply).toBe(true);
-    expect(final.result).toBe("Which branch should I target?");
-    expect(final.agentRunId).toBeTruthy();
-  });
-
-  it("prefixes accumulated progress narration before the reply text", async () => {
-    const deps = baseDeps({
-      delegateSelector: { select: vi.fn().mockResolvedValue({ type: "agent", agent }) },
-      agentChannel: {
-        awaitReply: vi
-          .fn()
-          .mockResolvedValue({ message: "Opened PR #1", final: true, narration: ["Cloning repo.", "Running tests."] }),
-        sendPrompt: vi.fn(),
-        close: vi.fn(),
-      },
-    });
-    const graph = buildAgentGraph(deps);
-
-    const final = await graph.invoke({ request: "build a feature", authToken: "tok" });
-
-    expect(final.result).toBe("Cloning repo.\nRunning tests.\n\nOpened PR #1");
-  });
-
-  it("surfaces an agent failure as a graph error", async () => {
-    const deps = baseDeps({
-      delegateSelector: { select: vi.fn().mockResolvedValue({ type: "agent", agent }) },
-      agentChannel: {
-        awaitReply: vi.fn().mockRejectedValue(new AgentTurnFailedError("clone_failed", "no such repo")),
-        sendPrompt: vi.fn(),
-        close: vi.fn(),
-      },
-    });
-    const graph = buildAgentGraph(deps);
-
-    const final = await graph.invoke({ request: "build a feature", authToken: "tok" });
-
-    expect(final.error).toMatch(/agent failed \(clone_failed\): no such repo/);
-  });
-
-  it("continues an existing agent run for a matching session, without any retrieval or a new AgentRun", async () => {
-    const deps = baseDeps({
-      agentStore: {
-        upsert: vi.fn(),
-        delete: vi.fn(),
-        query: vi.fn(),
-        getByIds: vi.fn().mockResolvedValue([{ agent, score: 1 }]),
-      },
-      agentChannel: {
-        awaitReply: vi.fn().mockResolvedValue({ message: "Opened PR #1", final: true, narration: [] }),
-        sendPrompt: vi.fn(),
-        close: vi.fn(),
-      },
-    });
-    const graph = buildAgentGraph(deps);
-
-    const final = await graph.invoke({
-      request: "use the main branch",
-      authToken: "tok",
-      activeAgentId: agent.id,
-      activeAgentRunId: "run-42",
-      sessionSubject: "alice",
-    });
-
-    expect(final.error).toBeUndefined();
-    expect(final.selectedAgent?.id).toBe(agent.id);
-    expect(final.agentRunId).toBe("run-42");
-    expect(final.agentAwaitingReply).toBe(false);
-    expect(deps.agentChannel.sendPrompt).toHaveBeenCalledWith("run-42", "use the main branch");
-    expect(deps.agentRunLauncher.launch).not.toHaveBeenCalled();
-    expect(deps.skillStore.query).not.toHaveBeenCalled();
-    expect(deps.agentStore.query).not.toHaveBeenCalled();
-  });
-
-  it("falls through to full retrieval when the continuing agent no longer resolves under the caller's roles", async () => {
-    const deps = baseDeps({
-      agentStore: {
-        upsert: vi.fn(),
-        delete: vi.fn(),
-        query: vi.fn().mockResolvedValue([]),
-        getByIds: vi.fn().mockResolvedValue([]),
-      },
-    });
-    const graph = buildAgentGraph(deps);
-
-    const final = await graph.invoke({
-      request: "use the main branch",
-      authToken: "tok",
-      activeAgentId: agent.id,
-      activeAgentRunId: "run-42",
-      sessionSubject: "alice",
-    });
-
-    expect(final.error).toBeUndefined();
-    expect(deps.agentChannel.sendPrompt).not.toHaveBeenCalled();
-    // Fell through to full retrieval + selection (default delegateSelector picks the skill).
-    expect(deps.skillStore.query).toHaveBeenCalled();
-    expect(final.selectedSkill?.id).toBe(skill.id);
   });
 });
 

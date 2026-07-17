@@ -1,7 +1,7 @@
 apiVersion: v2
-name: recipe-agent
+name: controller-agent
 description: >-
-  Umbrella Helm chart for the whole recipe-agent system: the parent
+  Umbrella Helm chart for the whole controller-agent system: the parent
   orchestrator (RAG skill/tool selection + ToolRun launcher), the
   tool-controller operator (Tool/Skill/ToolRun CRDs), the Tool/Skill
   catalog, and an optional Open WebUI chat front-end -- each a subchart so
@@ -9,9 +9,9 @@ description: >-
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-home: https://github.com/bitovi/recipe-agent
+home: https://github.com/imaustink/agent-controller
 sources:
-  - https://github.com/bitovi/recipe-agent
+  - https://github.com/imaustink/agent-controller
 keywords:
   - agent
   - orchestrator
@@ -19,7 +19,7 @@ keywords:
   - llm
   - kubernetes
 maintainers:
-  - name: recipe-agent
+  - name: controller-agent
 dependencies:
   # The long-lived parent orchestrator (apps/agent-orchestrator). Bundles its
   # own optional Qdrant instance as a transitive dependency (see the
@@ -55,3 +55,14 @@ dependencies:
     version: "15.2.0"
     repository: https://helm.openwebui.com/
     condition: openwebui.enabled
+  # Optional NATS JetStream server for the queue-based tool-result channel.
+  # When nats.enabled=true the orchestrator deployment gets AGENT_NATS_URL
+  # pointing at this instance; tools publish their results via NatsSink and
+  # the orchestrator subscribes via NatsJobReceiver, replacing the HTTP
+  # callback Service on port 8080.  Off by default -- the HTTP callback path
+  # remains the backward-compatible default when this is disabled.
+  # Official chart: https://github.com/nats-io/k8s/tree/main/helm/charts/nats
+  - name: nats
+    version: "2.14.2"
+    repository: https://nats-io.github.io/k8s/helm/charts/
+    condition: nats.enabled

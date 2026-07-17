@@ -26,7 +26,7 @@ export interface AppConfig {
   maxRedirects: number;
   userAgent: string;
   /** Message-passing transport for events (see ../../docs/messaging.md and src/messaging/index.ts). */
-  transport: "stdout" | "events" | "file" | "callback";
+  transport: "stdout" | "events" | "file" | "callback" | "nats";
   /** Correlation id for this tool call; generated if not provided. */
   jobId: string;
   /** File path for the `file` transport (NDJSON, append-only). */
@@ -45,6 +45,10 @@ export interface AppConfig {
   callbackAllowedHosts: string[];
   /** Delivery retry attempts for the callback transport. */
   callbackMaxRetries: number;
+  /** NATS server URL for the `nats` transport, e.g. nats://nats.svc:4222 */
+  natsUrl: string | undefined;
+  /** NATS subject to publish tool events to for the `nats` transport. */
+  natsSubject: string | undefined;
 }
 
 function num(raw: string | undefined, fallback: number): number {
@@ -66,6 +70,7 @@ function transport(raw: string | undefined): AppConfig["transport"] {
     case "events":
     case "file":
     case "callback":
+    case "nats":
       return raw;
     default:
       return "stdout";
@@ -94,4 +99,6 @@ export const config: AppConfig = {
   callbackSecret: process.env.RECIPE_CALLBACK_SECRET,
   callbackAllowedHosts: list(process.env.RECIPE_CALLBACK_ALLOWED_HOSTS),
   callbackMaxRetries: num(process.env.RECIPE_CALLBACK_MAX_RETRIES, 3),
+  natsUrl: process.env.RECIPE_NATS_URL,
+  natsSubject: process.env.RECIPE_NATS_SUBJECT,
 };

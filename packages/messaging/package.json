@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Transport-agnostic tool-call event protocol shared by recipe-agent tool containers.",
+  "description": "Transport-agnostic tool-call event protocol shared by controller-agent tool containers.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "nats": "2.29.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
 # recipe-scraper
 
-> One tool container in the [recipe-agent](../../README.md) collection. Shared
+> One tool container in the [controller-agent](../../README.md) collection. Shared
 > conventions (the event protocol and security model every tool follows) live at
 > the repo root: [docs/messaging.md](../../docs/messaging.md) and
 > [docs/security.md](../../docs/security.md).

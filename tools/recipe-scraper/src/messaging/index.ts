@@ -2,6 +2,7 @@ import {
   CallbackSink,
   FileSink,
   JobEmitter as BaseJobEmitter,
+  NatsSink,
   StdoutSink,
   type Sink,
 } from "@controller-agent/messaging";
@@ -45,6 +46,11 @@ export function createSink(cfg: AppConfig): Sink<string> {
         allowedHosts: cfg.callbackAllowedHosts,
         maxRetries: cfg.callbackMaxRetries,
       });
+    case "nats":
+      if (!cfg.natsUrl || !cfg.natsSubject) {
+        throw new Error("RECIPE_TRANSPORT=nats requires RECIPE_NATS_URL and RECIPE_NATS_SUBJECT");
+      }
+      return new NatsSink<string>({ natsUrl: cfg.natsUrl, subject: cfg.natsSubject });
     case "stdout":
     default:
       return new StdoutSink<string>("final");

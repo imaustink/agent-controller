@@ -85,7 +85,7 @@ async function fetchSubtitles(url: string, dir: string): Promise<string | null> 
       "--write-subs",
       "--write-auto-subs",
       "--sub-langs",
-      "en.*",
+      "en",
       "--sub-format",
       "vtt",
       "--convert-subs",
@@ -150,23 +150,37 @@ export async function extractVideo(url: string): Promise<Extraction> {
     if (author) parts.push(`Uploader: ${author}`);
     if (meta.description) parts.push(`Description:\n${meta.description}`);
 
-    let transcript = await fetchSubtitles(url, dir);
-    if (transcript) {
-      transcriptSource = "subtitles";
-    } else {
-      const audioPath = await downloadAudio(url, dir);
-      if (audioPath) {
-        try {
-          transcript = await transcribeAudio(audioPath);
-          transcriptSource = "audio-transcription";
-        } catch (err) {
-          warnings.push(`Transcription failed: ${(err as Error).message}`);
-        }
-      } else {
-        warnings.push("No subtitles available and audio download failed");
+    // Fetch subtitles and download audio in parallel so neither blocks the
+    // other. Both are best-effort: a failure in one doesn't prevent the other
+    // from contributing content. The LLM receives both when available, which
+    // improves extraction for videos whose subtitles are incomplete or absent.
+    const [subtitleTranscript, audioPath] = await Promise.all([
+      fetchSubtitles(url, dir),
+      downloadAudio(url, dir),
+    ]);
+
+    let audioTranscript: string | null = null;
+    if (audioPath) {
+      try {
+        audioTranscript = await transcribeAudio(audioPath);
+      } catch (err) {
+        warnings.push(`Audio transcription failed: ${(err as Error).message}`);
       }
     }
-    if (transcript) parts.push(`Transcript:\n${transcript}`);
+
+    const transcriptSources: string[] = [];
+    if (subtitleTranscript) {
+      transcriptSources.push("subtitles");
+      parts.push(`Subtitles:\n${subtitleTranscript}`);
+    }
+    if (audioTranscript) {
+      transcriptSources.push("audio-transcription");
+      parts.push(`Audio Transcript:\n${audioTranscript}`);
+    }
+    if (transcriptSources.length === 0) {
+      warnings.push("No transcript available (subtitles absent and audio transcription failed or skipped)");
+    }
+    transcriptSource = transcriptSources.join("+") || null;
 
     return {
       text: parts.join("\n\n"),

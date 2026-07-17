@@ -1,5 +1,5 @@
 {
-  "name": "recipe-agent",
+  "name": "controller-agent",
   "private": true,
   "version": "0.0.0",
   "workspaces": [

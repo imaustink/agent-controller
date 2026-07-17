@@ -1,4 +1,4 @@
-# Umbrella values for the whole recipe-agent system. Each top-level key maps to
+# Umbrella values for the whole controller-agent system. Each top-level key maps to
 # a subchart (by its dependency name/alias in Chart.yaml); set `<key>.enabled`
 # to toggle that component. Anything nested under a key is passed straight
 # through to that subchart -- see each subchart's own values.yaml for the full
@@ -45,7 +45,7 @@ tools:
 # ---------------------------------------------------------------------------
 # Optional Open WebUI chat UI (upstream open-webui chart, aliased `openwebui`)
 # in front of the orchestrator's OpenAI-compatible facade (ADR 0007). Off by
-# default. Run `helm dependency update charts/recipe-agent` once so the
+# default. Run `helm dependency update charts/controller-agent` once so the
 # subchart tarball is fetched.
 #
 # IMPORTANT auth caveat: Open WebUI sends `openaiApiKey` as a plain
@@ -92,7 +92,7 @@ openwebui:
   #    For the documented port-forward workflow:
   #      http://localhost:8080/oauth/google/login/callback
   # 3. Create the client secret as a k8s Secret yourself:
-  #      kubectl create secret generic recipe-agent-openwebui-google-oauth \
+  #      kubectl create secret generic controller-agent-openwebui-google-oauth \
   #        -n <namespace> --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
   # 4. Set sso.google.enabled=true, sso.google.clientId=<GOOGLE_CLIENT_ID>
   #    and sso.google.clientExistingSecret to the Secret name above.

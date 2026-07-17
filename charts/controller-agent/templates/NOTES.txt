@@ -1,5 +1,5 @@
 {{- $ao := index .Values "agent-orchestrator" -}}
-recipe-agent ({{ .Chart.Version }}) has been deployed as a single release.
+controller-agent ({{ .Chart.Version }}) has been deployed as a single release.
 
 Components enabled in this release:
   - orchestrator:    {{ if $ao.enabled }}yes{{ else }}no{{ end }}
@@ -51,5 +51,5 @@ production (see apps/agent-orchestrator/src/rbac/static-identity-resolver.ts).
 Tool/Skill catalog CRs are applied as Helm hooks AFTER the tool-controller.
 Note: because they are hooks, `helm uninstall` will NOT remove them --
 delete them by hand if needed:
-  kubectl -n {{ .Release.Namespace }} delete tool,skill -l app.kubernetes.io/part-of=recipe-agent
+  kubectl -n {{ .Release.Namespace }} delete tool,skill -l app.kubernetes.io/part-of=controller-agent
 {{- end }}

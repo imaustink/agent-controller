@@ -11,5 +11,8 @@ dependencies:
 - name: open-webui
   repository: https://helm.openwebui.com/
   version: 15.2.0
-digest: sha256:4648f4166918affd6938646fe3998c642378cc93f61ee1e74cc5ab3578d3bea1
-generated: "2026-07-12T17:48:06.009329-07:00"
+- name: nats
+  repository: https://nats-io.github.io/k8s/helm/charts/
+  version: 2.14.2
+digest: sha256:9ec53ab3e7c04e4acf7a901175350745113744d0b1b7c0897b2214546c04aebd
+generated: "2026-07-14T08:41:02.165393-07:00"

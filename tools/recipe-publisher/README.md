@@ -1,6 +1,6 @@
 # recipe-publisher
 
-> One tool container in the [recipe-agent](../../README.md) collection. Shared
+> One tool container in the [controller-agent](../../README.md) collection. Shared
 > conventions (the event protocol and security model every tool follows) live at
 > the repo root: [docs/messaging.md](../../docs/messaging.md) and
 > [docs/security.md](../../docs/security.md).
@@ -104,7 +104,7 @@ it must already exist in the target namespace (nothing in this repo creates
 tool ServiceAccounts):
 
 ```bash
-kubectl -n recipe-agent create serviceaccount recipe-publisher
+kubectl -n controller-agent create serviceaccount recipe-publisher
 ```
 
 ### 3. Create the secret
@@ -115,7 +115,7 @@ Create a long-lived API token in the Mealie UI (`/user/profile/api-tokens`),
 then:
 
 ```bash
-kubectl -n recipe-agent create secret generic recipe-publisher-secrets \
+kubectl -n controller-agent create secret generic recipe-publisher-secrets \
   --from-literal=MEALIE_API_TOKEN=<your-mealie-api-token>
 ```
 
@@ -129,7 +129,7 @@ Edit `MEALIE_BASE_URL` in [tool.yaml](tool.yaml) to point at your Mealie
 instance first, then:
 
 ```bash
-kubectl -n recipe-agent apply -f tools/recipe-publisher/tool.yaml
+kubectl -n controller-agent apply -f tools/recipe-publisher/tool.yaml
 ```
 
 ### 5. Restart the orchestrator
@@ -138,7 +138,7 @@ The orchestrator reads the Tool catalog once at startup (no live watch), so
 a new or changed Tool CR isn't picked up until it restarts:
 
 ```bash
-kubectl -n recipe-agent rollout restart deployment/agent-orchestrator
+kubectl -n controller-agent rollout restart deployment/agent-orchestrator
 ```
 
 After a rebuild of the image (step 1) with the same `latest` tag, no restart

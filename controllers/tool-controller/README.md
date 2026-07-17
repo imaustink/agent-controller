@@ -120,7 +120,7 @@ apiVersion: core.controller-agent.dev/v1alpha1
 kind: Tool
 metadata:
   name: recipe-scraper
-  namespace: recipe-agent
+  namespace: controller-agent
 spec:
   description: Extracts a structured recipe from a URL and returns Markdown.
   input: A publicly accessible recipe URL.
@@ -219,7 +219,7 @@ make deploy IMG=<registry>/tool-controller:tag
 Or via the bundled Helm chart:
 
 ```sh
-helm install tool-controller charts/tool-controller -n recipe-agent
+helm install tool-controller charts/tool-controller -n controller-agent
 ```
 
 ### Applying sample resources

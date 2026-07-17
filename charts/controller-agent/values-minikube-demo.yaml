@@ -1,5 +1,5 @@
-# Values file for the local minikube demo of the single `recipe-agent`
-# umbrella release (namespace `recipe-agent`). Merges the two former
+# Values file for the local minikube demo of the single `controller-agent`
+# umbrella release (namespace `controller-agent`). Merges the two former
 # per-chart demo files (charts/agent-orchestrator/values-minikube-demo.yaml
 # and charts/tool-controller/values-minikube-demo.yaml) under their subchart
 # keys, now that both are subcharts of one release.
@@ -8,7 +8,7 @@
 # flags and no `-f`/`--reuse-values` REPLACES the entire computed values tree
 # with just those flags on the chart defaults -- it does NOT merge with the
 # previous revision. Always upgrade with:
-#   helm upgrade recipe-agent charts/recipe-agent -n recipe-agent -f charts/recipe-agent/values-minikube-demo.yaml
+#   helm upgrade controller-agent charts/controller-agent -n controller-agent -f charts/controller-agent/values-minikube-demo.yaml
 # (edit this file first for any new setting, then run the same command --
 # never hand-assemble a fresh pile of `--set` flags from memory).
 #
@@ -23,8 +23,6 @@ agent-orchestrator:
   qdrant:
     enabled: true
   nats:
-    enabled: true
-  redis:
     enabled: true
   secrets:
     existingSecret: agent-orchestrator-secrets
@@ -47,15 +45,21 @@ tool-controller:
   enabled: true
   image:
     tag: latest
-  # Point the controller at the same in-cluster NATS instance the orchestrator
-  # uses (deployed as the agent-orchestrator subchart's NATS dependency).
-  # With the umbrella release named "recipe-agent" and namespace "recipe-agent",
-  # the NATS Service is "recipe-agent-nats.recipe-agent.svc.cluster.local".
-  nats:
-    agentUrl: "nats://recipe-agent-nats.recipe-agent.svc.cluster.local:4222"
+
+# Top-level NATS server (nats subchart). The agent-orchestrator.nats.enabled
+# above controls URL derivation in the orchestrator; this enables the actual
+# server pod. Both must be true for NATS-based result delivery.
+nats:
+  enabled: true
 
 tools:
   enabled: true
+  # recipe-scraper + recipe-publisher are on by default. copilot-swe (the
+  # privileged GitHub coding agent) + its skill are enabled here; they need the
+  # copilot-swe ServiceAccount + copilot-swe-secrets (key GITHUB_TOKEN, a
+  # fine-grained PAT) to already exist in-cluster.
+  copilotSwe:
+    enabled: true
   skills:
     softwareEngineering:
       enabled: true
@@ -75,6 +79,6 @@ openwebui:
       enabled: true
       clientId: 916932714292-6900thjm1dq3e4fnqrcj3ipe4iud70o8.apps.googleusercontent.com
       # Secret created out-of-band (never via --set/chat):
-      #   kubectl create secret generic recipe-agent-openwebui-google-oauth \
-      #     -n recipe-agent --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
-      clientExistingSecret: recipe-agent-openwebui-google-oauth
+      #   kubectl create secret generic controller-agent-openwebui-google-oauth \
+      #     -n controller-agent --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
+      clientExistingSecret: controller-agent-openwebui-google-oauth

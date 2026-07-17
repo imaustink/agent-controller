@@ -40,26 +40,12 @@ config:
   # Service URL is derived automatically instead). Set this to point at an
   # existing/external Qdrant instance otherwise.
   qdrantUrl: "http://qdrant:6333"
-  # Ignored when nats.enabled=true below (the in-cluster NATS Service URL is
-  # Ignored when nats.enabled=true below (the in-cluster NATS Service URL is
-  # derived automatically). Set to point at an existing/external NATS otherwise.
-  natsUrl: "nats://nats:4222"
-  # Redis URL for the conversation session store (docs/adr/0016). Ignored when
-  # redis.enabled=true below (the in-cluster URL is derived automatically).
-  # Set to an external Redis URL (e.g. rediss://user:pass@host:6380) otherwise.
-  # Unset by default: uses in-memory store (single-replica only).
-  redisUrl: ""
   qdrantCollection: tools
   qdrantVectorSize: 1536
   qdrantSkillsCollection: skills
-  qdrantAgentsCollection: agents
   embeddingModel: text-embedding-3-small
   selectionModel: gpt-4o-2024-08-06
   skillTopK: 3
-  agentTopK: 3
-  # Bounds an AgentRun's activeDeadlineSeconds; longer than a tool's default
-  # since an agent may be waiting on a human mid-conversation.
-  agentRunTimeoutSeconds: 1800
   # Base URL Job pods use to reach the callback receiver. Leave empty to
   # default to the in-cluster callback Service DNS name (ADR 0006).
   callbackBaseUrl: ""
@@ -71,6 +57,13 @@ config:
   # bearer token -> {subject, roles}. Leave unset in any real deployment;
   # prefer a real OIDC/JWT identity resolver instead (not implemented yet).
   staticIdentities: ""
+  # NATS URL for the queue-based tool-result channel. Ignored when
+  # nats.enabled=true (the in-cluster Service URL is derived automatically).
+  # When non-empty the orchestrator uses NatsJobReceiver instead of the HTTP
+  # CallbackReceiver -- AGENT_CALLBACK_SECRET / AGENT_CALLBACK_SECRET_REF_NAME
+  # are no longer required in that case. Leave empty to use the HTTP callback
+  # path (backward-compatible default).
+  natsUrl: ""
 
 # Secrets: OPENAI_API_KEY (required), AGENT_CALLBACK_SECRET (required, no
 # default — must not be guessable), AGENT_QDRANT_API_KEY (optional).
@@ -267,26 +260,31 @@ qdrant:
   # single-tenant dev cluster.
   apiKey: false
 
-# Optional in-cluster NATS server for the bidirectional agent protocol
-# (@controller-agent/messaging). Off by default; enable for the sub-agent
-# feature. Values here pass through to the upstream nats chart.
-nats:
-  enabled: false
-
-# Optional in-cluster Redis for the conversation session store (docs/adr/0016).
-# Off by default (sessions are stored in-memory, single-replica only).
-# Enable for multi-replica deployments or to survive orchestrator restarts.
-# Uses the official redis:alpine image via a custom Deployment + Service
-# (templates/redis.yaml) rather than the Bitnami subchart.
+# Optional lightweight Redis instance for the conversation session store
+# (docs/adr/0016). Uses the official redis:alpine image (no Bitnami subchart)
+# so there are no external chart dependencies to fetch. Off by default --
+# the in-memory session store is used when this is disabled (single replica
+# only; a shared Redis store is the scale-out path).
 redis:
   enabled: false
-  image:
-    tag: "7-alpine"
-    pullPolicy: IfNotPresent
+  storageClass: ""
+  storageSize: 1Gi
   resources:
     requests:
       cpu: 50m
-      memory: 32Mi
+      memory: 64Mi
     limits:
       cpu: 200m
       memory: 128Mi
+
+# Toggles AGENT_NATS_URL derivation only -- the actual NATS server is the
+# umbrella chart's shared `nats` dependency (see charts/controller-agent/Chart.yaml),
+# not bundled here. When enabled, AGENT_NATS_URL is set automatically to that
+# shared in-cluster Service's DNS name, and tool Jobs deliver their results
+# over NATS instead of the HTTP callback receiver. The HTTP callback Service
+# (port 8080) stays up as a fallback but receives no traffic in NATS mode.
+# Off by default. Must be set together with the umbrella chart's top-level
+# `nats.enabled` (which actually deploys the server).
+nats:
+  enabled: false
+

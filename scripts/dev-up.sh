@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# dev-up.sh — start minikube and (re)deploy the full recipe-agent stack.
+# dev-up.sh — start minikube and (re)deploy the full controller-agent stack.
 #
 # Usage:
 #   ./scripts/dev-up.sh          # start everything
 #   ./scripts/dev-up.sh --skip-build   # skip docker image builds (use cached)
 #
 # Prerequisites (one-time, out-of-band):
-#   kubectl -n recipe-agent create secret generic agent-orchestrator-secrets \
+#   kubectl -n controller-agent create secret generic agent-orchestrator-secrets \
 #     --from-literal=OPENAI_API_KEY=<key> \
 #     --from-literal=AGENT_CALLBACK_SECRET=<random-secret>
 #
-#   kubectl -n recipe-agent create secret generic recipe-publisher-secrets \
+#   kubectl -n controller-agent create secret generic recipe-publisher-secrets \
 #     --from-literal=MEALIE_API_TOKEN=<token>
 #
-#   kubectl -n recipe-agent create secret generic agent-orchestrator-openwebui-google-oauth \
+#   kubectl -n controller-agent create secret generic agent-orchestrator-openwebui-google-oauth \
 #     --from-literal=client-secret=<google-oauth-client-secret>
 #
 # All three secrets survive minikube restarts as long as the container is NOT
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-NS="recipe-agent"
+NS="controller-agent"
 SKIP_BUILD=false
 
 for arg in "$@"; do
@@ -93,8 +93,8 @@ step "Fetching Helm chart dependencies..."
 # update` handles the unmanaged open-webui repo automatically (it also writes
 # redundant local subchart .tgz alongside the unpacked dirs -- harmless, they're
 # gitignored and Helm dedupes them at render time).
-helm dependency update "$REPO_ROOT/charts/recipe-agent/charts/agent-orchestrator"
-helm dependency update "$REPO_ROOT/charts/recipe-agent"
+helm dependency update "$REPO_ROOT/charts/controller-agent/charts/agent-orchestrator"
+helm dependency update "$REPO_ROOT/charts/controller-agent"
 
 # ── 6. Docker images → minikube daemon ───────────────────────────────────────
 if [[ "$SKIP_BUILD" == "false" ]]; then
@@ -121,6 +121,20 @@ if [[ "$SKIP_BUILD" == "false" ]]; then
   docker build -f "$REPO_ROOT/apps/copilot-swe-agent/Dockerfile" \
     -t copilot-swe-agent:latest "$REPO_ROOT" --quiet
 
+  echo "  Building localtool-executor sidecars..."
+  docker build -f "$REPO_ROOT/sidecars/localtool-executor/Dockerfile" \
+    --build-arg BASE_IMAGE=node:24-bookworm-slim --build-arg RUNTIME=node \
+    -t localtool-executor-node:latest "$REPO_ROOT/sidecars/localtool-executor" --quiet
+  docker build -f "$REPO_ROOT/sidecars/localtool-executor/Dockerfile" \
+    --build-arg BASE_IMAGE=python:3.12-slim-bookworm --build-arg RUNTIME=python \
+    -t localtool-executor-python:latest "$REPO_ROOT/sidecars/localtool-executor" --quiet
+  docker build -f "$REPO_ROOT/sidecars/localtool-executor/Dockerfile" \
+    --build-arg BASE_IMAGE=golang:1.24-bookworm --build-arg RUNTIME=go \
+    -t localtool-executor-go:latest "$REPO_ROOT/sidecars/localtool-executor" --quiet
+  docker build -f "$REPO_ROOT/sidecars/localtool-executor/Dockerfile" \
+    --build-arg BASE_IMAGE=debian:bookworm-slim --build-arg RUNTIME=shell \
+    -t localtool-executor-shell:latest "$REPO_ROOT/sidecars/localtool-executor" --quiet
+
   # Return to the host daemon so subsequent docker commands work normally.
   eval "$(minikube docker-env --unset)"
 else
@@ -131,20 +145,20 @@ fi
 step "Applying CRDs..."
 # Helm's crds/ dir is install-only; upgrades never touch them. Apply manually
 # every time so CRD schema changes are always current.
-for crd in "$REPO_ROOT"/charts/recipe-agent/charts/tool-controller/crds/*.yaml; do
+for crd in "$REPO_ROOT"/charts/controller-agent/charts/tool-controller/crds/*.yaml; do
   kubectl apply -f "$crd" --server-side >/dev/null
 done
 
 # ── 8. Helm release ──────────────────────────────────────────────────────────
-step "Installing / upgrading the recipe-agent umbrella release..."
+step "Installing / upgrading the controller-agent umbrella release..."
 # One release, four subcharts (orchestrator + tool-controller + tools catalog +
 # optional Open WebUI). The `tools` subchart applies the Tool/Skill CRs as
 # post-install/post-upgrade hooks (after the controller), so no manual CR apply
 # is needed here anymore. --wait blocks on the controller/orchestrator becoming
 # ready before those hook CRs run.
-helm upgrade --install recipe-agent "$REPO_ROOT/charts/recipe-agent" \
+helm upgrade --install controller-agent "$REPO_ROOT/charts/controller-agent" \
   --namespace "$NS" --wait --timeout 5m \
-  -f "$REPO_ROOT/charts/recipe-agent/values-minikube-demo.yaml"
+  -f "$REPO_ROOT/charts/controller-agent/values-minikube-demo.yaml"
 
 # ── 10. Rollout restart (picks up new images + refreshes CRD-sourced catalog) ─
 step "Restarting deployments to pick up new images and updated CRs..."

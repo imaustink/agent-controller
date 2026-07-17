@@ -1,6 +1,6 @@
-# recipe-agent (umbrella Helm chart)
+# controller-agent (umbrella Helm chart)
 
-Deploys the **whole recipe-agent system as a single Helm release**, using the
+Deploys the **whole controller-agent system as a single Helm release**, using the
 subcharts pattern — each component is a subchart that can be toggled
 independently:
 
@@ -12,12 +12,12 @@ independently:
 | `openwebui` | Optional [Open WebUI](https://github.com/open-webui/open-webui) chat UI in front of the orchestrator's OpenAI-compatible facade | off |
 
 This replaces the two previously-separate releases (`agent-orchestrator` and
-`tool-controller`) with one `recipe-agent` release.
+`tool-controller`) with one `controller-agent` release.
 
 ## Layout
 
 ```
-charts/recipe-agent/
+charts/controller-agent/
 ├── Chart.yaml                  # 4 dependencies (3 local file://, 1 remote open-webui)
 ├── values.yaml                 # per-subchart passthrough + enable toggles
 ├── values-minikube-demo.yaml   # the local minikube demo overrides (not packaged)
@@ -45,8 +45,8 @@ Helm does **not** recurse into nested subchart dependencies, so fetch the
 orchestrator subchart's Qdrant first, then the umbrella's Open WebUI:
 
 ```bash
-helm dependency update charts/recipe-agent/charts/agent-orchestrator   # qdrant
-helm dependency update charts/recipe-agent                             # open-webui
+helm dependency update charts/controller-agent/charts/agent-orchestrator   # qdrant
+helm dependency update charts/controller-agent                             # open-webui
 ```
 
 > `helm dependency update` also writes redundant local subchart `.tgz` files
@@ -58,8 +58,8 @@ helm dependency update charts/recipe-agent                             # open-we
 ## Install
 
 ```bash
-helm install recipe-agent charts/recipe-agent -n recipe-agent --create-namespace \
-  -f charts/recipe-agent/values-minikube-demo.yaml
+helm install controller-agent charts/controller-agent -n controller-agent --create-namespace \
+  -f charts/controller-agent/values-minikube-demo.yaml
 ```
 
 For the local minikube workflow (build images into minikube, apply CRDs, then
@@ -69,8 +69,8 @@ Always upgrade with the same values file so previously-set overrides aren't
 dropped (see the header comment in `values-minikube-demo.yaml`):
 
 ```bash
-helm upgrade recipe-agent charts/recipe-agent -n recipe-agent \
-  -f charts/recipe-agent/values-minikube-demo.yaml
+helm upgrade controller-agent charts/controller-agent -n controller-agent \
+  -f charts/controller-agent/values-minikube-demo.yaml
 ```
 
 ## Notable behaviors
@@ -86,7 +86,7 @@ helm upgrade recipe-agent charts/recipe-agent -n recipe-agent \
   controller Deployment is created; with `--wait` they run after it is ready.
 - **Uninstall caveat.** Because the catalog CRs are Helm hooks, `helm uninstall`
   does **not** delete them. Remove them by hand if needed:
-  `kubectl -n <ns> delete tool,skill -l app.kubernetes.io/part-of=recipe-agent`.
+  `kubectl -n <ns> delete tool,skill -l app.kubernetes.io/part-of=controller-agent`.
   (CRDs, installed from `crds/`, are also never removed by Helm.)
 
 ## Values

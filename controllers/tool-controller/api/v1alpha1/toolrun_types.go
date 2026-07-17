@@ -35,19 +35,37 @@ type SecretKeySelector struct {
 	Key string `json:"key"`
 }
 
-// ToolRunCallback describes where/how the launched Job reports results, reusing
-// the existing @controller-agent/messaging HMAC callback protocol unchanged (ADR 0006).
+// ToolRunCallback describes where/how the launched Job reports results.
+// Exactly one delivery mode must be configured per ToolRun: HTTP callback
+// (set url + secretRef) or NATS (set natsSubject + natsUrl). When
+// natsSubject is non-empty the NATS path is used and url/secretRef are
+// ignored; when natsSubject is empty the HTTP callback path is used and
+// url/secretRef are required.
 type ToolRunCallback struct {
-	// url is the in-cluster callback receiver endpoint, e.g.
-	// http://agent-orchestrator-callback.recipe-agent.svc.cluster.local:8080
-	// +required
-	URL string `json:"url"`
+	// url is the in-cluster HTTP callback receiver endpoint, e.g.
+	// http://agent-orchestrator-callback.controller-agent.svc.cluster.local:8080
+	// Required when natsSubject is empty.
+	// +optional
+	URL string `json:"url,omitempty"`
 
-	// secretRef selects the HMAC signing secret injected as AGENT_CALLBACK_SECRET
-	// (or equivalent) into the Job container's environment via secretKeyRef —
-	// never copied into the ToolRun spec/status in plaintext.
-	// +required
-	SecretRef SecretKeySelector `json:"secretRef"`
+	// secretRef selects the HMAC signing secret injected as RECIPE_CALLBACK_SECRET
+	// into the Job container's environment via secretKeyRef — never copied into
+	// the ToolRun spec/status in plaintext.
+	// Required when natsSubject is empty.
+	// +optional
+	SecretRef SecretKeySelector `json:"secretRef,omitempty"`
+
+	// natsSubject is the NATS subject the Job should publish its result events to,
+	// e.g. "callbacks.550e8400-e29b-41d4-a716-446655440000". When set, the Job
+	// uses RECIPE_TRANSPORT=nats instead of the HTTP callback path.
+	// +optional
+	NatsSubject string `json:"natsSubject,omitempty"`
+
+	// natsUrl is the NATS server URL the Job should connect to, e.g.
+	// "nats://nats.controller-agent.svc.cluster.local:4222". Required when
+	// natsSubject is set.
+	// +optional
+	NatsUrl string `json:"natsUrl,omitempty"`
 }
 
 // ToolRunSpec defines the desired state of ToolRun. The orchestrator creates one

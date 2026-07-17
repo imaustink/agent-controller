@@ -53,13 +53,6 @@ export interface AgentGraphInput {
   /** Identity subject the session record was created under (docs/adr/0012). */
   sessionSubject?: string;
   /**
-   * Per-tool continuation tokens from the session store (docs/adr/0016),
-   * keyed by tool id. The graph's `runTool` node prepends the stored token
-   * to tool_args before launch so tools can resume multi-turn state without
-   * it ever appearing in the chat transcript the LLM planner sees.
-   */
-  toolContinuations?: Record<string, string>;
-  /**
    * Per-request progress listener — set by the SSE streaming handler to
    * forward tool Job progress/warning events as Open WebUI status steps.
    * Absent on non-streaming paths (fire-and-forget /invoke, tests) — in
@@ -136,9 +129,6 @@ export class InvokeServer {
     input.activeAgentId = record.activeAgentId;
     input.activeAgentRunId = record.activeAgentRunId;
     input.sessionSubject = record.subject;
-    if (record.toolContinuations && Object.keys(record.toolContinuations).length > 0) {
-      input.toolContinuations = record.toolContinuations;
-    }
     return input;
   }
 
@@ -151,12 +141,8 @@ export class InvokeServer {
    * (a question) — once it gives its final reply (or fails), the record is
    * cleared to just the subject so the NEXT unrelated turn doesn't try to
    * continue a run that's already exited.
-   *
-   * Also merges any per-tool continuation token extracted this turn
-   * (docs/adr/0016) into the `toolContinuations` map on the session record
-   * so the next turn for the same tool can re-inject the stored state.
    */
-  private async persistSession(
+  private persistSession(
     sessionId: string | undefined,
     identity: { subject: string } | undefined,
     outcome: {
@@ -164,40 +150,23 @@ export class InvokeServer {
       selectedAgent?: { id: string };
       agentRunId?: string;
       agentAwaitingReply?: boolean;
-      /** Continuation token extracted from the tool's result this turn (docs/adr/0016). */
-      extractedContinuation?: { toolId: string; token: string };
-      /** The toolContinuations that were passed INTO the graph (to merge with the new token). */
-      existingContinuations?: Record<string, string>;
     },
-  ): Promise<void> {
+  ): void {
     if (!sessionId || !this.sessionStore || !identity) return;
-
-    // Merge the newly-extracted continuation token into the existing map.
-    const merged: Record<string, string> = { ...(outcome.existingContinuations ?? {}) };
-    if (outcome.extractedContinuation) {
-      merged[outcome.extractedContinuation.toolId] = outcome.extractedContinuation.token;
-    }
-    const toolContinuations = Object.keys(merged).length > 0 ? merged : undefined;
-
     if (outcome.selectedSkill) {
-      await this.sessionStore.set(sessionId, {
-        subject: identity.subject,
-        activeSkillId: outcome.selectedSkill.id,
-        toolContinuations,
-      });
+      this.sessionStore.set(sessionId, { subject: identity.subject, activeSkillId: outcome.selectedSkill.id });
       return;
     }
     if (outcome.agentRunId) {
       if (outcome.agentAwaitingReply && outcome.selectedAgent) {
-        await this.sessionStore.set(sessionId, {
+        this.sessionStore.set(sessionId, {
           subject: identity.subject,
           activeAgentId: outcome.selectedAgent.id,
           activeAgentRunId: outcome.agentRunId,
-          toolContinuations,
         });
       } else {
         // Agent finished or failed -- clear any prior continuation state.
-        await this.sessionStore.set(sessionId, { subject: identity.subject, toolContinuations });
+        this.sessionStore.set(sessionId, { subject: identity.subject });
       }
     }
   }
@@ -283,13 +252,11 @@ export class InvokeServer {
       this.graph
         .invoke(graphInput)
         .then((state) => {
-          void this.persistSession(sessionId, state.identity, {
+          this.persistSession(sessionId, state.identity, {
             selectedSkill: state.selectedSkill,
             selectedAgent: state.selectedAgent,
             agentRunId: state.agentRunId,
             agentAwaitingReply: state.agentAwaitingReply,
-            extractedContinuation: state.extractedContinuation,
-            existingContinuations: graphInput.toolContinuations,
           });
           this.invocations.set(id, {
             id,
@@ -367,13 +334,11 @@ export class InvokeServer {
       res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(openAiError(state.error, code)));
       return;
     }
-    void this.persistSession(sessionId, state.identity, {
+    this.persistSession(sessionId, state.identity, {
       selectedSkill: state.selectedSkill,
       selectedAgent: state.selectedAgent,
       agentRunId: state.agentRunId,
       agentAwaitingReply: state.agentAwaitingReply,
-      extractedContinuation: state.extractedContinuation,
-      existingContinuations: graphInput.toolContinuations,
     });
     const id = chatCompletionId();
     const content = renderResult(state.result);
@@ -421,7 +386,6 @@ export class InvokeServer {
       let selectedAgent: { id: string } | undefined;
       let agentRunId: string | undefined;
       let agentAwaitingReply: boolean | undefined;
-      let extractedContinuation: { toolId: string; token: string } | undefined;
       let skillContinuation = false; // true when checkActiveSkill confirmed an existing session skill
       // The tool result is produced by `runTool` and may then be left as-is or
       // wrapped by `composeResponse` (docs/adr/0015). composeResponse emits an
@@ -429,14 +393,7 @@ export class InvokeServer {
       // rather than reading it off the terminal node's update alone.
       let result: unknown;
       const persist = (): void =>
-        void this.persistSession(sessionId, identity, {
-          selectedSkill,
-          selectedAgent,
-          agentRunId,
-          agentAwaitingReply,
-          extractedContinuation,
-          existingContinuations: graphInput.toolContinuations,
-        });
+        this.persistSession(sessionId, identity, { selectedSkill, selectedAgent, agentRunId, agentAwaitingReply });
       for await (const item of withHeartbeat(source, HEARTBEAT_MS)) {
         if (item.type === "heartbeat") {
           writeSseComment(res, "keep-alive");
@@ -450,11 +407,6 @@ export class InvokeServer {
         if ("agentAwaitingReply" in update) agentAwaitingReply = update.agentAwaitingReply as boolean | undefined;
         if (nodeName === "checkActiveSkill" && update.selectedSkill) skillContinuation = true;
         if ("result" in update) result = update.result;
-        // Capture the continuation token extracted from the tool's output this
-        // turn (docs/adr/0016); persisted into the session store below.
-        if (nodeName === "runTool" && "extractedContinuation" in update) {
-          extractedContinuation = update.extractedContinuation as { toolId: string; token: string } | undefined;
-        }
 
         if (typeof update.error === "string") {
           finish(`❌ ${update.error}`);

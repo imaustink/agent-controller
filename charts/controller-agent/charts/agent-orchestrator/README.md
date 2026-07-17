@@ -1,7 +1,7 @@
 # agent-orchestrator (Helm chart)
 
-> **This is now a subchart of the [recipe-agent umbrella chart](../../).**
-> Deploy the whole system as one release with `charts/recipe-agent` instead of
+> **This is now a subchart of the [controller-agent umbrella chart](../../).**
+> Deploy the whole system as one release with `charts/controller-agent` instead of
 > installing this chart standalone. Open WebUI and the committed
 > `values-minikube-demo.yaml` moved up to the umbrella level; the standalone
 > `helm install`/Open WebUI/upgrade instructions below are retained only for
@@ -69,7 +69,7 @@ orchestrator, using the official chart as a dependency (declared in
 locally:
 
 ```bash
-helm dependency update charts/recipe-agent/charts/agent-orchestrator
+helm dependency update charts/controller-agent/charts/agent-orchestrator
 ```
 
 `config.qdrantUrl` is ignored when this is on — the orchestrator's
@@ -106,7 +106,7 @@ orchestrator's dev/test-only `StaticIdentityResolver` rejects anything not
 in `config.staticIdentities` — set both to the same value, e.g.:
 
 ```bash
-helm upgrade agent-orchestrator charts/agent-orchestrator -n recipe-agent --reuse-values \
+helm upgrade agent-orchestrator charts/agent-orchestrator -n controller-agent --reuse-values \
   --set openwebui.enabled=true \
   --set openwebui.openaiApiKey=<some-token> \
   --set config.staticIdentities='{"<some-token>":{"subject":"open-webui","roles":["reader"]}}'
@@ -141,7 +141,7 @@ password accounts). Disabled by default. Setup:
    it never lands in stored Helm release values):
    ```bash
    kubectl create secret generic agent-orchestrator-openwebui-google-oauth \
-     -n recipe-agent --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
+     -n controller-agent --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
    ```
 4. Upgrade with the client ID (not secret — safe to commit/pass via `--set`)
    and the Secret name from step 3. **Prefer adding these to a values file
@@ -150,7 +150,7 @@ password accounts). Disabled by default. Setup:
    dropping any previously-set flags not repeated in the same command (this
    has actually happened in this deployment's history, see that section):
    ```bash
-   helm upgrade agent-orchestrator charts/agent-orchestrator -n recipe-agent \
+   helm upgrade agent-orchestrator charts/agent-orchestrator -n controller-agent \
      --set openwebui.enabled=true \
      --set openwebui.sso.enabled=true \
      --set openwebui.sso.google.enabled=true \
@@ -164,14 +164,14 @@ access Open WebUI differently.
 
 ## Upgrading this deployment (minikube demo)
 
-This repo's own minikube demo deployment (namespace `recipe-agent`) has a
+This repo's own minikube demo deployment (namespace `controller-agent`) has a
 committed [`values-minikube-demo.yaml`](values-minikube-demo.yaml) capturing
 every override it actually needs (image tag, bundled Qdrant, existing
 secret, dev bearer token, Google OAuth client id/secret ref). **Always
 upgrade with it, never with hand-assembled `--set` flags**:
 
 ```bash
-helm upgrade agent-orchestrator charts/agent-orchestrator -n recipe-agent \
+helm upgrade agent-orchestrator charts/agent-orchestrator -n controller-agent \
   -f charts/agent-orchestrator/values-minikube-demo.yaml
 ```
 

@@ -1,4 +1,4 @@
-# Copilot Instructions — recipe-agent
+# Copilot Instructions — controller-agent
 
 ## Architecture
 

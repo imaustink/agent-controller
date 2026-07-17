@@ -13,3 +13,4 @@ export { JobEmitter, type JobEmitterOptions } from "./emitter.js";
 export { StdoutSink } from "./stdout-sink.js";
 export { FileSink } from "./file-sink.js";
 export { CallbackSink, CallbackConfigError, type CallbackOptions } from "./callback-sink.js";
+export { NatsSink, type NatsSinkOptions } from "./nats-sink.js";

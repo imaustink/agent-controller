@@ -8,6 +8,21 @@ export class CallbackAuthError extends Error {}
 export type ProgressHandler = (stage: string, message: string | undefined) => void;
 
 /**
+ * Common interface for both the HTTP and NATS result-channel adapters.
+ * The agent graph depends on this interface (not a concrete class) so the
+ * transport can be swapped without touching graph logic.
+ */
+export interface JobResultReceiver {
+  /** Returns a Promise that resolves once a terminal (`succeeded`/`failed`) event arrives. */
+  awaitJob(jobId: string): Promise<Event>;
+  /**
+   * Registers a handler to receive `progress`/`warning` events for `jobId`.
+   * Returns an unsubscribe function — always call it when the job is done.
+   */
+  onJobProgress(jobId: string, handler: ProgressHandler): () => void;
+}
+
+/**
  * Verifies the `x-signature: sha256=<hmac>` header written by
  * `@controller-agent/messaging`'s `CallbackSink`, then validates the body against
  * the shared `EventSchema`. Kept as a pure function so it's testable without

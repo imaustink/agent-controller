@@ -18,7 +18,7 @@ export interface SecretKeySelector {
  * 0010) instead of creating a k8s Job directly — the Go tool-controller
  * (controllers/tool-controller/) is the ONLY thing that creates Jobs now.
  * This is why the orchestrator's own RBAC no longer needs `batch/jobs`
- * permissions at all (see charts/recipe-agent/charts/agent-orchestrator/templates/rbac.yaml).
+ * permissions at all (see charts/controller-agent/charts/agent-orchestrator/templates/rbac.yaml).
  *
  * Result/progress payloads still flow over the existing HMAC callback
  * protocol unchanged (ADR 0006) — `options.callbackUrl` is passed straight
@@ -66,6 +66,15 @@ export class ToolRunLauncher implements ContainerToolLauncher {
     // for cross-kind uniqueness, so a prefixed CR name would produce a
     // stuttering "toolrun-toolrun-<uuid>" Job name.
     const name = randomUUID();
+
+    // Build the callback block: NATS mode when natsSubject is set, HTTP mode
+    // otherwise (backward compatible). Both paths are mutually exclusive —
+    // the tool-controller inspects which fields are present to decide which
+    // env vars to inject into the launched Job.
+    const callback = options.natsSubject
+      ? { natsSubject: options.natsSubject, natsUrl: options.natsUrl }
+      : { url: options.callbackUrl, secretRef: this.callbackSecretRef };
+
     const body = {
       apiVersion: `${this.group}/${this.version}`,
       kind: "ToolRun",
@@ -73,10 +82,7 @@ export class ToolRunLauncher implements ContainerToolLauncher {
       spec: {
         toolRef: template.toolRef,
         args: options.args ?? template.args,
-        callback: {
-          url: options.callbackUrl,
-          secretRef: this.callbackSecretRef,
-        },
+        callback,
       },
     };
 

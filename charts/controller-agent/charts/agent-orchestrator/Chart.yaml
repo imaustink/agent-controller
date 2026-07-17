@@ -1,21 +1,21 @@
 apiVersion: v2
 name: agent-orchestrator
 description: >-
-  Helm chart for the recipe-agent parent orchestrator: RAG-based skill/tool
+  Helm chart for the controller-agent parent orchestrator: RAG-based skill/tool
   selection and Kubernetes Job launcher (see apps/agent-orchestrator).
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-home: https://github.com/bitovi/recipe-agent
+home: https://github.com/imaustink/agent-controller
 sources:
-  - https://github.com/bitovi/recipe-agent
+  - https://github.com/imaustink/agent-controller
 keywords:
   - agent
   - orchestrator
   - llm
   - langgraph
 maintainers:
-  - name: recipe-agent
+  - name: controller-agent
 dependencies:
   # Optional Qdrant instance (config.qdrantUrl's backing store), off by
   # default (see values.yaml `qdrant.enabled`) -- most deployments should
@@ -27,14 +27,11 @@ dependencies:
     version: "1.18.2"
     repository: https://qdrant.github.io/qdrant-helm
     condition: qdrant.enabled
-  # Optional NATS server (bidirectional agent control protocol,
-  # @controller-agent/messaging agent-protocol). Off by default like qdrant;
-  # enable for the sub-agent feature. Pinned exact -- bump deliberately with
-  # `helm dependency update` after reviewing the nats-helm changelog.
-  - name: nats
-    version: "2.14.2"
-    repository: https://nats-io.github.io/k8s/helm/charts/
-    condition: nats.enabled
+  # NATS is provided by the umbrella chart's own `nats` dependency (shared
+  # across the whole release, used for tool-result delivery), not bundled
+  # here -- `nats.enabled` in this subchart's values only toggles URL
+  # derivation (see templates/_helpers.tpl `agent-orchestrator.natsUrl`),
+  # which resolves to the umbrella release's shared NATS Service by name.
   # Redis for the conversation session store (docs/adr/0016) is provided by
   # a simple custom Deployment + Service template in templates/redis.yaml
   # (NOT a Bitnami subchart, to avoid Bitnami image-registry availability

@@ -1,10 +1,8 @@
 import * as k8s from "@kubernetes/client-node";
 import { config } from "./config.js";
 import { CallbackReceiver } from "./callback/receiver.js";
-import { AgentRunLauncher } from "./k8s/agentrun-launcher.js";
-import { NatsAgentChannel } from "./agents/nats-agent-channel.js";
-import { CrdAgentRegistry } from "./agents/crd-agent-registry.js";
-import { QdrantAgentStore } from "./agents/qdrant-agent-store.js";
+import { NatsJobReceiver } from "./callback/nats-job-receiver.js";
+import type { JobResultReceiver } from "./callback/receiver.js";
 import { ToolRunLauncher } from "./k8s/toolrun-launcher.js";
 import { LocalToolExecutor, K8sSecretReader } from "./local/local-tool-executor.js";
 import { CrdToolRegistry } from "./registry/crd-tool-registry.js";
@@ -16,13 +14,11 @@ import { QdrantSkillStore } from "./skills/qdrant-skill-store.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { QdrantToolStore } from "./vector-store/qdrant-store.js";
 import { OpenAiActionPlanner } from "./agent/action-planner.js";
-import { OpenAiDelegateSelector } from "./agent/delegate-selector.js";
 import { OpenAiResponseComposer } from "./agent/response-composer.js";
 import { OpenAiSkillFitChecker } from "./agent/skill-fit-checker.js";
+import { OpenAiSkillSelector } from "./agent/skill-selector.js";
 import { buildAgentGraph } from "./agent/graph.js";
 import { InMemorySessionStore } from "./session/in-memory-session-store.js";
-import { RedisSessionStore } from "./session/redis-session-store.js";
-import type { SessionStore } from "./session/types.js";
 import { InvokeServer } from "./server.js";
 import { retryWithBackoff } from "./retry.js";
 
@@ -41,17 +37,24 @@ const EXIT_STARTUP_FAILURE = 1;
  *   orchestrator result channel (docs/messaging.md), unchanged.
  */
 async function main(): Promise<void> {
-  if (!config.callbackSecret) {
-    console.error("AGENT_CALLBACK_SECRET is required (no default; must not be guessable)");
-    process.exit(EXIT_STARTUP_FAILURE);
-  }
-  if (!config.callbackSecretRefName) {
-    console.error(
-      "AGENT_CALLBACK_SECRET_REF_NAME is required -- ToolRunLauncher references the callback HMAC secret " +
-        "by k8s Secret name/key (never plaintext in the ToolRun CR), so the controller can wire it into " +
-        "the launched Job via secretKeyRef (ADR 0010)",
-    );
-    process.exit(EXIT_STARTUP_FAILURE);
+  // Validate startup requirements based on the result-channel mode.
+  if (!config.natsUrl) {
+    // HTTP callback mode: both the secret value (for HMAC verification) and
+    // the secret ref (for ToolRunLauncher to embed in the ToolRun CR) are
+    // required.
+    if (!config.callbackSecret) {
+      console.error("AGENT_CALLBACK_SECRET is required when AGENT_NATS_URL is not set");
+      process.exit(EXIT_STARTUP_FAILURE);
+    }
+    if (!config.callbackSecretRefName) {
+      console.error(
+        "AGENT_CALLBACK_SECRET_REF_NAME is required when AGENT_NATS_URL is not set -- " +
+          "ToolRunLauncher references the callback HMAC secret by k8s Secret name/key " +
+          "(never plaintext in the ToolRun CR), so the controller can wire it into " +
+          "the launched Job via secretKeyRef (ADR 0010)",
+      );
+      process.exit(EXIT_STARTUP_FAILURE);
+    }
   }
 
   const kubeConfig = new k8s.KubeConfig();
@@ -74,10 +77,15 @@ async function main(): Promise<void> {
     config.crdVersion,
     kubeConfig,
   );
+  // callbackSecretRefName is only used by ToolRunLauncher's HTTP callback
+  // path -- when NATS is configured it's never embedded into ToolRun CRs.
+  // Passing an empty string as a safe sentinel is fine: if a NATS ToolRun
+  // were accidentally created with the HTTP path the Go controller's own
+  // validation would catch the empty secretRef.name.
   const containerToolLauncher = ToolRunLauncher.fromKubeConfig(
     config.crdGroup,
     config.crdVersion,
-    { name: config.callbackSecretRefName, key: config.callbackSecretRefKey },
+    { name: config.callbackSecretRefName ?? "", key: config.callbackSecretRefKey },
     kubeConfig,
   );
   const embedder = new OpenAiEmbedder({ model: config.embeddingModel });
@@ -138,33 +146,21 @@ async function main(): Promise<void> {
   // after the next restart, same staleness as the rest of the catalog.
   await skillStore.upsert(deriveSkillAccess(skills, allTools));
 
-  // Agent catalog: discovered from `Agent` custom resources, upserted into
-  // its own Qdrant collection at startup -- same one-shot-at-startup shape
-  // as tools/skills/LocalTools. Agents carry their OWN allowedRoles (unlike
-  // skills, no derivation needed).
-  const agentRegistry = CrdAgentRegistry.fromKubeConfig(
-    config.namespace,
-    config.crdGroup,
-    config.crdVersion,
-    kubeConfig,
-  );
-  const agentStore = new QdrantAgentStore(
-    {
-      url: config.qdrantUrl,
-      apiKey: config.qdrantApiKey,
-      collection: config.agentsQdrantCollection,
-      vectorSize: config.qdrantVectorSize,
-    },
-    embedder,
-  );
-  await agentStore.ensureCollection();
-  const agents = await agentRegistry.listAll();
-  await agentStore.upsert(agents);
-
   const identities = loadStaticIdentitiesFromEnv(config.staticIdentities);
   const identityResolver = new StaticIdentityResolver(identities);
 
-  const callbackReceiver = new CallbackReceiver(config.callbackSecret);
+  // Result channel: NATS when AGENT_NATS_URL is set, HTTP callback otherwise.
+  let jobResultReceiver: JobResultReceiver;
+  let callbackReceiver: CallbackReceiver | undefined;
+  if (config.natsUrl) {
+    console.error(`Using NATS result channel: ${config.natsUrl}`);
+    jobResultReceiver = await NatsJobReceiver.connect(config.natsUrl);
+  } else {
+    callbackReceiver = new CallbackReceiver(config.callbackSecret!);
+    jobResultReceiver = callbackReceiver;
+  }
+
+  const skillSelector = new OpenAiSkillSelector({ model: config.selectionModel });
   const skillFitChecker = new OpenAiSkillFitChecker({ model: config.selectionModel });
   const actionPlanner = new OpenAiActionPlanner({ model: config.selectionModel });
   // Post-tool response composition (ADR 0015): lets the active skill's own
@@ -181,71 +177,52 @@ async function main(): Promise<void> {
     secretReader: K8sSecretReader.fromKubeConfig(config.namespace, kubeConfig),
   });
 
-  // Agent delegation (bidirectional NATS protocol): one shared connection for
-  // the whole process (long-lived service), agent-scoped subjects derived
-  // per run id -- see src/agents/nats-agent-channel.ts.
-  const agentChannel = await NatsAgentChannel.connect(config.natsUrl, config.natsSubjectPrefix);
-  const agentRunLauncher = AgentRunLauncher.fromKubeConfig(config.crdGroup, config.crdVersion, kubeConfig);
-  const delegateSelector = new OpenAiDelegateSelector({ model: config.selectionModel });
-
   const graph = buildAgentGraph({
     identityResolver,
     skillStore,
+    skillSelector,
     skillFitChecker,
     vectorStore,
     actionPlanner,
     responseComposer,
     containerToolLauncher,
-    callbackReceiver,
+    jobResultReceiver,
     localToolExecutor,
     callbackBaseUrl: config.callbackBaseUrl,
     callbackSecret: config.callbackSecret,
+    natsUrl: config.natsUrl,
     skillTopK: config.skillTopK,
-    agentStore,
-    delegateSelector,
-    agentRunLauncher,
-    agentChannel,
-    agentTopK: config.agentTopK,
-    agentRunTimeoutSeconds: config.agentRunTimeoutSeconds,
-    callbackSecretRef: { name: config.callbackSecretRefName, key: config.callbackSecretRefKey },
   });
 
-  // Conversation-session store (docs/adr/0012, docs/adr/0016): remembers each
-  // chat's active skill and per-tool continuation tokens so follow-up turns
-  // skip RAG re-selection and re-inject stored tool state without it ever
-  // appearing in the chat transcript. Redis-backed when AGENT_REDIS_URL is
-  // set (multi-replica safe, survives restarts); in-memory otherwise (single-
-  // replica default, same behaviour as before ADR 0016).
-  let sessionStore: SessionStore;
-  if (config.redisUrl) {
-    const redisStore = new RedisSessionStore(config.redisUrl, { ttlSeconds: config.sessionTtlSeconds });
-    await retryWithBackoff("redis startup check", () => redisStore.ping(), {
-      attempts: 12,
-      initialDelayMs: 1_000,
-      maxDelayMs: 15_000,
-    });
-    sessionStore = redisStore;
-    console.error(`session store: Redis at ${config.redisUrl}`);
-    process.on("SIGTERM", () => void redisStore.close());
-    process.on("SIGINT", () => void redisStore.close());
-  } else {
-    sessionStore = new InMemorySessionStore({
-      ttlMs: config.sessionTtlSeconds * 1000,
-      maxEntries: config.sessionMaxEntries,
-    });
-    console.error("session store: in-memory (set AGENT_REDIS_URL to use Redis)");
-  }
+  // Conversation-session store (docs/adr/0012): remembers each chat's active
+  // skill so follow-up turns skip RAG re-selection when the fit-check
+  // passes. In-memory -- assumes the chart's default single replica.
+  const sessionStore = new InMemorySessionStore({
+    ttlMs: config.sessionTtlSeconds * 1000,
+    maxEntries: config.sessionMaxEntries,
+  });
   const invokeServer = new InvokeServer(graph, sessionStore);
 
-  await callbackReceiver.listen(config.callbackPort);
-  await invokeServer.listen(config.httpPort);
-  console.error(
-    `agent-orchestrator listening: invoke API on :${config.httpPort}, Job callbacks on :${config.callbackPort}`,
-  );
+  if (callbackReceiver) {
+    await callbackReceiver.listen(config.callbackPort);
+    await invokeServer.listen(config.httpPort);
+    console.error(
+      `agent-orchestrator listening: invoke API on :${config.httpPort}, Job callbacks on :${config.callbackPort}`,
+    );
+  } else {
+    await invokeServer.listen(config.httpPort);
+    console.error(`agent-orchestrator listening: invoke API on :${config.httpPort} (NATS result channel)`);
+  }
 
   const shutdown = async (signal: string): Promise<void> => {
     console.error(`${signal} received, shutting down`);
-    await Promise.all([invokeServer.close(), callbackReceiver.close(), agentChannel.close()]);
+    const closers: Promise<void>[] = [invokeServer.close()];
+    if (callbackReceiver) closers.push(callbackReceiver.close());
+    if (config.natsUrl) {
+      // NatsJobReceiver.close() drains the connection.
+      closers.push((jobResultReceiver as NatsJobReceiver).close());
+    }
+    await Promise.all(closers);
     process.exit(0);
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));

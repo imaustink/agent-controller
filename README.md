@@ -173,19 +173,19 @@ cluster, in your own terminal (never paste real secrets into chat or files):
 # Generate a random callback HMAC secret
 CALLBACK_SECRET=$(openssl rand -hex 32)
 
-kubectl create namespace recipe-agent
+kubectl create namespace controller-agent
 
 # OpenAI key + callback HMAC secret (used by the orchestrator)
-kubectl -n recipe-agent create secret generic agent-orchestrator-secrets \
+kubectl -n controller-agent create secret generic agent-orchestrator-secrets \
   --from-literal=OPENAI_API_KEY=<your-openai-api-key> \
   --from-literal=AGENT_CALLBACK_SECRET="$CALLBACK_SECRET"
 
 # Mealie long-lived API token (create at /user/profile/api-tokens in your Mealie instance)
-kubectl -n recipe-agent create secret generic recipe-publisher-secrets \
+kubectl -n controller-agent create secret generic recipe-publisher-secrets \
   --from-literal=MEALIE_API_TOKEN=<your-mealie-api-token>
 
 # Google OAuth client secret (from Google Cloud Console)
-kubectl -n recipe-agent create secret generic agent-orchestrator-openwebui-google-oauth \
+kubectl -n controller-agent create secret generic agent-orchestrator-openwebui-google-oauth \
   --from-literal=client-secret=<your-google-oauth-client-secret>
 ```
 
