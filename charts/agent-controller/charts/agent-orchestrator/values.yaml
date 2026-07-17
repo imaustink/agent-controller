@@ -286,7 +286,7 @@ redis:
       memory: 128Mi
 
 # Toggles AGENT_NATS_URL derivation only -- the actual NATS server is the
-# umbrella chart's shared `nats` dependency (see charts/controller-agent/Chart.yaml),
+# umbrella chart's shared `nats` dependency (see charts/agent-controller/Chart.yaml),
 # not bundled here. When enabled, AGENT_NATS_URL is set automatically to that
 # shared in-cluster Service's DNS name, and tool Jobs deliver their results
 # over NATS instead of the HTTP callback receiver. The HTTP callback Service

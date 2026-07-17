@@ -1,7 +1,7 @@
 # agent-orchestrator (Helm chart)
 
 > **This is now a subchart of the [controller-agent umbrella chart](../../).**
-> Deploy the whole system as one release with `charts/controller-agent` instead of
+> Deploy the whole system as one release with `charts/agent-controller` instead of
 > installing this chart standalone. Open WebUI and the committed
 > `values-minikube-demo.yaml` moved up to the umbrella level; the standalone
 > `helm install`/Open WebUI/upgrade instructions below are retained only for
@@ -69,7 +69,7 @@ orchestrator, using the official chart as a dependency (declared in
 locally:
 
 ```bash
-helm dependency update charts/controller-agent/charts/agent-orchestrator
+helm dependency update charts/agent-controller/charts/agent-orchestrator
 ```
 
 `config.qdrantUrl` is ignored when this is on — the orchestrator's

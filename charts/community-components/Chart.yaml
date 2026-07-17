@@ -1,0 +1,22 @@
+apiVersion: v2
+name: community-components
+description: >-
+  The community catalog of Tool, Skill, and Agent custom resources
+  (ADR 0010/0011) that the agent-controller's tool-controller operator
+  reconciles and the orchestrator RAG-selects. Installed as a standalone
+  release on top of a running agent-controller chart -- requires that
+  chart's CRDs (Tool/Skill/Agent/ToolRun/AgentRun/LocalTool) to already exist
+  in the cluster. Grows independently of the core system as more tools,
+  skills, and agents are contributed.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/imaustink/agent-controller
+sources:
+  - https://github.com/imaustink/agent-controller
+keywords:
+  - agent
+  - catalog
+  - crd
+maintainers:
+  - name: controller-agent

@@ -5,8 +5,6 @@ metadata:
   name: recipe-publisher
   labels:
     {{- include "tools.labels" . | nindent 4 }}
-  annotations:
-    {{- include "tools.hookAnnotations" . | nindent 4 }}
 spec:
   description: >-
     Publishes (or updates) a finalized recipe on a Mealie instance: creates

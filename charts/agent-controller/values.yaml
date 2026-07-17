@@ -1,9 +1,12 @@
-# Umbrella values for the whole controller-agent system. Each top-level key maps to
-# a subchart (by its dependency name/alias in Chart.yaml); set `<key>.enabled`
+# Values for the agent-controller system chart. Each top-level key maps to a
+# subchart (by its dependency name/alias in Chart.yaml); set `<key>.enabled`
 # to toggle that component. Anything nested under a key is passed straight
 # through to that subchart -- see each subchart's own values.yaml for the full
-# set of knobs (charts/agent-orchestrator, charts/tool-controller, charts/tools,
-# and the upstream open-webui chart).
+# set of knobs (charts/agent-orchestrator, charts/tool-controller, and the
+# upstream open-webui chart).
+#
+# The Tool/Skill/Agent catalog itself is a separate top-level chart --
+# see ../community-components -- installed as its own release after this one.
 
 # ---------------------------------------------------------------------------
 # Parent orchestrator (charts/agent-orchestrator). Bundles an optional Qdrant
@@ -35,17 +38,9 @@ tool-controller:
   fullnameOverride: tool-controller
 
 # ---------------------------------------------------------------------------
-# Tool + Skill catalog (charts/tools). Applied as post-install/post-upgrade
-# hooks after the controller. See charts/tools/values.yaml for per-Tool and
-# per-Skill toggles + image/secret settings.
-# ---------------------------------------------------------------------------
-tools:
-  enabled: true
-
-# ---------------------------------------------------------------------------
 # Optional Open WebUI chat UI (upstream open-webui chart, aliased `openwebui`)
 # in front of the orchestrator's OpenAI-compatible facade (ADR 0007). Off by
-# default. Run `helm dependency update charts/controller-agent` once so the
+# default. Run `helm dependency update charts/agent-controller` once so the
 # subchart tarball is fetched.
 #
 # IMPORTANT auth caveat: Open WebUI sends `openaiApiKey` as a plain

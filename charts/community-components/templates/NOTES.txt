@@ -1,0 +1,23 @@
+community-components ({{ .Chart.Version }}) has been deployed.
+
+This chart requires the agent-controller chart's CRDs (Tool/Skill/Agent/
+ToolRun/AgentRun/LocalTool) to already exist in the cluster.
+
+Installed components:
+{{- if .Values.recipeScraper.enabled }}
+  - Tool  recipe-scraper
+{{- end }}
+{{- if .Values.recipePublisher.enabled }}
+  - Tool  recipe-publisher
+{{- end }}
+{{- if .Values.skills.recipeRefining.enabled }}
+  - Skill recipe-refining-skill
+{{- end }}
+{{- if .Values.skills.softwareEngineering.enabled }}
+  - Skill software-engineering-skill
+{{- end }}
+{{- if .Values.opencodeSweAgent.enabled }}
+  - Agent opencode-swe-agent
+{{- end }}
+
+kubectl -n {{ .Release.Namespace }} get tools,skills,agents

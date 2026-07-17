@@ -1,21 +1,17 @@
-# The Tool + Skill catalog custom resources. Each entry can be toggled off.
+# The community Tool/Skill/Agent catalog custom resources. Each entry can be
+# toggled off.
 #
-# These are applied as post-install/post-upgrade Helm hooks so they land after
-# the tool-controller Deployment is created (their CRDs are installed first,
-# from charts/tool-controller/crds/, before any templated resource in the
-# release). Because they are hooks, `helm uninstall` will NOT delete them --
-# remove them by hand (`kubectl delete tool,skill -l ...`) or delete the CRDs
-# if you want them gone. See templates/_helpers.tpl for the hook annotations.
+# These are normal Helm-managed resources -- install this chart AFTER the
+# agent-controller chart (which owns the Tool/Skill/Agent/ToolRun/AgentRun/
+# LocalTool CRDs, from charts/agent-controller/charts/tool-controller/crds/).
+# `helm uninstall` on this release cleanly removes every CR it created.
 
 enabled: true
 
-# apiVersion of the Tool/Skill CRDs. Must match what charts/tool-controller
-# installs (config.crdGroup/crdVersion on the orchestrator side too).
+# apiVersion of the Tool/Skill/Agent CRDs. Must match what the agent-controller
+# chart's tool-controller subchart installs (config.crdGroup/crdVersion on the
+# orchestrator side too).
 crdApiVersion: core.controller-agent.dev/v1alpha1
-
-# Base Helm hook weight for the catalog CRs. Higher = applied later; kept
-# positive so they run after the (unweighted, weight 0) controller resources.
-hookWeight: 5
 
 # recipe-scraper: read-only URL -> recipe Markdown extraction.
 recipeScraper:

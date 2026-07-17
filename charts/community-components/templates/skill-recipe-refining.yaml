@@ -5,8 +5,6 @@ metadata:
   name: recipe-refining-skill
   labels:
     {{- include "tools.labels" . | nindent 4 }}
-  annotations:
-    {{- include "tools.hookAnnotations" . | nindent 4 }}
 spec:
   description: >-
     Extract a recipe from a URL (video, image, or web page), publish it to
