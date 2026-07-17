@@ -11,13 +11,19 @@ import { loadStaticIdentitiesFromEnv, StaticIdentityResolver } from "./rbac/stat
 import { CrdSkillRegistry } from "./skills/crd-skill-registry.js";
 import { deriveSkillAccess } from "./skills/derive-access.js";
 import { QdrantSkillStore } from "./skills/qdrant-skill-store.js";
+import { CrdAgentRegistry } from "./agents/crd-agent-registry.js";
+import { QdrantAgentStore } from "./agents/qdrant-agent-store.js";
+import { NatsAgentChannel } from "./agents/nats-agent-channel.js";
+import { AgentRunLauncher } from "./k8s/agentrun-launcher.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { QdrantToolStore } from "./vector-store/qdrant-store.js";
 import { OpenAiActionPlanner } from "./agent/action-planner.js";
+import { OpenAiDelegateSelector } from "./agent/delegate-selector.js";
 import { OpenAiResponseComposer } from "./agent/response-composer.js";
 import { OpenAiSkillFitChecker } from "./agent/skill-fit-checker.js";
 import { OpenAiSkillSelector } from "./agent/skill-selector.js";
 import { buildAgentGraph } from "./agent/graph.js";
+import { OpenAiTaskCompleter } from "./openai/task-completer.js";
 import { InMemorySessionStore } from "./session/in-memory-session-store.js";
 import { InvokeServer } from "./server.js";
 import { retryWithBackoff } from "./retry.js";
@@ -146,6 +152,48 @@ async function main(): Promise<void> {
   // after the next restart, same staleness as the rest of the catalog.
   await skillStore.upsert(deriveSkillAccess(skills, allTools));
 
+  // Agent catalog (Agent CRs, ADR 0010's pattern extended to agent
+  // delegation): a full agent loop retrievable via RAG alongside skills, as
+  // an equally-weighted top-level delegation target. Only meaningful over
+  // NATS -- it needs a live bidirectional channel to a long-running Job --
+  // so this whole bundle is skipped in HTTP-callback-only deployments; the
+  // graph degrades gracefully to skills-only in that case (see graph.ts).
+  let agentDelegation:
+    | {
+        agentStore: QdrantAgentStore;
+        delegateSelector: OpenAiDelegateSelector;
+        agentRunLauncher: AgentRunLauncher;
+        agentChannel: NatsAgentChannel;
+      }
+    | undefined;
+  if (config.natsUrl) {
+    const agentRegistry = CrdAgentRegistry.fromKubeConfig(
+      config.namespace,
+      config.crdGroup,
+      config.crdVersion,
+      kubeConfig,
+    );
+    const agentStore = new QdrantAgentStore(
+      {
+        url: config.qdrantUrl,
+        apiKey: config.qdrantApiKey,
+        collection: config.agentsQdrantCollection,
+        vectorSize: config.qdrantVectorSize,
+      },
+      embedder,
+    );
+    await agentStore.ensureCollection();
+    const agents = await agentRegistry.listAll();
+    await agentStore.upsert(agents);
+
+    agentDelegation = {
+      agentStore,
+      delegateSelector: new OpenAiDelegateSelector({ model: config.selectionModel }),
+      agentRunLauncher: AgentRunLauncher.fromKubeConfig(config.crdGroup, config.crdVersion, kubeConfig),
+      agentChannel: await NatsAgentChannel.connect(config.natsUrl),
+    };
+  }
+
   const identities = loadStaticIdentitiesFromEnv(config.staticIdentities);
   const identityResolver = new StaticIdentityResolver(identities);
 
@@ -192,6 +240,17 @@ async function main(): Promise<void> {
     callbackSecret: config.callbackSecret,
     natsUrl: config.natsUrl,
     skillTopK: config.skillTopK,
+    ...(agentDelegation
+      ? {
+          agentStore: agentDelegation.agentStore,
+          delegateSelector: agentDelegation.delegateSelector,
+          agentRunLauncher: agentDelegation.agentRunLauncher,
+          agentChannel: agentDelegation.agentChannel,
+          agentTopK: config.agentTopK,
+          agentRunTimeoutSeconds: config.agentRunTimeoutSeconds,
+          callbackSecretRef: { name: config.callbackSecretRefName ?? "", key: config.callbackSecretRefKey },
+        }
+      : {}),
   });
 
   // Conversation-session store (docs/adr/0012): remembers each chat's active
@@ -201,7 +260,11 @@ async function main(): Promise<void> {
     ttlMs: config.sessionTtlSeconds * 1000,
     maxEntries: config.sessionMaxEntries,
   });
-  const invokeServer = new InvokeServer(graph, sessionStore);
+  // Answers Open WebUI's internal housekeeping completions (title/tags/query
+  // generation) directly, bypassing the agent graph -- see server.ts's
+  // handleInternalUiTask and isInternalUiTaskRequest.
+  const taskCompleter = new OpenAiTaskCompleter();
+  const invokeServer = new InvokeServer(graph, sessionStore, taskCompleter);
 
   if (callbackReceiver) {
     await callbackReceiver.listen(config.callbackPort);
@@ -222,6 +285,7 @@ async function main(): Promise<void> {
       // NatsJobReceiver.close() drains the connection.
       closers.push((jobResultReceiver as NatsJobReceiver).close());
     }
+    if (agentDelegation) closers.push(agentDelegation.agentChannel.close());
     await Promise.all(closers);
     process.exit(0);
   };

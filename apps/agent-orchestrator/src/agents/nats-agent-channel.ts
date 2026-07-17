@@ -38,11 +38,16 @@ export interface AgentOrchestratorChannel {
   /**
    * Subscribes to `agentRunId`'s up subject and resolves on the first
    * `reply` or `failed` message (progress/warning are collected into
-   * `narration` but do not resolve). Call this BEFORE triggering whatever
-   * makes the agent respond (launching the AgentRun, or `sendPrompt`) so a
-   * fast reply can never be missed by a late subscription.
+   * `narration`, and forwarded live to `opts.onProgress` if given, but do
+   * not resolve the promise themselves). Call this BEFORE triggering
+   * whatever makes the agent respond (launching the AgentRun, or
+   * `sendPrompt`) so a fast reply can never be missed by a late
+   * subscription.
    */
-  awaitReply(agentRunId: string, opts?: { timeoutMs?: number }): Promise<AgentTurnResult>;
+  awaitReply(
+    agentRunId: string,
+    opts?: { timeoutMs?: number; onProgress?: (stage: string | undefined, message: string) => void },
+  ): Promise<AgentTurnResult>;
   /** Sends a follow-up user turn to an already-running agent (HITL continuation, or a fresh follow-up turn). */
   sendPrompt(agentRunId: string, message: string): Promise<void>;
   close(): Promise<void>;
@@ -64,7 +69,10 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
     return new NatsAgentChannel(nc, subjectPrefix);
   }
 
-  async awaitReply(agentRunId: string, opts: { timeoutMs?: number } = {}): Promise<AgentTurnResult> {
+  async awaitReply(
+    agentRunId: string,
+    opts: { timeoutMs?: number; onProgress?: (stage: string | undefined, message: string) => void } = {},
+  ): Promise<AgentTurnResult> {
     const { up } = agentSubjects(agentRunId, this.subjectPrefix);
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const sub = this.nc.subscribe(up, { timeout: timeoutMs });
@@ -87,9 +95,11 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
             break;
           case "progress":
             narration.push(msg.message);
+            opts.onProgress?.(msg.stage, msg.message);
             break;
           case "warning":
             narration.push(`Warning: ${msg.message}`);
+            opts.onProgress?.("warning", msg.message);
             break;
           case "reply":
             sub.unsubscribe();
