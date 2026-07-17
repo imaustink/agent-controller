@@ -99,13 +99,15 @@ done
 
 # ── 5. Nested Helm dependency (Helm doesn't recurse into file:// subcharts) ──
 step "Fetching agent-orchestrator's own subchart dependency (qdrant)..."
-helm dependency update "$REPO_ROOT/charts/controller-agent/charts/agent-orchestrator"
+helm dependency update "$REPO_ROOT/charts/agent-controller/charts/agent-orchestrator"
 
 # ── 6. CRDs ──────────────────────────────────────────────────────────────────
 step "Applying CRDs..."
 # Helm's crds/ dir is install-only; upgrades never touch them. Apply manually
-# every time so CRD schema changes are always current.
-for crd in "$REPO_ROOT"/charts/controller-agent/charts/core-controller/crds/*.yaml; do
+# every time so CRD schema changes are always current. These CRDs are what
+# the (separately-released) community-components chart's Tool/Skill/Agent CRs
+# depend on.
+for crd in "$REPO_ROOT"/charts/agent-controller/charts/core-controller/crds/*.yaml; do
   kubectl apply -f "$crd" --server-side >/dev/null
 done
 

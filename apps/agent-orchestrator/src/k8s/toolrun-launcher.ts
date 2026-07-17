@@ -18,7 +18,7 @@ export interface SecretKeySelector {
  * 0010) instead of creating a k8s Job directly — the Go core-controller
  * (controllers/core-controller/) is the ONLY thing that creates Jobs now.
  * This is why the orchestrator's own RBAC no longer needs `batch/jobs`
- * permissions at all (see charts/controller-agent/charts/agent-orchestrator/templates/rbac.yaml).
+ * permissions at all (see charts/agent-controller/charts/agent-orchestrator/templates/rbac.yaml).
  *
  * Result/progress payloads still flow over the existing HMAC callback
  * protocol unchanged (ADR 0006) — `options.callbackUrl` is passed straight

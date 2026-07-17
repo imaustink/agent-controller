@@ -5,8 +5,6 @@ metadata:
   name: opencode-swe-agent-tool
   labels:
     {{- include "tools.labels" . | nindent 4 }}
-  annotations:
-    {{- include "tools.hookAnnotations" . | nindent 4 }}
 spec:
   description: >-
     Delegates a software-engineering task to the opencode SWE agent: create

@@ -96,8 +96,8 @@ orchestrator service, and `controllers/` holds the Go controller.
 │       ├── api/v1alpha1/        # Tool, Skill, Agent, ToolRun, AgentRun types
 │       └── internal/controller/ # reconciliation logic
 └── charts/                     # Helm charts
-    ├── agent-orchestrator/     # orchestrator Deployment/Services/RBAC
-    └── core-controller/        # controller Deployment + bundled CRDs
+    ├── agent-controller/       # system chart: orchestrator + core-controller (+ CRDs) + optional Redis/Qdrant/NATS/Open WebUI
+    └── community-components/   # catalog chart: Tool/Skill/Agent custom resources
 ```
 
 General, cross-cutting documentation lives at the repo root (`README.md` and
@@ -150,17 +150,36 @@ Every tool container is expected to conform to these repo-wide standards:
 
 ## Deploying
 
-Two Helm charts cover the full system:
+Two independent Helm charts cover the full system:
 
 | Chart | What it installs |
 | ----- | ---------------- |
-| [charts/core-controller](charts/core-controller/) | CRDs + controller Deployment/RBAC |
-| [charts/agent-orchestrator](charts/agent-orchestrator/) | Orchestrator Deployment, invoke/callback Services, optional Qdrant + Open WebUI |
+| [charts/agent-controller](charts/agent-controller/) | The system: CRDs + core-controller operator Deployment/RBAC, the agent-orchestrator Deployment/Services, and optional Redis/Qdrant/NATS/Open WebUI |
+| [charts/community-components](charts/community-components/) | The catalog: Tool/Skill/Agent custom resources (recipe-scraper, recipe-publisher, recipe-refining skill, opencode-swe-agent) |
 
-Install the controller first (it owns the CRDs), then the orchestrator. See
-each chart's README for prerequisites and values. Tools are never deployed as
-long-running pods — the controller launches them as one-shot Jobs via
-`ToolRun`/`AgentRun` CRs.
+Install `agent-controller` first (it owns the CRDs), then
+`community-components` on top of it. See each chart's README for
+prerequisites and values. Tools are never deployed as long-running pods — the
+controller launches them as one-shot Jobs via `ToolRun`/`AgentRun` CRs.
+
+From a local checkout:
+
+```bash
+helm install agent-controller charts/agent-controller -n controller-agent --create-namespace
+helm install community-components charts/community-components -n controller-agent
+```
+
+Both charts are also published as OCI artifacts to GitHub Container Registry
+on every merge to `main` that touches `charts/**` (see
+[.github/workflows/publish-charts.yml](.github/workflows/publish-charts.yml)),
+so you can install without cloning the repo:
+
+```bash
+helm install agent-controller oci://ghcr.io/imaustink/charts/agent-controller --version 0.1.0 \
+  -n controller-agent --create-namespace
+helm install community-components oci://ghcr.io/imaustink/charts/community-components --version 0.1.0 \
+  -n controller-agent
+```
 
 ### Minikube quick-start
 

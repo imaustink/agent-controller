@@ -1,11 +1,13 @@
 apiVersion: v2
-name: controller-agent
+name: agent-controller
 description: >-
-  Umbrella Helm chart for the whole controller-agent system: the parent
-  orchestrator (RAG skill/tool selection + ToolRun launcher), the
-  core-controller operator (Tool/Skill/ToolRun CRDs), the Tool/Skill
-  catalog, and an optional Open WebUI chat front-end -- each a subchart so
-  they can be enabled/disabled independently while deploying as one release.
+  The agent-controller system chart: the parent orchestrator (RAG skill/tool
+  selection + ToolRun launcher), the core-controller operator (Tool/Skill/
+  Agent/ToolRun/AgentRun/LocalTool CRDs), and optional infra (Redis session
+  store, Qdrant vector store, NATS, Open WebUI chat front-end) -- each a
+  subchart so they can be enabled/disabled independently while deploying as
+  one release. Install the community-components chart afterward to populate
+  the catalog with Tool/Skill/Agent CRs.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
@@ -36,13 +38,6 @@ dependencies:
     version: "0.1.0"
     repository: "file://charts/core-controller"
     condition: core-controller.enabled
-  # The app's Tool + Skill catalog (Tool/Skill custom resources). Applied as
-  # post-install/post-upgrade hooks so they land after the core-controller
-  # Deployment is created (see the subchart's templates for the hook weights).
-  - name: tools
-    version: "0.1.0"
-    repository: "file://charts/tools"
-    condition: tools.enabled
   # Optional Open WebUI chat UI (https://github.com/open-webui/open-webui) in
   # front of the orchestrator's OpenAI-compatible facade (ADR 0007), off by
   # default. Aliased to lowercase `openwebui` (no hyphen/camelCase) because

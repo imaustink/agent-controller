@@ -1,21 +1,17 @@
-# The Tool + Skill catalog custom resources. Each entry can be toggled off.
+# The community Tool/Skill/Agent catalog custom resources. Each entry can be
+# toggled off.
 #
-# These are applied as post-install/post-upgrade Helm hooks so they land after
-# the core-controller Deployment is created (their CRDs are installed first,
-# from charts/core-controller/crds/, before any templated resource in the
-# release). Because they are hooks, `helm uninstall` will NOT delete them --
-# remove them by hand (`kubectl delete tool,skill -l ...`) or delete the CRDs
-# if you want them gone. See templates/_helpers.tpl for the hook annotations.
+# These are normal Helm-managed resources -- install this chart AFTER the
+# agent-controller chart (which owns the Tool/Skill/Agent/ToolRun/AgentRun/
+# LocalTool CRDs, from charts/agent-controller/charts/core-controller/crds/).
+# `helm uninstall` on this release cleanly removes every CR it created.
 
 enabled: true
 
-# apiVersion of the Tool/Skill CRDs. Must match what charts/core-controller
-# installs (config.crdGroup/crdVersion on the orchestrator side too).
+# apiVersion of the Tool/Skill/Agent CRDs. Must match what the agent-controller
+# chart's core-controller subchart installs (config.crdGroup/crdVersion on the
+# orchestrator side too).
 crdApiVersion: core.controller-agent.dev/v1alpha1
-
-# Base Helm hook weight for the catalog CRs. Higher = applied later; kept
-# positive so they run after the (unweighted, weight 0) controller resources.
-hookWeight: 5
 
 # recipe-scraper: read-only URL -> recipe Markdown extraction.
 recipeScraper:
@@ -57,6 +53,18 @@ opencodeSweAgent:
   secretName: opencode-swe-secrets
   secretKey: GITHUB_TOKEN
   anthropicSecretKey: ANTHROPIC_API_KEY
+  # Optional (ADR 0018): GitHub App installation-token auth, preferred over
+  # the GITHUB_TOKEN PAT above when all three keys below are set (a partial
+  # set is rejected by the agent, not silently ignored). Leave all three
+  # empty (the default) to keep using the PAT -- no behavior change.
+  #   kubectl -n <ns> create secret generic opencode-swe-secrets \
+  #     --from-literal=GITHUB_APP_ID=... \
+  #     --from-literal=GITHUB_APP_PRIVATE_KEY="$(cat app-key.pem)" \
+  #     --from-literal=GITHUB_APP_INSTALLATION_ID=... \
+  #     --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+  githubAppIdSecretKey: ""
+  githubAppPrivateKeySecretKey: ""
+  githubAppInstallationIdSecretKey: ""
 
 # opencode-swe-agent-tool: an agent-backed Tool (spec.agentRef) wrapping the
 # opencodeSweAgent Agent CR above, so a Skill's toolRefs can delegate to it

@@ -1,14 +1,18 @@
-# Values file for the local minikube demo of the single `controller-agent`
-# umbrella release (namespace `controller-agent`). Merges the two former
+# Values file for the local minikube demo of the `agent-controller` system
+# chart release (namespace `controller-agent`). Merges the two former
 # per-chart demo files (charts/agent-orchestrator/values-minikube-demo.yaml
 # and charts/core-controller/values-minikube-demo.yaml) under their subchart
 # keys, now that both are subcharts of one release.
+#
+# The catalog (Tool/Skill/Agent CRs) is a separate chart+release -- see
+# ../community-components/values-minikube-demo.yaml -- installed after this
+# one.
 #
 # IMPORTANT LESSON (hit for real): `helm upgrade` with only a FEW `--set`
 # flags and no `-f`/`--reuse-values` REPLACES the entire computed values tree
 # with just those flags on the chart defaults -- it does NOT merge with the
 # previous revision. Always upgrade with:
-#   helm upgrade controller-agent charts/controller-agent -n controller-agent -f charts/controller-agent/values-minikube-demo.yaml
+#   helm upgrade agent-controller charts/agent-controller -n controller-agent -f charts/agent-controller/values-minikube-demo.yaml
 # (edit this file first for any new setting, then run the same command --
 # never hand-assemble a fresh pile of `--set` flags from memory).
 #
@@ -55,29 +59,13 @@ core-controller:
   # Jobs fall back to the chart default "nats://nats:4222", which doesn't
   # resolve, and every delegated agent crashes on startup.
   nats:
-    agentUrl: "nats://controller-agent-nats.controller-agent.svc.cluster.local:4222"
+    agentUrl: "nats://agent-controller-nats.controller-agent.svc.cluster.local:4222"
 
 # Top-level NATS server (nats subchart). The agent-orchestrator.nats.enabled
 # above controls URL derivation in the orchestrator; this enables the actual
 # server pod. Both must be true for NATS-based result delivery.
 nats:
   enabled: true
-
-tools:
-  enabled: true
-  # recipe-scraper + recipe-publisher are on by default. opencode-swe (the
-  # privileged GitHub coding agent, calling Anthropic directly) is enabled
-  # here; it needs the opencode-swe-agent ServiceAccount + opencode-swe-secrets
-  # (keys GITHUB_TOKEN and ANTHROPIC_API_KEY) to already exist in-cluster.
-  opencodeSweAgent:
-    enabled: true
-  # Agent-backed Tool wrapping opencode-swe-agent above, and the skill that
-  # uses it to draft+PR a new Skill/Tool CR from a successful fallback turn.
-  opencodeSweAgentTool:
-    enabled: true
-  skills:
-    selfImprovement:
-      enabled: true
 
 openwebui:
   enabled: true
@@ -94,6 +82,6 @@ openwebui:
       enabled: true
       clientId: 916932714292-6900thjm1dq3e4fnqrcj3ipe4iud70o8.apps.googleusercontent.com
       # Secret created out-of-band (never via --set/chat):
-      #   kubectl create secret generic controller-agent-openwebui-google-oauth \
+      #   kubectl create secret generic agent-controller-openwebui-google-oauth \
       #     -n controller-agent --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
-      clientExistingSecret: controller-agent-openwebui-google-oauth
+      clientExistingSecret: agent-controller-openwebui-google-oauth

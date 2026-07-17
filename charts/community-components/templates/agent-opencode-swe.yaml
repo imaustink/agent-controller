@@ -5,8 +5,6 @@ metadata:
   name: opencode-swe-agent
   labels:
     {{- include "tools.labels" . | nindent 4 }}
-  annotations:
-    {{- include "tools.hookAnnotations" . | nindent 4 }}
 spec:
   description: >-
     Performs software-engineering work on GitHub end-to-end: creates or
@@ -67,4 +65,22 @@ spec:
       secretRef:
         name: {{ .Values.opencodeSweAgent.secretName }}
         key: {{ .Values.opencodeSweAgent.anthropicSecretKey }}
+    {{- if .Values.opencodeSweAgent.githubAppIdSecretKey }}
+    - name: GITHUB_APP_ID
+      secretRef:
+        name: {{ .Values.opencodeSweAgent.secretName }}
+        key: {{ .Values.opencodeSweAgent.githubAppIdSecretKey }}
+    {{- end }}
+    {{- if .Values.opencodeSweAgent.githubAppPrivateKeySecretKey }}
+    - name: GITHUB_APP_PRIVATE_KEY
+      secretRef:
+        name: {{ .Values.opencodeSweAgent.secretName }}
+        key: {{ .Values.opencodeSweAgent.githubAppPrivateKeySecretKey }}
+    {{- end }}
+    {{- if .Values.opencodeSweAgent.githubAppInstallationIdSecretKey }}
+    - name: GITHUB_APP_INSTALLATION_ID
+      secretRef:
+        name: {{ .Values.opencodeSweAgent.secretName }}
+        key: {{ .Values.opencodeSweAgent.githubAppInstallationIdSecretKey }}
+    {{- end }}
 {{- end }}
