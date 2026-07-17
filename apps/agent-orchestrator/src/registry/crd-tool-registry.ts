@@ -3,7 +3,7 @@ import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { ToolRegistry } from "./types.js";
 
 /** Shape of a `Tool` custom resource (`<group>/<version>`, kind `Tool`) — mirrors
- * `controllers/tool-controller/api/v1alpha1/tool_types.go`'s `ToolSpec`. */
+ * `controllers/core-controller/api/v1alpha1/tool_types.go`'s `ToolSpec`. */
 export interface ToolCustomResource {
   metadata: { name: string };
   spec: {
@@ -12,8 +12,10 @@ export interface ToolCustomResource {
     output: string;
     allowedRoles: string[];
     tier?: string;
-    image: string;
-    serviceAccountName: string;
+    /** Names an Agent CR this Tool wraps — mutually exclusive with image/serviceAccountName. */
+    agentRef?: string;
+    image?: string;
+    serviceAccountName?: string;
     args?: string[];
     env?: { name: string; value: string }[];
     resources?: {
@@ -33,7 +35,7 @@ export interface CustomObjectsApiLike {
   }): Promise<{ items?: unknown[] }>;
 }
 
-/** Plural resource name used by the `Tool` CRD (matches `config/crd/bases` in controllers/tool-controller). */
+/** Plural resource name used by the `Tool` CRD (matches `config/crd/bases` in controllers/core-controller). */
 export const TOOL_PLURAL = "tools";
 
 /**
@@ -41,7 +43,7 @@ export const TOOL_PLURAL = "tools";
  * supersedes both the earlier annotated-Deployment discovery (ADR 0004) and
  * the static build-time manifest approach (ADR 0009). A `Tool` CR is pure
  * metadata (no image rebuild, no dummy Deployment needed just to be
- * discoverable) validated/reconciled by the Go tool-controller, which also
+ * discoverable) validated/reconciled by the Go core-controller, which also
  * confirms the referenced
  * ServiceAccount exists.
  *
@@ -85,7 +87,19 @@ export class CrdToolRegistry implements ToolRegistry {
 function toToolDescriptor(cr: ToolCustomResource, namespace: string): ToolDescriptor | undefined {
   const name = cr.metadata?.name;
   const spec = cr.spec;
-  if (!name || !spec?.image || !spec?.serviceAccountName) return undefined;
+  if (!name) return undefined;
+
+  if (spec?.agentRef) {
+    return {
+      id: name,
+      name,
+      description: `${spec.description}\n\nInput: ${spec.input}\nOutput: ${spec.output}`,
+      allowedRoles: spec.allowedRoles ?? [],
+      tier: spec.tier,
+      agentRunTemplate: { namespace, agentRef: spec.agentRef },
+    };
+  }
+  if (!spec?.image || !spec?.serviceAccountName) return undefined;
 
   return {
     id: name,

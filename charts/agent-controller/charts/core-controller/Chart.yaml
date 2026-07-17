@@ -1,0 +1,20 @@
+apiVersion: v2
+name: core-controller
+description: >-
+  Helm chart for the controller-agent core-controller: a Go/kubebuilder
+  operator that reconciles Tool/Skill/ToolRun custom resources (ADR 0010),
+  replacing static build-time tool manifests and the orchestrator's own
+  direct k8s Job creation (see controllers/core-controller).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/imaustink/agent-controller
+sources:
+  - https://github.com/imaustink/agent-controller
+keywords:
+  - agent
+  - operator
+  - kubernetes-controller
+  - crd
+maintainers:
+  - name: controller-agent

@@ -9,7 +9,7 @@ Accepted
 ## Context
 
 Every tool so far (ADR 0001, 0010) runs as a one-shot k8s Job launched by the
-tool-controller: a `Tool` CR points at a prebuilt container image, a `ToolRun`
+core-controller: a `Tool` CR points at a prebuilt container image, a `ToolRun`
 CR is created per invocation, the controller builds a hardened Job, and the
 tool reports back over the HMAC callback protocol. That gives strong isolation
 (a fresh pod per call, its own image, ServiceAccount, network identity) but
@@ -43,7 +43,7 @@ isolated, slowest): in-pod execution keeps latency low (no scheduling, warm
 runtime, shared cache) while a separate container restores real
 container-level isolation.
 
-1. **`LocalTool` CRD** (`controllers/tool-controller/api/v1alpha1/localtool_types.go`).
+1. **`LocalTool` CRD** (`controllers/core-controller/api/v1alpha1/localtool_types.go`).
    Catalog/RAG fields like `Tool` (`description`/`input`/`output`/`allowedRoles`/
    `tier`) plus a `runtime` enum, a pinned package coordinate
    (`package`+exact `version`+optional `entry`, or `sourceURL`+`checksum` for

@@ -6,7 +6,7 @@ import type { ToolRegistry } from "./types.js";
 /**
  * Shape of a `LocalTool` custom resource (`<group>/<version>`, kind
  * `LocalTool`) — mirrors
- * `controllers/tool-controller/api/v1alpha1/localtool_types.go`'s
+ * `controllers/core-controller/api/v1alpha1/localtool_types.go`'s
  * `LocalToolSpec` (ADR 0014).
  */
 export interface LocalToolCustomResource {

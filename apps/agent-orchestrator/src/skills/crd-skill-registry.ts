@@ -3,7 +3,7 @@ import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import type { SkillDescriptor, SkillRegistry } from "./types.js";
 
 /** Shape of a `Skill` custom resource (`<group>/<version>`, kind `Skill`) — mirrors
- * `controllers/tool-controller/api/v1alpha1/skill_types.go`'s `SkillSpec`. */
+ * `controllers/core-controller/api/v1alpha1/skill_types.go`'s `SkillSpec`. */
 export interface SkillCustomResource {
   metadata: { name: string };
   spec: {
@@ -22,7 +22,7 @@ export interface SkillCustomResource {
   };
 }
 
-/** Plural resource name used by the `Skill` CRD (matches `config/crd/bases` in controllers/tool-controller). */
+/** Plural resource name used by the `Skill` CRD (matches `config/crd/bases` in controllers/core-controller). */
 export const SKILL_PLURAL = "skills";
 
 /**

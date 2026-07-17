@@ -3,7 +3,7 @@ import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import type { AgentRunTemplate } from "../agents/types.js";
 import type { SecretKeySelector } from "./toolrun-launcher.js";
 
-/** Plural resource name used by the `AgentRun` CRD (matches `config/crd/bases` in controllers/tool-controller). */
+/** Plural resource name used by the `AgentRun` CRD (matches `config/crd/bases` in controllers/core-controller). */
 export const AGENTRUN_PLURAL = "agentruns";
 
 export interface AgentLaunchOptions {
@@ -45,7 +45,7 @@ export interface AgentRunLauncherPort {
 
 /**
  * Creates one `AgentRun` custom resource per agent delegation — the Go
- * tool-controller (controllers/tool-controller/) reconciles it into a
+ * core-controller (controllers/core-controller/) reconciles it into a
  * hardened Job, exactly like ToolRunLauncher does for tools. Mirrors
  * ../k8s/toolrun-launcher.ts structurally.
  */

@@ -11,7 +11,7 @@
 # CLI which used one PAT for both). The agent runtime
 # (@controller-agent/agent-runtime) connects to NATS (AGENT_NATS_URL) and
 # receives its run id + initial goal via env (AGENT_RUN_ID, AGENT_GOAL) --
-# injected by the Go tool-controller into the k8s Job when it reconciles the
+# injected by the Go core-controller into the k8s Job when it reconciles the
 # AgentRun CR (Phase 7).
 
 ############################
@@ -81,7 +81,7 @@ COPY --from=build /repo/node_modules                     ./node_modules
 COPY --from=build /repo/apps/opencode-swe-agent/dist      ./dist
 COPY --from=build /repo/apps/opencode-swe-agent/package.json ./package.json
 
-# The tool-controller's hardened Job securityContext runs as uid 10001 with a
+# The core-controller's hardened Job securityContext runs as uid 10001 with a
 # read-only root filesystem + emptyDir at /tmp. All writable state (workspace,
 # git credentials, NATS connection) goes under /tmp.
 USER node

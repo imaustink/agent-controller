@@ -39,8 +39,8 @@ export interface LaunchedJob {
  * without touching the agent graph.
  *
  * The only wired implementation is `ToolRunLauncher`, which creates a
- * `ToolRun` custom resource — the Go tool-controller
- * (controllers/tool-controller/) reconciles that into a hardened k8s Job.
+ * `ToolRun` custom resource — the Go core-controller
+ * (controllers/core-controller/) reconciles that into a hardened k8s Job.
  * The orchestrator process therefore never creates a Job itself and needs no
  * `batch/jobs` RBAC (see charts/agent-orchestrator/templates/rbac.yaml).
  */

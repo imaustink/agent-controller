@@ -57,7 +57,7 @@ export interface AppConfig {
   callbackSecret: string;
   /**
    * Name of the k8s Secret containing the callback HMAC secret, referenced
-   * (never copied as plaintext) by ToolRun CRs so the Go tool-controller can
+   * (never copied as plaintext) by ToolRun CRs so the Go core-controller can
    * wire it into the launched Job via `secretKeyRef` (ADR 0010).
    */
   callbackSecretRefName: string | undefined;
@@ -82,6 +82,13 @@ export interface AppConfig {
    * callback path is used (backward-compatible default).
    */
   natsUrl: string | undefined;
+  /**
+   * Max candidate tools retrieved when attempting a direct fallback tool call
+   * for a turn matching no Skill/Agent, before falling through to a bare
+   * best-effort LLM answer (there is no hardcoded fallback agent). Mirrors
+   * skillTopK/agentTopK.
+   */
+  fallbackToolTopK: number;
   requestId: string;
 }
 
@@ -119,5 +126,6 @@ export const config: AppConfig = {
   localToolTimeoutSeconds: num(process.env.AGENT_LOCALTOOL_TIMEOUT_SECONDS, 30),
   staticIdentities: process.env.AGENT_STATIC_IDENTITIES,
   natsUrl: process.env.AGENT_NATS_URL,
+  fallbackToolTopK: num(process.env.AGENT_FALLBACK_TOOL_TOP_K, 3),
   requestId: process.env.AGENT_REQUEST_ID ?? randomUUID(),
 };

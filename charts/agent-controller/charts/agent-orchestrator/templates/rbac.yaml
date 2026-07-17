@@ -4,8 +4,8 @@ Namespace-scoped Role (never a ClusterRole, ADR 0005) granting exactly what
 the orchestrator's CRD-based registries/launcher use (ADR 0010):
 read-only access to the Tool/Skill catalog CRDs, and full CRUD on ToolRun
 (the CR it creates per invocation and polls for lifecycle). It no longer
-creates k8s Jobs directly -- that's the tool-controller's job now (see
-charts/tool-controller) -- so this Role has NO `batch/jobs` permissions at
+creates k8s Jobs directly -- that's the core-controller's job now (see
+charts/core-controller) -- so this Role has NO `batch/jobs` permissions at
 all, a meaningfully smaller blast radius than before ADR 0010. Bound in the
 tool/Job namespace, which may differ from the release namespace when
 `namespace` is set explicitly.

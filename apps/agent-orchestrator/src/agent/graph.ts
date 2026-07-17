@@ -15,10 +15,12 @@ import type { SkillDescriptor, SkillSearchResult, SkillStore } from "../skills/t
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { VectorStore } from "../vector-store/types.js";
 import type { ActionPlanner } from "./action-planner.js";
+import type { BestEffortResponder } from "./best-effort-responder.js";
 import type { DelegateSelector } from "./delegate-selector.js";
 import type { ResponseComposer } from "./response-composer.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
+import type { ToolFitChecker } from "./tool-fit-checker.js";
 
 /**
  * Agent state threaded through the graph (docs/adr/0008, docs/adr/0012,
@@ -195,6 +197,18 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
+  /**
+   * True when `selectDelegate` found no matching Skill/Agent candidate at
+   * all and `noMatchFallback` handled the turn instead — either a relevance-
+   * gated direct tool call (selectFallbackTool) or a bare best-effort LLM
+   * answer. Read by `runTool` to append a self-improvement suggestion onto
+   * the tool's result (the bare-answer case already has the suggestion
+   * appended in noMatchFallback itself).
+   */
+  wasFallback: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
+  }),
 });
 
 export type AgentState = typeof AgentStateAnnotation.State;
@@ -247,7 +261,7 @@ export interface AgentGraphDeps {
   agentStore?: AgentStore;
   /** Picks ONE delegation target — a skill or an agent — from both candidate lists at once. */
   delegateSelector?: DelegateSelector;
-  /** Creates the AgentRun CR the tool-controller reconciles into a hardened Job. */
+  /** Creates the AgentRun CR the core-controller reconciles into a hardened Job. */
   agentRunLauncher?: AgentRunLauncherPort;
   /** Bidirectional NATS channel to a running agent (progress, human-in-the-loop questions, final reply). */
   agentChannel?: AgentOrchestratorChannel;
@@ -261,6 +275,28 @@ export interface AgentGraphDeps {
    * whenever `agentRunLauncher` is set.
    */
   callbackSecretRef?: SecretKeySelector;
+  /**
+   * Max candidate tools retrieved when attempting a direct fallback tool call
+   * (selectFallbackTool) for a turn matching no Skill/Agent. Mirrors
+   * skillTopK/agentTopK.
+   */
+  fallbackToolTopK?: number;
+  /**
+   * Narrow, skeptical per-candidate relevance gate for the fallback tool-fit
+   * path — rejects tools that only surfaced via loose embedding/keyword
+   * overlap (e.g. "create a recipe" vs. a tool described as "create a
+   * repository") before they're ever handed to the action planner.
+   */
+  toolFitChecker: ToolFitChecker;
+  /**
+   * The true last resort (noMatchFallback): a plain conversational LLM
+   * answer, called only when NEITHER a Skill/Agent match NOR a fallback tool
+   * fit was found. Deliberately not a hardcoded fallback agent — delegating
+   * an unrelated request to a general-purpose agent (e.g. a coding agent)
+   * caused it to take real, unwanted side effects (opening a GitHub repo/PR
+   * for a cooking-recipe request) rather than just answering in chat.
+   */
+  bestEffortResponder: BestEffortResponder;
 }
 
 function afterOrEnd(next: string) {
@@ -319,6 +355,93 @@ function composeAgentTurnMessage(state: Pick<AgentState, "progressListener">, re
 const AGENT_TIMEOUT_GRACE_MS = 60_000;
 function agentAwaitReplyTimeoutMs(agentRunTimeoutSeconds: number | undefined): number | undefined {
   return agentRunTimeoutSeconds ? agentRunTimeoutSeconds * 1000 + AGENT_TIMEOUT_GRACE_MS : undefined;
+}
+
+/**
+ * Appended to a `noMatchFallback` result (`state.wasFallback`) so the caller
+ * knows this turn was handled ad-hoc — no Skill or Agent matched it — and can
+ * ask for a permanent skill to be authored for next time.
+ */
+function appendSelfImprovementSuggestion(message: string): string {
+  return `${message}\n\n---\nNo existing skill or agent matched this request, so it was handled ad-hoc. Ask me to run the self-improvement skill if you'd like a permanent skill added for this next time.`;
+}
+
+/**
+ * System-prompt content for the fallback tool-fit decision below — the
+ * synthetic-skill counterpart of a real Skill's `markdown` (ADR 0008). A real
+ * skill's markdown carries authored procedural guidance (when to call which
+ * tool, when not to); a request that reaches this fallback has none of that,
+ * so this instructs the planner to be conservative — only call a tool that is
+ * an unambiguous fit for the raw catalog description, and decline otherwise
+ * rather than force a poor match.
+ */
+const FALLBACK_TOOL_MARKDOWN = [
+  "No dedicated skill matched this request. You are deciding, from the raw tool catalog below (with no",
+  "authored procedural guidance for how these tools relate or when to use them), whether exactly one of",
+  "them is an unambiguous fit for the request.",
+  "Only call a tool when its description is a clear, direct match — if the fit is unclear, or the request",
+  "would need multiple tools or steps to satisfy, decline (respond) rather than force a guess; this request",
+  "will get a plain best-effort answer instead if no tool is called.",
+].join(" ");
+
+/**
+ * Best-effort direct tool call for a request that matched no Skill or Agent
+ * (graph.ts's selectDelegate). Retrieves top-K candidates from the FULL tool
+ * catalog by embedding similarity, then re-checks each with `toolFitChecker`
+ * — a narrower, more skeptical judgment than the embedding score alone,
+ * since similarity search surfaces loose keyword-overlap matches (e.g. a
+ * request to "create a recipe" scoring against a tool described as
+ * "create...a repository") that are not actually relevant. Only tools that
+ * pass this check are ever handed to the action planner for a real call/args
+ * decision. Returns undefined when nothing passes (or none are visible to
+ * this caller) — the caller falls through to noMatchFallback's bare LLM
+ * response in that case.
+ */
+async function selectFallbackTool(
+  state: AgentState,
+  deps: AgentGraphDeps,
+): Promise<{ tool: ToolDescriptor; toolArgs: string; toolInstanceKey?: string } | undefined> {
+  if (!state.identity) return undefined;
+  const candidates = await deps.vectorStore.query(state.request, { callerRoles: state.identity.roles }, deps.fallbackToolTopK ?? 3);
+  if (candidates.length === 0) return undefined;
+  const fitFlags = await Promise.all(candidates.map((c) => deps.toolFitChecker.fits(state.request, c.tool)));
+  const tools = candidates.filter((_, i) => fitFlags[i]).map((c) => c.tool);
+  if (tools.length === 0) return undefined;
+  const syntheticSkill: SkillDescriptor = {
+    id: "__fallback_tool__",
+    name: "Fallback tool selection",
+    description: "",
+    markdown: FALLBACK_TOOL_MARKDOWN,
+    toolIds: tools.map((t) => t.id),
+  };
+  const planned = await deps.actionPlanner.plan(state.request, syntheticSkill, tools);
+  if (planned.action !== "call_tool") return undefined;
+  const tool = tools.find((t) => t.id === planned.toolId);
+  if (!tool) return undefined;
+  return { tool, toolArgs: planned.toolArgs, ...(planned.toolInstanceKey ? { toolInstanceKey: planned.toolInstanceKey } : {}) };
+}
+
+/**
+ * The full no-match cascade for `selectDelegate`: try a direct single-tool
+ * fit first (relevance-gated, deterministic), and if nothing passes, the
+ * request gets a plain conversational answer from `bestEffortResponder` —
+ * never a hardcoded fallback agent (see that interface's doc comment for
+ * why). Shared by every "nothing matched" branch in selectDelegate so the
+ * cascade is applied uniformly regardless of whether agent delegation (NATS)
+ * is configured.
+ */
+async function noMatchFallback(state: AgentState, deps: AgentGraphDeps): Promise<Partial<AgentState>> {
+  const toolFallback = await selectFallbackTool(state, deps);
+  if (toolFallback) {
+    return {
+      selectedTool: toolFallback.tool,
+      toolArgs: toolFallback.toolArgs,
+      toolInstanceKey: toolFallback.toolInstanceKey,
+      wasFallback: true,
+    };
+  }
+  const response = await deps.bestEffortResponder.respond(state.request);
+  return { result: appendSelfImprovementSuggestion(response), wasFallback: true };
 }
 
 /** Builds and compiles the LangGraph.js agent graph (docs/adr/0008, superseding the earlier flat tool-RAG flow). */
@@ -417,11 +540,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // otherwise, so the graph degrades gracefully without NATS.
       if (deps.delegateSelector) {
         if (state.skillCandidates.length === 0 && state.agentCandidates.length === 0) {
-          return { error: "no matching skill or agent for this request" };
+          return noMatchFallback(state, deps);
         }
         const choice = await deps.delegateSelector.select(state.request, state.skillCandidates, state.agentCandidates);
         if (!choice) {
-          return { error: "no matching skill or agent for this request" };
+          return noMatchFallback(state, deps);
         }
         if (choice.type === "agent") {
           return { selectedAgent: choice.agent };
@@ -429,11 +552,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         return { selectedSkill: choice.skill };
       }
       if (state.skillCandidates.length === 0) {
-        return { error: "no matching skill for this request" };
+        return noMatchFallback(state, deps);
       }
       const selected = await deps.skillSelector.select(state.request, state.skillCandidates);
       if (!selected) {
-        return { error: "no matching skill for this request" };
+        return noMatchFallback(state, deps);
       }
       return { selectedSkill: selected };
     })
@@ -538,6 +661,49 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       const priorToken = state.toolContinuations?.[continuationKey];
       const input = priorToken ? prependContinuationToken(priorToken, rawInput) : rawInput;
 
+      if (tool.agentRunTemplate) {
+        // Agent-backed tool: dispatch as an AgentRun over NATS, the same
+        // mechanism the peer-level delegateToAgent path uses, instead of a
+        // ToolRun Job. Lets a Skill's toolRefs reach a full agent loop (e.g.
+        // a coding agent that opens PRs) via the ordinary tool-call path.
+        if (!deps.agentRunLauncher || !deps.agentChannel || !deps.callbackSecretRef) {
+          return { error: `tool ${tool.id} is agent-backed but agent delegation is not configured` };
+        }
+        const runId = randomUUID();
+        const callbackUrl = `${deps.callbackBaseUrl}/callback/${randomUUID()}`;
+        try {
+          const awaitReply = deps.agentChannel.awaitReply(runId, {
+            timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
+            onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+          });
+          await deps.agentRunLauncher.launch(tool.agentRunTemplate, runId, {
+            goal: input,
+            callbackUrl,
+            callbackSecretRef: deps.callbackSecretRef,
+            timeoutSeconds: deps.agentRunTimeoutSeconds,
+          });
+          const reply = await awaitReply;
+          // v1 scope cut: agent-backed tools support single-turn/final-reply
+          // only — runTool has no session slot to resume a specific
+          // tool-launched AgentRun the way checkActiveAgentRun does for
+          // peer-level agent delegation. A clarifying (non-final) reply is
+          // therefore reported as a clean error rather than silently
+          // dropped or half-handled.
+          if (!reply.final) {
+            return { jobId: runId, error: `tool ${tool.id} (agent-backed) requires a single-turn agent — got a non-final reply` };
+          }
+          const message = composeAgentTurnMessage(state, reply);
+          const { token, text } = extractContinuationToken(message);
+          return {
+            jobId: runId,
+            result: state.wasFallback ? appendSelfImprovementSuggestion(text) : text,
+            extractedContinuation: { toolId: continuationKey, token: token ?? "" },
+          };
+        } catch (err) {
+          return { jobId: runId, error: agentTurnErrorMessage(err) };
+        }
+      }
+
       let jobId: string;
       let event: Event;
       if (tool.localExec) {
@@ -551,7 +717,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         jobId = event.job_id;
       } else if (tool.jobTemplate) {
         // Container tool (ADR 0010): create a ToolRun CR — the Go
-        // tool-controller reconciles it into a hardened Job. The orchestrator
+        // core-controller reconciles it into a hardened Job. The orchestrator
         // itself never creates a Job.
         jobId = randomUUID();
         const awaitResult = deps.jobResultReceiver.awaitJob(jobId);
@@ -586,7 +752,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           unsubscribeProgress();
         }
       } else {
-        return { error: `tool ${tool.id} has neither a jobTemplate nor a localExec spec` };
+        return { error: `tool ${tool.id} has neither a jobTemplate, localExec, nor agentRunTemplate spec` };
       }
 
       if (event.type === "failed") {
@@ -602,7 +768,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // key. Non-string (structured) results have no such marker.
       if (typeof event.result === "string") {
         const { token, text } = extractContinuationToken(event.result);
-        return { jobId, result: text, extractedContinuation: { toolId: continuationKey, token: token ?? "" } };
+        return {
+          jobId,
+          result: state.wasFallback ? appendSelfImprovementSuggestion(text) : text,
+          extractedContinuation: { toolId: continuationKey, token: token ?? "" },
+        };
       }
       // The tool output is surfaced to the user verbatim; any follow-up
       // narration is added by the composeResponse node (docs/adr/0015), not
@@ -649,12 +819,19 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     .addConditionalEdges("checkActiveAgentRun", (state) => (state.error || state.agentRunId ? END : "retrieveSkills"))
     .addConditionalEdges("retrieveSkills", afterOrEnd("retrieveAgents"))
     .addConditionalEdges("retrieveAgents", afterOrEnd("selectDelegate"))
-    // selectDelegate branches three ways: error -> END, a skill was picked ->
-    // loadSkillTools (existing flow, unchanged), an agent was picked ->
-    // delegateToAgent.
+    // selectDelegate branches five ways: error -> END, a skill was picked ->
+    // loadSkillTools (existing flow, unchanged), an agent was picked (a real
+    // DelegateSelector match — never a hardcoded fallback) -> delegateToAgent,
+    // a tool was picked directly with no skill (the fallback tool-fit path,
+    // noMatchFallback) -> runTool skipping loadSkillTools/planAction, or
+    // noMatchFallback already produced a bare best-effort LLM answer (result
+    // set, nothing else selected) -> END, nothing left to do.
     .addConditionalEdges("selectDelegate", (state) => {
       if (state.error) return END;
-      return state.selectedAgent ? "delegateToAgent" : "loadSkillTools";
+      if (state.selectedAgent) return "delegateToAgent";
+      if (state.selectedTool) return "runTool";
+      if (state.result !== undefined) return END;
+      return "loadSkillTools";
     })
     // Delegation is always terminal for THIS graph invocation — whether the
     // agent asked a question, gave its final reply, or failed. A follow-up

@@ -3,7 +3,7 @@ agent-controller ({{ .Chart.Version }}) has been deployed as a single release.
 
 Components enabled in this release:
   - orchestrator:    {{ if $ao.enabled }}yes{{ else }}no{{ end }}
-  - tool-controller: {{ if (index .Values "tool-controller").enabled }}yes{{ else }}no{{ end }}
+  - core-controller: {{ if (index .Values "core-controller").enabled }}yes{{ else }}no{{ end }}
   - Open WebUI:      {{ if .Values.openwebui.enabled }}yes{{ else }}no{{ end }}
 
 Install the community-components chart next to populate the Tool/Skill/Agent

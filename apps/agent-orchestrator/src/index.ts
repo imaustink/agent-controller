@@ -18,6 +18,8 @@ import { AgentRunLauncher } from "./k8s/agentrun-launcher.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { QdrantToolStore } from "./vector-store/qdrant-store.js";
 import { OpenAiActionPlanner } from "./agent/action-planner.js";
+import { OpenAiToolFitChecker } from "./agent/tool-fit-checker.js";
+import { OpenAiBestEffortResponder } from "./agent/best-effort-responder.js";
 import { OpenAiDelegateSelector } from "./agent/delegate-selector.js";
 import { OpenAiResponseComposer } from "./agent/response-composer.js";
 import { OpenAiSkillFitChecker } from "./agent/skill-fit-checker.js";
@@ -71,8 +73,8 @@ async function main(): Promise<void> {
   // Tool catalog discovered from `Tool` custom resources (ADR 0010) --
   // supersedes the static build-time manifest catalog (ADR 0009), which
   // itself superseded annotated-Deployment discovery (ADR 0004). A Tool CR
-  // is pure metadata, reconciled/validated by the Go tool-controller
-  // (controllers/tool-controller/), which is also the only thing that ever
+  // is pure metadata, reconciled/validated by the Go core-controller
+  // (controllers/core-controller/), which is also the only thing that ever
   // creates a k8s Job now.
   const registry = CrdToolRegistry.fromKubeConfig(config.namespace, config.crdGroup, config.crdVersion, kubeConfig);
   // LocalTools (ADR 0014): tools executed in-pod by a per-language executor
@@ -213,6 +215,12 @@ async function main(): Promise<void> {
   const skillSelector = new OpenAiSkillSelector({ model: config.selectionModel });
   const skillFitChecker = new OpenAiSkillFitChecker({ model: config.selectionModel });
   const actionPlanner = new OpenAiActionPlanner({ model: config.selectionModel });
+  // Fallback cascade for a turn matching no Skill/Agent (graph.ts's
+  // noMatchFallback): toolFitChecker gates the full-catalog fallback tool
+  // call, bestEffortResponder is the true last resort (a plain LLM answer,
+  // never a hardcoded fallback agent).
+  const toolFitChecker = new OpenAiToolFitChecker({ model: config.selectionModel });
+  const bestEffortResponder = new OpenAiBestEffortResponder({ model: config.selectionModel });
   // Post-tool response composition (ADR 0015): lets the active skill's own
   // instructions add any follow-up around a tool's verbatim output, so no
   // per-tool prompt lives in the agent graph.
@@ -242,6 +250,9 @@ async function main(): Promise<void> {
     callbackSecret: config.callbackSecret,
     natsUrl: config.natsUrl,
     skillTopK: config.skillTopK,
+    fallbackToolTopK: config.fallbackToolTopK,
+    toolFitChecker,
+    bestEffortResponder,
     ...(agentDelegation
       ? {
           agentStore: agentDelegation.agentStore,

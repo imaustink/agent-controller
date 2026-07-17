@@ -3,7 +3,7 @@ import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import type { AgentDescriptor, AgentRegistry } from "./types.js";
 
 /** Shape of an `Agent` custom resource (`<group>/<version>`, kind `Agent`) — mirrors
- * `controllers/tool-controller/api/v1alpha1/agent_types.go`'s `AgentSpec`. */
+ * `controllers/core-controller/api/v1alpha1/agent_types.go`'s `AgentSpec`. */
 export interface AgentCustomResource {
   metadata: { name: string };
   spec: {
@@ -20,7 +20,7 @@ export interface AgentCustomResource {
   };
 }
 
-/** Plural resource name used by the `Agent` CRD (matches `config/crd/bases` in controllers/tool-controller). */
+/** Plural resource name used by the `Agent` CRD (matches `config/crd/bases` in controllers/core-controller). */
 export const AGENT_PLURAL = "agents";
 
 /**

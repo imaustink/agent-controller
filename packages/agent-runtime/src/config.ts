@@ -1,6 +1,6 @@
 /**
  * Runtime configuration for a sub-agent process, read from the environment the
- * `AgentRun` controller injects (see the tool-controller's agentrun job build).
+ * `AgentRun` controller injects (see the core-controller's agentrun job build).
  */
 export interface AgentRuntimeConfig {
   /** NATS server URL (AGENT_NATS_URL). */

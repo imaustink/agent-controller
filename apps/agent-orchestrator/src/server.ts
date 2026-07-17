@@ -558,6 +558,17 @@ export class InvokeServer {
           finish(renderResult(update.result));
           return;
         }
+        // selectDelegate is also terminal when noMatchFallback produced a
+        // bare best-effort LLM answer (no skill, tool, or agent selected at
+        // all — graph.ts's true last resort for a request matching nothing
+        // in the catalog) — `result` is set directly on this node and the
+        // graph routes straight to END without ever reaching runTool or
+        // composeResponse.
+        if (nodeName === "selectDelegate" && update.result !== undefined) {
+          await persist();
+          finish(renderResult(update.result));
+          return;
+        }
         // delegateToAgent and checkActiveAgentRun (continuation) are always
         // terminal for this graph invocation when they set an agentRunId — a
         // question, a final reply, or a failure all end the turn.

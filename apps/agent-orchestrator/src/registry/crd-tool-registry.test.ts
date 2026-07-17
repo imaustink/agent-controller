@@ -65,6 +65,33 @@ describe("CrdToolRegistry", () => {
     expect(tools[0].id).toBe("recipe-scraper");
   });
 
+  it("maps an agent-backed Tool (agentRef) to a ToolDescriptor with agentRunTemplate", async () => {
+    const agentBacked: ToolCustomResource = {
+      metadata: { name: "opencode-swe-agent-tool" },
+      spec: {
+        description: "Delegates to the opencode SWE agent",
+        input: "a goal",
+        output: "a final reply",
+        allowedRoles: ["writer"],
+        agentRef: "opencode-swe-agent",
+      },
+    };
+    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [agentBacked] });
+    const api: CustomObjectsApiLike = { listNamespacedCustomObject };
+    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+
+    const tools = await registry.listAll();
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({
+      id: "opencode-swe-agent-tool",
+      name: "opencode-swe-agent-tool",
+      allowedRoles: ["writer"],
+      agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
+    });
+    expect(tools[0].jobTemplate).toBeUndefined();
+  });
+
   it("returns an empty catalog when there are zero Tool resources", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };

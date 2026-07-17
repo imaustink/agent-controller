@@ -4,7 +4,7 @@ metadata:
   name: controller-agent
 
 # Single-command dev loop for the whole controller-agent stack: two Helm
-# releases -- `agent-controller` (the system: orchestrator, tool-controller +
+# releases -- `agent-controller` (the system: orchestrator, core-controller +
 # CRDs, optional infra) and `community-components` (the Tool/Skill/Agent
 # catalog) -- deployed from one `skaffold` invocation. Replaces the manual
 # build/dependency-update/apply/rollout sequence in scripts/dev-up.sh:
@@ -24,7 +24,7 @@ metadata:
 #   - `helm dependency update` on the agent-orchestrator subchart itself
 #     (its own qdrant dependency; Helm doesn't recurse into file:// subcharts,
 #     so skipBuildDependencies below only covers each chart's own direct deps)
-#   - applying charts/agent-controller/charts/tool-controller/crds/*.yaml
+#   - applying charts/agent-controller/charts/core-controller/crds/*.yaml
 #     --server-side (Helm's crds/ dir is install-only; upgrades never touch it)
 
 build:
@@ -43,8 +43,8 @@ build:
     - image: agent-orchestrator
       docker:
         dockerfile: apps/agent-orchestrator/Dockerfile
-    - image: tool-controller
-      context: controllers/tool-controller
+    - image: core-controller
+      context: controllers/core-controller
       docker:
         dockerfile: Dockerfile
     - image: recipe-scraper
@@ -112,8 +112,8 @@ deploy:
         setValueTemplates:
           agent-orchestrator.image.repository: "{{.IMAGE_REPO_agent_orchestrator}}"
           agent-orchestrator.image.tag: "{{.IMAGE_TAG_agent_orchestrator}}"
-          tool-controller.image.repository: "{{.IMAGE_REPO_tool_controller}}"
-          tool-controller.image.tag: "{{.IMAGE_TAG_tool_controller}}"
+          core-controller.image.repository: "{{.IMAGE_REPO_core_controller}}"
+          core-controller.image.tag: "{{.IMAGE_TAG_core_controller}}"
           # FRAGILE: index must match agent-orchestrator/values.yaml's
           # localTool.runtimes order (node, python, go, shell). Reorder both
           # together if you ever change it.

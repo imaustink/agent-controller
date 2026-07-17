@@ -108,7 +108,7 @@ spec:
             {{/*
             ToolRunLauncher never embeds the raw callback secret into a
             ToolRun CR -- only its k8s Secret name/key (ADR 0010), so the
-            tool-controller can wire it into the launched Job via
+            core-controller can wire it into the launched Job via
             secretKeyRef instead. These are the same Secret/key the
             orchestrator itself uses above to verify inbound callbacks.
             */}}

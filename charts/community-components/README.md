@@ -1,7 +1,7 @@
 # community-components
 
 The community catalog of `Tool`, `Skill`, and `Agent` custom resources
-(ADR 0010/0011) that the agent-controller's tool-controller operator
+(ADR 0010/0011) that the agent-controller's core-controller operator
 reconciles and the orchestrator RAG-selects. Installed as its own release,
 independent of the [agent-controller](../agent-controller/) chart, so the
 catalog can grow, version, and be upgraded/uninstalled on its own schedule.
@@ -11,7 +11,7 @@ catalog can grow, version, and be upgraded/uninstalled on its own schedule.
 The `agent-controller` chart must already be installed in the cluster --
 this chart's CRs (`Tool`/`Skill`/`Agent`) require the
 `Tool`/`Skill`/`Agent`/`ToolRun`/`AgentRun`/`LocalTool` CRDs that chart's
-`tool-controller` subchart installs. Installing this chart first will fail
+`core-controller` subchart installs. Installing this chart first will fail
 (the API group `core.controller-agent.dev/v1alpha1` won't exist yet).
 
 ## Install

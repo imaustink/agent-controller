@@ -7,7 +7,7 @@ independently:
 | Subchart (values key) | What it deploys | Default |
 | --------------------- | --------------- | ------- |
 | `agent-orchestrator` | Parent orchestrator Deployment, invoke/callback Services, RBAC; bundles an optional [Qdrant](charts/agent-orchestrator/) under `agent-orchestrator.qdrant.*` and an optional Redis session store under `agent-orchestrator.redis.*` | on |
-| `tool-controller` | The Go/kubebuilder operator + the Tool/Skill/ToolRun/Agent/AgentRun/LocalTool CRDs (from its `crds/` dir) | on |
+| `core-controller` | The Go/kubebuilder operator + the Tool/Skill/ToolRun/Agent/AgentRun/LocalTool CRDs (from its `crds/` dir) | on |
 | `openwebui` | Optional [Open WebUI](https://github.com/open-webui/open-webui) chat UI in front of the orchestrator's OpenAI-compatible facade | off |
 | `nats` | Optional NATS JetStream server for the queue-based tool-result channel | off |
 
@@ -26,7 +26,7 @@ charts/agent-controller/
 ├── templates/NOTES.txt         # aggregate post-install guidance
 └── charts/
     ├── agent-orchestrator/     # local subchart (with its own qdrant dependency)
-    ├── tool-controller/        # local subchart (ships the CRDs)
+    ├── core-controller/        # local subchart (ships the CRDs)
     ├── open-webui-*.tgz        # fetched remote dependency (gitignored)
     └── nats-*.tgz              # fetched remote dependency (gitignored)
 ```
@@ -87,8 +87,8 @@ helm upgrade agent-controller charts/agent-controller -n controller-agent \
 ## Notable behaviors
 
 - **Stable Service/Deployment names.** `agent-orchestrator.fullnameOverride` and
-  `tool-controller.fullnameOverride` pin the orchestrator's
-  `agent-orchestrator-invoke`/`-callback` Services and the `tool-controller` /
+  `core-controller.fullnameOverride` pin the orchestrator's
+  `agent-orchestrator-invoke`/`-callback` Services and the `core-controller` /
   `agent-orchestrator` Deployment names regardless of the release name — the
   Open WebUI base URL and the in-cluster callback URL depend on those names.
 - **Ordering.** The controller's CRDs install first (Helm processes every

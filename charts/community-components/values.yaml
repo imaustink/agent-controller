@@ -3,13 +3,13 @@
 #
 # These are normal Helm-managed resources -- install this chart AFTER the
 # agent-controller chart (which owns the Tool/Skill/Agent/ToolRun/AgentRun/
-# LocalTool CRDs, from charts/agent-controller/charts/tool-controller/crds/).
+# LocalTool CRDs, from charts/agent-controller/charts/core-controller/crds/).
 # `helm uninstall` on this release cleanly removes every CR it created.
 
 enabled: true
 
 # apiVersion of the Tool/Skill/Agent CRDs. Must match what the agent-controller
-# chart's tool-controller subchart installs (config.crdGroup/crdVersion on the
+# chart's core-controller subchart installs (config.crdGroup/crdVersion on the
 # orchestrator side too).
 crdApiVersion: core.controller-agent.dev/v1alpha1
 
@@ -66,6 +66,13 @@ opencodeSweAgent:
   githubAppPrivateKeySecretKey: ""
   githubAppInstallationIdSecretKey: ""
 
+# opencode-swe-agent-tool: an agent-backed Tool (spec.agentRef) wrapping the
+# opencodeSweAgent Agent CR above, so a Skill's toolRefs can delegate to it
+# via the ordinary tool-call path (self-improvement-skill below). Requires
+# opencodeSweAgent.enabled=true.
+opencodeSweAgentTool:
+  enabled: false
+
 skills:
   # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +
   # recipe-publisher). Enable both those tools above for its derived audience
@@ -75,4 +82,10 @@ skills:
   # software-engineering: SUPERSEDED by opencodeSweAgent Agent CR above.
   # Keep disabled when opencodeSweAgent.enabled=true.
   softwareEngineering:
+    enabled: false
+  # self-improvement: drafts a new Skill/Tool CR from a successful fallback
+  # turn (graph.ts's selectDelegate fallback) and opens a PR against
+  # imaustink/agent-controller via opencode-swe-agent-tool. Requires
+  # opencodeSweAgentTool.enabled=true for its derived audience to be non-empty.
+  selfImprovement:
     enabled: false

@@ -62,12 +62,55 @@ describe("QdrantToolStore", () => {
             allowedRoles: ["reader"],
             jobTemplate: tool.jobTemplate,
             localExec: null,
+            agentRunTemplate: null,
             tier: null,
           },
         },
       ],
       wait: true,
     });
+  });
+
+  it("round-trips an agent-backed tool's agentRunTemplate through upsert and query (regression: this field was silently dropped before)", async () => {
+    const agentBackedTool: ToolDescriptor = {
+      id: "opencode-swe-agent-tool",
+      name: "opencode-swe-agent-tool",
+      description: "Delegates to the opencode SWE agent",
+      allowedRoles: ["writer"],
+      agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
+    };
+    const client = {
+      upsert: vi.fn().mockResolvedValue(true),
+      search: vi.fn().mockResolvedValue([
+        {
+          id: toQdrantPointId("opencode-swe-agent-tool"),
+          score: 0.9,
+          payload: {
+            id: "opencode-swe-agent-tool",
+            name: "opencode-swe-agent-tool",
+            description: agentBackedTool.description,
+            allowedRoles: ["writer"],
+            jobTemplate: null,
+            localExec: null,
+            agentRunTemplate: agentBackedTool.agentRunTemplate,
+            tier: null,
+          },
+        },
+      ]),
+    } as unknown as QdrantClient;
+    const store = new QdrantToolStore({ url: "http://q", collection: "tools", vectorSize: 3 }, fakeEmbedder(), client);
+
+    await store.upsert([agentBackedTool]);
+    expect(client.upsert).toHaveBeenCalledWith(
+      "tools",
+      expect.objectContaining({
+        points: [expect.objectContaining({ payload: expect.objectContaining({ agentRunTemplate: agentBackedTool.agentRunTemplate }) })],
+      }),
+    );
+
+    const results = await store.query("delegate a coding task", { callerRoles: ["writer"] });
+    expect(results).toEqual([{ tool: agentBackedTool, score: 0.9 }]);
+    expect(results[0]!.tool.agentRunTemplate).toEqual({ namespace: "default", agentRef: "opencode-swe-agent" });
   });
 
   it("fails closed: returns no results when callerRoles is empty, without querying Qdrant", async () => {

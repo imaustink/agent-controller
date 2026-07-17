@@ -61,7 +61,7 @@ the tool's result.
   runs in-pod LocalTools, ADR 0014, not only Jobs), and the container-launch
   port `JobLauncher` → `ContainerToolLauncher` — neither the orchestrator nor
   this port ever creates a k8s Job; container tools are launched as `ToolRun`
-  CRs and the Go tool-controller reconciles the Job (ADR 0010). The superseded
+  CRs and the Go core-controller reconciles the Job (ADR 0010). The superseded
   direct-Job `K8sJobLauncher`, the `ManifestToolRegistry` (ADR 0009), the
   annotated-Deployment `K8sAnnotationToolRegistry` (ADR 0004), and the static
   `skills/catalog.ts` (ADR 0008) were removed.

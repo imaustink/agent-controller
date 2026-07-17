@@ -19,7 +19,7 @@ been doing.
 
 Modelling tools and agents as custom resources flips this:
 
-| Concern | Baked into orchestrator | With agent-controller |
+| Concern | Baked into orchestrator | With core-controller |
 | ------- | ----------------------- | ---------------------- |
 | Tool definition | Config files / env vars | `Tool` CR — live-editable, `kubectl`-discoverable |
 | Secret injection | Orchestrator builds the full Job spec | Declared once on the CR; controller injects at run time |
@@ -40,7 +40,7 @@ Modelling tools and agents as custom resources flips this:
 graph TD
     User([User / Chat client])
     Orchestrator[agent-orchestrator\nDeployment]
-    Controller[agent-controller\nDeployment]
+    Controller[core-controller\nDeployment]
 
     subgraph CRDs["Custom Resources (core.controller-agent.dev/v1alpha1)"]
         ToolCR[Tool CR\nimage · SA · secretEnv · allowedRoles]
@@ -92,11 +92,11 @@ orchestrator service, and `controllers/` holds the Go controller.
 ├── apps/
 │   └── agent-orchestrator/     # RAG skill selection + ToolRun/AgentRun creator
 ├── controllers/
-│   └── tool-controller/        # Go controller — watches CRDs, launches Jobs
+│   └── core-controller/        # Go controller — watches CRDs, launches Jobs
 │       ├── api/v1alpha1/        # Tool, Skill, Agent, ToolRun, AgentRun types
 │       └── internal/controller/ # reconciliation logic
 └── charts/                     # Helm charts
-    ├── agent-controller/       # system chart: orchestrator + tool-controller (+ CRDs) + optional Redis/Qdrant/NATS/Open WebUI
+    ├── agent-controller/       # system chart: orchestrator + core-controller (+ CRDs) + optional Redis/Qdrant/NATS/Open WebUI
     └── community-components/   # catalog chart: Tool/Skill/Agent custom resources
 ```
 
@@ -112,7 +112,7 @@ tools.
 
 | Component | Language | Docs |
 | --------- | -------- | ---- |
-| **agent-controller** | Go (kubebuilder) | [controllers/tool-controller/README.md](controllers/tool-controller/README.md) |
+| **core-controller** | Go (kubebuilder) | [controllers/core-controller/README.md](controllers/core-controller/README.md) |
 
 The controller watches `Tool`, `Skill`, `Agent`, `ToolRun`, and `AgentRun` CRs
 (API group `core.controller-agent.dev/v1alpha1`) and manages all Job creation,
@@ -154,7 +154,7 @@ Two independent Helm charts cover the full system:
 
 | Chart | What it installs |
 | ----- | ---------------- |
-| [charts/agent-controller](charts/agent-controller/) | The system: CRDs + tool-controller operator Deployment/RBAC, the agent-orchestrator Deployment/Services, and optional Redis/Qdrant/NATS/Open WebUI |
+| [charts/agent-controller](charts/agent-controller/) | The system: CRDs + core-controller operator Deployment/RBAC, the agent-orchestrator Deployment/Services, and optional Redis/Qdrant/NATS/Open WebUI |
 | [charts/community-components](charts/community-components/) | The catalog: Tool/Skill/Agent custom resources (recipe-scraper, recipe-publisher, recipe-refining skill, opencode-swe-agent) |
 
 Install `agent-controller` first (it owns the CRDs), then

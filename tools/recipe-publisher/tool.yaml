@@ -4,7 +4,7 @@
 # Replaces the old tools/recipe-publisher/manifest.json (ADR 0009), which is
 # no longer baked into the orchestrator image or read at startup. The
 # `recipe-publisher` ServiceAccount referenced below must already exist in
-# the same namespace (this CR/the tool-controller never creates it).
+# the same namespace (this CR/the core-controller never creates it).
 apiVersion: core.controller-agent.dev/v1alpha1
 kind: Tool
 metadata:

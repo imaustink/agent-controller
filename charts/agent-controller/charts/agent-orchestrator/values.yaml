@@ -15,7 +15,7 @@ serviceAccount:
   # Creates the ServiceAccount the orchestrator runs as (see rbac.create
   # below for the permissions bound to it: read the Tool/Skill CRD catalog,
   # create/watch/delete ToolRun CRs -- it never talks to batch/jobs
-  # directly, that's charts/tool-controller's job, ADR 0010).
+  # directly, that's charts/core-controller's job, ADR 0010).
   create: true
   annotations: {}
   name: ""
@@ -50,7 +50,7 @@ config:
   # default to the in-cluster callback Service DNS name (ADR 0006).
   callbackBaseUrl: ""
   # API group/version for the Tool/Skill/ToolRun CRDs (ADR 0010). Must match
-  # charts/tool-controller's installed CRDs.
+  # charts/core-controller's installed CRDs.
   crdGroup: core.controller-agent.dev
   crdVersion: v1alpha1
   # DEV/TEST ONLY (see src/rbac/static-identity-resolver.ts) — JSON map of

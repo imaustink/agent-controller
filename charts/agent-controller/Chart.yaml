@@ -2,7 +2,7 @@ apiVersion: v2
 name: agent-controller
 description: >-
   The agent-controller system chart: the parent orchestrator (RAG skill/tool
-  selection + ToolRun launcher), the tool-controller operator (Tool/Skill/
+  selection + ToolRun launcher), the core-controller operator (Tool/Skill/
   Agent/ToolRun/AgentRun/LocalTool CRDs), and optional infra (Redis session
   store, Qdrant vector store, NATS, Open WebUI chat front-end) -- each a
   subchart so they can be enabled/disabled independently while deploying as
@@ -30,14 +30,14 @@ dependencies:
     version: "0.1.0"
     repository: "file://charts/agent-orchestrator"
     condition: agent-orchestrator.enabled
-  # The Go/kubebuilder operator (controllers/tool-controller). Its CRDs ship
+  # The Go/kubebuilder operator (controllers/core-controller). Its CRDs ship
   # in the subchart's crds/ dir, which Helm installs before any templated
   # resources in the whole release -- so the catalog subchart's Tool/Skill
   # CRs below always have their CRD present.
-  - name: tool-controller
+  - name: core-controller
     version: "0.1.0"
-    repository: "file://charts/tool-controller"
-    condition: tool-controller.enabled
+    repository: "file://charts/core-controller"
+    condition: core-controller.enabled
   # Optional Open WebUI chat UI (https://github.com/open-webui/open-webui) in
   # front of the orchestrator's OpenAI-compatible facade (ADR 0007), off by
   # default. Aliased to lowercase `openwebui` (no hyphen/camelCase) because

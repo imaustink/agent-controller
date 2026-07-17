@@ -2,7 +2,7 @@ apiVersion: v2
 name: community-components
 description: >-
   The community catalog of Tool, Skill, and Agent custom resources
-  (ADR 0010/0011) that the agent-controller's tool-controller operator
+  (ADR 0010/0011) that the agent-controller's core-controller operator
   reconciles and the orchestrator RAG-selects. Installed as a standalone
   release on top of a running agent-controller chart -- requires that
   chart's CRDs (Tool/Skill/Agent/ToolRun/AgentRun/LocalTool) to already exist

@@ -107,7 +107,7 @@ step "Applying CRDs..."
 # every time so CRD schema changes are always current. These CRDs are what
 # the (separately-released) community-components chart's Tool/Skill/Agent CRs
 # depend on.
-for crd in "$REPO_ROOT"/charts/agent-controller/charts/tool-controller/crds/*.yaml; do
+for crd in "$REPO_ROOT"/charts/agent-controller/charts/core-controller/crds/*.yaml; do
   kubectl apply -f "$crd" --server-side >/dev/null
 done
 

@@ -1,0 +1,38 @@
+name: Validate CRD samples
+
+on:
+  pull_request:
+    paths:
+      - "apps/agent-orchestrator/config/samples/**"
+      - "controllers/core-controller/config/crd/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    # GitHub-hosted runner (not arc-runner-set): this validates untrusted PR
+    # content (including forks) against a throwaway kind cluster, so it must
+    # never touch the self-hosted/private-registry infra publish.yml uses.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A real API server (not a static JSON-schema linter like kubeconform)
+      # is required here: ToolSpec's "exactly one of agentRef or
+      # (image and serviceAccountName)" rule is a CEL
+      # x-kubernetes-validations rule, which only the API server evaluates —
+      # a schema-shape-only validator would silently accept a Tool sample
+      # that violates it.
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+
+      - name: Install CRDs
+        run: kubectl apply -f controllers/core-controller/config/crd/bases/
+
+      # controllers/core-controller/config/samples/ is deliberately excluded:
+      # it's kubebuilder's scaffolded "TODO(user): Add fields here"
+      # placeholders, never filled in as real CRs, not this repo's actual
+      # sample catalog.
+      - name: Validate agent-orchestrator sample CRs against the API server
+        run: kubectl apply --dry-run=server -f apps/agent-orchestrator/config/samples/

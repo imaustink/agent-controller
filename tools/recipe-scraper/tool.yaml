@@ -4,7 +4,7 @@
 # Replaces the old tools/recipe-scraper/manifest.json (ADR 0009), which is
 # no longer baked into the orchestrator image or read at startup. The
 # `recipe-scraper` ServiceAccount referenced below must already exist in
-# the same namespace (this CR/the tool-controller never creates it).
+# the same namespace (this CR/the core-controller never creates it).
 #
 # secretEnv.OPENAI_API_KEY below references a Secret that must already exist
 # in the same namespace (any Secret + key works -- this example reuses the

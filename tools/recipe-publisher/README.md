@@ -85,10 +85,10 @@ directly.
 ## Deploying to Kubernetes
 
 In-cluster, this tool is never a long-running Deployment — the
-[tool-controller](../../controllers/tool-controller/) launches it as a
+[core-controller](../../controllers/core-controller/) launches it as a
 one-shot Job per invocation, based on the [`Tool` custom resource](tool.yaml)
 (ADR 0010). Prerequisites: the
-[tool-controller](../../charts/tool-controller/) and
+[core-controller](../../charts/core-controller/) and
 [agent-orchestrator](../../charts/agent-orchestrator/README.md) charts are
 already installed. Then, from the repo root:
 
@@ -169,7 +169,7 @@ description/input/output text changes, since those feed the RAG index.
 | `MEALIE_BASE_URL` | *(required)* | No trailing slash |
 | `MEALIE_API_TOKEN` | *(required)* | Never logged/echoed — see [docs/security.md](../../docs/security.md) |
 | `MEALIE_INGREDIENT_PARSER` | `nlp` | Which of Mealie's registered parsers to use (`nlp` \| `brute` \| `openai`) |
-| `RECIPE_CALLBACK_URL` / `RECIPE_CALLBACK_SECRET` | — | Injected automatically by the tool-controller; do not set manually |
+| `RECIPE_CALLBACK_URL` / `RECIPE_CALLBACK_SECRET` | — | Injected automatically by the core-controller; do not set manually |
 
 ## Security model
 
