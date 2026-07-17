@@ -189,6 +189,16 @@ Copilot-CLI-based `copilot-swe`/`copilot-swe-agent` (see
   write, **Metadata** read, and **Administration** write only if it should
   create repositories. Its blast radius is exactly the repositories its
   fine-grained access selects — keep it scoped.
+- **GitHub App auth as an alternative to the PAT** ([ADR
+  0018](adr/0018-github-app-auth-fallback.md)). Setting `GITHUB_APP_ID`,
+  `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_APP_INSTALLATION_ID` (all three, or
+  none) makes `resolveGithubToken` (`src/githubApp.ts`) mint a short-lived
+  (~1h) installation token per run instead of using the static
+  `GITHUB_TOKEN`; omitting them keeps the PAT path working unchanged. The App
+  path additionally scopes access to exactly one installation's repos and
+  auto-expires without manual rotation, but doesn't remove the need for the
+  deny-rule/branch-protection layers below — a compromised installation token
+  is still live for up to an hour.
 - **No irreversible actions — defense in depth, because no single layer
   suffices.** A PAT with `Administration` write can both create and delete
   repos, so token permissions alone cannot forbid deletion. Therefore:

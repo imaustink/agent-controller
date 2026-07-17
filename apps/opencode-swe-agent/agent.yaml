@@ -10,9 +10,24 @@
 #
 # Prerequisites:
 #   kubectl -n <namespace> create serviceaccount opencode-swe-agent
+#
+#   Option A -- fine-grained PAT (default, shown in secretEnv below):
 #   kubectl -n <namespace> create secret generic opencode-swe-secrets \
 #     --from-literal=GITHUB_TOKEN=github_pat_... \
 #     --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+#
+#   Option B -- GitHub App installation token (docs/adr/0018): mints a
+#   short-lived (~1h) token per run instead of using a long-lived PAT. Set
+#   ALL THREE of GITHUB_APP_ID/GITHUB_APP_PRIVATE_KEY/GITHUB_APP_INSTALLATION_ID
+#   (a partial set is rejected) and drop GITHUB_TOKEN, or leave GITHUB_TOKEN as
+#   a fallback -- the App credentials take precedence when all three are set.
+#   kubectl -n <namespace> create secret generic opencode-swe-secrets \
+#     --from-literal=GITHUB_APP_ID=123456 \
+#     --from-literal=GITHUB_APP_PRIVATE_KEY="$(cat github-app-private-key.pem)" \
+#     --from-literal=GITHUB_APP_INSTALLATION_ID=987654 \
+#     --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+#   ...then add secretEnv entries for GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY,
+#   and GITHUB_APP_INSTALLATION_ID (same secretRef.name, matching keys) below.
 apiVersion: core.controller-agent.dev/v1alpha1
 kind: Agent
 metadata:

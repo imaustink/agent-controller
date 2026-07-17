@@ -53,6 +53,18 @@ opencodeSweAgent:
   secretName: opencode-swe-secrets
   secretKey: GITHUB_TOKEN
   anthropicSecretKey: ANTHROPIC_API_KEY
+  # Optional (ADR 0018): GitHub App installation-token auth, preferred over
+  # the GITHUB_TOKEN PAT above when all three keys below are set (a partial
+  # set is rejected by the agent, not silently ignored). Leave all three
+  # empty (the default) to keep using the PAT -- no behavior change.
+  #   kubectl -n <ns> create secret generic opencode-swe-secrets \
+  #     --from-literal=GITHUB_APP_ID=... \
+  #     --from-literal=GITHUB_APP_PRIVATE_KEY="$(cat app-key.pem)" \
+  #     --from-literal=GITHUB_APP_INSTALLATION_ID=... \
+  #     --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+  githubAppIdSecretKey: ""
+  githubAppPrivateKeySecretKey: ""
+  githubAppInstallationIdSecretKey: ""
 
 skills:
   # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +
