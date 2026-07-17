@@ -43,11 +43,18 @@ export interface ParsedRecipeMarkdown {
   sourceUrl: string | null;
 }
 
-/** Parses a rendered numbered list (`1. foo\n2. bar`) back into a plain string array. */
+/**
+ * Parses a rendered list back into a plain string array. Primarily targets
+ * recipe-scraper's numbered-list output (`1. foo\n2. bar`), but also accepts
+ * `-`/`*`/`•` bullet markers -- recipes composed or edited directly by the
+ * orchestrator LLM (rather than scraped from a URL) commonly use bullets, and
+ * silently parsing zero items from those was publishing empty recipes to
+ * Mealie with no error (see run() in ../index.ts for the empty-section guard).
+ */
 function parseNumberedList(text: string): string[] {
   return text
     .split("\n")
-    .map((line) => line.match(/^\d+\.\s+(.+)$/))
+    .map((line) => line.match(/^(?:\d+\.|[-*•])\s+(.+)$/))
     .filter((match): match is RegExpMatchArray => match !== null)
     .map((match) => match[1]!.trim())
     .filter((item) => item.length > 0);
