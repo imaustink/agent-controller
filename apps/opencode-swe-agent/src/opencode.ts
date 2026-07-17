@@ -129,6 +129,13 @@ export interface OpencodeSignal {
    * forwarding each token individually.
    */
   isDelta?: boolean;
+  /**
+   * "narrative" is the agent's own words (assistant text/reasoning) — worth
+   * showing to the user as real conversation content. "status" is mechanical
+   * bookkeeping (tool invocations, fallback shapes) — worth a terse spinner
+   * line, not a paragraph in the chat. Defaults to "status" when omitted.
+   */
+  progressKind?: "narrative" | "status";
   /** Content of an assistant message (the final summary is the last of these). */
   finalMessage?: string;
   /** Output of a tool execution that failed (non-zero exit / success:false). */
@@ -163,15 +170,19 @@ export function parseOpencodeLine(line: string): OpencodeSignal | null {
       const content = str(part["text"]) ?? str(part["content"]) ?? str(rec["text"]) ?? str(rec["content"]);
       if (!content) return null;
       const isDelta = type === "text-delta";
-      return isDelta ? { progress: content, isDelta: true } : { finalMessage: content, progress: content.slice(0, 200) };
+      return isDelta
+        ? { progress: content, isDelta: true, progressKind: "narrative" }
+        : { finalMessage: content, progress: content, progressKind: "narrative" };
     }
     case "reasoning":
     case "reasoning-delta":
-      return str(part["text"]) ? { progress: str(part["text"])!, isDelta: type === "reasoning-delta" } : null;
+      return str(part["text"])
+        ? { progress: str(part["text"])!, isDelta: type === "reasoning-delta", progressKind: "narrative" }
+        : null;
     case "tool-call":
     case "tool_use": {
       const name = str(rec["toolName"]) ?? str(part["tool"]) ?? str(rec["tool"]);
-      return name ? { progress: `running ${name}` } : null;
+      return name ? { progress: `running ${name}`, progressKind: "status" } : null;
     }
     case "tool-result":
     case "tool_result": {

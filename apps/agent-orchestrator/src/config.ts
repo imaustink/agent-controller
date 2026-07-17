@@ -22,7 +22,13 @@ export interface AppConfig {
   skillTopK: number;
   /** Max candidate agents retrieved per request, before delegate selection (mirrors skillTopK). */
   agentTopK: number;
-  /** Bounds an AgentRun's activeDeadlineSeconds; longer than a tool's default since an agent may wait on a human. */
+  /**
+   * Bounds an AgentRun's activeDeadlineSeconds; longer than a tool's default
+   * since an agent may wait on a human or run a multi-step coding task.
+   * Also drives how long the orchestrator's NATS `awaitReply` waits for that
+   * same run's reply (graph.ts) — the two must stay in the same ballpark, or
+   * whichever is shorter cuts an otherwise-healthy run off early.
+   */
   agentRunTimeoutSeconds: number;
   /**
    * Sliding idle TTL (seconds) for conversation-session records — how long
@@ -92,7 +98,7 @@ export const config: AppConfig = {
   selectionModel: process.env.AGENT_SELECTION_MODEL ?? "gpt-4o-2024-08-06",
   skillTopK: num(process.env.AGENT_SKILL_TOP_K, 3),
   agentTopK: num(process.env.AGENT_TOP_K, 3),
-  agentRunTimeoutSeconds: num(process.env.AGENT_RUN_TIMEOUT_SECONDS, 1800),
+  agentRunTimeoutSeconds: num(process.env.AGENT_RUN_TIMEOUT_SECONDS, 3600),
   sessionTtlSeconds: num(process.env.AGENT_SESSION_TTL_SECONDS, 1800),
   sessionMaxEntries: num(process.env.AGENT_SESSION_MAX_ENTRIES, 1000),
   callbackPort: num(process.env.AGENT_CALLBACK_PORT, 8080),

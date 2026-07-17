@@ -428,8 +428,18 @@ export class InvokeServer {
 
     try {
       const graphInput = await this.buildGraphInput(request, authToken, sessionId, (stage, message) => {
-        // Forward each tool progress/warning event as an Open WebUI status
-        // step (collapsible StatusHistory spinner) while the Job runs.
+        // "agent-text" (opencode-swe-agent/src/index.ts) is the delegated
+        // agent's own narrative — its actual reasoning/commentary as it
+        // works. Stream that live as real chat content so the user reads it
+        // like normal assistant prose, rather than burying it in the
+        // collapsible status spinner with the mechanical tool-call noise.
+        if (stage === "agent-text" && message) {
+          writeSseChunk(res, chatCompletionChunk(id, model, { content: message }, null));
+          return;
+        }
+        // Everything else (tool invocations, warnings, pipeline stage
+        // transitions) is mechanical bookkeeping -- an Open WebUI status step
+        // (collapsible StatusHistory spinner) while the Job runs.
         const label = message
           ? `${stage ? `${stage}: ` : ""}${message.slice(0, 120)}`
           : stage || "working…";
