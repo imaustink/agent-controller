@@ -67,6 +67,13 @@ tools:
   # (keys GITHUB_TOKEN and ANTHROPIC_API_KEY) to already exist in-cluster.
   opencodeSweAgent:
     enabled: true
+  # Agent-backed Tool wrapping opencode-swe-agent above, and the skill that
+  # uses it to draft+PR a new Skill/Tool CR from a successful fallback turn.
+  opencodeSweAgentTool:
+    enabled: true
+  skills:
+    selfImprovement:
+      enabled: true
 
 openwebui:
   enabled: true

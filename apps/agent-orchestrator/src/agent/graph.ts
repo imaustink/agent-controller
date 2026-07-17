@@ -281,6 +281,12 @@ export interface AgentGraphDeps {
    * unchanged. Only meaningful alongside `agentRunLauncher`/`agentChannel`.
    */
   fallbackAgent?: AgentDescriptor;
+  /**
+   * Max candidate tools retrieved when attempting a direct fallback tool call
+   * (selectFallbackTool), before the fallback agent is tried. Mirrors
+   * skillTopK/agentTopK.
+   */
+  fallbackToolTopK?: number;
 }
 
 function afterOrEnd(next: string) {
@@ -348,6 +354,78 @@ function agentAwaitReplyTimeoutMs(agentRunTimeoutSeconds: number | undefined): n
  */
 function appendSelfImprovementSuggestion(message: string): string {
   return `${message}\n\n---\nNo existing skill or agent matched this request, so it was handled ad-hoc. Ask me to run the self-improvement skill if you'd like a permanent skill added for this next time.`;
+}
+
+/**
+ * System-prompt content for the fallback tool-fit decision below — the
+ * synthetic-skill counterpart of a real Skill's `markdown` (ADR 0008). A real
+ * skill's markdown carries authored procedural guidance (when to call which
+ * tool, when not to); a request that reaches this fallback has none of that,
+ * so this instructs the planner to be conservative — only call a tool that is
+ * an unambiguous fit for the raw catalog description, and decline otherwise
+ * rather than force a poor match.
+ */
+const FALLBACK_TOOL_MARKDOWN = [
+  "No dedicated skill matched this request. You are deciding, from the raw tool catalog below (with no",
+  "authored procedural guidance for how these tools relate or when to use them), whether exactly one of",
+  "them is an unambiguous fit for the request.",
+  "Only call a tool when its description is a clear, direct match — if the fit is unclear, or the request",
+  "would need multiple tools or steps to satisfy, decline (respond) rather than force a guess; a",
+  "best-effort fallback agent will attempt the task next.",
+].join(" ");
+
+/**
+ * Best-effort direct tool call for a request that matched no Skill or Agent
+ * (graph.ts's selectDelegate) — tried BEFORE the (more expensive, more
+ * general) fallback agent, since a clean single-tool fit is cheaper and more
+ * predictable than a full agent run. Reuses the existing action planner
+ * against a synthetic skill (no real Skill exists for this turn) scoped to
+ * the top-K tool-catalog candidates, same RBAC discipline as loadSkillTools.
+ * Returns undefined when no tool fits (or none are visible to this caller) —
+ * the caller falls through to the agent fallback in that case.
+ */
+async function selectFallbackTool(
+  state: AgentState,
+  deps: AgentGraphDeps,
+): Promise<{ tool: ToolDescriptor; toolArgs: string; toolInstanceKey?: string } | undefined> {
+  if (!state.identity) return undefined;
+  const candidates = await deps.vectorStore.query(state.request, { callerRoles: state.identity.roles }, deps.fallbackToolTopK ?? 3);
+  if (candidates.length === 0) return undefined;
+  const tools = candidates.map((c) => c.tool);
+  const syntheticSkill: SkillDescriptor = {
+    id: "__fallback_tool__",
+    name: "Fallback tool selection",
+    description: "",
+    markdown: FALLBACK_TOOL_MARKDOWN,
+    toolIds: tools.map((t) => t.id),
+  };
+  const planned = await deps.actionPlanner.plan(state.request, syntheticSkill, tools);
+  if (planned.action !== "call_tool") return undefined;
+  const tool = tools.find((t) => t.id === planned.toolId);
+  if (!tool) return undefined;
+  return { tool, toolArgs: planned.toolArgs, ...(planned.toolInstanceKey ? { toolInstanceKey: planned.toolInstanceKey } : {}) };
+}
+
+/**
+ * The full no-match cascade for `selectDelegate`: try a direct single-tool
+ * fit first (cheap, deterministic), then the configured fallback agent (a
+ * full agent run — general-purpose but expensive and non-deterministic), and
+ * only fail closed if neither is available/applicable. Shared by every
+ * "nothing matched" branch in selectDelegate so the cascade is applied
+ * uniformly regardless of whether agent delegation (NATS) is configured.
+ */
+async function noMatchFallback(state: AgentState, deps: AgentGraphDeps): Promise<Partial<AgentState>> {
+  const toolFallback = await selectFallbackTool(state, deps);
+  if (toolFallback) {
+    return {
+      selectedTool: toolFallback.tool,
+      toolArgs: toolFallback.toolArgs,
+      toolInstanceKey: toolFallback.toolInstanceKey,
+      wasFallback: true,
+    };
+  }
+  if (deps.fallbackAgent) return { selectedAgent: deps.fallbackAgent, wasFallback: true };
+  return { error: "no matching skill or agent for this request" };
 }
 
 /** Builds and compiles the LangGraph.js agent graph (docs/adr/0008, superseding the earlier flat tool-RAG flow). */
@@ -446,13 +524,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // otherwise, so the graph degrades gracefully without NATS.
       if (deps.delegateSelector) {
         if (state.skillCandidates.length === 0 && state.agentCandidates.length === 0) {
-          if (deps.fallbackAgent) return { selectedAgent: deps.fallbackAgent, wasFallback: true };
-          return { error: "no matching skill or agent for this request" };
+          return noMatchFallback(state, deps);
         }
         const choice = await deps.delegateSelector.select(state.request, state.skillCandidates, state.agentCandidates);
         if (!choice) {
-          if (deps.fallbackAgent) return { selectedAgent: deps.fallbackAgent, wasFallback: true };
-          return { error: "no matching skill or agent for this request" };
+          return noMatchFallback(state, deps);
         }
         if (choice.type === "agent") {
           return { selectedAgent: choice.agent };
@@ -460,11 +536,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         return { selectedSkill: choice.skill };
       }
       if (state.skillCandidates.length === 0) {
-        return { error: "no matching skill for this request" };
+        return noMatchFallback(state, deps);
       }
       const selected = await deps.skillSelector.select(state.request, state.skillCandidates);
       if (!selected) {
-        return { error: "no matching skill for this request" };
+        return noMatchFallback(state, deps);
       }
       return { selectedSkill: selected };
     })
@@ -602,7 +678,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           }
           const message = composeAgentTurnMessage(state, reply);
           const { token, text } = extractContinuationToken(message);
-          return { jobId: runId, result: text, extractedContinuation: { toolId: continuationKey, token: token ?? "" } };
+          return {
+            jobId: runId,
+            result: state.wasFallback ? appendSelfImprovementSuggestion(text) : text,
+            extractedContinuation: { toolId: continuationKey, token: token ?? "" },
+          };
         } catch (err) {
           return { jobId: runId, error: agentTurnErrorMessage(err) };
         }
@@ -672,7 +752,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // key. Non-string (structured) results have no such marker.
       if (typeof event.result === "string") {
         const { token, text } = extractContinuationToken(event.result);
-        return { jobId, result: text, extractedContinuation: { toolId: continuationKey, token: token ?? "" } };
+        return {
+          jobId,
+          result: state.wasFallback ? appendSelfImprovementSuggestion(text) : text,
+          extractedContinuation: { toolId: continuationKey, token: token ?? "" },
+        };
       }
       // The tool output is surfaced to the user verbatim; any follow-up
       // narration is added by the composeResponse node (docs/adr/0015), not
@@ -719,12 +803,17 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     .addConditionalEdges("checkActiveAgentRun", (state) => (state.error || state.agentRunId ? END : "retrieveSkills"))
     .addConditionalEdges("retrieveSkills", afterOrEnd("retrieveAgents"))
     .addConditionalEdges("retrieveAgents", afterOrEnd("selectDelegate"))
-    // selectDelegate branches three ways: error -> END, a skill was picked ->
-    // loadSkillTools (existing flow, unchanged), an agent was picked ->
-    // delegateToAgent.
+    // selectDelegate branches four ways: error -> END, a skill was picked ->
+    // loadSkillTools (existing flow, unchanged), an agent was picked (either a
+    // real match or the fallback agent) -> delegateToAgent, a tool was picked
+    // directly with no skill (the fallback tool-fit path, noMatchFallback) ->
+    // runTool, skipping loadSkillTools/planAction since there's no skill to
+    // scope/plan against.
     .addConditionalEdges("selectDelegate", (state) => {
       if (state.error) return END;
-      return state.selectedAgent ? "delegateToAgent" : "loadSkillTools";
+      if (state.selectedAgent) return "delegateToAgent";
+      if (!state.selectedSkill && state.selectedTool) return "runTool";
+      return "loadSkillTools";
     })
     // Delegation is always terminal for THIS graph invocation — whether the
     // agent asked a question, gave its final reply, or failed. A follow-up

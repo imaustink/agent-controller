@@ -56,7 +56,10 @@ function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
   const vectorStore: VectorStore = {
     upsert: vi.fn(),
     delete: vi.fn(),
-    query: vi.fn(),
+    // Defaults to no fallback-tool candidates (graph.ts's selectFallbackTool)
+    // so tests that don't care about that path aren't broken by it; override
+    // per-test when exercising the fallback-tool-fit cascade.
+    query: vi.fn().mockResolvedValue([]),
     getByIds: vi.fn().mockResolvedValue([
       { tool: scraperTool, score: 1 },
       { tool: publisherTool, score: 1 },
@@ -772,7 +775,7 @@ describe("buildAgentGraph agent-backed Tool (runTool via AgentRun)", () => {
     const vectorStore: VectorStore = {
       upsert: vi.fn(),
       delete: vi.fn(),
-      query: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
       getByIds: vi.fn().mockResolvedValue([{ tool: agentBackedTool, score: 1 }]),
     };
     const actionPlanner: ActionPlanner = {
@@ -940,6 +943,123 @@ describe("buildAgentGraph fallback delegation on no match", () => {
 
     expect(final.error).toBeUndefined();
     expect(final.result).not.toContain("self-improvement");
+  });
+});
+
+describe("buildAgentGraph fallback tool-fit (tried before the fallback agent)", () => {
+  function noMatchWithToolDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    const skillStore: SkillStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn(),
+    };
+    const vectorStore: VectorStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ tool: scraperTool, score: 0.8 }]),
+      getByIds: vi.fn(),
+    };
+    return baseDeps({ skillStore, vectorStore, ...overrides });
+  }
+
+  it("calls a directly-fitting tool from the full catalog when no skill/agent matched, without touching the fallback agent", async () => {
+    const actionPlanner: ActionPlanner = {
+      plan: vi.fn().mockResolvedValue({
+        action: "call_tool",
+        toolId: "recipe-scraper",
+        toolArgs: "https://example.com/recipe",
+      } satisfies PlannedAction),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = { launch: vi.fn() };
+    const deps = noMatchWithToolDeps({ actionPlanner, agentRunLauncher });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "scrape https://example.com/recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedSkill).toBeUndefined();
+    expect(final.selectedTool?.id).toBe("recipe-scraper");
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalled();
+    expect(agentRunLauncher.launch).not.toHaveBeenCalled();
+    // baseDeps' default tool result is structured (non-string) -- no
+    // self-improvement suggestion is appended to it (same "only string
+    // results" rule as composeResponse); see the string-result test below
+    // for the suggestion-append path.
+    expect(final.result).toEqual({ title: "Pancakes" });
+  });
+
+  it("appends the self-improvement suggestion to a string result from a fallback-selected tool", async () => {
+    const actionPlanner: ActionPlanner = {
+      plan: vi.fn().mockResolvedValue({
+        action: "call_tool",
+        toolId: "recipe-scraper",
+        toolArgs: "https://example.com/recipe",
+      } satisfies PlannedAction),
+    };
+    const jobResultReceiver = {
+      awaitJob: vi.fn().mockResolvedValue({
+        type: "succeeded",
+        job_id: "job-1",
+        seq: 1,
+        ts: new Date(0).toISOString(),
+        result: "# Pancakes",
+      } satisfies Event),
+      onJobProgress: vi.fn(),
+    } as unknown as JobResultReceiver;
+    const deps = noMatchWithToolDeps({ actionPlanner, jobResultReceiver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "scrape https://example.com/recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).toContain("# Pancakes");
+    expect(final.result).toContain("self-improvement");
+  });
+
+  it("falls through to the fallback agent when the fallback tool planner declines (no clear fit)", async () => {
+    const actionPlanner: ActionPlanner = {
+      plan: vi.fn().mockResolvedValue({ action: "respond", response: "not a clear fit" } satisfies PlannedAction),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({ message: "did the best-effort task", final: true, narration: [] } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) };
+    const fallbackAgent: AgentDescriptor = {
+      id: "opencode-swe-agent",
+      name: "opencode-swe-agent",
+      description: "fallback",
+      allowedRoles: ["reader"],
+      agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
+    };
+    const deps = noMatchWithToolDeps({
+      actionPlanner,
+      agentChannel,
+      agentRunLauncher,
+      fallbackAgent,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "do something niche", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedTool).toBeUndefined();
+    expect(agentRunLauncher.launch).toHaveBeenCalled();
+    expect(final.result).toContain("self-improvement");
+  });
+
+  it("does not attempt a fallback tool call when the caller has no resolved identity", async () => {
+    const identityResolver: IdentityResolver = { resolve: vi.fn().mockResolvedValue(undefined) };
+    const deps = noMatchWithToolDeps({ identityResolver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "scrape https://example.com/recipe", authToken: "tok" });
+
+    expect(final.error).toBe("unauthorized: could not resolve caller identity");
   });
 });
 

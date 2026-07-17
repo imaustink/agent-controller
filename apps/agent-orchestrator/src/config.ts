@@ -83,6 +83,12 @@ export interface AppConfig {
    * string to disable the fallback and keep today's fail-closed behavior.
    */
   fallbackAgentName: string;
+  /**
+   * Max candidate tools retrieved when attempting a direct fallback tool call
+   * for a turn matching no Skill/Agent, before falling back further to
+   * fallbackAgentName. Mirrors skillTopK/agentTopK.
+   */
+  fallbackToolTopK: number;
   requestId: string;
 }
 
@@ -120,5 +126,6 @@ export const config: AppConfig = {
   staticIdentities: process.env.AGENT_STATIC_IDENTITIES,
   natsUrl: process.env.AGENT_NATS_URL,
   fallbackAgentName: process.env.AGENT_FALLBACK_AGENT_NAME ?? "opencode-swe-agent",
+  fallbackToolTopK: num(process.env.AGENT_FALLBACK_TOOL_TOP_K, 3),
   requestId: process.env.AGENT_REQUEST_ID ?? randomUUID(),
 };

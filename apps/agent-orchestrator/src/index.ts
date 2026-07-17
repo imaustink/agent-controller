@@ -246,6 +246,7 @@ async function main(): Promise<void> {
     callbackSecret: config.callbackSecret,
     natsUrl: config.natsUrl,
     skillTopK: config.skillTopK,
+    fallbackToolTopK: config.fallbackToolTopK,
     ...(agentDelegation
       ? {
           agentStore: agentDelegation.agentStore,

@@ -1,0 +1,26 @@
+{{- if .Values.opencodeSweAgentTool.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: Tool
+metadata:
+  name: opencode-swe-agent-tool
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+  annotations:
+    {{- include "tools.hookAnnotations" . | nindent 4 }}
+spec:
+  description: >-
+    Delegates a software-engineering task to the opencode SWE agent: create
+    or clone a repository, implement a change, and open a pull request. Use
+    for any single-turn request to make and PR a code change on GitHub.
+  input: >-
+    A natural-language software-engineering instruction, e.g. "add a Skill
+    custom resource for this and open a PR against imaustink/agent-controller".
+  output: >-
+    A summary of the changes plus a link to the opened/updated pull request.
+  allowedRoles:
+    - writer
+  # Agent-backed Tool (spec.agentRef): dispatched by the orchestrator as an
+  # AgentRun against the named Agent CR instead of a container Job — requires
+  # opencodeSweAgent.enabled=true (the Agent CR this wraps).
+  agentRef: opencode-swe-agent
+{{- end }}
