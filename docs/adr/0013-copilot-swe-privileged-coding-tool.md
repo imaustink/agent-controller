@@ -1,6 +1,10 @@
 # 0013. Privileged `copilot-swe` coding tool
 
-Status: accepted
+Status: superseded by [0016](0016-opencode-anthropic-direct-swe-agent.md) for
+the CLI/model-auth mechanism (Copilot CLI + single shared PAT -> opencode CLI
++ independent `GITHUB_TOKEN`/`ANTHROPIC_API_KEY` secrets). The privileged-tool
+threat model, guardrail approach, and branch-as-state design described below
+still apply to the successor.
 
 ## Context
 

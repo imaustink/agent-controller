@@ -1,14 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import type { Event } from "@controller-agent/messaging";
+import type { AgentOrchestratorChannel } from "../agents/nats-agent-channel.js";
+import { AgentTurnFailedError, AgentTurnTimeoutError } from "../agents/nats-agent-channel.js";
+import type { AgentDescriptor, AgentSearchResult, AgentStore } from "../agents/types.js";
 import type { JobResultReceiver } from "../callback/receiver.js";
 import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
+import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
+import type { SecretKeySelector } from "../k8s/toolrun-launcher.js";
 import type { LocalToolExecutor } from "../local/local-tool-executor.js";
 import type { IdentityResolver, Identity } from "../rbac/types.js";
 import type { SkillDescriptor, SkillSearchResult, SkillStore } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { VectorStore } from "../vector-store/types.js";
 import type { ActionPlanner } from "./action-planner.js";
+import type { DelegateSelector } from "./delegate-selector.js";
 import type { ResponseComposer } from "./response-composer.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
@@ -45,11 +51,30 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
+  /**
+   * Id of the Agent CR the conversation is continuing (if any), from the
+   * caller's session. Set by the server, consumed by `checkActiveAgentRun`;
+   * mutually exclusive with `activeSkillId` in practice (a conversation is
+   * either continuing a skill or continuing a running agent, never both).
+   */
+  activeAgentId: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /** Name of the specific `AgentRun` CR the conversation is continuing, if any. */
+  activeAgentRunId: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
   identity: Annotation<Identity | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
   skillCandidates: Annotation<SkillSearchResult[]>({
+    reducer: (_current, update) => update,
+    default: () => [],
+  }),
+  agentCandidates: Annotation<AgentSearchResult[]>({
     reducer: (_current, update) => update,
     default: () => [],
   }),
@@ -82,24 +107,29 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
-  /**
-   * Descriptor of the sub-agent selected for this turn (agent delegation path,
-   * partial implementation — not yet wired by any node but referenced by
-   * `server.ts` session persistence for future use).
-   */
-  selectedAgent: Annotation<{ id: string } | undefined>({
+  /** Descriptor of the sub-agent selected for this turn (agent delegation path). */
+  selectedAgent: Annotation<AgentDescriptor | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
-  /** Name of the active AgentRun CR when a turn is continuing a long-running sub-agent. */
+  /**
+   * Name of the AgentRun CR this turn launched or continued — set whenever an
+   * agent produced a reply (question or final), so the server can persist it
+   * for the next turn's continuation and narrate progress.
+   */
   agentRunId: Annotation<string | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
-  /** True when the sub-agent paused mid-run with a clarification question. */
-  agentAwaitingReply: Annotation<boolean | undefined>({
+  /**
+   * True when the agent's reply this turn was a question (non-final) and the
+   * conversation should continue this SAME AgentRun next turn; false once the
+   * agent is done (final reply) or on failure — either way the session's
+   * agent-continuation fields should be cleared, not carried forward.
+   */
+  agentAwaitingReply: Annotation<boolean>({
     reducer: (_current, update) => update,
-    default: () => undefined,
+    default: () => false,
   }),
   /**
    * Opaque continuation token extracted from the tool's succeeded result
@@ -107,6 +137,18 @@ export const AgentStateAnnotation = Annotation.Root({
    * re-injected into tool_args on the next turn for the same tool (ADR 0016).
    */
   extractedContinuation: Annotation<{ toolId: string; token: string } | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * Per-request progress listener — set by the SSE streaming path so tool
+   * Job progress/warning events (and, for agent delegation, the sub-agent's
+   * own narration) are forwarded as Open WebUI status steps while the Job
+   * runs. Absent on non-streaming paths; keeping it in state (not in deps)
+   * guarantees concurrent requests each have their own handler without
+   * shared-mutable-state races.
+   */
+  progressListener: Annotation<((stage: string, message: string | undefined) => void) | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
@@ -151,10 +193,42 @@ export interface AgentGraphDeps {
    */
   natsUrl?: string;
   skillTopK?: number;
+  /**
+   * Agent catalog (RAG index), retrieved alongside skills as an equally-
+   * weighted top-level delegation target. Agent delegation as a whole is
+   * only meaningful over NATS (it needs a live bidirectional channel to a
+   * long-running Job), so this bundle of deps is optional: absent ->
+   * `retrieveAgents`/`checkActiveAgentRun` degrade to no-ops and the graph
+   * behaves exactly as it does today (skills only).
+   */
+  agentStore?: AgentStore;
+  /** Picks ONE delegation target — a skill or an agent — from both candidate lists at once. */
+  delegateSelector?: DelegateSelector;
+  /** Creates the AgentRun CR the tool-controller reconciles into a hardened Job. */
+  agentRunLauncher?: AgentRunLauncherPort;
+  /** Bidirectional NATS channel to a running agent (progress, human-in-the-loop questions, final reply). */
+  agentChannel?: AgentOrchestratorChannel;
+  /** Max candidate agents retrieved per request, before delegate selection (mirrors skillTopK). */
+  agentTopK?: number;
+  /** Bounds an AgentRun's activeDeadlineSeconds — typically longer than a tool's, since an agent may wait on a human. */
+  agentRunTimeoutSeconds?: number;
+  /**
+   * k8s Secret name/key the AgentRun CR's (currently vestigial) callback
+   * field references — reuses the same secretRef as ToolRun. Required
+   * whenever `agentRunLauncher` is set.
+   */
+  callbackSecretRef?: SecretKeySelector;
 }
 
 function afterOrEnd(next: string) {
   return (state: AgentState): string => (state.error ? END : next);
+}
+
+/** Normalizes an agent-turn failure (from awaitReply/sendPrompt) into a state.error message. */
+function agentTurnErrorMessage(err: unknown): string {
+  if (err instanceof AgentTurnFailedError) return `agent failed (${err.code}): ${err.message}`;
+  if (err instanceof AgentTurnTimeoutError) return err.message;
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** Builds and compiles the LangGraph.js agent graph (docs/adr/0008, superseding the earlier flat tool-RAG flow). */
@@ -184,6 +258,42 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (!fits) return {};
       return { selectedSkill: skill };
     })
+    .addNode("checkActiveAgentRun", async (state) => {
+      // Agent-continuation counterpart to checkActiveSkill: if the
+      // conversation is already mid-delegation to an agent (it asked a
+      // question and is waiting), re-verify the caller can still use that
+      // Agent under their CURRENT roles, then forward this turn's message as
+      // a `prompt` to the SAME AgentRun and await its next reply — no
+      // retrieval/selection needed. Every miss (no session, subject
+      // mismatch, agent gone, roles revoked, agent delegation not
+      // configured) falls through to full retrieval + selection, same
+      // discipline as checkActiveSkill.
+      if (state.selectedSkill) return {}; // checkActiveSkill already resolved this turn
+      if (!deps.agentStore || !deps.agentChannel) return {};
+      if (!state.activeAgentRunId || !state.activeAgentId || !state.identity) return {};
+      if (state.sessionSubject !== state.identity.subject) return {};
+      const [found] = await deps.agentStore.getByIds([state.activeAgentId], {
+        callerRoles: state.identity.roles,
+      });
+      if (!found) return {};
+
+      try {
+        const awaitReply = deps.agentChannel.awaitReply(state.activeAgentRunId, {
+          onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+        });
+        await deps.agentChannel.sendPrompt(state.activeAgentRunId, state.request);
+        const reply = await awaitReply;
+        const message = reply.narration.length > 0 ? `${reply.narration.join("\n")}\n\n${reply.message}` : reply.message;
+        return {
+          selectedAgent: found.agent,
+          agentRunId: state.activeAgentRunId,
+          agentAwaitingReply: !reply.final,
+          result: message,
+        };
+      } catch (err) {
+        return { agentRunId: state.activeAgentRunId, error: agentTurnErrorMessage(err) };
+      }
+    })
     .addNode("retrieveSkills", async (state) => {
       // Unreachable without an identity (conditional edge below), but keep
       // the fail-closed check local to this node too.
@@ -195,7 +305,32 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       );
       return { skillCandidates };
     })
-    .addNode("selectSkill", async (state) => {
+    .addNode("retrieveAgents", async (state) => {
+      if (!deps.agentStore || !state.identity) return { agentCandidates: [] };
+      const agentCandidates = await deps.agentStore.query(
+        state.request,
+        { callerRoles: state.identity.roles },
+        deps.agentTopK ?? 3,
+      );
+      return { agentCandidates };
+    })
+    .addNode("selectDelegate", async (state) => {
+      // Full skill+agent delegate selection when agent delegation is
+      // configured (NATS deployments); a plain skill-only selection
+      // otherwise, so the graph degrades gracefully without NATS.
+      if (deps.delegateSelector) {
+        if (state.skillCandidates.length === 0 && state.agentCandidates.length === 0) {
+          return { error: "no matching skill or agent for this request" };
+        }
+        const choice = await deps.delegateSelector.select(state.request, state.skillCandidates, state.agentCandidates);
+        if (!choice) {
+          return { error: "no matching skill or agent for this request" };
+        }
+        if (choice.type === "agent") {
+          return { selectedAgent: choice.agent };
+        }
+        return { selectedSkill: choice.skill };
+      }
       if (state.skillCandidates.length === 0) {
         return { error: "no matching skill for this request" };
       }
@@ -204,6 +339,41 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         return { error: "no matching skill for this request" };
       }
       return { selectedSkill: selected };
+    })
+    .addNode("delegateToAgent", async (state) => {
+      if (!deps.agentRunLauncher || !deps.agentChannel || !deps.callbackSecretRef) {
+        return { error: "agent delegation is not configured" };
+      }
+      if (!state.selectedAgent || !state.identity) {
+        return { error: "no agent selected" };
+      }
+      const agent = state.selectedAgent;
+      const runId = randomUUID();
+      const jobId = randomUUID();
+      const callbackUrl = `${deps.callbackBaseUrl}/callback/${jobId}`;
+
+      try {
+        // Subscribe BEFORE creating the AgentRun CR so a fast-replying agent
+        // can never publish before our subscription exists.
+        const awaitReply = deps.agentChannel.awaitReply(runId, {
+          onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+        });
+        await deps.agentRunLauncher.launch(agent.agentRunTemplate, runId, {
+          goal: state.request,
+          callbackUrl,
+          callbackSecretRef: deps.callbackSecretRef,
+          timeoutSeconds: deps.agentRunTimeoutSeconds,
+        });
+        const reply = await awaitReply;
+        const message = reply.narration.length > 0 ? `${reply.narration.join("\n")}\n\n${reply.message}` : reply.message;
+        return {
+          agentRunId: runId,
+          agentAwaitingReply: !reply.final,
+          result: message,
+        };
+      } catch (err) {
+        return { agentRunId: runId, error: agentTurnErrorMessage(err) };
+      }
     })
     .addNode("loadSkillTools", async (state) => {
       if (!state.selectedSkill || !state.identity) {
@@ -264,24 +434,35 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         jobId = randomUUID();
         const awaitResult = deps.jobResultReceiver.awaitJob(jobId);
 
-        if (deps.natsUrl) {
-          // NATS mode: tool publishes its result to `callbacks.<jobId>`.
-          await deps.containerToolLauncher.launch(tool.jobTemplate, {
-            args: [input],
-            natsUrl: deps.natsUrl,
-            natsSubject: `callbacks.${jobId}`,
-          });
-        } else {
-          // HTTP callback mode (backward-compatible default).
-          const callbackUrl = `${deps.callbackBaseUrl!}/callback/${jobId}`;
-          await deps.containerToolLauncher.launch(tool.jobTemplate, {
-            args: [input],
-            callbackUrl,
-            callbackSecret: deps.callbackSecret!,
-          });
-        }
+        // Register the per-request progress handler (if any) before launching
+        // so no early events are missed. The handler lives in state — not in
+        // shared deps — so concurrent requests never cross-contaminate.
+        const unsubscribeProgress = state.progressListener
+          ? deps.jobResultReceiver.onJobProgress(jobId, state.progressListener)
+          : () => undefined;
 
-        event = await awaitResult;
+        try {
+          if (deps.natsUrl) {
+            // NATS mode: tool publishes its result to `callbacks.<jobId>`.
+            await deps.containerToolLauncher.launch(tool.jobTemplate, {
+              args: [input],
+              natsUrl: deps.natsUrl,
+              natsSubject: `callbacks.${jobId}`,
+            });
+          } else {
+            // HTTP callback mode (backward-compatible default).
+            const callbackUrl = `${deps.callbackBaseUrl!}/callback/${jobId}`;
+            await deps.containerToolLauncher.launch(tool.jobTemplate, {
+              args: [input],
+              callbackUrl,
+              callbackSecret: deps.callbackSecret!,
+            });
+          }
+
+          event = await awaitResult;
+        } finally {
+          unsubscribeProgress();
+        }
       } else {
         return { error: `tool ${tool.id} has neither a jobTemplate nor a localExec spec` };
       }
@@ -322,13 +503,30 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     })
     .addEdge(START, "resolveIdentity")
     .addConditionalEdges("resolveIdentity", afterOrEnd("checkActiveSkill"))
-    // Active skill confirmed -> skip retrieval + selection entirely;
-    // otherwise fall through to the full RAG path (docs/adr/0012).
+    // Active skill confirmed -> skip straight to loadSkillTools; otherwise
+    // check for a continuing agent run before falling through to full
+    // retrieval (docs/adr/0012, extended to agents).
     .addConditionalEdges("checkActiveSkill", (state) =>
-      state.error ? END : state.selectedSkill ? "loadSkillTools" : "retrieveSkills",
+      state.error ? END : state.selectedSkill ? "loadSkillTools" : "checkActiveAgentRun",
     )
-    .addConditionalEdges("retrieveSkills", afterOrEnd("selectSkill"))
-    .addConditionalEdges("selectSkill", afterOrEnd("loadSkillTools"))
+    // A continuing agent run either produced a terminal turn result
+    // (question or final reply, agentRunId set) or errored -> END either
+    // way; a miss (agentRunId still unset, e.g. no active run or agent
+    // delegation not configured) falls through to full retrieval.
+    .addConditionalEdges("checkActiveAgentRun", (state) => (state.error || state.agentRunId ? END : "retrieveSkills"))
+    .addConditionalEdges("retrieveSkills", afterOrEnd("retrieveAgents"))
+    .addConditionalEdges("retrieveAgents", afterOrEnd("selectDelegate"))
+    // selectDelegate branches three ways: error -> END, a skill was picked ->
+    // loadSkillTools (existing flow, unchanged), an agent was picked ->
+    // delegateToAgent.
+    .addConditionalEdges("selectDelegate", (state) => {
+      if (state.error) return END;
+      return state.selectedAgent ? "delegateToAgent" : "loadSkillTools";
+    })
+    // Delegation is always terminal for THIS graph invocation — whether the
+    // agent asked a question, gave its final reply, or failed. A follow-up
+    // user turn is a NEW invocation that re-enters via checkActiveAgentRun.
+    .addEdge("delegateToAgent", END)
     .addConditionalEdges("loadSkillTools", afterOrEnd("planAction"))
     // planAction branches three ways: error -> END, "respond" (result set,
     // no tool) -> END, "call_tool" (selectedTool set) -> runTool. A single

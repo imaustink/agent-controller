@@ -24,7 +24,7 @@ export interface SweMarker {
   branch: string;
   /** Pull request number, if one has been opened yet. */
   pr: string | null;
-  /** Stable session id (also used as the Copilot CLI --session-id). */
+  /** Stable session id carried across continuation turns. */
   session: string;
 }
 

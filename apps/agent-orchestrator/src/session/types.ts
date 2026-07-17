@@ -45,7 +45,7 @@ export interface SessionRecord {
    * opaque token is stored here and re-injected into tool_args on the next
    * turn for that same tool. The orchestrator stores/forwards the token
    * without ever parsing its content — each tool encodes its own state
-   * (e.g. copilot-swe: repo/branch/pr/session; recipe-publisher: slug).
+   * (e.g. opencode-swe: repo/branch/pr/session; recipe-publisher: slug).
    */
   toolContinuations?: Record<string, string>;
   /** Last touch time (ms since epoch); used for sliding TTL expiry. */

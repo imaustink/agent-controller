@@ -15,8 +15,8 @@ export type SweStage = "authenticate" | "prepare" | "agent" | "finalize";
  * Error taxonomy (plain TS union, not runtime-validated — same convention as
  * the other tools in this repo).
  *  - usage:   missing/blank instruction or required configuration
- *  - auth:    GitHub App token minting / Copilot auth failure
- *  - agent:   the Copilot CLI process failed
+ *  - auth:    GitHub App token minting / Anthropic auth failure
+ *  - agent:   the opencode CLI process failed
  *  - git:     no pushable result was produced (no branch/commit/PR)
  *  - general: anything else
  */

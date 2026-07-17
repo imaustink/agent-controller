@@ -19,10 +19,13 @@ metadata:
     {{- include "agent-orchestrator.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["core.controller-agent.dev"]
-    resources: ["tools", "skills"]
+    resources: ["tools", "skills", "agents"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["core.controller-agent.dev"]
     resources: ["toolruns"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["agentruns"]
     verbs: ["create", "get", "list", "watch", "delete"]
   {{- if .Values.localTool.enabled }}
   # LocalTools (ADR 0014): read the catalog, and read Secrets to resolve a

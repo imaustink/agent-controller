@@ -45,6 +45,13 @@ tool-controller:
   enabled: true
   image:
     tag: latest
+  # Must match the in-cluster NATS Service the orchestrator itself connects
+  # to (agent-orchestrator.natsUrl helper derives
+  # "<release>-nats.<namespace>.svc.cluster.local"). Without this, AgentRun
+  # Jobs fall back to the chart default "nats://nats:4222", which doesn't
+  # resolve, and every delegated agent crashes on startup.
+  nats:
+    agentUrl: "nats://controller-agent-nats.controller-agent.svc.cluster.local:4222"
 
 # Top-level NATS server (nats subchart). The agent-orchestrator.nats.enabled
 # above controls URL derivation in the orchestrator; this enables the actual
@@ -54,15 +61,12 @@ nats:
 
 tools:
   enabled: true
-  # recipe-scraper + recipe-publisher are on by default. copilot-swe (the
-  # privileged GitHub coding agent) + its skill are enabled here; they need the
-  # copilot-swe ServiceAccount + copilot-swe-secrets (key GITHUB_TOKEN, a
-  # fine-grained PAT) to already exist in-cluster.
-  copilotSwe:
+  # recipe-scraper + recipe-publisher are on by default. opencode-swe (the
+  # privileged GitHub coding agent, calling Anthropic directly) is enabled
+  # here; it needs the opencode-swe-agent ServiceAccount + opencode-swe-secrets
+  # (keys GITHUB_TOKEN and ANTHROPIC_API_KEY) to already exist in-cluster.
+  opencodeSweAgent:
     enabled: true
-  skills:
-    softwareEngineering:
-      enabled: true
 
 openwebui:
   enabled: true

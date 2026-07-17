@@ -81,7 +81,7 @@ fi
 
 # ── 4. ServiceAccounts ───────────────────────────────────────────────────────
 step "Ensuring tool ServiceAccounts..."
-for sa in recipe-scraper recipe-publisher copilot-swe-agent; do
+for sa in recipe-scraper recipe-publisher opencode-swe-agent; do
   kubectl -n "$NS" get serviceaccount "$sa" >/dev/null 2>&1 \
     || kubectl -n "$NS" create serviceaccount "$sa"
 done
@@ -117,9 +117,9 @@ if [[ "$SKIP_BUILD" == "false" ]]; then
   docker build -f "$REPO_ROOT/tools/recipe-publisher/Dockerfile" \
     -t recipe-publisher:latest "$REPO_ROOT" --quiet
 
-  echo "  Building copilot-swe-agent..."
-  docker build -f "$REPO_ROOT/apps/copilot-swe-agent/Dockerfile" \
-    -t copilot-swe-agent:latest "$REPO_ROOT" --quiet
+  echo "  Building opencode-swe-agent..."
+  docker build -f "$REPO_ROOT/apps/opencode-swe-agent/Dockerfile" \
+    -t opencode-swe-agent:latest "$REPO_ROOT" --quiet
 
   echo "  Building localtool-executor sidecars..."
   docker build -f "$REPO_ROOT/sidecars/localtool-executor/Dockerfile" \

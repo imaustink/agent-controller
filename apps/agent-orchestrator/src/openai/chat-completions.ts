@@ -91,6 +91,22 @@ export function buildAgentRequest(messages: unknown): string | undefined {
   return `<conversation_history>\n${history}\n</conversation_history>\n\n${userContent}`;
 }
 
+/**
+ * Open WebUI (and similar OpenAI-compatible chat UIs) send internal
+ * housekeeping completions — generating a chat title, tags, a search query,
+ * or a follow-up question — to the SAME /v1/chat/completions endpoint as
+ * real user turns, using a well-known "### Task:" prompt prefix. These must
+ * NEVER be routed through skill/agent delegation: a housekeeping call whose
+ * embedded chat history happens to match e.g. the software-engineering agent
+ * would silently launch a real, privileged AgentRun (cloning/creating repos,
+ * opening pull requests) for what should be a cheap, side-effect-free text
+ * completion. `server.ts` checks this before invoking the agent graph and
+ * routes a match to `TaskCompleter` instead.
+ */
+export function isInternalUiTaskRequest(userContent: string): boolean {
+  return userContent.trimStart().startsWith("### Task:");
+}
+
 /** Tool results are structured JSON, not prose; render them as readable chat content. */
 export function renderResult(result: unknown): string {
   if (typeof result === "string") return result;

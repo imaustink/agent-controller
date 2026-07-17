@@ -1,5 +1,5 @@
-# Agent custom resource for the copilot-swe-agent -- apply with:
-#   kubectl apply -n <namespace> -f apps/copilot-swe-agent/agent.yaml
+# Agent custom resource for the opencode-swe-agent -- apply with:
+#   kubectl apply -n <namespace> -f apps/opencode-swe-agent/agent.yaml
 #
 # Replaces both the old `copilot-swe` Tool CR (tools/copilot-swe/tool.yaml)
 # and the `software-engineering-skill` Skill CR
@@ -9,13 +9,14 @@
 #   kubectl -n <namespace> delete skill software-engineering-skill
 #
 # Prerequisites:
-#   kubectl -n <namespace> create serviceaccount copilot-swe-agent
-#   kubectl -n <namespace> create secret generic copilot-swe-secrets \
-#     --from-literal=GITHUB_TOKEN=github_pat_...
+#   kubectl -n <namespace> create serviceaccount opencode-swe-agent
+#   kubectl -n <namespace> create secret generic opencode-swe-secrets \
+#     --from-literal=GITHUB_TOKEN=github_pat_... \
+#     --from-literal=ANTHROPIC_API_KEY=sk-ant-...
 apiVersion: core.controller-agent.dev/v1alpha1
 kind: Agent
 metadata:
-  name: copilot-swe-agent
+  name: opencode-swe-agent
 spec:
   description: >-
     Performs software-engineering work on GitHub end-to-end: creates or
@@ -37,8 +38,8 @@ spec:
   allowedRoles:
     - writer
   tier: privileged
-  image: copilot-swe-agent:latest
-  serviceAccountName: copilot-swe-agent
+  image: opencode-swe-agent:latest
+  serviceAccountName: opencode-swe-agent
   # -- Orchestrator prompt (injected into the PARENT orchestrator's planner) --
   # Explains how and when to delegate to this agent, and how to interpret
   # the swe marker it embeds in its replies.
@@ -62,13 +63,13 @@ spec:
   # (injected by the controller from this field in Phase 7).
   agentPrompt: |
     You are a software-engineering sub-agent that writes code and manages
-    GitHub repositories using the GitHub Copilot CLI and the gh/git CLIs.
-    You are spawned for a single coding task and communicate with the
-    orchestrator over NATS.
+    GitHub repositories using the opencode CLI (calling Claude Sonnet 5 via
+    the Anthropic API) and the gh/git CLIs. You are spawned for a single
+    coding task and communicate with the orchestrator over NATS.
 
     Your job:
-    1. Authenticate with the provided GITHUB_TOKEN.
-    2. Run the GitHub Copilot CLI to implement the requested changes.
+    1. Authenticate with the provided GITHUB_TOKEN and ANTHROPIC_API_KEY.
+    2. Run the opencode CLI to implement the requested changes.
     3. Report progress to the orchestrator as you go.
     4. When you have a result, return the PR link and a summary.
     5. If the task is genuinely ambiguous and you cannot proceed without
@@ -95,5 +96,9 @@ spec:
   secretEnv:
     - name: GITHUB_TOKEN
       secretRef:
-        name: copilot-swe-secrets
+        name: opencode-swe-secrets
         key: GITHUB_TOKEN
+    - name: ANTHROPIC_API_KEY
+      secretRef:
+        name: opencode-swe-secrets
+        key: ANTHROPIC_API_KEY

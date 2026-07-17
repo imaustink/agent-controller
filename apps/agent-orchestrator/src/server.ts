@@ -8,6 +8,7 @@ import {
   chatCompletionId,
   chatCompletionResponse,
   errorStatusAndCode,
+  isInternalUiTaskRequest,
   listModelsResponse,
   MODEL_ID,
   nodeStatusText,
@@ -18,6 +19,7 @@ import {
   writeSseDone,
   writeSseStatus,
 } from "./openai/chat-completions.js";
+import type { TaskCompleter } from "./openai/task-completer.js";
 import { withHeartbeat } from "./openai/with-heartbeat.js";
 
 export type InvocationStatus = "pending" | "succeeded" | "failed";
@@ -111,6 +113,14 @@ export class InvokeServer {
      * and offered to the graph on the next turn. Absent -> fully stateless.
      */
     private readonly sessionStore?: SessionStore,
+    /**
+     * Answers Open WebUI's internal housekeeping completions (title/tags/
+     * query generation, `isInternalUiTaskRequest`) directly, bypassing the
+     * agent graph so these can never be misrouted into skill/agent
+     * delegation. Absent -> such requests still bypass the graph but get a
+     * generic static reply (safety takes priority over title quality).
+     */
+    private readonly taskCompleter?: TaskCompleter,
   ) {}
 
   /** Builds the graph input for one turn, folding in any session-scoped active skill or agent run (docs/adr/0012). */
@@ -313,11 +323,58 @@ export class InvokeServer {
     const sessionId = headerValue(req.headers[CHAT_ID_HEADER]);
     const stream = parsed.stream === true;
 
+    // Open WebUI's own housekeeping completions (title/tags/query/follow-up
+    // generation) must NEVER reach the agent graph — see
+    // isInternalUiTaskRequest. Answered directly, with no delegation, no
+    // identity resolution, and no session mutation, regardless of `stream`.
+    if (isInternalUiTaskRequest(request)) {
+      await this.handleInternalUiTask(res, parsed.messages, model, stream);
+      return;
+    }
+
     if (!stream) {
       await this.handleChatCompletionsBlocking(res, request, model, authToken, sessionId);
       return;
     }
     await this.handleChatCompletionsStreaming(res, request, model, authToken, sessionId);
+  }
+
+  /**
+   * Answers an Open WebUI internal housekeeping request (see
+   * `isInternalUiTaskRequest`) with a direct, non-agentic completion —
+   * bypassing the agent graph entirely. Falls back to a generic static reply
+   * when no `taskCompleter` is configured; safety (never delegating) matters
+   * more here than title quality.
+   */
+  private async handleInternalUiTask(
+    res: ServerResponse,
+    messages: unknown,
+    model: string,
+    stream: boolean,
+  ): Promise<void> {
+    let content: string;
+    try {
+      content = this.taskCompleter ? await this.taskCompleter.complete(messages, model) : "";
+    } catch {
+      content = "";
+    }
+    const id = chatCompletionId();
+    if (!stream) {
+      res.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify(chatCompletionResponse(id, model, content, "stop")),
+      );
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    });
+    res.flushHeaders?.();
+    writeSseChunk(res, chatCompletionChunk(id, model, { content }, null));
+    writeSseChunk(res, chatCompletionChunk(id, model, {}, "stop"));
+    writeSseDone(res);
+    res.end();
   }
 
   private async handleChatCompletionsBlocking(

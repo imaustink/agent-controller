@@ -1,10 +1,10 @@
 # Skill custom resource for software-engineering-skill -- SUPERSEDED.
 #
 # NOT WIRED BY DEFAULT -- the copilot-swe tool and this skill have been
-# replaced by the copilot-swe-agent Agent CR (apps/copilot-swe-agent/agent.yaml)
+# replaced by the opencode-swe-agent Agent CR (apps/opencode-swe-agent/agent.yaml)
 # which is a top-level delegation target retrieved alongside skills by the
 # unified DelegateSelector. Apply the Agent CR instead:
-#   kubectl apply -n <namespace> -f apps/copilot-swe-agent/agent.yaml
+#   kubectl apply -n <namespace> -f apps/opencode-swe-agent/agent.yaml
 #
 # This file is kept in place (same convention as superseded code in this repo).
 # Original documentation below:

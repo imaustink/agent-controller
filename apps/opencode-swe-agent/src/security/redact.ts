@@ -1,9 +1,9 @@
 /**
  * Best-effort redaction for anything that might be surfaced in logs, error
- * messages, or forwarded Copilot output (same convention as the other tools
+ * messages, or forwarded opencode output (same convention as the other tools
  * in this repo). This tool handles unusually sensitive material — a GitHub
- * App private key and two GitHub tokens — so the pattern set is broader than
- * recipe-publisher's.
+ * App private key, GitHub tokens, and an Anthropic API key — so the pattern
+ * set is broader than recipe-publisher's.
  */
 const SECRET_PATTERNS: RegExp[] = [
   // PEM private keys (the GitHub App key), including the BEGIN/END envelope.
@@ -15,6 +15,8 @@ const SECRET_PATTERNS: RegExp[] = [
   /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
   // x-access-token:<token> as embedded in an authenticated clone/push URL.
   /x-access-token:[^@\s/]+/gi,
+  // Anthropic API keys.
+  /sk-ant-[A-Za-z0-9_-]{16,}/g,
   // Generic OpenAI-style keys and Bearer headers.
   /sk-[A-Za-z0-9_-]{16,}/g,
   /Bearer\s+[A-Za-z0-9._-]{16,}/gi,

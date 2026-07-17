@@ -2,14 +2,17 @@
 #
 # Build from the REPO ROOT:
 #
-#   docker build -f apps/copilot-swe-agent/Dockerfile -t copilot-swe-agent:latest .
+#   docker build -f apps/opencode-swe-agent/Dockerfile -t opencode-swe-agent:latest .
 #
 # This is a PRIVILEGED agent (docs/security.md): it needs outbound network to
-# GitHub + the Copilot API, a writable workspace (/tmp emptyDir), and a GitHub
-# App/Copilot credential. The agent runtime (@controller-agent/agent-runtime)
-# connects to NATS (AGENT_NATS_URL) and receives its run id + initial goal via
-# env (AGENT_RUN_ID, AGENT_GOAL) -- injected by the Go tool-controller into the
-# k8s Job when it reconciles the AgentRun CR (Phase 7).
+# GitHub + the Anthropic API, a writable workspace (/tmp emptyDir), a GitHub
+# App credential (git/gh operations), and an Anthropic API key (opencode's
+# model credential -- the two are independent secrets, unlike the old Copilot
+# CLI which used one PAT for both). The agent runtime
+# (@controller-agent/agent-runtime) connects to NATS (AGENT_NATS_URL) and
+# receives its run id + initial goal via env (AGENT_RUN_ID, AGENT_GOAL) --
+# injected by the Go tool-controller into the k8s Job when it reconciles the
+# AgentRun CR (Phase 7).
 
 ############################
 # Build stage
@@ -20,17 +23,17 @@ WORKDIR /repo
 COPY package.json package-lock.json* ./
 COPY packages/messaging/package.json   packages/messaging/package.json
 COPY packages/agent-runtime/package.json packages/agent-runtime/package.json
-COPY apps/copilot-swe-agent/package.json apps/copilot-swe-agent/package.json
+COPY apps/opencode-swe-agent/package.json apps/opencode-swe-agent/package.json
 RUN npm ci
 
 COPY packages/messaging   packages/messaging
 COPY packages/agent-runtime packages/agent-runtime
-COPY apps/copilot-swe-agent/tsconfig.json apps/copilot-swe-agent/tsconfig.json
-COPY apps/copilot-swe-agent/src           apps/copilot-swe-agent/src
+COPY apps/opencode-swe-agent/tsconfig.json apps/opencode-swe-agent/tsconfig.json
+COPY apps/opencode-swe-agent/src           apps/opencode-swe-agent/src
 
 RUN npm run build --workspace=@controller-agent/messaging \
   && npm run build --workspace=@controller-agent/agent-runtime \
-  && npm run build --workspace=copilot-swe-agent \
+  && npm run build --workspace=opencode-swe-agent \
   && npm prune --omit=dev \
   # Materialize workspace packages as real directories (not symlinks) so they
   # survive the copy into the runtime stage.
@@ -61,8 +64,8 @@ RUN apt-get update \
   # Go toolchain -- installed from the official tarball; arch is detected at build time.
   && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-$(dpkg --print-architecture).tar.gz" \
      | tar -xz -C /usr/local \
-  # Agentic GitHub Copilot CLI.
-  && npm install -g @github/copilot \
+  # Agentic opencode CLI, configured to call Anthropic (Claude Sonnet 5) directly.
+  && npm install -g opencode-ai@latest \
   && npm cache clean --force \
   && apt-get purge -y curl \
   && apt-get autoremove -y \
@@ -75,8 +78,8 @@ ENV PATH="/usr/local/go/bin:$PATH"
 ENV GOPATH="/tmp/go"
 
 COPY --from=build /repo/node_modules                     ./node_modules
-COPY --from=build /repo/apps/copilot-swe-agent/dist      ./dist
-COPY --from=build /repo/apps/copilot-swe-agent/package.json ./package.json
+COPY --from=build /repo/apps/opencode-swe-agent/dist      ./dist
+COPY --from=build /repo/apps/opencode-swe-agent/package.json ./package.json
 
 # The tool-controller's hardened Job securityContext runs as uid 10001 with a
 # read-only root filesystem + emptyDir at /tmp. All writable state (workspace,
