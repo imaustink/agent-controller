@@ -393,6 +393,40 @@ describe("InvokeServer OpenAI-compatible chat completions (ADR 0007)", () => {
 
     await server.close();
   });
+
+  it("POST /v1/chat/completions (streaming) surfaces a selectDelegate best-effort answer (no skill/tool/agent matched) instead of hanging until 'agent stream ended unexpectedly'", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn(),
+      stream: vi.fn().mockResolvedValue(
+        toStream([
+          { resolveIdentity: { identity: { subject: "alice", roles: ["reader"] } } },
+          { retrieveSkills: { skillCandidates: [] } },
+          { retrieveAgents: { agentCandidates: [] } },
+          // noMatchFallback's true last resort: no skill/tool/agent selected at
+          // all, `result` set directly on selectDelegate -- the graph routes
+          // straight to END without ever reaching runTool/composeResponse.
+          { selectDelegate: { result: "Here's a peach cocktail syrup recipe...", wasFallback: true } },
+        ]),
+      ),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ stream: true, messages: [{ role: "user", content: "help me create a recipe for peach cocktail syrup" }] }),
+    });
+
+    expect(res.status).toBe(200);
+    const chunks = (await readSse(res)) as { choices?: { delta: { content?: string }; finish_reason: string | null }[] }[];
+    const allContent = chunks.filter((c) => c.choices).map((c) => c.choices![0]?.delta.content ?? "").join("");
+    expect(allContent).toContain("peach cocktail syrup recipe");
+    expect(allContent).not.toContain("agent stream ended unexpectedly");
+    expect(chunks.filter((c) => c.choices).at(-1)?.choices![0]?.finish_reason).toBe("stop");
+
+    await server.close();
+  });
 });
 
 describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
