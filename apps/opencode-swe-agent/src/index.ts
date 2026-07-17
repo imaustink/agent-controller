@@ -26,7 +26,13 @@ function runOpencode(
   onProgress: (text: string) => void,
 ): Promise<{ code: number; finalMessage: string | null; toolFailures: string[]; transcript: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("opencode", args, { cwd, env });
+    // stdin MUST be closed (not the default open pipe): opencode probes for
+    // piped input right after startup, and an open-but-silent pipe (Node's
+    // default child stdio) makes it block forever waiting for EOF that never
+    // comes -- reproduced reliably in production, never reproduced when
+    // manually exec'd without a stdin attached. `ignore` gives it immediate
+    // EOF, matching the working manual-invocation case exactly.
+    const child = spawn("opencode", args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let buffer = "";
     let finalMessage: string | null = null;
     const toolFailures: string[] = [];
