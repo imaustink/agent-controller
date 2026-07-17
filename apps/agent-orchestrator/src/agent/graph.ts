@@ -591,6 +591,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           callbackUrl,
           callbackSecretRef: deps.callbackSecretRef,
           timeoutSeconds: deps.agentRunTimeoutSeconds,
+          ...(deps.natsUrl ? { natsUrl: deps.natsUrl, natsSubject: `callbacks.${runId}` } : {}),
         });
         const reply = await awaitReply;
         const message = composeAgentTurnMessage(state, reply);
@@ -681,6 +682,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             callbackUrl,
             callbackSecretRef: deps.callbackSecretRef,
             timeoutSeconds: deps.agentRunTimeoutSeconds,
+            ...(deps.natsUrl ? { natsUrl: deps.natsUrl, natsSubject: `callbacks.${runId}` } : {}),
           });
           const reply = await awaitReply;
           // v1 scope cut: agent-backed tools support single-turn/final-reply

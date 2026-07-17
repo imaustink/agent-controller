@@ -10,15 +10,22 @@ export interface AgentLaunchOptions {
   /** The initial user turn / task objective, delivered via AgentRun.spec.goal (like ToolRun's args — not a NATS message). */
   goal: string;
   /**
-   * Callback url/secretRef the AgentRun CR still carries today (Go CRD field
-   * is currently required) even though the bidirectional NATS protocol is
-   * the actual result channel for agents — vestigial until the AgentRun CRD
+   * Callback block the AgentRun CR still carries today (Go CRD field is
+   * currently required) even though the bidirectional NATS protocol is the
+   * actual result channel for agents — vestigial until the AgentRun CRD
    * makes `callback` optional and the controller injects NATS env instead.
-   * Reuses the same secretRef ToolRunLauncher uses; the value is otherwise
-   * unused by the agent-runtime SDK.
+   * Mirrors ToolRunLauncher's NATS-vs-HTTP branching (toolrun-launcher.ts):
+   * when `natsSubject` is set the controller takes the NATS path (no
+   * secretRef needed) instead of validating `callbackSecretRef` as a real
+   * k8s Secret reference — required here since in NATS mode
+   * `callbackSecretRef.name` is legitimately unset (config.ts only requires
+   * AGENT_CALLBACK_SECRET_REF_NAME when AGENT_NATS_URL is absent), and the
+   * Go controller rejects an empty secretRef.name on the HTTP path.
    */
   callbackUrl: string;
   callbackSecretRef: SecretKeySelector;
+  natsUrl?: string;
+  natsSubject?: string;
   /** Bounds the Job's activeDeadlineSeconds; agents typically need longer than tools (may wait on a human). */
   timeoutSeconds?: number;
 }
@@ -75,6 +82,12 @@ export class AgentRunLauncher implements AgentRunLauncherPort {
    * message from the newly-launched pod can be missed by a late subscription.
    */
   async launch(template: AgentRunTemplate, name: string, options: AgentLaunchOptions): Promise<LaunchedAgentRun> {
+    // Build the callback block: NATS mode when natsSubject is set, HTTP mode
+    // otherwise (backward compatible) — same branching as ToolRunLauncher.
+    const callback = options.natsSubject
+      ? { natsSubject: options.natsSubject, natsUrl: options.natsUrl }
+      : { url: options.callbackUrl, secretRef: options.callbackSecretRef };
+
     const body = {
       apiVersion: `${this.group}/${this.version}`,
       kind: "AgentRun",
@@ -82,10 +95,7 @@ export class AgentRunLauncher implements AgentRunLauncherPort {
       spec: {
         agentRef: template.agentRef,
         goal: options.goal,
-        callback: {
-          url: options.callbackUrl,
-          secretRef: options.callbackSecretRef,
-        },
+        callback,
         ...(options.timeoutSeconds ? { timeoutSeconds: options.timeoutSeconds } : {}),
       },
     };
