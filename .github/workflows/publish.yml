@@ -31,12 +31,12 @@ jobs:
             -f apps/agent-orchestrator/Dockerfile .
           docker push registry.kurpuis.com:5000/agent-orchestrator:latest
 
-      - name: Build & push copilot-swe-agent
+      - name: Build & push opencode-swe-agent
         run: |
           docker build \
-            -t registry.kurpuis.com:5000/copilot-swe-agent:latest \
-            -f apps/copilot-swe-agent/Dockerfile .
-          docker push registry.kurpuis.com:5000/copilot-swe-agent:latest
+            -t registry.kurpuis.com:5000/opencode-swe-agent:latest \
+            -f apps/opencode-swe-agent/Dockerfile .
+          docker push registry.kurpuis.com:5000/opencode-swe-agent:latest
 
       - name: Build & push recipe-scraper
         run: |
