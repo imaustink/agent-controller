@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
-# dev-up.sh — start minikube and (re)deploy the full controller-agent stack.
+# dev-up.sh — one-time/rare cluster prep, then hand off to Skaffold for the
+# actual build+deploy (see skaffold.yaml at repo root).
 #
 # Usage:
-#   ./scripts/dev-up.sh          # start everything
-#   ./scripts/dev-up.sh --skip-build   # skip docker image builds (use cached)
+#   ./scripts/dev-up.sh              # prep, then `skaffold run` (one-shot deploy)
+#   ./scripts/dev-up.sh --dev        # prep, then `skaffold dev` (watch + redeploy loop)
+#   ./scripts/dev-up.sh --prep-only  # just the prep steps below, no skaffold invocation
+#
+# Everything here is either a true one-time prerequisite or something
+# Skaffold's helm deployer has no hook mechanism for (only its kubectl
+# deployer supports before/after hooks) — see the "Prerequisites this file
+# deliberately does NOT own" comment in skaffold.yaml.
 #
 # Prerequisites (one-time, out-of-band):
 #   kubectl -n controller-agent create secret generic agent-orchestrator-secrets \
@@ -25,10 +32,13 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NS="controller-agent"
-SKIP_BUILD=false
+MODE="run"
 
 for arg in "$@"; do
-  [[ "$arg" == "--skip-build" ]] && SKIP_BUILD=true
+  case "$arg" in
+    --dev) MODE="dev" ;;
+    --prep-only) MODE="none" ;;
+  esac
 done
 
 step() { echo ""; echo "▶ $*"; }
@@ -52,6 +62,7 @@ step "Starting minikube..."
 minikube start --memory=6144 --cpus=4 --driver=docker
 
 # Safety check: make sure we're pointing at minikube, not a real cluster.
+# Skaffold auto-targets minikube's Docker daemon based on this same context.
 CURRENT_CONTEXT="$(kubectl config current-context 2>/dev/null || true)"
 if [[ "$CURRENT_CONTEXT" != "minikube" ]]; then
   die "kubectl context is '$CURRENT_CONTEXT', not 'minikube'. Aborting to avoid touching the wrong cluster."
@@ -86,62 +97,11 @@ for sa in recipe-scraper recipe-publisher opencode-swe-agent; do
     || kubectl -n "$NS" create serviceaccount "$sa"
 done
 
-# ── 5. Helm dependencies ─────────────────────────────────────────────────────
-step "Fetching Helm chart dependencies..."
-# Helm does NOT recurse into nested subchart deps, so fetch the orchestrator
-# subchart's qdrant first, then the umbrella's own open-webui. `helm dependency
-# update` handles the unmanaged open-webui repo automatically (it also writes
-# redundant local subchart .tgz alongside the unpacked dirs -- harmless, they're
-# gitignored and Helm dedupes them at render time).
+# ── 5. Nested Helm dependency (Helm doesn't recurse into file:// subcharts) ──
+step "Fetching agent-orchestrator's own subchart dependency (qdrant)..."
 helm dependency update "$REPO_ROOT/charts/controller-agent/charts/agent-orchestrator"
-helm dependency update "$REPO_ROOT/charts/controller-agent"
 
-# ── 6. Docker images → minikube daemon ───────────────────────────────────────
-if [[ "$SKIP_BUILD" == "false" ]]; then
-  step "Building Docker images into minikube's daemon..."
-  eval "$(minikube docker-env)"
-
-  echo "  Building agent-orchestrator..."
-  docker build -f "$REPO_ROOT/apps/agent-orchestrator/Dockerfile" \
-    -t agent-orchestrator:latest "$REPO_ROOT" --quiet
-
-  echo "  Building tool-controller..."
-  docker build -f "$REPO_ROOT/controllers/tool-controller/Dockerfile" \
-    -t tool-controller:latest "$REPO_ROOT/controllers/tool-controller" --quiet
-
-  echo "  Building recipe-scraper..."
-  docker build -f "$REPO_ROOT/tools/recipe-scraper/Dockerfile" \
-    -t recipe-scraper:latest "$REPO_ROOT" --quiet
-
-  echo "  Building recipe-publisher..."
-  docker build -f "$REPO_ROOT/tools/recipe-publisher/Dockerfile" \
-    -t recipe-publisher:latest "$REPO_ROOT" --quiet
-
-  echo "  Building opencode-swe-agent..."
-  docker build -f "$REPO_ROOT/apps/opencode-swe-agent/Dockerfile" \
-    -t opencode-swe-agent:latest "$REPO_ROOT" --quiet
-
-  echo "  Building localtool-executor sidecars..."
-  docker build -f "$REPO_ROOT/sidecars/localtool-executor/Dockerfile" \
-    --build-arg BASE_IMAGE=node:24-bookworm-slim --build-arg RUNTIME=node \
-    -t localtool-executor-node:latest "$REPO_ROOT/sidecars/localtool-executor" --quiet
-  docker build -f "$REPO_ROOT/sidecars/localtool-executor/Dockerfile" \
-    --build-arg BASE_IMAGE=python:3.12-slim-bookworm --build-arg RUNTIME=python \
-    -t localtool-executor-python:latest "$REPO_ROOT/sidecars/localtool-executor" --quiet
-  docker build -f "$REPO_ROOT/sidecars/localtool-executor/Dockerfile" \
-    --build-arg BASE_IMAGE=golang:1.24-bookworm --build-arg RUNTIME=go \
-    -t localtool-executor-go:latest "$REPO_ROOT/sidecars/localtool-executor" --quiet
-  docker build -f "$REPO_ROOT/sidecars/localtool-executor/Dockerfile" \
-    --build-arg BASE_IMAGE=debian:bookworm-slim --build-arg RUNTIME=shell \
-    -t localtool-executor-shell:latest "$REPO_ROOT/sidecars/localtool-executor" --quiet
-
-  # Return to the host daemon so subsequent docker commands work normally.
-  eval "$(minikube docker-env --unset)"
-else
-  echo "  --skip-build: reusing cached images."
-fi
-
-# ── 7. CRDs ──────────────────────────────────────────────────────────────────
+# ── 6. CRDs ──────────────────────────────────────────────────────────────────
 step "Applying CRDs..."
 # Helm's crds/ dir is install-only; upgrades never touch them. Apply manually
 # every time so CRD schema changes are always current.
@@ -149,27 +109,20 @@ for crd in "$REPO_ROOT"/charts/controller-agent/charts/tool-controller/crds/*.ya
   kubectl apply -f "$crd" --server-side >/dev/null
 done
 
-# ── 8. Helm release ──────────────────────────────────────────────────────────
-step "Installing / upgrading the controller-agent umbrella release..."
-# One release, four subcharts (orchestrator + tool-controller + tools catalog +
-# optional Open WebUI). The `tools` subchart applies the Tool/Skill CRs as
-# post-install/post-upgrade hooks (after the controller), so no manual CR apply
-# is needed here anymore. --wait blocks on the controller/orchestrator becoming
-# ready before those hook CRs run.
-helm upgrade --install controller-agent "$REPO_ROOT/charts/controller-agent" \
-  --namespace "$NS" --wait --timeout 5m \
-  -f "$REPO_ROOT/charts/controller-agent/values-minikube-demo.yaml"
-
-# ── 10. Rollout restart (picks up new images + refreshes CRD-sourced catalog) ─
-step "Restarting deployments to pick up new images and updated CRs..."
-kubectl -n "$NS" rollout restart deployment/agent-orchestrator
-kubectl -n "$NS" rollout restart deployment/tool-controller 2>/dev/null || true
-kubectl -n "$NS" rollout status deployment/agent-orchestrator --timeout=120s
-kubectl -n "$NS" rollout status deployment/tool-controller --timeout=60s 2>/dev/null || true
-
-# ── 11. Summary ──────────────────────────────────────────────────────────────
-step "All done! Current pod state:"
-kubectl -n "$NS" get pods
+# ── 7. Hand off to Skaffold ───────────────────────────────────────────────────
+case "$MODE" in
+  run)
+    step "Building images and deploying via Skaffold (one-shot)..."
+    (cd "$REPO_ROOT" && skaffold run)
+    ;;
+  dev)
+    step "Building images and deploying via Skaffold (watch mode)..."
+    (cd "$REPO_ROOT" && skaffold dev)
+    ;;
+  none)
+    step "Prep done. Run 'skaffold run' or 'skaffold dev' from $REPO_ROOT when ready."
+    ;;
+esac
 
 echo ""
 echo "  Port-forward shortcuts:"

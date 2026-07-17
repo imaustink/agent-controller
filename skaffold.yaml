@@ -1,0 +1,131 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: controller-agent
+
+# Single-command dev loop for the whole controller-agent stack. Replaces the
+# manual build/dependency-update/apply/rollout sequence in scripts/dev-up.sh:
+#   skaffold dev     # build + deploy, then watch files and redeploy on change
+#   skaffold run     # one-shot build + deploy (CI-style)
+#   skaffold delete  # tear down the release this config created
+#
+# Adding a new image to the stack = add one entry to build.artifacts (+ a
+# setValueTemplates line below if the chart needs to know its tag). No shell
+# script changes required.
+#
+# Prerequisites this file deliberately does NOT own -- scripts/dev-up.sh
+# still handles these before invoking skaffold, since Skaffold's helm
+# deployer has no before/after hook support (only its kubectl deployer does):
+#   - minikube start, the three bootstrap Secrets, the recipe-scraper/
+#     recipe-publisher/opencode-swe-agent ServiceAccounts
+#   - `helm dependency update` on the agent-orchestrator subchart itself
+#     (its own qdrant dependency; Helm doesn't recurse into file:// subcharts,
+#     so skipBuildDependencies below only covers the umbrella chart's direct deps)
+#   - applying charts/.../tool-controller/crds/*.yaml --server-side (Helm's
+#     crds/ dir is install-only; upgrades never touch it)
+
+build:
+  # No `local.push` -- Skaffold auto-detects the "minikube" kube-context and
+  # points the Docker client at minikube's own daemon (the eval $(minikube
+  # docker-env) dance in dev-up.sh, done automatically per build).
+  local:
+    useDockerCLI: true
+  # Unique tags per build (default gitCommit-based) so a Helm upgrade always
+  # changes the Deployment's pod template -- pods roll automatically on every
+  # `skaffold dev`/`run`, no manual `kubectl rollout restart` needed anymore.
+  tagPolicy:
+    gitCommit:
+      variant: AbbrevCommitSha
+  artifacts:
+    - image: agent-orchestrator
+      docker:
+        dockerfile: apps/agent-orchestrator/Dockerfile
+    - image: tool-controller
+      context: controllers/tool-controller
+      docker:
+        dockerfile: Dockerfile
+    - image: recipe-scraper
+      docker:
+        dockerfile: tools/recipe-scraper/Dockerfile
+    - image: recipe-publisher
+      docker:
+        dockerfile: tools/recipe-publisher/Dockerfile
+    - image: opencode-swe-agent
+      docker:
+        dockerfile: apps/opencode-swe-agent/Dockerfile
+    # One Dockerfile, four runtimes via --build-arg (mirrors dev-up.sh).
+    - image: localtool-executor-node
+      context: sidecars/localtool-executor
+      docker:
+        dockerfile: Dockerfile
+        buildArgs:
+          BASE_IMAGE: node:24-bookworm-slim
+          RUNTIME: node
+    - image: localtool-executor-python
+      context: sidecars/localtool-executor
+      docker:
+        dockerfile: Dockerfile
+        buildArgs:
+          BASE_IMAGE: python:3.12-slim-bookworm
+          RUNTIME: python
+    - image: localtool-executor-go
+      context: sidecars/localtool-executor
+      docker:
+        dockerfile: Dockerfile
+        buildArgs:
+          BASE_IMAGE: golang:1.24-bookworm
+          RUNTIME: go
+    - image: localtool-executor-shell
+      context: sidecars/localtool-executor
+      docker:
+        dockerfile: Dockerfile
+        buildArgs:
+          BASE_IMAGE: debian:bookworm-slim
+          RUNTIME: shell
+
+manifests: {}
+
+deploy:
+  helm:
+    releases:
+      - name: controller-agent
+        chartPath: charts/controller-agent
+        namespace: controller-agent
+        createNamespace: true
+        wait: true
+        valuesFiles:
+          - charts/controller-agent/values-minikube-demo.yaml
+        # false = skaffold runs `helm dependency build` on this chart itself
+        # before every deploy. It does NOT recurse into the nested
+        # agent-orchestrator/qdrant dependency (file:// subcharts aren't
+        # recursive in Helm) -- scripts/dev-up.sh still runs that one
+        # `helm dependency update` command before invoking skaffold.
+        skipBuildDependencies: false
+        # Maps each built image to the value the chart expects. Image name ->
+        # template var: dashes become underscores, see Skaffold's helm docs
+        # ("Deploy with helm") for IMAGE_REPO_*/IMAGE_TAG_*/IMAGE_FULLY_QUALIFIED_*.
+        setValueTemplates:
+          agent-orchestrator.image.repository: "{{.IMAGE_REPO_agent_orchestrator}}"
+          agent-orchestrator.image.tag: "{{.IMAGE_TAG_agent_orchestrator}}"
+          tool-controller.image.repository: "{{.IMAGE_REPO_tool_controller}}"
+          tool-controller.image.tag: "{{.IMAGE_TAG_tool_controller}}"
+          tools.recipeScraper.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_scraper}}"
+          tools.recipePublisher.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_publisher}}"
+          tools.opencodeSweAgent.image: "{{.IMAGE_FULLY_QUALIFIED_opencode_swe_agent}}"
+          # FRAGILE: index must match agent-orchestrator/values.yaml's
+          # localTool.runtimes order (node, python, go, shell). Reorder both
+          # together if you ever change it.
+          #
+          # `.name` must be set explicitly alongside `.image`: Helm replaces
+          # array values wholesale rather than merging them, so setting only
+          # `[i].image` via --set-string silently drops the chart default's
+          # `.name` field (which the deployment/volume names are built from),
+          # producing an invalid empty-suffix name like "localtool-executor-".
+          agent-orchestrator.localTool.runtimes[0].name: "node"
+          agent-orchestrator.localTool.runtimes[0].image: "{{.IMAGE_FULLY_QUALIFIED_localtool_executor_node}}"
+          agent-orchestrator.localTool.runtimes[1].name: "python"
+          agent-orchestrator.localTool.runtimes[1].image: "{{.IMAGE_FULLY_QUALIFIED_localtool_executor_python}}"
+          agent-orchestrator.localTool.runtimes[2].name: "go"
+          agent-orchestrator.localTool.runtimes[2].image: "{{.IMAGE_FULLY_QUALIFIED_localtool_executor_go}}"
+          agent-orchestrator.localTool.runtimes[3].name: "shell"
+          agent-orchestrator.localTool.runtimes[3].image: "{{.IMAGE_FULLY_QUALIFIED_localtool_executor_shell}}"
