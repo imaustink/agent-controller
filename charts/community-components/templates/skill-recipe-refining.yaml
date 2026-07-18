@@ -7,10 +7,15 @@ metadata:
     {{- include "tools.labels" . | nindent 4 }}
 spec:
   description: >-
-    Extract a recipe from a URL (video, image, or web page), publish it to
-    Mealie once the user confirms, and keep refining it afterward with every
-    change pushed live to that same Mealie recipe. Covers the full recipe
-    workflow: extraction, first-publish confirmation, and live refinement.
+    Extract a recipe from a URL (video, image, or web page), publish or save
+    it to Mealie once the user confirms, and keep refining it afterward with
+    every change pushed live to that same Mealie recipe. Covers the full
+    recipe workflow: extraction, first-publish confirmation, and live
+    refinement. Also applies to a bare follow-up like "publish", "publish
+    this", "save it", or "post it to Mealie" when a recipe already appears
+    earlier in the conversation -- the recipe doesn't have to come from a URL
+    extracted in THIS skill call; a recipe pasted by the user or written out
+    by the assistant earlier in the same conversation still counts.
   input: >-
     A recipe URL to start from, or the current recipe Markdown from a
     prior turn plus the requested adjustment or a confirmation to publish.
