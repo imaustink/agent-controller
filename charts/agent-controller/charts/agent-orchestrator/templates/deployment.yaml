@@ -106,16 +106,26 @@ spec:
                   name: {{ .Values.secrets.existingSecret | default (include "agent-orchestrator.fullname" .) }}
                   key: {{ .Values.secrets.callbackSecretKey }}
             {{/*
-            ToolRunLauncher never embeds the raw callback secret into a
-            ToolRun CR -- only its k8s Secret name/key (ADR 0010), so the
-            core-controller can wire it into the launched Job via
-            secretKeyRef instead. These are the same Secret/key the
+            ToolRunLauncher/AgentRunLauncher never embed the raw callback
+            secret into a ToolRun/AgentRun CR -- only its k8s Secret name/key
+            (ADR 0010), so the core-controller can wire it into the launched
+            Job via secretKeyRef instead. These are the same Secret/key the
             orchestrator itself uses above to verify inbound callbacks.
+
+            Only meaningful in HTTP-callback mode: NATS mode (AGENT_NATS_URL
+            set) delivers ToolRun/AgentRun results over NATS instead, so
+            gate this the same way AGENT_NATS_URL above is gated -- omitting
+            it here (rather than always emitting a value the app ignores)
+            keeps minikube's env shape matching prod's NATS-mode deploys, so
+            a launcher that forgets to branch on NATS mode fails the same
+            way in both instead of only in prod.
             */}}
+            {{- if not (or .Values.config.natsUrl (index .Values "nats" "enabled")) }}
             - name: AGENT_CALLBACK_SECRET_REF_NAME
               value: {{ .Values.secrets.existingSecret | default (include "agent-orchestrator.fullname" .) | quote }}
             - name: AGENT_CALLBACK_SECRET_REF_KEY
               value: {{ .Values.secrets.callbackSecretKey | quote }}
+            {{- end }}
             {{- if or .Values.secrets.qdrantApiKey .Values.secrets.existingSecret }}
             - name: AGENT_QDRANT_API_KEY
               valueFrom:
