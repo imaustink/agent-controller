@@ -83,6 +83,7 @@ orchestrator service, and `controllers/` holds the Go controller.
 │   ├── messaging.md            # event protocol & transports
 │   ├── security.md             # threat model & mitigations
 │   ├── orchestrator.md         # orchestrator architecture
+│   ├── integrations-gateway.md # proposal: event integrations (email/Slack/job) + FAAS gateway
 │   └── adr/                    # Architecture Decision Records
 ├── packages/
 │   └── messaging/              # @controller-agent/messaging — shared event protocol

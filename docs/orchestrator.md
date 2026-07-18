@@ -343,3 +343,6 @@ existing SSRF/prompt-injection mitigations:
   result reporting.
 - [security.md](security.md) — container hardening contract Job templates
   build on.
+- [integrations-gateway.md](integrations-gateway.md) — proposed event-driven
+  integrations (email/Slack/job triggers) and FAAS-style direct tool/agent
+  invocation, layered on this document's interfaces without modifying them.
