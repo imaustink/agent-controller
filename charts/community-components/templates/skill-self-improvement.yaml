@@ -48,26 +48,54 @@ spec:
     `tool_args` set to a single natural-language goal for that tool (itself a
     full coding agent) containing, in your own words:
 
-    1. A short, kebab-case name for the new capability (e.g.
-       `weather-lookup-skill`), derived from the original ad-hoc request.
+    1. Generalize before naming: the ad-hoc request is one EXAMPLE of a
+       capability, not the capability itself. Identify the general class of
+       request it demonstrates (e.g. "create a recipe for peach cocktail
+       syrup" demonstrates "create a recipe for any dish or drink from a
+       plain-text description", not "create peach cocktail syrup"). Actually
+       open and read the `spec.description`/`spec.input`/`spec.output` AND
+       `spec.toolRefs` of every existing Skill file under
+       `apps/agent-orchestrator/config/samples/` — do not judge by filename
+       alone, and do not skip this step. A Skill whose name sounds narrower
+       than the ad-hoc request (e.g. named after only one entry point) may
+       already cover the general class through a broader workflow described
+       in its markdown; a Skill already covers the ad-hoc request's class if
+       the SAME tool the ad-hoc task used already appears in that Skill's
+       `toolRefs`, even under a different step of its workflow. If such a
+       Skill exists, widen ITS markdown/description/input/output to also
+       accept the ad-hoc request's phrasing/entry point instead of drafting a
+       new, narrower Skill — this is the common case; only draft a new Skill
+       when no existing one's toolRefs come close. When you do draft a new
+       one, pick a short, kebab-case name for the GENERAL capability (e.g.
+       `recipe-creation-skill`, not `peach-cocktail-syrup-skill`) — a name and
+       scope tied to the literal ad-hoc request will never match the next,
+       differently-worded request.
     2. The full YAML for a new `Skill` custom resource, `apiVersion:
        core.controller-agent.dev/v1alpha1`, `kind: Skill`, to be created at
        `apps/agent-orchestrator/config/samples/<name>.yaml`:
-       - `spec.description` / `spec.input` / `spec.output`: written from what
-         the ad-hoc task actually needed and produced, in the same style as
-         the other Skill samples in that directory (read a couple of them
-         for the house style — plain, RAG-retrieval-oriented description;
-         input/output describe the contract, not an example).
-       - `spec.toolRefs`: name whichever existing `Tool`/`LocalTool` CRs (or a
-         new agent-backed Tool, if the ad-hoc task itself used
-         `opencode-swe-agent` or another Agent CR directly) the new skill
-         needs — inspect the existing catalog under
+       - `spec.description` / `spec.input` / `spec.output`: written for the
+         GENERAL capability identified in step 1 (not restated in terms of
+         the specific ad-hoc example), in the same style as the other Skill
+         samples in that directory (read a couple of them for the house
+         style — plain, RAG-retrieval-oriented description; input/output
+         describe the contract, not an example).
+       - `spec.toolRefs`: a plain YAML list of strings (`SkillSpec.ToolRefs`
+         is `[]string` — NOT a list of objects, so entries are `- some-name`,
+         never `- name: some-name`), each string exactly matching the
+         `metadata.name` of an existing `Tool`/`LocalTool` CR (or a new
+         agent-backed Tool, if the ad-hoc task itself used
+         `opencode-swe-agent` or another Agent CR directly) — grep for
+         `kind: Tool` / `kind: LocalTool` across
          `apps/agent-orchestrator/config/samples/` and
-         `controllers/core-controller/config/samples/` for what already
-         exists before inventing a new Tool.
+         `controllers/core-controller/config/samples/` and copy the name
+         from that CR's own `metadata.name` field verbatim; never guess or
+         invent a name (e.g. by appending `-tool` to the capability name) —
+         if no matching Tool CR exists, that must be called out to the SWE
+         agent as a new Tool to create alongside the Skill, not assumed.
        - `spec.markdown`: the new skill's own system prompt, written the same
-         way as this file's — classify the user's request, call the right
-         tool, never fabricate. Do not copy this skill's own markdown.
+         way as this file's — classify the user's request against the
+         GENERAL capability (not just the literal ad-hoc example), call the
+         right tool, never fabricate. Do not copy this skill's own markdown.
        - `metadata.annotations`: include
          `controller-agent.dev/generated-by: self-improvement-skill` so the
          provenance of an auto-drafted skill is visible on the CR itself.

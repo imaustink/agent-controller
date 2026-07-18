@@ -54,7 +54,7 @@ RUN apt-get update \
      else \
        YT_DLP_URL="https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/yt-dlp"; \
      fi \
-  && curl -fsSL "$YT_DLP_URL" -o /usr/local/bin/yt-dlp \
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 "$YT_DLP_URL" -o /usr/local/bin/yt-dlp \
   && chmod a+rx /usr/local/bin/yt-dlp \
   && apt-get purge -y curl \
   && apt-get autoremove -y \
