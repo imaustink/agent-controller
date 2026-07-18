@@ -1,0 +1,52 @@
+# Skill custom resource for peach-cocktail-syrup-skill -- apply with:
+#   kubectl apply -n <namespace> -f config/samples/peach-cocktail-syrup-skill.yaml
+#
+# Drafted via the self-improvement-skill (ADR: see self-improvement-skill.yaml)
+# after a prior ad-hoc turn asked the assistant to create a peach cocktail
+# syrup recipe with no matching Skill/Agent in the catalog. That turn was
+# handled as a one-off fallback; this Skill makes it a permanent, retrievable
+# capability instead. toolRefs must name existing Tool CRs in the same
+# namespace -- this reuses the recipe-publisher Tool already defined at
+# tools/recipe-publisher/tool.yaml (there is no separate "-tool"-suffixed
+# publisher Tool in this catalog).
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Skill
+metadata:
+  name: peach-cocktail-syrup-skill
+  annotations:
+    controller-agent.dev/generated-by: self-improvement-skill
+spec:
+  description: >-
+    Creates a recipe for peach cocktail syrup, including ingredients and
+    step-by-step instructions.
+  input: >-
+    A request to create a peach cocktail syrup recipe.
+  output: >-
+    A detailed recipe for peach cocktail syrup, including ingredients and
+    instructions.
+  # No allowedRoles here (ADR 0011): a Skill carries no RBAC of its own. Who
+  # can retrieve this skill is derived from its toolRefs' Tool.spec.allowedRoles
+  # (here: recipe-publisher, i.e. writer-only, since publishing is optional
+  # but still the only tool this skill may call).
+  toolRefs:
+    - recipe-publisher
+  markdown: |
+    # Peach Cocktail Syrup
+
+    Classify the user's request to determine if it is asking for a peach
+    cocktail syrup recipe. If so, provide a detailed recipe including a full
+    ingredients list (with quantities) and clear, numbered step-by-step
+    instructions for making a peach syrup suitable for cocktails.
+
+    If the user asks you to publish, save, or otherwise persist the recipe,
+    call the `recipe-publisher` tool with `tool_args` set to the full recipe
+    Markdown (title heading, ## Ingredients, ## Directions), exactly as you
+    presented it. Only call the tool when the user actually asks to publish
+    it -- otherwise just respond with the recipe directly.
+
+    Rules:
+    - Only `recipe-publisher` may be called from this skill -- never any
+      other tool.
+    - Never fabricate a recipe you are not confident in; if you are unsure of
+      correct proportions or technique for peach cocktail syrup, say so rather
+      than inventing details.
