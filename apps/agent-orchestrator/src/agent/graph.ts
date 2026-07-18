@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import type { Event } from "@controller-agent/messaging";
 import { extractContinuationToken, prependContinuationToken } from "../continuation.js";
+import { SELF_IMPROVEMENT_FOOTER } from "../openai/chat-completions.js";
 import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-agent-channel.js";
 import { AgentTurnFailedError, AgentTurnTimeoutError } from "../agents/nats-agent-channel.js";
 import type { AgentDescriptor, AgentSearchResult, AgentStore } from "../agents/types.js";
@@ -356,14 +357,6 @@ const AGENT_TIMEOUT_GRACE_MS = 60_000;
 function agentAwaitReplyTimeoutMs(agentRunTimeoutSeconds: number | undefined): number | undefined {
   return agentRunTimeoutSeconds ? agentRunTimeoutSeconds * 1000 + AGENT_TIMEOUT_GRACE_MS : undefined;
 }
-
-/**
- * Appended to a `noMatchFallback` result (`state.wasFallback`) so the caller
- * knows this turn was handled ad-hoc — no Skill or Agent matched it — and can
- * ask for a permanent skill to be authored for next time.
- */
-const SELF_IMPROVEMENT_FOOTER =
-  "\n\n---\nNo existing skill or agent matched this request, so it was handled ad-hoc. Ask me to run the self-improvement skill if you'd like a permanent skill added for this next time.";
 
 function appendSelfImprovementSuggestion(message: string): string {
   return `${message}${SELF_IMPROVEMENT_FOOTER}`;
