@@ -467,7 +467,17 @@ export class InvokeServer {
     });
     res.flushHeaders?.();
 
+    // Tracks the most recent in-progress ("done: false") status step so it
+    // can be closed out before the stream ends -- otherwise Open WebUI's
+    // StatusHistory spinner is left stuck on that step forever, since a
+    // "done: false" event is never followed by a matching "done: true" one
+    // for the same step once the agent turn completes.
+    let openStatusLabel: string | undefined;
     const finish = (content: string): void => {
+      if (openStatusLabel !== undefined) {
+        writeSseStatus(res, openStatusLabel, true);
+        openStatusLabel = undefined;
+      }
       writeSseChunk(res, chatCompletionChunk(id, model, { content }, null));
       writeSseChunk(res, chatCompletionChunk(id, model, {}, "stop"));
       writeSseDone(res);
@@ -491,6 +501,7 @@ export class InvokeServer {
         const label = message
           ? `${stage ? `${stage}: ` : ""}${message.slice(0, 120)}`
           : stage || "working…";
+        openStatusLabel = label;
         writeSseStatus(res, label, false);
       });
       const source = await this.graph.stream(graphInput, { streamMode: "updates" });
