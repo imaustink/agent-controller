@@ -44,6 +44,31 @@ const HISTORY_MAX_MESSAGES = 8;
 const HISTORY_MAX_CHARS = 24_000;
 
 /**
+ * Appended to a `noMatchFallback` reply (graph.ts) so the user knows a turn
+ * was handled ad-hoc and can ask for a permanent skill. Exported (rather than
+ * kept private to graph.ts) so {@link buildAgentRequest} can strip it back
+ * out of a folded assistant message below.
+ */
+export const SELF_IMPROVEMENT_FOOTER =
+  "\n\n---\nNo existing skill or agent matched this request, so it was handled ad-hoc. Ask me to run the self-improvement skill if you'd like a permanent skill added for this next time.";
+
+/**
+ * Strips a trailing {@link SELF_IMPROVEMENT_FOOTER} from a folded assistant
+ * message. This footer is a UI hint for the human ("no skill matched, want
+ * one added?"), not semantic content — but left in, it re-enters the next
+ * turn's `<conversation_history>` verbatim, and its very "no existing skill
+ * or agent matched this request" wording biases the next turn's
+ * skill/agent/tool selection calls (all of which see the full folded
+ * history) toward repeating "no match" even when the new turn's request
+ * plainly fits a real skill. Stripping it keeps the selectors judging the
+ * actual conversation content instead of the orchestrator's own prior
+ * fallback verdict.
+ */
+function stripSelfImprovementFooter(content: string): string {
+  return content.endsWith(SELF_IMPROVEMENT_FOOTER) ? content.slice(0, -SELF_IMPROVEMENT_FOOTER.length) : content;
+}
+
+/**
  * Builds the actual request text sent to the agent graph. The graph itself
  * is stateless per-turn (docs/adr/0008) — it only ever sees a single
  * `request` string — but standard OpenAI-style chat clients (Open WebUI et
@@ -78,7 +103,8 @@ export function buildAgentRequest(messages: unknown): string | undefined {
     if (!message || typeof message !== "object") continue;
     if (message.role !== "user" && message.role !== "assistant") continue;
     if (typeof message.content !== "string" || message.content.trim() === "") continue;
-    prior.unshift({ role: message.role, content: message.content });
+    const content = message.role === "assistant" ? stripSelfImprovementFooter(message.content) : message.content;
+    prior.unshift({ role: message.role, content });
   }
   // Enforce the char budget by dropping oldest first.
   let total = prior.reduce((sum, m) => sum + m.content.length, 0);
