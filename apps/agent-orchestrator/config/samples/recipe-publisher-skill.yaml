@@ -1,0 +1,14 @@
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Skill
+metadata:
+  name: recipe-publisher-skill
+  annotations:
+    controller-agent.dev/generated-by: self-improvement-skill
+spec:
+  description: "Publishes a recipe to a specified platform."
+  input: "A recipe with ingredients and instructions."
+  output: "A confirmation of publication with a link to the published recipe."
+  toolRefs:
+    - name: recipe-publisher-tool
+  markdown: |
+    Classify the user's request to publish a recipe. Use the recipe-publisher-tool to publish the recipe and provide a confirmation with a link. Never fabricate a response.
