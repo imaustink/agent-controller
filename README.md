@@ -148,6 +148,10 @@ Every tool container is expected to conform to these repo-wide standards:
 
 `recipe-scraper` is the reference implementation of both standards.
 
+Operating the deployed system day-to-day (reaching the chat UI, reading
+`ToolRun`/`AgentRun` status, troubleshooting) is covered separately in
+**[Operating the chat UI with kubectl](docs/kubectl-ui-guide.md)**.
+
 ## Deploying
 
 Two independent Helm charts cover the full system:
@@ -180,6 +184,11 @@ helm install agent-controller oci://ghcr.io/imaustink/charts/agent-controller --
 helm install community-components oci://ghcr.io/imaustink/charts/community-components --version 0.1.0 \
   -n controller-agent
 ```
+
+Once installed, see **[Operating the chat UI with kubectl](docs/kubectl-ui-guide.md)**
+for reaching Open WebUI, verifying it's healthy, and inspecting
+`ToolRun`/`AgentRun`/`Tool`/`Skill`/`Agent` resources with plain `kubectl`
+commands.
 
 ### Minikube quick-start
 

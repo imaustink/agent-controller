@@ -104,3 +104,10 @@ helm upgrade agent-controller charts/agent-controller -n controller-agent \
 See [values.yaml](values.yaml) for the full set. Each top-level key maps to a
 subchart and is passed straight through; consult the subcharts' own
 `values.yaml` files for their complete knobs.
+
+## Operating Open WebUI after install
+
+For reaching the chat UI, verifying it's healthy, and inspecting
+`ToolRun`/`AgentRun`/`Tool`/`Skill`/`Agent` resources with plain `kubectl`
+(no Helm/dashboard needed), see
+[docs/kubectl-ui-guide.md](../../docs/kubectl-ui-guide.md).
