@@ -1,0 +1,38 @@
+{{- if .Values.signozQuery.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: Tool
+metadata:
+  name: signoz-query
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Queries SigNoz (logs, traces, or metrics) for a bounded time window to
+    correlate application behavior with a cluster issue being debugged --
+    e.g. error-level logs for a service, recent traces, or a metric's
+    recent values. Read-only: only the query_range endpoint is called, and
+    the lookback window is capped server-side.
+  input: >-
+    A single JSON object: {"signal":"logs"|"traces"|"metrics",
+    "start":"-1h"|"now"|<ISO-8601>, "end":"now"|<ISO-8601>,
+    "serviceName"?, "metricName"? (required when signal is "metrics"),
+    "filters"?: [{"key","op":"="|"!="|"contains"|"in","value"}],
+    "limit"?: <=500}. Lookback windows longer than 24h are rejected.
+  output: >-
+    The SigNoz query_range JSON response, wrapped in a fenced code block.
+  allowedRoles:
+    - reader
+  tier: standard
+  image: {{ .Values.signozQuery.image | quote }}
+  serviceAccountName: {{ .Values.signozQuery.serviceAccountName | quote }}
+  env:
+    - name: SIGNOZ_BASE_URL
+      value: {{ .Values.signozQuery.baseUrl | quote }}
+  {{- if .Values.signozQuery.secretName }}
+  secretEnv:
+    - name: SIGNOZ_API_KEY
+      secretRef:
+        name: {{ .Values.signozQuery.secretName | quote }}
+        key: {{ .Values.signozQuery.secretKey | quote }}
+  {{- end }}
+{{- end }}

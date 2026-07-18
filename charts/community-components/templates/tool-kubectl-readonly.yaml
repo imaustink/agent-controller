@@ -1,0 +1,30 @@
+{{- if .Values.kubectlReadonly.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: Tool
+metadata:
+  name: kubectl-readonly
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Runs a single read-only kubectl command against the cluster (get,
+    describe, logs, events, or top) to inspect the live state of pods,
+    deployments, services, nodes, and related resources for debugging.
+    Strictly read-only: RBAC and an in-tool allowlist both block any
+    mutating verb and any access to Secrets or RBAC objects.
+  input: >-
+    A single kubectl command line, everything after "kubectl" (e.g.
+    "get pods -n prod", "describe pod my-pod-abc123 -n prod",
+    "logs -n prod my-pod-abc123 -c app --tail=200 --previous",
+    "get events -n prod --sort-by=.lastTimestamp"). Only the verbs
+    get/describe/logs/events/top and a fixed set of read-only flags are
+    accepted; anything else is rejected before it reaches the cluster.
+  output: >-
+    kubectl's own stdout (JSON when `-o json` was requested, otherwise
+    kubectl's normal text/table output), wrapped in a fenced code block.
+  allowedRoles:
+    - reader
+  tier: standard
+  image: {{ .Values.kubectlReadonly.image | quote }}
+  serviceAccountName: {{ .Values.kubectlReadonly.serviceAccountName | quote }}
+{{- end }}
