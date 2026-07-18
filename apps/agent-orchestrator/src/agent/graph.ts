@@ -362,8 +362,11 @@ function agentAwaitReplyTimeoutMs(agentRunTimeoutSeconds: number | undefined): n
  * knows this turn was handled ad-hoc — no Skill or Agent matched it — and can
  * ask for a permanent skill to be authored for next time.
  */
+const SELF_IMPROVEMENT_FOOTER =
+  "\n\n---\nNo existing skill or agent matched this request, so it was handled ad-hoc. Ask me to run the self-improvement skill if you'd like a permanent skill added for this next time.";
+
 function appendSelfImprovementSuggestion(message: string): string {
-  return `${message}\n\n---\nNo existing skill or agent matched this request, so it was handled ad-hoc. Ask me to run the self-improvement skill if you'd like a permanent skill added for this next time.`;
+  return `${message}${SELF_IMPROVEMENT_FOOTER}`;
 }
 
 /**
@@ -440,8 +443,18 @@ async function noMatchFallback(state: AgentState, deps: AgentGraphDeps): Promise
       wasFallback: true,
     };
   }
-  const response = await deps.bestEffortResponder.respond(state.request);
-  return { result: appendSelfImprovementSuggestion(response), wasFallback: true };
+  // Streaming callers watch the response go by live as "agent-text" content
+  // deltas (server.ts), so the final `result` need only carry the footer --
+  // duplicating the body here would repeat the whole answer in the chat, the
+  // same rule composeAgentTurnMessage applies via dropStreamedNarrative.
+  const onToken = state.progressListener
+    ? (delta: string) => state.progressListener!("agent-text", delta)
+    : undefined;
+  const response = onToken
+    ? await deps.bestEffortResponder.respond(state.request, onToken)
+    : await deps.bestEffortResponder.respond(state.request);
+  const result = onToken ? SELF_IMPROVEMENT_FOOTER : appendSelfImprovementSuggestion(response);
+  return { result, wasFallback: true };
 }
 
 /** Builds and compiles the LangGraph.js agent graph (docs/adr/0008, superseding the earlier flat tool-RAG flow). */
