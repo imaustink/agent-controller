@@ -83,6 +83,7 @@ orchestrator service, and `controllers/` holds the Go controller.
 │   ├── messaging.md            # event protocol & transports
 │   ├── security.md             # threat model & mitigations
 │   ├── orchestrator.md         # orchestrator architecture
+│   ├── integrations-gateway.md # proposal: event integrations + FAAS gateway
 │   └── adr/                    # Architecture Decision Records
 ├── packages/
 │   └── messaging/              # @controller-agent/messaging — shared event protocol
@@ -90,7 +91,8 @@ orchestrator service, and `controllers/` holds the Go controller.
 │   ├── recipe-scraper/         # URL → recipe Markdown
 │   └── recipe-publisher/       # recipe Markdown → Mealie instance
 ├── apps/
-│   └── agent-orchestrator/     # RAG skill selection + ToolRun/AgentRun creator
+│   ├── agent-orchestrator/     # RAG skill selection + ToolRun/AgentRun creator
+│   └── integration-gateway/    # phase-1 FAAS-only direct ToolRun/AgentRun gateway
 ├── controllers/
 │   └── core-controller/        # Go controller — watches CRDs, launches Jobs
 │       ├── api/v1alpha1/        # Tool, Skill, Agent, ToolRun, AgentRun types
@@ -123,10 +125,15 @@ secret injection, and lifecycle tracking.
 | App | Docs |
 | --- | ---- |
 | **agent-orchestrator** | [apps/agent-orchestrator/README.md](apps/agent-orchestrator/README.md) |
+| **integration-gateway** | [apps/integration-gateway/README.md](apps/integration-gateway/README.md) |
 
 A long-lived LangGraph.js service that handles the agent loop: resolves caller
 identity, selects a Skill via RAG, plans an action, and creates a `ToolRun` or
 `AgentRun` CR for the controller to execute.
+
+`integration-gateway` is a narrower sibling app: phase-1, FAAS-only direct
+`POST /fn/:id` / `GET /fn/runs/:id` lookup and launch against the same catalog,
+without RAG or skill selection (see [docs/integrations-gateway.md](docs/integrations-gateway.md)).
 
 ### Example tools
 
