@@ -1,0 +1,95 @@
+# RBAC for the kubectl-readonly Tool's launched Jobs -- apply with:
+#   kubectl apply -n <namespace> -f tools/kubectl-readonly/rbac.yaml
+#
+# Replace <namespace> below with wherever the Tool's Jobs actually run (the
+# same namespace as the rest of the agent-controller install). This is a
+# manual, out-of-band prerequisite like every other tool's ServiceAccount in
+# this repo (see tools/recipe-publisher/README.md) -- no Helm chart creates
+# ServiceAccounts/RBAC for individual tools today.
+#
+# Scope: read-only (get/list/watch only, never create/update/patch/delete)
+# across ALL namespaces, restricted to the same resource kinds the tool's
+# own in-process allowlist (src/allowlist.ts) permits. Secrets, RBAC objects
+# (Roles/RoleBindings/ClusterRoles/ClusterRoleBindings/ServiceAccounts) and
+# CustomResourceDefinitions are intentionally never granted here, even
+# though the tool's own allowlist already blocks them -- defense in depth.
+#
+# Narrower alternative: if you'd rather scope this to specific namespaces
+# instead of the whole cluster, drop the ClusterRoleBinding below and instead
+# apply a namespaced RoleBinding (same roleRef, kind: ClusterRole) in each
+# namespace you want this tool to see:
+#
+#   apiVersion: rbac.authorization.k8s.io/v1
+#   kind: RoleBinding
+#   metadata:
+#     name: kubectl-readonly-view
+#     namespace: <target-namespace>
+#   subjects:
+#     - kind: ServiceAccount
+#       name: kubectl-readonly
+#       namespace: <namespace-the-tool-runs-in>
+#   roleRef:
+#     kind: ClusterRole
+#     name: kubectl-readonly-view
+#     apiGroup: rbac.authorization.k8s.io
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubectl-readonly
+  namespace: <namespace>
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubectl-readonly-view
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - pods/status
+      - services
+      - endpoints
+      - events
+      - nodes
+      - namespaces
+      - persistentvolumeclaims
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      - pods
+      - nodes
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubectl-readonly-view
+subjects:
+  - kind: ServiceAccount
+    name: kubectl-readonly
+    namespace: <namespace>
+roleRef:
+  kind: ClusterRole
+  name: kubectl-readonly-view
+  apiGroup: rbac.authorization.k8s.io

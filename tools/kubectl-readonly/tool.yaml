@@ -1,0 +1,35 @@
+# Tool custom resource for kubectl-readonly (ADR 0010) -- apply with:
+#   kubectl apply -n <namespace> -f tools/kubectl-readonly/tool.yaml
+#
+# Prerequisites (out-of-band, same convention as every other tool's
+# serviceAccountName in this repo -- see rbac.yaml, applied separately):
+#   kubectl apply -n <namespace> -f tools/kubectl-readonly/rbac.yaml
+#
+# No secretEnv here: auth is this pod's own projected ServiceAccount token
+# (see rbac.yaml), never a stored credential.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Tool
+metadata:
+  name: kubectl-readonly
+spec:
+  description: >-
+    Runs a single read-only kubectl command against the cluster (get,
+    describe, logs, events, or top) to inspect the live state of pods,
+    deployments, services, nodes, and related resources for debugging.
+    Strictly read-only: RBAC and an in-tool allowlist both block any
+    mutating verb and any access to Secrets or RBAC objects.
+  input: >-
+    A single kubectl command line, everything after "kubectl" (e.g.
+    "get pods -n prod", "describe pod my-pod-abc123 -n prod",
+    "logs -n prod my-pod-abc123 -c app --tail=200 --previous",
+    "get events -n prod --sort-by=.lastTimestamp"). Only the verbs
+    get/describe/logs/events/top and a fixed set of read-only flags are
+    accepted; anything else is rejected before it reaches the cluster.
+  output: >-
+    kubectl's own stdout (JSON when `-o json` was requested, otherwise
+    kubectl's normal text/table output), wrapped in a fenced code block.
+  allowedRoles:
+    - reader
+  tier: standard
+  image: kubectl-readonly:latest
+  serviceAccountName: kubectl-readonly

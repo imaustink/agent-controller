@@ -1,0 +1,48 @@
+# Tool custom resource for signoz-query (ADR 0010) -- apply with:
+#   kubectl apply -n <namespace> -f tools/signoz-query/tool.yaml
+#
+# Prerequisites (out-of-band, same convention as every other tool in this
+# repo -- see tools/recipe-publisher/README.md):
+#   kubectl -n <namespace> create serviceaccount signoz-query
+#   # Only if your SigNoz instance requires an API key (SigNoz Cloud, or
+#   # self-hosted with auth enabled) -- omit entirely for an unauthenticated
+#   # self-hosted OSS instance and drop the secretEnv block below too:
+#   kubectl -n <namespace> create secret generic signoz-query-secrets \
+#     --from-literal=SIGNOZ_API_KEY=...
+#
+# No k8s RBAC is bound to the signoz-query ServiceAccount at all (see
+# rbac note in README.md) -- this tool only ever makes outbound HTTPS calls
+# to the fixed SIGNOZ_BASE_URL below, never the k8s API.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Tool
+metadata:
+  name: signoz-query
+spec:
+  description: >-
+    Queries SigNoz (logs, traces, or metrics) for a bounded time window to
+    correlate application behavior with a cluster issue being debugged --
+    e.g. error-level logs for a service, recent traces, or a metric's
+    recent values. Read-only: only the query_range endpoint is called, and
+    the lookback window is capped server-side.
+  input: >-
+    A single JSON object: {"signal":"logs"|"traces"|"metrics",
+    "start":"-1h"|"now"|<ISO-8601>, "end":"now"|<ISO-8601>,
+    "serviceName"?, "metricName"? (required when signal is "metrics"),
+    "filters"?: [{"key","op":"="|"!="|"contains"|"in","value"}],
+    "limit"?: <=500}. Lookback windows longer than 24h are rejected.
+  output: >-
+    The SigNoz query_range JSON response, wrapped in a fenced code block.
+  allowedRoles:
+    - reader
+  tier: standard
+  image: signoz-query:latest
+  serviceAccountName: signoz-query
+  env:
+    - name: SIGNOZ_BASE_URL
+      value: "http://signoz.monitoring.svc.cluster.local:8080"
+  # Remove this secretEnv block entirely if your SigNoz instance has no auth.
+  secretEnv:
+    - name: SIGNOZ_API_KEY
+      secretRef:
+        name: signoz-query-secrets
+        key: SIGNOZ_API_KEY

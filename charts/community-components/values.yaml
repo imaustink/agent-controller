@@ -35,6 +35,34 @@ recipePublisher:
   secretName: recipe-publisher-secrets
   secretKey: MEALIE_API_TOKEN
 
+# kubectl-readonly: read-only kubectl (get/describe/logs/events/top) against
+# the live cluster, for debugging. Prerequisites (out-of-band):
+#   kubectl -n <ns> create serviceaccount kubectl-readonly
+#   kubectl apply -n <ns> -f tools/kubectl-readonly/rbac.yaml   # ClusterRole + ClusterRoleBinding
+kubectlReadonly:
+  enabled: false
+  image: kubectl-readonly:latest
+  serviceAccountName: kubectl-readonly
+
+# signoz-query: bounded logs/traces/metrics queries against a SigNoz
+# instance, for correlating application behavior with cluster issues.
+# Prerequisites (out-of-band):
+#   kubectl -n <ns> create serviceaccount signoz-query
+#   # Only if your SigNoz instance requires an API key -- omit secretName
+#   # below (set it to "") for an unauthenticated self-hosted OSS instance:
+#   kubectl -n <ns> create secret generic signoz-query-secrets \
+#     --from-literal=SIGNOZ_API_KEY=...
+signozQuery:
+  enabled: false
+  image: signoz-query:latest
+  serviceAccountName: signoz-query
+  # Target SigNoz Query Service instance (not a secret).
+  baseUrl: "http://signoz.monitoring.svc.cluster.local:8080"
+  # Leave secretName empty ("") to omit secretEnv entirely (unauthenticated
+  # self-hosted OSS SigNoz).
+  secretName: signoz-query-secrets
+  secretKey: SIGNOZ_API_KEY
+
 # opencode-swe-agent: Agent-SDK software-engineering sub-agent (bidirectional
 # NATS, HITL) that runs the opencode CLI against Anthropic's API directly
 # (Claude Sonnet 5) instead of GitHub Copilot. Replaces the old copilotSwe
@@ -88,4 +116,9 @@ skills:
   # imaustink/agent-controller via opencode-swe-agent-tool. Requires
   # opencodeSweAgentTool.enabled=true for its derived audience to be non-empty.
   selfImprovement:
+    enabled: false
+  # cluster-debug: read-only kubectl + SigNoz-query triage skill. Enable both
+  # kubectlReadonly and signozQuery above for its derived audience (ADR 0011)
+  # to be non-empty.
+  clusterDebug:
     enabled: false
