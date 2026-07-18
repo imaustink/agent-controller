@@ -54,14 +54,12 @@ FROM node:20-bookworm-slim AS runtime
 ARG GH_VERSION=2.63.2
 ARG GO_VERSION=1.24.5
 
-/**
- * Common dev-tool baseline for the agent's own use during a task (build
- * tooling, archive handling, JSON munging, searching a checkout, editing) --
- * so opencode doesn't discover a missing tool mid-task and try to apt-get
- * install it itself (slow, and it may not know it's even allowed to). See
- * the `## Environment` section of buildPrompt (opencode.ts) which tells the
- * agent exactly what's installed here, so it doesn't have to probe/guess.
- */
+# Common dev-tool baseline for the agent's own use during a task (build
+# tooling, archive handling, JSON munging, searching a checkout, editing) --
+# so opencode doesn't discover a missing tool mid-task and try to apt-get
+# install it itself (slow, and it may not know it's even allowed to). See
+# the `## Environment` section of buildPrompt (opencode.ts) which tells the
+# agent exactly what's installed here, so it doesn't have to probe/guess.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
      ca-certificates curl git python3 python3-pip make build-essential \
