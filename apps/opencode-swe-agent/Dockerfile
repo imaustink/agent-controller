@@ -54,18 +54,30 @@ FROM node:20-bookworm-slim AS runtime
 ARG GH_VERSION=2.63.2
 ARG GO_VERSION=1.24.5
 
+/**
+ * Common dev-tool baseline for the agent's own use during a task (build
+ * tooling, archive handling, JSON munging, searching a checkout, editing) --
+ * so opencode doesn't discover a missing tool mid-task and try to apt-get
+ * install it itself (slow, and it may not know it's even allowed to). See
+ * the `## Environment` section of buildPrompt (opencode.ts) which tells the
+ * agent exactly what's installed here, so it doesn't have to probe/guess.
+ */
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git python3 python3-pip make \
+  && apt-get install -y --no-install-recommends \
+     ca-certificates curl git python3 python3-pip make build-essential \
+     jq unzip zip less ripgrep \
   # GitHub CLI -- installed from the official release tarball for a hermetic build.
   # curl retries transient network resets (common on flaky CI runners) instead
-  # of failing the whole build on a single dropped connection.
+  # of failing the whole build on a single dropped connection. Arch is
+  # detected at build time (matches the Go install below) rather than
+  # hardcoded, so this also builds correctly on amd64 runners/nodes.
   && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
-     "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_arm64.tar.gz" \
+     "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_$(dpkg --print-architecture).tar.gz" \
      -o /tmp/gh.tar.gz \
   && tar -xzf /tmp/gh.tar.gz -C /tmp \
   && rm -f /tmp/gh.tar.gz \
-  && mv "/tmp/gh_${GH_VERSION}_linux_arm64/bin/gh" /usr/local/bin/gh \
-  && rm -rf "/tmp/gh_${GH_VERSION}_linux_arm64" \
+  && mv "/tmp/gh_${GH_VERSION}_linux_$(dpkg --print-architecture)/bin/gh" /usr/local/bin/gh \
+  && rm -rf "/tmp/gh_${GH_VERSION}_linux_$(dpkg --print-architecture)" \
   # Go toolchain -- installed from the official tarball; arch is detected at build time.
   && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
      "https://go.dev/dl/go${GO_VERSION}.linux-$(dpkg --print-architecture).tar.gz" \
@@ -75,7 +87,10 @@ RUN apt-get update \
   # Agentic opencode CLI, configured to call Anthropic (Claude Sonnet 5) directly.
   && npm install -g opencode-ai@latest \
   && npm cache clean --force \
-  && apt-get purge -y curl \
+  # curl is kept at runtime (unlike before) -- the agent's tasks routinely
+  # need it (hitting APIs, downloading assets) and network egress is already
+  # unrestricted for this Job (docs/security.md), so purging it only cost
+  # the agent a working tool without adding any real containment.
   && apt-get autoremove -y \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
