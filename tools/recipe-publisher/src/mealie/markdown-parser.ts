@@ -59,14 +59,35 @@ export interface ParsedRecipeMarkdown {
  * orchestrator LLM (rather than scraped from a URL) commonly use bullets, and
  * silently parsing zero items from those was publishing empty recipes to
  * Mealie with no error (see run() in ../index.ts for the empty-section guard).
+ *
+ * A line that's INDENTED (rather than a new marker at column 0) is treated as
+ * a continuation of the item above it -- e.g. a bold lead-in step followed by
+ * the actual detail as a nested sub-bullet:
+ *   1. **Prepare the peaches:**
+ *      - Peel, pit, and slice.
+ * Without this, that detail line is silently dropped (it doesn't match the
+ * marker regex at column 0), leaving a step that's just a colon with nothing
+ * after it. Only indentation triggers a merge -- an unindented trailing line
+ * (e.g. the `[Source](<url>)` line after the last section) is never folded
+ * into the previous item.
  */
 function parseNumberedList(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => line.match(/^(?:\d+\.|[-*•])\s+(.+)$/))
-    .filter((match): match is RegExpMatchArray => match !== null)
-    .map((match) => match[1]!.trim())
-    .filter((item) => item.length > 0);
+  const items: string[] = [];
+  for (const rawLine of text.split("\n")) {
+    const marker = rawLine.match(/^(?:\d+\.|[-*•])\s+(.+)$/);
+    if (marker) {
+      items.push(marker[1]!.trim());
+      continue;
+    }
+    const indented = rawLine.match(/^[ \t]+(?:[-*•]\s+)?(.+)$/);
+    if (indented && items.length > 0) {
+      const continuation = indented[1]!.trim();
+      if (continuation.length > 0) {
+        items[items.length - 1] = `${items[items.length - 1]} ${continuation}`;
+      }
+    }
+  }
+  return items.filter((item) => item.length > 0);
 }
 
 /**
@@ -82,8 +103,15 @@ function parseNumberedList(text: string): string[] {
  */
 const DIRECTIONS_HEADING_ALIASES = new Set(["directions", "instructions", "steps", "method", "preparation"]);
 
+const KNOWN_SECTION_KEYS = new Set(["ingredients", "directions", "equipment", "tips"]);
+
+/** Trims a heading's own trailing punctuation (`## Ingredients:`) -- common in casually-authored Markdown, harmless to the heading's meaning. */
+function normalizeHeadingText(heading: string): string {
+  return heading.trim().replace(/[:.]+\s*$/, "").trim();
+}
+
 function canonicalHeadingKey(heading: string): string {
-  const key = heading.trim().toLowerCase();
+  const key = normalizeHeadingText(heading).toLowerCase();
   return DIRECTIONS_HEADING_ALIASES.has(key) ? "directions" : key;
 }
 
@@ -103,7 +131,7 @@ function parseSectionGroup(body: string): ParsedSection[] {
     sections.push({ name: null, items: preambleItems });
   }
   for (let i = 1; i < parts.length; i += 2) {
-    const name = parts[i]!.trim();
+    const name = normalizeHeadingText(parts[i] ?? "");
     sections.push({ name, items: parseNumberedList(parts[i + 1] ?? "") });
   }
   return sections;
@@ -141,14 +169,19 @@ function headingBody(matches: HeadingMatch[], i: number, markdown: string): stri
 }
 
 export function parseRecipeMarkdown(markdown: string): ParsedRecipeMarkdown {
-  const titleMatch = markdown.match(/^#\s+(.+)$/m);
-  const title = titleMatch ? titleMatch[1]!.trim() : null;
-
   const sourceMatch = markdown.match(/\[Source\]\((.+?)\)/);
   const sourceUrl = sourceMatch ? sourceMatch[1]!.trim() : null;
 
-  const blocks = new Map<string, string>();
   const headingMatches = findHeadingMatches(markdown);
+  // The title is the first heading that ISN'T one of the known section
+  // labels, at whatever level it happens to use -- not hardcoded to a single
+  // `#` -- since a recipe pasted or composed directly (rather than rendered
+  // by recipe-scraper's own `# Title` convention) may title itself with any
+  // heading depth (e.g. `### Peach Cocktail Syrup`).
+  const titleMatch = headingMatches.find((m) => !KNOWN_SECTION_KEYS.has(canonicalHeadingKey(m.heading)));
+  const title = titleMatch ? normalizeHeadingText(titleMatch.heading) : null;
+
+  const blocks = new Map<string, string>();
   for (let i = 0; i < headingMatches.length; i++) {
     const key = canonicalHeadingKey(headingMatches[i]!.heading);
     if (!blocks.has(key)) {

@@ -137,6 +137,51 @@ describe("parseRecipeMarkdown", () => {
     expect(parsed.directionSections).toEqual([{ name: null, items: ["Mix and bake"] }]);
   });
 
+  it("uses a non-H1 heading as the title when the recipe doesn't use recipe-scraper's canonical `#`", () => {
+    const markdown = ["### Peach Cocktail Syrup Recipe", "", "#### Ingredients", "- 2 cups peaches"].join("\n");
+    expect(parseRecipeMarkdown(markdown).title).toBe("Peach Cocktail Syrup Recipe");
+  });
+
+  it("strips a heading's own trailing colon (e.g. '#### Ingredients:')", () => {
+    const markdown = ["#### Ingredients:", "- 2 cups peaches", "", "#### Instructions:", "1. Simmer"].join("\n");
+    const parsed = parseRecipeMarkdown(markdown);
+    expect(parsed.ingredientSections).toEqual([{ name: null, items: ["2 cups peaches"] }]);
+    expect(parsed.directionSections).toEqual([{ name: null, items: ["Simmer"] }]);
+  });
+
+  it("folds an indented continuation line into the numbered item above it", () => {
+    const markdown = [
+      "### Peach Cocktail Syrup",
+      "",
+      "#### Ingredients:",
+      "- 2 cups peaches",
+      "",
+      "#### Instructions:",
+      "",
+      "1. **Prepare the Peaches:**",
+      "   - Peel, pit, and slice the fresh peaches.",
+      "2. **Combine Ingredients:**",
+      "   - Mix the peaches, sugar, water, and lemon juice.",
+    ].join("\n");
+
+    const parsed = parseRecipeMarkdown(markdown);
+    expect(parsed.title).toBe("Peach Cocktail Syrup");
+    expect(parsed.directionSections).toEqual([
+      {
+        name: null,
+        items: [
+          "**Prepare the Peaches:** Peel, pit, and slice the fresh peaches.",
+          "**Combine Ingredients:** Mix the peaches, sugar, water, and lemon juice.",
+        ],
+      },
+    ]);
+  });
+
+  it("does not fold an unindented trailing line (e.g. the [Source] link) into the last item", () => {
+    const markdown = ["## Tips", "", "1. Don't overmix", "", "[Source](https://example.com/recipe)"].join("\n");
+    expect(parseRecipeMarkdown(markdown).tips).toEqual(["Don't overmix"]);
+  });
+
   it.each(["-", "*", "•"])("parses %s-bulleted lists the same as numbered lists", (marker) => {
     const markdown = [
       "# Pancakes",
