@@ -1,7 +1,11 @@
 # Event Integrations & FAAS Gateway (design proposal)
 
-> **Status:** proposed — no implementation yet. This document is a starting
-> point for discussion, written to the same standard as
+> **Status:** partially implemented. Phase 1 (the `faas` adapter / direct-by-id
+> invocation surface — see [§4](#4-one-off--faas-path-direct-toolrunagentrun-skips-retrieval))
+> is implemented in [apps/integration-gateway](../apps/integration-gateway/);
+> the remaining phases (Slack/email adapters, `IntegrationRoute` routing) are
+> still proposed only. This document is a starting point for discussion,
+> written to the same standard as
 > [orchestrator.md](orchestrator.md) and cross-referenced from
 > [README.md](../README.md). It assumes familiarity with
 > [orchestrator.md](orchestrator.md), [messaging.md](messaging.md), and

@@ -4,7 +4,7 @@ import type { Event } from "@controller-agent/messaging";
 import type { AgentRunLauncherPort } from "./k8s/agentrun-launcher.js";
 import type { ToolRunLauncherPort } from "./k8s/toolrun-launcher.js";
 import type { IdentityResolver } from "./rbac/types.js";
-import type { CatalogRegistry } from "./registry/types.js";
+import type { CatalogRegistry, ResolvedCatalogEntry } from "./registry/types.js";
 import type { InboundEvent } from "./types.js";
 
 export type RunStatus = "pending" | "succeeded" | "failed";
@@ -161,7 +161,7 @@ export class GatewayServer {
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(run));
   }
 
-  private async launchAndAwait(id: string, entry: Awaited<ReturnType<CatalogRegistry["getById"]>> extends infer R ? Exclude<R, undefined> : never, event: InboundEvent): Promise<void> {
+  private async launchAndAwait(id: string, entry: ResolvedCatalogEntry, event: InboundEvent): Promise<void> {
     const callbackUrl = `${this.options.callbackBaseUrl.replace(/\/$/, "")}/callback/${id}`;
     if (entry.kind === "tool" && entry.jobTemplate) {
       await this.options.toolRunLauncher.launch(entry.jobTemplate, {

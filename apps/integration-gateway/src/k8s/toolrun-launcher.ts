@@ -12,9 +12,14 @@ export interface SecretKeySelector {
 
 export interface ToolRunLaunchOptions {
   args?: string[];
+  /**
+   * URL the launched Job POSTs its terminal event to. The gateway's HMAC
+   * secret is deliberately NOT part of this options shape: the ToolRun CR
+   * only ever carries a `secretRef` (k8s Secret name/key, injected below
+   * from the launcher's own constructor param), never a plaintext secret
+   * value re-embedded by this process.
+   */
   callbackUrl: string;
-  /** Present for API symmetry; ignored because the CR only carries secretRef. */
-  callbackSecret?: string;
 }
 
 export interface LaunchedToolRun {

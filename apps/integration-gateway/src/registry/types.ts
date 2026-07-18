@@ -29,3 +29,6 @@ export interface CatalogEntry {
 export interface CatalogRegistry {
   getById(id: string): Promise<CatalogEntry | undefined>;
 }
+
+/** A {@link CatalogEntry} known to have resolved (never `undefined`) — used once `getById`'s result has been null-checked. */
+export type ResolvedCatalogEntry = CatalogEntry;

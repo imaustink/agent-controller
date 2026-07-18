@@ -6,9 +6,12 @@ export const AGENTRUN_PLURAL = "agentruns";
 
 export interface AgentRunLaunchOptions {
   goal: string;
+  /**
+   * URL the launched Job POSTs its terminal event to. As with
+   * {@link ToolRunLaunchOptions}, no plaintext callback secret is part of
+   * this shape -- the AgentRun CR only ever carries a `secretRef`.
+   */
   callbackUrl: string;
-  /** Present for API symmetry; ignored because the CR only carries secretRef. */
-  callbackSecret?: string;
   timeoutSeconds?: number;
 }
 

@@ -14,7 +14,7 @@ catalog entry by id.
 
 ## What it does
 
-- `POST /fn/:id` with `Authorization: ****** and body
+- `POST /fn/:id` with an `Authorization` bearer-token header and body
   `{ "input": "...", "args"?: ["..."] }`
 - resolves the caller identity,
 - looks up a `Tool` or `Agent` custom resource by `:id`,

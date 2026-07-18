@@ -22,7 +22,6 @@ describe("ToolRunLauncher", () => {
     const launched = await launcher.launch(template, {
       args: ["https://example.com/recipe"],
       callbackUrl: "http://integration-gateway-callback.default.svc.cluster.local:8091/callback/abc",
-      callbackSecret: "raw-secret-that-must-not-appear-in-the-cr",
     });
 
     expect(launched.namespace).toBe("default");
@@ -44,7 +43,6 @@ describe("ToolRunLauncher", () => {
         secretRef: { name: "integration-gateway-secrets", key: "secret" },
       },
     });
-    expect(JSON.stringify(body)).not.toContain("raw-secret-that-must-not-appear-in-the-cr");
   });
 
   it("throws if the template has no toolRef", async () => {
@@ -56,10 +54,7 @@ describe("ToolRunLauncher", () => {
     );
 
     await expect(
-      launcher.launch(
-        { image: "x", namespace: "default", serviceAccountName: "sa" },
-        { callbackUrl: "http://x", callbackSecret: "s" },
-      ),
+      launcher.launch({ image: "x", namespace: "default", serviceAccountName: "sa" }, { callbackUrl: "http://x" }),
     ).rejects.toThrow(/toolRef/);
   });
 });
