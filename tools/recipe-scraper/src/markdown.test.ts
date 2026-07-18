@@ -9,6 +9,8 @@ describe("renderMarkdown", () => {
       url: "https://example.com/recipe",
       title: "Pancakes",
       recipe: {
+        isRecipe: true,
+        name: null,
         ingredientSections: [{ name: null, items: ["2 eggs", "1 cup flour"] }],
         directionSections: [{ name: null, items: ["Mix", "Cook"] }],
         equipment: ["whisk"],
@@ -51,6 +53,8 @@ describe("renderMarkdown", () => {
       url: "https://example.com/muffins",
       title: "Bakery Style Blueberry Muffins",
       recipe: {
+        isRecipe: true,
+        name: null,
         ingredientSections: [
           { name: "Crumble Topping Ingredients", items: ["4 tbsp butter, melted", "1/2 cup sugar"] },
           { name: "Muffin Ingredients", items: ["2 cups flour", "2 cups blueberries"] },
@@ -109,6 +113,8 @@ describe("renderMarkdown", () => {
       url: "https://example.com/recipe",
       title: null,
       recipe: {
+        isRecipe: true,
+        name: null,
         ingredientSections: [{ name: null, items: ["2 eggs"] }],
         directionSections: [{ name: null, items: ["Mix"] }],
         equipment: [],
