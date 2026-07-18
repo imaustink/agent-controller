@@ -66,15 +66,24 @@ spec:
        capability, not the capability itself. Identify the general class of
        request it demonstrates (e.g. "create a recipe for peach cocktail
        syrup" demonstrates "create a recipe for any dish or drink from a
-       plain-text description", not "create peach cocktail syrup"). Inspect
-       the existing catalog under `apps/agent-orchestrator/config/samples/`
-       for a Skill that already covers that general class through a
-       different entry point (e.g. one that only handles recipes starting
-       from a URL) — if one exists, widen ITS markdown/description instead
-       of drafting a new, narrower Skill. Otherwise pick a short, kebab-case
-       name for the GENERAL capability (e.g. `recipe-creation-skill`, not
-       `peach-cocktail-syrup-skill`) — a name and scope tied to the literal
-       ad-hoc request will never match the next, differently-worded request.
+       plain-text description", not "create peach cocktail syrup"). Actually
+       open and read the `spec.description`/`spec.input`/`spec.output` AND
+       `spec.toolRefs` of every existing Skill file under
+       `apps/agent-orchestrator/config/samples/` — do not judge by filename
+       alone, and do not skip this step. A Skill whose name sounds narrower
+       than the ad-hoc request (e.g. named after only one entry point) may
+       already cover the general class through a broader workflow described
+       in its markdown; a Skill already covers the ad-hoc request's class if
+       the SAME tool the ad-hoc task used already appears in that Skill's
+       `toolRefs`, even under a different step of its workflow. If such a
+       Skill exists, widen ITS markdown/description/input/output to also
+       accept the ad-hoc request's phrasing/entry point instead of drafting a
+       new, narrower Skill — this is the common case; only draft a new Skill
+       when no existing one's toolRefs come close. When you do draft a new
+       one, pick a short, kebab-case name for the GENERAL capability (e.g.
+       `recipe-creation-skill`, not `peach-cocktail-syrup-skill`) — a name and
+       scope tied to the literal ad-hoc request will never match the next,
+       differently-worded request.
     2. The full YAML for a new `Skill` custom resource, `apiVersion:
        core.controller-agent.dev/v1alpha1`, `kind: Skill`, to be created at
        `apps/agent-orchestrator/config/samples/<name>.yaml`:
@@ -84,13 +93,19 @@ spec:
          samples in that directory (read a couple of them for the house
          style — plain, RAG-retrieval-oriented description; input/output
          describe the contract, not an example).
-       - `spec.toolRefs`: name whichever existing `Tool`/`LocalTool` CRs (or a
-         new agent-backed Tool, if the ad-hoc task itself used
-         `opencode-swe-agent` or another Agent CR directly) the new skill
-         needs — inspect the existing catalog under
+       - `spec.toolRefs`: a plain YAML list of strings (`SkillSpec.ToolRefs`
+         is `[]string` — NOT a list of objects, so entries are `- some-name`,
+         never `- name: some-name`), each string exactly matching the
+         `metadata.name` of an existing `Tool`/`LocalTool` CR (or a new
+         agent-backed Tool, if the ad-hoc task itself used
+         `opencode-swe-agent` or another Agent CR directly) — grep for
+         `kind: Tool` / `kind: LocalTool` across
          `apps/agent-orchestrator/config/samples/` and
-         `controllers/core-controller/config/samples/` for what already
-         exists before inventing a new Tool.
+         `controllers/core-controller/config/samples/` and copy the name
+         from that CR's own `metadata.name` field verbatim; never guess or
+         invent a name (e.g. by appending `-tool` to the capability name) —
+         if no matching Tool CR exists, that must be called out to the SWE
+         agent as a new Tool to create alongside the Skill, not assumed.
        - `spec.markdown`: the new skill's own system prompt, written the same
          way as this file's — classify the user's request against the
          GENERAL capability (not just the literal ad-hoc example), call the
