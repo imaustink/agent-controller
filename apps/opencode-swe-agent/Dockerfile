@@ -57,13 +57,21 @@ ARG GO_VERSION=1.24.5
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git python3 python3-pip make \
   # GitHub CLI -- installed from the official release tarball for a hermetic build.
-  && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_arm64.tar.gz" \
-     | tar -xz -C /tmp \
+  # curl retries transient network resets (common on flaky CI runners) instead
+  # of failing the whole build on a single dropped connection.
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+     "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_arm64.tar.gz" \
+     -o /tmp/gh.tar.gz \
+  && tar -xzf /tmp/gh.tar.gz -C /tmp \
+  && rm -f /tmp/gh.tar.gz \
   && mv "/tmp/gh_${GH_VERSION}_linux_arm64/bin/gh" /usr/local/bin/gh \
   && rm -rf "/tmp/gh_${GH_VERSION}_linux_arm64" \
   # Go toolchain -- installed from the official tarball; arch is detected at build time.
-  && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-$(dpkg --print-architecture).tar.gz" \
-     | tar -xz -C /usr/local \
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+     "https://go.dev/dl/go${GO_VERSION}.linux-$(dpkg --print-architecture).tar.gz" \
+     -o /tmp/go.tar.gz \
+  && tar -xzf /tmp/go.tar.gz -C /usr/local \
+  && rm -f /tmp/go.tar.gz \
   # Agentic opencode CLI, configured to call Anthropic (Claude Sonnet 5) directly.
   && npm install -g opencode-ai@latest \
   && npm cache clean --force \
