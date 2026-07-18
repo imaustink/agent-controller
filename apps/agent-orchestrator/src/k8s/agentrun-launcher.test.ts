@@ -41,6 +41,28 @@ describe("AgentRunLauncher", () => {
     });
   });
 
+  it("uses a natsSubject callback (no secretRef) when natsUrl is set, so the CR passes controller validation even with an empty callbackSecretRef", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const launcher = new AgentRunLauncher("core.controller-agent.dev", "v1alpha1", api);
+
+    await launcher.launch(template, "run-3", {
+      goal: "add a health check endpoint",
+      callbackUrl: "http://unused",
+      // Legitimately empty in NATS mode -- config.ts only requires
+      // AGENT_CALLBACK_SECRET_REF_NAME when AGENT_NATS_URL is absent.
+      callbackSecretRef: { name: "", key: "AGENT_CALLBACK_SECRET" },
+      natsUrl: "nats://nats:4222",
+      natsSubject: "callbacks.run-3",
+    });
+
+    const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { spec: Record<string, unknown> } }];
+    expect(request.body.spec.callback).toEqual({
+      natsSubject: "callbacks.run-3",
+      natsUrl: "nats://nats:4222",
+    });
+  });
+
   it("omits timeoutSeconds when not provided (controller default applies)", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
