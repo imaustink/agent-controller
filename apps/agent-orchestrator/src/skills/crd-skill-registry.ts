@@ -1,4 +1,5 @@
 import * as k8s from "@kubernetes/client-node";
+import { makeCrdWatcher, type CrdChangeEvent, type WatchCrdFn } from "../k8s/crd-watcher.js";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import type { SkillDescriptor, SkillRegistry } from "./types.js";
 
@@ -28,9 +29,10 @@ export const SKILL_PLURAL = "skills";
 /**
  * Discovers the skill catalog from `Skill` custom resources (ADR 0010) —
  * supersedes the static, hand-authored `catalog.ts` array (ADR 0008).
- * Skills become configurable in-cluster without an image rebuild, at the
- * cost of the same one-shot-at-startup limitation `CrdToolRegistry` has (no
- * live watch loop yet).
+ * Skills become configurable in-cluster without an image rebuild.
+ * `listAll()` is a one-shot read used only for the initial catalog at
+ * startup; `watch()` (ADR 0020) keeps it current afterward via a live k8s
+ * watch, same shape as `CrdToolRegistry`.
  */
 export class CrdSkillRegistry implements SkillRegistry {
   constructor(
@@ -38,6 +40,8 @@ export class CrdSkillRegistry implements SkillRegistry {
     private readonly group: string,
     private readonly version: string,
     private readonly api: CustomObjectsApiLike,
+    /** Absent in tests that only exercise `listAll()`; real instances always pass one via `fromKubeConfig`. */
+    private readonly watchFn?: WatchCrdFn,
   ) {}
 
   static fromKubeConfig(
@@ -46,7 +50,13 @@ export class CrdSkillRegistry implements SkillRegistry {
     version: string,
     kubeConfig: k8s.KubeConfig,
   ): CrdSkillRegistry {
-    return new CrdSkillRegistry(namespace, group, version, kubeConfig.makeApiClient(k8s.CustomObjectsApi));
+    return new CrdSkillRegistry(
+      namespace,
+      group,
+      version,
+      kubeConfig.makeApiClient(k8s.CustomObjectsApi),
+      makeCrdWatcher(kubeConfig),
+    );
   }
 
   async listAll(): Promise<SkillDescriptor[]> {
@@ -63,9 +73,31 @@ export class CrdSkillRegistry implements SkillRegistry {
     }
     return skills;
   }
+
+  watch(
+    onChange: (event: CrdChangeEvent<SkillDescriptor>) => void,
+    onError?: (err: unknown) => void,
+  ): { stop: () => void } {
+    if (!this.watchFn) throw new Error("CrdSkillRegistry.watch() requires a watchFn (construct via fromKubeConfig)");
+    return this.watchFn(
+      { group: this.group, version: this.version, namespace: this.namespace, plural: SKILL_PLURAL },
+      (phase, obj) => {
+        const cr = obj as SkillCustomResource;
+        const id = cr?.metadata?.name;
+        if (!id) return;
+        if (phase === "DELETED") {
+          onChange({ type: "delete", id });
+          return;
+        }
+        const descriptor = toSkillDescriptor(cr);
+        if (descriptor) onChange({ type: "upsert", descriptor });
+      },
+      onError,
+    );
+  }
 }
 
-function toSkillDescriptor(cr: SkillCustomResource): SkillDescriptor | undefined {
+export function toSkillDescriptor(cr: SkillCustomResource): SkillDescriptor | undefined {
   const name = cr.metadata?.name;
   const spec = cr.spec;
   // toolRefs may legitimately be empty (respond-only skill, ADR 0011); only

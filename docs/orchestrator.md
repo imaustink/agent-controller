@@ -130,14 +130,15 @@ only ever sees a short list of *relevant* tools, not the full catalog:
   superseded the dynamic Deployment discovery of ADR 0004): each tool ships a
   `Tool` CR (id/name/description/input/output/allowedRoles/tier plus
   image/serviceAccount/env/resources). `CrdToolRegistry` lists every `Tool`
-  CR once at startup and upserts it into the RAG index; the Go core-controller
-  reconciles each invocation's `ToolRun` CR into a hardened one-shot Job, so
-  the orchestrator itself never creates a Job. Dynamic Deployment-based
-  discovery had been rejected earlier for a chicken-and-egg problem: tools are
-  only ever launched on demand as one-shot Jobs (ADR 0005), so there is no
-  live, always-running Deployment to discover. "Register a tool" is now: add
-  `tools/<name>/tool.yaml`, `kubectl apply` it, restart the orchestrator so it
-  re-reads the catalog (one-shot-at-startup, no watch loop yet).
+  CR at startup and upserts it into the RAG index, then keeps watching for
+  changes (ADR 0020) so later CR creates/edits/deletes take effect live; the
+  Go core-controller reconciles each invocation's `ToolRun` CR into a
+  hardened one-shot Job, so the orchestrator itself never creates a Job.
+  Dynamic Deployment-based discovery had been rejected earlier for a
+  chicken-and-egg problem: tools are only ever launched on demand as
+  one-shot Jobs (ADR 0005), so there is no live, always-running Deployment
+  to discover. "Register a tool" is now: add `tools/<name>/tool.yaml`,
+  `kubectl apply` it — no orchestrator restart needed.
 
 ### 3. RBAC-scoped tool discovery
 

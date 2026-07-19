@@ -1,4 +1,5 @@
 import * as k8s from "@kubernetes/client-node";
+import { makeCrdWatcher, type CrdChangeEvent, type WatchCrdFn } from "../k8s/crd-watcher.js";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import type { AgentDescriptor, AgentRegistry } from "./types.js";
 
@@ -25,9 +26,10 @@ export const AGENT_PLURAL = "agents";
 
 /**
  * Discovers the agent catalog from `Agent` custom resources — mirrors
- * `../registry/crd-tool-registry.ts` exactly. A one-shot `listAll()` read at
- * startup, not a live watch loop (same documented limitation as the tool/
- * skill registries: the catalog only refreshes on orchestrator restart).
+ * `../registry/crd-tool-registry.ts` exactly. `listAll()` is a one-shot read
+ * used only for the initial catalog at startup; `watch()` (ADR 0020) keeps
+ * it current afterward via a live k8s watch, same shape as
+ * `CrdToolRegistry`.
  */
 export class CrdAgentRegistry implements AgentRegistry {
   constructor(
@@ -35,6 +37,8 @@ export class CrdAgentRegistry implements AgentRegistry {
     private readonly group: string,
     private readonly version: string,
     private readonly api: CustomObjectsApiLike,
+    /** Absent in tests that only exercise `listAll()`; real instances always pass one via `fromKubeConfig`. */
+    private readonly watchFn?: WatchCrdFn,
   ) {}
 
   static fromKubeConfig(
@@ -43,7 +47,13 @@ export class CrdAgentRegistry implements AgentRegistry {
     version: string,
     kubeConfig: k8s.KubeConfig,
   ): CrdAgentRegistry {
-    return new CrdAgentRegistry(namespace, group, version, kubeConfig.makeApiClient(k8s.CustomObjectsApi));
+    return new CrdAgentRegistry(
+      namespace,
+      group,
+      version,
+      kubeConfig.makeApiClient(k8s.CustomObjectsApi),
+      makeCrdWatcher(kubeConfig),
+    );
   }
 
   async listAll(): Promise<AgentDescriptor[]> {
@@ -60,9 +70,31 @@ export class CrdAgentRegistry implements AgentRegistry {
     }
     return agents;
   }
+
+  watch(
+    onChange: (event: CrdChangeEvent<AgentDescriptor>) => void,
+    onError?: (err: unknown) => void,
+  ): { stop: () => void } {
+    if (!this.watchFn) throw new Error("CrdAgentRegistry.watch() requires a watchFn (construct via fromKubeConfig)");
+    return this.watchFn(
+      { group: this.group, version: this.version, namespace: this.namespace, plural: AGENT_PLURAL },
+      (phase, obj) => {
+        const cr = obj as AgentCustomResource;
+        const id = cr?.metadata?.name;
+        if (!id) return;
+        if (phase === "DELETED") {
+          onChange({ type: "delete", id });
+          return;
+        }
+        const descriptor = toAgentDescriptor(cr, this.namespace);
+        if (descriptor) onChange({ type: "upsert", descriptor });
+      },
+      onError,
+    );
+  }
 }
 
-function toAgentDescriptor(cr: AgentCustomResource, namespace: string): AgentDescriptor | undefined {
+export function toAgentDescriptor(cr: AgentCustomResource, namespace: string): AgentDescriptor | undefined {
   const name = cr.metadata?.name;
   const spec = cr.spec;
   if (!name || !spec?.description) return undefined;

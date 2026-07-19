@@ -1,4 +1,5 @@
 import * as k8s from "@kubernetes/client-node";
+import { makeCrdWatcher, type CrdChangeEvent, type WatchCrdFn } from "../k8s/crd-watcher.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { ToolRegistry } from "./types.js";
 
@@ -47,9 +48,10 @@ export const TOOL_PLURAL = "tools";
  * confirms the referenced
  * ServiceAccount exists.
  *
- * This is a one-shot `listAll()` read at startup, same shape as the
- * registries it supersedes — NOT a live watch loop (same documented
- * limitation as ADR 0009: catalog only refreshes on orchestrator restart).
+ * `listAll()` is a one-shot read used only for the initial catalog at
+ * startup; `watch()` (ADR 0020) keeps it current afterward via a live k8s
+ * watch, so a Tool CR created/edited/deleted post-startup no longer needs an
+ * orchestrator restart to take effect.
  */
 export class CrdToolRegistry implements ToolRegistry {
   constructor(
@@ -57,6 +59,8 @@ export class CrdToolRegistry implements ToolRegistry {
     private readonly group: string,
     private readonly version: string,
     private readonly api: CustomObjectsApiLike,
+    /** Absent in tests that only exercise `listAll()`; real instances always pass one via `fromKubeConfig`. */
+    private readonly watchFn?: WatchCrdFn,
   ) {}
 
   static fromKubeConfig(
@@ -65,7 +69,13 @@ export class CrdToolRegistry implements ToolRegistry {
     version: string,
     kubeConfig: k8s.KubeConfig,
   ): CrdToolRegistry {
-    return new CrdToolRegistry(namespace, group, version, kubeConfig.makeApiClient(k8s.CustomObjectsApi));
+    return new CrdToolRegistry(
+      namespace,
+      group,
+      version,
+      kubeConfig.makeApiClient(k8s.CustomObjectsApi),
+      makeCrdWatcher(kubeConfig),
+    );
   }
 
   async listAll(): Promise<ToolDescriptor[]> {
@@ -82,9 +92,31 @@ export class CrdToolRegistry implements ToolRegistry {
     }
     return tools;
   }
+
+  watch(
+    onChange: (event: CrdChangeEvent<ToolDescriptor>) => void,
+    onError?: (err: unknown) => void,
+  ): { stop: () => void } {
+    if (!this.watchFn) throw new Error("CrdToolRegistry.watch() requires a watchFn (construct via fromKubeConfig)");
+    return this.watchFn(
+      { group: this.group, version: this.version, namespace: this.namespace, plural: TOOL_PLURAL },
+      (phase, obj) => {
+        const cr = obj as ToolCustomResource;
+        const id = cr?.metadata?.name;
+        if (!id) return;
+        if (phase === "DELETED") {
+          onChange({ type: "delete", id });
+          return;
+        }
+        const descriptor = toToolDescriptor(cr, this.namespace);
+        if (descriptor) onChange({ type: "upsert", descriptor });
+      },
+      onError,
+    );
+  }
 }
 
-function toToolDescriptor(cr: ToolCustomResource, namespace: string): ToolDescriptor | undefined {
+export function toToolDescriptor(cr: ToolCustomResource, namespace: string): ToolDescriptor | undefined {
   const name = cr.metadata?.name;
   const spec = cr.spec;
   if (!name) return undefined;
