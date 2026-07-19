@@ -46,12 +46,21 @@ core-controller:
 # IMPORTANT auth caveat: Open WebUI sends `openaiApiKey` as a plain
 # `Authorization: Bearer <key>` header on every request, and the
 # orchestrator's StaticIdentityResolver (dev/test-only) rejects any token not
-# in agent-orchestrator.config.staticIdentities. Set `openwebui.openaiApiKey`
-# AND add the same value as a key in that map.
+# in agent-orchestrator.config.staticIdentities. Set the token below AND add
+# the same value as a key in that map.
+#
+# Bring your own Secret via `openaiApiKeyExistingSecret`/Key (e.g. populated
+# by an external-secrets operator / sealed secrets / `kubectl create secret`)
+# rather than setting `openaiApiKey` directly -- that value lands in
+# plaintext in the Helm release's stored values, which is not appropriate
+# for production. See the upstream open-webui chart's values.yaml for the
+# full field docs.
 # ---------------------------------------------------------------------------
 openwebui:
   enabled: false
   openaiApiKey: ""
+  openaiApiKeyExistingSecret: ""
+  openaiApiKeyExistingSecretKey: ""
   # Base URL Open WebUI targets for the OpenAI-compatible API. Points at the
   # orchestrator's invoke Service (pinned to `agent-orchestrator-invoke` via
   # agent-orchestrator.fullnameOverride above), same namespace as this release.
