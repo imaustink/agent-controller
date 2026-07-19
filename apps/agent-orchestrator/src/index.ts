@@ -20,6 +20,7 @@ import { QdrantToolStore } from "./vector-store/qdrant-store.js";
 import { OpenAiActionPlanner } from "./agent/action-planner.js";
 import { OpenAiToolFitChecker } from "./agent/tool-fit-checker.js";
 import { OpenAiBestEffortResponder } from "./agent/best-effort-responder.js";
+import { OpenAiCapabilityNeedChecker } from "./agent/capability-need-checker.js";
 import { OpenAiDelegateSelector } from "./agent/delegate-selector.js";
 import { OpenAiResponseComposer } from "./agent/response-composer.js";
 import { OpenAiSkillFitChecker } from "./agent/skill-fit-checker.js";
@@ -221,6 +222,10 @@ async function main(): Promise<void> {
   // never a hardcoded fallback agent).
   const toolFitChecker = new OpenAiToolFitChecker({ model: config.selectionModel });
   const bestEffortResponder = new OpenAiBestEffortResponder({ model: config.selectionModel });
+  // Gates catalog retrieval (ADR 0019): skips the RAG search + self-
+  // improvement suggestion entirely for requests that never needed a
+  // skill/tool/agent in the first place.
+  const capabilityNeedChecker = new OpenAiCapabilityNeedChecker({ model: config.selectionModel });
   // Post-tool response composition (ADR 0015): lets the active skill's own
   // instructions add any follow-up around a tool's verbatim output, so no
   // per-tool prompt lives in the agent graph.
@@ -253,6 +258,7 @@ async function main(): Promise<void> {
     fallbackToolTopK: config.fallbackToolTopK,
     toolFitChecker,
     bestEffortResponder,
+    capabilityNeedChecker,
     ...(agentDelegation
       ? {
           agentStore: agentDelegation.agentStore,

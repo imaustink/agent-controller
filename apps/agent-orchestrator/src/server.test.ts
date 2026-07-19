@@ -427,6 +427,39 @@ describe("InvokeServer OpenAI-compatible chat completions (ADR 0007)", () => {
 
     await server.close();
   });
+
+  it("POST /v1/chat/completions (streaming) surfaces a bareAnswer (capability-need gate, docs/adr/0019) instead of hanging until 'agent stream ended unexpectedly'", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn(),
+      stream: vi.fn().mockResolvedValue(
+        toStream([
+          { resolveIdentity: { identity: { subject: "alice", roles: ["reader"] } } },
+          { checkNeedsCapability: { needsCapability: false } },
+          // The capability-need gate judged no skill/tool/agent is needed --
+          // `result` is set directly on `bareAnswer` and the graph routes
+          // straight to END, skipping retrieveSkills/retrieveAgents entirely.
+          { bareAnswer: { result: "Paris is the capital of France." } },
+        ]),
+      ),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ stream: true, messages: [{ role: "user", content: "What is the capital of France?" }] }),
+    });
+
+    expect(res.status).toBe(200);
+    const chunks = (await readSse(res)) as { choices?: { delta: { content?: string }; finish_reason: string | null }[] }[];
+    const allContent = chunks.filter((c) => c.choices).map((c) => c.choices![0]?.delta.content ?? "").join("");
+    expect(allContent).toContain("Paris is the capital of France");
+    expect(allContent).not.toContain("agent stream ended unexpectedly");
+    expect(chunks.filter((c) => c.choices).at(-1)?.choices![0]?.finish_reason).toBe("stop");
+
+    await server.close();
+  });
 });
 
 describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
