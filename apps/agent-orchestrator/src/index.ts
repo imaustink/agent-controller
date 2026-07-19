@@ -32,6 +32,17 @@ import { RedisSessionStore } from "./session/redis-session-store.js";
 import type { SessionStore } from "./session/types.js";
 import { InvokeServer } from "./server.js";
 import { retryWithBackoff } from "./retry.js";
+import type { ToolDescriptor } from "./tool-descriptor.js";
+import type { SkillDescriptor } from "./skills/types.js";
+import type { CrdChangeEvent } from "./k8s/crd-watcher.js";
+
+/**
+ * Debounce window for re-deriving skill access after a Tool/LocalTool/Skill
+ * catalog change (ADR 0020). A burst of watch events (e.g. `kubectl apply`
+ * -f` of several CRs at once) should trigger one re-derive + re-upsert, not
+ * one per event.
+ */
+const SKILL_REINDEX_DEBOUNCE_MS = 500;
 
 /** Process exit code for startup failures — this is a long-lived service, not a one-shot CLI (ADR 0006). */
 const EXIT_STARTUP_FAILURE = 1;
@@ -120,15 +131,20 @@ async function main(): Promise<void> {
   });
 
   // Load the current Tool catalog from the cluster and upsert it into the
-  // RAG index at startup (ADR 0010 -- still a one-shot read, not a live
-  // watch loop; same documented limitation as the superseded ADR 0009
-  // manifest approach, just against CRDs instead of files).
+  // RAG index at startup (ADR 0010). Kept current afterward by a live watch
+  // (ADR 0020, wired up below) instead of only refreshing on restart.
   const tools = await registry.listAll();
   const localTools = await localToolRegistry.listAll();
   // One RAG index over both kinds; getByIds/query return whichever descriptor
   // shape (jobTemplate vs localExec) the tool was registered with.
   const allTools = [...tools, ...localTools];
   await vectorStore.upsert(allTools);
+
+  // In-memory mirror of the tool catalog, kept current by the watches below
+  // (ADR 0020) so a re-derive of skill access (which needs the FULL current
+  // tool list, not just the one that changed) doesn't require re-listing the
+  // cluster on every event.
+  const toolsById = new Map<string, ToolDescriptor>(allTools.map((tool) => [tool.id, tool]));
 
   // Skill catalog (ADR 0010, supersedes the static src/skills/catalog.ts
   // array from ADR 0008): Skill custom resources, upserted into their own
@@ -152,10 +168,64 @@ async function main(): Promise<void> {
   const skills = await skillRegistry.listAll();
   // Skills carry no allowedRoles of their own (ADR 0011) -- derive each
   // skill's retrieval audience from its tools' allowedRoles (intersection;
-  // unrestricted when a skill declares no tools) before indexing. Note this
-  // happens at startup only: a Tool CR role change affects skill visibility
-  // after the next restart, same staleness as the rest of the catalog.
+  // unrestricted when a skill declares no tools) before indexing.
   await skillStore.upsert(deriveSkillAccess(skills, allTools));
+
+  // In-memory mirror of the skill catalog, same purpose as toolsById above.
+  const skillsById = new Map<string, SkillDescriptor>(skills.map((skill) => [skill.id, skill]));
+
+  // Re-derives and re-upserts EVERY skill's access from the current
+  // toolsById/skillsById snapshot (ADR 0020) -- deriveSkillAccess needs the
+  // full tool list, not just whichever one changed, so a targeted per-skill
+  // upsert isn't possible here the way it is for tools/agents. Debounced so
+  // a burst of watch events collapses into one re-derive.
+  let skillReindexTimer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleSkillReindex = (): void => {
+    if (skillReindexTimer) return;
+    skillReindexTimer = setTimeout(() => {
+      skillReindexTimer = undefined;
+      skillStore
+        .upsert(deriveSkillAccess([...skillsById.values()], [...toolsById.values()]))
+        .catch((err) => console.error("failed to re-index skills after a catalog change:", err));
+    }, SKILL_REINDEX_DEBOUNCE_MS);
+  };
+
+  // Live catalog updates (ADR 0020): a Tool/LocalTool/Skill CR
+  // created/edited/deleted after startup now takes effect immediately
+  // instead of only on the next orchestrator restart. A Tool/LocalTool
+  // change also affects skill visibility (derive-access.ts), so both kinds
+  // schedule a skill re-derive; the Tool/Skill catalogs themselves are kept
+  // current directly via targeted vectorStore upserts/deletes.
+  const handleToolChange = (event: CrdChangeEvent<ToolDescriptor>): void => {
+    if (event.type === "delete") {
+      toolsById.delete(event.id);
+      void vectorStore.delete([event.id]).catch((err) => console.error(`failed to remove tool "${event.id}":`, err));
+    } else {
+      toolsById.set(event.descriptor.id, event.descriptor);
+      void vectorStore
+        .upsert([event.descriptor])
+        .catch((err) => console.error(`failed to index tool "${event.descriptor.id}":`, err));
+    }
+    scheduleSkillReindex();
+  };
+  const toolWatch = registry.watch(handleToolChange, (err) => console.error("Tool watch error:", err));
+  const localToolWatch = localToolRegistry.watch(handleToolChange, (err) =>
+    console.error("LocalTool watch error:", err),
+  );
+  const skillWatch = skillRegistry.watch(
+    (event) => {
+      if (event.type === "delete") {
+        skillsById.delete(event.id);
+        void skillStore
+          .delete([event.id])
+          .catch((err) => console.error(`failed to remove skill "${event.id}":`, err));
+      } else {
+        skillsById.set(event.descriptor.id, event.descriptor);
+      }
+      scheduleSkillReindex();
+    },
+    (err) => console.error("Skill watch error:", err),
+  );
 
   // Agent catalog (Agent CRs, ADR 0010's pattern extended to agent
   // delegation): a full agent loop retrievable via RAG alongside skills, as
@@ -171,6 +241,7 @@ async function main(): Promise<void> {
         agentChannel: NatsAgentChannel;
       }
     | undefined;
+  let agentWatch: { stop: () => void } | undefined;
   if (config.natsUrl) {
     const agentRegistry = CrdAgentRegistry.fromKubeConfig(
       config.namespace,
@@ -190,6 +261,24 @@ async function main(): Promise<void> {
     await agentStore.ensureCollection();
     const agents = await agentRegistry.listAll();
     await agentStore.upsert(agents);
+
+    // Live catalog updates (ADR 0020): unlike tools/skills, an Agent
+    // descriptor never depends on anything else in the catalog, so each
+    // event is a direct targeted upsert/delete -- no reindex/debounce needed.
+    agentWatch = agentRegistry.watch(
+      (event) => {
+        if (event.type === "delete") {
+          void agentStore
+            .delete([event.id])
+            .catch((err) => console.error(`failed to remove agent "${event.id}":`, err));
+        } else {
+          void agentStore
+            .upsert([event.descriptor])
+            .catch((err) => console.error(`failed to index agent "${event.descriptor.id}":`, err));
+        }
+      },
+      (err) => console.error("Agent watch error:", err),
+    );
 
     agentDelegation = {
       agentStore,
@@ -315,6 +404,14 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string): Promise<void> => {
     console.error(`${signal} received, shutting down`);
+    // Stop the CRD watches (ADR 0020) before closing everything else --
+    // otherwise a reconnect racing the process exit would log a spurious
+    // watch error.
+    toolWatch.stop();
+    localToolWatch.stop();
+    skillWatch.stop();
+    agentWatch?.stop();
+    if (skillReindexTimer) clearTimeout(skillReindexTimer);
     const closers: Promise<void>[] = [invokeServer.close()];
     if (callbackReceiver) closers.push(callbackReceiver.close());
     if (config.natsUrl) {

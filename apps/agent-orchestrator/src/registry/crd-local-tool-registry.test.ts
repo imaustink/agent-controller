@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { WatchCrdFn } from "../k8s/crd-watcher.js";
 import type { CustomObjectsApiLike } from "./crd-tool-registry.js";
 import {
   CrdLocalToolRegistry,
@@ -114,5 +115,35 @@ describe("CrdLocalToolRegistry", () => {
 
     expect(tools).toHaveLength(1);
     expect(tools[0].id).toBe("http-get-node");
+  });
+
+  describe("watch", () => {
+    it("maps ADDED to an upsert event and DELETED to a delete event", () => {
+      const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
+      let onEvent!: (phase: string, obj: unknown) => void;
+      const watchFn: WatchCrdFn = (opts, cb) => {
+        expect(opts.plural).toBe("localtools");
+        onEvent = cb;
+        return { stop: vi.fn() };
+      };
+      const registry = new CrdLocalToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const onChange = vi.fn();
+      registry.watch(onChange);
+
+      onEvent("ADDED", nodeTool);
+      expect(onChange).toHaveBeenCalledWith({
+        type: "upsert",
+        descriptor: expect.objectContaining({ id: "http-get-node" }),
+      });
+
+      onEvent("DELETED", nodeTool);
+      expect(onChange).toHaveBeenCalledWith({ type: "delete", id: "http-get-node" });
+    });
+
+    it("throws when constructed without a watchFn", () => {
+      const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
+      const registry = new CrdLocalToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      expect(() => registry.watch(() => {})).toThrow();
+    });
   });
 });

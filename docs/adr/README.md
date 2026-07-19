@@ -24,5 +24,7 @@ See [../orchestrator.md](../orchestrator.md) for how these fit together.
 | [0016](0016-opencode-anthropic-direct-swe-agent.md) | `opencode-swe-agent` replaces the Copilot CLI with the opencode CLI calling Anthropic (Claude Sonnet 5) directly; `GITHUB_TOKEN` and `ANTHROPIC_API_KEY` are now independent secrets (its `<!-- swe: ... -->` marker choice superseded by 0017) |
 | [0017](0017-continuation-tokens-via-session-store.md) | Per-tool/per-agent continuation tokens (Mealie slug, opencode-swe repo/branch/PR/session) move from an in-transcript HTML-comment marker to the session store, closing the prompt-injection surface that marker was a documented risk for |
 | [0018](0018-github-app-auth-fallback.md) | `opencode-swe-agent` supports GitHub App installation tokens as an alternative to the static `GITHUB_TOKEN` PAT, falling back to the PAT when App credentials aren't configured |
+| [0019](0019-capability-need-gate.md) | A cheap `CapabilityNeedChecker` gate skips catalog retrieval (and the self-improvement suggestion) for purely conversational turns that were never going to match a skill/tool/agent |
+| [0020](0020-crd-catalog-hot-reload-via-k8s-watch.md) | Tool/LocalTool/Skill/Agent registries hot-reload via a live k8s watch instead of only refreshing on orchestrator restart |
 
 Status values: `proposed` | `accepted` | `superseded by NNNN`.

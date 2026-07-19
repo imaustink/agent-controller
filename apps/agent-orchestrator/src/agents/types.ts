@@ -1,3 +1,5 @@
+import type { CrdChangeEvent } from "../k8s/crd-watcher.js";
+
 /**
  * An Agent is a full agent loop launched as a one-shot Job, retrievable via
  * RAG exactly like a Tool or Skill (top-level delegation target, alongside
@@ -71,4 +73,14 @@ export interface AgentStore {
 /** Port for discovering the current catalog of agents (mirrors ToolRegistry/SkillRegistry). */
 export interface AgentRegistry {
   listAll(): Promise<AgentDescriptor[]>;
+  /**
+   * Live catalog updates after the initial `listAll()` (ADR 0020) -- an
+   * Agent CR created/edited/deleted after startup is reported here instead
+   * of only taking effect on the next orchestrator restart. Returns a handle
+   * to stop watching (used on shutdown).
+   */
+  watch(
+    onChange: (event: CrdChangeEvent<AgentDescriptor>) => void,
+    onError?: (err: unknown) => void,
+  ): { stop: () => void };
 }

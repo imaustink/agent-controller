@@ -145,17 +145,13 @@ helm upgrade --install community-components charts/community-components \
 
 ### 5. Restart the orchestrator
 
-The orchestrator reads the Tool catalog once at startup (no live watch), so
-a new or changed Tool CR isn't picked up until it restarts:
-
-```bash
-kubectl -n controller-agent rollout restart deployment/agent-orchestrator
-```
+The orchestrator watches the Tool catalog live (ADR 0020), so a new or
+changed Tool CR is picked up within seconds of `kubectl apply` — no
+orchestrator restart needed.
 
 After a rebuild of the image (step 1) with the same `latest` tag, no restart
-of anything is needed — the next launched Job picks up the new image — but
-re-apply `tool.yaml` + restart the orchestrator whenever the CR's
-description/input/output text changes, since those feed the RAG index.
+of anything is needed either — the next launched Job picks up the new image
+directly.
 
 ## Exit codes
 

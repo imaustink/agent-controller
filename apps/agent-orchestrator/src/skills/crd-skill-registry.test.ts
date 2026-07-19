@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { WatchCrdFn } from "../k8s/crd-watcher.js";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import { CrdSkillRegistry, type SkillCustomResource } from "./crd-skill-registry.js";
 
@@ -92,5 +93,35 @@ describe("CrdSkillRegistry", () => {
     const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     expect(await registry.listAll()).toEqual([]);
+  });
+
+  describe("watch", () => {
+    it("maps ADDED to an upsert event and DELETED to a delete event", () => {
+      const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
+      let onEvent!: (phase: string, obj: unknown) => void;
+      const watchFn: WatchCrdFn = (opts, cb) => {
+        expect(opts.plural).toBe("skills");
+        onEvent = cb;
+        return { stop: vi.fn() };
+      };
+      const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const onChange = vi.fn();
+      registry.watch(onChange);
+
+      onEvent("ADDED", validSkill);
+      expect(onChange).toHaveBeenCalledWith({
+        type: "upsert",
+        descriptor: expect.objectContaining({ id: "recipe-publisher-skill" }),
+      });
+
+      onEvent("DELETED", validSkill);
+      expect(onChange).toHaveBeenCalledWith({ type: "delete", id: "recipe-publisher-skill" });
+    });
+
+    it("throws when constructed without a watchFn", () => {
+      const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
+      const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      expect(() => registry.watch(() => {})).toThrow();
+    });
   });
 });

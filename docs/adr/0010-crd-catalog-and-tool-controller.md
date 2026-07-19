@@ -13,6 +13,11 @@
 > `ToolRun`, `AgentRun`, and `LocalTool` CRs, not just tools, so "tool-controller"
 > no longer described what it did. This ADR's body below is left as originally
 > written and still says `tool-controller` throughout.
+>
+> **Editorial note (2026-07-19):** the "one-shot-at-startup read, no watch
+> loop yet" limitation called out below (and its restart-required staleness)
+> is resolved by [ADR 0020](0020-crd-catalog-hot-reload-via-k8s-watch.md) —
+> the orchestrator now watches Tool/LocalTool/Skill/Agent CRs live.
 
 ## Context
 

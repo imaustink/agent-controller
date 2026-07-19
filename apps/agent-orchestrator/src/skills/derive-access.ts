@@ -17,12 +17,12 @@ import type { SkillAccess, SkillDescriptor } from "./types.js";
  * - a disjoint intersection also yields `[]` — the skill is authorable but
  *   unreachable, surfaced via console.error instead of a runtime dead-end.
  *
- * Pure function; called once at startup between the tool-catalog load and
- * the skill upsert (see index.ts). Because it runs at index time, a Tool
- * CR's allowedRoles change only affects skill visibility after an
- * orchestrator restart — same one-shot-at-startup staleness as the rest of
- * the catalog, but now applying to authorization, so it's called out
- * explicitly in ADR 0011.
+ * Pure function; called at startup between the tool-catalog load and the
+ * skill upsert, and again by index.ts's debounced `scheduleSkillReindex`
+ * whenever a Tool/LocalTool/Skill watch event fires (ADR 0020) — so a Tool
+ * CR's allowedRoles change now reaches skill visibility within the debounce
+ * window instead of only on the next orchestrator restart (superseding the
+ * staleness ADR 0011 originally called out).
  */
 export function deriveSkillAccess(skills: SkillDescriptor[], tools: ToolDescriptor[]): SkillAccess[] {
   const rolesByToolId = new Map(tools.map((tool) => [tool.id, tool.allowedRoles]));

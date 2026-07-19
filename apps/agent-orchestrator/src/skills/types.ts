@@ -1,3 +1,5 @@
+import type { CrdChangeEvent } from "../k8s/crd-watcher.js";
+
 /**
  * A Skill sits between a user's request and tool retrieval (docs/adr/0008):
  * it is RAG-matched against the request first, then its `markdown` is
@@ -92,4 +94,14 @@ export interface SkillStore {
  */
 export interface SkillRegistry {
   listAll(): Promise<SkillDescriptor[]>;
+  /**
+   * Live catalog updates after the initial `listAll()` (ADR 0020) -- a Skill
+   * CR created/edited/deleted after startup is reported here instead of only
+   * taking effect on the next orchestrator restart. Returns a handle to stop
+   * watching (used on shutdown).
+   */
+  watch(
+    onChange: (event: CrdChangeEvent<SkillDescriptor>) => void,
+    onError?: (err: unknown) => void,
+  ): { stop: () => void };
 }
