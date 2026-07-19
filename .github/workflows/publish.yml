@@ -13,8 +13,56 @@ jobs:
     # Self-hosted runner: only ever reachable via push to main (collaborators only).
     # Guard so a fork that somehow re-targets this job cannot run it on our infra.
     if: github.repository == 'imaustink/agent-controller'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: agent-orchestrator
+            dockerfile: apps/agent-orchestrator/Dockerfile
+            context: .
+          - image: opencode-swe-agent
+            dockerfile: apps/opencode-swe-agent/Dockerfile
+            context: .
+          - image: recipe-scraper
+            dockerfile: tools/recipe-scraper/Dockerfile
+            context: .
+          - image: recipe-publisher
+            dockerfile: tools/recipe-publisher/Dockerfile
+            context: .
+          - image: web-search
+            dockerfile: tools/web-search/Dockerfile
+            context: .
+          - image: core-controller
+            dockerfile: controllers/core-controller/Dockerfile
+            context: controllers/core-controller
+          - image: localtool-executor-node
+            dockerfile: sidecars/localtool-executor/Dockerfile
+            context: sidecars/localtool-executor
+            build_args: |
+              BASE_IMAGE=node:24-bookworm-slim
+              RUNTIME=node
+          - image: localtool-executor-python
+            dockerfile: sidecars/localtool-executor/Dockerfile
+            context: sidecars/localtool-executor
+            build_args: |
+              BASE_IMAGE=python:3.12-slim-bookworm
+              RUNTIME=python
+          - image: localtool-executor-go
+            dockerfile: sidecars/localtool-executor/Dockerfile
+            context: sidecars/localtool-executor
+            build_args: |
+              BASE_IMAGE=golang:1.24-bookworm
+              RUNTIME=go
+          - image: localtool-executor-shell
+            dockerfile: sidecars/localtool-executor/Dockerfile
+            context: sidecars/localtool-executor
+            build_args: |
+              BASE_IMAGE=debian:bookworm-slim
+              RUNTIME=shell
     steps:
       - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
 
       - name: Docker login
         run: |
@@ -24,61 +72,11 @@ jobs:
           REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
           REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
 
-      - name: Build & push agent-orchestrator
-        run: |
-          docker build \
-            -t registry.kurpuis.com:5000/agent-orchestrator:latest \
-            -f apps/agent-orchestrator/Dockerfile .
-          docker push registry.kurpuis.com:5000/agent-orchestrator:latest
-
-      - name: Build & push opencode-swe-agent
-        run: |
-          docker build \
-            -t registry.kurpuis.com:5000/opencode-swe-agent:latest \
-            -f apps/opencode-swe-agent/Dockerfile .
-          docker push registry.kurpuis.com:5000/opencode-swe-agent:latest
-
-      - name: Build & push recipe-scraper
-        run: |
-          docker build \
-            -t registry.kurpuis.com:5000/recipe-scraper:latest \
-            -f tools/recipe-scraper/Dockerfile .
-          docker push registry.kurpuis.com:5000/recipe-scraper:latest
-
-      - name: Build & push recipe-publisher
-        run: |
-          docker build \
-            -t registry.kurpuis.com:5000/recipe-publisher:latest \
-            -f tools/recipe-publisher/Dockerfile .
-          docker push registry.kurpuis.com:5000/recipe-publisher:latest
-
-      - name: Build & push web-search
-        run: |
-          docker build \
-            -t registry.kurpuis.com:5000/web-search:latest \
-            -f tools/web-search/Dockerfile .
-          docker push registry.kurpuis.com:5000/web-search:latest
-
-      - name: Build & push core-controller
-        run: |
-          docker build \
-            -t registry.kurpuis.com:5000/core-controller:latest \
-            -f controllers/core-controller/Dockerfile controllers/core-controller
-          docker push registry.kurpuis.com:5000/core-controller:latest
-
-      - name: Build & push localtool-executor (node, python, go, shell)
-        run: |
-          declare -A base_images=(
-            [node]=node:24-bookworm-slim
-            [python]=python:3.12-slim-bookworm
-            [go]=golang:1.24-bookworm
-            [shell]=debian:bookworm-slim
-          )
-          for runtime in "${!base_images[@]}"; do
-            docker build \
-              --build-arg BASE_IMAGE="${base_images[$runtime]}" \
-              --build-arg RUNTIME="$runtime" \
-              -t registry.kurpuis.com:5000/localtool-executor-"$runtime":latest \
-              -f sidecars/localtool-executor/Dockerfile sidecars/localtool-executor
-            docker push registry.kurpuis.com:5000/localtool-executor-"$runtime":latest
-          done
+      - name: Build & push ${{ matrix.image }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          build-args: ${{ matrix.build_args }}
+          tags: registry.kurpuis.com:5000/${{ matrix.image }}:latest
