@@ -35,6 +35,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Sync core-controller CRDs into the Helm chart
+        # charts/agent-controller/charts/core-controller/crds/*.yaml is
+        # generated (not committed, see its README.md) -- Helm's crds/
+        # convention needs the files physically present before `helm
+        # dependency update`/`helm package` will pick them up.
+        run: cp controllers/core-controller/config/crd/bases/*.yaml charts/agent-controller/charts/core-controller/crds/
+
       - name: Set up Helm
         uses: azure/setup-helm@v4
         with:

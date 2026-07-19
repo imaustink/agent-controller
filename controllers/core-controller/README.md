@@ -199,16 +199,20 @@ docker build -f controllers/core-controller/Dockerfile   -t core-controller:late
 make install
 ```
 
-Or apply the bundled copies in the Helm chart directly:
+Or apply the synced copy in the Helm chart directly:
 
 ```sh
-kubectl apply -f charts/core-controller/crds/
+kubectl apply -f ../../charts/agent-controller/charts/core-controller/crds/
 ```
 
-> **Note:** Helm's `crds/` directory is install-only — `helm upgrade` never
-> updates CRDs already on the cluster. After any `*_types.go` change, run
-> `make manifests`, copy the generated CRD to `charts/core-controller/crds/`,
-> then `kubectl apply -f charts/core-controller/crds/<changed>.yaml` by hand.
+> **Note:** That `crds/` directory is generated, not committed (see its
+> README.md) — run `make manifests` (or `make sync-crds` if
+> `config/crd/bases/` is already current) to populate it first. Helm's
+> `crds/` directory is also install-only — `helm upgrade` never updates CRDs
+> already on the cluster. After any `*_types.go` change, run `make
+> manifests`, then `kubectl apply -f
+> ../../charts/agent-controller/charts/core-controller/crds/<changed>.yaml`
+> by hand.
 
 ### Deploying
 
@@ -242,9 +246,7 @@ make undeploy
 
 ```sh
 make generate   # regenerate DeepCopy methods (zz_generated.deepcopy.go)
-make manifests  # regenerate CRDs + RBAC from kubebuilder markers
-# Then manually sync the CRD to the Helm chart:
-cp config/crd/bases/core.controller-agent.dev_tools.yaml    ../../charts/core-controller/crds/
+make manifests  # regenerate CRDs + RBAC from kubebuilder markers, and sync them into the Helm chart's crds/ dir
 ```
 
 ### Running tests
