@@ -20,7 +20,8 @@ export interface AgentToolConfig {
   /**
    * GitHub App credentials, used instead of `githubToken` when all three are
    * set: a short-lived installation access token is minted per run (see
-   * ./githubApp.ts) rather than using a long-lived static PAT. Empty strings
+   * @controller-agent/github-app-auth) rather than using a long-lived static
+   * PAT. Empty strings
    * when unset — `resolveGithubToken` falls back to `githubToken` in that
    * case, so existing PAT-based deployments keep working unmodified.
    */
