@@ -18,6 +18,7 @@ import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-a
 import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
 import type { BestEffortResponder } from "./best-effort-responder.js";
+import type { CapabilityNeedChecker } from "./capability-need-checker.js";
 
 const scraperTool: ToolDescriptor = {
   id: "recipe-scraper",
@@ -91,6 +92,10 @@ function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
   // to mock this explicitly; override per-test to exercise a rejection.
   const toolFitChecker: ToolFitChecker = { fits: vi.fn().mockResolvedValue(true) };
   const bestEffortResponder: BestEffortResponder = { respond: vi.fn().mockResolvedValue("best-effort answer") };
+  // Defaults to "needs capability" so every existing test (which assumes full
+  // retrieval runs) is unaffected; override per-test to exercise the
+  // capability-need gate itself.
+  const capabilityNeedChecker: CapabilityNeedChecker = { needsCapability: vi.fn().mockResolvedValue(true) };
 
   return {
     identityResolver,
@@ -104,6 +109,7 @@ function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
     jobResultReceiver: callbackReceiver,
     toolFitChecker,
     bestEffortResponder,
+    capabilityNeedChecker,
     callbackBaseUrl: "http://orchestrator",
     callbackSecret: "s3cret",
     ...overrides,
@@ -1055,6 +1061,57 @@ describe("buildAgentGraph fallback tool-fit (tried before the best-effort LLM an
     const final = await graph.invoke({ request: "scrape https://example.com/recipe", authToken: "tok" });
 
     expect(final.error).toBe("unauthorized: could not resolve caller identity");
+  });
+});
+
+describe("buildAgentGraph capability-need gate (no search for conversational requests, ADR 0019)", () => {
+  it("skips catalog retrieval and the self-improvement suggestion when no capability is needed", async () => {
+    const capabilityNeedChecker: CapabilityNeedChecker = { needsCapability: vi.fn().mockResolvedValue(false) };
+    const deps = baseDeps({ capabilityNeedChecker });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "what's a good substitute for buttermilk?", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.capabilityNeedChecker.needsCapability).toHaveBeenCalledWith("what's a good substitute for buttermilk?");
+    expect(deps.skillStore.query).not.toHaveBeenCalled();
+    expect(deps.vectorStore.query).not.toHaveBeenCalled();
+    expect(deps.bestEffortResponder.respond).toHaveBeenCalledWith("what's a good substitute for buttermilk?");
+    expect(final.result).toBe("best-effort answer");
+    expect(final.result).not.toContain("self-improvement");
+    expect(final.wasFallback).toBe(false);
+  });
+
+  it("streams the answer via the progress listener and leaves result empty, still with no self-improvement suggestion", async () => {
+    const capabilityNeedChecker: CapabilityNeedChecker = { needsCapability: vi.fn().mockResolvedValue(false) };
+    const bestEffortResponder: BestEffortResponder = {
+      respond: vi.fn().mockImplementation(async (_request: string, onToken?: (delta: string) => void) => {
+        onToken?.("streamed answer");
+        return "streamed answer";
+      }),
+    };
+    const deps = baseDeps({ capabilityNeedChecker, bestEffortResponder });
+    const graph = buildAgentGraph(deps);
+    const progressListener = vi.fn();
+
+    const final = await graph.invoke({ request: "tell me a joke", authToken: "tok", progressListener });
+
+    expect(final.error).toBeUndefined();
+    expect(progressListener).toHaveBeenCalledWith("agent-text", "streamed answer");
+    expect(final.result).toBe("");
+    expect(deps.skillStore.query).not.toHaveBeenCalled();
+  });
+
+  it("proceeds with the normal retrieval flow unchanged when a capability is judged needed", async () => {
+    const capabilityNeedChecker: CapabilityNeedChecker = { needsCapability: vi.fn().mockResolvedValue(true) };
+    const deps = baseDeps({ capabilityNeedChecker });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "scrape and publish this recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.capabilityNeedChecker.needsCapability).toHaveBeenCalledWith("scrape and publish this recipe");
+    expect(deps.skillStore.query).toHaveBeenCalled();
   });
 });
 

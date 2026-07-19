@@ -17,6 +17,7 @@ import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { VectorStore } from "../vector-store/types.js";
 import type { ActionPlanner } from "./action-planner.js";
 import type { BestEffortResponder } from "./best-effort-responder.js";
+import type { CapabilityNeedChecker } from "./capability-need-checker.js";
 import type { DelegateSelector } from "./delegate-selector.js";
 import type { ResponseComposer } from "./response-composer.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
@@ -25,14 +26,18 @@ import type { ToolFitChecker } from "./tool-fit-checker.js";
 
 /**
  * Agent state threaded through the graph (docs/adr/0008, docs/adr/0012,
- * docs/orchestrator.md): resolve identity -> re-check the conversation's
- * active skill if one exists (fit-check first, RAG on miss) -> otherwise
- * retrieve candidate skills (RAG, RBAC-filtered) and select one -> load the
- * tools that skill declares -> plan an action (respond directly, or call one
- * of those tools) -> if a tool was chosen, run it (a container tool via a
- * ToolRun CR + callback, or a LocalTool in-pod) and await its result ->
- * compose the final turn, letting the skill's own instructions add any
- * follow-up narration around the tool's verbatim output (docs/adr/0015).
+ * docs/adr/0019, docs/orchestrator.md): resolve identity -> re-check the
+ * conversation's active skill if one exists (fit-check first, RAG on miss)
+ * -> otherwise re-check a continuing agent run -> otherwise ask whether the
+ * request plausibly needs a capability at all (docs/adr/0019); a "no"
+ * short-circuits to a plain conversational answer with no catalog search and
+ * no self-improvement suggestion -> a "yes" retrieves candidate skills and
+ * agents (RAG, RBAC-filtered) and selects one -> load the tools that skill
+ * declares -> plan an action (respond directly, or call one of those tools)
+ * -> if a tool was chosen, run it (a container tool via a ToolRun CR +
+ * callback, or a LocalTool in-pod) and await its result -> compose the final
+ * turn, letting the skill's own instructions add any follow-up narration
+ * around the tool's verbatim output (docs/adr/0015).
  */
 export const AgentStateAnnotation = Annotation.Root({
   request: Annotation<string>,
@@ -204,11 +209,25 @@ export const AgentStateAnnotation = Annotation.Root({
    * gated direct tool call (selectFallbackTool) or a bare best-effort LLM
    * answer. Read by `runTool` to append a self-improvement suggestion onto
    * the tool's result (the bare-answer case already has the suggestion
-   * appended in noMatchFallback itself).
+   * appended in noMatchFallback itself). Never true for the `bareAnswer`
+   * short-circuit below (docs/adr/0019) — that path never attempted a
+   * catalog search, so there is nothing to suggest turning into a skill.
    */
   wasFallback: Annotation<boolean>({
     reducer: (_current, update) => update,
     default: () => false,
+  }),
+  /**
+   * Result of `checkNeedsCapability` (docs/adr/0019): whether this request
+   * plausibly needs a specialized skill/tool/agent, as opposed to being
+   * answerable directly from general conversation. Defaults to `true` so any
+   * path that never reaches that node (active skill/agent continuation) is
+   * unaffected. `false` routes straight to `bareAnswer`, skipping
+   * `retrieveSkills`/`retrieveAgents`/`selectDelegate` entirely.
+   */
+  needsCapability: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => true,
   }),
 });
 
@@ -298,6 +317,14 @@ export interface AgentGraphDeps {
    * for a cooking-recipe request) rather than just answering in chat.
    */
   bestEffortResponder: BestEffortResponder;
+  /**
+   * Gates catalog retrieval (docs/adr/0019): asked once per turn, after
+   * session-continuity checks and before `retrieveSkills`/`retrieveAgents`,
+   * whether the request plausibly needs a specialized capability at all. A
+   * "no" short-circuits straight to a plain conversational answer (no RAG
+   * search, no self-improvement suggestion) via the `bareAnswer` node.
+   */
+  capabilityNeedChecker: CapabilityNeedChecker;
 }
 
 function afterOrEnd(next: string) {
@@ -418,6 +445,21 @@ async function selectFallbackTool(
 }
 
 /**
+ * Calls `bestEffortResponder` for the raw request, streaming deltas through
+ * `progressListener` (as "agent-text" content, the same convention
+ * `composeAgentTurnMessage` uses) when one is attached. Shared by
+ * `noMatchFallback`'s bare-answer branch and the `bareAnswer` node
+ * (docs/adr/0019) — the two differ only in whether the self-improvement
+ * footer gets appended, not in how the model is called.
+ */
+async function callBestEffort(state: AgentState, deps: AgentGraphDeps): Promise<string> {
+  const onToken = state.progressListener
+    ? (delta: string) => state.progressListener!("agent-text", delta)
+    : undefined;
+  return onToken ? deps.bestEffortResponder.respond(state.request, onToken) : deps.bestEffortResponder.respond(state.request);
+}
+
+/**
  * The full no-match cascade for `selectDelegate`: try a direct single-tool
  * fit first (relevance-gated, deterministic), and if nothing passes, the
  * request gets a plain conversational answer from `bestEffortResponder` —
@@ -440,13 +482,8 @@ async function noMatchFallback(state: AgentState, deps: AgentGraphDeps): Promise
   // deltas (server.ts), so the final `result` need only carry the footer --
   // duplicating the body here would repeat the whole answer in the chat, the
   // same rule composeAgentTurnMessage applies via dropStreamedNarrative.
-  const onToken = state.progressListener
-    ? (delta: string) => state.progressListener!("agent-text", delta)
-    : undefined;
-  const response = onToken
-    ? await deps.bestEffortResponder.respond(state.request, onToken)
-    : await deps.bestEffortResponder.respond(state.request);
-  const result = onToken ? SELF_IMPROVEMENT_FOOTER : appendSelfImprovementSuggestion(response);
+  const response = await callBestEffort(state, deps);
+  const result = state.progressListener ? SELF_IMPROVEMENT_FOOTER : appendSelfImprovementSuggestion(response);
   return { result, wasFallback: true };
 }
 
@@ -519,6 +556,24 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       } catch (err) {
         return { agentRunId: state.activeAgentRunId, error: agentTurnErrorMessage(err) };
       }
+    })
+    .addNode("checkNeedsCapability", async (state) => {
+      // Cheap classifier gate (docs/adr/0019) run once every session-
+      // continuity check has missed: decides whether this turn plausibly
+      // needs a specialized skill/tool/agent at all, before spending an
+      // embedding + RAG round trip over the catalogs to find out the hard
+      // way. "No" is never an error -- see `bareAnswer` below.
+      const needsCapability = await deps.capabilityNeedChecker.needsCapability(state.request);
+      return { needsCapability };
+    })
+    .addNode("bareAnswer", async (state) => {
+      // A plain conversational answer for a request that was never expected
+      // to need a skill/tool/agent (docs/adr/0019) -- unlike
+      // `noMatchFallback`'s bare-answer branch, no catalog search was ever
+      // attempted here, so `wasFallback` stays false and no
+      // self-improvement suggestion is appended.
+      const response = await callBestEffort(state, deps);
+      return { result: state.progressListener ? "" : response };
     })
     .addNode("retrieveSkills", async (state) => {
       // Unreachable without an identity (conditional edge below), but keep
@@ -824,7 +879,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     // (question or final reply, agentRunId set) or errored -> END either
     // way; a miss (agentRunId still unset, e.g. no active run or agent
     // delegation not configured) falls through to full retrieval.
-    .addConditionalEdges("checkActiveAgentRun", (state) => (state.error || state.agentRunId ? END : "retrieveSkills"))
+    .addConditionalEdges("checkActiveAgentRun", (state) => (state.error || state.agentRunId ? END : "checkNeedsCapability"))
+    // A "no" (docs/adr/0019) skips catalog retrieval entirely and answers
+    // directly; a "yes" (or classifier error) proceeds exactly as before.
+    .addConditionalEdges("checkNeedsCapability", (state) =>
+      state.error ? END : state.needsCapability ? "retrieveSkills" : "bareAnswer",
+    )
+    .addEdge("bareAnswer", END)
     .addConditionalEdges("retrieveSkills", afterOrEnd("retrieveAgents"))
     .addConditionalEdges("retrieveAgents", afterOrEnd("selectDelegate"))
     // selectDelegate branches five ways: error -> END, a skill was picked ->

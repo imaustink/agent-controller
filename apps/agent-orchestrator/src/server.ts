@@ -580,6 +580,16 @@ export class InvokeServer {
           finish(renderResult(update.result));
           return;
         }
+        // bareAnswer is terminal when the capability-need gate (docs/adr/0019)
+        // judged the request needs no skill/tool/agent at all — a plain
+        // conversational answer with no catalog search ever attempted.
+        // `result` is set directly on this node and the graph routes
+        // straight to END.
+        if (nodeName === "bareAnswer" && update.result !== undefined) {
+          await persist();
+          finish(renderResult(update.result));
+          return;
+        }
         // delegateToAgent and checkActiveAgentRun (continuation) are always
         // terminal for this graph invocation when they set an agentRunId — a
         // question, a final reply, or a failure all end the turn.
