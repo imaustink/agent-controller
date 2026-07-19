@@ -70,7 +70,9 @@ fallback branch — tighten it against real output once observed.
 - Operators upgrading from `copilot-swe-agent` must create the renamed
   `opencode-swe-agent` ServiceAccount and `opencode-swe-secrets` Secret (now
   with both `GITHUB_TOKEN` and `ANTHROPIC_API_KEY` keys) and delete the old
-  ones; see `apps/opencode-swe-agent/agent.yaml`.
+  ones; see
+  `charts/community-components/templates/agent-opencode-swe.yaml`
+  (`opencodeSweAgent.enabled`).
 - The `parseOpencodeLine` progress-narration quality depends on how closely
   the defensive parser matches opencode's real event stream; verify against
   actual `opencode run --format json` output before relying on rich

@@ -3,31 +3,13 @@ name: Validate CRD samples
 on:
   pull_request:
     paths:
-      - "apps/agent-orchestrator/config/samples/**"
       - "controllers/core-controller/config/crd/**"
-      - "apps/opencode-swe-agent/agent.yaml"
-      - "tools/*/tool.yaml"
-      - "charts/community-components/templates/**"
-      - "scripts/sync-manifest-docs.py"
+      - "charts/community-components/**"
 
 permissions:
   contents: read
 
 jobs:
-  # Every Tool/Skill/Agent CR that a user can `kubectl apply` directly
-  # (tools/*/tool.yaml, apps/*/config/samples/*.yaml,
-  # apps/opencode-swe-agent/agent.yaml) has a twin in
-  # charts/community-components/templates/ -- the Helm-templated version
-  # actually installed in a real deployment. Their prose fields
-  # (description/input/output/markdown/orchestratorPrompt/agentPrompt) are
-  # meant to be identical; scripts/sync-manifest-docs.py catches drift
-  # between them (see its docstring for the full rationale).
-  check-manifest-docs-sync:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: python3 scripts/sync-manifest-docs.py --check
-
   validate:
     # GitHub-hosted runner (not arc-runner-set): this validates untrusted PR
     # content (including forks) against a throwaway kind cluster, so it must
@@ -36,21 +18,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+
       # A real API server (not a static JSON-schema linter like kubeconform)
       # is required here: ToolSpec's "exactly one of agentRef or
       # (image and serviceAccountName)" rule is a CEL
       # x-kubernetes-validations rule, which only the API server evaluates —
-      # a schema-shape-only validator would silently accept a Tool sample
-      # that violates it.
+      # a schema-shape-only validator would silently accept a Tool that
+      # violates it.
       - name: Create kind cluster
         uses: helm/kind-action@v1
 
       - name: Install CRDs
         run: kubectl apply -f controllers/core-controller/config/crd/bases/
 
-      # controllers/core-controller/config/samples/ is deliberately excluded:
-      # it's kubebuilder's scaffolded "TODO(user): Add fields here"
-      # placeholders, never filled in as real CRs, not this repo's actual
-      # sample catalog.
-      - name: Validate agent-orchestrator sample CRs against the API server
-        run: kubectl apply --dry-run=server -f apps/agent-orchestrator/config/samples/
+      # charts/community-components is the only place these Tool/Skill/Agent
+      # CRs are defined now (no more standalone tools/*/tool.yaml or
+      # apps/**/config/samples/*.yaml twins to drift out of sync) -- render
+      # it with every optional component enabled so this validates the full
+      # catalog, then dry-run apply against a real API server.
+      - name: Render community-components with every component enabled
+        run: |
+          helm template community-components charts/community-components \
+            --set recipeScraper.enabled=true \
+            --set recipePublisher.enabled=true \
+            --set skills.recipeRefining.enabled=true \
+            --set skills.softwareEngineering.enabled=true \
+            --set skills.selfImprovement.enabled=true \
+            --set opencodeSweAgent.enabled=true \
+            --set opencodeSweAgentTool.enabled=true \
+            > /tmp/community-components-rendered.yaml
+
+      - name: Validate rendered CRs against the API server
+        run: kubectl apply --dry-run=server -f /tmp/community-components-rendered.yaml

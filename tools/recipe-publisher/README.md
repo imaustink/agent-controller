@@ -131,11 +131,16 @@ handling.)
 
 ### 4. Apply the Tool custom resource
 
-Edit `MEALIE_BASE_URL` in [tool.yaml](tool.yaml) to point at your Mealie
-instance first, then:
+This Tool is defined in
+[charts/community-components/templates/tool-recipe-publisher.yaml](../../charts/community-components/templates/tool-recipe-publisher.yaml)
+and enabled by default (`recipePublisher.enabled`). Set
+`recipePublisher.mealieBaseUrl` in your values to point at your Mealie
+instance, then install/upgrade the chart (see
+[charts/community-components/README.md](../../charts/community-components/README.md)):
 
 ```bash
-kubectl -n controller-agent apply -f tools/recipe-publisher/tool.yaml
+helm upgrade --install community-components charts/community-components \
+  -n controller-agent --set recipePublisher.mealieBaseUrl=https://your-mealie-instance
 ```
 
 ### 5. Restart the orchestrator
