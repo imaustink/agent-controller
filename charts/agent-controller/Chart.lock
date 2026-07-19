@@ -1,9 +1,12 @@
 dependencies:
 - name: agent-orchestrator
   repository: file://charts/agent-orchestrator
-  version: 0.1.0
+  version: 0.2.0
 - name: core-controller
   repository: file://charts/core-controller
+  version: 0.1.0
+- name: integration-gateway
+  repository: file://charts/integration-gateway
   version: 0.1.0
 - name: open-webui
   repository: https://helm.openwebui.com/
@@ -11,5 +14,5 @@ dependencies:
 - name: nats
   repository: https://nats-io.github.io/k8s/helm/charts/
   version: 2.14.2
-digest: sha256:7f608eb38a9c51430ea91a521ba0ff52d1d2e4556fb745ddb87f6a2016d73185
-generated: "2026-07-17T16:04:04.732182-07:00"
+digest: sha256:473311f0700fe89dd6b74efea40ea3d31c23e4af7942429642fe81e1a60df4c5
+generated: "2026-07-19T15:32:53.021933-07:00"

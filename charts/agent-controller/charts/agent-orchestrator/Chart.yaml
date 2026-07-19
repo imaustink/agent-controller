@@ -4,7 +4,7 @@ description: >-
   Helm chart for the controller-agent parent orchestrator: RAG-based skill/tool
   selection and Kubernetes Job launcher (see apps/agent-orchestrator).
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:
