@@ -309,7 +309,16 @@ existing SSRF/prompt-injection mitigations:
 
 ## Open questions (explicitly deferred)
 
-- Identity/auth mechanism: which IdP, how tokens map to roles/scopes.
+- ~~Identity/auth mechanism: which IdP, how tokens map to roles/scopes.~~
+  Resolved for the "verify a real token" half: `OidcIdentityResolver`
+  (`apps/agent-orchestrator/src/rbac/oidc-identity-resolver.ts`) verifies
+  caller bearer tokens as JWTs against a configurable OIDC issuer's JWKS —
+  issuer/audience/JWKS URL and the roles-claim path are all config, so it
+  works with any standards-compliant IdP without a vendor-specific SDK.
+  Select it with `AGENT_IDENTITY_RESOLVER=oidc` (default remains `static`,
+  the dev/test-only stub). Still open: no specific IdP is deployed/wired up
+  in any chart — operators must point `oidcIssuer`/`oidcJwksUri` at their
+  own.
 - Embedding model for the RAG index.
 - **Manifest staleness** (ADR 0009): the tool catalog only changes when the
   orchestrator image is rebuilt/redeployed with updated `manifest.json`

@@ -53,10 +53,25 @@ config:
   # charts/core-controller's installed CRDs.
   crdGroup: core.controller-agent.dev
   crdVersion: v1alpha1
-  # DEV/TEST ONLY (see src/rbac/static-identity-resolver.ts) — JSON map of
+  # Which IdentityResolver to build: "static" (default) or "oidc". See
+  # src/rbac/static-identity-resolver.ts and src/rbac/oidc-identity-resolver.ts.
+  identityResolver: static
+  # DEV/TEST ONLY, and only used when identityResolver=static — JSON map of
   # bearer token -> {subject, roles}. Leave unset in any real deployment;
-  # prefer a real OIDC/JWT identity resolver instead (not implemented yet).
+  # set identityResolver=oidc and the oidc* fields below instead.
   staticIdentities: ""
+  # Required when identityResolver=oidc: expected JWT `iss` claim.
+  oidcIssuer: ""
+  # Required when identityResolver=oidc: JWKS endpoint used to verify JWT
+  # signatures (e.g. an IdP's `.well-known/jwks.json` or provider-specific
+  # certs endpoint).
+  oidcJwksUri: ""
+  # Optional: expected JWT `aud` claim. Leave empty to skip audience
+  # verification.
+  oidcAudience: ""
+  # Dot-path to the roles claim in the verified JWT, e.g. "roles" or
+  # "realm_access.roles" (Keycloak).
+  oidcRolesClaim: roles
   # NATS URL for the queue-based tool-result channel. Ignored when
   # nats.enabled=true (the in-cluster Service URL is derived automatically).
   # When non-empty the orchestrator uses NatsJobReceiver instead of the HTTP

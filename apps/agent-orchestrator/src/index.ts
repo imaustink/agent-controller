@@ -8,6 +8,9 @@ import { LocalToolExecutor, K8sSecretReader } from "./local/local-tool-executor.
 import { CrdToolRegistry } from "./registry/crd-tool-registry.js";
 import { CrdLocalToolRegistry } from "./registry/crd-local-tool-registry.js";
 import { loadStaticIdentitiesFromEnv, StaticIdentityResolver } from "./rbac/static-identity-resolver.js";
+import { OidcIdentityResolver } from "./rbac/oidc-identity-resolver.js";
+import type { IdentityResolver } from "./rbac/types.js";
+import { createRemoteJWKSet } from "jose";
 import { CrdSkillRegistry } from "./skills/crd-skill-registry.js";
 import { deriveSkillAccess } from "./skills/derive-access.js";
 import { QdrantSkillStore } from "./skills/qdrant-skill-store.js";
@@ -77,6 +80,13 @@ async function main(): Promise<void> {
       );
       process.exit(EXIT_STARTUP_FAILURE);
     }
+  }
+
+  if (config.identityResolverKind === "oidc" && (!config.oidcIssuer || !config.oidcJwksUri)) {
+    console.error(
+      "AGENT_OIDC_ISSUER and AGENT_OIDC_JWKS_URI are required when AGENT_IDENTITY_RESOLVER=oidc",
+    );
+    process.exit(EXIT_STARTUP_FAILURE);
   }
 
   const kubeConfig = new k8s.KubeConfig();
@@ -288,8 +298,18 @@ async function main(): Promise<void> {
     };
   }
 
-  const identities = loadStaticIdentitiesFromEnv(config.staticIdentities);
-  const identityResolver = new StaticIdentityResolver(identities);
+  let identityResolver: IdentityResolver;
+  if (config.identityResolverKind === "oidc") {
+    console.error(`Using OIDC identity resolver: issuer=${config.oidcIssuer}`);
+    identityResolver = new OidcIdentityResolver({
+      issuer: config.oidcIssuer!,
+      audience: config.oidcAudience,
+      rolesClaim: config.oidcRolesClaim,
+      jwks: createRemoteJWKSet(new URL(config.oidcJwksUri!)),
+    });
+  } else {
+    identityResolver = new StaticIdentityResolver(loadStaticIdentitiesFromEnv(config.staticIdentities));
+  }
 
   // Result channel: NATS when AGENT_NATS_URL is set, HTTP callback otherwise.
   let jobResultReceiver: JobResultReceiver;

@@ -211,9 +211,12 @@ authenticates Job → orchestrator callbacks).
 These are called out explicitly rather than silently glossed over — see
 [docs/orchestrator.md#open-questions-explicitly-deferred](../../docs/orchestrator.md#open-questions-explicitly-deferred):
 
-- **Identity resolution** ships only a `StaticIdentityResolver` (a hardcoded
-  dev/test token map). Real OIDC/JWT verification is not implemented — do not
-  run this outside local development as-is.
+- **Identity resolution** ships two `IdentityResolver`s: `StaticIdentityResolver`
+  (a hardcoded dev/test token map) and `OidcIdentityResolver` (verifies caller
+  bearer tokens as JWTs against a configured OIDC issuer's JWKS — works with
+  any standards-compliant IdP, no vendor SDK). Select via `AGENT_IDENTITY_RESOLVER`
+  (`static`, the default, or `oidc`) — see `.env.example` and
+  `src/rbac/oidc-identity-resolver.ts`.
 - **Manifest staleness** (ADR 0009): the tool catalog only reflects what was
   baked into the orchestrator image at build time — there's no live drift
   detection between a manifest and whether that tool's image/ServiceAccount

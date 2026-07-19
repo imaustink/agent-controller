@@ -83,7 +83,22 @@ spec:
             - name: AGENT_LOCALTOOL_TIMEOUT_SECONDS
               value: {{ .Values.localTool.defaultTimeoutSeconds | quote }}
             {{- end }}
-            {{- if .Values.config.staticIdentities }}
+            {{- if eq .Values.config.identityResolver "oidc" }}
+            - name: AGENT_IDENTITY_RESOLVER
+              value: "oidc"
+            - name: AGENT_OIDC_ISSUER
+              value: {{ .Values.config.oidcIssuer | quote }}
+            - name: AGENT_OIDC_JWKS_URI
+              value: {{ .Values.config.oidcJwksUri | quote }}
+            {{- if .Values.config.oidcAudience }}
+            - name: AGENT_OIDC_AUDIENCE
+              value: {{ .Values.config.oidcAudience | quote }}
+            {{- end }}
+            {{- if .Values.config.oidcRolesClaim }}
+            - name: AGENT_OIDC_ROLES_CLAIM
+              value: {{ .Values.config.oidcRolesClaim | quote }}
+            {{- end }}
+            {{- else if .Values.config.staticIdentities }}
             - name: AGENT_STATIC_IDENTITIES
               value: {{ .Values.config.staticIdentities | quote }}
             {{- end }}
