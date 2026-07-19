@@ -1,0 +1,94 @@
+import { describe, expect, it, vi } from "vitest";
+import { OrchestratorClient } from "./orchestrator-client.js";
+
+function noopSleep(): Promise<void> {
+  return Promise.resolve();
+}
+
+describe("OrchestratorClient.invoke", () => {
+  it("posts /invoke then polls until succeeded", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "run-1" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "pending" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "succeeded", result: "opened PR #7" }) });
+
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+
+    const result = await client.invoke("do the thing", "github:acme/widgets#42");
+    expect(result).toEqual({ status: "succeeded", result: "opened PR #7" });
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      "http://orchestrator:8081/invoke",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ request: "do the thing", session_id: "github:acme/widgets#42" }),
+      }),
+    );
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe("http://orchestrator:8081/invoke/run-1");
+  });
+
+  it("surfaces a failed turn", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "run-2" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "failed", error: "boom" }) });
+
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+
+    expect(await client.invoke("do the thing", "session-1")).toEqual({ status: "failed", error: "boom" });
+  });
+
+  it("returns failed when /invoke itself is rejected", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce({ ok: false, status: 401, text: async () => "unauthorized" });
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+    const result = await client.invoke("do the thing", "session-1");
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/401/);
+  });
+
+  it("times out if the turn never reaches a terminal state", async () => {
+    let now = 0;
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "run-3" }) })
+      .mockResolvedValue({ ok: true, json: async () => ({ status: "pending" }) });
+
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 10,
+      pollTimeoutMs: 25,
+      sleep: async () => {
+        now += 10;
+      },
+      fetchImpl,
+    });
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+
+    const result = await client.invoke("do the thing", "session-1");
+    expect(result.status).toBe("timed_out");
+    vi.restoreAllMocks();
+  });
+});

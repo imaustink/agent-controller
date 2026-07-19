@@ -38,6 +38,19 @@ core-controller:
   fullnameOverride: core-controller
 
 # ---------------------------------------------------------------------------
+# GitHub Issues adapter (charts/integration-gateway) -- phase 1 of
+# docs/integrations-gateway.md's conversational path. Off by default: enable
+# alongside agent-orchestrator (its default config.orchestratorUrl above
+# points at that subchart's pinned `agent-orchestrator-invoke` Service name).
+# ---------------------------------------------------------------------------
+integration-gateway:
+  enabled: false
+  # Common overrides live under here, e.g.:
+  #   config: { githubBotLogin: "agent-controller[bot]", githubIdentities: "..." }
+  #   secrets: { existingSecret: integration-gateway-secrets }
+  #   ingress: { enabled: true, host: "gateway.example.com" }
+
+# ---------------------------------------------------------------------------
 # Optional Open WebUI chat UI (upstream open-webui chart, aliased `openwebui`)
 # in front of the orchestrator's OpenAI-compatible facade (ADR 0007). Off by
 # default. Run `helm dependency update charts/agent-controller` once so the

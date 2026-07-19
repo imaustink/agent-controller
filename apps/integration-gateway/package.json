@@ -1,0 +1,23 @@
+{
+  "name": "integration-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "GitHub Issues adapter for the event-integrations proposal (docs/integrations-gateway.md): relays GitHub issue/comment webhooks into agent-orchestrator's existing conversational /invoke API, scoped to one session per issue, and posts replies back as issue comments.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@controller-agent/github-app-auth": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.5",
+    "typescript": "^5.6.2",
+    "vitest": "^4.0.0"
+  }
+}

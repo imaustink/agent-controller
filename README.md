@@ -83,20 +83,23 @@ orchestrator service, and `controllers/` holds the Go controller.
 │   ├── messaging.md            # event protocol & transports
 │   ├── security.md             # threat model & mitigations
 │   ├── orchestrator.md         # orchestrator architecture
+│   ├── integrations-gateway.md # event integrations proposal (GitHub Issues implemented)
 │   └── adr/                    # Architecture Decision Records
 ├── packages/
-│   └── messaging/              # @controller-agent/messaging — shared event protocol
+│   ├── messaging/              # @controller-agent/messaging — shared event protocol
+│   └── github-app-auth/        # @controller-agent/github-app-auth — GitHub App JWT/token auth
 ├── tools/                      # on-demand tool containers (example implementations)
 │   ├── recipe-scraper/         # URL → recipe Markdown
 │   └── recipe-publisher/       # recipe Markdown → Mealie instance
 ├── apps/
-│   └── agent-orchestrator/     # RAG skill selection + ToolRun/AgentRun creator
+│   ├── agent-orchestrator/     # RAG skill selection + ToolRun/AgentRun creator
+│   └── integration-gateway/    # GitHub Issues → agent-orchestrator webhook adapter
 ├── controllers/
 │   └── core-controller/        # Go controller — watches CRDs, launches Jobs
 │       ├── api/v1alpha1/        # Tool, Skill, Agent, ToolRun, AgentRun types
 │       └── internal/controller/ # reconciliation logic
 └── charts/                     # Helm charts
-    ├── agent-controller/       # system chart: orchestrator + core-controller (+ CRDs) + optional Redis/Qdrant/NATS/Open WebUI
+    ├── agent-controller/       # system chart: orchestrator + core-controller (+ CRDs) + optional Redis/Qdrant/NATS/Open WebUI/integration-gateway
     └── community-components/   # catalog chart: Tool/Skill/Agent custom resources
 ```
 

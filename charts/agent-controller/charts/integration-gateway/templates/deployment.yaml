@@ -1,0 +1,121 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "integration-gateway.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "integration-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "integration-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "integration-gateway.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "integration-gateway.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: integration-gateway
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.port }}
+              protocol: TCP
+          env:
+            - name: GATEWAY_HTTP_PORT
+              value: {{ .Values.port | quote }}
+            - name: GATEWAY_ORCHESTRATOR_URL
+              value: {{ .Values.config.orchestratorUrl | quote }}
+            - name: GITHUB_API_URL
+              value: {{ .Values.config.githubApiUrl | quote }}
+            - name: GATEWAY_GITHUB_BOT_LOGIN
+              value: {{ .Values.config.githubBotLogin | quote }}
+            {{- if .Values.config.githubIdentities }}
+            - name: GATEWAY_GITHUB_IDENTITIES
+              value: {{ .Values.config.githubIdentities | quote }}
+            {{- end }}
+            - name: GATEWAY_POLL_INTERVAL_MS
+              value: {{ .Values.config.pollIntervalMs | quote }}
+            - name: GATEWAY_POLL_TIMEOUT_MS
+              value: {{ .Values.config.pollTimeoutMs | quote }}
+            - name: GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.githubWebhookSecretKey }}
+            - name: GATEWAY_ORCHESTRATOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.orchestratorTokenKey }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.githubTokenKey }}
+                  optional: true
+            - name: GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.githubAppIdKey }}
+                  optional: true
+            - name: GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.githubAppPrivateKeyKey }}
+                  optional: true
+            - name: GITHUB_APP_INSTALLATION_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.githubAppInstallationIdKey }}
+                  optional: true
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
