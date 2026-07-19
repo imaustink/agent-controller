@@ -53,6 +53,9 @@ build:
     - image: recipe-publisher
       docker:
         dockerfile: tools/recipe-publisher/Dockerfile
+    - image: web-search
+      docker:
+        dockerfile: tools/web-search/Dockerfile
     - image: opencode-swe-agent
       docker:
         dockerfile: apps/opencode-swe-agent/Dockerfile
@@ -144,3 +147,4 @@ deploy:
           recipeScraper.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_scraper}}"
           recipePublisher.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_publisher}}"
           opencodeSweAgent.image: "{{.IMAGE_FULLY_QUALIFIED_opencode_swe_agent}}"
+          webSearch.image: "{{.IMAGE_FULLY_QUALIFIED_web_search}}"

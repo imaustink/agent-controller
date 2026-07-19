@@ -120,3 +120,46 @@ openwebui:
       value: "http://localhost:8080/oauth/google/login/callback"
     - name: ENABLE_FORWARD_USER_INFO_HEADERS
       value: "true"
+
+# ---------------------------------------------------------------------------
+# Optional SearXNG metasearch instance (https://docs.searxng.org/), backing
+# community-components' web-search Tool. Off by default. Hand-authored
+# templates (charts/agent-controller/templates/searxng.yaml), not a Helm
+# dependency -- there is no maintained official SearXNG Helm chart to pin to
+# (searxng/searxng-helm-chart was archived May 2025), the same reasoning
+# agent-orchestrator/templates/redis.yaml already applies to Redis.
+#
+# ClusterIP only, never exposed via Ingress: this is meant to be called only
+# by the web-search Tool from inside the cluster. SearXNG's JSON output
+# format is disabled by default upstream and enabled here specifically for
+# that in-cluster caller -- safe only because the Service is never
+# internet-reachable (SearXNG's own bot-detection limiter is designed for
+# public-facing instances, not this use case).
+#
+# secret_key (searxng's session/CSRF key) must come from a real k8s Secret,
+# never a plaintext value in this file:
+#   kubectl create secret generic searxng-secrets \
+#     -n <namespace> --from-literal=secret-key="$(openssl rand -hex 32)"
+# ---------------------------------------------------------------------------
+searxng:
+  enabled: false
+  image:
+    tag: latest
+  # Secret (must already exist) supplying the real secret_key, substituted
+  # into settings.yml by an initContainer at pod startup (see searxng.yaml
+  # for why SearXNG's own auto-generation doesn't apply here).
+  secretKeyExistingSecret: searxng-secrets
+  secretKeyExistingSecretKey: secret-key
+  # Extra settings.yml overrides merged in verbatim under the top level
+  # (e.g. `engines:` to trim/add search engines). Rarely needed --
+  # use_default_settings: true already gives a full working instance.
+  extraSettings: {}
+  service:
+    port: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi

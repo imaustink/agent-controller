@@ -52,6 +52,13 @@ jobs:
             -f tools/recipe-publisher/Dockerfile .
           docker push registry.kurpuis.com:5000/recipe-publisher:latest
 
+      - name: Build & push web-search
+        run: |
+          docker build \
+            -t registry.kurpuis.com:5000/web-search:latest \
+            -f tools/web-search/Dockerfile .
+          docker push registry.kurpuis.com:5000/web-search:latest
+
       - name: Build & push core-controller
         run: |
           docker build \
