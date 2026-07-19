@@ -66,3 +66,16 @@ does **not** create -- they must already exist in the namespace:
    templates.
 2. Document any new ServiceAccount/Secret prerequisites above.
 3. Bump `version` in `Chart.yaml`.
+
+### If it also ships a plain, manually-`kubectl apply`-able CR
+
+Some of these components (recipe-scraper, recipe-publisher, opencode-swe-agent
+and its Tool wrapper) additionally have a hand-maintained plain-CR twin under
+`tools/*/tool.yaml`, `apps/agent-orchestrator/config/samples/*.yaml`, or
+`apps/opencode-swe-agent/agent.yaml` -- for manual install without Helm, and
+because `.github/workflows/validate-crds.yml` dry-run validates those against
+a real API server. If you add or edit one, keep its prose fields
+(`description`/`input`/`output`/`markdown`/`orchestratorPrompt`/`agentPrompt`)
+identical to this chart's template -- run
+`python3 scripts/sync-manifest-docs.py --check` (or `--fix`) to verify/sync.
+CI enforces this on any PR touching either side.
