@@ -23,16 +23,19 @@ WORKDIR /repo
 COPY package.json package-lock.json* ./
 COPY packages/messaging/package.json   packages/messaging/package.json
 COPY packages/agent-runtime/package.json packages/agent-runtime/package.json
+COPY packages/github-app-auth/package.json packages/github-app-auth/package.json
 COPY apps/opencode-swe-agent/package.json apps/opencode-swe-agent/package.json
 RUN npm ci
 
 COPY packages/messaging   packages/messaging
 COPY packages/agent-runtime packages/agent-runtime
+COPY packages/github-app-auth packages/github-app-auth
 COPY apps/opencode-swe-agent/tsconfig.json apps/opencode-swe-agent/tsconfig.json
 COPY apps/opencode-swe-agent/src           apps/opencode-swe-agent/src
 
 RUN npm run build --workspace=@controller-agent/messaging \
   && npm run build --workspace=@controller-agent/agent-runtime \
+  && npm run build --workspace=@controller-agent/github-app-auth \
   && npm run build --workspace=opencode-swe-agent \
   && npm prune --omit=dev \
   # Materialize workspace packages as real directories (not symlinks) so they
@@ -44,7 +47,11 @@ RUN npm run build --workspace=@controller-agent/messaging \
   && rm -rf node_modules/@controller-agent/agent-runtime \
   && mkdir -p node_modules/@controller-agent/agent-runtime \
   && cp -r packages/agent-runtime/dist    node_modules/@controller-agent/agent-runtime/dist \
-  && cp packages/agent-runtime/package.json node_modules/@controller-agent/agent-runtime/package.json
+  && cp packages/agent-runtime/package.json node_modules/@controller-agent/agent-runtime/package.json \
+  && rm -rf node_modules/@controller-agent/github-app-auth \
+  && mkdir -p node_modules/@controller-agent/github-app-auth \
+  && cp -r packages/github-app-auth/dist        node_modules/@controller-agent/github-app-auth/dist \
+  && cp packages/github-app-auth/package.json   node_modules/@controller-agent/github-app-auth/package.json
 
 ############################
 # Runtime stage
