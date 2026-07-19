@@ -6,6 +6,11 @@
 enabled: true
 
 # recipe-scraper + recipe-publisher are on by default (see values.yaml).
+# web-search needs the agent-controller release's searxng.enabled=true (see
+# ../agent-controller/values-minikube-demo.yaml) -- the default searxngBaseUrl
+# in values.yaml already matches that release's name ("agent-controller").
+webSearch:
+  enabled: true
 # opencode-swe (the privileged GitHub coding agent, calling Anthropic
 # directly) is enabled here; it needs the opencode-swe-agent ServiceAccount +
 # opencode-swe-secrets (keys GITHUB_TOKEN and ANTHROPIC_API_KEY) to already
@@ -18,4 +23,6 @@ opencodeSweAgentTool:
   enabled: true
 skills:
   selfImprovement:
+    enabled: true
+  webSearch:
     enabled: true

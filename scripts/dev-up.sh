@@ -23,7 +23,10 @@
 #   kubectl -n controller-agent create secret generic agent-orchestrator-openwebui-google-oauth \
 #     --from-literal=client-secret=<google-oauth-client-secret>
 #
-# All three secrets survive minikube restarts as long as the container is NOT
+#   kubectl -n controller-agent create secret generic searxng-secrets \
+#     --from-literal=secret-key="$(openssl rand -hex 32)"
+#
+# All four secrets survive minikube restarts as long as the container is NOT
 # recreated (i.e. normal start/stop). If the minikube container itself is
 # deleted (as happened on 2026-07-12), you must re-create the secrets before
 # running this script.
@@ -75,7 +78,7 @@ kubectl get namespace "$NS" >/dev/null 2>&1 || kubectl create namespace "$NS"
 # ── 3. Secrets check ─────────────────────────────────────────────────────────
 step "Checking required secrets..."
 MISSING_SECRETS=()
-for secret in agent-orchestrator-secrets recipe-publisher-secrets agent-orchestrator-openwebui-google-oauth; do
+for secret in agent-orchestrator-secrets recipe-publisher-secrets agent-orchestrator-openwebui-google-oauth searxng-secrets; do
   if ! kubectl -n "$NS" get secret "$secret" >/dev/null 2>&1; then
     MISSING_SECRETS+=("$secret")
   fi
@@ -92,7 +95,7 @@ fi
 
 # ── 4. ServiceAccounts ───────────────────────────────────────────────────────
 step "Ensuring tool ServiceAccounts..."
-for sa in recipe-scraper recipe-publisher opencode-swe-agent; do
+for sa in recipe-scraper recipe-publisher opencode-swe-agent web-search; do
   kubectl -n "$NS" get serviceaccount "$sa" >/dev/null 2>&1 \
     || kubectl -n "$NS" create serviceaccount "$sa"
 done

@@ -23,6 +23,18 @@ recipeScraper:
     secretName: agent-orchestrator-secrets
     secretKey: OPENAI_API_KEY
 
+# web-search: queries an in-cluster SearXNG instance for web results.
+# Requires the agent-controller release's `searxng.enabled=true` (see that
+# chart's values.yaml) -- searxngBaseUrl below must point at its Service.
+webSearch:
+  enabled: false
+  image: web-search:latest
+  serviceAccountName: web-search
+  # Not a secret -- <agent-controller release name>-searxng, ClusterIP,
+  # same namespace as this release. Defaults to the minikube demo release
+  # name; override to match your own agent-controller release name.
+  searxngBaseUrl: "http://agent-controller-searxng:8080"
+
 # recipe-publisher: publishes/updates a recipe on a Mealie instance.
 recipePublisher:
   enabled: true
@@ -88,4 +100,9 @@ skills:
   # imaustink/agent-controller via opencode-swe-agent-tool. Requires
   # opencodeSweAgentTool.enabled=true for its derived audience to be non-empty.
   selfImprovement:
+    enabled: false
+  # web-search: answers a request using an in-cluster SearXNG search (see
+  # webSearch Tool above). Enable webSearch.enabled=true for its derived
+  # audience (ADR 0011) to be non-empty.
+  webSearch:
     enabled: false
