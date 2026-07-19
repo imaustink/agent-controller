@@ -99,13 +99,17 @@ startup and upserts it into the RAG index; the Go core-controller
 a hardened one-shot Job — the orchestrator itself never creates a Job. To
 register a container tool:
 
-1. Add `tools/<name>/tool.yaml` — a `Tool` CR with its
-   description/input/output/allowedRoles/tier plus the launch metadata
-   (image, serviceAccountName, env/secretEnv, resources). See
-   [tools/recipe-scraper/tool.yaml](../../tools/recipe-scraper/tool.yaml).
-2. `kubectl apply` it into the orchestrator's namespace, then restart the
-   orchestrator so it re-reads the catalog (one-shot-at-startup, no watch loop
-   yet — ADR 0010).
+1. Add a template under
+   [charts/community-components/templates/](../../charts/community-components/templates/)
+   — a `Tool` CR with its description/input/output/allowedRoles/tier plus the
+   launch metadata (image, serviceAccountName, env/secretEnv, resources),
+   gated by an `enabled` flag in that chart's `values.yaml`. See
+   [tool-recipe-scraper.yaml](../../charts/community-components/templates/tool-recipe-scraper.yaml)
+   for the pattern. This chart is the only place Tool/Skill/Agent CRs are
+   defined — no separate plain-CR copy to keep in sync.
+2. `helm upgrade` the `community-components` release into the orchestrator's
+   namespace, then restart the orchestrator so it re-reads the catalog
+   (one-shot-at-startup, no watch loop yet — ADR 0010).
 
 The target namespace's `serviceAccountName` (e.g. `recipe-scraper`) still
 needs to actually exist in the cluster — this app doesn't create tool
