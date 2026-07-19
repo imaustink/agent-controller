@@ -1,0 +1,11 @@
+{
+  "id": "web-fetch",
+  "name": "web-fetch",
+  "description": "Fetches a URL and returns its main readable content as Markdown. SSRF-guarded: rejects non-public/internal targets and re-validates every redirect hop.",
+  "input": "A single URL as a plain string.",
+  "output": "The page's title and extracted main-content text as Markdown, or a failed event if the page could not be fetched or had no readable content.",
+  "allowedRoles": ["reader", "writer"],
+  "tier": "standard",
+  "image": "web-fetch:latest",
+  "serviceAccountName": "web-fetch"
+}

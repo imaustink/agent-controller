@@ -1,0 +1,25 @@
+{{- if .Values.webFetch.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: Tool
+metadata:
+  name: web-fetch
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Fetches a URL and returns its main readable content as Markdown. The
+    target is validated by an in-process SSRF guard (public hosts only,
+    re-checked on every redirect hop) -- never trust it to reach internal
+    addresses.
+  input: A single URL as a plain string.
+  output: >-
+    The page's title and extracted main-content text as Markdown, or a failed
+    event if the page could not be fetched or had no readable content.
+  # Read-only page fetch -- safe for both roles.
+  allowedRoles:
+    - reader
+    - writer
+  tier: standard
+  image: {{ .Values.webFetch.image | quote }}
+  serviceAccountName: {{ .Values.webFetch.serviceAccountName | quote }}
+{{- end }}

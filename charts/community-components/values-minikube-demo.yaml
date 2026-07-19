@@ -15,6 +15,10 @@ recipePublisher:
 # in values.yaml already matches that release's name ("agent-controller").
 webSearch:
   enabled: true
+# web-fetch has no external dependency -- it's on here so the web-search-skill
+# (which needs both toolRefs) actually has a non-empty audience.
+webFetch:
+  enabled: true
 # opencode-swe (the privileged GitHub coding agent, calling Anthropic
 # directly) is enabled here; its ServiceAccount is created by this chart --
 # it still needs opencode-swe-secrets (keys GITHUB_TOKEN and
