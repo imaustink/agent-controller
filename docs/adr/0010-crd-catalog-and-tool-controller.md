@@ -69,5 +69,6 @@ as ADR 0009, but the refresh no longer requires an image rebuild.
 - New moving part: the controller Deployment + CRDs must be installed
   (charts/tool-controller) before the orchestrator is useful.
 - CRD changes require the regeneration chain: edit Go types → `make
-  generate manifests` → copy CRD yaml into `charts/tool-controller/crds/`
-  (manual sync) → rebuild controller image.
+  generate manifests` (the latter also syncs the CRD yaml into
+  `charts/agent-controller/charts/core-controller/crds/`, which is generated
+  and not committed) → rebuild controller image.

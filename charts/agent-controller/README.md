@@ -27,6 +27,7 @@ charts/agent-controller/
 └── charts/
     ├── agent-orchestrator/     # local subchart (with its own qdrant dependency)
     ├── core-controller/        # local subchart (ships the CRDs)
+    │   └── crds/               # generated from controllers/core-controller, not committed (gitignored) -- see its README.md
     ├── open-webui-*.tgz        # fetched remote dependency (gitignored)
     └── nats-*.tgz              # fetched remote dependency (gitignored)
 ```
