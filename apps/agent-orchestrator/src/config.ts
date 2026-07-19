@@ -73,8 +73,23 @@ export interface AppConfig {
   localToolSocketDir: string;
   /** Fallback per-execution timeout (seconds) for LocalTools that set none. */
   localToolTimeoutSeconds: number;
-  /** JSON map of dev/test bearer tokens -> identity; see StaticIdentityResolver. */
+  /**
+   * Which `IdentityResolver` to build (index.ts): `"static"` (default) uses
+   * `staticIdentities` below -- dev/test only. `"oidc"` verifies caller
+   * bearer tokens as signed JWTs against `oidcIssuer`'s JWKS (see
+   * OidcIdentityResolver) -- the real IdP integration deferred by ADR 0004.
+   */
+  identityResolverKind: "static" | "oidc";
+  /** JSON map of dev/test bearer tokens -> identity; see StaticIdentityResolver. Ignored unless identityResolverKind is "static". */
   staticIdentities: string | undefined;
+  /** Expected JWT `iss` claim. Required when identityResolverKind is "oidc". */
+  oidcIssuer: string | undefined;
+  /** JWKS endpoint used to verify JWT signatures. Required when identityResolverKind is "oidc". */
+  oidcJwksUri: string | undefined;
+  /** Expected JWT `aud` claim. Leave unset to skip audience verification. */
+  oidcAudience: string | undefined;
+  /** Dot-path to the roles claim in the verified JWT, e.g. "roles" or "realm_access.roles" (Keycloak). */
+  oidcRolesClaim: string;
   /**
    * NATS server URL for the tool-result channel (and the sub-agent channel).
    * When set, tool Jobs receive their result via NATS (`NatsJobReceiver`) instead
@@ -124,7 +139,12 @@ export const config: AppConfig = {
   callbackSecretRefKey: process.env.AGENT_CALLBACK_SECRET_REF_KEY ?? "AGENT_CALLBACK_SECRET",
   localToolSocketDir: process.env.AGENT_LOCALTOOL_SOCKET_DIR ?? "/run/localtool",
   localToolTimeoutSeconds: num(process.env.AGENT_LOCALTOOL_TIMEOUT_SECONDS, 30),
+  identityResolverKind: process.env.AGENT_IDENTITY_RESOLVER === "oidc" ? "oidc" : "static",
   staticIdentities: process.env.AGENT_STATIC_IDENTITIES,
+  oidcIssuer: process.env.AGENT_OIDC_ISSUER,
+  oidcJwksUri: process.env.AGENT_OIDC_JWKS_URI,
+  oidcAudience: process.env.AGENT_OIDC_AUDIENCE,
+  oidcRolesClaim: process.env.AGENT_OIDC_ROLES_CLAIM ?? "roles",
   natsUrl: process.env.AGENT_NATS_URL,
   fallbackToolTopK: num(process.env.AGENT_FALLBACK_TOOL_TOP_K, 3),
   requestId: process.env.AGENT_REQUEST_ID ?? randomUUID(),

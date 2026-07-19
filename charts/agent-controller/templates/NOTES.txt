@@ -39,11 +39,15 @@ that map, e.g.:
 
 {{- if $ao.enabled }}
 {{- if $ao.config }}
+{{- if ne ($ao.config.identityResolver | default "static") "oidc" }}
 {{- if $ao.config.staticIdentities }}
 
 WARNING: agent-orchestrator.config.staticIdentities is set. StaticIdentityResolver
 is a DEV/TEST-ONLY stub with no real token verification — do not use it in
 production (see apps/agent-orchestrator/src/rbac/static-identity-resolver.ts).
+Set agent-orchestrator.config.identityResolver=oidc (and the config.oidc*
+fields) for real IdP verification instead.
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
