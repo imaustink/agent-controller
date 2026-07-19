@@ -13,7 +13,7 @@ import { discoverResult, ensureDir, findRepoDir, resolveGitIdentity, runCommand,
 import { extractContinuationToken } from "./continuation.js";
 import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./marker.js";
 import { loadToolConfig } from "./config.js";
-import { resolveGithubToken } from "./githubApp.js";
+import { resolveGithubToken } from "@controller-agent/github-app-auth";
 import { clip } from "./security/redact.js";
 
 const toolConfig = loadToolConfig();
@@ -268,7 +268,7 @@ async function runOneTurn(
 runAgent(async (session) => {
   // Prefers a freshly minted GitHub App installation token when App
   // credentials are configured; falls back to the static GITHUB_TOKEN PAT
-  // otherwise. See ./githubApp.ts for the precedence/validation rules.
+  // otherwise. See @controller-agent/github-app-auth for the precedence/validation rules.
   const token = await resolveGithubToken(toolConfig);
   const anthropicApiKey = toolConfig.anthropicApiKey;
   if (!anthropicApiKey) {

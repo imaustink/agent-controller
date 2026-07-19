@@ -38,6 +38,14 @@ dependencies:
     version: "0.1.0"
     repository: "file://charts/core-controller"
     condition: core-controller.enabled
+  # GitHub Issues adapter (apps/integration-gateway) -- phase 1 of
+  # docs/integrations-gateway.md's conversational path. Off by default;
+  # calls the agent-orchestrator subchart's invoke Service, so enable that
+  # too if you enable this.
+  - name: integration-gateway
+    version: "0.1.0"
+    repository: "file://charts/integration-gateway"
+    condition: integration-gateway.enabled
   # Optional Open WebUI chat UI (https://github.com/open-webui/open-webui) in
   # front of the orchestrator's OpenAI-compatible facade (ADR 0007), off by
   # default. Aliased to lowercase `openwebui` (no hyphen/camelCase) because

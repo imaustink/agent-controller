@@ -1,0 +1,117 @@
+replicaCount: 1
+
+image:
+  repository: integration-gateway
+  # Defaults to .Chart.AppVersion if empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # This app never talks to the k8s API (it only calls agent-orchestrator's
+  # HTTP API and the GitHub REST API) -- the ServiceAccount exists only
+  # because every Pod needs one; automount is disabled since there's nothing
+  # for this app to use the token for.
+  create: true
+  annotations: {}
+  name: ""
+  automount: false
+
+port: 8090
+
+config:
+  # Base URL of agent-orchestrator's consumer-facing /invoke API (ADR 0006).
+  orchestratorUrl: "http://agent-orchestrator-invoke:8081"
+  # How this gateway authenticates its /invoke calls -- must resolve, via the
+  # orchestrator's own identity resolver (config.staticIdentities on the
+  # agent-orchestrator chart), to a role allowed to reach the SWE agent.
+  # Read from a Secret (see secrets.orchestratorTokenKey below), never set
+  # here in plaintext.
+  #
+  # GitHub API base URL (override for GitHub Enterprise Server).
+  githubApiUrl: "https://api.github.com"
+  # The App/bot's own GitHub login -- its own comments are ignored (loop
+  # prevention). Required once the App/webhook is wired up.
+  githubBotLogin: ""
+  # DEV/TEST-GRADE static allowlist mapping GitHub logins to identities (see
+  # src/identity.ts) -- JSON: {"<login>": {"subject": "...", "roles": [...]}}.
+  # A real GitHub-org/team-membership resolver is a documented follow-up.
+  githubIdentities: ""
+  pollIntervalMs: 3000
+  pollTimeoutMs: 900000
+
+# Secrets: GITHUB_WEBHOOK_SECRET (required), GATEWAY_ORCHESTRATOR_TOKEN
+# (required), and either GITHUB_TOKEN or the three GITHUB_APP_* fields
+# (required for posting issue comments).
+#
+# By default the chart does NOT create a Secret -- bring your own via
+# `existingSecret` (see charts/agent-orchestrator's values.yaml for the same
+# convention/rationale). `secrets.create: true` is for local/dev convenience
+# only.
+secrets:
+  create: false
+  existingSecret: ""
+  githubWebhookSecretKey: GITHUB_WEBHOOK_SECRET
+  orchestratorTokenKey: GATEWAY_ORCHESTRATOR_TOKEN
+  githubTokenKey: GITHUB_TOKEN
+  githubAppIdKey: GITHUB_APP_ID
+  githubAppPrivateKeyKey: GITHUB_APP_PRIVATE_KEY
+  githubAppInstallationIdKey: GITHUB_APP_INSTALLATION_ID
+  # Only read when secrets.create=true.
+  githubWebhookSecret: ""
+  orchestratorToken: ""
+  githubToken: ""
+  githubAppId: ""
+  githubAppPrivateKey: ""
+  githubAppInstallationId: ""
+
+service:
+  type: ClusterIP
+  port: 8090
+
+ingress:
+  # GitHub must reach this Service directly -- unlike agent-orchestrator's
+  # callback port, there's no in-cluster-only port to keep private here.
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  path: /
+  pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Matches the hardened run contract in docs/security.md.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+podAnnotations: {}
+podLabels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+extraEnv: []

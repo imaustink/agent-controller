@@ -1,0 +1,101 @@
+import { createHmac } from "node:crypto";
+import { describe, expect, it } from "vitest";
+import { parseGithubEvent, verifyGithubSignature, WebhookAuthError } from "./github.js";
+
+function sign(body: string, secret: string): string {
+  return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+}
+
+describe("verifyGithubSignature", () => {
+  it("accepts a valid signature", () => {
+    const body = '{"hello":"world"}';
+    expect(() => verifyGithubSignature(body, sign(body, "secret"), "secret")).not.toThrow();
+  });
+
+  it("rejects a mismatched signature", () => {
+    const body = '{"hello":"world"}';
+    expect(() => verifyGithubSignature(body, sign(body, "wrong-secret"), "secret")).toThrow(WebhookAuthError);
+  });
+
+  it("rejects a missing signature header", () => {
+    expect(() => verifyGithubSignature("{}", undefined, "secret")).toThrow(WebhookAuthError);
+  });
+});
+
+const repoSender = {
+  repository: { owner: { login: "acme" }, name: "widgets" },
+  sender: { login: "alice", type: "User" },
+};
+
+describe("parseGithubEvent", () => {
+  it("parses an issues.opened event", () => {
+    const event = parseGithubEvent(
+      "issues",
+      JSON.stringify({
+        action: "opened",
+        ...repoSender,
+        issue: { number: 42, title: "Add dark mode", body: "Please add a dark theme." },
+      }),
+    );
+    expect(event).toEqual({
+      kind: "issue-opened",
+      owner: "acme",
+      repo: "widgets",
+      issueNumber: 42,
+      senderLogin: "alice",
+      senderIsBot: false,
+      title: "Add dark mode",
+      body: "Please add a dark theme.",
+    });
+  });
+
+  it("parses an issue_comment.created event", () => {
+    const event = parseGithubEvent(
+      "issue_comment",
+      JSON.stringify({
+        action: "created",
+        ...repoSender,
+        issue: { number: 42 },
+        comment: { body: "start work" },
+      }),
+    );
+    expect(event).toEqual({
+      kind: "issue-comment-created",
+      owner: "acme",
+      repo: "widgets",
+      issueNumber: 42,
+      senderLogin: "alice",
+      senderIsBot: false,
+      commentBody: "start work",
+    });
+  });
+
+  it("flags a Bot sender", () => {
+    const event = parseGithubEvent(
+      "issue_comment",
+      JSON.stringify({
+        action: "created",
+        repository: { owner: { login: "acme" }, name: "widgets" },
+        sender: { login: "agent-controller[bot]", type: "Bot" },
+        issue: { number: 42 },
+        comment: { body: "the reply" },
+      }),
+    );
+    expect(event).toMatchObject({ senderIsBot: true, senderLogin: "agent-controller[bot]" });
+  });
+
+  it("ignores unrecognized event/action combinations", () => {
+    expect(parseGithubEvent("issues", JSON.stringify({ action: "closed", ...repoSender, issue: { number: 1 } }))).toEqual({
+      kind: "ignored",
+    });
+    expect(parseGithubEvent("pull_request", JSON.stringify({ action: "opened" }))).toEqual({ kind: "ignored" });
+  });
+
+  it("ignores malformed JSON without throwing", () => {
+    expect(parseGithubEvent("issues", "not json")).toEqual({ kind: "ignored" });
+  });
+
+  it("ignores payloads missing required fields", () => {
+    expect(parseGithubEvent("issues", JSON.stringify({ action: "opened" }))).toEqual({ kind: "ignored" });
+  });
+});
