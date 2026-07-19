@@ -44,17 +44,15 @@ spec:
     say" — it clones/inspects the repo and answers directly, no code
     change required; and (2) changes — creating or cloning repositories,
     implementing features and fixes, writing code and tests, and opening
-    or updating pull requests. Handles multi-turn refinement — follow-up
-    instructions push more commits to the same pull request. Supports
+    or updating pull requests. Handles multi-turn refinement and supports
     human-in-the-loop clarifying questions when the task needs more
     context before it can proceed.
   input: >-
     A natural-language software-engineering instruction or question about
     a GitHub repository's contents (e.g. "create a repo called hello-svc
     with a Node HTTP server and open a PR", or "how many levels does my
-    lander-game repo have?"), or a follow-up refinement instruction (e.g.
-    "add a health check endpoint") for a session that is already in
-    progress.
+    lander-game repo have?"), or a follow-up refinement instruction for a
+    session that is already in progress.
   output: >-
     A summary of the changes plus a link to the opened/updated pull
     request when the task changed code; a direct answer when the task
@@ -81,12 +79,11 @@ spec:
     does my lander game have, check GitHub" or "what does this repo's
     README say").
 
-    Pass the user's request verbatim as the goal.
-
-    If the previous assistant message starts with an HTML comment like
-    <!-- swe: repo=... branch=... pr=... session=... -->, the agent is
-    continuing an existing session. Include that FULL text at the start
-    of the goal so the agent can resume the same pull request.
+    Pass the user's request verbatim as the goal. Continuing a pull request
+    across separate turns needs no special handling from you: the
+    orchestrator itself carries the repo/branch/PR/session forward
+    server-side (docs/adr/0017) and prepends it to the goal automatically
+    whenever this agent already has one in progress for the conversation.
 
     The agent may pause mid-task to ask you a clarifying question (a
     non-final reply in the chat). Answer naturally; the conversation
@@ -95,29 +92,15 @@ spec:
   # Loaded by the agent-runtime SDK at startup from AGENT_PROMPT env
   # (injected by the controller from this field in Phase 7).
   agentPrompt: |
-    You are a software-engineering sub-agent that reads, writes, and manages
-    GitHub repositories using the opencode CLI (calling Claude Sonnet 5 via
-    the Anthropic API, with its bash/file-read/grep/glob tools) and the
-    gh/git CLIs. You are spawned for a single task and communicate with the
-    orchestrator over NATS.
-
-    Your job:
-    1. Authenticate with the provided GITHUB_TOKEN and ANTHROPIC_API_KEY.
-    2. Run the opencode CLI to satisfy the request. Not every task needs a
-       code change: if it's a read-only question about a repository's
-       contents (e.g. "how many levels does this repo's game have"), clone
-       or otherwise inspect the repo with git/gh and answer directly — you
-       do not need to commit or open a PR unless the task actually calls
-       for a change.
-    3. Report progress to the orchestrator as you go.
-    4. When you have a result, return the PR link and a summary for a
-       code change, or the direct answer for a read-only question.
-    5. If the task is genuinely ambiguous and you cannot proceed without
-       clarification, ask the user exactly ONE question using the ask()
-       mechanism, wait for their answer, then proceed.
-
-    Never ask for clarification if you can make a reasonable default
-    choice. Never perform irreversible operations (force-push, delete
+    You are a software-engineering sub-agent. Using the opencode CLI
+    (Claude Sonnet 5 via the Anthropic API, with its bash/file-read/grep/
+    glob tools) and the gh/git CLIs, satisfy the request: implement the
+    requested coding task and return a summary and PR link, or, if it's a
+    read-only question about a repository's contents, clone or inspect it
+    with git/gh and answer directly — no commit or PR is needed unless the
+    task actually calls for a change. Only ask the user a question if you
+    genuinely cannot proceed without their answer; otherwise use sensible
+    defaults. Never perform irreversible operations (force-push, delete
     branches/repos).
   # Coding tasks take much longer than the 300s default.
   # agentRunTimeoutSeconds (1800) set at the orchestrator level covers this,
