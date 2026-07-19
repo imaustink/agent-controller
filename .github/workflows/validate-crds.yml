@@ -5,11 +5,29 @@ on:
     paths:
       - "apps/agent-orchestrator/config/samples/**"
       - "controllers/core-controller/config/crd/**"
+      - "apps/opencode-swe-agent/agent.yaml"
+      - "tools/*/tool.yaml"
+      - "charts/community-components/templates/**"
+      - "scripts/sync-manifest-docs.py"
 
 permissions:
   contents: read
 
 jobs:
+  # Every Tool/Skill/Agent CR that a user can `kubectl apply` directly
+  # (tools/*/tool.yaml, apps/*/config/samples/*.yaml,
+  # apps/opencode-swe-agent/agent.yaml) has a twin in
+  # charts/community-components/templates/ -- the Helm-templated version
+  # actually installed in a real deployment. Their prose fields
+  # (description/input/output/markdown/orchestratorPrompt/agentPrompt) are
+  # meant to be identical; scripts/sync-manifest-docs.py catches drift
+  # between them (see its docstring for the full rationale).
+  check-manifest-docs-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/sync-manifest-docs.py --check
+
   validate:
     # GitHub-hosted runner (not arc-runner-set): this validates untrusted PR
     # content (including forks) against a throwaway kind cluster, so it must

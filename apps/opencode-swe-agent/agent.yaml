@@ -37,14 +37,13 @@ spec:
     Performs software-engineering work on GitHub end-to-end: creates or
     clones repositories, implements features and fixes, writes code and
     tests, and opens or updates pull requests. Handles multi-turn
-    refinement — follow-up instructions push more commits to the same
-    pull request. Supports human-in-the-loop clarifying questions when
+    refinement and supports human-in-the-loop clarifying questions when
     the task needs more context before it can proceed.
   input: >-
     A natural-language software-engineering instruction (e.g. "create a
     repo called hello-svc with a Node HTTP server and open a PR"), or a
-    follow-up refinement instruction (e.g. "add a health check endpoint")
-    for a session that is already in progress.
+    follow-up refinement instruction for a session that is already in
+    progress.
   output: >-
     A summary of the changes plus a link to the opened/updated pull
     request; or a mid-turn clarifying question to the user if more
@@ -63,12 +62,11 @@ spec:
     or cloning repositories, implementing features, fixing bugs, writing
     tests, and opening or updating pull requests on GitHub.
 
-    Pass the user's request verbatim as the goal.
-
-    If the previous assistant message starts with an HTML comment like
-    <!-- swe: repo=... branch=... pr=... session=... -->, the agent is
-    continuing an existing session. Include that FULL text at the start
-    of the goal so the agent can resume the same pull request.
+    Pass the user's request verbatim as the goal. Continuing a pull request
+    across separate turns needs no special handling from you: the
+    orchestrator itself carries the repo/branch/PR/session forward
+    server-side (docs/adr/0017) and prepends it to the goal automatically
+    whenever this agent already has one in progress for the conversation.
 
     The agent may pause mid-task to ask you a clarifying question (a
     non-final reply in the chat). Answer naturally; the conversation
@@ -77,23 +75,12 @@ spec:
   # Loaded by the agent-runtime SDK at startup from AGENT_PROMPT env
   # (injected by the controller from this field in Phase 7).
   agentPrompt: |
-    You are a software-engineering sub-agent that writes code and manages
-    GitHub repositories using the opencode CLI (calling Claude Sonnet 5 via
-    the Anthropic API) and the gh/git CLIs. You are spawned for a single
-    coding task and communicate with the orchestrator over NATS.
-
-    Your job:
-    1. Authenticate with the provided GITHUB_TOKEN and ANTHROPIC_API_KEY.
-    2. Run the opencode CLI to implement the requested changes.
-    3. Report progress to the orchestrator as you go.
-    4. When you have a result, return the PR link and a summary.
-    5. If the task is genuinely ambiguous and you cannot proceed without
-       clarification, ask the user exactly ONE question using the ask()
-       mechanism, wait for their answer, then proceed.
-
-    Never ask for clarification if you can make a reasonable default
-    choice. Never perform irreversible operations (force-push, delete
-    branches/repos).
+    You are a software-engineering sub-agent. Implement the requested
+    coding task using the opencode CLI (Claude Sonnet 5 via the Anthropic
+    API) and the gh/git CLIs, then return a summary and PR link. Only ask
+    the user a question if you genuinely cannot proceed without their
+    answer; otherwise use sensible defaults. Never perform irreversible
+    operations (force-push, delete branches/repos).
   # Coding tasks take much longer than the 300s default.
   # agentRunTimeoutSeconds (1800) set at the orchestrator level covers this,
   # but the Go controller also reads timeoutSeconds here to set the Job's
