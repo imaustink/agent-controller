@@ -8,57 +8,111 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    # Cheap, network-light job: figures out which images actually need a
+    # rebuild so `publish` below only spins up matrix jobs for those. Runs on
+    # a GitHub-hosted runner since it doesn't touch the internal registry.
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            workflow:
+              - '.github/workflows/publish.yml'
+            agent-orchestrator:
+              - 'package.json'
+              - 'package-lock.json'
+              - 'packages/messaging/**'
+              - 'apps/agent-orchestrator/**'
+            opencode-swe-agent:
+              - 'package.json'
+              - 'package-lock.json'
+              - 'packages/messaging/**'
+              - 'packages/agent-runtime/**'
+              - 'apps/opencode-swe-agent/**'
+            recipe-scraper:
+              - 'package.json'
+              - 'package-lock.json'
+              - 'packages/messaging/**'
+              - 'tools/recipe-scraper/**'
+            recipe-publisher:
+              - 'package.json'
+              - 'package-lock.json'
+              - 'packages/messaging/**'
+              - 'tools/recipe-publisher/**'
+            web-search:
+              - 'package.json'
+              - 'package-lock.json'
+              - 'packages/messaging/**'
+              - 'tools/web-search/**'
+            core-controller:
+              - 'controllers/core-controller/**'
+            localtool-executor:
+              - 'sidecars/localtool-executor/**'
+
+      - name: Compute matrix
+        id: matrix
+        env:
+          WORKFLOW_CHANGED: ${{ steps.filter.outputs.workflow }}
+          AGENT_ORCHESTRATOR: ${{ steps.filter.outputs.agent-orchestrator }}
+          OPENCODE_SWE_AGENT: ${{ steps.filter.outputs.opencode-swe-agent }}
+          RECIPE_SCRAPER: ${{ steps.filter.outputs.recipe-scraper }}
+          RECIPE_PUBLISHER: ${{ steps.filter.outputs.recipe-publisher }}
+          WEB_SEARCH: ${{ steps.filter.outputs.web-search }}
+          CORE_CONTROLLER: ${{ steps.filter.outputs.core-controller }}
+          LOCALTOOL_EXECUTOR: ${{ steps.filter.outputs.localtool-executor }}
+        run: |
+          cat <<'EOF' > all.json
+          [
+            {"image":"agent-orchestrator","changed_key":"AGENT_ORCHESTRATOR","dockerfile":"apps/agent-orchestrator/Dockerfile","context":"."},
+            {"image":"opencode-swe-agent","changed_key":"OPENCODE_SWE_AGENT","dockerfile":"apps/opencode-swe-agent/Dockerfile","context":"."},
+            {"image":"recipe-scraper","changed_key":"RECIPE_SCRAPER","dockerfile":"tools/recipe-scraper/Dockerfile","context":"."},
+            {"image":"recipe-publisher","changed_key":"RECIPE_PUBLISHER","dockerfile":"tools/recipe-publisher/Dockerfile","context":"."},
+            {"image":"web-search","changed_key":"WEB_SEARCH","dockerfile":"tools/web-search/Dockerfile","context":"."},
+            {"image":"core-controller","changed_key":"CORE_CONTROLLER","dockerfile":"controllers/core-controller/Dockerfile","context":"controllers/core-controller"},
+            {"image":"localtool-executor-node","changed_key":"LOCALTOOL_EXECUTOR","dockerfile":"sidecars/localtool-executor/Dockerfile","context":"sidecars/localtool-executor","build_args":"BASE_IMAGE=node:24-bookworm-slim\nRUNTIME=node"},
+            {"image":"localtool-executor-python","changed_key":"LOCALTOOL_EXECUTOR","dockerfile":"sidecars/localtool-executor/Dockerfile","context":"sidecars/localtool-executor","build_args":"BASE_IMAGE=python:3.12-slim-bookworm\nRUNTIME=python"},
+            {"image":"localtool-executor-go","changed_key":"LOCALTOOL_EXECUTOR","dockerfile":"sidecars/localtool-executor/Dockerfile","context":"sidecars/localtool-executor","build_args":"BASE_IMAGE=golang:1.24-bookworm\nRUNTIME=go"},
+            {"image":"localtool-executor-shell","changed_key":"LOCALTOOL_EXECUTOR","dockerfile":"sidecars/localtool-executor/Dockerfile","context":"sidecars/localtool-executor","build_args":"BASE_IMAGE=debian:bookworm-slim\nRUNTIME=shell"}
+          ]
+          EOF
+
+          if [ "$WORKFLOW_CHANGED" = "true" ]; then
+            # The publish workflow itself changed -- rebuild everything so a
+            # broken matrix/cache config surfaces immediately, not on the
+            # next unrelated image change.
+            MATRIX=$(jq -c '.' all.json)
+          else
+            FLAGS=$(jq -n \
+              --arg AGENT_ORCHESTRATOR "$AGENT_ORCHESTRATOR" \
+              --arg OPENCODE_SWE_AGENT "$OPENCODE_SWE_AGENT" \
+              --arg RECIPE_SCRAPER "$RECIPE_SCRAPER" \
+              --arg RECIPE_PUBLISHER "$RECIPE_PUBLISHER" \
+              --arg WEB_SEARCH "$WEB_SEARCH" \
+              --arg CORE_CONTROLLER "$CORE_CONTROLLER" \
+              --arg LOCALTOOL_EXECUTOR "$LOCALTOOL_EXECUTOR" \
+              '{AGENT_ORCHESTRATOR:$AGENT_ORCHESTRATOR,OPENCODE_SWE_AGENT:$OPENCODE_SWE_AGENT,RECIPE_SCRAPER:$RECIPE_SCRAPER,RECIPE_PUBLISHER:$RECIPE_PUBLISHER,WEB_SEARCH:$WEB_SEARCH,CORE_CONTROLLER:$CORE_CONTROLLER,LOCALTOOL_EXECUTOR:$LOCALTOOL_EXECUTOR}')
+            MATRIX=$(jq -c --argjson flags "$FLAGS" 'map(select($flags[.changed_key] == "true"))' all.json)
+          fi
+
+          echo "Building: $(echo "$MATRIX" | jq -c '[.[].image]')"
+          echo "result=$MATRIX" >> "$GITHUB_OUTPUT"
+
   publish:
+    needs: changes
     runs-on: arc-runner-set-agent-controller
     # Self-hosted runner: only ever reachable via push to main (collaborators only).
     # Guard so a fork that somehow re-targets this job cannot run it on our infra.
-    if: github.repository == 'imaustink/agent-controller'
+    if: github.repository == 'imaustink/agent-controller' && needs.changes.outputs.matrix != '[]'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - image: agent-orchestrator
-            dockerfile: apps/agent-orchestrator/Dockerfile
-            context: .
-          - image: opencode-swe-agent
-            dockerfile: apps/opencode-swe-agent/Dockerfile
-            context: .
-          - image: recipe-scraper
-            dockerfile: tools/recipe-scraper/Dockerfile
-            context: .
-          - image: recipe-publisher
-            dockerfile: tools/recipe-publisher/Dockerfile
-            context: .
-          - image: web-search
-            dockerfile: tools/web-search/Dockerfile
-            context: .
-          - image: core-controller
-            dockerfile: controllers/core-controller/Dockerfile
-            context: controllers/core-controller
-          - image: localtool-executor-node
-            dockerfile: sidecars/localtool-executor/Dockerfile
-            context: sidecars/localtool-executor
-            build_args: |
-              BASE_IMAGE=node:24-bookworm-slim
-              RUNTIME=node
-          - image: localtool-executor-python
-            dockerfile: sidecars/localtool-executor/Dockerfile
-            context: sidecars/localtool-executor
-            build_args: |
-              BASE_IMAGE=python:3.12-slim-bookworm
-              RUNTIME=python
-          - image: localtool-executor-go
-            dockerfile: sidecars/localtool-executor/Dockerfile
-            context: sidecars/localtool-executor
-            build_args: |
-              BASE_IMAGE=golang:1.24-bookworm
-              RUNTIME=go
-          - image: localtool-executor-shell
-            dockerfile: sidecars/localtool-executor/Dockerfile
-            context: sidecars/localtool-executor
-            build_args: |
-              BASE_IMAGE=debian:bookworm-slim
-              RUNTIME=shell
+        include: ${{ fromJson(needs.changes.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -80,3 +134,10 @@ jobs:
           push: true
           build-args: ${{ matrix.build_args }}
           tags: registry.kurpuis.com:5000/${{ matrix.image }}:latest
+          # GitHub Actions cache backend, scoped per image so unrelated images
+          # don't evict each other's layers. `mode=max` also caches
+          # intermediate (build-stage) layers, not just the final stage --
+          # needed here since npm ci / go mod download / apt-get all happen
+          # in earlier stages than what gets pushed.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
