@@ -61,6 +61,15 @@ webSearch:
   # name; override to match your own agent-controller release name.
   searxngBaseUrl: "http://agent-controller-searxng:8080"
 
+# web-fetch: fetches a single URL and returns its main readable content as
+# Markdown. Pairs with web-search above -- the search tool only returns short
+# snippets, so the web-search-skill calls this tool on a result's URL to
+# actually read the page. SSRF-guarded; no other configuration needed.
+webFetch:
+  enabled: false
+  image: web-fetch:latest
+  serviceAccountName: web-fetch
+
 # recipe-publisher: publishes/updates a recipe on a Mealie instance.
 recipePublisher:
   enabled: true
@@ -142,8 +151,10 @@ skills:
   # opencodeSweAgentTool.enabled=true for its derived audience to be non-empty.
   selfImprovement:
     enabled: false
-  # web-search: answers a request using an in-cluster SearXNG search (see
-  # webSearch Tool above). Enable webSearch.enabled=true for its derived
-  # audience (ADR 0011) to be non-empty.
+  # web-search: answers a request using an in-cluster SearXNG search, and can
+  # follow up with web-fetch to read a promising result's full page (see
+  # webSearch and webFetch Tools above). Enable both webSearch.enabled=true
+  # and webFetch.enabled=true for its derived audience (ADR 0011) to be
+  # non-empty -- the skill's toolRefs lists both.
   webSearch:
     enabled: false
