@@ -13,6 +13,18 @@ enabled: true
 # orchestrator side too).
 crdApiVersion: core.controller-agent.dev/v1alpha1
 
+# Image pull secrets attached to every ServiceAccount this chart creates
+# (recipe-scraper, web-search, recipe-publisher, opencode-swe-agent), so Tool/
+# Agent pods running as those ServiceAccounts can pull from a private
+# registry. Each entry must reference a `kubernetes.io/dockerconfigjson`
+# Secret that already exists in this namespace, e.g.:
+#   kubectl -n <ns> create secret docker-registry docker-registry-credentials \
+#     --docker-server=registry.example.com \
+#     --docker-username=... --docker-password=...
+imagePullSecrets: []
+# imagePullSecrets:
+#   - name: docker-registry-credentials
+
 # recipe-scraper: read-only URL -> recipe Markdown extraction.
 recipeScraper:
   enabled: true
