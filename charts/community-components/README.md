@@ -40,6 +40,7 @@ helm install community-components oci://ghcr.io/imaustink/charts/community-compo
 | ---------- | ---- | ---------- | ------- |
 | `recipeScraper` | Tool | URL -> recipe Markdown extraction | on |
 | `recipePublisher` | Tool | publishes/updates a recipe on Mealie | on |
+| `webSearch` | Tool | queries an in-cluster SearXNG instance for web results | off |
 | `skills.recipeRefining` | Skill | extract -> confirm -> publish -> refine, using the two tools above | on |
 | `skills.softwareEngineering` | Skill | superseded by `opencodeSweAgent` below; keep disabled when that's enabled | off |
 | `opencodeSweAgent` | Agent | privileged GitHub coding sub-agent (opencode CLI + Anthropic API) | off |
@@ -49,15 +50,25 @@ See [values.yaml](values.yaml) for the full set of per-component knobs
 
 ## Prerequisites for enabled components
 
-Each Tool/Agent CR references a ServiceAccount and Secret that this chart
-does **not** create -- they must already exist in the namespace:
+Each Tool/Agent CR's ServiceAccount is created by this chart by default (see
+`<component>.serviceAccount.create` in values.yaml). What's still required
+out-of-band is:
 
-- `recipeScraper`: ServiceAccount `recipe-scraper`; Secret with `OPENAI_API_KEY`
-  (default `agent-orchestrator-secrets`).
-- `recipePublisher`: ServiceAccount `recipe-publisher`; Secret
+- `recipeScraper`: Secret with `OPENAI_API_KEY` (default
+  `agent-orchestrator-secrets`).
+- `recipePublisher`: `recipePublisher.mealieBaseUrl` must be set to your own
+  Mealie instance (no default -- install fails without it); Secret
   `recipe-publisher-secrets` with `MEALIE_API_TOKEN`.
-- `opencodeSweAgent` (if enabled): ServiceAccount `opencode-swe-agent`; Secret
-  `opencode-swe-secrets` with `GITHUB_TOKEN` and `ANTHROPIC_API_KEY`.
+- `webSearch` (if enabled): the `agent-controller` release's
+  `searxng.enabled=true`, and `webSearch.searxngBaseUrl` pointed at that
+  release's SearXNG Service (defaults to the minikube demo release name).
+- `opencodeSweAgent` (if enabled): Secret `opencode-swe-secrets` with
+  `GITHUB_TOKEN` and `ANTHROPIC_API_KEY`.
+
+Every tool/agent image (`recipeScraper.image`, `recipePublisher.image`,
+`webSearch.image`, `opencodeSweAgent.image`) also needs to point at a registry
+you actually have access to -- see the top-level
+[agent-controller README](../agent-controller/README.md#prerequisites).
 
 ## Adding a new community component
 

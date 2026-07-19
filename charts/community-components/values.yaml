@@ -18,6 +18,13 @@ recipeScraper:
   enabled: true
   image: recipe-scraper:latest
   serviceAccountName: recipe-scraper
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
   # Secret (must already exist) supplying the tool's OPENAI_API_KEY.
   openai:
     secretName: agent-orchestrator-secrets
@@ -30,6 +37,13 @@ webSearch:
   enabled: false
   image: web-search:latest
   serviceAccountName: web-search
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need to attach annotations managed elsewhere (e.g. IRSA)
+  # that this chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
   # Not a secret -- <agent-controller release name>-searxng, ClusterIP,
   # same namespace as this release. Defaults to the minikube demo release
   # name; override to match your own agent-controller release name.
@@ -40,8 +54,17 @@ recipePublisher:
   enabled: true
   image: recipe-publisher:latest
   serviceAccountName: recipe-publisher
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
   # Target Mealie instance (not a secret) + which ingredient parser to use.
-  mealieBaseUrl: "https://recipes.kurpuis.com"
+  # No default on purpose -- must be set to your own Mealie instance, never
+  # inherited from this repo's demo config.
+  mealieBaseUrl: ""
   ingredientParser: "nlp"
   # Secret (must already exist) supplying MEALIE_API_TOKEN.
   secretName: recipe-publisher-secrets
@@ -51,8 +74,7 @@ recipePublisher:
 # NATS, HITL) that runs the opencode CLI against Anthropic's API directly
 # (Claude Sonnet 5) instead of GitHub Copilot. Replaces the old copilotSwe
 # Tool + softwareEngineering Skill when enabled.
-# Prerequisites (out-of-band):
-#   kubectl -n <ns> create serviceaccount opencode-swe-agent
+# Prerequisite (out-of-band -- Helm can't source secret values on its own):
 #   kubectl -n <ns> create secret generic opencode-swe-secrets \
 #     --from-literal=GITHUB_TOKEN=github_pat_... \
 #     --from-literal=ANTHROPIC_API_KEY=sk-ant-...
@@ -60,6 +82,13 @@ opencodeSweAgent:
   enabled: false
   image: opencode-swe-agent:latest
   serviceAccountName: opencode-swe-agent
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
   # Two independent secrets in one k8s Secret: a fine-grained GitHub PAT for
   # git/gh operations, and an Anthropic API key for the opencode model.
   secretName: opencode-swe-secrets

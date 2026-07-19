@@ -35,8 +35,21 @@ charts/agent-controller/
 ## Prerequisites
 
 - A Kubernetes cluster and `helm` 3.
-- Secrets created out-of-band (never via `--set`), e.g. for the demo:
-  - `agent-orchestrator-secrets` with `OPENAI_API_KEY` + `AGENT_CALLBACK_SECRET`
+- A Secret created out-of-band (never via `--set`) with `OPENAI_API_KEY` +
+  `AGENT_CALLBACK_SECRET`. With default values this must be named
+  `agent-orchestrator` (`agent-orchestrator.fullnameOverride`, since
+  `agent-orchestrator.secrets.existingSecret` is unset) — the demo values file
+  overrides this to `agent-orchestrator-secrets` instead
+  (`values-minikube-demo.yaml`'s `secrets.existingSecret`), so match whichever
+  values file you actually install with.
+- Your own images for `agent-orchestrator.image`/`core-controller.image` (and,
+  for `community-components`, `recipeScraper`/`recipePublisher`/`webSearch`/
+  `opencodeSweAgent`). `.github/workflows/publish.yml` currently only pushes
+  these to a private self-hosted registry (`registry.kurpuis.com:5000`), and
+  every chart default is a bare `<name>:latest` with no registry prefix — that
+  resolves against Docker Hub and 404s for anyone without access to that
+  registry. Build and push your own images and override the `image`/
+  `image.repository` values accordingly.
 
 ## Fetching dependencies
 
