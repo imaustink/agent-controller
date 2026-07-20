@@ -57,10 +57,20 @@ type SkillSpec struct {
 	// Note a Skill deliberately carries NO allowedRoles of its own (ADR 0011):
 	// skills are trusted markdown, not capability — all RBAC lives on the
 	// dangerous things (Tool/Agent). A skill's effective audience is derived
-	// by the orchestrator as the intersection of its tools' allowedRoles
-	// (unrestricted when toolRefs is empty).
+	// by the orchestrator as the intersection of its tools' AND agents'
+	// allowedRoles (unrestricted when both toolRefs and agentRefs are empty).
 	// +optional
 	ToolRefs []string `json:"toolRefs,omitempty"`
+
+	// agentRefs are the names of Agent CRs this skill is permitted to
+	// delegate to directly (docs/adr/0021) — dispatched as an AgentRun the
+	// same way an agent-backed Tool (Tool.spec.agentRef) already is, but
+	// without needing a Tool CR to wrap the Agent first. Combined with
+	// toolRefs for both RBAC derivation (ADR 0011) and what the action
+	// planner may select from. May be empty for skills that call only tools
+	// (or neither, for a respond-only skill).
+	// +optional
+	AgentRefs []string `json:"agentRefs,omitempty"`
 }
 
 // SkillStatus defines the observed state of Skill.

@@ -42,6 +42,7 @@ const skill: SkillDescriptor = {
   description: "Extract, adjust, and publish recipes",
   markdown: "# instructions",
   toolIds: ["recipe-scraper", "recipe-publisher"],
+  agentIds: [],
 };
 
 function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
@@ -779,6 +780,7 @@ describe("buildAgentGraph agent-backed Tool (runTool via AgentRun)", () => {
     description: "Drafts and PRs a new skill",
     markdown: "# instructions",
     toolIds: ["opencode-swe-agent-tool"],
+    agentIds: [],
   };
 
   function agentBackedToolDeps(overrides: Partial<AgentGraphDeps> = {}, reply: Partial<AgentTurnResult> = {}) {
@@ -862,6 +864,98 @@ describe("buildAgentGraph agent-backed Tool (runTool via AgentRun)", () => {
   });
 });
 
+describe("buildAgentGraph Skill.agentRefs (ADR 0021, no Tool wrapper)", () => {
+  const opencodeAgent: AgentDescriptor = {
+    id: "opencode-swe-agent",
+    name: "opencode-swe-agent",
+    description: "General-purpose coding agent",
+    allowedRoles: ["reader"],
+    agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
+  };
+
+  const selfImprovementSkill: SkillDescriptor = {
+    id: "self-improvement-skill",
+    name: "Self Improvement",
+    description: "Drafts and PRs a new skill",
+    markdown: "# instructions",
+    toolIds: [],
+    agentIds: ["opencode-swe-agent"],
+  };
+
+  function agentRefsDeps(overrides: Partial<AgentGraphDeps> = {}, reply: Partial<AgentTurnResult> = {}) {
+    const skillStore: SkillStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ skill: selfImprovementSkill, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([selfImprovementSkill]),
+    };
+    const skillSelector: SkillSelector = { select: vi.fn().mockResolvedValue(selfImprovementSkill) };
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: opencodeAgent, score: 1 }]),
+    };
+    const actionPlanner: ActionPlanner = {
+      plan: vi.fn().mockResolvedValue({
+        action: "call_tool",
+        toolId: "opencode-swe-agent",
+        toolArgs: "open a PR adding this skill",
+      } satisfies PlannedAction),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened https://github.com/imaustink/agent-controller/pull/42",
+        final: true,
+        narration: [],
+        ...reply,
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      skillStore,
+      skillSelector,
+      agentStore,
+      actionPlanner,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("resolves a skill's agentRefs via agentStore and dispatches straight to an AgentRun, no Tool CR involved", async () => {
+    const deps = agentRefsDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedTool?.id).toBe("opencode-swe-agent");
+    expect(final.selectedTool?.agentRunTemplate).toEqual(opencodeAgent.agentRunTemplate);
+    expect(final.result).toBe("Opened https://github.com/imaustink/agent-controller/pull/42");
+    expect(deps.agentStore!.getByIds).toHaveBeenCalledWith(["opencode-swe-agent"], { callerRoles: ["reader"] });
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      opencodeAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ goal: "open a PR adding this skill" }),
+    );
+  });
+
+  it("errors when a skill declares agentRefs but agent delegation (agentStore) is not configured", async () => {
+    const deps = agentRefsDeps({ agentStore: undefined });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+    expect(final.error).toMatch(/agent delegation is not configured/);
+  });
+});
+
 describe("buildAgentGraph best-effort LLM answer on no match (no hardcoded fallback agent)", () => {
   const realAgent: AgentDescriptor = {
     id: "opencode-swe-agent",
@@ -912,7 +1006,7 @@ describe("buildAgentGraph best-effort LLM answer on no match (no hardcoded fallb
   it("gives a bare best-effort LLM answer when the delegate selector picks no candidate", async () => {
     const deps = noMatchDeps();
     (deps.skillStore.query as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { skill: { id: "unrelated", name: "unrelated", description: "x", markdown: "x", toolIds: [] }, score: 0.1 },
+      { skill: { id: "unrelated", name: "unrelated", description: "x", markdown: "x", toolIds: [], agentIds: [] }, score: 0.1 },
     ]);
     const graph = buildAgentGraph(deps);
 

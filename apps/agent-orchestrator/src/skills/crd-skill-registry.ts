@@ -17,9 +17,16 @@ export interface SkillCustomResource {
     /**
      * May be absent/empty for respond-only skills. A Skill CR carries no
      * allowedRoles (docs/adr/0011) — its audience is derived from these
-     * tools' allowedRoles at index time (see derive-access.ts).
+     * tools' (and agentRefs' below, ADR 0021) allowedRoles at index time
+     * (see derive-access.ts).
      */
     toolRefs?: string[];
+    /**
+     * Names of Agent CRs this skill may delegate to directly (ADR 0021) —
+     * no Tool CR wrapper required. Combined with toolRefs for both RBAC
+     * derivation and what the action planner may select from.
+     */
+    agentRefs?: string[];
   };
 }
 
@@ -117,5 +124,6 @@ export function toSkillDescriptor(cr: SkillCustomResource): SkillDescriptor | un
     description,
     markdown: spec.markdown,
     toolIds: spec.toolRefs ?? [],
+    agentIds: spec.agentRefs ?? [],
   };
 }

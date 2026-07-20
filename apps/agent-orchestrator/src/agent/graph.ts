@@ -436,6 +436,7 @@ async function selectFallbackTool(
     description: "",
     markdown: FALLBACK_TOOL_MARKDOWN,
     toolIds: tools.map((t) => t.id),
+    agentIds: [],
   };
   const planned = await deps.actionPlanner.plan(state.request, syntheticSkill, tools);
   if (planned.action !== "call_tool") return undefined;
@@ -676,21 +677,49 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (!state.selectedSkill || !state.identity) {
         return { error: "no skill selected" };
       }
-      // Respond-only skill (no toolIds, ADR 0011): nothing to load and
-      // nothing to authorize -- the planner can only choose "respond".
-      if (state.selectedSkill.toolIds.length === 0) {
+      const { toolIds, agentIds } = state.selectedSkill;
+      // Respond-only skill (no toolIds/agentIds, ADR 0011/0021): nothing to
+      // load and nothing to authorize -- the planner can only choose "respond".
+      if (toolIds.length === 0 && agentIds.length === 0) {
         return { skillTools: [] };
       }
-      const skillTools = await deps.vectorStore.getByIds(state.selectedSkill.toolIds, {
-        callerRoles: state.identity.roles,
-      });
+
+      if (agentIds.length > 0 && !deps.agentStore) {
+        // Same precondition an agent-backed Tool's dispatch already requires
+        // (runTool below) -- a Skill.agentRefs (ADR 0021) is equally
+        // meaningless without agent delegation configured (NATS).
+        return { error: `skill ${state.selectedSkill.id} declares agentRefs but agent delegation is not configured` };
+      }
+
+      const [toolResults, agentResults] = await Promise.all([
+        toolIds.length > 0 ? deps.vectorStore.getByIds(toolIds, { callerRoles: state.identity.roles }) : [],
+        agentIds.length > 0 && deps.agentStore
+          ? deps.agentStore.getByIds(agentIds, { callerRoles: state.identity.roles })
+          : [],
+      ]);
+      // Adapt each resolved Agent into the same ToolDescriptor shape an
+      // agent-backed Tool (Tool.spec.agentRef) already produces (ADR 0021) --
+      // runTool/action-planner dispatch on `agentRunTemplate` alone and don't
+      // need to know whether it came from a Tool wrapper or a Skill's own
+      // agentRefs.
+      const skillTools: ToolDescriptor[] = [
+        ...toolResults.map((r) => r.tool),
+        ...agentResults.map((r) => ({
+          id: r.agent.id,
+          name: r.agent.name,
+          description: r.agent.description,
+          allowedRoles: r.agent.allowedRoles,
+          tier: r.agent.tier,
+          agentRunTemplate: r.agent.agentRunTemplate,
+        })),
+      ];
       if (skillTools.length === 0) {
         // Should be unreachable now that skill visibility is derived from
-        // tool RBAC (ADR 0011) -- kept as the fail-closed backstop for index
-        // drift (e.g. a Tool CR deleted after startup indexing).
-        return { error: "skill has no usable tools for this caller" };
+        // tool/agent RBAC (ADR 0011/0021) -- kept as the fail-closed backstop
+        // for index drift (e.g. a Tool/Agent CR deleted after startup indexing).
+        return { error: "skill has no usable tools/agents for this caller" };
       }
-      return { skillTools: skillTools.map((r) => r.tool) };
+      return { skillTools };
     })
     .addNode("planAction", async (state) => {
       if (!state.selectedSkill) {
