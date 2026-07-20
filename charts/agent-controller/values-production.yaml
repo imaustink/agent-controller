@@ -280,8 +280,11 @@ openwebui:
   # client-secret Secret first:
   #   kubectl create secret generic openwebui-pocket-id-oauth -n controller-agent \
   #     --from-literal=client-secret=<POCKET_ID_CLIENT_SECRET>
-  # Callback URL registered on the Pocket ID client must be exactly:
-  #   https://chat.kurpuis.com/oauth/oidc/login/callback
+  # Callback URLs registered on the Pocket ID client must include both
+  # https://chat.kurpuis.com/oauth/oidc/callback (what this Open WebUI
+  # version actually redirects to) and .../oauth/oidc/login/callback (a
+  # newer route also present in its source) -- provision-openwebui-sso.sh
+  # in imaustink/homelab registers both.
   sso:
     enabled: true
     enableSignup: true
