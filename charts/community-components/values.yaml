@@ -93,8 +93,7 @@ recipePublisher:
 
 # opencode-swe-agent: Agent-SDK software-engineering sub-agent (bidirectional
 # NATS, HITL) that runs the opencode CLI against Anthropic's API directly
-# (Claude Sonnet 5) instead of GitHub Copilot. Replaces the old copilotSwe
-# Tool + softwareEngineering Skill when enabled.
+# (Claude Sonnet 5).
 # Prerequisite (out-of-band -- Helm can't source secret values on its own):
 #   kubectl -n <ns> create secret generic opencode-swe-secrets \
 #     --from-literal=GITHUB_TOKEN=github_pat_... \
@@ -134,10 +133,6 @@ skills:
   # (ADR 0011) to be non-empty.
   recipeRefining:
     enabled: true
-  # software-engineering: SUPERSEDED by opencodeSweAgent Agent CR above.
-  # Keep disabled when opencodeSweAgent.enabled=true.
-  softwareEngineering:
-    enabled: false
   # self-improvement: drafts a new Skill/Tool CR from a successful fallback
   # turn (graph.ts's selectDelegate fallback) and opens a PR against
   # imaustink/agent-controller by delegating straight to the opencode-swe-agent
