@@ -41,20 +41,28 @@ agent-orchestrator:
     existingSecret: agent-orchestrator-secrets
 
   config:
-    # Reverted from oidc (2026-07-19 outage: neither caller can present a
-    # token the oidc resolver accepts -- Open WebUI sends a static configured
-    # string, not a Google id_token, and integration-gateway has no path to
-    # mint a JWT at all. See imaustink/homelab's
-    # kubernetes/manifests/agent-controller/README.md known-limitation note.
-    # Real per-caller OIDC needs a token issuer that supports client_credentials
-    # (e.g. Pocket ID) before this can be revisited -- tracked as a follow-up,
-    # not re-enabled here.
-    identityResolver: static
-    # JSON map of bearer token -> {subject, roles}, sourced from a Secret
-    # created out-of-band (never committed -- this values file is public).
-    # See imaustink/homelab's README for the kubectl command that creates it.
-    staticIdentitiesExistingSecret: agent-orchestrator-static-identities
-    staticIdentitiesExistingSecretKey: AGENT_STATIC_IDENTITIES
+    # oidc against Pocket ID (kubernetes/manifests/services/pocket-id in
+    # imaustink/homelab), not Google -- the 2026-07-19 outage was caused by
+    # Google id_tokens: Open WebUI has no way to obtain one for its
+    # backend-to-backend calls, and integration-gateway (a server-to-server
+    # webhook relay, no user login flow) can't mint one at all. Pocket ID
+    # supports the client_credentials grant for both, and its per-client
+    # granted permission keys land in the JWT's `scp` claim (a real JSON
+    # array -- see imaustink/homelab's
+    # kubernetes/manifests/services/pocket-id/provision-agent-orchestrator.sh),
+    # which is what oidcRolesClaim below points at.
+    identityResolver: oidc
+    oidcIssuer: "https://pocket-id.kurpuis.com"
+    oidcJwksUri: "https://pocket-id.kurpuis.com/.well-known/jwks.json"
+    # The Custom API "resource" provisioned in Pocket ID -- see
+    # provision-agent-orchestrator.sh. Both openwebui and integration-gateway
+    # request this as the client_credentials `resource` param.
+    oidcAudience: "https://agent-orchestrator.controller-agent.svc.cluster.local"
+    oidcRolesClaim: scp
+    # config.staticIdentitiesExistingSecret / staticIdentitiesExistingSecretKey
+    # (chart 0.2.1+) remain available as a static fallback -- see
+    # charts/agent-orchestrator/values.yaml -- but are unused while oidc is
+    # the active resolver above.
 
   # Invoke API stays internal — no ingress, only Open WebUI (in-cluster) calls it.
   ingress:
@@ -147,14 +155,16 @@ integration-gateway:
     githubIdentities: '{"imaustink": {"subject": "imaustink", "roles": ["writer"]}}'
 
   # Bring-your-own secret: GITHUB_WEBHOOK_SECRET, GATEWAY_ORCHESTRATOR_TOKEN,
-  # and GITHUB_TOKEN. GATEWAY_ORCHESTRATOR_TOKEN must be one of the bearer
-  # tokens present in the agent-orchestrator-static-identities Secret
-  # referenced by agent-orchestrator.config.staticIdentitiesExistingSecret
-  # above.
+  # and GITHUB_TOKEN. GATEWAY_ORCHESTRATOR_TOKEN must be a Pocket ID
+  # client_credentials access token for the "integration-gateway" client (see
+  # kubernetes/manifests/services/pocket-id/provision-agent-orchestrator.sh in
+  # imaustink/homelab) -- these expire in 1 hour, so this is a placeholder
+  # until apps/integration-gateway fetches/refreshes its own token instead of
+  # reading a static env var (tracked follow-up, not done yet).
   # Create with:
   #   kubectl create secret generic integration-gateway-secrets -n controller-agent \
   #     --from-literal=GITHUB_WEBHOOK_SECRET="$(openssl rand -hex 32)" \
-  #     --from-literal=GATEWAY_ORCHESTRATOR_TOKEN=<same token as staticIdentities key> \
+  #     --from-literal=GATEWAY_ORCHESTRATOR_TOKEN=<Pocket ID client_credentials access token> \
   #     --from-literal=GITHUB_TOKEN=github_pat_...
   secrets:
     existingSecret: integration-gateway-secrets
@@ -178,12 +188,16 @@ openwebui:
   enabled: true
 
   # Sourced from a Secret (chart PR #27) instead of plaintext here, so it
-  # doesn't land in the Helm release's stored values. Must be one of the
-  # bearer tokens present in the agent-orchestrator-static-identities Secret
-  # referenced by agent-orchestrator.config.staticIdentitiesExistingSecret
-  # above. Create with:
+  # doesn't land in the Helm release's stored values. Must be a Pocket ID
+  # client_credentials access token for the "openwebui" client (see
+  # kubernetes/manifests/services/pocket-id/provision-agent-orchestrator.sh in
+  # imaustink/homelab) -- these expire in 1 hour and Open WebUI has no
+  # refresh mechanism of its own (static API-key field, read as an env var at
+  # container start), so this needs a periodic job to re-fetch a token and
+  # restart the openwebui pod until that's built (tracked follow-up, not done
+  # yet). Create with:
   #   kubectl create secret generic openwebui-openai-api-key -n controller-agent \
-  #     --from-literal=openai-api-key=<token>
+  #     --from-literal=openai-api-key=<Pocket ID client_credentials access token>
   openaiApiKeyExistingSecret: openwebui-openai-api-key
   openaiApiKeyExistingSecretKey: openai-api-key
   openaiBaseApiUrl: "http://agent-orchestrator-invoke:8081/v1"
