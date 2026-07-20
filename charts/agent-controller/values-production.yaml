@@ -224,6 +224,16 @@ openwebui:
   #     --from-literal=AGENT_STATIC_IDENTITIES='{"<token>": {"subject": "openwebui", "roles": ["reader", "writer"]}}'
   #   kubectl create secret generic openwebui-openai-api-key -n controller-agent \
   #     --from-literal=openai-api-key=<same token>
+  #
+  # GOTCHA (cost real debugging time): Open WebUI persists this Connection's
+  # API key into its own Postgres `config` table (key openai.api_keys) the
+  # FIRST time it boots, and never re-reads OPENAI_API_KEY from the env
+  # again after that -- rotating this Secret and restarting the pod does
+  # NOT change what Open WebUI actually sends. To rotate for real: update it
+  # in Open WebUI's own Admin Settings -> Connections UI (or the `config`
+  # table's `openai.api_keys` row directly), THEN match that same value in
+  # agent-orchestrator-openwebui-static-identity above -- not the other way
+  # around.
   openaiApiKeyExistingSecret: openwebui-openai-api-key
   openaiApiKeyExistingSecretKey: openai-api-key
   openaiBaseApiUrl: "http://agent-orchestrator-invoke:8081/v1"
