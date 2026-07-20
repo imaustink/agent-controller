@@ -263,14 +263,55 @@ openwebui:
   #     -n controller-agent --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
   # Authorized redirect URI in the Google Cloud Console OAuth client must be:
   #   https://chat.kurpuis.com/oauth/google/login/callback
+  #
+  # Kept alongside Pocket ID below (both can be enabled at once, see
+  # imaustink/homelab's kubernetes/manifests/agent-controller/README.md) as a
+  # fallback login path -- Google-authenticated users just don't get Pocket
+  # ID's role/group management, since Google can't emit custom roles/groups
+  # claims (this is why oidc verification against Google broke in the first
+  # place, see values-production.yaml's git history). Pocket ID is the
+  # managed path going forward.
+  #
+  # Pocket ID OIDC SSO: real per-user login, roles managed via Pocket ID
+  # Groups + a custom "roles" claim (see
+  # kubernetes/manifests/services/pocket-id/provision-openwebui-sso.sh in
+  # imaustink/homelab) -- NOT the same Pocket ID client integration-gateway
+  # uses (that one's client_credentials-only, no login flow). Create the
+  # client-secret Secret first:
+  #   kubectl create secret generic openwebui-pocket-id-oauth -n controller-agent \
+  #     --from-literal=client-secret=<POCKET_ID_CLIENT_SECRET>
+  # Callback URL registered on the Pocket ID client must be exactly:
+  #   https://chat.kurpuis.com/oauth/oidc/login/callback
   sso:
     enabled: true
     enableSignup: true
+    enableRoleManagement: true
+    enableGroupManagement: true
     google:
       enabled: true
       clientId: "916932714292-6900thjm1dq3e4fnqrcj3ipe4iud70o8.apps.googleusercontent.com"
       clientExistingSecret: controller-agent-openwebui-google-oauth
       clientExistingSecretKey: "client-secret"
+    oidc:
+      enabled: true
+      clientId: "openwebui"
+      clientExistingSecret: openwebui-pocket-id-oauth
+      clientExistingSecretKey: "client-secret"
+      providerUrl: "https://pocket-id.kurpuis.com/.well-known/openid-configuration"
+      providerName: "Pocket ID"
+      scopes: "openid email profile groups"
+    roleManagement:
+      # Pocket ID has no native "roles" concept -- this claim is emitted via
+      # a custom claim on a Pocket ID Group (key "roles", JSON array value),
+      # not anything built-in. See provision-openwebui-sso.sh.
+      rolesClaim: "roles"
+      allowedRoles: "user,admin"
+      adminRoles: "admin"
+    groupManagement:
+      # Pocket ID's native group-name list (no custom claim needed) --
+      # matches Open WebUI Groups by name if you create ones with matching
+      # names. Unused for role assignment (see roleManagement above).
+      groupsClaim: "groups"
 
   # NOTE: Helm replaces arrays wholesale — every entry must stay together here.
   extraEnvVars:
@@ -278,6 +319,19 @@ openwebui:
       value: "https://chat.kurpuis.com/oauth/google/login/callback"
     - name: ENABLE_FORWARD_USER_INFO_HEADERS
       value: "true"
+    # Switches ENABLE_FORWARD_USER_INFO_HEADERS from the legacy plaintext
+    # X-OpenWebUI-User-* headers to a single signed JWT
+    # (X-OpenWebUI-User-Jwt, HS256, minted fresh on every outbound request --
+    # no refresh problem, unlike Pocket ID's client_credentials tokens).
+    # Currently unused by agent-orchestrator (it still only reads the
+    # Authorization bearer via the CompositeIdentityResolver static
+    # fallback) -- verifying this header for real per-user roles at the
+    # orchestrator is tracked follow-up, not done yet.
+    - name: FORWARD_USER_INFO_HEADER_JWT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: openwebui-forward-jwt-secret
+          key: secret
     # ---- Database (CNPG Postgres — see imaustink/homelab's
     # manifests/agent-controller/003-openwebui-postgres.yaml) ----
     # Replaces the default SQLite file, which has no retry/failover behavior
