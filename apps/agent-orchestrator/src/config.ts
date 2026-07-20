@@ -75,12 +75,22 @@ export interface AppConfig {
   localToolTimeoutSeconds: number;
   /**
    * Which `IdentityResolver` to build (index.ts): `"static"` (default) uses
-   * `staticIdentities` below -- dev/test only. `"oidc"` verifies caller
+   * `staticIdentities` below as the only resolver. `"oidc"` verifies caller
    * bearer tokens as signed JWTs against `oidcIssuer`'s JWKS (see
    * OidcIdentityResolver) -- the real IdP integration deferred by ADR 0004.
+   * If `staticIdentities` is also set while this is "oidc", tokens that fail
+   * oidc verification fall back to that static map (CompositeIdentityResolver)
+   * instead of being rejected outright -- see staticIdentities below.
    */
   identityResolverKind: "static" | "oidc";
-  /** JSON map of dev/test bearer tokens -> identity; see StaticIdentityResolver. Ignored unless identityResolverKind is "static". */
+  /**
+   * JSON map of bearer tokens -> identity; see StaticIdentityResolver. When
+   * identityResolverKind is "static", this is the only resolver. When
+   * identityResolverKind is "oidc" and this is also set, it becomes a
+   * fallback CompositeIdentityResolver consults for tokens that fail oidc
+   * verification -- for callers that can't present a real, refreshable OIDC
+   * token (e.g. Open WebUI's static API-key field).
+   */
   staticIdentities: string | undefined;
   /** Expected JWT `iss` claim. Required when identityResolverKind is "oidc". */
   oidcIssuer: string | undefined;

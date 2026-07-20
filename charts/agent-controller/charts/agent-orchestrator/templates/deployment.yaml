@@ -98,7 +98,14 @@ spec:
             - name: AGENT_OIDC_ROLES_CLAIM
               value: {{ .Values.config.oidcRolesClaim | quote }}
             {{- end }}
-            {{- else if .Values.config.staticIdentitiesExistingSecret }}
+            {{- end }}
+            {{/*
+            Independent of identityResolver above (not else-if): when oidc is
+            primary, a static map here becomes a CompositeIdentityResolver
+            fallback for callers that can't present a real OIDC token (e.g.
+            Open WebUI) instead of being mutually exclusive with it.
+            */}}
+            {{- if .Values.config.staticIdentitiesExistingSecret }}
             - name: AGENT_STATIC_IDENTITIES
               valueFrom:
                 secretKeyRef:

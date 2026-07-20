@@ -43,26 +43,40 @@ agent-orchestrator:
   config:
     # oidc against Pocket ID (kubernetes/manifests/services/pocket-id in
     # imaustink/homelab), not Google -- the 2026-07-19 outage was caused by
-    # Google id_tokens: Open WebUI has no way to obtain one for its
-    # backend-to-backend calls, and integration-gateway (a server-to-server
-    # webhook relay, no user login flow) can't mint one at all. Pocket ID
-    # supports the client_credentials grant for both, and its per-client
-    # granted permission keys land in the JWT's `scp` claim (a real JSON
-    # array -- see imaustink/homelab's
+    # Google id_tokens: neither caller could present one (Open WebUI has no
+    # way to obtain one for its backend-to-backend calls, and
+    # integration-gateway -- a server-to-server webhook relay, no user login
+    # flow -- can't mint one at all).
+    #
+    # integration-gateway is this repo's own code and does real
+    # client_credentials against Pocket ID -- its granted permission keys
+    # land in the JWT's `scp` claim (a real JSON array -- see
+    # imaustink/homelab's
     # kubernetes/manifests/services/pocket-id/provision-agent-orchestrator.sh),
-    # which is what oidcRolesClaim below points at.
+    # which oidcRolesClaim below reads.
+    #
+    # Open WebUI structurally cannot do the same (a static API-key field, no
+    # refresh mechanism of its own) -- rather than force it through an IdP
+    # flow it can't sustain, it authenticates via the
+    # staticIdentitiesExistingSecret fallback below (chart 0.2.2+:
+    # CompositeIdentityResolver -- oidc verification first, falling back to
+    # this static map only for tokens that fail it). integration-gateway
+    # still must pass real oidc verification; only Open WebUI's token gets
+    # this pass.
     identityResolver: oidc
     oidcIssuer: "https://pocket-id.kurpuis.com"
     oidcJwksUri: "https://pocket-id.kurpuis.com/.well-known/jwks.json"
     # The Custom API "resource" provisioned in Pocket ID -- see
-    # provision-agent-orchestrator.sh. Both openwebui and integration-gateway
-    # request this as the client_credentials `resource` param.
+    # provision-agent-orchestrator.sh. integration-gateway requests this as
+    # the client_credentials `resource` param.
     oidcAudience: "https://agent-orchestrator.controller-agent.svc.cluster.local"
     oidcRolesClaim: scp
-    # config.staticIdentitiesExistingSecret / staticIdentitiesExistingSecretKey
-    # (chart 0.2.1+) remain available as a static fallback -- see
-    # charts/agent-orchestrator/values.yaml -- but are unused while oidc is
-    # the active resolver above.
+    # JSON map of bearer token -> {subject, roles}, sourced from a Secret
+    # created out-of-band (never committed -- this values file is public).
+    # One entry: Open WebUI's long-lived static token. See
+    # imaustink/homelab's README for the kubectl command that creates it.
+    staticIdentitiesExistingSecret: agent-orchestrator-openwebui-static-identity
+    staticIdentitiesExistingSecretKey: AGENT_STATIC_IDENTITIES
 
   # Invoke API stays internal — no ingress, only Open WebUI (in-cluster) calls it.
   ingress:
@@ -188,16 +202,19 @@ openwebui:
   enabled: true
 
   # Sourced from a Secret (chart PR #27) instead of plaintext here, so it
-  # doesn't land in the Helm release's stored values. Must be a Pocket ID
-  # client_credentials access token for the "openwebui" client (see
-  # kubernetes/manifests/services/pocket-id/provision-agent-orchestrator.sh in
-  # imaustink/homelab) -- these expire in 1 hour and Open WebUI has no
-  # refresh mechanism of its own (static API-key field, read as an env var at
-  # container start), so this needs a periodic job to re-fetch a token and
-  # restart the openwebui pod until that's built (tracked follow-up, not done
-  # yet). Create with:
+  # doesn't land in the Helm release's stored values. NOT a Pocket ID token --
+  # Open WebUI has no refresh mechanism of its own (a static API-key field,
+  # read as an env var at container start), so rather than chase Pocket ID's
+  # 1-hour client_credentials expiry with a periodic restart job, this is a
+  # long-lived, manually-rotated shared secret matched by
+  # agent-orchestrator.config.staticIdentitiesExistingSecret above
+  # (CompositeIdentityResolver's static fallback -- see that comment).
+  # Must be the same value as that Secret's one token entry. Create with:
+  #   kubectl create secret generic agent-orchestrator-openwebui-static-identity \
+  #     -n controller-agent \
+  #     --from-literal=AGENT_STATIC_IDENTITIES='{"<token>": {"subject": "openwebui", "roles": ["reader", "writer"]}}'
   #   kubectl create secret generic openwebui-openai-api-key -n controller-agent \
-  #     --from-literal=openai-api-key=<Pocket ID client_credentials access token>
+  #     --from-literal=openai-api-key=<same token>
   openaiApiKeyExistingSecret: openwebui-openai-api-key
   openaiApiKeyExistingSecretKey: openai-api-key
   openaiBaseApiUrl: "http://agent-orchestrator-invoke:8081/v1"

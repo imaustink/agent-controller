@@ -56,17 +56,26 @@ config:
   # Which IdentityResolver to build: "static" (default) or "oidc". See
   # src/rbac/static-identity-resolver.ts and src/rbac/oidc-identity-resolver.ts.
   identityResolver: static
-  # Only used when identityResolver=static — JSON map of
-  # bearer token -> {subject, roles}. Prefer staticIdentitiesExistingSecret
-  # below for anything beyond local/dev use: `staticIdentities` here lands in
-  # plaintext in the Helm release's stored values (same caveat as
-  # secrets.create/values above), which is not appropriate once the values
-  # file itself is committed anywhere outside a private, secret-free repo.
+  # JSON map of bearer token -> {subject, roles}. When identityResolver=static
+  # this is the only resolver; when identityResolver=oidc it becomes a
+  # fallback for tokens that fail oidc verification (see
+  # staticIdentitiesExistingSecret below for the not-mutually-exclusive
+  # behavior). Prefer staticIdentitiesExistingSecret for anything beyond
+  # local/dev use: `staticIdentities` here lands in plaintext in the Helm
+  # release's stored values (same caveat as secrets.create/values above),
+  # which is not appropriate once the values file itself is committed
+  # anywhere outside a private, secret-free repo.
   staticIdentities: ""
   # Existing Secret name holding the same JSON map (see staticIdentities
   # above) under staticIdentitiesExistingSecretKey. Takes precedence over
-  # the inline `staticIdentities` value when set. Only used when
-  # identityResolver=static.
+  # the inline `staticIdentities` value when set.
+  #
+  # Not exclusive with identityResolver=oidc: when both are set, the app
+  # builds a CompositeIdentityResolver -- oidc verification first, falling
+  # back to this static map only for tokens that fail it. Use this for
+  # callers that structurally cannot present a real, refreshable OIDC token
+  # (e.g. a chat UI with only a static API-key field), while callers capable
+  # of real OIDC still go through full verification.
   staticIdentitiesExistingSecret: ""
   staticIdentitiesExistingSecretKey: AGENT_STATIC_IDENTITIES
   # Required when identityResolver=oidc: expected JWT `iss` claim.

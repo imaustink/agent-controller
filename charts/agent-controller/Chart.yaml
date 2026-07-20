@@ -9,7 +9,7 @@ description: >-
   one release. Install the community-components chart afterward to populate
   the catalog with Tool/Skill/Agent CRs.
 type: application
-version: 0.2.1
+version: 0.2.2
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:
@@ -27,7 +27,7 @@ dependencies:
   # own optional Qdrant instance as a transitive dependency (see the
   # subchart's own Chart.yaml / values `qdrant.enabled`).
   - name: agent-orchestrator
-    version: "0.2.1"
+    version: "0.2.2"
     repository: "file://charts/agent-orchestrator"
     condition: agent-orchestrator.enabled
   # The Go/kubebuilder operator (controllers/core-controller). Its CRDs ship
