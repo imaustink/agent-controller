@@ -268,19 +268,16 @@ openwebui:
     tls: true
     existingSecret: "chat-kurpuis-tls"
 
-  # Google OAuth SSO. Create the client-secret Secret first:
+  # Google OAuth SSO -- disabled (see google.enabled below), Pocket ID is the
+  # only SSO path now. Config left in place, not deleted, in case it's ever
+  # re-enabled as a fallback; it was only ever ungoverned anyway, since
+  # Google can't emit custom roles/groups claims (the same limitation that
+  # broke oidc verification against Google in the first place, see
+  # values-production.yaml's git history). If re-enabled, the client-secret
+  # Secret and Google Cloud Console redirect URI are still:
   #   kubectl create secret generic controller-agent-openwebui-google-oauth \
   #     -n controller-agent --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
-  # Authorized redirect URI in the Google Cloud Console OAuth client must be:
   #   https://chat.kurpuis.com/oauth/google/login/callback
-  #
-  # Kept alongside Pocket ID below (both can be enabled at once, see
-  # imaustink/homelab's kubernetes/manifests/agent-controller/README.md) as a
-  # fallback login path -- Google-authenticated users just don't get Pocket
-  # ID's role/group management, since Google can't emit custom roles/groups
-  # claims (this is why oidc verification against Google broke in the first
-  # place, see values-production.yaml's git history). Pocket ID is the
-  # managed path going forward.
   #
   # Pocket ID OIDC SSO: real per-user login, roles managed via Pocket ID
   # Groups + a custom "roles" claim (see
@@ -301,7 +298,11 @@ openwebui:
     enableRoleManagement: true
     enableGroupManagement: true
     google:
-      enabled: true
+      # Disabled -- Pocket ID is the only managed SSO path now. Left
+      # configured (not deleted) so re-enabling is a one-line flip if ever
+      # needed; it was only ever an ungoverned fallback since Google can't
+      # emit custom roles/groups claims.
+      enabled: false
       clientId: "916932714292-6900thjm1dq3e4fnqrcj3ipe4iud70o8.apps.googleusercontent.com"
       clientExistingSecret: controller-agent-openwebui-google-oauth
       clientExistingSecretKey: "client-secret"
