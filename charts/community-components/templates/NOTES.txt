@@ -13,9 +13,6 @@ Installed components:
 {{- if .Values.skills.recipeRefining.enabled }}
   - Skill recipe-refining-skill
 {{- end }}
-{{- if .Values.skills.softwareEngineering.enabled }}
-  - Skill software-engineering-skill
-{{- end }}
 {{- if .Values.opencodeSweAgent.enabled }}
   - Agent opencode-swe-agent
 {{- end }}
