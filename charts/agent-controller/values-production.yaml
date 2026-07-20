@@ -41,21 +41,20 @@ agent-orchestrator:
     existingSecret: agent-orchestrator-secrets
 
   config:
-    # Real IdentityResolver: verifies caller bearer tokens as JWTs against
-    # Google's JWKS instead of the dev/test-only staticIdentities map this
-    # replaces. Reuses the same Google OAuth client already configured for
-    # Open WebUI SSO below (openwebui.sso.google.clientId).
-    identityResolver: oidc
-    oidcIssuer: "https://accounts.google.com"
-    oidcJwksUri: "https://www.googleapis.com/oauth2/v3/certs"
-    oidcAudience: "916932714292-6900thjm1dq3e4fnqrcj3ipe4iud70o8.apps.googleusercontent.com"
-    # Google ID tokens carry no roles claim -- see imaustink/homelab's
-    # kubernetes/manifests/agent-controller/README.md known-limitation note:
-    # this must be addressed (custom claim, or a role-mapping shim) before
-    # Open WebUI/integration-gateway callers can authorize as anything other
-    # than whatever the resolver defaults unauthenticated role-less subjects
-    # to.
-    oidcRolesClaim: roles
+    # Reverted from oidc (2026-07-19 outage: neither caller can present a
+    # token the oidc resolver accepts -- Open WebUI sends a static configured
+    # string, not a Google id_token, and integration-gateway has no path to
+    # mint a JWT at all. See imaustink/homelab's
+    # kubernetes/manifests/agent-controller/README.md known-limitation note.
+    # Real per-caller OIDC needs a token issuer that supports client_credentials
+    # (e.g. Pocket ID) before this can be revisited -- tracked as a follow-up,
+    # not re-enabled here.
+    identityResolver: static
+    # JSON map of bearer token -> {subject, roles}, sourced from a Secret
+    # created out-of-band (never committed -- this values file is public).
+    # See imaustink/homelab's README for the kubectl command that creates it.
+    staticIdentitiesExistingSecret: agent-orchestrator-static-identities
+    staticIdentitiesExistingSecretKey: AGENT_STATIC_IDENTITIES
 
   # Invoke API stays internal — no ingress, only Open WebUI (in-cluster) calls it.
   ingress:
@@ -148,11 +147,10 @@ integration-gateway:
     githubIdentities: '{"imaustink": {"subject": "imaustink", "roles": ["writer"]}}'
 
   # Bring-your-own secret: GITHUB_WEBHOOK_SECRET, GATEWAY_ORCHESTRATOR_TOKEN,
-  # and GITHUB_TOKEN. NOTE: now that agent-orchestrator.config.identityResolver
-  # is "oidc", GATEWAY_ORCHESTRATOR_TOKEN must be a JWT the orchestrator can
-  # verify against oidcIssuer/oidcJwksUri above, not an arbitrary shared
-  # secret — see imaustink/homelab's README known-limitation note, this is
-  # unresolved follow-up work.
+  # and GITHUB_TOKEN. GATEWAY_ORCHESTRATOR_TOKEN must be one of the bearer
+  # tokens present in the agent-orchestrator-static-identities Secret
+  # referenced by agent-orchestrator.config.staticIdentitiesExistingSecret
+  # above.
   # Create with:
   #   kubectl create secret generic integration-gateway-secrets -n controller-agent \
   #     --from-literal=GITHUB_WEBHOOK_SECRET="$(openssl rand -hex 32)" \
@@ -180,11 +178,10 @@ openwebui:
   enabled: true
 
   # Sourced from a Secret (chart PR #27) instead of plaintext here, so it
-  # doesn't land in the Helm release's stored values. Must now be a JWT the
-  # orchestrator's oidc IdentityResolver (agent-orchestrator.config above)
-  # can verify, not an arbitrary static token -- see imaustink/homelab's
-  # README known-limitation note, this is unresolved follow-up work. Create
-  # with:
+  # doesn't land in the Helm release's stored values. Must be one of the
+  # bearer tokens present in the agent-orchestrator-static-identities Secret
+  # referenced by agent-orchestrator.config.staticIdentitiesExistingSecret
+  # above. Create with:
   #   kubectl create secret generic openwebui-openai-api-key -n controller-agent \
   #     --from-literal=openai-api-key=<token>
   openaiApiKeyExistingSecret: openwebui-openai-api-key

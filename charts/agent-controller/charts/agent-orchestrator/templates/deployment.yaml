@@ -98,6 +98,12 @@ spec:
             - name: AGENT_OIDC_ROLES_CLAIM
               value: {{ .Values.config.oidcRolesClaim | quote }}
             {{- end }}
+            {{- else if .Values.config.staticIdentitiesExistingSecret }}
+            - name: AGENT_STATIC_IDENTITIES
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.staticIdentitiesExistingSecret }}
+                  key: {{ .Values.config.staticIdentitiesExistingSecretKey }}
             {{- else if .Values.config.staticIdentities }}
             - name: AGENT_STATIC_IDENTITIES
               value: {{ .Values.config.staticIdentities | quote }}

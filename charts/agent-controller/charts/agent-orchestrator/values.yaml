@@ -56,10 +56,19 @@ config:
   # Which IdentityResolver to build: "static" (default) or "oidc". See
   # src/rbac/static-identity-resolver.ts and src/rbac/oidc-identity-resolver.ts.
   identityResolver: static
-  # DEV/TEST ONLY, and only used when identityResolver=static — JSON map of
-  # bearer token -> {subject, roles}. Leave unset in any real deployment;
-  # set identityResolver=oidc and the oidc* fields below instead.
+  # Only used when identityResolver=static — JSON map of
+  # bearer token -> {subject, roles}. Prefer staticIdentitiesExistingSecret
+  # below for anything beyond local/dev use: `staticIdentities` here lands in
+  # plaintext in the Helm release's stored values (same caveat as
+  # secrets.create/values above), which is not appropriate once the values
+  # file itself is committed anywhere outside a private, secret-free repo.
   staticIdentities: ""
+  # Existing Secret name holding the same JSON map (see staticIdentities
+  # above) under staticIdentitiesExistingSecretKey. Takes precedence over
+  # the inline `staticIdentities` value when set. Only used when
+  # identityResolver=static.
+  staticIdentitiesExistingSecret: ""
+  staticIdentitiesExistingSecretKey: AGENT_STATIC_IDENTITIES
   # Required when identityResolver=oidc: expected JWT `iss` claim.
   oidcIssuer: ""
   # Required when identityResolver=oidc: JWKS endpoint used to verify JWT
