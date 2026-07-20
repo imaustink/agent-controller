@@ -23,26 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Mint a short-lived token scoped to the private homelab repo so we can
-      # fetch the production Helm values (which live outside this repo, same
-      # pattern as imaustink/glyph's deploy.yml).
-      - name: Generate homelab access token
-        id: homelab-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.HOMELAB_APP_ID }}
-          private-key: ${{ secrets.HOMELAB_APP_PRIVATE_KEY }}
-          owner: imaustink
-          repositories: homelab
-
-      - name: Checkout homelab (production values)
-        uses: actions/checkout@v4
-        with:
-          repository: imaustink/homelab
-          token: ${{ steps.homelab-token.outputs.token }}
-          path: homelab
-          persist-credentials: false
-
       - name: Set up Helm
         uses: azure/setup-helm@v4
         with:
@@ -69,13 +49,13 @@ jobs:
       - name: Helm upgrade agent-controller
         run: |
           helm upgrade --install agent-controller charts/agent-controller \
-            -f homelab/kubernetes/helm/deployments/agent-controller/values-agent-controller.yaml \
+            -f charts/agent-controller/values-production.yaml \
             -n controller-agent --timeout 5m
 
       - name: Helm upgrade community-components
         run: |
           helm upgrade --install community-components charts/community-components \
-            -f homelab/kubernetes/helm/deployments/agent-controller/values-community-components.yaml \
+            -f charts/community-components/values-production.yaml \
             -n controller-agent --timeout 5m
 
       # Tool/Agent Jobs (recipe-scraper, web-search, web-fetch,

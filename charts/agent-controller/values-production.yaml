@@ -1,0 +1,282 @@
+# values-production.yaml — agent-controller system chart on the homelab
+# cluster (namespace controller-agent). Consumed automatically by
+# .github/workflows/deploy.yml on every push to main; formerly lived as
+# values-agent-controller.yaml in the private imaustink/homelab repo and was
+# fetched cross-repo via a GitHub App token on every deploy -- moved here to
+# drop that indirection now that nothing in this file is a real secret (see
+# values-minikube-demo.yaml's note: real secrets stay in k8s Secrets
+# referenced by name only).
+#
+# First-time manual install (after creating the namespace, ServiceAccounts,
+# secrets and docker-registry-credentials pull secret described in
+# imaustink/homelab's kubernetes/manifests/agent-controller/README.md):
+#
+#   helm dependency update charts/agent-controller/charts/agent-orchestrator
+#   helm dependency update charts/agent-controller
+#   helm install agent-controller charts/agent-controller -n controller-agent \
+#     -f charts/agent-controller/values-production.yaml
+#
+# Must be installed BEFORE the community-components chart (its Tool/Skill/Agent
+# CRs depend on the Tool/Skill/Agent/ToolRun/AgentRun/LocalTool CRDs that this
+# chart's core-controller subchart installs).
+
+agent-orchestrator:
+  enabled: true
+  fullnameOverride: agent-orchestrator
+
+  image:
+    repository: registry.kurpuis.com:5000/agent-orchestrator
+    tag: latest
+    pullPolicy: Always
+
+  imagePullSecrets:
+    - name: docker-registry-credentials
+
+  # Bring-your-own secret: OPENAI_API_KEY, AGENT_CALLBACK_SECRET (required),
+  # AGENT_QDRANT_API_KEY (optional). Create with:
+  #   kubectl create secret generic agent-orchestrator-secrets -n controller-agent \
+  #     --from-literal=OPENAI_API_KEY=sk-... \
+  #     --from-literal=AGENT_CALLBACK_SECRET=<random-string>
+  secrets:
+    existingSecret: agent-orchestrator-secrets
+
+  config:
+    # Real IdentityResolver: verifies caller bearer tokens as JWTs against
+    # Google's JWKS instead of the dev/test-only staticIdentities map this
+    # replaces. Reuses the same Google OAuth client already configured for
+    # Open WebUI SSO below (openwebui.sso.google.clientId).
+    identityResolver: oidc
+    oidcIssuer: "https://accounts.google.com"
+    oidcJwksUri: "https://www.googleapis.com/oauth2/v3/certs"
+    oidcAudience: "916932714292-6900thjm1dq3e4fnqrcj3ipe4iud70o8.apps.googleusercontent.com"
+    # Google ID tokens carry no roles claim -- see imaustink/homelab's
+    # kubernetes/manifests/agent-controller/README.md known-limitation note:
+    # this must be addressed (custom claim, or a role-mapping shim) before
+    # Open WebUI/integration-gateway callers can authorize as anything other
+    # than whatever the resolver defaults unauthenticated role-less subjects
+    # to.
+    oidcRolesClaim: roles
+
+  # Invoke API stays internal — no ingress, only Open WebUI (in-cluster) calls it.
+  ingress:
+    enabled: false
+
+  # Bundled Qdrant vector store (github.com/qdrant/qdrant-helm). No external
+  # Qdrant exists in this cluster, so this single-replica dev/demo instance
+  # backs the RAG tool/skill selection. See charts/agent-orchestrator's
+  # values.yaml for the production caveats (no backup/DR story).
+  qdrant:
+    enabled: true
+
+  # The orchestrator unconditionally lists LocalTool CRs at startup even
+  # though no LocalTool CRs are deployed by community-components today, so
+  # the Role needs the `localtools` grant that only ships when this is
+  # enabled (see charts/agent-orchestrator/templates/rbac.yaml).
+  #
+  # Executor sidecars for all 4 runtimes: this repo's publish.yml CI now
+  # builds+pushes registry.kurpuis.com:5000/localtool-executor-<runtime> on
+  # every merge to main, so point the chart's default `<runtime>:latest`
+  # images at our private registry instead of leaving runtimes empty.
+  # Requires unprivileged user namespaces enabled on every node (bubblewrap
+  # per-invocation sandboxing, see charts/agent-orchestrator's own
+  # values.yaml comment + docs/adr/0014) — the sidecar's
+  # securityContext.seccompProfile is Unconfined by chart default for
+  # exactly this reason.
+  localTool:
+    enabled: true
+    runtimes:
+      - name: node
+        image: registry.kurpuis.com:5000/localtool-executor-node:latest
+      - name: python
+        image: registry.kurpuis.com:5000/localtool-executor-python:latest
+      - name: go
+        image: registry.kurpuis.com:5000/localtool-executor-go:latest
+      - name: shell
+        image: registry.kurpuis.com:5000/localtool-executor-shell:latest
+    pullPolicy: Always
+
+  # Agent delegation (Agent CRs, e.g. opencode-swe-agent) only runs over NATS
+  # (ADR 0010/0017) -- without this, AGENT_NATS_URL is never set on the
+  # orchestrator and it silently degrades to skills-only: no "agents" Qdrant
+  # collection ever gets created, so it never finds an Agent CR to delegate
+  # to. The umbrella chart's top-level `nats.enabled` below deploys the NATS
+  # server itself; this just tells the orchestrator to use it.
+  nats:
+    enabled: true
+
+core-controller:
+  enabled: true
+  fullnameOverride: core-controller
+
+  image:
+    repository: registry.kurpuis.com:5000/core-controller
+    tag: latest
+    pullPolicy: Always
+
+  # Must match the actual in-cluster NATS Service (the release-name-prefixed
+  # "agent-controller-nats", not the chart's placeholder default
+  # "nats://nats:4222", which doesn't resolve to anything in this namespace).
+  # This is the URL core-controller stamps into every AgentRun Job it
+  # launches -- get it wrong and every delegated agent (opencode-swe-agent)
+  # crashes on startup trying to reach NATS.
+  nats:
+    agentUrl: "nats://agent-controller-nats.controller-agent.svc.cluster.local:4222"
+
+  imagePullSecrets:
+    - name: docker-registry-credentials
+
+# GitHub Issues adapter (phase 1 of the integrations-gateway proposal) —
+# relays GitHub issue/comment webhooks into agent-orchestrator's existing
+# conversational /invoke API, one session per issue.
+integration-gateway:
+  enabled: true
+
+  image:
+    repository: registry.kurpuis.com:5000/integration-gateway
+    tag: latest
+    pullPolicy: Always
+
+  imagePullSecrets:
+    - name: docker-registry-credentials
+
+  config:
+    # Loop prevention — the gateway ignores comments authored by this login.
+    githubBotLogin: "agent-controller[bot]"
+    # DEV/TEST-GRADE static allowlist mapping GitHub logins to identities —
+    # a real GitHub-org/team-membership resolver is a documented upstream
+    # follow-up. JSON: {"<login>": {"subject": "...", "roles": [...]}}
+    githubIdentities: '{"imaustink": {"subject": "imaustink", "roles": ["writer"]}}'
+
+  # Bring-your-own secret: GITHUB_WEBHOOK_SECRET, GATEWAY_ORCHESTRATOR_TOKEN,
+  # and GITHUB_TOKEN. NOTE: now that agent-orchestrator.config.identityResolver
+  # is "oidc", GATEWAY_ORCHESTRATOR_TOKEN must be a JWT the orchestrator can
+  # verify against oidcIssuer/oidcJwksUri above, not an arbitrary shared
+  # secret — see imaustink/homelab's README known-limitation note, this is
+  # unresolved follow-up work.
+  # Create with:
+  #   kubectl create secret generic integration-gateway-secrets -n controller-agent \
+  #     --from-literal=GITHUB_WEBHOOK_SECRET="$(openssl rand -hex 32)" \
+  #     --from-literal=GATEWAY_ORCHESTRATOR_TOKEN=<same token as staticIdentities key> \
+  #     --from-literal=GITHUB_TOKEN=github_pat_...
+  secrets:
+    existingSecret: integration-gateway-secrets
+
+  # GitHub must reach this Service directly (unlike the orchestrator's
+  # in-cluster-only callback port).
+  ingress:
+    enabled: true
+    className: traefik
+    annotations:
+      kubernetes.io/ingress.class: traefik
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      traefik.ingress.kubernetes.io/router.middlewares: default-redirect-https@kubernetescrd
+    host: "gateway.kurpuis.com"
+    tls:
+      - secretName: gateway-kurpuis-tls
+        hosts:
+          - "gateway.kurpuis.com"
+
+openwebui:
+  enabled: true
+
+  # Sourced from a Secret (chart PR #27) instead of plaintext here, so it
+  # doesn't land in the Helm release's stored values. Must now be a JWT the
+  # orchestrator's oidc IdentityResolver (agent-orchestrator.config above)
+  # can verify, not an arbitrary static token -- see imaustink/homelab's
+  # README known-limitation note, this is unresolved follow-up work. Create
+  # with:
+  #   kubectl create secret generic openwebui-openai-api-key -n controller-agent \
+  #     --from-literal=openai-api-key=<token>
+  openaiApiKeyExistingSecret: openwebui-openai-api-key
+  openaiApiKeyExistingSecretKey: openai-api-key
+  openaiBaseApiUrl: "http://agent-orchestrator-invoke:8081/v1"
+
+  ollama:
+    enabled: false
+  pipelines:
+    enabled: false
+
+  persistence:
+    size: 2Gi
+
+  service:
+    type: ClusterIP
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 2Gi
+    limits:
+      cpu: "1"
+      memory: 3Gi
+
+  ingress:
+    enabled: true
+    class: traefik
+    annotations:
+      kubernetes.io/ingress.class: traefik
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      traefik.ingress.kubernetes.io/router.middlewares: default-redirect-https@kubernetescrd
+    host: "chat.kurpuis.com"
+    tls: true
+    existingSecret: "chat-kurpuis-tls"
+
+  # Google OAuth SSO. Create the client-secret Secret first:
+  #   kubectl create secret generic controller-agent-openwebui-google-oauth \
+  #     -n controller-agent --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
+  # Authorized redirect URI in the Google Cloud Console OAuth client must be:
+  #   https://chat.kurpuis.com/oauth/google/login/callback
+  sso:
+    enabled: true
+    enableSignup: true
+    google:
+      enabled: true
+      clientId: "916932714292-6900thjm1dq3e4fnqrcj3ipe4iud70o8.apps.googleusercontent.com"
+      clientExistingSecret: controller-agent-openwebui-google-oauth
+      clientExistingSecretKey: "client-secret"
+
+  # NOTE: Helm replaces arrays wholesale — every entry must stay together here.
+  extraEnvVars:
+    - name: GOOGLE_REDIRECT_URI
+      value: "https://chat.kurpuis.com/oauth/google/login/callback"
+    - name: ENABLE_FORWARD_USER_INFO_HEADERS
+      value: "true"
+    # ---- Database (CNPG Postgres — see imaustink/homelab's
+    # manifests/agent-controller/003-openwebui-postgres.yaml) ----
+    # Replaces the default SQLite file, which has no retry/failover behavior
+    # and turned a transient Longhorn replica blip into a full outage.
+    - name: DATABASE_TYPE
+      value: "postgres"
+    - name: DATABASE_HOST
+      value: "agent-controller-openwebui-postgres-rw"
+    - name: DATABASE_PORT
+      value: "5432"
+    - name: DATABASE_NAME
+      value: "openwebui"
+    - name: DATABASE_USER
+      valueFrom:
+        secretKeyRef:
+          name: agent-controller-openwebui-postgres-app
+          key: username
+    - name: DATABASE_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: agent-controller-openwebui-postgres-app
+          key: password
+
+# Bundled NATS server (nats subchart) backing agent delegation's result
+# channel (agent-orchestrator.nats.enabled + core-controller.nats.agentUrl
+# above both depend on this actually running). Pinning explicitly rather
+# than relying on Helm's implicit "enabled if condition path is unset"
+# fallback, which is what let this stay on accidentally with no NATS wiring
+# actually pointed at it.
+nats:
+  enabled: true
+
+# Hand-authored SearXNG instance (chart templates/searxng.yaml, not a Helm
+# subchart) backing community-components' web-search Tool. ClusterIP only,
+# no Ingress. Requires the searxng-secrets Secret to already exist:
+#   kubectl create secret generic searxng-secrets -n controller-agent \
+#     --from-literal=secret-key="$(openssl rand -hex 32)"
+searxng:
+  enabled: true
