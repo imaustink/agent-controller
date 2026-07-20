@@ -33,8 +33,28 @@ describe("CrdSkillRegistry", () => {
         description: "Extract, adjust, and publish a recipe",
         markdown: "# Recipe Extraction & Publishing\n\n...",
         toolIds: ["recipe-scraper", "recipe-publisher"],
+        agentIds: [],
       },
     ]);
+  });
+
+  it("maps agentRefs to agentIds (ADR 0021)", async () => {
+    const agentBacked: SkillCustomResource = {
+      metadata: { name: "self-improvement-skill" },
+      spec: {
+        description: "Draft a new Skill/Tool CR",
+        markdown: "# Self Improvement",
+        agentRefs: ["opencode-swe-agent"],
+      },
+    };
+    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [agentBacked] });
+    const api: CustomObjectsApiLike = { listNamespacedCustomObject };
+    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+
+    const skills = await registry.listAll();
+
+    expect(skills[0].toolIds).toEqual([]);
+    expect(skills[0].agentIds).toEqual(["opencode-swe-agent"]);
   });
 
   it("maps a respond-only Skill (no toolRefs, ADR 0011) with empty toolIds instead of skipping it", async () => {

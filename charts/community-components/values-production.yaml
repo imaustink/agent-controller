@@ -74,17 +74,14 @@ opencodeSweAgent:
   githubAppPrivateKeySecretKey: ""
   githubAppInstallationIdSecretKey: ""
 
-# Not requested — leave off. Enable only if a self-improvement Skill is wanted.
-opencodeSweAgentTool:
-  enabled: false
-
 skills:
   recipeRefining:
     enabled: true
   # Superseded by opencodeSweAgent Agent CR above — keep disabled.
   softwareEngineering:
     enabled: false
-  # Requires opencodeSweAgentTool.enabled=true — not requested.
+  # Delegates straight to the opencode-swe-agent Agent CR above (ADR 0021 --
+  # no Tool wrapper needed). Not requested — leave off.
   selfImprovement:
     enabled: false
   # Requires webSearch.enabled=true above.

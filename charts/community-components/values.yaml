@@ -128,13 +128,6 @@ opencodeSweAgent:
   githubAppPrivateKeySecretKey: ""
   githubAppInstallationIdSecretKey: ""
 
-# opencode-swe-agent-tool: an agent-backed Tool (spec.agentRef) wrapping the
-# opencodeSweAgent Agent CR above, so a Skill's toolRefs can delegate to it
-# via the ordinary tool-call path (self-improvement-skill below). Requires
-# opencodeSweAgent.enabled=true.
-opencodeSweAgentTool:
-  enabled: false
-
 skills:
   # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +
   # recipe-publisher). Enable both those tools above for its derived audience
@@ -147,8 +140,9 @@ skills:
     enabled: false
   # self-improvement: drafts a new Skill/Tool CR from a successful fallback
   # turn (graph.ts's selectDelegate fallback) and opens a PR against
-  # imaustink/agent-controller via opencode-swe-agent-tool. Requires
-  # opencodeSweAgentTool.enabled=true for its derived audience to be non-empty.
+  # imaustink/agent-controller by delegating straight to the opencode-swe-agent
+  # Agent CR (ADR 0021 -- no Tool wrapper needed). Requires
+  # opencodeSweAgent.enabled=true for its derived audience to be non-empty.
   selfImprovement:
     enabled: false
   # web-search: answers a request using an in-cluster SearXNG search, and can

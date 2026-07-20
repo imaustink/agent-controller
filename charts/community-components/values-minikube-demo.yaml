@@ -25,11 +25,10 @@ webFetch:
 # ANTHROPIC_API_KEY) to already exist in-cluster.
 opencodeSweAgent:
   enabled: true
-# Agent-backed Tool wrapping opencode-swe-agent above, and the skill that
-# uses it to draft+PR a new Skill/Tool CR from a successful fallback turn.
-opencodeSweAgentTool:
-  enabled: true
 skills:
+  # Delegates straight to the opencode-swe-agent Agent CR above (ADR 0021 --
+  # no Tool wrapper needed) to draft+PR a new Skill/Tool CR from a
+  # successful fallback turn.
   selfImprovement:
     enabled: true
   webSearch:

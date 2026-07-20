@@ -25,15 +25,23 @@ export interface SkillDescriptor {
    * empty for respond-only skills (pure system-prompt knowledge).
    */
   toolIds: string[];
+  /**
+   * Ids of {@link AgentDescriptor}s (docs/adr/0021) this skill may delegate
+   * to directly — dispatched as an AgentRun the same way an agent-backed
+   * Tool already is, without needing a Tool CR to wrap the Agent first. May
+   * be empty (or combined with toolIds — a skill isn't limited to one kind).
+   */
+  agentIds: string[];
 }
 
 /**
- * A skill plus its derived retrieval audience (docs/adr/0011). Skills carry
- * no allowedRoles of their own — they are trusted markdown, not capability;
- * all RBAC lives on tools (and agents). `effectiveRoles` is computed by
- * derive-access.ts as the intersection of the referenced tools'
- * `allowedRoles`; `null` means unrestricted (a skill with no toolIds — any
- * caller with a resolved identity may select it).
+ * A skill plus its derived retrieval audience (docs/adr/0011, extended by
+ * ADR 0021 to agents). Skills carry no allowedRoles of their own — they are
+ * trusted markdown, not capability; all RBAC lives on tools and agents.
+ * `effectiveRoles` is computed by derive-access.ts as the intersection of
+ * the referenced tools' AND agents' `allowedRoles`; `null` means
+ * unrestricted (a skill with no toolIds/agentIds — any caller with a
+ * resolved identity may select it).
  */
 export interface SkillAccess {
   skill: SkillDescriptor;
