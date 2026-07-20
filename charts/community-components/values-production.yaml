@@ -1,0 +1,92 @@
+# values-production.yaml — Tool/Skill/Agent catalog on the homelab cluster
+# (namespace controller-agent). Consumed automatically by
+# .github/workflows/deploy.yml on every push to main; formerly lived as
+# values-community-components.yaml in the private imaustink/homelab repo and
+# was fetched cross-repo via a GitHub App token on every deploy -- moved here
+# to drop that indirection now that nothing in this file is a real secret.
+#
+# First-time manual install AFTER agent-controller (its CRs need the CRDs
+# that chart installs):
+#
+#   helm install community-components charts/community-components -n controller-agent \
+#     -f charts/community-components/values-production.yaml
+
+enabled: true
+
+crdApiVersion: core.controller-agent.dev/v1alpha1
+
+# Chart now templates recipe-scraper/recipe-publisher/opencode-swe-agent/
+# web-search's ServiceAccounts itself (serviceAccount.create default true per
+# component) — this is what actually attaches the private-registry pull
+# secret to them.
+imagePullSecrets:
+  - name: docker-registry-credentials
+
+recipeScraper:
+  enabled: true
+  image: registry.kurpuis.com:5000/recipe-scraper:latest
+  serviceAccountName: recipe-scraper
+  openai:
+    secretName: agent-orchestrator-secrets
+    secretKey: OPENAI_API_KEY
+
+# web-search: queries the in-cluster SearXNG instance (agent-controller
+# chart's searxng.enabled=true — values-production.yaml). Default
+# searxngBaseUrl already matches that release's name ("agent-controller").
+webSearch:
+  enabled: true
+  image: registry.kurpuis.com:5000/web-search:latest
+  serviceAccountName: web-search
+
+# web-fetch: fetches a single URL and returns its main readable content as
+# Markdown. Required alongside webSearch above — the web-search skill's
+# toolRefs lists both tools, and its derived audience (ADR 0011) is empty
+# without this one. No external dependency (SSRF-guarded).
+webFetch:
+  enabled: true
+  image: registry.kurpuis.com:5000/web-fetch:latest
+  serviceAccountName: web-fetch
+
+recipePublisher:
+  enabled: true
+  image: registry.kurpuis.com:5000/recipe-publisher:latest
+  serviceAccountName: recipe-publisher
+  mealieBaseUrl: "https://recipes.kurpuis.com"
+  ingredientParser: "nlp"
+  # Create first:
+  #   kubectl create secret generic recipe-publisher-secrets -n controller-agent \
+  #     --from-literal=MEALIE_API_TOKEN=<token>
+  secretName: recipe-publisher-secrets
+  secretKey: MEALIE_API_TOKEN
+
+# opencode-swe-agent: privileged GitHub coding sub-agent. Create first:
+#   kubectl create secret generic opencode-swe-secrets -n controller-agent \
+#     --from-literal=GITHUB_TOKEN=github_pat_... \
+#     --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+opencodeSweAgent:
+  enabled: true
+  image: registry.kurpuis.com:5000/opencode-swe-agent:latest
+  serviceAccountName: opencode-swe-agent
+  secretName: opencode-swe-secrets
+  secretKey: GITHUB_TOKEN
+  anthropicSecretKey: ANTHROPIC_API_KEY
+  githubAppIdSecretKey: ""
+  githubAppPrivateKeySecretKey: ""
+  githubAppInstallationIdSecretKey: ""
+
+# Not requested — leave off. Enable only if a self-improvement Skill is wanted.
+opencodeSweAgentTool:
+  enabled: false
+
+skills:
+  recipeRefining:
+    enabled: true
+  # Superseded by opencodeSweAgent Agent CR above — keep disabled.
+  softwareEngineering:
+    enabled: false
+  # Requires opencodeSweAgentTool.enabled=true — not requested.
+  selfImprovement:
+    enabled: false
+  # Requires webSearch.enabled=true above.
+  webSearch:
+    enabled: true
