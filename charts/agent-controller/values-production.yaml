@@ -192,6 +192,15 @@ integration-gateway:
       kubernetes.io/ingress.class: traefik
       cert-manager.io/cluster-issuer: letsencrypt-prod
       traefik.ingress.kubernetes.io/router.middlewares: default-redirect-https@kubernetescrd
+      # Without this, external-dns defaults new hosts to the Traefik
+      # LoadBalancer Service's address (192.168.0.200) -- a private LAN IP
+      # Let's Encrypt's HTTP-01 validator can never reach, so issuance fails
+      # with "no valid A records found" even though DNS itself resolves fine
+      # (same bug fixed for pocket-id.kurpuis.com; see that manifest's
+      # comment in imaustink/homelab). CNAME to lab.kurpuis.com (the actual
+      # publicly-routable address, same pattern chat.kurpuis.com uses)
+      # instead of an A record.
+      external-dns.alpha.kubernetes.io/target: lab.kurpuis.com
     host: "gateway.kurpuis.com"
     tls:
       - secretName: gateway-kurpuis-tls
