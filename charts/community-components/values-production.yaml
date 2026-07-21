@@ -70,9 +70,6 @@ opencodeSweAgent:
   secretName: opencode-swe-secrets
   secretKey: GITHUB_TOKEN
   anthropicSecretKey: ANTHROPIC_API_KEY
-  githubAppIdSecretKey: ""
-  githubAppPrivateKeySecretKey: ""
-  githubAppInstallationIdSecretKey: ""
   # Per-user GitHub identity linking (docs/adr/0022) -- agent-orchestrator/
   # integration-gateway's identityLink.enabled are already on (see
   # charts/agent-controller/values-production.yaml). Flipping this breaks
