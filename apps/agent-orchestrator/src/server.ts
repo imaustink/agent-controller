@@ -526,7 +526,11 @@ export class InvokeServer {
         // works. Stream that live as real chat content so the user reads it
         // like normal assistant prose, rather than burying it in the
         // collapsible status spinner with the mechanical tool-call noise.
-        if (stage === "agent-text" && message) {
+        // "identity-link" (agent/graph.ts's delegateToAgent) is the one-time
+        // "please link your GitHub account" prompt -- also real content, not
+        // a status step, since the status label is truncated to 120 chars
+        // and would mangle the markdown link/URL.
+        if ((stage === "agent-text" || stage === "identity-link") && message) {
           writeSseChunk(res, chatCompletionChunk(id, model, { content: message }, null));
           return;
         }

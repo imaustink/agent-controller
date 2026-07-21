@@ -1402,6 +1402,63 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(final.result).toMatch(/github\.com\/login\/oauth\/authorize/);
   });
 
+  it("holds the turn open via waitForCompletion on a streaming call and launches without ending the turn once linked", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "authcode" as const,
+        authorizeUrl: "https://github.com/login/oauth/authorize?state=xyz",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      waitForCompletion: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+    const progressListener = vi.fn();
+
+    const final = await graph.invoke({ request: "open a PR that fixes the bug", authToken: "tok", progressListener });
+
+    expect(progressListener).toHaveBeenCalledWith("identity-link", expect.stringContaining("github.com/login/oauth/authorize"));
+    expect(identityLinkGateway.waitForCompletion).toHaveBeenCalledWith("github", "alice", 600_000);
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      githubAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }] }),
+    );
+    expect(final.identityLinkPending).toBeFalsy();
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(final.agentRunId).toBeDefined();
+  });
+
+  it("falls back to the pending-link message when waitForCompletion times out on a streaming call", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "authcode" as const,
+        authorizeUrl: "https://github.com/login/oauth/authorize?state=xyz",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      waitForCompletion: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+    const progressListener = vi.fn();
+
+    const final = await graph.invoke({ request: "open a PR that fixes the bug", authToken: "tok", progressListener });
+
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual({
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "authcode",
+      expiresAt: expect.any(Number),
+    });
+    expect(final.result).toMatch(/send any message once you're done/);
+  });
+
   it("resumes delegation and launches with secretEnv once a pending link's poll reports complete", async () => {
     const identityLinkGateway: IdentityLinkPort = {
       start: vi.fn(),

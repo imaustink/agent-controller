@@ -102,4 +102,33 @@ describe("IdentityLinkGatewayClient", () => {
 
     await expect(client.getToken("github", "user-1")).rejects.toThrow(/500/);
   });
+
+  it("waitForCompletion() posts subject/timeoutMs and returns the token on completion", async () => {
+    const token = { token: "gho_abc123", githubLogin: "octocat" };
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { status: "complete", token }));
+    const client = new IdentityLinkGatewayClient({ baseUrl: "http://gateway", token: "tok", fetchImpl });
+
+    const result = await client.waitForCompletion("github", "user-1", 60_000);
+
+    expect(result).toEqual(token);
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://gateway/identity-link/github/wait");
+    expect(JSON.parse(init.body as string)).toEqual({ subject: "user-1", timeoutMs: 60_000 });
+  });
+
+  it("waitForCompletion() returns undefined on a timeout response", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { status: "timeout" }));
+    const client = new IdentityLinkGatewayClient({ baseUrl: "http://gateway", token: "tok", fetchImpl });
+
+    const result = await client.waitForCompletion("github", "user-1", 60_000);
+
+    expect(result).toBeUndefined();
+  });
+
+  it("waitForCompletion() throws on a non-2xx response", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(500, { error: "boom" }));
+    const client = new IdentityLinkGatewayClient({ baseUrl: "http://gateway", token: "tok", fetchImpl });
+
+    await expect(client.waitForCompletion("github", "user-1", 60_000)).rejects.toThrow(/500/);
+  });
 });
