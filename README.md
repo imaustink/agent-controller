@@ -2,6 +2,29 @@
 
 > [github.com/imaustink/agent-controller](https://github.com/imaustink/agent-controller)
 
+---
+
+### 🔥 STRAP IN. THIS IS AGENT-CONTROLLER. 🔥
+
+**Somewhere in a cluster near you**, agents are spinning up, tools are firing,
+Jobs are launching — and NOTHING is hard-coded. NOTHING is baked in. This is
+**Kubernetes-native AI orchestration** turned up to eleven, and it does NOT
+slow down for redeploys.
+
+> 💥 CRDs as the catalog. 💥 The controller as the engine. 💥 Your agents,
+> UNLEASHED.
+
+No image rebuilds. No bottlenecked orchestrators. No excuses. Just
+`Tool`, `Skill`, and `Agent` custom resources roaring off the line and
+one-shot Jobs screaming across your cluster like it's the main stage at
+1 AM. `kubectl apply` is your remote control — mash it, and watch the
+whole system light up.
+
+**This is not your grandfather's config file. This is agent-controller.**
+**Declarative. Relentless. Live.**
+
+---
+
 A Kubernetes-native framework for building production AI agents. Tools, Skills,
 and Agents are declared as **custom resources** and launched as one-shot Jobs by
 a dedicated controller — so operators manage the catalog declaratively and the
