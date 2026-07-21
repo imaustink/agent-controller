@@ -9,6 +9,7 @@ import { CrdToolRegistry } from "./registry/crd-tool-registry.js";
 import { CrdLocalToolRegistry } from "./registry/crd-local-tool-registry.js";
 import { loadStaticIdentitiesFromEnv, StaticIdentityResolver } from "./rbac/static-identity-resolver.js";
 import { OidcIdentityResolver } from "./rbac/oidc-identity-resolver.js";
+import { CompositeIdentityResolver } from "./rbac/composite-identity-resolver.js";
 import type { IdentityResolver } from "./rbac/types.js";
 import { createRemoteJWKSet } from "jose";
 import { CrdSkillRegistry } from "./skills/crd-skill-registry.js";
@@ -322,12 +323,21 @@ async function main(): Promise<void> {
   let identityResolver: IdentityResolver;
   if (config.identityResolverKind === "oidc") {
     console.error(`Using OIDC identity resolver: issuer=${config.oidcIssuer}`);
-    identityResolver = new OidcIdentityResolver({
+    const oidcResolver = new OidcIdentityResolver({
       issuer: config.oidcIssuer!,
       audience: config.oidcAudience,
       rolesClaim: config.oidcRolesClaim,
       jwks: createRemoteJWKSet(new URL(config.oidcJwksUri!)),
     });
+    // Callers that structurally cannot present a real, refreshable OIDC
+    // token (e.g. Open WebUI: a static configured bearer-token field, no
+    // token-refresh mechanism of its own) fall back to a small static map
+    // instead of weakening oidc verification for everyone. Only tokens
+    // registered in AGENT_STATIC_IDENTITIES get this pass -- callers that
+    // can do real OIDC (e.g. integration-gateway) still must.
+    identityResolver = config.staticIdentities
+      ? new CompositeIdentityResolver(oidcResolver, new StaticIdentityResolver(loadStaticIdentitiesFromEnv(config.staticIdentities)))
+      : oidcResolver;
   } else {
     identityResolver = new StaticIdentityResolver(loadStaticIdentitiesFromEnv(config.staticIdentities));
   }

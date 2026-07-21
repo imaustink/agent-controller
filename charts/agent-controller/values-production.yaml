@@ -41,21 +41,42 @@ agent-orchestrator:
     existingSecret: agent-orchestrator-secrets
 
   config:
-    # Real IdentityResolver: verifies caller bearer tokens as JWTs against
-    # Google's JWKS instead of the dev/test-only staticIdentities map this
-    # replaces. Reuses the same Google OAuth client already configured for
-    # Open WebUI SSO below (openwebui.sso.google.clientId).
+    # oidc against Pocket ID (kubernetes/manifests/services/pocket-id in
+    # imaustink/homelab), not Google -- the 2026-07-19 outage was caused by
+    # Google id_tokens: neither caller could present one (Open WebUI has no
+    # way to obtain one for its backend-to-backend calls, and
+    # integration-gateway -- a server-to-server webhook relay, no user login
+    # flow -- can't mint one at all).
+    #
+    # integration-gateway is this repo's own code and does real
+    # client_credentials against Pocket ID -- its granted permission keys
+    # land in the JWT's `scp` claim (a real JSON array -- see
+    # imaustink/homelab's
+    # kubernetes/manifests/services/pocket-id/provision-agent-orchestrator.sh),
+    # which oidcRolesClaim below reads.
+    #
+    # Open WebUI structurally cannot do the same (a static API-key field, no
+    # refresh mechanism of its own) -- rather than force it through an IdP
+    # flow it can't sustain, it authenticates via the
+    # staticIdentitiesExistingSecret fallback below (chart 0.2.2+:
+    # CompositeIdentityResolver -- oidc verification first, falling back to
+    # this static map only for tokens that fail it). integration-gateway
+    # still must pass real oidc verification; only Open WebUI's token gets
+    # this pass.
     identityResolver: oidc
-    oidcIssuer: "https://accounts.google.com"
-    oidcJwksUri: "https://www.googleapis.com/oauth2/v3/certs"
-    oidcAudience: "916932714292-6900thjm1dq3e4fnqrcj3ipe4iud70o8.apps.googleusercontent.com"
-    # Google ID tokens carry no roles claim -- see imaustink/homelab's
-    # kubernetes/manifests/agent-controller/README.md known-limitation note:
-    # this must be addressed (custom claim, or a role-mapping shim) before
-    # Open WebUI/integration-gateway callers can authorize as anything other
-    # than whatever the resolver defaults unauthenticated role-less subjects
-    # to.
-    oidcRolesClaim: roles
+    oidcIssuer: "https://pocket-id.kurpuis.com"
+    oidcJwksUri: "https://pocket-id.kurpuis.com/.well-known/jwks.json"
+    # The Custom API "resource" provisioned in Pocket ID -- see
+    # provision-agent-orchestrator.sh. integration-gateway requests this as
+    # the client_credentials `resource` param.
+    oidcAudience: "https://agent-orchestrator.controller-agent.svc.cluster.local"
+    oidcRolesClaim: scp
+    # JSON map of bearer token -> {subject, roles}, sourced from a Secret
+    # created out-of-band (never committed -- this values file is public).
+    # One entry: Open WebUI's long-lived static token. See
+    # imaustink/homelab's README for the kubectl command that creates it.
+    staticIdentitiesExistingSecret: agent-orchestrator-openwebui-static-identity
+    staticIdentitiesExistingSecretKey: AGENT_STATIC_IDENTITIES
 
   # Invoke API stays internal — no ingress, only Open WebUI (in-cluster) calls it.
   ingress:
@@ -148,15 +169,16 @@ integration-gateway:
     githubIdentities: '{"imaustink": {"subject": "imaustink", "roles": ["writer"]}}'
 
   # Bring-your-own secret: GITHUB_WEBHOOK_SECRET, GATEWAY_ORCHESTRATOR_TOKEN,
-  # and GITHUB_TOKEN. NOTE: now that agent-orchestrator.config.identityResolver
-  # is "oidc", GATEWAY_ORCHESTRATOR_TOKEN must be a JWT the orchestrator can
-  # verify against oidcIssuer/oidcJwksUri above, not an arbitrary shared
-  # secret — see imaustink/homelab's README known-limitation note, this is
-  # unresolved follow-up work.
+  # and GITHUB_TOKEN. GATEWAY_ORCHESTRATOR_TOKEN must be a Pocket ID
+  # client_credentials access token for the "integration-gateway" client (see
+  # kubernetes/manifests/services/pocket-id/provision-agent-orchestrator.sh in
+  # imaustink/homelab) -- these expire in 1 hour, so this is a placeholder
+  # until apps/integration-gateway fetches/refreshes its own token instead of
+  # reading a static env var (tracked follow-up, not done yet).
   # Create with:
   #   kubectl create secret generic integration-gateway-secrets -n controller-agent \
   #     --from-literal=GITHUB_WEBHOOK_SECRET="$(openssl rand -hex 32)" \
-  #     --from-literal=GATEWAY_ORCHESTRATOR_TOKEN=<same token as staticIdentities key> \
+  #     --from-literal=GATEWAY_ORCHESTRATOR_TOKEN=<Pocket ID client_credentials access token> \
   #     --from-literal=GITHUB_TOKEN=github_pat_...
   secrets:
     existingSecret: integration-gateway-secrets
@@ -170,6 +192,15 @@ integration-gateway:
       kubernetes.io/ingress.class: traefik
       cert-manager.io/cluster-issuer: letsencrypt-prod
       traefik.ingress.kubernetes.io/router.middlewares: default-redirect-https@kubernetescrd
+      # Without this, external-dns defaults new hosts to the Traefik
+      # LoadBalancer Service's address (192.168.0.200) -- a private LAN IP
+      # Let's Encrypt's HTTP-01 validator can never reach, so issuance fails
+      # with "no valid A records found" even though DNS itself resolves fine
+      # (same bug fixed for pocket-id.kurpuis.com; see that manifest's
+      # comment in imaustink/homelab). CNAME to lab.kurpuis.com (the actual
+      # publicly-routable address, same pattern chat.kurpuis.com uses)
+      # instead of an A record.
+      external-dns.alpha.kubernetes.io/target: lab.kurpuis.com
     host: "gateway.kurpuis.com"
     tls:
       - secretName: gateway-kurpuis-tls
@@ -180,13 +211,29 @@ openwebui:
   enabled: true
 
   # Sourced from a Secret (chart PR #27) instead of plaintext here, so it
-  # doesn't land in the Helm release's stored values. Must now be a JWT the
-  # orchestrator's oidc IdentityResolver (agent-orchestrator.config above)
-  # can verify, not an arbitrary static token -- see imaustink/homelab's
-  # README known-limitation note, this is unresolved follow-up work. Create
-  # with:
+  # doesn't land in the Helm release's stored values. NOT a Pocket ID token --
+  # Open WebUI has no refresh mechanism of its own (a static API-key field,
+  # read as an env var at container start), so rather than chase Pocket ID's
+  # 1-hour client_credentials expiry with a periodic restart job, this is a
+  # long-lived, manually-rotated shared secret matched by
+  # agent-orchestrator.config.staticIdentitiesExistingSecret above
+  # (CompositeIdentityResolver's static fallback -- see that comment).
+  # Must be the same value as that Secret's one token entry. Create with:
+  #   kubectl create secret generic agent-orchestrator-openwebui-static-identity \
+  #     -n controller-agent \
+  #     --from-literal=AGENT_STATIC_IDENTITIES='{"<token>": {"subject": "openwebui", "roles": ["reader", "writer"]}}'
   #   kubectl create secret generic openwebui-openai-api-key -n controller-agent \
-  #     --from-literal=openai-api-key=<token>
+  #     --from-literal=openai-api-key=<same token>
+  #
+  # GOTCHA (cost real debugging time): Open WebUI persists this Connection's
+  # API key into its own Postgres `config` table (key openai.api_keys) the
+  # FIRST time it boots, and never re-reads OPENAI_API_KEY from the env
+  # again after that -- rotating this Secret and restarting the pod does
+  # NOT change what Open WebUI actually sends. To rotate for real: update it
+  # in Open WebUI's own Admin Settings -> Connections UI (or the `config`
+  # table's `openai.api_keys` row directly), THEN match that same value in
+  # agent-orchestrator-openwebui-static-identity above -- not the other way
+  # around.
   openaiApiKeyExistingSecret: openwebui-openai-api-key
   openaiApiKeyExistingSecretKey: openai-api-key
   openaiBaseApiUrl: "http://agent-orchestrator-invoke:8081/v1"
@@ -221,19 +268,64 @@ openwebui:
     tls: true
     existingSecret: "chat-kurpuis-tls"
 
-  # Google OAuth SSO. Create the client-secret Secret first:
+  # Google OAuth SSO -- disabled (see google.enabled below), Pocket ID is the
+  # only SSO path now. Config left in place, not deleted, in case it's ever
+  # re-enabled as a fallback; it was only ever ungoverned anyway, since
+  # Google can't emit custom roles/groups claims (the same limitation that
+  # broke oidc verification against Google in the first place, see
+  # values-production.yaml's git history). If re-enabled, the client-secret
+  # Secret and Google Cloud Console redirect URI are still:
   #   kubectl create secret generic controller-agent-openwebui-google-oauth \
   #     -n controller-agent --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
-  # Authorized redirect URI in the Google Cloud Console OAuth client must be:
   #   https://chat.kurpuis.com/oauth/google/login/callback
+  #
+  # Pocket ID OIDC SSO: real per-user login, roles managed via Pocket ID
+  # Groups + a custom "roles" claim (see
+  # kubernetes/manifests/services/pocket-id/provision-openwebui-sso.sh in
+  # imaustink/homelab) -- NOT the same Pocket ID client integration-gateway
+  # uses (that one's client_credentials-only, no login flow). Create the
+  # client-secret Secret first:
+  #   kubectl create secret generic openwebui-pocket-id-oauth -n controller-agent \
+  #     --from-literal=client-secret=<POCKET_ID_CLIENT_SECRET>
+  # Callback URLs registered on the Pocket ID client must include both
+  # https://chat.kurpuis.com/oauth/oidc/callback (what this Open WebUI
+  # version actually redirects to) and .../oauth/oidc/login/callback (a
+  # newer route also present in its source) -- provision-openwebui-sso.sh
+  # in imaustink/homelab registers both.
   sso:
     enabled: true
     enableSignup: true
+    enableRoleManagement: true
+    enableGroupManagement: true
     google:
-      enabled: true
+      # Disabled -- Pocket ID is the only managed SSO path now. Left
+      # configured (not deleted) so re-enabling is a one-line flip if ever
+      # needed; it was only ever an ungoverned fallback since Google can't
+      # emit custom roles/groups claims.
+      enabled: false
       clientId: "916932714292-6900thjm1dq3e4fnqrcj3ipe4iud70o8.apps.googleusercontent.com"
       clientExistingSecret: controller-agent-openwebui-google-oauth
       clientExistingSecretKey: "client-secret"
+    oidc:
+      enabled: true
+      clientId: "openwebui"
+      clientExistingSecret: openwebui-pocket-id-oauth
+      clientExistingSecretKey: "client-secret"
+      providerUrl: "https://pocket-id.kurpuis.com/.well-known/openid-configuration"
+      providerName: "Pocket ID"
+      scopes: "openid email profile groups"
+    roleManagement:
+      # Pocket ID has no native "roles" concept -- this claim is emitted via
+      # a custom claim on a Pocket ID Group (key "roles", JSON array value),
+      # not anything built-in. See provision-openwebui-sso.sh.
+      rolesClaim: "roles"
+      allowedRoles: "user,admin"
+      adminRoles: "admin"
+    groupManagement:
+      # Pocket ID's native group-name list (no custom claim needed) --
+      # matches Open WebUI Groups by name if you create ones with matching
+      # names. Unused for role assignment (see roleManagement above).
+      groupsClaim: "groups"
 
   # NOTE: Helm replaces arrays wholesale — every entry must stay together here.
   extraEnvVars:
@@ -241,6 +333,19 @@ openwebui:
       value: "https://chat.kurpuis.com/oauth/google/login/callback"
     - name: ENABLE_FORWARD_USER_INFO_HEADERS
       value: "true"
+    # Switches ENABLE_FORWARD_USER_INFO_HEADERS from the legacy plaintext
+    # X-OpenWebUI-User-* headers to a single signed JWT
+    # (X-OpenWebUI-User-Jwt, HS256, minted fresh on every outbound request --
+    # no refresh problem, unlike Pocket ID's client_credentials tokens).
+    # Currently unused by agent-orchestrator (it still only reads the
+    # Authorization bearer via the CompositeIdentityResolver static
+    # fallback) -- verifying this header for real per-user roles at the
+    # orchestrator is tracked follow-up, not done yet.
+    - name: FORWARD_USER_INFO_HEADER_JWT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: openwebui-forward-jwt-secret
+          key: secret
     # ---- Database (CNPG Postgres — see imaustink/homelab's
     # manifests/agent-controller/003-openwebui-postgres.yaml) ----
     # Replaces the default SQLite file, which has no retry/failover behavior
