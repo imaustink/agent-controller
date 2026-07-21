@@ -247,9 +247,8 @@ integration-gateway:
     enabled: true
     # GitHub App OAuth client_id -- PUBLIC, not a secret (see this field's
     # doc comment in charts/agent-controller/charts/integration-gateway/values.yaml).
-    # REPLACE with the real value from the GitHub App's settings page --
-    # left as a placeholder here since it isn't known at PR-authoring time.
-    githubAppClientId: "1052865"
+    # This is the App's Client ID (Iv1./Iv23... string), NOT its numeric App ID.
+    githubAppClientId: "Iv23liVElRYG8F7GBzRy"
     # Must exactly match the GitHub App's registered "Callback URL"
     # (scheme/host/path/trailing-slash all significant) -- see
     # charts/agent-controller/charts/integration-gateway/values.yaml's
