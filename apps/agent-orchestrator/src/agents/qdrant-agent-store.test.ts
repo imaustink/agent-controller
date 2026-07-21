@@ -52,6 +52,7 @@ describe("QdrantAgentStore", () => {
             allowedRoles: ["writer"],
             tier: "privileged",
             orchestratorPrompt: "Delegate the whole request verbatim as the goal.",
+            identityProviders: null,
             namespace: "default",
             agentRef: "software-engineering-agent",
           },
@@ -59,6 +60,44 @@ describe("QdrantAgentStore", () => {
       ],
       wait: true,
     });
+  });
+
+  it("upserts identityProviders when the descriptor declares them (ADR 0022)", async () => {
+    const client = { upsert: vi.fn().mockResolvedValue(true) } as unknown as QdrantClient;
+    const store = new QdrantAgentStore({ url: "http://q", collection: "agents", vectorSize: 3 }, fakeEmbedder([1, 2, 3]), client);
+    const identityGatedAgent: AgentDescriptor = { ...agent, identityProviders: ["github"] };
+
+    await store.upsert([identityGatedAgent]);
+
+    expect(client.upsert).toHaveBeenCalledWith(
+      "agents",
+      expect.objectContaining({ points: [expect.objectContaining({ payload: expect.objectContaining({ identityProviders: ["github"] }) })] }),
+    );
+  });
+
+  it("round-trips identityProviders back into the AgentDescriptor returned by getByIds (regression: this used to be silently dropped)", async () => {
+    const client = {
+      retrieve: vi.fn().mockResolvedValue([
+        {
+          payload: {
+            id: "software-engineering-agent",
+            name: "software-engineering-agent",
+            description: agent.description,
+            allowedRoles: ["writer"],
+            tier: "privileged",
+            orchestratorPrompt: "Delegate the whole request verbatim as the goal.",
+            identityProviders: ["github"],
+            namespace: "default",
+            agentRef: "software-engineering-agent",
+          },
+        },
+      ]),
+    } as unknown as QdrantClient;
+    const store = new QdrantAgentStore({ url: "http://q", collection: "agents", vectorSize: 3 }, fakeEmbedder(), client);
+
+    const results = await store.getByIds(["software-engineering-agent"], { callerRoles: ["writer"] });
+
+    expect(results[0]?.agent.identityProviders).toEqual(["github"]);
   });
 
   it("no-ops on an empty upsert (Qdrant rejects zero-point upserts)", async () => {
