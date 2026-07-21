@@ -169,8 +169,14 @@ integration-gateway:
     githubIdentities: '{"imaustink": {"subject": "imaustink", "roles": ["writer"]}}'
 
   # Bring-your-own secret: GITHUB_WEBHOOK_SECRET, GATEWAY_ORCHESTRATOR_TOKEN,
-  # and GITHUB_TOKEN. GATEWAY_ORCHESTRATOR_TOKEN must be a Pocket ID
-  # client_credentials access token for the "integration-gateway" client (see
+  # and GITHUB_APP_ID/GITHUB_APP_INSTALLATION_ID/GITHUB_APP_PRIVATE_KEY (a
+  # GitHub App, not a PAT -- packages/github-app-auth mints a fresh
+  # installation token from these on every call, so there's nothing to
+  # refresh manually here, unlike GATEWAY_ORCHESTRATOR_TOKEN below).
+  # GITHUB_TOKEN (a static PAT) is only a fallback read when the three
+  # GITHUB_APP_* fields are absent -- not needed, and not set, here.
+  # GATEWAY_ORCHESTRATOR_TOKEN must be a Pocket ID client_credentials access
+  # token for the "integration-gateway" client (see
   # kubernetes/manifests/services/pocket-id/provision-agent-orchestrator.sh in
   # imaustink/homelab) -- these expire in 1 hour, so this is a placeholder
   # until apps/integration-gateway fetches/refreshes its own token instead of
@@ -179,7 +185,9 @@ integration-gateway:
   #   kubectl create secret generic integration-gateway-secrets -n controller-agent \
   #     --from-literal=GITHUB_WEBHOOK_SECRET="$(openssl rand -hex 32)" \
   #     --from-literal=GATEWAY_ORCHESTRATOR_TOKEN=<Pocket ID client_credentials access token> \
-  #     --from-literal=GITHUB_TOKEN=github_pat_...
+  #     --from-literal=GITHUB_APP_ID=<GitHub App ID> \
+  #     --from-literal=GITHUB_APP_INSTALLATION_ID=<installation ID> \
+  #     --from-literal=GITHUB_APP_PRIVATE_KEY=<GitHub App private key PEM>
   secrets:
     existingSecret: integration-gateway-secrets
 
