@@ -40,24 +40,29 @@ async function main(): Promise<void> {
     console.error("GATEWAY_ORCHESTRATOR_TOKEN is required");
     process.exit(EXIT_STARTUP_FAILURE);
   }
-  if (!config.identityLinkToken) {
-    console.error("GATEWAY_IDENTITY_LINK_TOKEN is required");
+
+  // Identity-link (docs/adr/0022) is an opt-in feature (chart's
+  // identityLink.enabled), so it must never be unconditionally required --
+  // an integration-gateway deployment that doesn't use it (e.g. today's
+  // production, which only relays GitHub issue comments) must keep starting
+  // with none of these four set. Only fail closed on a PARTIAL
+  // configuration (some but not all set), since that's almost certainly a
+  // typo'd Secret/values file rather than an intentional choice -- same
+  // discipline as opencode-swe-agent's GitHub App fields (ADR 0018).
+  const identityLinkFields = {
+    GATEWAY_IDENTITY_LINK_TOKEN: config.identityLinkToken,
+    GITHUB_APP_CLIENT_ID: config.githubAppClientId,
+    IDENTITY_LINK_ENCRYPTION_KEY: config.identityLinkEncryptionKey,
+    AGENT_REDIS_URL: config.redisUrl,
+  };
+  const identityLinkFieldEntries = Object.entries(identityLinkFields);
+  const identityLinkFieldsSet = identityLinkFieldEntries.filter(([, value]) => Boolean(value));
+  if (identityLinkFieldsSet.length > 0 && identityLinkFieldsSet.length < identityLinkFieldEntries.length) {
+    const missing = identityLinkFieldEntries.filter(([, value]) => !value).map(([name]) => name);
+    console.error(`Partial identity-link configuration -- missing: ${missing.join(", ")}`);
     process.exit(EXIT_STARTUP_FAILURE);
   }
-  if (!config.githubAppClientId) {
-    console.error("GITHUB_APP_CLIENT_ID is required");
-    process.exit(EXIT_STARTUP_FAILURE);
-  }
-  if (!config.identityLinkEncryptionKey) {
-    console.error("IDENTITY_LINK_ENCRYPTION_KEY is required");
-    process.exit(EXIT_STARTUP_FAILURE);
-  }
-  const redisUrl = config.redisUrl;
-  if (!redisUrl) {
-    console.error("AGENT_REDIS_URL is required (the identity-link store has no in-memory fallback -- account links must be durable)");
-    process.exit(EXIT_STARTUP_FAILURE);
-    return;
-  }
+  const identityLinkEnabled = identityLinkFieldsSet.length === identityLinkFieldEntries.length;
 
   const identities = loadGithubIdentitiesFromEnv(config.githubIdentities);
   const identityResolver = new GithubIdentityResolver(identities, config.githubBotLogin);
@@ -77,30 +82,34 @@ async function main(): Promise<void> {
     githubApiUrl: config.githubApiUrl,
   });
 
-  const identityLinkStore = new RedisIdentityLinkStore(redisUrl, decodeEncryptionKey(config.identityLinkEncryptionKey));
-  await retryWithBackoff("redis startup check (identity-link store)", () => identityLinkStore.connect(), {
-    attempts: 12,
-    initialDelayMs: 1_000,
-    maxDelayMs: 15_000,
-  });
-  console.error(`Using Redis identity-link store: ${redisUrl}`);
+  let identityLinkStore: RedisIdentityLinkStore | undefined;
+  let identityLinkLinker: GithubDeviceFlowLinker | undefined;
+  if (identityLinkEnabled) {
+    const redisUrl = config.redisUrl!;
+    identityLinkStore = new RedisIdentityLinkStore(redisUrl, decodeEncryptionKey(config.identityLinkEncryptionKey));
+    await retryWithBackoff("redis startup check (identity-link store)", () => identityLinkStore!.connect(), {
+      attempts: 12,
+      initialDelayMs: 1_000,
+      maxDelayMs: 15_000,
+    });
+    console.error(`Using Redis identity-link store: ${redisUrl}`);
 
-  const identityLinkLinker = new GithubDeviceFlowLinker({
-    clientId: config.githubAppClientId,
-    scope: config.deviceFlowScope,
-    store: identityLinkStore,
-    clientSecret: config.githubAppClientSecret,
-    stateSecret: config.identityLinkStateSecret,
-    redirectUri: config.githubOauthRedirectUri,
-  });
+    identityLinkLinker = new GithubDeviceFlowLinker({
+      clientId: config.githubAppClientId,
+      scope: config.deviceFlowScope,
+      store: identityLinkStore,
+      clientSecret: config.githubAppClientSecret,
+      stateSecret: config.identityLinkStateSecret,
+      redirectUri: config.githubOauthRedirectUri,
+    });
+  }
 
   const server = new GatewayServer({
     githubWebhookSecret: config.githubWebhookSecret,
     identityResolver,
     orchestratorClient,
     githubReplyClient,
-    identityLinkLinker,
-    identityLinkToken: config.identityLinkToken,
+    ...(identityLinkLinker ? { identityLinkLinker, identityLinkToken: config.identityLinkToken } : {}),
   });
 
   await server.listen(config.httpPort);
@@ -112,7 +121,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     console.error(`Received ${signal}; shutting down integration-gateway...`);
     await server.close();
-    await identityLinkStore.close();
+    await identityLinkStore?.close();
     process.exit(0);
   };
 
