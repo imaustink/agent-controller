@@ -102,6 +102,15 @@ export interface ToolDescriptor {
    * merge. Absent for container/LocalTools.
    */
   agentRunTemplate?: AgentRunTemplate;
+  /**
+   * External identity providers the CALLING user must have linked (ADR
+   * 0022) before this agent-backed tool can be launched — carried over
+   * from `AgentDescriptor.identityProviders` when a Skill's `agentRefs`
+   * resolves an Agent into a ToolDescriptor (`loadSkillTools`). Absent for
+   * container/LocalTools and for agent-backed tools with no identity
+   * requirement.
+   */
+  identityProviders?: string[];
   /** Optional coarse risk/cost tier, for future quota/authorization use. */
   tier?: string;
 }

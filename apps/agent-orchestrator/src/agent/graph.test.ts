@@ -863,6 +863,65 @@ describe("buildAgentGraph agent-backed Tool (runTool via AgentRun)", () => {
 
     expect(final.error).toMatch(/agent delegation is not configured/);
   });
+
+  describe("identity-gated agent-backed tool (ADR 0022)", () => {
+    const identityGatedTool: ToolDescriptor = { ...agentBackedTool, identityProviders: ["github"] };
+
+    function identityGatedDeps(overrides: Partial<AgentGraphDeps> = {}) {
+      const vectorStore: VectorStore = {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([{ tool: identityGatedTool, score: 1 }]),
+      };
+      const identityLinkGateway: IdentityLinkPort = {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getToken: vi.fn().mockResolvedValue(undefined),
+      };
+      return agentBackedToolDeps({ vectorStore, identityLinkGateway, ...overrides });
+    }
+
+    it("injects the caller's already-linked token as secretEnv instead of erroring", async () => {
+      const identityLinkGateway: IdentityLinkPort = {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getToken: vi.fn().mockResolvedValue({ token: "gho_alice-token" }),
+      };
+      const deps = identityGatedDeps({ identityLinkGateway });
+      const graph = buildAgentGraph(deps);
+
+      const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+      expect(final.error).toBeUndefined();
+      expect(identityLinkGateway.getToken).toHaveBeenCalledWith("github", "alice");
+      expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+        identityGatedTool.agentRunTemplate,
+        expect.any(String),
+        expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_alice-token" }] }),
+      );
+    });
+
+    it("errors (without launching) instead of silently running credential-less when the caller has no linked token", async () => {
+      const deps = identityGatedDeps();
+      const graph = buildAgentGraph(deps);
+
+      const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+      expect(final.error).toMatch(/requires linking your github account/);
+      expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    });
+
+    it("errors when identity providers are declared but no identity-link gateway is configured", async () => {
+      const deps = identityGatedDeps({ identityLinkGateway: undefined });
+      const graph = buildAgentGraph(deps);
+
+      const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+      expect(final.error).toMatch(/no identity-link gateway is configured/);
+      expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("buildAgentGraph Skill.agentRefs (ADR 0021, no Tool wrapper)", () => {
@@ -954,6 +1013,27 @@ describe("buildAgentGraph Skill.agentRefs (ADR 0021, no Tool wrapper)", () => {
     const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
 
     expect(final.error).toMatch(/agent delegation is not configured/);
+  });
+
+  it("carries an agentRefs-resolved Agent's identityProviders through to the ToolDescriptor and gates the launch on it (regression: this used to launch with no credentials at all)", async () => {
+    const identityGatedAgent: AgentDescriptor = { ...opencodeAgent, identityProviders: ["github"] };
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: identityGatedAgent, score: 1 }]),
+    };
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = agentRefsDeps({ agentStore, identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+    expect(final.error).toMatch(/requires linking your github account/);
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
   });
 });
 
