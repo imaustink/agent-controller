@@ -741,6 +741,22 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       }
       const agent = state.selectedAgent;
 
+      // TEMPORARY diagnostic for the "launched with no GITHUB_TOKEN despite
+      // a linked identity" investigation -- remove once root-caused. Logs
+      // exactly what this call sees at the identity-gate decision point,
+      // never the token value itself.
+      console.log(
+        "[identity-gate-debug] delegateToAgent",
+        JSON.stringify({
+          agentId: agent.id,
+          identityProviders: agent.identityProviders,
+          hasIdentityLinkGateway: Boolean(deps.identityLinkGateway),
+          subject: state.identity.subject,
+          roles: state.identity.roles,
+          hasProgressListener: Boolean(state.progressListener),
+        }),
+      );
+
       // Per-caller identity gate (replaces the old shared static credential
       // for any Agent that declares `identityProviders`): the FIRST time this
       // caller delegates to such an agent, they must link their own GitHub
@@ -757,6 +773,10 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         }
         const provider = agent.identityProviders[0]!;
         let existing = await deps.identityLinkGateway.getToken(provider, state.identity.subject);
+        console.log(
+          "[identity-gate-debug] getToken",
+          JSON.stringify({ provider, subject: state.identity.subject, found: Boolean(existing) }),
+        );
         if (!existing) {
           // Ordinary Open WebUI chat turns never set `identityLinkFlow`, so
           // they default to the browser-redirect authcode flow; a headless
@@ -815,6 +835,10 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         }
         identitySecretEnv = [{ name: envVarName, value: existing.token }];
       }
+      console.log(
+        "[identity-gate-debug] pre-launch",
+        JSON.stringify({ agentId: agent.id, hasIdentitySecretEnv: Boolean(identitySecretEnv) }),
+      );
 
       const runId = randomUUID();
       const jobId = randomUUID();
