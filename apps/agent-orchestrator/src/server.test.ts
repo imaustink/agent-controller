@@ -226,6 +226,102 @@ describe("InvokeServer OpenAI-compatible chat completions (ADR 0007)", () => {
     await server.close();
   });
 
+  it("POST /v1/chat/completions forwards Open WebUI's per-user signed JWT header to the graph (non-streaming)", async () => {
+    // Regression test: authToken alone is Open WebUI's single static bearer
+    // token, shared by every one of its users -- the X-OpenWebUI-User-Jwt
+    // header must reach the graph as forwardedUserToken so resolveIdentity
+    // can resolve each human to their own subject instead.
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({
+        request: "scrape https://example.com",
+        authToken: "tok-1",
+        skillCandidates: [],
+        result: { title: "Pancakes" },
+      } as AgentState),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer tok-1",
+        "x-openwebui-user-jwt": "alices-signed-jwt",
+      },
+      body: JSON.stringify({
+        model: "agent-orchestrator",
+        messages: [{ role: "user", content: "scrape https://example.com" }],
+      }),
+    });
+
+    expect(graph.invoke).toHaveBeenCalledWith({
+      request: "scrape https://example.com",
+      authToken: "tok-1",
+      forwardedUserToken: "alices-signed-jwt",
+    });
+
+    await server.close();
+  });
+
+  it("POST /v1/chat/completions omits forwardedUserToken when Open WebUI sends no such header", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({
+        request: "scrape https://example.com",
+        authToken: "tok-1",
+        skillCandidates: [],
+        result: { title: "Pancakes" },
+      } as AgentState),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({
+        model: "agent-orchestrator",
+        messages: [{ role: "user", content: "scrape https://example.com" }],
+      }),
+    });
+
+    expect(graph.invoke).toHaveBeenCalledWith({ request: "scrape https://example.com", authToken: "tok-1" });
+
+    await server.close();
+  });
+
+  it("POST /v1/chat/completions (streaming) forwards Open WebUI's per-user signed JWT header to the graph", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn(),
+      stream: vi.fn().mockResolvedValue(toStream([{ composeResponse: { result: "done" } }])),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer tok-1",
+        "x-openwebui-user-jwt": "alices-signed-jwt",
+      },
+      body: JSON.stringify({
+        model: "agent-orchestrator",
+        stream: true,
+        messages: [{ role: "user", content: "scrape https://example.com" }],
+      }),
+    });
+
+    expect(graph.stream).toHaveBeenCalledWith(
+      expect.objectContaining({ authToken: "tok-1", forwardedUserToken: "alices-signed-jwt" }),
+      { streamMode: "updates" },
+    );
+
+    await server.close();
+  });
+
   it("POST /v1/chat/completions folds prior conversation turns (e.g. a previously extracted recipe) into the request instead of discarding them", async () => {
     const graph: AgentGraphLike = {
       invoke: vi.fn().mockResolvedValue({

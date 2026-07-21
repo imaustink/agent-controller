@@ -42,10 +42,27 @@ const HEARTBEAT_MS = 15_000;
  */
 const CHAT_ID_HEADER = "x-openwebui-chat-id";
 
+/**
+ * Per-request signed user JWT forwarded by Open WebUI on every upstream
+ * request when its deployment sets `ENABLE_FORWARD_USER_INFO_HEADERS=true`.
+ * Unlike the `Authorization` bearer token (a single static value shared by
+ * every Open WebUI user), this identifies the specific human sending the
+ * request -- see `OpenWebUiForwardedUserResolver`. Absent header -> identity
+ * resolution falls back to the shared static/OIDC path, same as before this
+ * header was read.
+ */
+const FORWARDED_USER_JWT_HEADER = "x-openwebui-user-jwt";
+
 /** Input passed to the agent graph for one turn (see AgentStateAnnotation in agent/graph.ts). */
 export interface AgentGraphInput {
   request: string;
   authToken: string;
+  /**
+   * Open WebUI's per-request signed user JWT (`X-OpenWebUI-User-Jwt`), if
+   * the caller sent one -- see `FORWARDED_USER_JWT_HEADER` and
+   * `OpenWebUiForwardedUserResolver`.
+   */
+  forwardedUserToken?: string;
   /** Active skill id from the caller's session, if any (docs/adr/0012). */
   activeSkillId?: string;
   /** Id of the Agent CR the conversation is continuing, if any. */
@@ -145,10 +162,12 @@ export class InvokeServer {
     sessionId: string | undefined,
     progressListener?: (stage: string, message: string | undefined) => void,
     identityLinkFlow?: "device" | "authcode",
+    forwardedUserToken?: string,
   ): Promise<AgentGraphInput> {
     const input: AgentGraphInput = { request, authToken };
     if (progressListener) input.progressListener = progressListener;
     if (identityLinkFlow) input.identityLinkFlow = identityLinkFlow;
+    if (forwardedUserToken) input.forwardedUserToken = forwardedUserToken;
     if (!sessionId || !this.sessionStore) return input;
     const record = await this.sessionStore.get(sessionId);
     if (!record) return input;
@@ -400,6 +419,7 @@ export class InvokeServer {
     const model = typeof parsed.model === "string" && parsed.model ? parsed.model : MODEL_ID;
     const authToken = bearerToken(req.headers.authorization);
     const sessionId = headerValue(req.headers[CHAT_ID_HEADER]);
+    const forwardedUserToken = headerValue(req.headers[FORWARDED_USER_JWT_HEADER]);
     const stream = parsed.stream === true;
 
     // Open WebUI's own housekeeping completions (title/tags/query/follow-up
@@ -412,10 +432,10 @@ export class InvokeServer {
     }
 
     if (!stream) {
-      await this.handleChatCompletionsBlocking(res, request, model, authToken, sessionId);
+      await this.handleChatCompletionsBlocking(res, request, model, authToken, sessionId, forwardedUserToken);
       return;
     }
-    await this.handleChatCompletionsStreaming(res, request, model, authToken, sessionId);
+    await this.handleChatCompletionsStreaming(res, request, model, authToken, sessionId, forwardedUserToken);
   }
 
   /**
@@ -462,8 +482,9 @@ export class InvokeServer {
     model: string,
     authToken: string,
     sessionId: string | undefined,
+    forwardedUserToken?: string,
   ): Promise<void> {
-    const graphInput = await this.buildGraphInput(request, authToken, sessionId);
+    const graphInput = await this.buildGraphInput(request, authToken, sessionId, undefined, undefined, forwardedUserToken);
     const state = await this.graph.invoke(graphInput);
     if (state.error) {
       const { status, code } = errorStatusAndCode(state.error);
@@ -493,6 +514,7 @@ export class InvokeServer {
     model: string,
     authToken: string,
     sessionId: string | undefined,
+    forwardedUserToken?: string,
   ): Promise<void> {
     const id = chatCompletionId();
     res.writeHead(200, {
@@ -542,7 +564,7 @@ export class InvokeServer {
           : stage || "working…";
         openStatusLabel = label;
         writeSseStatus(res, label, false);
-      });
+      }, undefined, forwardedUserToken);
       const source = await this.graph.stream(graphInput, { streamMode: "updates" });
       // Accumulated across updates so the session can be persisted once the
       // turn reaches a successful terminal node (docs/adr/0012).

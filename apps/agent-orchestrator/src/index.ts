@@ -10,6 +10,7 @@ import { CrdLocalToolRegistry } from "./registry/crd-local-tool-registry.js";
 import { loadStaticIdentitiesFromEnv, StaticIdentityResolver } from "./rbac/static-identity-resolver.js";
 import { OidcIdentityResolver } from "./rbac/oidc-identity-resolver.js";
 import { CompositeIdentityResolver } from "./rbac/composite-identity-resolver.js";
+import { OpenWebUiForwardedUserResolver } from "./rbac/openwebui-forwarded-user-resolver.js";
 import type { IdentityResolver } from "./rbac/types.js";
 import { createRemoteJWKSet } from "jose";
 import { CrdSkillRegistry } from "./skills/crd-skill-registry.js";
@@ -90,6 +91,23 @@ async function main(): Promise<void> {
       "AGENT_OIDC_ISSUER and AGENT_OIDC_JWKS_URI are required when AGENT_IDENTITY_RESOLVER=oidc",
     );
     process.exit(EXIT_STARTUP_FAILURE);
+  }
+
+  if (config.staticIdentities && !config.openWebUiUserJwtSecret) {
+    // Not a startup failure -- some deployments legitimately use
+    // AGENT_STATIC_IDENTITIES for non-Open-WebUI test/dev callers that don't
+    // send a per-user JWT at all. But when the static fallback IS serving
+    // Open WebUI, every one of its users resolves to the same shared
+    // subject, so any credential linked by one is usable by all of them with
+    // no auth check (see OpenWebUiForwardedUserResolver). Loud warning
+    // rather than silent, since this is easy to leave misconfigured.
+    console.error(
+      "WARNING: AGENT_STATIC_IDENTITIES is set but AGENT_OPENWEBUI_USER_JWT_SECRET is not -- " +
+        "if the static identity map is serving Open WebUI, every Open WebUI user resolves to " +
+        "the same shared subject and can use each other's linked credentials (e.g. GitHub " +
+        "identity-link, ADR 0022) with no authentication. Set AGENT_OPENWEBUI_USER_JWT_SECRET " +
+        "to Open WebUI's FORWARD_USER_INFO_HEADER_JWT_SECRET to resolve per-user identity instead.",
+    );
   }
 
   const kubeConfig = new k8s.KubeConfig();
@@ -343,6 +361,18 @@ async function main(): Promise<void> {
     identityResolver = new StaticIdentityResolver(loadStaticIdentitiesFromEnv(config.staticIdentities));
   }
 
+  // Resolves identity from Open WebUI's per-request signed user JWT rather
+  // than its shared static bearer token (see graph.ts's resolveIdentity and
+  // OpenWebUiForwardedUserResolver) -- without this, every Open WebUI user
+  // resolves to the same shared subject via the static-identities fallback
+  // above, so linking an OAuth identity (e.g. GitHub, ADR 0022) as one user
+  // makes it usable by every other Open WebUI user with no auth check.
+  // Absent config -> resolveIdentity falls back to the shared-subject path,
+  // same as before this resolver existed.
+  const forwardedUserIdentityResolver = config.openWebUiUserJwtSecret
+    ? new OpenWebUiForwardedUserResolver({ secret: config.openWebUiUserJwtSecret })
+    : undefined;
+
   // Result channel: NATS when AGENT_NATS_URL is set, HTTP callback otherwise.
   let jobResultReceiver: JobResultReceiver;
   let callbackReceiver: CallbackReceiver | undefined;
@@ -395,6 +425,7 @@ async function main(): Promise<void> {
 
   const graph = buildAgentGraph({
     identityResolver,
+    forwardedUserIdentityResolver,
     skillStore,
     skillSelector,
     skillFitChecker,

@@ -272,12 +272,33 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
+  /**
+   * Open WebUI's per-request signed `X-OpenWebUI-User-Jwt` header, if the
+   * caller sent one. When present (and `deps.forwardedUserIdentityResolver`
+   * is configured), `resolveIdentity` resolves the caller's identity from
+   * this instead of `authToken` -- Open WebUI's `authToken` is a single
+   * static value shared by every one of its users, so resolving identity
+   * from it alone would collapse every human into one shared subject.
+   */
+  forwardedUserToken: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
 });
 
 export type AgentState = typeof AgentStateAnnotation.State;
 
 export interface AgentGraphDeps {
   identityResolver: IdentityResolver;
+  /**
+   * Resolves identity from Open WebUI's per-request signed
+   * `X-OpenWebUI-User-Jwt` header (`OpenWebUiForwardedUserResolver`) rather
+   * than its shared static `authToken`. Optional: absent -> `resolveIdentity`
+   * always falls back to `identityResolver.resolve(state.authToken)`, the
+   * pre-existing shared-subject behavior for deployments that haven't
+   * configured `AGENT_OPENWEBUI_USER_JWT_SECRET`.
+   */
+  forwardedUserIdentityResolver?: IdentityResolver;
   skillStore: SkillStore;
   skillSelector: SkillSelector;
   skillFitChecker: SkillFitChecker;
@@ -551,7 +572,15 @@ async function noMatchFallback(state: AgentState, deps: AgentGraphDeps): Promise
 export function buildAgentGraph(deps: AgentGraphDeps) {
   const graph = new StateGraph(AgentStateAnnotation)
     .addNode("resolveIdentity", async (state) => {
-      const identity = await deps.identityResolver.resolve(state.authToken);
+      // Prefer Open WebUI's per-request signed user JWT over the shared
+      // static authToken when available -- authToken is one value shared by
+      // every Open WebUI user, so resolving identity from it alone would
+      // collapse every human into one shared subject (see
+      // OpenWebUiForwardedUserResolver).
+      const identity =
+        state.forwardedUserToken && deps.forwardedUserIdentityResolver
+          ? await deps.forwardedUserIdentityResolver.resolve(state.forwardedUserToken)
+          : await deps.identityResolver.resolve(state.authToken);
       if (!identity) {
         return { error: "unauthorized: could not resolve caller identity" };
       }

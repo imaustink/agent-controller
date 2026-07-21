@@ -78,6 +78,18 @@ config:
   # of real OIDC still go through full verification.
   staticIdentitiesExistingSecret: ""
   staticIdentitiesExistingSecretKey: AGENT_STATIC_IDENTITIES
+  # Existing Secret holding the HS256 secret Open WebUI signs its per-request
+  # X-OpenWebUI-User-Jwt header with (Open WebUI's own
+  # FORWARD_USER_INFO_HEADER_JWT_SECRET, ENABLE_FORWARD_USER_INFO_HEADERS).
+  # Required whenever staticIdentitiesExistingSecret/staticIdentities above is
+  # serving Open WebUI: without it, every Open WebUI user resolves to the
+  # SAME shared subject from the static map (Open WebUI's Authorization
+  # bearer token is one static value for all of its users), so any OAuth
+  # identity one user links (e.g. GitHub, ADR 0022) becomes usable by every
+  # other Open WebUI user with no authentication. See
+  # src/rbac/openwebui-forwarded-user-resolver.ts.
+  openWebUiUserJwtSecretExistingSecret: ""
+  openWebUiUserJwtSecretExistingSecretKey: AGENT_OPENWEBUI_USER_JWT_SECRET
   # Required when identityResolver=oidc: expected JWT `iss` claim.
   oidcIssuer: ""
   # Required when identityResolver=oidc: JWKS endpoint used to verify JWT

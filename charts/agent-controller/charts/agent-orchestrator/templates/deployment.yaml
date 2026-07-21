@@ -115,6 +115,13 @@ spec:
             - name: AGENT_STATIC_IDENTITIES
               value: {{ .Values.config.staticIdentities | quote }}
             {{- end }}
+            {{- if .Values.config.openWebUiUserJwtSecretExistingSecret }}
+            - name: AGENT_OPENWEBUI_USER_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.openWebUiUserJwtSecretExistingSecret }}
+                  key: {{ .Values.config.openWebUiUserJwtSecretExistingSecretKey }}
+            {{- end }}
             {{- if or .Values.config.natsUrl (index .Values "nats" "enabled") }}
             - name: AGENT_NATS_URL
               value: {{ include "agent-orchestrator.natsUrl" . | quote }}
