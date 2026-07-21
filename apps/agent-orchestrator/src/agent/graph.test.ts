@@ -420,6 +420,189 @@ describe("buildAgentGraph", () => {
   });
 });
 
+describe("buildAgentGraph multi-step tool use (docs/adr/0008 update: fixes the single-tool-call limit)", () => {
+  const searchTool: ToolDescriptor = {
+    id: "web-search",
+    name: "web-search",
+    description: "Searches the web",
+    allowedRoles: ["reader"],
+    jobTemplate: { image: "example.com/web-search:latest", namespace: "default", serviceAccountName: "sa" },
+  };
+  const fetchTool: ToolDescriptor = {
+    id: "web-fetch",
+    name: "web-fetch",
+    description: "Fetches a URL",
+    allowedRoles: ["reader"],
+    jobTemplate: { image: "example.com/web-fetch:latest", namespace: "default", serviceAccountName: "sa" },
+  };
+  const searchSkill: SkillDescriptor = {
+    id: "web-search-skill",
+    name: "Web Search",
+    description: "Search the web, fetch a promising result, and answer",
+    markdown: "# instructions",
+    toolIds: ["web-search", "web-fetch"],
+    agentIds: [],
+  };
+
+  function searchDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    return baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: searchSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([searchSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(searchSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn(),
+        getByIds: vi.fn().mockResolvedValue([
+          { tool: searchTool, score: 1 },
+          { tool: fetchTool, score: 1 },
+        ]),
+      },
+      ...overrides,
+    });
+  }
+
+  it("chains a second tool call (web-fetch) using the first tool's (web-search) result, then responds with its own synthesized answer", async () => {
+    const plan = vi
+      .fn()
+      .mockResolvedValueOnce({
+        action: "call_tool",
+        toolId: "web-search",
+        toolArgs: "countries that made the World Cup finals",
+      } satisfies PlannedAction)
+      .mockResolvedValueOnce({
+        action: "call_tool",
+        toolId: "web-fetch",
+        toolArgs: "https://en.wikipedia.org/wiki/List_of_FIFA_World_Cup_finals",
+      } satisfies PlannedAction)
+      .mockResolvedValueOnce({
+        action: "respond",
+        response: "Uruguay, Argentina, Brazil, and others have made World Cup finals -- see the full list for every year.",
+      } satisfies PlannedAction);
+    const actionPlanner: ActionPlanner = { plan };
+
+    const awaitJob = vi
+      .fn()
+      .mockResolvedValueOnce({
+        type: "succeeded",
+        job_id: "job-1",
+        seq: 1,
+        ts: new Date().toISOString(),
+        result: "- [List of FIFA World Cup finals](https://en.wikipedia.org/wiki/List_of_FIFA_World_Cup_finals): ...",
+      } satisfies Event)
+      .mockResolvedValueOnce({
+        type: "succeeded",
+        job_id: "job-2",
+        seq: 1,
+        ts: new Date().toISOString(),
+        result: "Full page content: Uruguay 1930, Argentina 1930, ... every World Cup final by year.",
+      } satisfies Event);
+    const jobResultReceiver = { awaitJob, onJobProgress: vi.fn().mockReturnValue(() => {}) } as unknown as JobResultReceiver;
+
+    const deps = searchDeps({ actionPlanner, jobResultReceiver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "What countries made the World Cup finals?", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(plan).toHaveBeenCalledTimes(3);
+    // The second decision is planned with the FIRST tool's result as context.
+    expect(plan.mock.calls[1]?.[3]).toEqual([
+      {
+        toolId: "web-search",
+        toolArgs: "countries that made the World Cup finals",
+        result: "- [List of FIFA World Cup finals](https://en.wikipedia.org/wiki/List_of_FIFA_World_Cup_finals): ...",
+      },
+    ]);
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledTimes(2);
+    // The final answer is the planner's OWN synthesized text -- not either raw tool result pasted back verbatim
+    // (this is the exact bug being fixed: previously the graph could never make this second tool call at all).
+    expect(final.result).toBe(
+      "Uruguay, Argentina, Brazil, and others have made World Cup finals -- see the full list for every year.",
+    );
+  });
+
+  it("finishes with the last tool's verbatim result (no rewrite) when the planner says finish after chaining", async () => {
+    const plan = vi
+      .fn()
+      .mockResolvedValueOnce({ action: "call_tool", toolId: "web-search", toolArgs: "pancake recipe site" } satisfies PlannedAction)
+      .mockResolvedValueOnce({
+        action: "call_tool",
+        toolId: "web-fetch",
+        toolArgs: "https://example.com/recipe",
+      } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "finish" } satisfies PlannedAction);
+    const actionPlanner: ActionPlanner = { plan };
+
+    const awaitJob = vi
+      .fn()
+      .mockResolvedValueOnce({
+        type: "succeeded",
+        job_id: "job-1",
+        seq: 1,
+        ts: new Date().toISOString(),
+        result: "search results markdown",
+      } satisfies Event)
+      .mockResolvedValueOnce({
+        type: "succeeded",
+        job_id: "job-2",
+        seq: 1,
+        ts: new Date().toISOString(),
+        result: "# Pancakes\n\n## Ingredients\n\n1. 2 eggs",
+      } satisfies Event);
+    const jobResultReceiver = { awaitJob, onJobProgress: vi.fn().mockReturnValue(() => {}) } as unknown as JobResultReceiver;
+
+    const deps = searchDeps({ actionPlanner, jobResultReceiver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fetch the recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedTool?.id).toBe("web-fetch");
+    expect(final.result).toBe("# Pancakes\n\n## Ingredients\n\n1. 2 eggs");
+    expect(deps.responseComposer.compose).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ id: "web-search-skill" }),
+      fetchTool,
+      "# Pancakes\n\n## Ingredients\n\n1. 2 eggs",
+    );
+  });
+
+  it("bounds the loop at a fixed max step count, finishing with the last tool result instead of looping forever", async () => {
+    let n = 0;
+    const plan = vi.fn().mockImplementation(async () => {
+      n += 1;
+      return { action: "call_tool", toolId: "web-fetch", toolArgs: `https://example.com/page-${n}` } satisfies PlannedAction;
+    });
+    const actionPlanner: ActionPlanner = { plan };
+
+    const awaitJob = vi.fn().mockImplementation(async () => ({
+      type: "succeeded",
+      job_id: `job-${n}`,
+      seq: 1,
+      ts: new Date().toISOString(),
+      result: `page ${n} content`,
+    } satisfies Event));
+    const jobResultReceiver = { awaitJob, onJobProgress: vi.fn().mockReturnValue(() => {}) } as unknown as JobResultReceiver;
+
+    const deps = searchDeps({ actionPlanner, jobResultReceiver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "keep fetching pages forever", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    // The planner never settles (always a fresh call_tool with new args, so
+    // the identical-repeat guard never kicks in) -- the loop still stops.
+    expect(plan.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledTimes(plan.mock.calls.length);
+    expect(final.result).toBe(`page ${plan.mock.calls.length} content`);
+  });
+});
+
 describe("buildAgentGraph session-scoped active skill (ADR 0012)", () => {
   it("keeps the active skill and skips retrieval + selection when the fit-check passes", async () => {
     const deps = baseDeps();

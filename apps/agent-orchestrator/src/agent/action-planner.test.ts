@@ -122,4 +122,64 @@ describe("OpenAiActionPlanner", () => {
     const systemMessage = call.messages.find((m) => m.role === "system");
     expect(systemMessage?.content).toContain(skill.markdown);
   });
+
+  it("injects prior tool calls as <prior_tool_calls> context, enabling a second tool call (docs/adr/0008 update)", async () => {
+    const client = fakeClient({
+      action: "call_tool",
+      response: null,
+      tool_id: "recipe-scraper",
+      tool_args: "https://example.com/other-recipe",
+    });
+    const planner = new OpenAiActionPlanner({ client });
+
+    const result = await planner.plan("do a thing", skill, tools, [
+      { toolId: "recipe-scraper", toolArgs: "https://example.com/recipe", result: "some prior result" },
+    ]);
+
+    expect(result).toEqual({
+      action: "call_tool",
+      toolId: "recipe-scraper",
+      toolArgs: "https://example.com/other-recipe",
+    });
+    const call = (client.chat.completions.create as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]?.[0] as {
+      messages: { role: string; content: string }[];
+    };
+    const userMessage = call.messages.find((m) => m.role === "user");
+    expect(userMessage?.content).toContain("<prior_tool_calls>");
+    expect(userMessage?.content).toContain("https://example.com/recipe");
+    expect(userMessage?.content).toContain("some prior result");
+  });
+
+  it("omits <prior_tool_calls> when no history is given", async () => {
+    const client = fakeClient({ action: "respond", response: "ok", tool_id: null, tool_args: null });
+    const planner = new OpenAiActionPlanner({ client });
+
+    await planner.plan("do a thing", skill, tools);
+
+    const call = (client.chat.completions.create as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]?.[0] as {
+      messages: { role: string; content: string }[];
+    };
+    const userMessage = call.messages.find((m) => m.role === "user");
+    expect(userMessage?.content).not.toContain("<prior_tool_calls>");
+  });
+
+  it("returns a finish action when history is non-empty and the model chooses to stop", async () => {
+    const client = fakeClient({ action: "finish", response: null, tool_id: null, tool_args: null });
+    const planner = new OpenAiActionPlanner({ client });
+
+    const result = await planner.plan("do a thing", skill, tools, [
+      { toolId: "recipe-scraper", toolArgs: "https://example.com/recipe", result: "some prior result" },
+    ]);
+
+    expect(result).toEqual({ action: "finish" });
+  });
+
+  it("falls back to respond when the model says finish with no prior tool calls (finish is meaningless on the first decision)", async () => {
+    const client = fakeClient({ action: "finish", response: "fallback text", tool_id: null, tool_args: null });
+    const planner = new OpenAiActionPlanner({ client });
+
+    const result = await planner.plan("do a thing", skill, tools);
+
+    expect(result).toEqual({ action: "respond", response: "fallback text" });
+  });
 });
