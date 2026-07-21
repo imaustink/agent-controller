@@ -33,12 +33,36 @@ agent-orchestrator:
     - name: docker-registry-credentials
 
   # Bring-your-own secret: OPENAI_API_KEY, AGENT_CALLBACK_SECRET (required),
-  # AGENT_QDRANT_API_KEY (optional). Create with:
+  # AGENT_QDRANT_API_KEY (optional), IDENTITY_LINK_GATEWAY_TOKEN (required
+  # once identityLink.enabled below is true -- see that block's comment).
+  # Create/update with:
   #   kubectl create secret generic agent-orchestrator-secrets -n controller-agent \
   #     --from-literal=OPENAI_API_KEY=sk-... \
-  #     --from-literal=AGENT_CALLBACK_SECRET=<random-string>
+  #     --from-literal=AGENT_CALLBACK_SECRET=<random-string> \
+  #     --from-literal=IDENTITY_LINK_GATEWAY_TOKEN=<same value as
+  #       integration-gateway-secrets' GATEWAY_IDENTITY_LINK_TOKEN below>
+  #   # (or `kubectl edit secret agent-orchestrator-secrets -n controller-agent`
+  #   # / patch it if the Secret already exists)
   secrets:
     existingSecret: agent-orchestrator-secrets
+
+  # Per-user GitHub identity linking (docs/adr/0022): lets agent-orchestrator
+  # resolve/inject a caller's own linked GitHub token instead of a shared
+  # bot/PAT credential, for any Agent that declares identityProviders.
+  # Requires PR #47 (integration-gateway's opt-in startup-check fix) merged
+  # FIRST, and integration-gateway.identityLink below configured with the
+  # same GitHub App. Enabling this here is inert by itself -- opencode-swe-agent
+  # (charts/community-components) still doesn't declare identityProviders
+  # yet, so nothing actually uses this path until that's flipped on
+  # separately, once the linking flow is verified end-to-end.
+  identityLink:
+    enabled: true
+    # Matches this umbrella chart's default subchart naming (no
+    # fullnameOverride set on the integration-gateway block below, and the
+    # release name is "agent-controller"), which Helm's standard
+    # <release>-<chart> fullname template resolves to
+    # "agent-controller-integration-gateway".
+    gatewayUrl: "http://agent-controller-integration-gateway:8090"
 
   config:
     # oidc against Pocket ID (kubernetes/manifests/services/pocket-id in
@@ -175,13 +199,53 @@ integration-gateway:
   # imaustink/homelab) -- these expire in 1 hour, so this is a placeholder
   # until apps/integration-gateway fetches/refreshes its own token instead of
   # reading a static env var (tracked follow-up, not done yet).
-  # Create with:
+  #
+  # Per-user GitHub identity linking (docs/adr/0022, identityLink.enabled
+  # below) needs FOUR more keys in this same Secret: GATEWAY_IDENTITY_LINK_TOKEN
+  # (any random string -- must match agent-orchestrator-secrets'
+  # IDENTITY_LINK_GATEWAY_TOKEN above exactly), IDENTITY_LINK_ENCRYPTION_KEY
+  # (32-byte AES-256-GCM key, base64), IDENTITY_LINK_STATE_SECRET (distinct
+  # random key -- do NOT reuse the encryption key, so rotating one never
+  # forces rotating the other), and GITHUB_APP_CLIENT_SECRET (generated on
+  # the GitHub App's own settings page -- device flow never needed one, the
+  # authorization-code flow does).
+  #
+  # DO NOT MERGE identityLink.enabled=true below before creating/updating
+  # this Secret with all four -- deploy.yml auto-applies on every push to
+  # main, and integration-gateway will otherwise fail to start
+  # (CreateContainerConfigError, missing Secret keys).
+  #
+  # Create/update with:
   #   kubectl create secret generic integration-gateway-secrets -n controller-agent \
   #     --from-literal=GITHUB_WEBHOOK_SECRET="$(openssl rand -hex 32)" \
   #     --from-literal=GATEWAY_ORCHESTRATOR_TOKEN=<Pocket ID client_credentials access token> \
-  #     --from-literal=GITHUB_TOKEN=github_pat_...
+  #     --from-literal=GITHUB_TOKEN=github_pat_... \
+  #     --from-literal=GATEWAY_IDENTITY_LINK_TOKEN="$(openssl rand -hex 32)" \
+  #     --from-literal=IDENTITY_LINK_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+  #     --from-literal=IDENTITY_LINK_STATE_SECRET="$(openssl rand -base64 32)" \
+  #     --from-literal=GITHUB_APP_CLIENT_SECRET=<from the GitHub App's settings page>
+  #   # (or `kubectl edit secret integration-gateway-secrets -n controller-agent`
+  #   # if it already exists -- just add the four new keys)
   secrets:
     existingSecret: integration-gateway-secrets
+
+  # Per-user GitHub identity linking (docs/adr/0022) -- see the secrets
+  # comment above for the required Secret keys, and the setup checklist in
+  # this PR's description for the GitHub App-side steps (Device Flow
+  # enabled, client secret generated, callback URL registered).
+  identityLink:
+    enabled: true
+    # GitHub App OAuth client_id -- PUBLIC, not a secret (see this field's
+    # doc comment in charts/agent-controller/charts/integration-gateway/values.yaml).
+    # REPLACE with the real value from the GitHub App's settings page --
+    # left as a placeholder here since it isn't known at PR-authoring time.
+    githubAppClientId: "REPLACE_ME_GITHUB_APP_CLIENT_ID"
+    # Must exactly match the GitHub App's registered "Callback URL"
+    # (scheme/host/path/trailing-slash all significant) -- see
+    # charts/agent-controller/charts/integration-gateway/values.yaml's
+    # githubOauthRedirectUri comment for the same discipline
+    # GOOGLE_REDIRECT_URI already follows elsewhere in this file.
+    githubOauthRedirectUri: "https://gateway.kurpuis.com/identity-link/github/callback"
 
   # GitHub must reach this Service directly (unlike the orchestrator's
   # in-cluster-only callback port).

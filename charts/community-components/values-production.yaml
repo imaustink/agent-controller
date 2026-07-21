@@ -75,9 +75,13 @@ opencodeSweAgent:
   githubAppPrivateKeySecretKey: ""
   githubAppInstallationIdSecretKey: ""
   # Per-user GitHub identity linking (docs/adr/0022) -- left disabled for
-  # now, keeping this a PAT-only deployment. Requires agent-orchestrator's
-  # identityLink.enabled=true and a configured integration-gateway (see
-  # charts/agent-controller) before flipping this on.
+  # now, keeping this a PAT-only deployment. agent-orchestrator/
+  # integration-gateway's identityLink.enabled are now on (see
+  # charts/agent-controller/values-production.yaml), so this is the last
+  # flag: flip it only AFTER manually verifying the linking flow works
+  # end-to-end (visit the authorize link, confirm a token gets stored) --
+  # flipping it prematurely breaks every opencode-swe-agent request for
+  # every caller until it does.
   identityLink:
     enabled: false
     providers:
