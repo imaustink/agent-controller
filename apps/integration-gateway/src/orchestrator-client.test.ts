@@ -35,6 +35,47 @@ describe("OrchestratorClient.invoke", () => {
     expect(fetchImpl.mock.calls[1]?.[0]).toBe("http://orchestrator:8081/invoke/run-1");
   });
 
+  it("omits identity_link_flow entirely when not passed", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "run-4" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "succeeded", result: "done" }) });
+
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+
+    await client.invoke("do the thing", "session-1");
+    const body = JSON.parse(fetchImpl.mock.calls[0]?.[1]?.body as string);
+    expect(body).toEqual({ request: "do the thing", session_id: "session-1" });
+    expect(Object.keys(body)).not.toContain("identity_link_flow");
+  });
+
+  it("includes identity_link_flow when passed", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "run-5" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "succeeded", result: "done" }) });
+
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+
+    await client.invoke("do the thing", "session-1", "device");
+    const body = JSON.parse(fetchImpl.mock.calls[0]?.[1]?.body as string);
+    expect(body).toEqual({ request: "do the thing", session_id: "session-1", identity_link_flow: "device" });
+  });
+
   it("surfaces a failed turn", async () => {
     const fetchImpl = vi
       .fn()

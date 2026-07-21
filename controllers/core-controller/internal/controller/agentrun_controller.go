@@ -113,7 +113,7 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 		// to avoid shell escaping issues with arbitrary natural-language goals.
 		args:           nil,
 		staticEnv:      append(agent.Spec.Env, r.agentRuntimeEnv(run.Name, run.Spec.Goal)...),
-		secretEnv:      agent.Spec.SecretEnv,
+		secretEnv:      mergeSecretEnv(agent.Spec.SecretEnv, run.Spec.SecretEnv),
 		resources:      agent.Spec.Resources,
 		callback:       run.Spec.Callback,
 		timeoutSeconds: run.Spec.TimeoutSeconds,

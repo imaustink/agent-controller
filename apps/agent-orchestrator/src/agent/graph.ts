@@ -11,6 +11,7 @@ import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
 import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { SecretKeySelector } from "../k8s/toolrun-launcher.js";
 import type { LocalToolExecutor } from "../local/local-tool-executor.js";
+import type { IdentityLinkPort } from "../identity-link/gateway-client.js";
 import type { IdentityResolver, Identity } from "../rbac/types.js";
 import type { SkillDescriptor, SkillSearchResult, SkillStore } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
@@ -229,6 +230,48 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => true,
   }),
+  /**
+   * The identity-link analogue of `activeAgentId`/`activeAgentRunId` — a
+   * delegation attempt that's paused on a one-time OAuth Device Flow
+   * authorization has no live AgentRun/NATS channel yet, unlike an in-flight
+   * agent question (`checkActiveAgentRun`), so it needs its own
+   * session-carried pending state. Set by `delegateToAgent` when it starts a
+   * fresh device-flow attempt; consumed (and cleared) by
+   * `checkPendingIdentityLink` on the NEXT turn once the caller has had a
+   * chance to authorize (or the attempt times out/is denied).
+   */
+  pendingIdentityLink: Annotation<
+    | { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number }
+    | undefined
+  >({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * True when THIS turn ended still waiting on the caller to complete a
+   * pending device-flow authorization (`checkPendingIdentityLink` polled
+   * "pending" and the attempt hasn't expired yet) — the turn's `result` is a
+   * plain "still waiting" message, not a real delegation outcome, so the
+   * server persists `pendingIdentityLink` rather than clearing it the way it
+   * would for an ordinary terminal turn.
+   */
+  identityLinkPending: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
+  }),
+  /**
+   * Per-turn override of which OAuth flow `delegateToAgent` starts when this
+   * caller hasn't linked their identity yet. Absent means the default
+   * ("authcode") applies at the point of use -- ordinary Open WebUI chat
+   * turns never set this, so they always get the browser-redirect flow. An
+   * explicit direct `/invoke` caller (e.g. integration-gateway's own headless
+   * GitHub-issue relay, which has no browser to redirect) can force
+   * `"device"` instead.
+   */
+  identityLinkFlow: Annotation<"device" | "authcode" | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
 });
 
 export type AgentState = typeof AgentStateAnnotation.State;
@@ -325,7 +368,23 @@ export interface AgentGraphDeps {
    * search, no self-improvement suggestion) via the `bareAnswer` node.
    */
   capabilityNeedChecker: CapabilityNeedChecker;
+  /**
+   * Client for apps/integration-gateway's identity-link API (OAuth Device
+   * Flow) — lets `delegateToAgent`/`checkPendingIdentityLink` resolve a
+   * per-caller GitHub token instead of a shared static credential. Optional:
+   * absent means no Agent in the catalog is expected to declare
+   * `identityProviders`; if one does anyway, `delegateToAgent` fails with a
+   * clear `state.error` rather than silently skipping the identity check.
+   */
+  identityLinkGateway?: IdentityLinkPort;
 }
+
+/**
+ * Maps an identity-linked provider (Agent.identityProviders, e.g. "github")
+ * to the env var name its linked token is injected as (AgentLaunchOptions'
+ * secretEnv, agentrun-launcher.ts). Phase A supports exactly one provider.
+ */
+const PROVIDER_ENV_VAR: Record<string, string> = { github: "GITHUB_TOKEN" };
 
 function afterOrEnd(next: string) {
   return (state: AgentState): string => (state.error ? END : next);
@@ -515,6 +574,57 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (!fits) return {};
       return { selectedSkill: skill };
     })
+    .addNode("checkPendingIdentityLink", async (state) => {
+      // Identity-link continuation, run right after resolveIdentity and
+      // before any skill/agent-run continuity check (mirrors
+      // checkActiveSkill/checkActiveAgentRun's own discipline): if the LAST
+      // turn paused on a one-time device-flow authorization, see whether the
+      // caller has completed it yet. Every miss (no session, subject
+      // mismatch, gateway/agentStore not configured) falls through to
+      // ordinary retrieval/selection -- a miss is never an error.
+      if (!state.identity || !state.pendingIdentityLink) return {};
+      if (state.sessionSubject !== state.identity.subject) return {};
+      if (!deps.identityLinkGateway || !deps.agentStore) return {};
+      const pending = state.pendingIdentityLink;
+
+      // Resolve "is this pending link now complete, still pending, or
+      // expired/denied" per flow -- device polls GitHub's device-code
+      // endpoint; authcode has nothing analogous to poll against (the
+      // browser redirect completes out-of-band via integration-gateway's own
+      // callback route), so it just checks whether a token has landed yet.
+      const status =
+        pending.flow === "device"
+          ? await deps.identityLinkGateway.poll(pending.provider, state.identity.subject, pending.deviceCode!)
+          : (await deps.identityLinkGateway.getToken(pending.provider, state.identity.subject))
+            ? "complete"
+            : Date.now() < pending.expiresAt
+              ? "pending"
+              : "expired";
+
+      if (status === "pending" && Date.now() < pending.expiresAt) {
+        return {
+          identityLinkPending: true,
+          result:
+            pending.flow === "device"
+              ? "Still waiting for you to authorize GitHub access. Visit the link and enter the code you were given, then send any message to continue."
+              : "Still waiting for you to authorize GitHub access. Visit the link and complete it in your browser, then send any message to continue.",
+        };
+      }
+      if (status === "pending" || status === "expired" || status === "denied") {
+        // Link attempt is over (timed out or explicitly failed) -- clear it
+        // and let this turn fall through to ordinary retrieval/selection,
+        // which will re-detect the missing link and start a FRESH
+        // device-flow attempt in delegateToAgent if the same/another
+        // identity-requiring agent is chosen again.
+        return { pendingIdentityLink: undefined };
+      }
+      // status === "complete": re-fetch the agent (RBAC re-check, same
+      // discipline as checkActiveAgentRun) and resume straight into
+      // delegation with it.
+      const [found] = await deps.agentStore.getByIds([pending.agentId], { callerRoles: state.identity.roles });
+      if (!found) return { pendingIdentityLink: undefined }; // agent gone/revoked -- fall through to fresh selection
+      return { selectedAgent: found.agent, pendingIdentityLink: undefined };
+    })
     .addNode("checkActiveAgentRun", async (state) => {
       // Agent-continuation counterpart to checkActiveSkill: if the
       // conversation is already mid-delegation to an agent (it asked a
@@ -630,6 +740,62 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         return { error: "no agent selected" };
       }
       const agent = state.selectedAgent;
+
+      // Per-caller identity gate (replaces the old shared static credential
+      // for any Agent that declares `identityProviders`): the FIRST time this
+      // caller delegates to such an agent, they must link their own GitHub
+      // account (one-time OAuth Device Flow) before a launch is even
+      // attempted. Phase A supports exactly one provider end-to-end
+      // ("github" -> GITHUB_TOKEN); the loop below is written to extend to
+      // multiple providers later without reshaping state.
+      let identitySecretEnv: { name: string; value: string }[] | undefined;
+      if (agent.identityProviders && agent.identityProviders.length > 0) {
+        if (!deps.identityLinkGateway) {
+          return {
+            error: `agent ${agent.id} requires identity providers (${agent.identityProviders.join(", ")}) but no identity-link gateway is configured`,
+          };
+        }
+        const provider = agent.identityProviders[0]!;
+        const existing = await deps.identityLinkGateway.getToken(provider, state.identity.subject);
+        if (!existing) {
+          // Ordinary Open WebUI chat turns never set `identityLinkFlow`, so
+          // they default to the browser-redirect authcode flow; a headless
+          // direct `/invoke` caller (e.g. integration-gateway's own
+          // GitHub-issue relay) can force the device flow instead, since it
+          // has no browser to redirect.
+          const flow = state.identityLinkFlow ?? "authcode";
+          const started = await deps.identityLinkGateway.start(provider, state.identity.subject, flow);
+          if (started.flow === "device") {
+            return {
+              result: `To continue, please link your GitHub account: visit ${started.verificationUri} and enter code ${started.userCode}. This is a one-time step -- send any message once you're done.`,
+              pendingIdentityLink: {
+                agentId: agent.id,
+                provider,
+                flow: "device",
+                deviceCode: started.deviceCode,
+                expiresAt: Date.now() + started.expiresInSeconds * 1000,
+              },
+              identityLinkPending: true,
+            };
+          }
+          return {
+            result: `To continue, please link your GitHub account: ${started.authorizeUrl}. This is a one-time step -- send any message once you're done.`,
+            pendingIdentityLink: {
+              agentId: agent.id,
+              provider,
+              flow: "authcode",
+              expiresAt: Date.now() + started.expiresInSeconds * 1000,
+            },
+            identityLinkPending: true,
+          };
+        }
+        const envVarName = PROVIDER_ENV_VAR[provider];
+        if (!envVarName) {
+          return { error: `agent ${agent.id} declares unsupported identity provider "${provider}"` };
+        }
+        identitySecretEnv = [{ name: envVarName, value: existing.token }];
+      }
+
       const runId = randomUUID();
       const jobId = randomUUID();
       const callbackUrl = `${deps.callbackBaseUrl}/callback/${jobId}`;
@@ -654,6 +820,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           callbackSecretRef: deps.callbackSecretRef,
           timeoutSeconds: deps.agentRunTimeoutSeconds,
           ...(deps.natsUrl ? { natsUrl: deps.natsUrl, natsSubject: `callbacks.${runId}` } : {}),
+          ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
         });
         const reply = await awaitReply;
         const message = composeAgentTurnMessage(state, reply);
@@ -897,7 +1064,15 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       return { result: `${prefix ?? ""}${state.result}${suffix ?? ""}` };
     })
     .addEdge(START, "resolveIdentity")
-    .addConditionalEdges("resolveIdentity", afterOrEnd("checkActiveSkill"))
+    .addConditionalEdges("resolveIdentity", afterOrEnd("checkPendingIdentityLink"))
+    // A pending device-flow link either just completed (an agent was
+    // re-selected -> resume straight into delegateToAgent), is still being
+    // waited on (identityLinkPending -> END, same "still waiting" result as
+    // last turn), or missed entirely (no pending link, or it just
+    // expired/was cleared) -> fall through to ordinary skill continuity.
+    .addConditionalEdges("checkPendingIdentityLink", (state) =>
+      state.error ? END : state.selectedAgent ? "delegateToAgent" : state.identityLinkPending ? END : "checkActiveSkill",
+    )
     // Active skill confirmed -> skip straight to loadSkillTools; otherwise
     // check for a continuing agent run before falling through to full
     // retrieval (docs/adr/0012, extended to agents).

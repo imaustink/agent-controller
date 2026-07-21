@@ -199,6 +199,28 @@ Copilot-CLI-based `copilot-swe`/`copilot-swe-agent` (see
   auto-expires without manual rotation, but doesn't remove the need for the
   deny-rule/branch-protection layers below — a compromised installation token
   is still live for up to an hour.
+- **Per-user GitHub identity as a third option, replacing the shared
+  credential entirely** ([ADR
+  0022](adr/0022-per-user-github-device-flow-identity.md), opt-in via
+  `opencodeSweAgent.identityLink.enabled`). Instead of a bot/App-installation
+  token shared by every caller, `agent-orchestrator` resolves and injects the
+  **calling user's own** linked GitHub token per invocation, via a new
+  `AgentRunSpec.SecretEnv` (a per-run override of this Agent's static
+  `secretEnv`, referencing a short-lived k8s `Secret` created and owned by
+  that one `AgentRun`, garbage-collected with it). The link itself is
+  established once per person via GitHub OAuth Device Flow, brokered by
+  `apps/integration-gateway` (a new subject-keyed, encrypted-at-rest store,
+  `IDENTITY_LINK_ENCRYPTION_KEY` — needs the same rotation/no-plaintext-
+  logging discipline as `opencode-swe-secrets`) and transparently refreshed
+  thereafter — no re-prompting on subsequent requests. This narrows blast
+  radius to **the linked human's own GitHub permissions** rather than
+  whatever the shared PAT/App installation was scoped to, and correspondingly
+  widens `agent-orchestrator`'s own k8s RBAC with `secrets: create`/`patch`
+  (gated behind `identityLink.enabled`, same discipline as the LocalTool-
+  gated `secrets: get` grant below). The deny-rule/branch-protection layers
+  immediately below are unchanged and still required either way — a
+  compromised per-user token is still live for its own lifetime (~8h, or up
+  to ~6 months if its refresh token is also compromised).
 - **No irreversible actions — defense in depth, because no single layer
   suffices.** A PAT with `Administration` write can both create and delete
   repos, so token permissions alone cannot forbid deletion. Therefore:

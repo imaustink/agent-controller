@@ -47,6 +47,16 @@ type AgentRunSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
+
+	// secretEnv are per-invocation environment variables sourced from Secret
+	// keys (same namespace), merged over the referenced Agent's static
+	// AgentSpec.SecretEnv at Job-build time. An entry here with the same
+	// `name` as an Agent-level entry wins for this run only; entries unique
+	// to either side are both included. Intended for short-lived,
+	// caller-scoped credentials (e.g. a per-user GitHub token) that must not
+	// be baked into the Agent template.
+	// +optional
+	SecretEnv []SecretEnvVar `json:"secretEnv,omitempty"`
 }
 
 // AgentRunStatus defines the observed state of AgentRun — identical shape

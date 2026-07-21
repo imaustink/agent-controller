@@ -94,10 +94,21 @@ recipePublisher:
 # opencode-swe-agent: Agent-SDK software-engineering sub-agent (bidirectional
 # NATS, HITL) that runs the opencode CLI against Anthropic's API directly
 # (Claude Sonnet 5).
-# Prerequisite (out-of-band -- Helm can't source secret values on its own):
-#   kubectl -n <ns> create secret generic opencode-swe-secrets \
-#     --from-literal=GITHUB_TOKEN=github_pat_... \
-#     --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+#
+# Three mutually-exclusive ways to give it a GitHub credential:
+#   1. GITHUB_TOKEN PAT (default) -- prerequisite (out-of-band -- Helm can't
+#      source secret values on its own):
+#        kubectl -n <ns> create secret generic opencode-swe-secrets \
+#          --from-literal=GITHUB_TOKEN=github_pat_... \
+#          --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+#   2. GitHub App installation-token auth (ADR 0018) -- see the three
+#      githubApp*SecretKey fields below.
+#   3. Per-user identity linking (ADR 0022, identityLink block below) -- no
+#      static GitHub credential is baked into this Agent's template at all;
+#      agent-orchestrator resolves and injects the CALLING USER's own linked
+#      GitHub token per-run instead. Requires agent-orchestrator's own
+#      identityLink.enabled=true and a configured integration-gateway (see
+#      those charts' values.yaml).
 opencodeSweAgent:
   enabled: false
   image: opencode-swe-agent:latest
@@ -126,6 +137,18 @@ opencodeSweAgent:
   githubAppIdSecretKey: ""
   githubAppPrivateKeySecretKey: ""
   githubAppInstallationIdSecretKey: ""
+  # Per-user GitHub identity linking (docs/adr/0022): when enabled, this
+  # agent no longer uses a shared GITHUB_TOKEN/App-installation credential
+  # at all -- agent-orchestrator resolves and injects the CALLING USER's
+  # own linked GitHub token per-run instead (requires agent-orchestrator's
+  # own identityLink.enabled=true and a configured integration-gateway,
+  # see those charts). Leave disabled (default) to keep today's shared-
+  # credential behavior (GITHUB_TOKEN PAT or GitHub App installation token)
+  # unchanged.
+  identityLink:
+    enabled: false
+    providers:
+      - github
 
 skills:
   # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +

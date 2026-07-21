@@ -13,7 +13,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@controller-agent/github-app-auth": "0.1.0"
+    "@controller-agent/github-app-auth": "0.1.0",
+    "ioredis": "^5.11.1"
   },
   "devDependencies": {
     "@types/node": "^20.16.5",

@@ -77,4 +77,87 @@ describe("AgentRunLauncher", () => {
     const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { spec: Record<string, unknown> } }];
     expect(request.body.spec.timeoutSeconds).toBeUndefined();
   });
+
+  it("launch() without options.secretEnv never touches the Secret API", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({ metadata: { uid: "uid-1" } });
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const createNamespacedSecret = vi.fn();
+    const patchNamespacedSecret = vi.fn();
+    const launcher = new AgentRunLauncher("core.controller-agent.dev", "v1alpha1", api, {
+      createNamespacedSecret,
+      patchNamespacedSecret,
+    });
+
+    await launcher.launch(template, "run-4", {
+      goal: "add a health check endpoint",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+    });
+
+    expect(createNamespacedSecret).not.toHaveBeenCalled();
+    expect(patchNamespacedSecret).not.toHaveBeenCalled();
+    const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { spec: Record<string, unknown> } }];
+    expect(request.body.spec.secretEnv).toBeUndefined();
+  });
+
+  it("launch() with options.secretEnv creates a Secret, references it from the AgentRun spec, and patches ownerReferences using the created AgentRun's uid", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({ metadata: { uid: "agentrun-uid-123" } });
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const createNamespacedSecret = vi.fn().mockResolvedValue({ metadata: { name: "run-5-identity" } });
+    const patchNamespacedSecret = vi.fn().mockResolvedValue({});
+    const launcher = new AgentRunLauncher("core.controller-agent.dev", "v1alpha1", api, {
+      createNamespacedSecret,
+      patchNamespacedSecret,
+    });
+
+    const launched = await launcher.launch(template, "run-5", {
+      goal: "open a PR",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+      secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_super-secret-value" }],
+    });
+
+    expect(launched.name).toBe("run-5");
+
+    expect(createNamespacedSecret).toHaveBeenCalledTimes(1);
+    const [secretRequest] = createNamespacedSecret.mock.calls[0] as [
+      { namespace: string; body: { metadata: { name: string }; stringData: Record<string, string> } },
+    ];
+    expect(secretRequest.namespace).toBe("default");
+    expect(secretRequest.body.metadata.name).toBe("run-5-identity");
+    expect(secretRequest.body.stringData).toEqual({ GITHUB_TOKEN: "gho_super-secret-value" });
+    // The plaintext token must never appear in the AgentRun CR body.
+    expect(JSON.stringify(secretRequest.body)).toContain("gho_super-secret-value");
+
+    const [crRequest] = createNamespacedCustomObject.mock.calls[0] as [{ body: { spec: Record<string, unknown> } }];
+    expect(crRequest.body.spec.secretEnv).toEqual([
+      { name: "GITHUB_TOKEN", secretRef: { name: "run-5-identity", key: "GITHUB_TOKEN" } },
+    ]);
+    expect(JSON.stringify(crRequest.body)).not.toContain("gho_super-secret-value");
+
+    expect(patchNamespacedSecret).toHaveBeenCalledTimes(1);
+    const [patchRequest] = patchNamespacedSecret.mock.calls[0] as [
+      { name: string; namespace: string; body: unknown },
+    ];
+    expect(patchRequest.name).toBe("run-5-identity");
+    expect(patchRequest.namespace).toBe("default");
+    expect(JSON.stringify(patchRequest.body)).toContain("agentrun-uid-123");
+    expect(JSON.stringify(patchRequest.body)).toContain("run-5");
+  });
+
+  it("launch() throws if options.secretEnv is non-empty but no SecretApiLike was configured", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const launcher = new AgentRunLauncher("core.controller-agent.dev", "v1alpha1", api);
+
+    await expect(
+      launcher.launch(template, "run-6", {
+        goal: "open a PR",
+        callbackUrl: "http://x",
+        callbackSecretRef: { name: "s", key: "k" },
+        secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_x" }],
+      }),
+    ).rejects.toThrow(/SecretApiLike/);
+    expect(createNamespacedCustomObject).not.toHaveBeenCalled();
+  });
 });

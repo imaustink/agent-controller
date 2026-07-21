@@ -103,6 +103,30 @@ config:
   # instead of the single-replica in-memory default.
   redisUrl: ""
 
+# Per-chat-user GitHub identity linking (docs/adr/0022): lets the
+# orchestrator resolve the CALLING USER's own linked GitHub token (via
+# integration-gateway's new /identity-link/* API) and inject it per-run into
+# an identity-linked Agent's launched Job, instead of that Agent always
+# using a shared bot/PAT credential. Off by default -- both fields below are
+# optional and, when left empty, no Agent should declare identityProviders
+# (see charts/community-components) and this feature has no effect.
+identityLink:
+  enabled: false
+  # Base URL of integration-gateway's identity-link API (in-cluster Service
+  # DNS). Mirrors config.orchestratorUrl above's naming precedent, just in
+  # the opposite direction -- pointing at integration-gateway's Service
+  # instead of this chart's own. No default: set this to the
+  # integration-gateway release's Service name/port (see that chart's
+  # templates/service.yaml), e.g.
+  # "http://integration-gateway:8090" for the umbrella chart's pinned name.
+  gatewayUrl: ""
+  # Secrets: IDENTITY_LINK_GATEWAY_TOKEN (see secrets block below). Must
+  # match the value configured as integration-gateway's
+  # identityLink.secrets.identityLinkToken (GATEWAY_IDENTITY_LINK_TOKEN env
+  # var on that side) -- same shared-secret-value convention already used
+  # for AGENT_CALLBACK_SECRET / GATEWAY_ORCHESTRATOR_TOKEN in the reverse
+  # direction.
+
 # Secrets: OPENAI_API_KEY (required), AGENT_CALLBACK_SECRET (required, no
 # default — must not be guessable), AGENT_QDRANT_API_KEY (optional).
 #
@@ -118,10 +142,13 @@ secrets:
   openaiApiKeyKey: OPENAI_API_KEY
   callbackSecretKey: AGENT_CALLBACK_SECRET
   qdrantApiKeyKey: AGENT_QDRANT_API_KEY
+  # Only used when identityLink.enabled=true above.
+  identityLinkGatewayTokenKey: IDENTITY_LINK_GATEWAY_TOKEN
   # Only read when secrets.create=true.
   openaiApiKey: ""
   callbackSecret: ""
   qdrantApiKey: ""
+  identityLinkGatewayToken: ""
 
 service:
   invoke:

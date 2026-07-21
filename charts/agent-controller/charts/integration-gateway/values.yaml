@@ -44,9 +44,73 @@ config:
   pollIntervalMs: 3000
   pollTimeoutMs: 900000
 
+# Per-chat-user GitHub identity linking (OAuth Device Flow, docs/adr/0022):
+# turns this gateway into a general external-identity credential broker in
+# addition to its existing GitHub-webhook-relay role, exposing a new
+# internal HTTP API under /identity-link/* (bearer-token-authed, same HTTP
+# server/port as the webhook endpoint -- see src/server.ts's handleRequest --
+# no new Service/port needed). Off by default: none of the fields below are
+# required/rendered unless enabled, and existing webhook-relay behavior is
+# completely unaffected either way.
+#
+# As of the authorization-code (web) flow addition, the GitHub App backing
+# this needs BOTH a client_id (device flow) AND a generated client secret
+# (authcode token exchange -- device flow alone never needed one), plus a
+# registered OAuth callback URL (see githubOauthRedirectUri below). Browser
+# callers default to the authcode flow; device flow remains an explicit
+# fallback for headless callers.
+identityLink:
+  enabled: false
+  # GitHub App OAuth client_id, used by both the device flow and the
+  # authorization-code flow. PUBLIC by design -- GitHub App client ids are
+  # not sensitive (same reasoning values-minikube-demo.yaml already
+  # documents for the Google OAuth client ID), so this is a plain config
+  # value, never wired through the Secret.
+  githubAppClientId: ""
+  # Optional device-flow OAuth scope. Leave empty to use the app's own
+  # default ("repo").
+  githubDeviceFlowScope: ""
+  # Redis URL for the identity-link token store. Reuses the SAME Redis
+  # instance agent-orchestrator's conversation-session store uses
+  # (docs/adr/0016) -- integration-gateway is a sibling subchart under the
+  # same parent (charts/agent-controller), deployed into the same
+  # release/namespace, so agent-orchestrator's Redis Service
+  # ("<agent-orchestrator fullname>-redis", see
+  # charts/agent-orchestrator/templates/redis.yaml) is trivially reachable
+  # cross-subchart by in-cluster DNS. The umbrella chart pins
+  # agent-orchestrator's fullnameOverride to "agent-orchestrator", so the
+  # default below matches that pinned name -- override if you've changed
+  # that pin or point this at a different/external Redis instance entirely.
+  redisUrl: "redis://agent-orchestrator-redis:6379"
+  # OAuth callback URL for the authorization-code (web) flow. MUST exactly
+  # match the URL registered as this GitHub App's "Callback URL" -- GitHub
+  # rejects the token exchange on any mismatch (scheme, host, path, or
+  # trailing slash) -- and that registered URL must itself point at
+  # https://<this gateway's public host>/identity-link/github/callback
+  # (see src/server.ts's handleRequest for the route). Same
+  # externally-registered-value-must-match-verbatim discipline as
+  # GOOGLE_REDIRECT_URI in charts/agent-controller/values.yaml /
+  # values-production.yaml (Open WebUI's Google SSO callback). No default on
+  # purpose -- this MUST be set explicitly by whoever deploys with the
+  # authcode flow enabled.
+  githubOauthRedirectUri: ""
+
 # Secrets: GITHUB_WEBHOOK_SECRET (required), GATEWAY_ORCHESTRATOR_TOKEN
 # (required), and either GITHUB_TOKEN or the three GITHUB_APP_* fields
-# (required for posting issue comments).
+# (required for posting issue comments). When identityLink.enabled=true,
+# also: IDENTITY_LINK_ENCRYPTION_KEY (required, a 32-byte AES-256-GCM key,
+# base64-encoded, used to encrypt stored per-user GitHub tokens at rest),
+# GATEWAY_IDENTITY_LINK_TOKEN (required, the bearer token agent-orchestrator
+# authenticates its NEW /identity-link/* calls with -- the opposite
+# direction from GATEWAY_ORCHESTRATOR_TOKEN above, which is how THIS gateway
+# authenticates its calls to the orchestrator; two distinct tokens for two
+# distinct directions), GITHUB_APP_CLIENT_SECRET (required once the
+# authorization-code flow's token-exchange code path is invoked -- the
+# GitHub App's generated client secret; device flow alone never needed
+# this), and IDENTITY_LINK_STATE_SECRET (required for the same reason -- an
+# HMAC signing key for the authcode flow's CSRF `state` tokens; a distinct
+# key from IDENTITY_LINK_ENCRYPTION_KEY on purpose, so rotating one never
+# forces rotating the other).
 #
 # By default the chart does NOT create a Secret -- bring your own via
 # `existingSecret` (see charts/agent-orchestrator's values.yaml for the same
@@ -61,6 +125,10 @@ secrets:
   githubAppIdKey: GITHUB_APP_ID
   githubAppPrivateKeyKey: GITHUB_APP_PRIVATE_KEY
   githubAppInstallationIdKey: GITHUB_APP_INSTALLATION_ID
+  identityLinkEncryptionKeyKey: IDENTITY_LINK_ENCRYPTION_KEY
+  identityLinkTokenKey: GATEWAY_IDENTITY_LINK_TOKEN
+  githubAppClientSecretKey: GITHUB_APP_CLIENT_SECRET
+  identityLinkStateSecretKey: IDENTITY_LINK_STATE_SECRET
   # Only read when secrets.create=true.
   githubWebhookSecret: ""
   orchestratorToken: ""
@@ -68,6 +136,10 @@ secrets:
   githubAppId: ""
   githubAppPrivateKey: ""
   githubAppInstallationId: ""
+  identityLinkEncryptionKey: ""
+  identityLinkToken: ""
+  githubAppClientSecret: ""
+  identityLinkStateSecret: ""
 
 service:
   type: ClusterIP

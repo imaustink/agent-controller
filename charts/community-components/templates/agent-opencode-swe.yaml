@@ -35,6 +35,12 @@ spec:
   allowedRoles:
     - writer
   tier: privileged
+  {{- if .Values.opencodeSweAgent.identityLink.enabled }}
+  identityProviders:
+    {{- range .Values.opencodeSweAgent.identityLink.providers }}
+    - {{ . }}
+    {{- end }}
+  {{- end }}
   image: {{ .Values.opencodeSweAgent.image }}
   serviceAccountName: {{ .Values.opencodeSweAgent.serviceAccountName }}
   resources:
@@ -78,14 +84,17 @@ spec:
     defaults. Never perform irreversible operations (force-push, delete
     branches/repos).
   secretEnv:
+    {{- if not .Values.opencodeSweAgent.identityLink.enabled }}
     - name: GITHUB_TOKEN
       secretRef:
         name: {{ .Values.opencodeSweAgent.secretName }}
         key: {{ .Values.opencodeSweAgent.secretKey }}
+    {{- end }}
     - name: ANTHROPIC_API_KEY
       secretRef:
         name: {{ .Values.opencodeSweAgent.secretName }}
         key: {{ .Values.opencodeSweAgent.anthropicSecretKey }}
+    {{- if not .Values.opencodeSweAgent.identityLink.enabled }}
     {{- if .Values.opencodeSweAgent.githubAppIdSecretKey }}
     - name: GITHUB_APP_ID
       secretRef:
@@ -103,5 +112,6 @@ spec:
       secretRef:
         name: {{ .Values.opencodeSweAgent.secretName }}
         key: {{ .Values.opencodeSweAgent.githubAppInstallationIdSecretKey }}
+    {{- end }}
     {{- end }}
 {{- end }}

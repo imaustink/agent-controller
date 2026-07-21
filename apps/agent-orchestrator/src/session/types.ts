@@ -58,6 +58,13 @@ export interface SessionRecord {
    * to round-trip this state through the conversation history itself.
    */
   agentContinuations?: Record<string, string>;
+  /**
+   * A device-flow identity-link attempt this conversation is waiting on
+   * (agent/graph.ts's `pendingIdentityLink` state field — see its doc
+   * comment). Persisted so the NEXT turn's `checkPendingIdentityLink` node
+   * can poll it without the caller having to repeat their request.
+   */
+  pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number };
   /** Last touch time (ms since epoch); used for sliding TTL expiry. */
   updatedAt: number;
 }

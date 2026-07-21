@@ -49,15 +49,27 @@ export class OrchestratorClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  /** Starts a new turn (or resumes an existing session's active agent run) and awaits its terminal result. */
-  async invoke(request: string, sessionId: string): Promise<OrchestratorInvokeResult> {
+  /**
+   * Starts a new turn (or resumes an existing session's active agent run)
+   * and awaits its terminal result. `identityLinkFlow`, when set, is passed
+   * through as `identity_link_flow` so agent-orchestrator knows which
+   * identity-link flow to offer this caller (e.g. this gateway's own
+   * GitHub-issue-comment relay has no browser, so it always forces
+   * `"device"`) -- omitted entirely (not sent as `null`) when unset, so
+   * agent-orchestrator's own default applies.
+   */
+  async invoke(request: string, sessionId: string, identityLinkFlow?: "device" | "authcode"): Promise<OrchestratorInvokeResult> {
     const acceptRes = await this.fetchImpl(`${this.options.baseUrl.replace(/\/$/, "")}/invoke`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${this.options.token}`,
       },
-      body: JSON.stringify({ request, session_id: sessionId }),
+      body: JSON.stringify({
+        request,
+        session_id: sessionId,
+        ...(identityLinkFlow !== undefined ? { identity_link_flow: identityLinkFlow } : {}),
+      }),
     });
     if (!acceptRes.ok) {
       return { status: "failed", error: `/invoke rejected the request: ${acceptRes.status} ${await acceptRes.text()}` };

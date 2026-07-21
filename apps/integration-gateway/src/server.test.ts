@@ -107,7 +107,11 @@ describe("GatewayServer", () => {
     expect(res.status).toBe(202);
     await flush();
 
-    expect(invoke).toHaveBeenCalledWith("Add dark mode\n\nPlease add a dark theme option.", sessionIdFor("acme", "widgets", 7));
+    expect(invoke).toHaveBeenCalledWith(
+      "Add dark mode\n\nPlease add a dark theme option.",
+      sessionIdFor("acme", "widgets", 7),
+      "device",
+    );
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
   });
 
@@ -120,7 +124,7 @@ describe("GatewayServer", () => {
       comment: { body: "start work" },
     });
     await flush();
-    expect(invoke).toHaveBeenCalledWith("start work", sessionIdFor("acme", "widgets", 7));
+    expect(invoke).toHaveBeenCalledWith("start work", sessionIdFor("acme", "widgets", 7), "device");
   });
 
   it("posts a failure-explaining comment when the orchestrator turn fails", async () => {

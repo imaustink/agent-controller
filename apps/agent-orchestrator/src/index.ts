@@ -19,6 +19,7 @@ import { CrdAgentRegistry } from "./agents/crd-agent-registry.js";
 import { QdrantAgentStore } from "./agents/qdrant-agent-store.js";
 import { NatsAgentChannel } from "./agents/nats-agent-channel.js";
 import { AgentRunLauncher } from "./k8s/agentrun-launcher.js";
+import { IdentityLinkGatewayClient } from "./identity-link/gateway-client.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { QdrantToolStore } from "./vector-store/qdrant-store.js";
 import { OpenAiActionPlanner } from "./agent/action-planner.js";
@@ -371,6 +372,18 @@ async function main(): Promise<void> {
   // per-tool prompt lives in the agent graph.
   const responseComposer = new OpenAiResponseComposer({ model: config.selectionModel });
 
+  // Per-caller GitHub identity (replaces the old shared static credential for
+  // any Agent that declares `identityProviders`, e.g. opencode-swe-agent):
+  // absent config -> stays unconfigured, so delegateToAgent fails closed with
+  // a clear per-turn error for such an Agent rather than crashing startup.
+  const identityLinkGateway =
+    config.identityLinkGatewayUrl && config.identityLinkGatewayToken
+      ? new IdentityLinkGatewayClient({
+          baseUrl: config.identityLinkGatewayUrl,
+          token: config.identityLinkGatewayToken,
+        })
+      : undefined;
+
   // Executes LocalTools by RPC to the per-language sidecars over the shared
   // unix-socket dir (ADR 0014). Secret-backed env is resolved here (the
   // orchestrator holds the k8s identity; the sidecars deliberately do not).
@@ -399,6 +412,7 @@ async function main(): Promise<void> {
     toolFitChecker,
     bestEffortResponder,
     capabilityNeedChecker,
+    ...(identityLinkGateway ? { identityLinkGateway } : {}),
     ...(agentDelegation
       ? {
           agentStore: agentDelegation.agentStore,

@@ -56,6 +56,18 @@ spec:
               value: {{ .Values.config.pollIntervalMs | quote }}
             - name: GATEWAY_POLL_TIMEOUT_MS
               value: {{ .Values.config.pollTimeoutMs | quote }}
+            {{- if .Values.identityLink.enabled }}
+            - name: GITHUB_APP_CLIENT_ID
+              value: {{ .Values.identityLink.githubAppClientId | quote }}
+            {{- if .Values.identityLink.githubDeviceFlowScope }}
+            - name: GITHUB_DEVICE_FLOW_SCOPE
+              value: {{ .Values.identityLink.githubDeviceFlowScope | quote }}
+            {{- end }}
+            - name: AGENT_REDIS_URL
+              value: {{ .Values.identityLink.redisUrl | quote }}
+            - name: GITHUB_OAUTH_REDIRECT_URI
+              value: {{ .Values.identityLink.githubOauthRedirectUri | quote }}
+            {{- end }}
             - name: GITHUB_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
@@ -90,6 +102,28 @@ spec:
                   name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
                   key: {{ .Values.secrets.githubAppInstallationIdKey }}
                   optional: true
+            {{- if .Values.identityLink.enabled }}
+            - name: IDENTITY_LINK_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.identityLinkEncryptionKeyKey }}
+            - name: GATEWAY_IDENTITY_LINK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.identityLinkTokenKey }}
+            - name: GITHUB_APP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.githubAppClientSecretKey }}
+            - name: IDENTITY_LINK_STATE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.identityLinkStateSecretKey }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

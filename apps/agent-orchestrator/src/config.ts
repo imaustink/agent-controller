@@ -114,6 +114,18 @@ export interface AppConfig {
    * skillTopK/agentTopK.
    */
   fallbackToolTopK: number;
+  /**
+   * Base URL of apps/integration-gateway's internal identity-link API
+   * (OAuth Device Flow for per-caller GitHub identity). Optional along with
+   * `identityLinkGatewayToken` below -- absent means `identityLinkGateway`
+   * stays unconfigured (index.ts), so any Agent declaring `identityProviders`
+   * fails closed with a clear per-turn error rather than crashing startup;
+   * deployments that never delegate to an identity-requiring Agent can
+   * ignore this feature entirely.
+   */
+  identityLinkGatewayUrl: string | undefined;
+  /** Bearer token this orchestrator authenticates to the identity-link API with. */
+  identityLinkGatewayToken: string | undefined;
   requestId: string;
 }
 
@@ -157,5 +169,7 @@ export const config: AppConfig = {
   oidcRolesClaim: process.env.AGENT_OIDC_ROLES_CLAIM ?? "roles",
   natsUrl: process.env.AGENT_NATS_URL,
   fallbackToolTopK: num(process.env.AGENT_FALLBACK_TOOL_TOP_K, 3),
+  identityLinkGatewayUrl: process.env.IDENTITY_LINK_GATEWAY_URL,
+  identityLinkGatewayToken: process.env.IDENTITY_LINK_GATEWAY_TOKEN,
   requestId: process.env.AGENT_REQUEST_ID ?? randomUUID(),
 };

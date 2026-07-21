@@ -28,6 +28,16 @@ export interface AgentDescriptor {
    * orchestrator never sees or needs.
    */
   orchestratorPrompt?: string;
+  /**
+   * External identity providers (e.g. `["github"]`) the CALLING user must
+   * have linked (one-time OAuth Device Flow, apps/integration-gateway's
+   * identity-link API) before this Agent can be launched -- launching it
+   * injects THAT caller's own current token as the AgentRun's identity
+   * secretEnv instead of the shared static credential every Agent used
+   * before this field existed. Absent/empty means no identity linking is
+   * required (today's behavior, unchanged).
+   */
+  identityProviders?: string[];
   /** Everything needed to launch an AgentRun CR referencing this Agent. */
   agentRunTemplate: AgentRunTemplate;
 }
