@@ -59,11 +59,10 @@ recipePublisher:
   secretName: recipe-publisher-secrets
   secretKey: MEALIE_API_TOKEN
 
-# opencode-swe-agent: privileged GitHub coding sub-agent. PAT-only deployment
-# for now (Phase A) -- create first:
-#   kubectl create secret generic opencode-swe-secrets -n controller-agent \
-#     --from-literal=GITHUB_TOKEN=github_pat_... \
-#     --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+# opencode-swe-agent: privileged GitHub coding sub-agent. Cut over from
+# PAT-only (Phase A) to per-user GitHub identity linking (docs/adr/0022,
+# Phase B) -- the opencode-swe-secrets GITHUB_TOKEN key is retired as part
+# of this cutover; ANTHROPIC_API_KEY remains PAT-based.
 opencodeSweAgent:
   enabled: true
   image: registry.kurpuis.com:5000/opencode-swe-agent:latest
@@ -71,19 +70,13 @@ opencodeSweAgent:
   secretName: opencode-swe-secrets
   secretKey: GITHUB_TOKEN
   anthropicSecretKey: ANTHROPIC_API_KEY
-  githubAppIdSecretKey: ""
-  githubAppPrivateKeySecretKey: ""
-  githubAppInstallationIdSecretKey: ""
-  # Per-user GitHub identity linking (docs/adr/0022) -- left disabled for
-  # now, keeping this a PAT-only deployment. agent-orchestrator/
-  # integration-gateway's identityLink.enabled are now on (see
-  # charts/agent-controller/values-production.yaml), so this is the last
-  # flag: flip it only AFTER manually verifying the linking flow works
-  # end-to-end (visit the authorize link, confirm a token gets stored) --
-  # flipping it prematurely breaks every opencode-swe-agent request for
-  # every caller until it does.
+  # Per-user GitHub identity linking (docs/adr/0022) -- agent-orchestrator/
+  # integration-gateway's identityLink.enabled are already on (see
+  # charts/agent-controller/values-production.yaml). Flipping this breaks
+  # every opencode-swe-agent request for every caller until they complete
+  # the device-flow link.
   identityLink:
-    enabled: false
+    enabled: true
     providers:
       - github
 
