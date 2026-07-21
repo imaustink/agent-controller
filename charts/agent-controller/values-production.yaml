@@ -239,7 +239,7 @@ integration-gateway:
     # doc comment in charts/agent-controller/charts/integration-gateway/values.yaml).
     # REPLACE with the real value from the GitHub App's settings page --
     # left as a placeholder here since it isn't known at PR-authoring time.
-    githubAppClientId: "REPLACE_ME_GITHUB_APP_CLIENT_ID"
+    githubAppClientId: "1052865"
     # Must exactly match the GitHub App's registered "Callback URL"
     # (scheme/host/path/trailing-slash all significant) -- see
     # charts/agent-controller/charts/integration-gateway/values.yaml's
