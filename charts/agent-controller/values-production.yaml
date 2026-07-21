@@ -149,6 +149,16 @@ agent-orchestrator:
   nats:
     enabled: true
 
+  # Required by integration-gateway.identityLink above (enabled below): its
+  # RedisIdentityLinkStore points at "agent-orchestrator-redis" by default
+  # (charts/integration-gateway/values.yaml), which only exists when this
+  # chart's own templates/redis.yaml is rendered. Was left at its default
+  # (false) when identityLink.enabled was flipped on for both subcharts,
+  # so that Service was never deployed and integration-gateway crash-loops
+  # on ENOTFOUND agent-orchestrator-redis.
+  redis:
+    enabled: true
+
 core-controller:
   enabled: true
   fullnameOverride: core-controller
