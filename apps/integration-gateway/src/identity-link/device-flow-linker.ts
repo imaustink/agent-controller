@@ -181,6 +181,19 @@ export class GithubDeviceFlowLinker {
     return { subject: verifiedState.subject };
   }
 
+  /**
+   * Blocks until a credential lands for `subject`, or resolves `undefined`
+   * once `timeoutMs` elapses. Delegates entirely to the store's own
+   * pub/sub wait (no polling/renewal logic here, unlike `getValidToken`) --
+   * the API layer's `/wait` route calls this directly from the OAuth
+   * callback's write, not from a refreshed token flow.
+   */
+  async waitForCompletion(subject: string, timeoutMs: number): Promise<{ token: string; githubLogin: string } | undefined> {
+    const cred = await this.options.store.waitForCompletion(PROVIDER, subject, timeoutMs);
+    if (!cred) return undefined;
+    return { token: cred.token, githubLogin: cred.githubLogin };
+  }
+
   async getValidToken(subject: string): Promise<{ token: string; githubLogin: string } | undefined> {
     const cred = await this.options.store.get(PROVIDER, subject);
     if (!cred) return undefined;

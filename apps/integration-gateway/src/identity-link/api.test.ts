@@ -16,6 +16,7 @@ describe("GatewayServer identity-link routes", () => {
   let getValidToken: ReturnType<typeof vi.fn>;
   let startAuthCode: ReturnType<typeof vi.fn>;
   let completeAuthCode: ReturnType<typeof vi.fn>;
+  let waitForCompletion: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     start = vi.fn().mockResolvedValue({
@@ -33,13 +34,21 @@ describe("GatewayServer identity-link routes", () => {
       expiresInSeconds: 600,
     });
     completeAuthCode = vi.fn().mockResolvedValue({ subject: "user-1" });
+    waitForCompletion = vi.fn().mockResolvedValue({ token: "gho_abc", githubLogin: "octocat" });
 
     server = new GatewayServer({
       githubWebhookSecret: "unused",
       identityResolver: {} as unknown as GithubIdentityResolver,
       orchestratorClient: {} as unknown as OrchestratorClient,
       githubReplyClient: {} as unknown as GithubReplyClient,
-      identityLinkLinker: { start, poll, getValidToken, startAuthCode, completeAuthCode } as unknown as GithubDeviceFlowLinker,
+      identityLinkLinker: {
+        start,
+        poll,
+        getValidToken,
+        startAuthCode,
+        completeAuthCode,
+        waitForCompletion,
+      } as unknown as GithubDeviceFlowLinker,
       identityLinkToken: TOKEN,
     });
     await server.listen(0);
@@ -180,6 +189,47 @@ describe("GatewayServer identity-link routes", () => {
       headers: { authorization: `Bearer ${TOKEN}` },
     });
     expect(res.status).toBe(404);
+  });
+
+  it("waits for completion and returns the token once it lands", async () => {
+    const res = await fetch(url("/identity-link/github/wait"), {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ subject: "user-1", timeoutMs: 5000 }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "complete", token: { token: "gho_abc", githubLogin: "octocat" } });
+    expect(waitForCompletion).toHaveBeenCalledWith("user-1", 5000);
+  });
+
+  it("reports a timeout when nothing lands in time", async () => {
+    waitForCompletion.mockResolvedValue(undefined);
+    const res = await fetch(url("/identity-link/github/wait"), {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ subject: "nobody", timeoutMs: 5000 }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "timeout" });
+  });
+
+  it("caps timeoutMs at the 10-minute ceiling", async () => {
+    const res = await fetch(url("/identity-link/github/wait"), {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ subject: "user-1", timeoutMs: 999_000_000 }),
+    });
+    expect(res.status).toBe(200);
+    expect(waitForCompletion).toHaveBeenCalledWith("user-1", 10 * 60 * 1000);
+  });
+
+  it("400s wait on a missing subject field", async () => {
+    const res = await fetch(url("/identity-link/github/wait"), {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
   });
 });
 

@@ -13,6 +13,9 @@ function makeInMemoryStore(): IdentityLinkStore & { data: Map<string, LinkedCred
     async set(provider, subject, cred) {
       data.set(`${provider}:${subject}`, cred);
     },
+    async waitForCompletion(provider, subject) {
+      return data.get(`${provider}:${subject}`);
+    },
   };
 }
 

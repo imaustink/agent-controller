@@ -42,6 +42,16 @@ export interface IdentityLinkPort {
   poll(provider: string, subject: string, deviceCode: string): Promise<IdentityLinkPollStatus>;
   /** Returns `undefined` when nothing is linked yet for this (provider, subject) -- a 404, not an error. */
   getToken(provider: string, subject: string): Promise<IdentityLinkToken | undefined>;
+  /**
+   * Blocks (via the gateway's own Redis-backed wait, not local polling) until
+   * a token lands for (provider, subject), or resolves `undefined` once
+   * `timeoutMs` elapses -- lets a streaming caller hold its connection open
+   * across an authcode browser round-trip instead of requiring a follow-up
+   * chat message. Optional: callers fall back to the original
+   * wait-for-the-next-message behavior when a `IdentityLinkPort` doesn't
+   * implement it (e.g. existing test doubles).
+   */
+  waitForCompletion?(provider: string, subject: string, timeoutMs: number): Promise<IdentityLinkToken | undefined>;
 }
 
 export interface IdentityLinkGatewayClientOptions {
@@ -106,5 +116,26 @@ export class IdentityLinkGatewayClient implements IdentityLinkPort {
       throw new Error(`identity-link token lookup (${provider}) failed: ${res.status} ${await res.text()}`);
     }
     return (await res.json()) as IdentityLinkToken;
+  }
+
+  /**
+   * A long-held `fetch` -- the gateway itself blocks on this request (up to
+   * `timeoutMs`) rather than us polling it repeatedly. No AbortSignal is set
+   * here: the gateway's own response is the authoritative deadline.
+   */
+  async waitForCompletion(provider: string, subject: string, timeoutMs: number): Promise<IdentityLinkToken | undefined> {
+    const res = await this.fetchImpl(`${this.baseUrl}/identity-link/${provider}/wait`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.options.token}`,
+      },
+      body: JSON.stringify({ subject, timeoutMs }),
+    });
+    if (!res.ok) {
+      throw new Error(`identity-link wait (${provider}) failed: ${res.status} ${await res.text()}`);
+    }
+    const body = (await res.json()) as { status: "complete" | "timeout"; token?: IdentityLinkToken };
+    return body.status === "complete" ? body.token : undefined;
   }
 }

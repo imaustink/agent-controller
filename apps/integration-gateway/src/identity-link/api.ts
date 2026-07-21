@@ -4,6 +4,9 @@ import type { GithubDeviceFlowLinker } from "./device-flow-linker.js";
 /** Only `github` is supported today -- any other `:provider` segment is a 400, not a 404, since the route itself matched. */
 const SUPPORTED_PROVIDERS = new Set(["github"]);
 
+/** Hard ceiling on `/wait`'s `timeoutMs`, matching the authcode `state` TTL -- a caller can't hold this route open longer than a link attempt could possibly still be valid for. */
+const MAX_WAIT_MS = 10 * 60 * 1000;
+
 /** Checks `Authorization: Bearer <expectedToken>`. Mirrors `orchestrator-client.ts`'s `Bearer ${token}` framing, but this gateway is the one checking it here (not sending it). */
 export function checkBearer(req: IncomingMessage, expectedToken: string): boolean {
   const header = req.headers.authorization;
@@ -160,6 +163,10 @@ export class IdentityLinkApi {
       await this.handleToken(res, url, provider!);
       return true;
     }
+    if (req.method === "POST" && action === "wait") {
+      await this.handleWait(req, res, provider!);
+      return true;
+    }
     res.writeHead(404).end();
     return true;
   }
@@ -212,6 +219,34 @@ export class IdentityLinkApi {
     const { subject, deviceCode } = body as { subject: string; deviceCode: string };
     const polled = await this.linker.poll(subject, deviceCode);
     sendJson(res, 200, polled);
+  }
+
+  /**
+   * Long-held route: blocks (up to `timeoutMs`, capped at `MAX_WAIT_MS`)
+   * until a token lands for `subject`, letting agent-orchestrator hold a
+   * streaming chat turn open across the OAuth browser round-trip instead of
+   * requiring the caller to send a follow-up chat message.
+   */
+  private async handleWait(req: IncomingMessage, res: ServerResponse, provider: string): Promise<void> {
+    if (!SUPPORTED_PROVIDERS.has(provider)) {
+      sendJson(res, 400, { error: `Unsupported identity provider: ${provider}` });
+      return;
+    }
+    const body = await parseJsonBody(req);
+    if (!body || typeof (body as { subject?: unknown }).subject !== "string") {
+      sendJson(res, 400, { error: "Request body must be JSON with a string `subject` field" });
+      return;
+    }
+    const { subject } = body as { subject: string };
+    const rawTimeout = (body as { timeoutMs?: unknown }).timeoutMs;
+    const timeoutMs = typeof rawTimeout === "number" && rawTimeout > 0 ? Math.min(rawTimeout, MAX_WAIT_MS) : MAX_WAIT_MS;
+
+    const token = await this.linker.waitForCompletion(subject, timeoutMs);
+    if (!token) {
+      sendJson(res, 200, { status: "timeout" });
+      return;
+    }
+    sendJson(res, 200, { status: "complete", token: { token: token.token, githubLogin: token.githubLogin } });
   }
 
   private async handleToken(res: ServerResponse, url: URL, provider: string): Promise<void> {

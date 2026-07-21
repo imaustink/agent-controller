@@ -14,6 +14,14 @@ export interface LinkedCredential {
 export interface IdentityLinkStore {
   get(provider: string, subject: string): Promise<LinkedCredential | undefined>;
   set(provider: string, subject: string, cred: LinkedCredential): Promise<void>;
+  /**
+   * Resolves as soon as a credential lands for (provider, subject) -- via
+   * pub/sub, not polling -- or `undefined` once `timeoutMs` elapses. Lets a
+   * caller (agent-orchestrator, across the HTTP `/wait` route) hold a
+   * connection open across the OAuth browser round-trip instead of
+   * re-checking on every chat turn.
+   */
+  waitForCompletion(provider: string, subject: string, timeoutMs: number): Promise<LinkedCredential | undefined>;
 }
 
 const ENCRYPTION_KEY_BYTES = 32;
@@ -123,6 +131,10 @@ export class RedisIdentityLinkStore implements IdentityLinkStore {
     return `${this.prefix}${provider}:${subject}`;
   }
 
+  private channelFor(provider: string, subject: string): string {
+    return `${this.prefix}complete:${provider}:${subject}`;
+  }
+
   async get(provider: string, subject: string): Promise<LinkedCredential | undefined> {
     try {
       const raw = await this.redis.get(this.keyFor(provider, subject));
@@ -155,11 +167,50 @@ export class RedisIdentityLinkStore implements IdentityLinkStore {
       };
       // No TTL/EX here -- an account link persists indefinitely until re-linked.
       await this.redis.set(this.keyFor(provider, subject), JSON.stringify(stored));
+      // Best-effort wake-up for any in-flight `waitForCompletion` -- a missed
+      // publish (e.g. no subscriber caught up yet) just means that caller
+      // falls back to its own timeout, never a correctness problem, since
+      // `waitForCompletion` always re-reads the store rather than trusting
+      // the message payload.
+      await this.redis.publish(this.channelFor(provider, subject), "1");
     } catch (err) {
       console.error(
         "RedisIdentityLinkStore.set failed (ignored):",
         err instanceof Error ? err.message : String(err),
       );
+    }
+  }
+
+  async waitForCompletion(provider: string, subject: string, timeoutMs: number): Promise<LinkedCredential | undefined> {
+    const existing = await this.get(provider, subject);
+    if (existing) return existing;
+
+    const subscriber = this.redis.duplicate();
+    try {
+      await subscriber.subscribe(this.channelFor(provider, subject));
+      // Re-check after subscribing to close the race between the `get` miss
+      // above and the subscription taking effect -- a `set` landing in that
+      // gap would otherwise be missed until `timeoutMs` expires.
+      const afterSubscribe = await this.get(provider, subject);
+      if (afterSubscribe) return afterSubscribe;
+
+      return await new Promise<LinkedCredential | undefined>((resolve) => {
+        const timer = setTimeout(() => resolve(undefined), timeoutMs);
+        subscriber.on("message", () => {
+          clearTimeout(timer);
+          this.get(provider, subject)
+            .then(resolve)
+            .catch(() => resolve(undefined));
+        });
+      });
+    } catch (err) {
+      console.error(
+        "RedisIdentityLinkStore.waitForCompletion failed (treating as timeout):",
+        err instanceof Error ? err.message : String(err),
+      );
+      return undefined;
+    } finally {
+      await subscriber.quit().catch(() => {});
     }
   }
 

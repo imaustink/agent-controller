@@ -756,7 +756,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           };
         }
         const provider = agent.identityProviders[0]!;
-        const existing = await deps.identityLinkGateway.getToken(provider, state.identity.subject);
+        let existing = await deps.identityLinkGateway.getToken(provider, state.identity.subject);
         if (!existing) {
           // Ordinary Open WebUI chat turns never set `identityLinkFlow`, so
           // they default to the browser-redirect authcode flow; a headless
@@ -767,7 +767,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           const started = await deps.identityLinkGateway.start(provider, state.identity.subject, flow);
           if (started.flow === "device") {
             return {
-              result: `To continue, please link your GitHub account: visit ${started.verificationUri} and enter code ${started.userCode}. This is a one-time step -- send any message once you're done.`,
+              result: `To continue, please [link your GitHub account](${started.verificationUri}) and enter code \`${started.userCode}\`. This is a one-time step -- send any message once you're done.`,
               pendingIdentityLink: {
                 agentId: agent.id,
                 provider,
@@ -778,16 +778,36 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               identityLinkPending: true,
             };
           }
-          return {
-            result: `To continue, please link your GitHub account: ${started.authorizeUrl}. This is a one-time step -- send any message once you're done.`,
-            pendingIdentityLink: {
-              agentId: agent.id,
+          // Streaming turns can hold the SSE connection open (withHeartbeat
+          // keeps it alive) while integration-gateway's OAuth callback
+          // publishes completion over the identity-link Redis instance the
+          // two services already share -- so the caller never has to send a
+          // follow-up "done" message. Non-streaming (blocking) callers have
+          // no connection to hold open, so they keep the original
+          // wait-for-the-next-message behavior below.
+          if (state.progressListener) {
+            state.progressListener(
+              "identity-link",
+              `To continue, please [link your GitHub account](${started.authorizeUrl}). This is a one-time step — I'll continue automatically once you finish.`,
+            );
+            existing = await deps.identityLinkGateway.waitForCompletion?.(
               provider,
-              flow: "authcode",
-              expiresAt: Date.now() + started.expiresInSeconds * 1000,
-            },
-            identityLinkPending: true,
-          };
+              state.identity.subject,
+              started.expiresInSeconds * 1000,
+            );
+          }
+          if (!existing) {
+            return {
+              result: `To continue, please [link your GitHub account](${started.authorizeUrl}). This is a one-time step -- send any message once you're done.`,
+              pendingIdentityLink: {
+                agentId: agent.id,
+                provider,
+                flow: "authcode",
+                expiresAt: Date.now() + started.expiresInSeconds * 1000,
+              },
+              identityLinkPending: true,
+            };
+          }
         }
         const envVarName = PROVIDER_ENV_VAR[provider];
         if (!envVarName) {

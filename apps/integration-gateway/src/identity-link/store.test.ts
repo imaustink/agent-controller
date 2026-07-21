@@ -2,16 +2,23 @@ import { randomBytes } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockRedisState = new Map<string, string>();
+/** Fake broker shared by every `FakeRedis` instance and its `.duplicate()`s -- mirrors real Redis pub/sub being a single shared bus, not per-connection state. */
+const mockRedisChannels = new Map<string, Set<(message: string) => void>>();
 
 /**
  * Minimal fake satisfying the subset of the ioredis interface
  * `RedisIdentityLinkStore` uses -- no real Redis required. `ioredis-mock` is
  * not a dependency here, so this hand-rolls just `get`/`set`/`connect`/
- * `ping`/`quit`/`on`, following the "inject a minimal mock" guidance rather
- * than the (nonexistent) `redis-session-store.test.ts` pattern.
+ * `ping`/`quit`/`on`/`publish`/`subscribe`/`duplicate`, following the "inject
+ * a minimal mock" guidance rather than the (nonexistent)
+ * `redis-session-store.test.ts` pattern.
  */
 class FakeRedis {
-  on(): void {}
+  private readonly messageHandlers: ((channel: string, message: string) => void)[] = [];
+
+  on(event: string, handler: (channel: string, message: string) => void): void {
+    if (event === "message") this.messageHandlers.push(handler);
+  }
   async connect(): Promise<void> {}
   async ping(): Promise<void> {}
   async quit(): Promise<void> {}
@@ -21,6 +28,23 @@ class FakeRedis {
   async set(key: string, value: string): Promise<"OK"> {
     mockRedisState.set(key, value);
     return "OK";
+  }
+  async publish(channel: string, message: string): Promise<number> {
+    const subscribers = mockRedisChannels.get(channel);
+    if (!subscribers) return 0;
+    for (const notify of subscribers) notify(message);
+    return subscribers.size;
+  }
+  async subscribe(channel: string): Promise<void> {
+    const notify = (message: string): void => {
+      for (const handler of this.messageHandlers) handler(channel, message);
+    };
+    const subscribers = mockRedisChannels.get(channel) ?? new Set();
+    subscribers.add(notify);
+    mockRedisChannels.set(channel, subscribers);
+  }
+  duplicate(): FakeRedis {
+    return new FakeRedis();
   }
 }
 
@@ -50,6 +74,7 @@ describe("decodeEncryptionKey", () => {
 describe("RedisIdentityLinkStore", () => {
   beforeEach(() => {
     mockRedisState.clear();
+    mockRedisChannels.clear();
   });
 
   it("round-trips a credential through encrypt/decrypt", async () => {
@@ -100,5 +125,38 @@ describe("RedisIdentityLinkStore", () => {
     };
     await store.set("github", "user-789", cred);
     expect(await store.get("github", "user-789")).toEqual(cred);
+  });
+});
+
+describe("RedisIdentityLinkStore.waitForCompletion", () => {
+  const CRED = {
+    githubLogin: "octocat",
+    token: "gho_supersecret",
+    expiresAt: "2026-07-20T12:00:00.000Z",
+    refreshToken: undefined,
+    refreshExpiresAt: undefined,
+  };
+
+  beforeEach(() => {
+    mockRedisState.clear();
+    mockRedisChannels.clear();
+  });
+
+  it("resolves immediately when a credential is already stored", async () => {
+    const store = new RedisIdentityLinkStore("redis://fake", KEY);
+    await store.set("github", "user-1", CRED);
+    await expect(store.waitForCompletion("github", "user-1", 1000)).resolves.toEqual(CRED);
+  });
+
+  it("resolves once a concurrent set() publishes completion", async () => {
+    const store = new RedisIdentityLinkStore("redis://fake", KEY);
+    const waiting = store.waitForCompletion("github", "user-2", 5000);
+    await store.set("github", "user-2", CRED);
+    await expect(waiting).resolves.toEqual(CRED);
+  });
+
+  it("resolves undefined once timeoutMs elapses with no completion", async () => {
+    const store = new RedisIdentityLinkStore("redis://fake", KEY);
+    await expect(store.waitForCompletion("github", "nobody", 5)).resolves.toBeUndefined();
   });
 });
