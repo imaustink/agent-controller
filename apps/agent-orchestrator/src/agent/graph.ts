@@ -16,7 +16,7 @@ import type { IdentityResolver, Identity } from "../rbac/types.js";
 import type { SkillDescriptor, SkillSearchResult, SkillStore } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { VectorStore } from "../vector-store/types.js";
-import type { ActionPlanner } from "./action-planner.js";
+import type { ActionPlanner, ToolCallRecord } from "./action-planner.js";
 import type { BestEffortResponder } from "./best-effort-responder.js";
 import type { CapabilityNeedChecker } from "./capability-need-checker.js";
 import type { DelegateSelector } from "./delegate-selector.js";
@@ -132,6 +132,29 @@ export const AgentStateAnnotation = Annotation.Root({
    * conversation. Absent for tools that don't need instance-scoping.
    */
   toolInstanceKey: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * Completed tool calls (and their results) from earlier in THIS turn's
+   * planAction<->runTool loop -- fed back to `deps.actionPlanner.plan` so it
+   * can decide its next step from what a prior tool actually returned (e.g.
+   * fetch a page a prior web-search call surfaced), instead of getting only
+   * one tool call per turn. Reset per turn (never persisted across turns).
+   */
+  actionHistory: Annotation<ToolCallRecord[]>({
+    reducer: (_current, update) => update,
+    default: () => [],
+  }),
+  /**
+   * The most recent decision `planAction` made -- distinguishes "just chose
+   * to call a NEW tool" (route to runTool) from "decided to stop" (either
+   * `respond`, ending the turn with the planner's own synthesized text, or
+   * `finish`, ending the turn with the last tool's result verbatim via
+   * composeResponse) from a plain routing check on `selectedTool` alone,
+   * which stays populated across loop iterations and can't tell those apart.
+   */
+  plannedAction: Annotation<"respond" | "call_tool" | "finish" | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
@@ -385,6 +408,14 @@ export interface AgentGraphDeps {
  * secretEnv, agentrun-launcher.ts). Phase A supports exactly one provider.
  */
 const PROVIDER_ENV_VAR: Record<string, string> = { github: "GITHUB_TOKEN" };
+
+/**
+ * Caps how many tool calls a skill's planAction<->runTool loop may chain in a
+ * single turn (docs/adr/0008 update: multi-step tool use) -- generous enough
+ * for a realistic research chain (e.g. search, then fetch two candidate
+ * pages) while bounding the worst case of a planner that never settles.
+ */
+const MAX_TOOL_STEPS = 4;
 
 function afterOrEnd(next: string) {
   return (state: AgentState): string => (state.error ? END : next);
@@ -937,15 +968,36 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (!state.selectedSkill) {
         return { error: "no skill selected" };
       }
-      const planned = await deps.actionPlanner.plan(state.request, state.selectedSkill, state.skillTools);
+      // Bound the loop (docs/adr/0008 update: multi-step tool use) so a
+      // planner that never settles can't run forever -- finish with the
+      // last tool's result rather than erroring, since a genuine answer is
+      // already in hand.
+      if (state.actionHistory.length >= MAX_TOOL_STEPS) {
+        return { plannedAction: "finish" };
+      }
+      const planned = await deps.actionPlanner.plan(state.request, state.selectedSkill, state.skillTools, state.actionHistory);
+      if (planned.action === "finish") {
+        return { plannedAction: "finish" };
+      }
       if (planned.action === "respond") {
-        return { result: planned.response };
+        return { result: planned.response, plannedAction: "respond" };
       }
       const tool = state.skillTools.find((t) => t.id === planned.toolId);
       if (!tool) {
         return { error: "planner selected a tool outside the skill's scope" };
       }
-      return { selectedTool: tool, toolArgs: planned.toolArgs, toolInstanceKey: planned.toolInstanceKey };
+      const last = state.actionHistory[state.actionHistory.length - 1];
+      if (last && last.toolId === planned.toolId && last.toolArgs === planned.toolArgs) {
+        // Guard against a stuck loop re-issuing an identical call: treat a
+        // verbatim repeat as "done", same as an explicit finish.
+        return { plannedAction: "finish" };
+      }
+      return {
+        selectedTool: tool,
+        toolArgs: planned.toolArgs,
+        toolInstanceKey: planned.toolInstanceKey,
+        plannedAction: "call_tool",
+      };
     })
     .addNode("runTool", async (state) => {
       const tool = state.selectedTool;
@@ -1032,6 +1084,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             jobId: runId,
             result: state.wasFallback ? appendSelfImprovementSuggestion(text) : text,
             extractedContinuation: { toolId: continuationKey, token: token ?? "" },
+            actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: text }],
           };
         } catch (err) {
           return { jobId: runId, error: agentTurnErrorMessage(err) };
@@ -1106,12 +1159,19 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           jobId,
           result: state.wasFallback ? appendSelfImprovementSuggestion(text) : text,
           extractedContinuation: { toolId: continuationKey, token: token ?? "" },
+          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: text }],
         };
       }
       // The tool output is surfaced to the user verbatim; any follow-up
       // narration is added by the composeResponse node (docs/adr/0015), not
-      // hard-coded here.
-      return { jobId, result: event.result };
+      // hard-coded here. Structured results are stringified only for the
+      // planner's own benefit (`actionHistory`'s prompt context) -- `result`
+      // itself carries the real object through untouched.
+      return {
+        jobId,
+        result: event.result,
+        actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: JSON.stringify(event.result) }],
+      };
     })
     .addNode("composeResponse", async (state) => {
       // Post-tool response composition (docs/adr/0015): the active skill's own
@@ -1125,8 +1185,12 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       //
       // Only string results can be narrated in place; a structured (JSON)
       // result is passed straight through, so the node is a safe no-op outside
-      // the string path.
-      if (!state.selectedSkill || !state.selectedTool || typeof state.result !== "string") {
+      // the string path. Also a no-op when the planner's last decision was
+      // "respond" rather than "finish" -- that means the visible text is
+      // already the planner's own synthesized final answer (e.g. after a
+      // multi-step search-then-answer chain), not a verbatim tool result to
+      // narrate around.
+      if (!state.selectedSkill || !state.selectedTool || state.plannedAction !== "finish" || typeof state.result !== "string") {
         return {};
       }
       const { prefix, suffix } = await deps.responseComposer.compose(
@@ -1186,14 +1250,26 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     // user turn is a NEW invocation that re-enters via checkActiveAgentRun.
     .addEdge("delegateToAgent", END)
     .addConditionalEdges("loadSkillTools", afterOrEnd("planAction"))
-    // planAction branches three ways: error -> END, "respond" (result set,
-    // no tool) -> END, "call_tool" (selectedTool set) -> runTool. A single
-    // condition covers all three: only proceed to runTool when a tool was
-    // actually selected.
-    .addConditionalEdges("planAction", (state) => (state.error || !state.selectedTool ? END : "runTool"))
-    // A failed/empty tool run ends the turn; a successful one flows into
-    // composeResponse so the skill can add any follow-up (docs/adr/0015).
-    .addConditionalEdges("runTool", (state) => (state.error || state.result === undefined ? END : "composeResponse"))
+    // planAction branches three ways: error -> END, "call_tool" -> runTool
+    // (chain another tool call), "finish" -> composeResponse (show the last
+    // tool's result verbatim, with optional narration), "respond" -> END
+    // (the planner's own synthesized final text, already complete).
+    .addConditionalEdges("planAction", (state) => {
+      if (state.error) return END;
+      if (state.plannedAction === "call_tool") return "runTool";
+      if (state.plannedAction === "finish") return "composeResponse";
+      return END;
+    })
+    // A failed/empty tool run ends the turn. A successful skill-driven call
+    // (selectedSkill set) loops back to planAction so the skill can chain
+    // another tool call or decide it's done (docs/adr/0008 update: multi-step
+    // tool use) -- bounded by MAX_TOOL_STEPS there. A successful FALLBACK
+    // tool call (no skill selected -- selectFallbackTool/noMatchFallback,
+    // which never re-plans) goes straight to composeResponse as before.
+    .addConditionalEdges("runTool", (state) => {
+      if (state.error || state.result === undefined) return END;
+      return state.selectedSkill ? "planAction" : "composeResponse";
+    })
     .addEdge("composeResponse", END);
 
   return graph.compile();
