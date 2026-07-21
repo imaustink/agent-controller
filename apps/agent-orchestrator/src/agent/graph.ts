@@ -878,6 +878,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           allowedRoles: r.agent.allowedRoles,
           tier: r.agent.tier,
           agentRunTemplate: r.agent.agentRunTemplate,
+          identityProviders: r.agent.identityProviders,
         })),
       ];
       if (skillTools.length === 0) {
@@ -922,10 +923,39 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (tool.agentRunTemplate) {
         // Agent-backed tool: dispatch as an AgentRun over NATS, the same
         // mechanism the peer-level delegateToAgent path uses, instead of a
-        // ToolRun Job. Lets a Skill's toolRefs reach a full agent loop (e.g.
-        // a coding agent that opens PRs) via the ordinary tool-call path.
+        // ToolRun Job. Lets a Skill's toolRefs/agentRefs reach a full agent
+        // loop (e.g. a coding agent that opens PRs) via the ordinary
+        // tool-call path.
         if (!deps.agentRunLauncher || !deps.agentChannel || !deps.callbackSecretRef) {
           return { error: `tool ${tool.id} is agent-backed but agent delegation is not configured` };
+        }
+        // Same per-caller identity gate as delegateToAgent (ADR 0022) --
+        // required here too now that an identity-gated Agent's static
+        // secretEnv is stripped regardless of which path reaches it. v1
+        // scope cut: unlike delegateToAgent, this path never STARTS a fresh
+        // device-flow/authcode link -- there's no session slot analogous to
+        // pendingIdentityLink for a paused tool call, only for a paused
+        // agent delegation. A caller must link once via direct chat
+        // delegation to the same agent before a Skill can reach it here.
+        let identitySecretEnv: { name: string; value: string }[] | undefined;
+        if (tool.identityProviders && tool.identityProviders.length > 0) {
+          if (!deps.identityLinkGateway || !state.identity) {
+            return {
+              error: `tool ${tool.id} requires identity providers (${tool.identityProviders.join(", ")}) but no identity-link gateway is configured`,
+            };
+          }
+          const provider = tool.identityProviders[0]!;
+          const existing = await deps.identityLinkGateway.getToken(provider, state.identity.subject);
+          if (!existing) {
+            return {
+              error: `tool ${tool.id} requires linking your ${provider} account first -- start a direct conversation with this agent to link it, then retry`,
+            };
+          }
+          const envVarName = PROVIDER_ENV_VAR[provider];
+          if (!envVarName) {
+            return { error: `tool ${tool.id} declares unsupported identity provider "${provider}"` };
+          }
+          identitySecretEnv = [{ name: envVarName, value: existing.token }];
         }
         const runId = randomUUID();
         const callbackUrl = `${deps.callbackBaseUrl}/callback/${randomUUID()}`;
@@ -940,6 +970,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             callbackSecretRef: deps.callbackSecretRef,
             timeoutSeconds: deps.agentRunTimeoutSeconds,
             ...(deps.natsUrl ? { natsUrl: deps.natsUrl, natsSubject: `callbacks.${runId}` } : {}),
+            ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
           });
           const reply = await awaitReply;
           // v1 scope cut: agent-backed tools support single-turn/final-reply
