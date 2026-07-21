@@ -39,6 +39,19 @@ rules:
     resources: ["secrets"]
     verbs: ["get"]
   {{- end }}
+  {{- if .Values.identityLink.enabled }}
+  # Per-run Secret injection for identity-linked Agents (docs/adr/0022): the
+  # orchestrator resolves the calling user's linked GitHub token via
+  # integration-gateway's /identity-link/* API and creates/patches a
+  # per-run Secret that the launched AgentRun's Job consumes as its
+  # GITHUB_TOKEN (AgentRunSpec.SecretEnv), instead of that Agent always
+  # using a shared bot/PAT credential. This `secrets: create/patch` grant
+  # widens the orchestrator's blast radius -- only added when identity
+  # linking is on.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "patch"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

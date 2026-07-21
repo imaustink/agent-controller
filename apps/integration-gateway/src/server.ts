@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { REPLY_MARKER, type GithubReplyClient } from "./github-client.js";
+import type { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
+import { IdentityLinkApi } from "./identity-link/api.js";
 import type { GithubIdentityResolver } from "./identity.js";
 import type { OrchestratorClient } from "./orchestrator-client.js";
 import { parseGithubEvent, verifyGithubSignature, WebhookAuthError } from "./webhooks/github.js";
@@ -11,6 +13,13 @@ export interface GatewayServerOptions {
   githubReplyClient: GithubReplyClient;
   /** Called with any error from the background invoke-and-reply step; defaults to console.error. */
   onBackgroundError?: (error: unknown) => void;
+  /**
+   * The identity-link credential-broker API (docs on `IdentityLinkApi`) --
+   * optional so existing GitHub-webhook-only callers/tests don't need to wire
+   * it up. Both fields must be set together to enable `/identity-link/*`.
+   */
+  identityLinkLinker?: GithubDeviceFlowLinker;
+  identityLinkToken?: string;
 }
 
 /** `owner/repo#issueNumber` scoped session id -- see docs/integrations-gateway.md's conversational path. */
@@ -29,8 +38,14 @@ export function sessionIdFor(owner: string, repo: string, issueNumber: number): 
  */
 export class GatewayServer {
   private server: Server | undefined;
+  private readonly identityLinkApi: IdentityLinkApi | undefined;
 
-  constructor(private readonly options: GatewayServerOptions) {}
+  constructor(private readonly options: GatewayServerOptions) {
+    this.identityLinkApi =
+      options.identityLinkLinker && options.identityLinkToken
+        ? new IdentityLinkApi(options.identityLinkLinker, options.identityLinkToken)
+        : undefined;
+  }
 
   listen(port: number): Promise<void> {
     return new Promise((resolve) => {
@@ -59,6 +74,16 @@ export class GatewayServer {
     }
     if (req.method === "POST" && url.pathname === "/webhooks/github") {
       await this.handleGithubWebhook(req, res);
+      return;
+    }
+    // The authcode callback route is intercepted BEFORE the bearer-gated
+    // dispatch below -- it's hit directly by the end user's browser (via
+    // GitHub's redirect), which cannot carry our internal bearer token, and
+    // `identityLinkApi.handle`'s own bearer check would otherwise 401 it.
+    if (this.identityLinkApi && (await this.identityLinkApi.handleCallback(req, res, url))) {
+      return;
+    }
+    if (this.identityLinkApi && (await this.identityLinkApi.handle(req, res, url))) {
       return;
     }
     res.writeHead(404).end();
@@ -108,7 +133,10 @@ export class GatewayServer {
     request: string,
     sessionId: string,
   ): Promise<void> {
-    const outcome = await this.options.orchestratorClient.invoke(request, sessionId);
+    // This relay has no browser -- always force device flow explicitly
+    // rather than relying on agent-orchestrator's own default (which is
+    // "authcode", intended for browser-based callers).
+    const outcome = await this.options.orchestratorClient.invoke(request, sessionId, "device");
     const reply =
       outcome.status === "succeeded"
         ? (outcome.result ?? "")

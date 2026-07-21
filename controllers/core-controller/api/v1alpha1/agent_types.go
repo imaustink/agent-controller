@@ -107,6 +107,17 @@ type AgentSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	MaxIterations int32 `json:"maxIterations,omitempty"`
+
+	// identityProviders declares which external identity providers (e.g.
+	// "github") must be linked for the calling user before this Agent can be
+	// launched. This controller does not consume the field itself — it is
+	// read by the agent-orchestrator when deciding whether/how to launch an
+	// AgentRun for a given user (e.g. resolving and injecting a per-user
+	// token via AgentRunSpec.SecretEnv) — but it belongs on the CRD as the
+	// source of truth an operator deploys alongside the rest of the Agent
+	// catalog entry.
+	// +optional
+	IdentityProviders []string `json:"identityProviders,omitempty"`
 }
 
 // AgentStatus defines the observed state of Agent.

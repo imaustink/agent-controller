@@ -58,6 +58,17 @@ export interface AgentGraphInput {
   toolContinuations?: Record<string, string>;
   /** Per-agent continuation tokens from the caller's session, keyed by agent id (docs/adr/0017). */
   agentContinuations?: Record<string, string>;
+  /** A device-flow identity-link attempt this conversation is waiting on, if any (see `SessionRecord.pendingIdentityLink`). */
+  pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number };
+  /**
+   * Per-request override of which OAuth flow `delegateToAgent` starts if
+   * this caller needs to link an identity (see `AgentState.identityLinkFlow`
+   * in agent/graph.ts). Absent -> the graph's own default ("authcode")
+   * applies. Only ever set by `handleInvoke`'s `identity_link_flow` body
+   * field -- the Open WebUI-facing chat-completions facade never sets this,
+   * so it always gets the browser-redirect default.
+   */
+  identityLinkFlow?: "device" | "authcode";
   /**
    * Per-request progress listener — set by the SSE streaming handler to
    * forward tool Job progress/warning events as Open WebUI status steps.
@@ -133,9 +144,11 @@ export class InvokeServer {
     authToken: string,
     sessionId: string | undefined,
     progressListener?: (stage: string, message: string | undefined) => void,
+    identityLinkFlow?: "device" | "authcode",
   ): Promise<AgentGraphInput> {
     const input: AgentGraphInput = { request, authToken };
     if (progressListener) input.progressListener = progressListener;
+    if (identityLinkFlow) input.identityLinkFlow = identityLinkFlow;
     if (!sessionId || !this.sessionStore) return input;
     const record = await this.sessionStore.get(sessionId);
     if (!record) return input;
@@ -145,6 +158,7 @@ export class InvokeServer {
     input.sessionSubject = record.subject;
     input.toolContinuations = record.toolContinuations;
     input.agentContinuations = record.agentContinuations;
+    input.pendingIdentityLink = record.pendingIdentityLink;
     return input;
   }
 
@@ -173,6 +187,8 @@ export class InvokeServer {
       agentAwaitingReply?: boolean;
       extractedContinuation?: { toolId: string; token: string };
       extractedAgentContinuation?: { agentId: string; token: string };
+      pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number };
+      identityLinkPending?: boolean;
     },
   ): Promise<void> {
     if (!sessionId || !this.sessionStore || !identity) return;
@@ -198,6 +214,15 @@ export class InvokeServer {
       ...(Object.keys(toolContinuations).length > 0 ? { toolContinuations } : {}),
       ...(Object.keys(agentContinuations).length > 0 ? { agentContinuations } : {}),
     };
+
+    if (outcome.identityLinkPending) {
+      // A turn paused on a one-time device-flow authorization never also
+      // sets selectedSkill/agentRunId (delegateToAgent/checkPendingIdentityLink
+      // return early before either), so this is checked first and is always
+      // mutually exclusive with the branches below.
+      await this.sessionStore.set(sessionId, { ...base, pendingIdentityLink: outcome.pendingIdentityLink });
+      return;
+    }
 
     if (outcome.selectedSkill) {
       await this.sessionStore.set(sessionId, { ...base, activeSkillId: outcome.selectedSkill.id });
@@ -275,6 +300,7 @@ export class InvokeServer {
 
     let request: string;
     let sessionId: string | undefined;
+    let identityLinkFlow: "device" | "authcode" | undefined;
     try {
       const parsed: unknown = rawBody ? JSON.parse(rawBody) : {};
       if (
@@ -288,6 +314,11 @@ export class InvokeServer {
       request = (parsed as { request: string }).request;
       const rawSessionId = (parsed as { session_id?: unknown }).session_id;
       sessionId = typeof rawSessionId === "string" && rawSessionId.trim() !== "" ? rawSessionId : undefined;
+      // Power-user/headless-caller convenience field, not required -- an
+      // absent or invalid value is silently ignored (the graph's own
+      // "authcode" default applies) rather than 400ing the whole request.
+      const rawFlow = (parsed as { identity_link_flow?: unknown }).identity_link_flow;
+      identityLinkFlow = rawFlow === "device" || rawFlow === "authcode" ? rawFlow : undefined;
     } catch {
       res.writeHead(400, { "content-type": "application/json" }).end(
         JSON.stringify({ error: "body must be JSON: { \"request\": \"<non-empty string>\" }" }),
@@ -302,7 +333,7 @@ export class InvokeServer {
     // Fire-and-forget: the HTTP response returns immediately; the graph run
     // (which blocks on the launched tool Job's callback) updates the record
     // when it eventually settles.
-    void this.buildGraphInput(request, authToken, sessionId).then((graphInput) =>
+    void this.buildGraphInput(request, authToken, sessionId, undefined, identityLinkFlow).then((graphInput) =>
       this.graph
         .invoke(graphInput)
         .then(async (state) => {
@@ -313,6 +344,8 @@ export class InvokeServer {
             agentAwaitingReply: state.agentAwaitingReply,
             extractedContinuation: state.extractedContinuation,
             extractedAgentContinuation: state.extractedAgentContinuation,
+            pendingIdentityLink: state.pendingIdentityLink,
+            identityLinkPending: state.identityLinkPending,
           });
           this.invocations.set(id, {
             id,
@@ -444,6 +477,8 @@ export class InvokeServer {
       agentAwaitingReply: state.agentAwaitingReply,
       extractedContinuation: state.extractedContinuation,
       extractedAgentContinuation: state.extractedAgentContinuation,
+      pendingIdentityLink: state.pendingIdentityLink,
+      identityLinkPending: state.identityLinkPending,
     });
     const id = chatCompletionId();
     const content = renderResult(state.result);
@@ -520,6 +555,10 @@ export class InvokeServer {
       let result: unknown;
       let extractedContinuation: { toolId: string; token: string } | undefined;
       let extractedAgentContinuation: { agentId: string; token: string } | undefined;
+      let pendingIdentityLink:
+        | { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number }
+        | undefined;
+      let identityLinkPending: boolean | undefined;
       const persist = (): Promise<void> =>
         this.persistSession(sessionId, identity, {
           selectedSkill,
@@ -528,6 +567,8 @@ export class InvokeServer {
           agentAwaitingReply,
           extractedContinuation,
           extractedAgentContinuation,
+          pendingIdentityLink,
+          identityLinkPending,
         });
       for await (const item of withHeartbeat(source, HEARTBEAT_MS)) {
         if (item.type === "heartbeat") {
@@ -550,9 +591,26 @@ export class InvokeServer {
             | { agentId: string; token: string }
             | undefined;
         }
+        if ("pendingIdentityLink" in update) {
+          pendingIdentityLink = update.pendingIdentityLink as
+            | { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number }
+            | undefined;
+        }
+        if ("identityLinkPending" in update) identityLinkPending = update.identityLinkPending as boolean | undefined;
 
         if (typeof update.error === "string") {
           finish(`❌ ${update.error}`);
+          return;
+        }
+        // checkPendingIdentityLink (still waiting on an existing device-flow
+        // attempt) and delegateToAgent (just started a FRESH one) are both
+        // terminal for this graph invocation whenever identityLinkPending is
+        // true -- `result` is the "please link/still waiting" message, set
+        // directly on the node, with no agentRunId (no AgentRun was ever
+        // launched yet).
+        if ((nodeName === "checkPendingIdentityLink" || nodeName === "delegateToAgent") && identityLinkPending) {
+          await persist();
+          finish(renderResult(result));
           return;
         }
         if (nodeName === "composeResponse") {

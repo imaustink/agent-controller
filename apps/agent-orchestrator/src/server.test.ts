@@ -120,6 +120,67 @@ describe("InvokeServer", () => {
   });
 });
 
+describe("InvokeServer session-scoped pending identity link (GitHub OAuth Device Flow)", () => {
+  function sessionStore() {
+    return new InMemorySessionStore({ ttlMs: 60_000, maxEntries: 10 });
+  }
+
+  it("persists pendingIdentityLink from a turn that paused on device-flow authorization, and offers it to the graph on the next turn", async () => {
+    const identity = { subject: "alice", roles: ["reader"] };
+    const pendingIdentityLink = {
+      agentId: "opencode-swe",
+      provider: "github",
+      deviceCode: "raw-device-code",
+      expiresAt: Date.now() + 900_000,
+    };
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({
+        request: "x",
+        authToken: "tok-1",
+        skillCandidates: [],
+        identity,
+        pendingIdentityLink,
+        identityLinkPending: true,
+        result: "please link your GitHub account",
+      } as AgentState),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph, sessionStore());
+    const port = await listenOn(server);
+
+    const postRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "open a PR", session_id: "session-1" }),
+    });
+    const { id } = (await postRes.json()) as { id: string };
+    await new Promise((r) => setTimeout(r, 10));
+    const doneRes = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
+    expect((await doneRes.json()) as { status: string }).toMatchObject({ status: "succeeded" });
+
+    // Second turn: the session should now offer the pending link back to the graph.
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "any message", session_id: "session-1" }),
+    });
+
+    expect(graph.invoke).toHaveBeenNthCalledWith(2, {
+      request: "any message",
+      authToken: "tok-1",
+      activeSkillId: undefined,
+      activeAgentId: undefined,
+      activeAgentRunId: undefined,
+      sessionSubject: "alice",
+      toolContinuations: undefined,
+      agentContinuations: undefined,
+      pendingIdentityLink,
+    });
+
+    await server.close();
+  });
+});
+
 describe("InvokeServer OpenAI-compatible chat completions (ADR 0007)", () => {
   it("GET /v1/models lists a single model id", async () => {
     const graph: AgentGraphLike = { invoke: vi.fn(), stream: vi.fn() };
@@ -668,6 +729,59 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
       activeSkillId: "recipe-skill",
       sessionSubject: "open-webui",
     });
+
+    await server.close();
+  });
+
+  it("threads an explicit identity_link_flow on POST /invoke into the graph input", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "tok-1", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "open a PR", identity_link_flow: "device" }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(graph.invoke).toHaveBeenCalledWith({
+      request: "open a PR",
+      authToken: "tok-1",
+      identityLinkFlow: "device",
+    });
+
+    await server.close();
+  });
+
+  it("silently ignores a missing or invalid identity_link_flow on POST /invoke, without failing the request", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "tok-1", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const omittedRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "open a PR" }),
+    });
+    expect(omittedRes.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(graph.invoke).toHaveBeenLastCalledWith({ request: "open a PR", authToken: "tok-1" });
+
+    const invalidRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "open a PR", identity_link_flow: "carrier-pigeon" }),
+    });
+    expect(invalidRes.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(graph.invoke).toHaveBeenLastCalledWith({ request: "open a PR", authToken: "tok-1" });
 
     await server.close();
   });

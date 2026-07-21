@@ -19,6 +19,7 @@ import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
 import type { BestEffortResponder } from "./best-effort-responder.js";
 import type { CapabilityNeedChecker } from "./capability-need-checker.js";
+import type { IdentityLinkPort } from "../identity-link/gateway-client.js";
 
 const scraperTool: ToolDescriptor = {
   id: "recipe-scraper",
@@ -1206,6 +1207,290 @@ describe("buildAgentGraph capability-need gate (no search for conversational req
     expect(final.error).toBeUndefined();
     expect(deps.capabilityNeedChecker.needsCapability).toHaveBeenCalledWith("scrape and publish this recipe");
     expect(deps.skillStore.query).toHaveBeenCalled();
+  });
+});
+
+describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)", () => {
+  const githubAgent: AgentDescriptor = {
+    id: "opencode-swe",
+    name: "opencode-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    identityProviders: ["github"],
+    agentRunTemplate: { namespace: "default", agentRef: "opencode-swe" },
+  };
+
+  function identityLinkDeps(overrides: Partial<AgentGraphDeps> = {}, reply: Partial<AgentTurnResult> = {}) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: githubAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([githubAgent]),
+    };
+    const delegateSelector: DelegateSelector = {
+      select: vi.fn().mockResolvedValue({ type: "agent", agent: githubAgent }),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened a pull request",
+        final: true,
+        narration: [],
+        ...reply,
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "device" as const,
+        verificationUri: "https://github.com/login/device",
+        userCode: "ABCD-1234",
+        deviceCode: "raw-device-code",
+        expiresInSeconds: 900,
+        pollIntervalSeconds: 5,
+      }),
+      poll: vi.fn().mockResolvedValue("complete"),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher,
+      identityLinkGateway,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("starts a device-flow link (identityLinkFlow: \"device\" explicitly set) and does NOT launch the agent when the caller has no linked token yet", async () => {
+    const deps = identityLinkDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "open a PR that fixes the bug",
+      authToken: "tok",
+      identityLinkFlow: "device",
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.identityLinkGateway!.getToken).toHaveBeenCalledWith("github", "alice");
+    expect(deps.identityLinkGateway!.start).toHaveBeenCalledWith("github", "alice", "device");
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual({
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "device",
+      deviceCode: "raw-device-code",
+      expiresAt: expect.any(Number),
+    });
+    expect(final.result).toMatch(/github\.com\/login\/device/);
+    expect(final.result).toMatch(/ABCD-1234/);
+  });
+
+  it("starts an authcode-flow link by default (no identityLinkFlow set) and does NOT launch the agent when the caller has no linked token yet", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "authcode" as const,
+        authorizeUrl: "https://github.com/login/oauth/authorize?state=xyz",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "open a PR that fixes the bug", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(identityLinkGateway.getToken).toHaveBeenCalledWith("github", "alice");
+    expect(identityLinkGateway.start).toHaveBeenCalledWith("github", "alice", "authcode");
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual({
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "authcode",
+      expiresAt: expect.any(Number),
+    });
+    expect(final.pendingIdentityLink?.deviceCode).toBeUndefined();
+    expect(final.result).toMatch(/github\.com\/login\/oauth\/authorize/);
+  });
+
+  it("resumes delegation and launches with secretEnv once a pending link's poll reports complete", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn().mockResolvedValue("complete"),
+      getToken: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "continue please",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: {
+        agentId: "opencode-swe",
+        provider: "github",
+        flow: "device",
+        deviceCode: "raw-device-code",
+        expiresAt: Date.now() + 900_000,
+      },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(identityLinkGateway.poll).toHaveBeenCalledWith("github", "alice", "raw-device-code");
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      githubAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }] }),
+    );
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(final.agentRunId).toBeDefined();
+  });
+
+  it("ends the turn with identityLinkPending true and the pending link preserved when poll reports still-pending before expiry", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn().mockResolvedValue("pending"),
+      getToken: vi.fn(),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+    const pending = {
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "device" as const,
+      deviceCode: "raw-device-code",
+      expiresAt: Date.now() + 900_000,
+    };
+
+    const final = await graph.invoke({
+      request: "still working on it",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: pending,
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual(pending);
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.result).toMatch(/still waiting/i);
+  });
+
+  it("clears the pending link and falls through to normal selection when poll reports expired", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "device" as const,
+        verificationUri: "https://github.com/login/device",
+        userCode: "NEW-CODE",
+        deviceCode: "new-device-code",
+        expiresInSeconds: 900,
+        pollIntervalSeconds: 5,
+      }),
+      poll: vi.fn().mockResolvedValue("expired"),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "let's try again",
+      authToken: "tok",
+      sessionSubject: "alice",
+      // Same caller forces device flow again on the fresh attempt below.
+      identityLinkFlow: "device",
+      pendingIdentityLink: {
+        agentId: "opencode-swe",
+        provider: "github",
+        flow: "device",
+        deviceCode: "raw-device-code",
+        expiresAt: Date.now() - 1_000, // already expired
+      },
+    });
+
+    expect(final.error).toBeUndefined();
+    // Falls through to fresh retrieval/selection, which re-detects the
+    // missing link and starts a BRAND NEW device-flow attempt.
+    expect(deps.identityLinkGateway!.start).toHaveBeenCalledWith("github", "alice", "device");
+    expect(final.pendingIdentityLink).toEqual({
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "device",
+      deviceCode: "new-device-code",
+      expiresAt: expect.any(Number),
+    });
+  });
+
+  it("resumes delegation via authcode's getToken check (not poll) when a pending authcode link's token has landed", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "continue please",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: {
+        agentId: "opencode-swe",
+        provider: "github",
+        flow: "authcode",
+        expiresAt: Date.now() + 900_000,
+      },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(identityLinkGateway.poll).not.toHaveBeenCalled();
+    expect(identityLinkGateway.getToken).toHaveBeenCalledWith("github", "alice");
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      githubAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }] }),
+    );
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(final.agentRunId).toBeDefined();
+  });
+
+  it("ends the turn with identityLinkPending true when a pending authcode link's token has not landed yet and it hasn't expired (poll not called)", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+    const pending = {
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "authcode" as const,
+      expiresAt: Date.now() + 900_000,
+    };
+
+    const final = await graph.invoke({
+      request: "still working on it",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: pending,
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(identityLinkGateway.poll).not.toHaveBeenCalled();
+    expect(identityLinkGateway.getToken).toHaveBeenCalledWith("github", "alice");
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual(pending);
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.result).toMatch(/still waiting/i);
   });
 });
 

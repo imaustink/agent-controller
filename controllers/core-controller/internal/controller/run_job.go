@@ -172,6 +172,43 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 	return job, nil
 }
 
+// mergeSecretEnv merges per-run secretEnv overrides over an Agent template's
+// static secretEnv, keyed by Name: an override entry wins over a base entry
+// with the same Name, and entries unique to either side are both included.
+// Base ordering is preserved for unchanged/unmatched base entries, with
+// overrides appended afterward (winning overrides replace in place;
+// override-only entries are appended at the end). Used to let an AgentRun
+// inject a per-invocation credential (e.g. a short-lived per-user GitHub
+// token) that overrides or adds to the Agent's baked-in static credentials
+// for that one run only, without mutating the Agent CR.
+func mergeSecretEnv(base, overrides []toolv1alpha1.SecretEnvVar) []toolv1alpha1.SecretEnvVar {
+	if len(overrides) == 0 {
+		return base
+	}
+
+	overrideByName := make(map[string]toolv1alpha1.SecretEnvVar, len(overrides))
+	for _, o := range overrides {
+		overrideByName[o.Name] = o
+	}
+
+	merged := make([]toolv1alpha1.SecretEnvVar, 0, len(base)+len(overrides))
+	seen := make(map[string]bool, len(overrides))
+	for _, b := range base {
+		if o, ok := overrideByName[b.Name]; ok {
+			merged = append(merged, o)
+			seen[b.Name] = true
+		} else {
+			merged = append(merged, b)
+		}
+	}
+	for _, o := range overrides {
+		if !seen[o.Name] {
+			merged = append(merged, o)
+		}
+	}
+	return merged
+}
+
 // jobPhase maps an observed Job's status to the shared run-phase enum, plus
 // a human-readable message. Used by both ToolRun and AgentRun status sync.
 func jobPhase(job *batchv1.Job, currentMessage string) (toolv1alpha1.ToolRunPhase, string) {

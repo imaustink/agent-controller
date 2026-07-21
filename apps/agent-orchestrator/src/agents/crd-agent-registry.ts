@@ -14,6 +14,8 @@ export interface AgentCustomResource {
     allowedRoles: string[];
     tier?: string;
     orchestratorPrompt?: string;
+    /** Mirrors AgentDescriptor.identityProviders — see that field's doc comment. */
+    identityProviders?: string[];
     // agentPrompt, image, serviceAccountName, env, secretEnv, resources,
     // skillRefs, model, maxIterations are launch/loop-internal details this
     // orchestrator never needs — it only ever references the Agent CR by
@@ -106,6 +108,7 @@ export function toAgentDescriptor(cr: AgentCustomResource, namespace: string): A
     allowedRoles: spec.allowedRoles ?? [],
     tier: spec.tier,
     orchestratorPrompt: spec.orchestratorPrompt,
+    identityProviders: spec.identityProviders,
     agentRunTemplate: {
       namespace,
       agentRef: name,

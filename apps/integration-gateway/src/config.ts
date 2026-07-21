@@ -23,6 +23,22 @@ export interface AppConfig {
   pollIntervalMs: number;
   /** Maximum total time (ms) to poll before giving up on a turn. */
   pollTimeoutMs: number;
+  /** Public GitHub App client id used to start OAuth Device Flow links (not a secret). */
+  githubAppClientId: string;
+  /** Base64 (or hex) 32-byte AES-256-GCM key used to encrypt linked GitHub tokens at rest. */
+  identityLinkEncryptionKey: string;
+  /** Bearer token agent-orchestrator authenticates to this gateway's /identity-link/* API as (opposite direction from orchestratorToken). */
+  identityLinkToken: string;
+  /** Redis connection string backing the durable identity-link store; same env var agent-orchestrator uses for its own session store. */
+  redisUrl: string | undefined;
+  /** OAuth scope requested when starting a device-flow link. */
+  deviceFlowScope: string;
+  /** GitHub App client secret; only required when the authcode identity-link flow is actually used. */
+  githubAppClientSecret: string;
+  /** HMAC secret used to sign/verify the authcode `state` param; only required when the authcode identity-link flow is actually used. */
+  identityLinkStateSecret: string;
+  /** Must exactly match the GitHub App's registered OAuth callback URL (not a secret); only required when the authcode identity-link flow is actually used. */
+  githubOauthRedirectUri: string;
 }
 
 function num(raw: string | undefined, fallback: number): number {
@@ -51,6 +67,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     githubIdentities: env.GATEWAY_GITHUB_IDENTITIES,
     pollIntervalMs: num(env.GATEWAY_POLL_INTERVAL_MS, 3_000),
     pollTimeoutMs: num(env.GATEWAY_POLL_TIMEOUT_MS, 15 * 60 * 1000),
+    githubAppClientId: env.GITHUB_APP_CLIENT_ID ?? "",
+    identityLinkEncryptionKey: env.IDENTITY_LINK_ENCRYPTION_KEY ?? "",
+    identityLinkToken: env.GATEWAY_IDENTITY_LINK_TOKEN ?? "",
+    redisUrl: env.AGENT_REDIS_URL,
+    deviceFlowScope: env.GITHUB_DEVICE_FLOW_SCOPE ?? "repo",
+    githubAppClientSecret: env.GITHUB_APP_CLIENT_SECRET ?? "",
+    identityLinkStateSecret: env.IDENTITY_LINK_STATE_SECRET ?? "",
+    githubOauthRedirectUri: env.GITHUB_OAUTH_REDIRECT_URI ?? "",
   };
 }
 

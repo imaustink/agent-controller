@@ -123,6 +123,10 @@ spec:
             - name: AGENT_REDIS_URL
               value: {{ include "agent-orchestrator.redisUrl" . | quote }}
             {{- end }}
+            {{- if .Values.identityLink.enabled }}
+            - name: IDENTITY_LINK_GATEWAY_URL
+              value: {{ .Values.identityLink.gatewayUrl | quote }}
+            {{- end }}
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -161,6 +165,13 @@ spec:
                   name: {{ .Values.secrets.existingSecret | default (include "agent-orchestrator.fullname" .) }}
                   key: {{ .Values.secrets.qdrantApiKeyKey }}
                   optional: true
+            {{- end }}
+            {{- if .Values.identityLink.enabled }}
+            - name: IDENTITY_LINK_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "agent-orchestrator.fullname" .) }}
+                  key: {{ .Values.secrets.identityLinkGatewayTokenKey }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
