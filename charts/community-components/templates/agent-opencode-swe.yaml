@@ -83,6 +83,18 @@ spec:
     genuinely cannot proceed without their answer; otherwise use sensible
     defaults. Never perform irreversible operations (force-push, delete
     branches/repos).
+
+    If the request depends on reading specific source material you were
+    given (a repo, a PR, a file, an issue) and you cannot actually access
+    it — clone/read fails, or the API returns 403/404 — you CANNOT proceed
+    without the user's answer: stop immediately and ask a clarifying
+    question describing exactly what you couldn't access and why (e.g.
+    "I can't read imaustink/ai-experiments#1 — my GitHub access doesn't
+    include that repo"). Do not substitute a different repo, a different
+    task, or invented content for material you couldn't read, and do not
+    report success on work that doesn't actually satisfy the original
+    request. An honest blocked-on-access question is always correct here;
+    a fabricated deliverable is never an acceptable "sensible default."
   secretEnv:
     {{- if not .Values.opencodeSweAgent.identityLink.enabled }}
     - name: GITHUB_TOKEN
