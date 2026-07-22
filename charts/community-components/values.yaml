@@ -165,14 +165,26 @@ opencodeSweAgent:
   githubAppIdSecretKey: ""
   githubAppPrivateKeySecretKey: ""
   githubAppInstallationIdSecretKey: ""
-  # Per-user GitHub identity linking (docs/adr/0022): when enabled, this
-  # agent no longer uses a shared GITHUB_TOKEN/App-installation credential
-  # at all -- agent-orchestrator resolves and injects the CALLING USER's
-  # own linked GitHub token per-run instead (requires agent-orchestrator's
-  # own identityLink.enabled=true and a configured integration-gateway,
-  # see those charts). Leave disabled (default) to keep today's shared-
-  # credential behavior (GITHUB_TOKEN PAT or GitHub App installation token)
-  # unchanged.
+  # The App's slug (from its GitHub settings page, e.g. "my-cool-app") --
+  # public, not a secret. Only used when identityLink.enabled and a full App
+  # configuration are both set (the dual-token pattern below): builds the
+  # bot's commit identity directly as "<slug>[bot]" instead of a generic
+  # placeholder, since an installation token can't call GET /user to derive
+  # it the way a PAT/user token can.
+  githubAppSlug: ""
+  # Per-user GitHub identity linking (docs/adr/0022, dual-token pattern):
+  # when enabled AND a full GitHub App configuration is also set (the three
+  # githubApp*SecretKey values above), this agent uses BOTH tokens per turn --
+  # the calling user's own linked GitHub token gates whether a write is
+  # authorized (does this specific person actually have push access?), while
+  # a freshly minted, repo-scoped App installation token performs the actual
+  # write, so commits/PRs attribute to the bot rather than the human. If
+  # identityLink.enabled is set but the App isn't fully configured, this
+  # agent falls back to writing with the user's own token directly (today's
+  # single-token behavior). Requires agent-orchestrator's own
+  # identityLink.enabled=true and a configured integration-gateway (see
+  # those charts). Leave disabled (default) for the shared-credential
+  # behavior (GITHUB_TOKEN PAT or GitHub App installation token) unchanged.
   identityLink:
     enabled: false
     providers:

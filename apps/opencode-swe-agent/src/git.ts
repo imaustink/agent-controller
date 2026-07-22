@@ -82,6 +82,49 @@ export async function setupGitAuth(opts: {
   await writeFile(gitconfig, content, { mode: 0o600 });
 }
 
+export interface CoAuthor {
+  login: string;
+  /** Numeric GitHub user id — used to build the standard `id+login@users.noreply.github.com` trailer email. */
+  id: number;
+}
+
+/**
+ * Deterministically appends a `Co-authored-by` trailer to the single commit
+ * this turn produced, then force-pushes the amended commit — done at the git
+ * level in code, not left to the LLM to remember. Only acts when the turn
+ * produced EXACTLY one new commit relative to `priorHeadSha` (or, if there
+ * was no prior SHA — a brand-new branch/repo — exactly one commit total):
+ * a turn that made several commits is left untouched rather than rewriting
+ * a longer, organic history non-deterministically. Returns whether the
+ * trailer was actually applied.
+ */
+export async function appendCoAuthorTrailer(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  coAuthor: CoAuthor,
+  priorHeadSha: string | null,
+): Promise<boolean> {
+  const countArgs = priorHeadSha
+    ? ["-C", repoDir, "rev-list", "--count", `${priorHeadSha}..HEAD`]
+    : ["-C", repoDir, "rev-list", "--count", "HEAD"];
+  const countRes = await runCommand("git", countArgs, { env });
+  if (countRes.code !== 0 || countRes.stdout.trim() !== "1") return false;
+
+  const msgRes = await runCommand("git", ["-C", repoDir, "log", "-1", "--pretty=%B"], { env });
+  if (msgRes.code !== 0) return false;
+
+  const email = `${coAuthor.id}+${coAuthor.login}@users.noreply.github.com`;
+  const newMessage = `${msgRes.stdout.trimEnd()}\n\nCo-authored-by: ${coAuthor.login} <${email}>\n`;
+
+  const amendRes = await runCommand("git", ["-C", repoDir, "commit", "--amend", "--allow-empty", "-m", newMessage], {
+    env,
+  });
+  if (amendRes.code !== 0) return false;
+
+  const pushRes = await runCommand("git", ["-C", repoDir, "push", "--force-with-lease"], { env });
+  return pushRes.code === 0;
+}
+
 /** Ensures a directory exists (recursive, idempotent). */
 export async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });

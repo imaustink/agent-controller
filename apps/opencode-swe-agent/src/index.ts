@@ -9,11 +9,12 @@ import {
   buildPrompt,
   parseOpencodeLine,
 } from "./opencode.js";
-import { discoverResult, ensureDir, findRepoDir, resolveGitIdentity, runCommand, setupGitAuth } from "./git.js";
+import { appendCoAuthorTrailer, discoverResult, ensureDir, findRepoDir, resolveGitIdentity, runCommand, setupGitAuth } from "./git.js";
 import { extractContinuationToken } from "./continuation.js";
 import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./marker.js";
 import { loadToolConfig } from "./config.js";
 import { resolveGithubToken } from "@controller-agent/github-app-auth";
+import { AuthorizationError, finalizeDelegatedWrite, isDelegating, resolveDelegatedToken } from "./identityDelegation.js";
 import { clip } from "./security/redact.js";
 
 const toolConfig = loadToolConfig();
@@ -145,10 +146,38 @@ async function runOneTurn(
   session: AgentSession,
   instruction: string,
   marker: SweMarker | null,
-  token: string,
   anthropicApiKey: string,
+  turnStartedAt: number,
 ): Promise<{ reply: string; nextMarker: SweMarker | null; succeeded: boolean }> {
   const apiHost = new URL(toolConfig.githubApiUrl).host === "api.github.com" ? "github.com" : new URL(toolConfig.githubApiUrl).host;
+
+  // Dual-token identity delegation (docs/adr — see identityDelegation.ts):
+  // when enabled, the user's own linked token only ever gates *whether* a
+  // write happens; the write itself is done with a freshly minted App
+  // installation token, so commits/PRs attribute to the bot. Falls back to
+  // resolveGithubToken's single-token behavior (static PAT, or whatever's
+  // configured) when delegation isn't configured.
+  const delegating = isDelegating(toolConfig);
+  let token: string;
+  let attribution: { githubLogin: string; githubId: number } | null = null;
+  if (delegating) {
+    try {
+      const resolved = await resolveDelegatedToken(toolConfig, marker?.repo ?? null, turnStartedAt);
+      token = resolved.token;
+      attribution = resolved.attribution;
+    } catch (err) {
+      if (err instanceof AuthorizationError) {
+        return {
+          reply: `You don't have write access to \`${marker?.repo}\`: ${err.message}`,
+          nextMarker: marker,
+          succeeded: false,
+        };
+      }
+      throw err;
+    }
+  } else {
+    token = await resolveGithubToken(toolConfig);
+  }
 
   // opencode reads its config (model, permission rules) from
   // $XDG_CONFIG_HOME/opencode/opencode.json. Point that at a writable
@@ -176,14 +205,26 @@ async function runOneTurn(
     JSON.stringify(buildOpencodeConfig({ model: toolConfig.model }), null, 2),
   );
 
-  const identity = (await resolveGitIdentity(childEnv, session.signal)) ?? {
-    name: "opencode-swe",
-    email: "opencode-swe@users.noreply.github.com",
-  };
+  // Once delegating, the token authenticating git/gh is an installation
+  // token, which can't call `GET /user` (403 — App tokens aren't user
+  // tokens), so resolveGitIdentity's own lookup would always miss. Construct
+  // the bot identity directly when the App's slug is configured; otherwise
+  // fall back to the generic placeholder (unchanged prior behavior).
+  const identity =
+    delegating && toolConfig.githubAppSlug
+      ? {
+          name: `${toolConfig.githubAppSlug}[bot]`,
+          email: `${toolConfig.githubAppId}+${toolConfig.githubAppSlug}[bot]@users.noreply.github.com`,
+        }
+      : ((await resolveGitIdentity(childEnv, session.signal)) ?? {
+          name: "opencode-swe",
+          email: "opencode-swe@users.noreply.github.com",
+        });
   await setupGitAuth({ homeDir: toolConfig.homeDir, token, apiHost, identity });
 
   await session.progress("Preparing workspace…");
 
+  let priorHeadSha: string | null = null;
   if (marker?.repo) {
     const repoName = marker.repo.split("/")[1];
     const dest = `${toolConfig.workdir}/${repoName}`;
@@ -193,6 +234,13 @@ async function runOneTurn(
     });
     if (cloneResult.code === 0 && marker.branch) {
       await runCommand("git", ["-C", dest, "checkout", marker.branch], { env: childEnv, signal: session.signal });
+    }
+    if (cloneResult.code === 0) {
+      const headRes = await runCommand("git", ["-C", dest, "rev-parse", "HEAD"], {
+        env: childEnv,
+        signal: session.signal,
+      });
+      if (headRes.code === 0) priorHeadSha = headRes.stdout.trim();
     }
   }
 
@@ -240,6 +288,53 @@ async function runOneTurn(
     };
   }
 
+  if (delegating && attribution) {
+    // marker.repo known -> access was already verified pre-flight above.
+    // marker.repo unknown -> this is the first point the actual repo is
+    // known, so it's the first point we CAN check: distinguish "the bot
+    // just created this" (grant the human access) from "this repo already
+    // existed" (retroactively verify access; revoke the PR if insufficient)
+    // via GitHub's own created_at timestamp — not the LLM's say-so.
+    if (!marker?.repo) {
+      const outcome = await finalizeDelegatedWrite({
+        token,
+        attribution,
+        repo: discovered.repo,
+        githubApiUrl: toolConfig.githubApiUrl,
+        turnStartedAt,
+      });
+      if (outcome.kind === "revoke") {
+        if (discovered.pr) {
+          await runCommand(
+            "gh",
+            [
+              "pr",
+              "close",
+              discovered.pr,
+              "--repo",
+              discovered.repo,
+              "--comment",
+              "Closed automatically: the initiating user does not have write access to this repository.",
+            ],
+            { env: childEnv, signal: session.signal },
+          );
+        }
+        return {
+          reply: `⚠️ This operation touched \`${discovered.repo}\`, which you don't have write access to (${outcome.reason}). The resulting change has been closed rather than reported as complete.`,
+          nextMarker: marker,
+          succeeded: false,
+        };
+      }
+    }
+
+    await appendCoAuthorTrailer(
+      repoDir!,
+      childEnv,
+      { login: attribution.githubLogin, id: attribution.githubId },
+      priorHeadSha,
+    );
+  }
+
   const nextMarker: SweMarker = {
     repo: discovered.repo,
     branch: discovered.branch,
@@ -279,10 +374,7 @@ async function runOneTurn(
  * `session.ask()` to pause and resume instead.
  */
 runAgent(async (session) => {
-  // Prefers a freshly minted GitHub App installation token when App
-  // credentials are configured; falls back to the static GITHUB_TOKEN PAT
-  // otherwise. See @controller-agent/github-app-auth for the precedence/validation rules.
-  const token = await resolveGithubToken(toolConfig);
+  const turnStartedAt = Date.now();
   const anthropicApiKey = toolConfig.anthropicApiKey;
   if (!anthropicApiKey) {
     throw new Error("ANTHROPIC_API_KEY is required — inject via secretEnv/secretKeyRef on the Agent CR");
@@ -306,7 +398,10 @@ runAgent(async (session) => {
   // Note: this is currently a simple heuristic — a more sophisticated agent
   // would use an LLM pre-flight check here. For now, always proceed to the
   // coding turn and let the opencode CLI surface missing-context errors.
-  const { reply, nextMarker, succeeded } = await runOneTurn(session, instruction, marker, token, anthropicApiKey);
+  // (Token resolution — including the dual-token identity-delegation path —
+  // happens inside runOneTurn, since it needs `marker` to decide whether the
+  // target repo is already known.)
+  const { reply, nextMarker, succeeded } = await runOneTurn(session, instruction, marker, anthropicApiKey, turnStartedAt);
 
   if (!succeeded) {
     throw new Error(reply);
