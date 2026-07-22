@@ -29,23 +29,24 @@ Everything below is your call to run — cluster + work-repo changes.
 
 ### 1. ECR repos + images (manual for the first stand-up)
 
-The platform's proper pattern is `platform-app-resources` additionalRepos +
-CI push, but durable-agents has no CI (local-only repo), so push by hand:
+The platform's pipeline builds agent-controller's images because that
+source is public; durable-agents is private/local, so build and push from
+your machine (needs platform-account AWS credentials):
 
 ```bash
-AWS_ACCOUNT=486491621059 REGION=us-east-1 TAG=$(git -C ~/personal/durable-agents rev-parse --short=12 HEAD)
-aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT.dkr.ecr.$REGION.amazonaws.com
-
-for app in gateway worker catalog-sync; do
-  aws ecr create-repository --repository-name durable-agents-$app --region $REGION || true
-  docker build -f ~/personal/durable-agents/Dockerfile.$app -t $AWS_ACCOUNT.dkr.ecr.$REGION.amazonaws.com/durable-agents-$app:$TAG ~/personal/durable-agents
-  docker push $AWS_ACCOUNT.dkr.ecr.$REGION.amazonaws.com/durable-agents-$app:$TAG
-done
+cd ~/personal/durable-agents
+make ecr-push        # login, create repos if missing, build linux/amd64, push
+                     # prints the tag to set in gitops/durable-agents/values.yaml
 ```
 
-(Long-term: add the three repos to the agent-controller app's
-`ecr.additionalRepositories` and wire a build workflow, matching the
-platform pattern.)
+Tag = 12-char git SHA, matching the platform's version.yaml convention.
+Images are `--platform linux/amd64` for the EKS nodes; pulls use the node
+IAM role (same account), so no imagePullSecrets.
+
+(Longer-term options if this graduates from testing: make durable-agents a
+private GitHub repo with its own OIDC push role via platform-app-resources,
+or move the ECR repos under the platform's Crossplane management to avoid
+IaC drift from the manually-created repos.)
 
 ### 2. 1Password item
 
