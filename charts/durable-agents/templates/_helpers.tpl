@@ -19,3 +19,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 - name: QDRANT_PORT
   value: {{ .Values.qdrant.port | quote }}
 {{- end }}
+
+{{- define "durable-agents.callbackBaseURL" -}}
+{{- if .Values.callback.baseURL -}}
+{{ .Values.callback.baseURL }}
+{{- else -}}
+http://{{ .Release.Name }}-gateway-callback.{{ .Release.Namespace }}.svc:8081
+{{- end -}}
+{{- end }}

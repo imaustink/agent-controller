@@ -13,10 +13,9 @@ import (
 	"syscall"
 
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 
 	"durable-agents/internal/catalog"
+	"durable-agents/internal/kubeconfig"
 	"durable-agents/internal/llm"
 	"durable-agents/internal/vectorstore"
 )
@@ -46,7 +45,7 @@ func main() {
 	}
 	defer client.Close()
 
-	kubeConfig, err := loadKubeConfig()
+	kubeConfig, err := kubeconfig.Load()
 	if err != nil {
 		log.Fatalf("load kube config: %v", err)
 	}
@@ -62,16 +61,6 @@ func main() {
 	if err := catalog.RunWatch(ctx, dynamicClient, namespace, indexer); err != nil {
 		log.Fatalf("catalog watch exited: %v", err)
 	}
-}
-
-// loadKubeConfig prefers in-cluster config, falling back to KUBECONFIG /
-// ~/.kube/config for local development.
-func loadKubeConfig() (*rest.Config, error) {
-	if cfg, err := rest.InClusterConfig(); err == nil {
-		return cfg, nil
-	}
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, nil).ClientConfig()
 }
 
 func getenv(key, fallback string) string {

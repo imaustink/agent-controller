@@ -97,7 +97,7 @@ Rebuild the agent half on Temporal; keep the tool half as-is.
    turn = one Update calling one LLM activity), chart, tests.
 2. ✅ Catalog + RAG: informers → Qdrant, RBAC-filtered retrieval activities,
    skill-access derivation.
-3. Tool execution end-to-end: ToolRun-create activity, callback→signal
+3. ✅ Tool execution end-to-end: ToolRun-create activity, callback→signal
    bridge, durable await with timeout, phase-mirror crash backstop.
 4. Agent-loop parity: capability gate → retrieve → select → plan⇄runTool
    loop → compose, plus the bare-answer path.

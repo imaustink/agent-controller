@@ -18,6 +18,9 @@ spec:
         {{- include "durable-agents.labels" . | nindent 8 }}
         app.kubernetes.io/component: worker
     spec:
+      {{- if .Values.toolrun.enabled }}
+      serviceAccountName: {{ .Release.Name }}-worker
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -41,6 +44,18 @@ spec:
               value: {{ .Values.llm.embedModel | quote }}
             {{- if .Values.qdrant.host }}
             {{- include "durable-agents.qdrantEnv" . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.toolrun.enabled }}
+            - name: TOOLRUN_MODE
+              value: "k8s"
+            - name: TOOLRUN_NAMESPACE
+              value: {{ .Values.catalog.namespace | quote }}
+            - name: CALLBACK_BASE_URL
+              value: {{ include "durable-agents.callbackBaseURL" . | quote }}
+            - name: CALLBACK_SECRET_NAME
+              value: {{ .Values.callback.secretName | quote }}
+            - name: CALLBACK_SECRET_KEY
+              value: {{ .Values.callback.secretKey | quote }}
             {{- end }}
             - name: OPENAI_API_KEY
               valueFrom:

@@ -18,6 +18,8 @@ design and milestone plan.
 | `cmd/catalog-sync` | Watches agent-controller's Tool/Skill/Agent CRs (dynamic informers) and mirrors them into Qdrant with derived skill access roles. |
 | `internal/catalog` | CR decoding, skill-access derivation (ADR 0011 port), indexer. |
 | `internal/vectorstore` | Store port + Qdrant adapter; RBAC filters baked into every read. |
+| `internal/messaging` | Go port of the tool event stream + HMAC callback contract — tool containers are unchanged. |
+| `internal/toolrun` | ToolRun CR launcher (k8s dynamic client) + fake mode for cluster-less dev. |
 | `internal/temporal` | Shared Temporal client/config for gateway + worker. |
 | `internal/temporal/workflows` | Deterministic workflow code only (`ConversationWorkflow`). |
 | `internal/temporal/activities` | All non-deterministic work (LLM calls; later: Qdrant, ToolRun CRs, identity). |

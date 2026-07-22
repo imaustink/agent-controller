@@ -10,10 +10,14 @@ import (
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 
+	"k8s.io/client-go/dynamic"
+
+	"durable-agents/internal/kubeconfig"
 	"durable-agents/internal/llm"
 	"durable-agents/internal/temporal"
 	"durable-agents/internal/temporal/activities"
 	"durable-agents/internal/temporal/workflows"
+	"durable-agents/internal/toolrun"
 	"durable-agents/internal/vectorstore"
 )
 
@@ -39,6 +43,9 @@ func main() {
 	w := worker.New(c, cfg.TaskQueue, worker.Options{})
 	w.RegisterWorkflowWithOptions(workflows.ConversationWorkflow, workflow.RegisterOptions{
 		Name: workflows.ConversationWorkflowName,
+	})
+	w.RegisterWorkflowWithOptions(workflows.ToolRunWorkflow, workflow.RegisterOptions{
+		Name: workflows.ToolRunWorkflowName,
 	})
 	w.RegisterActivityWithOptions((&activities.LLMActivities{Client: llmClient}).CompleteTurn, activity.RegisterOptions{
 		Name: activities.CompleteTurnActivityName,
@@ -69,6 +76,46 @@ func main() {
 		log.Printf("retrieval activities enabled: qdrant=%s:%d", qdrantHost, qdrantPort)
 	} else {
 		log.Printf("QDRANT_HOST not set; retrieval activities disabled")
+	}
+
+	// Tool execution: TOOLRUN_MODE=k8s creates real ToolRun CRs;
+	// TOOLRUN_MODE=fake logs launches for cluster-less dev (play the tool by
+	// posting signed callbacks yourself); unset disables tool activities.
+	switch mode := os.Getenv("TOOLRUN_MODE"); mode {
+	case "":
+		log.Printf("TOOLRUN_MODE not set; tool execution disabled")
+	case "k8s", "fake":
+		callbackBaseURL := os.Getenv("CALLBACK_BASE_URL")
+		if callbackBaseURL == "" {
+			log.Fatal("CALLBACK_BASE_URL is required when TOOLRUN_MODE is set")
+		}
+		var launcher toolrun.Launcher
+		if mode == "k8s" {
+			kubeCfg, err := kubeconfig.Load()
+			if err != nil {
+				log.Fatalf("load kube config: %v", err)
+			}
+			dynamicClient, err := dynamic.NewForConfig(kubeCfg)
+			if err != nil {
+				log.Fatalf("build dynamic client: %v", err)
+			}
+			launcher = toolrun.NewK8sLauncher(
+				dynamicClient,
+				getenv("TOOLRUN_NAMESPACE", "controller-agent"),
+				toolrun.SecretRef{
+					Name: getenv("CALLBACK_SECRET_NAME", "durable-agents-callback"),
+					Key:  getenv("CALLBACK_SECRET_KEY", "AGENT_CALLBACK_SECRET"),
+				},
+			)
+		} else {
+			launcher = toolrun.NewFakeLauncher()
+		}
+		toolRunActivities := &activities.ToolRunActivities{Launcher: launcher, CallbackBaseURL: callbackBaseURL}
+		w.RegisterActivityWithOptions(toolRunActivities.LaunchToolRun, activity.RegisterOptions{Name: activities.LaunchToolRunActivityName})
+		w.RegisterActivityWithOptions(toolRunActivities.GetToolRunPhase, activity.RegisterOptions{Name: activities.GetToolRunPhaseActivityName})
+		log.Printf("tool execution enabled: mode=%s callbacks=%s", mode, callbackBaseURL)
+	default:
+		log.Fatalf("unknown TOOLRUN_MODE %q (want k8s, fake, or unset)", mode)
 	}
 
 	log.Printf("worker starting: temporal=%s namespace=%s taskQueue=%s model=%s",
