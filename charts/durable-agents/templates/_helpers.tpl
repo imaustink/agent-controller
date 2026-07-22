@@ -18,6 +18,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
   value: {{ .Values.qdrant.host | quote }}
 - name: QDRANT_PORT
   value: {{ .Values.qdrant.port | quote }}
+{{- with .Values.qdrant.collectionPrefix }}
+- name: QDRANT_COLLECTION_PREFIX
+  value: {{ . | quote }}
+{{- end }}
 {{- end }}
 
 {{- define "durable-agents.callbackBaseURL" -}}

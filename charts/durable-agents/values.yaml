@@ -19,6 +19,10 @@ llm:
 qdrant:
   host: ""
   port: 6334
+  # Namespaces the collections (prefix+tools/skills/agents). REQUIRED when
+  # sharing a Qdrant instance with another indexer (e.g. the upstream
+  # agent-orchestrator) — payload schemas differ, never share collections.
+  collectionPrefix: ""
 
 # Where agent-controller's Tool/Skill/Agent CRs live (also where ToolRun CRs
 # are created, so tool Jobs run next to their Tool definitions).
@@ -46,6 +50,13 @@ callback:
   # Callback URL base as reachable from tool Job pods. Empty derives
   # http://<release>-gateway-callback.<release-ns>.svc:8081
   baseURL: ""
+
+# Optional 1Password-operator syncs (platforms running onepassword-connect):
+# each entry becomes a OnePasswordItem CR materializing a k8s Secret named
+# `name` from the vault item at `itemPath` (item field names become keys).
+onePasswordItems: []
+#  - name: durable-agents-callback
+#    itemPath: vaults/bitovi-platform/items/durable-agents-callback
 
 catalogSync:
   enabled: true
@@ -82,6 +93,14 @@ gateway:
   service:
     type: ClusterIP
     port: 8080
+  # Dev-grade identity (see internal/rbac): a bearer-token map plus an
+  # optional fallback for tokenless callers. Leave all empty to fail closed
+  # to zero capabilities.
+  identity:
+    # JSON: {"<token>": {"subject": "user:x", "roles": ["reader"]}}
+    staticIdentities: ""
+    defaultSubject: ""
+    defaultRoles: ""
   resources:
     requests:
       cpu: 25m

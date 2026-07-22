@@ -35,6 +35,18 @@ spec:
             {{- include "durable-agents.temporalEnv" . | nindent 12 }}
             - name: GATEWAY_ADDR
               value: ":8080"
+            {{- with .Values.gateway.identity.staticIdentities }}
+            - name: STATIC_IDENTITIES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.gateway.identity.defaultSubject }}
+            - name: AGENT_DEFAULT_SUBJECT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.gateway.identity.defaultRoles }}
+            - name: AGENT_DEFAULT_ROLES
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.toolrun.enabled }}
             - name: CALLBACK_ADDR
               value: ":8081"

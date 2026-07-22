@@ -85,7 +85,7 @@ func main() {
 			apiKey,
 			getenv("OPENAI_EMBED_MODEL", llm.DefaultEmbedModel),
 		)
-		qdrantClient, collections, err := vectorstore.OpenCollections(context.Background(), qdrantHost, qdrantPort, embedder, llm.DefaultEmbedDims)
+		qdrantClient, collections, err := vectorstore.OpenCollections(context.Background(), qdrantHost, qdrantPort, embedder, llm.DefaultEmbedDims, os.Getenv("QDRANT_COLLECTION_PREFIX"))
 		if err != nil {
 			log.Fatalf("open qdrant collections: %v", err)
 		}

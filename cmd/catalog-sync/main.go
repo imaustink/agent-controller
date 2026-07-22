@@ -39,7 +39,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid QDRANT_PORT: %v", err)
 	}
-	client, collections, err := vectorstore.OpenCollections(ctx, qdrantHost, qdrantPort, embedder, llm.DefaultEmbedDims)
+	client, collections, err := vectorstore.OpenCollections(ctx, qdrantHost, qdrantPort, embedder, llm.DefaultEmbedDims, os.Getenv("QDRANT_COLLECTION_PREFIX"))
 	if err != nil {
 		log.Fatalf("open qdrant collections: %v", err)
 	}
