@@ -17,8 +17,10 @@ export interface AppConfig {
   orchestratorUrl: string;
   /** Bearer token this gateway authenticates to agent-orchestrator's /invoke as. */
   orchestratorToken: string;
-  /** JSON map of `{ "<github-login>": { "subject": "...", "roles": ["..."] } }` -- see identity.ts. */
+  /** JSON map of `{ "<github-login>": { "subject": "...", "roles": ["..."] } }` -- dev/test-grade fallback, see identity.ts. */
   githubIdentities: string | undefined;
+  /** JSON map of `{ "<org>/<team-slug>": ["role", ...] }` -- prod-grade primary identity source, see GithubTeamMembershipResolver in identity.ts. */
+  githubTeamRoles: string | undefined;
   /** Polling interval (ms) while awaiting a GET /invoke/:id result. */
   pollIntervalMs: number;
   /** Maximum total time (ms) to poll before giving up on a turn. */
@@ -65,6 +67,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     orchestratorUrl: env.GATEWAY_ORCHESTRATOR_URL ?? "http://agent-orchestrator:8081",
     orchestratorToken: env.GATEWAY_ORCHESTRATOR_TOKEN ?? "",
     githubIdentities: env.GATEWAY_GITHUB_IDENTITIES,
+    githubTeamRoles: env.GATEWAY_GITHUB_TEAM_ROLES,
     pollIntervalMs: num(env.GATEWAY_POLL_INTERVAL_MS, 3_000),
     pollTimeoutMs: num(env.GATEWAY_POLL_TIMEOUT_MS, 15 * 60 * 1000),
     githubAppClientId: env.GITHUB_APP_CLIENT_ID ?? "",

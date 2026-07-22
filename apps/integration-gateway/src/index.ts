@@ -2,7 +2,13 @@ import { config } from "./config.js";
 import { GithubReplyClient } from "./github-client.js";
 import { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
 import { decodeEncryptionKey, RedisIdentityLinkStore } from "./identity-link/store.js";
-import { GithubIdentityResolver, loadGithubIdentitiesFromEnv } from "./identity.js";
+import {
+  CompositeGithubIdentityResolver,
+  GithubIdentityResolver,
+  GithubTeamMembershipResolver,
+  loadGithubIdentitiesFromEnv,
+  loadTeamRolesFromEnv,
+} from "./identity.js";
 import { OrchestratorClient } from "./orchestrator-client.js";
 import { GatewayServer } from "./server.js";
 
@@ -65,7 +71,31 @@ async function main(): Promise<void> {
   const identityLinkEnabled = identityLinkFieldsSet.length === identityLinkFieldEntries.length;
 
   const identities = loadGithubIdentitiesFromEnv(config.githubIdentities);
-  const identityResolver = new GithubIdentityResolver(identities, config.githubBotLogin);
+  const staticIdentityResolver = new GithubIdentityResolver(identities, config.githubBotLogin);
+
+  // Prod-grade primary identity source (docs/adr's follow-up on the static
+  // allowlist): GitHub org/team membership, no commit/redeploy needed to add
+  // or remove a person. Only constructed when GATEWAY_GITHUB_TEAM_ROLES is
+  // actually set, so a deployment that hasn't migrated yet keeps working off
+  // the static allowlist alone.
+  const teamRoles = loadTeamRolesFromEnv(config.githubTeamRoles);
+  const teamMembershipResolver =
+    teamRoles.size > 0
+      ? new GithubTeamMembershipResolver({
+          teamRoles,
+          authConfig: {
+            githubToken: config.githubToken,
+            githubAppId: config.githubAppId,
+            githubAppPrivateKey: config.githubAppPrivateKey,
+            githubAppInstallationId: config.githubAppInstallationId,
+            githubApiUrl: config.githubApiUrl,
+          },
+          githubApiUrl: config.githubApiUrl,
+          botLogin: config.githubBotLogin,
+        })
+      : undefined;
+
+  const identityResolver = new CompositeGithubIdentityResolver(teamMembershipResolver, staticIdentityResolver);
 
   const orchestratorClient = new OrchestratorClient({
     baseUrl: config.orchestratorUrl,

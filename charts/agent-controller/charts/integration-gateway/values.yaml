@@ -37,9 +37,17 @@ config:
   # The App/bot's own GitHub login -- its own comments are ignored (loop
   # prevention). Required once the App/webhook is wired up.
   githubBotLogin: ""
+  # PROD-GRADE, preferred: grants roles based on live GitHub org/team
+  # membership (see GithubTeamMembershipResolver in src/identity.ts) -- JSON:
+  # {"<org>/<team-slug>": ["role", ...]}. Adding/removing a person is a
+  # GitHub team membership change, no commit/redeploy needed. Uses the same
+  # GitHub App/PAT credentials as the reply client (needs Members: Read org
+  # permission, or read:org PAT scope).
+  githubTeamRoles: ""
   # DEV/TEST-GRADE static allowlist mapping GitHub logins to identities (see
   # src/identity.ts) -- JSON: {"<login>": {"subject": "...", "roles": [...]}}.
-  # A real GitHub-org/team-membership resolver is a documented follow-up.
+  # Only consulted as a fallback for logins githubTeamRoles above doesn't
+  # grant anything to -- e.g. a service account that isn't a team member.
   githubIdentities: ""
   pollIntervalMs: 3000
   pollTimeoutMs: 900000

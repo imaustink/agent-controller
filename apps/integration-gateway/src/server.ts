@@ -2,13 +2,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { REPLY_MARKER, type GithubReplyClient } from "./github-client.js";
 import type { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
 import { IdentityLinkApi } from "./identity-link/api.js";
-import type { GithubIdentityResolver } from "./identity.js";
+import type { IdentityResolver } from "./identity.js";
 import type { OrchestratorClient } from "./orchestrator-client.js";
 import { parseGithubEvent, verifyGithubSignature, WebhookAuthError } from "./webhooks/github.js";
 
 export interface GatewayServerOptions {
   githubWebhookSecret: string;
-  identityResolver: GithubIdentityResolver;
+  identityResolver: IdentityResolver;
   orchestratorClient: OrchestratorClient;
   githubReplyClient: GithubReplyClient;
   /** Called with any error from the background invoke-and-reply step; defaults to console.error. */
@@ -115,7 +115,7 @@ export class GatewayServer {
     const text = event.kind === "issue-opened" ? event.body : event.commentBody;
     if (text.includes(REPLY_MARKER)) return;
 
-    const identity = this.options.identityResolver.resolve(event.senderLogin, event.senderIsBot);
+    const identity = await this.options.identityResolver.resolve(event.senderLogin, event.senderIsBot);
     if (!identity) return;
 
     const sessionId = sessionIdFor(event.owner, event.repo, event.issueNumber);

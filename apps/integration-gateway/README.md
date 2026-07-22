@@ -45,11 +45,22 @@ See `src/config.ts` for the full list. Notable ones:
 - `GATEWAY_GITHUB_BOT_LOGIN` — the App/bot's own login, so its own comments
   are ignored (loop prevention; a second guard also skips any comment body
   containing the gateway's own reply marker).
-- `GATEWAY_GITHUB_IDENTITIES` — JSON map of
+- `GATEWAY_GITHUB_TEAM_ROLES` — **prod-grade, preferred**. JSON map of
+  `{ "<org>/<team-slug>": ["role", ...] }`. A sender is granted the union of
+  roles for every team they're an *active* member of, checked live against
+  GitHub's REST API (`GithubTeamMembershipResolver`) and cached briefly
+  (5 min for a member, 1 min for a non-member) to bound API calls. Adding or
+  removing a person is a GitHub org/team membership change — no commit or
+  redeploy needed. Uses the same GitHub App/PAT credentials as the reply
+  client, so it needs `Members: Read` org permission (App) or `read:org`
+  scope (PAT).
+- `GATEWAY_GITHUB_IDENTITIES` — dev/test-grade static allowlist, JSON map of
   `{ "<github-login>": { "subject": "...", "roles": ["..."] } }`. Unknown
-  logins are dropped (fail-closed) — this is a dev/test-grade static
-  allowlist, not real GitHub-org/team-membership verification; see the
-  doc-comment on `GithubIdentityResolver` for the intended follow-up.
+  logins are dropped (fail-closed). `CompositeGithubIdentityResolver` only
+  falls back to this when `GATEWAY_GITHUB_TEAM_ROLES` grants nothing for that
+  login — useful for a service account that isn't a team member, or while
+  migrating people onto team-based access. See the doc-comment on
+  `GithubIdentityResolver` in `src/identity.ts`.
 - `GATEWAY_POLL_INTERVAL_MS` / `GATEWAY_POLL_TIMEOUT_MS` — this gateway
   polls `GET /invoke/:id` rather than the orchestrator pushing a result,
   since it doesn't launch the run itself. This is a deliberate stand-in for

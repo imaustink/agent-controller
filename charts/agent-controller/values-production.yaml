@@ -209,10 +209,19 @@ integration-gateway:
   config:
     # Loop prevention — the gateway ignores comments authored by this login.
     githubBotLogin: "agent-controller[bot]"
-    # DEV/TEST-GRADE static allowlist mapping GitHub logins to identities —
-    # a real GitHub-org/team-membership resolver is a documented upstream
-    # follow-up. JSON: {"<login>": {"subject": "...", "roles": [...]}}
+    # DEV/TEST-GRADE static allowlist mapping GitHub logins to identities --
+    # kept only as CompositeGithubIdentityResolver's fallback now that
+    # githubTeamRoles below is the primary, prod-grade path (no
+    # commit/redeploy needed to add/remove a person). JSON:
+    # {"<login>": {"subject": "...", "roles": [...]}}
     githubIdentities: '{"imaustink": {"subject": "imaustink", "roles": ["writer"]}}'
+    # PROD-GRADE primary identity source (src/identity.ts's
+    # GithubTeamMembershipResolver): grants roles by live GitHub org/team
+    # membership instead of the static map above. Set once the target
+    # org/team exists and this App/PAT has Members: Read / read:org --
+    # example: '{"my-org/writers": ["writer"]}'. Left empty (falls through
+    # entirely to githubIdentities above) until that org/team is set up.
+    githubTeamRoles: ""
 
   # Bring-your-own secret: GITHUB_WEBHOOK_SECRET, GATEWAY_ORCHESTRATOR_TOKEN,
   # and GITHUB_TOKEN. GATEWAY_ORCHESTRATOR_TOKEN must be a Pocket ID
