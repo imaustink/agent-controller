@@ -4,6 +4,19 @@ import type { Identity, IdentityResolver } from "./types.js";
 export interface OpenWebUiForwardedUserResolverOptions {
   /** Shared HS256 secret, matching Open WebUI's `FORWARD_USER_INFO_HEADER_JWT_SECRET`. */
   secret: string;
+  /**
+   * RBAC roles (this system's own vocabulary, e.g. `["reader", "writer"]` --
+   * whatever Tool/Agent CRs declare in `allowedRoles`) granted to every
+   * caller this resolver successfully verifies. Open WebUI's own `role`
+   * claim ("user"/"admin"/"pending") is Open WebUI's internal permission
+   * model, unrelated to this system's RBAC vocabulary -- using it directly
+   * as `Identity.roles` (the pre-fix behavior) matches no Tool/Skill's
+   * `allowedRoles`, so every catalog lookup for every Open WebUI user comes
+   * back empty. This mirrors the fixed roles the old shared static identity
+   * (`AGENT_STATIC_IDENTITIES`) granted every user before this resolver
+   * existed, just now per-subject instead of per-shared-token.
+   */
+  roles: string[];
 }
 
 /**
@@ -27,9 +40,11 @@ export interface OpenWebUiForwardedUserResolverOptions {
  */
 export class OpenWebUiForwardedUserResolver implements IdentityResolver {
   private readonly key: Uint8Array;
+  private readonly roles: string[];
 
   constructor(opts: OpenWebUiForwardedUserResolverOptions) {
     this.key = new TextEncoder().encode(opts.secret);
+    this.roles = opts.roles;
   }
 
   async resolve(forwardedUserToken: string): Promise<Identity | undefined> {
@@ -48,9 +63,6 @@ export class OpenWebUiForwardedUserResolver implements IdentityResolver {
     const rawId = payload.id ?? payload.sub ?? payload.email;
     if (typeof rawId !== "string" || rawId.length === 0) return undefined;
 
-    const rawRole = payload.role;
-    const roles = typeof rawRole === "string" ? [rawRole] : [];
-
-    return { subject: `openwebui:${rawId}`, roles };
+    return { subject: `openwebui:${rawId}`, roles: this.roles };
   }
 }
