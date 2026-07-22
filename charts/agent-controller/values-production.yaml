@@ -101,6 +101,18 @@ agent-orchestrator:
     # imaustink/homelab's README for the kubectl command that creates it.
     staticIdentitiesExistingSecret: agent-orchestrator-openwebui-static-identity
     staticIdentitiesExistingSecretKey: AGENT_STATIC_IDENTITIES
+    # Same Secret Open WebUI's own FORWARD_USER_INFO_HEADER_JWT_SECRET reads
+    # (see openwebui.config.extraEnvVars above) -- lets
+    # OpenWebUiForwardedUserResolver verify Open WebUI's per-request signed
+    # X-OpenWebUI-User-Jwt header and resolve each Open WebUI user to their
+    # OWN subject, instead of every Open WebUI user sharing the single
+    # subject the static map above assigns to Open WebUI's static bearer
+    # token. Required for the identity-link feature (ADR 0022) to be safe
+    # under multiple Open WebUI users -- without this, whichever user links
+    # a GitHub identity first makes it usable by every other Open WebUI user
+    # with no authentication at all.
+    openWebUiUserJwtSecretExistingSecret: openwebui-forward-jwt-secret
+    openWebUiUserJwtSecretExistingSecretKey: secret
 
   # Invoke API stays internal — no ingress, only Open WebUI (in-cluster) calls it.
   ingress:
@@ -410,10 +422,13 @@ openwebui:
     # X-OpenWebUI-User-* headers to a single signed JWT
     # (X-OpenWebUI-User-Jwt, HS256, minted fresh on every outbound request --
     # no refresh problem, unlike Pocket ID's client_credentials tokens).
-    # Currently unused by agent-orchestrator (it still only reads the
-    # Authorization bearer via the CompositeIdentityResolver static
-    # fallback) -- verifying this header for real per-user roles at the
-    # orchestrator is tracked follow-up, not done yet.
+    # Verified by agent-orchestrator's OpenWebUiForwardedUserResolver (see
+    # agent-orchestrator.config.openWebUiUserJwtSecretExistingSecret below,
+    # pointed at this same Secret) -- until that was wired up, every Open
+    # WebUI user resolved to the SAME shared subject via the
+    # CompositeIdentityResolver static fallback, so any OAuth identity one
+    # user linked (e.g. GitHub, ADR 0022) was usable by every other Open
+    # WebUI user with no authentication at all.
     - name: FORWARD_USER_INFO_HEADER_JWT_SECRET
       valueFrom:
         secretKeyRef:

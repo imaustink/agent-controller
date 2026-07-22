@@ -126,6 +126,17 @@ export interface AppConfig {
   identityLinkGatewayUrl: string | undefined;
   /** Bearer token this orchestrator authenticates to the identity-link API with. */
   identityLinkGatewayToken: string | undefined;
+  /**
+   * Shared HS256 secret matching Open WebUI's `FORWARD_USER_INFO_HEADER_JWT_SECRET`,
+   * used to verify its per-request `X-OpenWebUI-User-Jwt` header
+   * (`OpenWebUiForwardedUserResolver`). Open WebUI's `Authorization` bearer
+   * token is a single static value shared by every one of its users, so
+   * resolving identity from it alone collapses every human into one shared
+   * subject -- this lets each Open WebUI user resolve to their own subject
+   * instead. Optional: absent -> the chat-completions path falls back to the
+   * shared-subject static/OIDC resolver (pre-existing behavior).
+   */
+  openWebUiUserJwtSecret: string | undefined;
   requestId: string;
 }
 
@@ -171,5 +182,6 @@ export const config: AppConfig = {
   fallbackToolTopK: num(process.env.AGENT_FALLBACK_TOOL_TOP_K, 3),
   identityLinkGatewayUrl: process.env.IDENTITY_LINK_GATEWAY_URL,
   identityLinkGatewayToken: process.env.IDENTITY_LINK_GATEWAY_TOKEN,
+  openWebUiUserJwtSecret: process.env.AGENT_OPENWEBUI_USER_JWT_SECRET,
   requestId: process.env.AGENT_REQUEST_ID ?? randomUUID(),
 };

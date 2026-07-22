@@ -253,6 +253,61 @@ describe("buildAgentGraph", () => {
     expect(deps.skillStore.query).not.toHaveBeenCalled();
   });
 
+  it("resolves identity from the forwarded-user token instead of the shared authToken when both are present", async () => {
+    // Regression test: authToken is Open WebUI's single static bearer token,
+    // shared by every one of its users. Resolving identity from it alone
+    // would collapse every human into one subject (see
+    // OpenWebUiForwardedUserResolver's doc comment) -- forwardedUserToken
+    // must take priority whenever a forwardedUserIdentityResolver is wired.
+    const identityResolver: IdentityResolver = { resolve: vi.fn().mockResolvedValue({ subject: "openwebui", roles: ["reader"] }) };
+    const forwardedUserIdentityResolver: IdentityResolver = {
+      resolve: vi.fn().mockResolvedValue({ subject: "openwebui:alice", roles: ["reader"] }),
+    };
+    const deps = baseDeps({ identityResolver, forwardedUserIdentityResolver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "extract the recipe at https://example.com/recipe",
+      authToken: "shared-static-token",
+      forwardedUserToken: "alices-signed-jwt",
+    });
+
+    expect(final.identity).toEqual({ subject: "openwebui:alice", roles: ["reader"] });
+    expect(forwardedUserIdentityResolver.resolve).toHaveBeenCalledWith("alices-signed-jwt");
+    expect(identityResolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it("falls back to authToken-based resolution when no forwardedUserToken is sent", async () => {
+    const identityResolver: IdentityResolver = { resolve: vi.fn().mockResolvedValue({ subject: "openwebui", roles: ["reader"] }) };
+    const forwardedUserIdentityResolver: IdentityResolver = { resolve: vi.fn() };
+    const deps = baseDeps({ identityResolver, forwardedUserIdentityResolver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "extract the recipe at https://example.com/recipe",
+      authToken: "shared-static-token",
+    });
+
+    expect(final.identity).toEqual({ subject: "openwebui", roles: ["reader"] });
+    expect(forwardedUserIdentityResolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the forwarded-user token fails to resolve, without falling back to the shared authToken", async () => {
+    const identityResolver: IdentityResolver = { resolve: vi.fn().mockResolvedValue({ subject: "openwebui", roles: ["reader"] }) };
+    const forwardedUserIdentityResolver: IdentityResolver = { resolve: vi.fn().mockResolvedValue(undefined) };
+    const deps = baseDeps({ identityResolver, forwardedUserIdentityResolver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "do a thing",
+      authToken: "shared-static-token",
+      forwardedUserToken: "bad-jwt",
+    });
+
+    expect(final.error).toMatch(/unauthorized/);
+    expect(identityResolver.resolve).not.toHaveBeenCalled();
+  });
+
   it("falls through to a best-effort LLM answer (no error) when no candidate skills are retrieved", async () => {
     const deps = baseDeps({
       skillStore: { upsert: vi.fn(), delete: vi.fn(), query: vi.fn().mockResolvedValue([]), getByIds: vi.fn().mockResolvedValue([]) },
