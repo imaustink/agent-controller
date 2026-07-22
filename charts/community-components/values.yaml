@@ -210,3 +210,12 @@ skills:
   # non-empty -- the skill's toolRefs lists both.
   webSearch:
     enabled: false
+
+integrationRoutes:
+  # github-issue-assigned-triage: an IntegrationRoute CR (docs/adr/0024)
+  # dispatching a GitHub `issues`/`assigned` webhook event straight to
+  # opencode-swe-agent with a triage prompt, deterministically bypassing RAG
+  # skill retrieval -- integration-gateway relays the event once the issue is
+  # assigned to its own bot account. Requires opencodeSweAgent.enabled=true.
+  githubIssueAssignedTriage:
+    enabled: false

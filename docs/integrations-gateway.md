@@ -3,8 +3,11 @@
 > **Status:** the **conversational GitHub Issues path** described below is
 > implemented — see [apps/integration-gateway](../apps/integration-gateway)
 > and the "Implementation status" section at the end of this document. The
-> FAAS-style direct-invoke path, and every other channel (email, Slack, job
-> webhooks), remain proposed/unimplemented. This document was originally
+> declarative **`IntegrationRoute` CRD** (ADR 0024) is also implemented,
+> letting a GitHub issue assigned to the bot dispatch deterministically
+> instead of through RAG retrieval. The FAAS-style direct-invoke path, and
+> every other channel (email, Slack, job webhooks), remain
+> proposed/unimplemented. This document was originally
 > written to the same standard as [orchestrator.md](orchestrator.md) and
 > cross-referenced from [README.md](../README.md). It assumes familiarity
 > with [orchestrator.md](orchestrator.md), [messaging.md](messaging.md), and
@@ -293,12 +296,10 @@ turning a reply path into a new SSRF/exfil surface.
   synthetic adapter that constructs one on a timer instead of parsing a
   request — router/launch code is unchanged.
 - Routing configuration (which channel/trigger maps to which skill, tool, or
-  agent by default) is intentionally declarative and small — a candidate
-  shape is a new CR (e.g. `IntegrationRoute` or reusing `Skill`/`Tool`
-  metadata with a `triggers: []` field) so operators manage it the same
-  `kubectl apply` way they already manage `Tool`/`Skill`/`Agent` (see
-  README's "why CRDs" table) — exact shape deferred to an ADR once an
-  adapter or two exist to validate the need.
+  agent by default) is a new `IntegrationRoute` CR (ADR 0024), so operators
+  manage it the same `kubectl apply` way they already manage
+  `Tool`/`Skill`/`Agent` (see README's "why CRDs" table). See
+  [Implementation status](#implementation-status) for what's built.
 
 ## Open questions
 
@@ -320,12 +321,6 @@ turning a reply path into a new SSRF/exfil surface.
   across workspace members (per repo conventions) and today there's exactly
   one consumer, starting inside the app and extracting later is likely
   lower risk.
-- **`IntegrationRoute`-style CRD vs. static config** — whether trigger
-  routing needs to be a first-class CRD (reconciled/validated by
-  core-controller, consistent with ADR 0010) from day one, or can start as
-  gateway-local config and graduate later, mirroring how the tool catalog
-  itself moved from static manifests (ADR 0009) to CRDs (ADR 0010) once the
-  need was concrete.
 - **Rate limiting / abuse controls per channel** — email and Slack are
   effectively open to anyone who can reach the webhook URL or DM the bot;
   needs a throttling story before general availability, separate from RBAC
@@ -354,8 +349,11 @@ turning a reply path into a new SSRF/exfil surface.
    well-documented webhook + signature-verification API.
 3. **Email adapter**: highest-risk channel, built once the injection/
    untrusted-content handling patterns are proven out.
-4. **Job/CI webhook adapter** and any `IntegrationRoute` CRD work, once
-   real trigger-routing needs are concrete rather than speculative.
+4. **Job/CI webhook adapter**, once real trigger-routing needs beyond GitHub
+   Issues are concrete rather than speculative. The `IntegrationRoute` CRD
+   itself (ADR 0024) is implemented, validated by a GitHub `issues.assigned`
+   → `opencode-swe-agent` route (see [Implementation
+   status](#implementation-status)).
 
 Each phase should land as its own ADR once concrete, per this repo's existing
 convention (see [docs/adr/](adr/)).
@@ -366,7 +364,8 @@ convention (see [docs/adr/](adr/)).
 GitHub Issues adapter for the conversational path only:
 
 - `POST /webhooks/github` verifies GitHub's `X-Hub-Signature-256` HMAC, then
-  handles `issues.opened` and `issue_comment.created` events.
+  handles `issues.opened`, `issue_comment.created`, and `issues.assigned`
+  events.
 - Session id is `github:<owner>/<repo>#<issueNumber>` — one session per
   issue, forwarded as `session_id` to `agent-orchestrator`'s existing
   `POST /invoke`. No `target`/FAAS shortcut: every event goes through normal
@@ -374,6 +373,21 @@ GitHub Issues adapter for the conversational path only:
   `AgentSession.ask()` mechanism (already built for `apps/opencode-swe-agent`)
   is what actually implements "ask a clarifying question, then resume on the
   next comment" — nothing new was built in the orchestrator for this.
+- **`issues.assigned` → deterministic dispatch (ADR 0024).** When a GitHub
+  issue is assigned to the gateway's own bot account
+  (`GATEWAY_GITHUB_BOT_LOGIN`), the gateway relays it into the same
+  conversational `/invoke` call as above, but attaches an `event` descriptor
+  (`{ source: "github", event: "issues", action: "assigned", owner, repo,
+  issueNumber, title, body, senderLogin, assigneeLogin }`). If this matches
+  an installed `IntegrationRoute` CR, `agent-orchestrator` bypasses RAG skill
+  retrieval and dispatches straight to that route's target with its
+  rendered `promptTemplate` (`CrdIntegrationRouteRegistry`,
+  `checkIntegrationRoute` graph node) — deterministic, since assignment is
+  an unambiguous action rather than free text needing intent inference. No
+  matching route falls back to ordinary RAG retrieval over a fallback
+  request string, unchanged from before this feature existed. A sample
+  route (`github`/`issues`/`assigned` → `opencode-swe-agent`) ships gated
+  behind `integrationRoutes.githubIssueAssignedTriage.enabled`.
 - Identity resolution's primary path is now real, no-redeploy-needed
   verification against GitHub itself, via two resolvers
   (`CompositeGithubIdentityResolver` tries both):

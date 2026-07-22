@@ -19,7 +19,7 @@ metadata:
     {{- include "agent-orchestrator.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["core.controller-agent.dev"]
-    resources: ["tools", "skills", "agents"]
+    resources: ["tools", "skills", "agents", "integrationroutes"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["core.controller-agent.dev"]
     resources: ["toolruns"]

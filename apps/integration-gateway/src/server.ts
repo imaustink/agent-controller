@@ -11,6 +11,14 @@ export interface GatewayServerOptions {
   identityResolver: IdentityResolver;
   orchestratorClient: OrchestratorClient;
   githubReplyClient: GithubReplyClient;
+  /**
+   * The gateway's own bot's GitHub login (same value as `IdentityResolver`'s
+   * loop-guard, `GATEWAY_GITHUB_BOT_LOGIN`) -- an `issues.assigned` webhook is
+   * only actionable when the issue was assigned to THIS account; assignment
+   * to anyone else is ignored. Empty string effectively disables the
+   * assignment trigger (no assignee login can ever match).
+   */
+  githubBotLogin: string;
   /** Called with any error from the background invoke-and-reply step; defaults to console.error. */
   onBackgroundError?: (error: unknown) => void;
   /**
@@ -110,6 +118,41 @@ export class GatewayServer {
 
     if (event.kind === "ignored") return;
 
+    if (event.kind === "issue-assigned") {
+      // Only actionable when assigned to THIS bot's own account -- assigning
+      // to a human (or a different bot) is none of our business.
+      if (event.assigneeLogin !== this.options.githubBotLogin) return;
+
+      // The sender here is whoever performed the assignment, not the bot --
+      // same identity/permission check as the other event kinds, gating on
+      // who triggered the action.
+      const identity = await this.options.identityResolver.resolve(event.senderLogin, event.senderIsBot, {
+        owner: event.owner,
+        repo: event.repo,
+      });
+      if (!identity) return;
+
+      const sessionId = sessionIdFor(event.owner, event.repo, event.issueNumber);
+      // Fallback request text -- only used if no IntegrationRoute CR matches
+      // the `event` descriptor sent below (agent-orchestrator then falls
+      // back to ordinary RAG skill retrieval over this text).
+      const request = `Issue #${event.issueNumber} was assigned to me: ${event.title}\n\n${event.body}`.trim();
+
+      this.relayAndReply(event.owner, event.repo, event.issueNumber, request, sessionId, {
+        source: "github",
+        event: "issues",
+        action: "assigned",
+        owner: event.owner,
+        repo: event.repo,
+        issueNumber: event.issueNumber,
+        title: event.title,
+        body: event.body,
+        senderLogin: event.senderLogin,
+        assigneeLogin: event.assigneeLogin,
+      }).catch(this.options.onBackgroundError ?? ((error: unknown) => console.error(error)));
+      return;
+    }
+
     // Belt-and-suspenders loop guard: skip our own bot/replies even if a
     // login isn't flagged as `type: "Bot"` (e.g. a PAT-backed account).
     const text = event.kind === "issue-opened" ? event.body : event.commentBody;
@@ -135,11 +178,17 @@ export class GatewayServer {
     issueNumber: number,
     request: string,
     sessionId: string,
+    event?: Record<string, string | number | undefined>,
   ): Promise<void> {
     // This relay has no browser -- always force device flow explicitly
     // rather than relying on agent-orchestrator's own default (which is
-    // "authcode", intended for browser-based callers).
-    const outcome = await this.options.orchestratorClient.invoke(request, sessionId, "device");
+    // "authcode", intended for browser-based callers). Only pass a 4th
+    // argument when there's an event descriptor -- keeps the call shape
+    // identical to before this feature existed for the ordinary
+    // opened/comment paths.
+    const outcome = event
+      ? await this.options.orchestratorClient.invoke(request, sessionId, "device", event)
+      : await this.options.orchestratorClient.invoke(request, sessionId, "device");
     const reply =
       outcome.status === "succeeded"
         ? (outcome.result ?? "")

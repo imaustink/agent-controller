@@ -1033,6 +1033,101 @@ describe("buildAgentGraph agent delegation continuation tokens (ADR 0017)", () =
   });
 });
 
+describe("buildAgentGraph checkIntegrationRoute (IntegrationRoute-forced dispatch)", () => {
+  it("resolves a forcedSkillId directly, bypassing RAG skill retrieval", async () => {
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "triage this issue",
+      authToken: "tok",
+      forcedSkillId: "recipe-publisher-skill",
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedSkill?.id).toBe("recipe-publisher-skill");
+    // RAG retrieval (skillStore.query) never runs -- checkIntegrationRoute
+    // resolved selectedSkill directly via skillStore.getByIds, routing
+    // straight to loadSkillTools.
+    expect(deps.skillStore.query).not.toHaveBeenCalled();
+    expect(deps.skillStore.getByIds).toHaveBeenCalledWith(["recipe-publisher-skill"], { callerRoles: ["reader"] });
+  });
+
+  it("resolves a forcedAgentId directly, bypassing RAG retrieval, and delegates to that agent", async () => {
+    const codingAgent: AgentDescriptor = {
+      id: "opencode-swe-agent",
+      name: "opencode-swe-agent",
+      description: "Does software engineering tasks",
+      allowedRoles: ["reader"],
+      agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
+    };
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: codingAgent }]),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({ message: "Opened a pull request", final: true, narration: [] } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    const deps = baseDeps({
+      agentStore,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      forcedAgentId: "opencode-swe-agent",
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedAgent?.id).toBe("opencode-swe-agent");
+    expect(deps.skillStore.query).not.toHaveBeenCalled();
+    expect(agentRunLauncher.launch).toHaveBeenCalled();
+  });
+
+  it("falls through to ordinary retrieval when forcedSkillId doesn't resolve to any Skill", async () => {
+    const skillStore: SkillStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ skill, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([]),
+    };
+    const deps = baseDeps({ skillStore });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "extract the recipe at https://example.com/recipe",
+      authToken: "tok",
+      forcedSkillId: "nonexistent-skill",
+    });
+
+    expect(final.error).toBeUndefined();
+    // Falls through to ordinary RAG retrieval, which still finds `skill`.
+    expect(deps.skillSelector.select).toHaveBeenCalled();
+    expect(final.selectedSkill?.id).toBe("recipe-publisher-skill");
+  });
+
+  it("does nothing when neither forcedSkillId nor forcedAgentId is set (ordinary turn, unaffected)", async () => {
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedSkill?.id).toBe("recipe-publisher-skill");
+  });
+});
+
 describe("buildAgentGraph agent-backed Tool (runTool via AgentRun)", () => {
   const agentBackedTool: ToolDescriptor = {
     id: "opencode-swe-agent-tool",

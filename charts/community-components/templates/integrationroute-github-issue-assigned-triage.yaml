@@ -1,0 +1,25 @@
+{{- if .Values.integrationRoutes.githubIssueAssignedTriage.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: IntegrationRoute
+metadata:
+  name: github-issue-assigned-triage
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  match:
+    source: github
+    event: issues
+    action: assigned
+  # No Tool wrapper needed -- dispatches straight to the Agent CR (ADR 0021),
+  # same pattern as skill-self-improvement.yaml's agentRefs.
+  agentRef: opencode-swe-agent
+  promptTemplate: |
+    You've been assigned GitHub issue {{`{{owner}}`}}/{{`{{repo}}`}}#{{`{{issueNumber}}`}}: "{{`{{title}}`}}"
+
+    {{`{{body}}`}}
+
+    Triage and resolve this issue: investigate the repository, implement a
+    fix or feature if the issue calls for one, and open a pull request. If
+    the issue is unclear or you need more context before proceeding, post a
+    comment asking a clarifying question instead of guessing.
+{{- end }}
