@@ -69,6 +69,13 @@ webFetch:
   enabled: false
   image: web-fetch:latest
   serviceAccountName: web-fetch
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need to attach annotations managed elsewhere (e.g. IRSA)
+  # that this chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
 
 # recipe-publisher: publishes/updates a recipe on a Mealie instance.
 recipePublisher:
