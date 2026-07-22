@@ -7,6 +7,33 @@ and Agents are declared as **custom resources** and launched as one-shot Jobs by
 a dedicated controller — so operators manage the catalog declaratively and the
 orchestrator stays focused on reasoning, not infrastructure.
 
+## プロジェクト紹介（日本語）
+
+`agent-controller` は、本番運用に耐える AI エージェントを Kubernetes 上で構築する
+ためのフレームワークです。Tool・Skill・Agent はそれぞれ **カスタムリソース** として
+宣言され、専用のコントローラーによって使い捨ての Job として起動されます。これに
+より、運用担当者はカタログを宣言的に管理でき、オーケストレーターは推論そのものに
+専念できます。
+
+ツールの定義や Job 起動ロジックをオーケストレーター側にハードコードしてしまうと、
+シークレットのローテーションやリソース上限の調整、新しいツールの追加のたびに
+イメージの再ビルドと再デプロイが必要になり、インフラの都合とアプリケーションの
+コードが密結合してしまいます。`agent-controller` はこの課題を、Tool・Skill・Agent
+を CRD としてモデル化することで解決します。
+
+- **宣言的なカタログ管理**：`kubectl apply` だけでツールの説明・権限・リソース制限
+  を変更でき、イメージの再ビルドは不要です。
+- **責務の分離**：運用担当者はカタログを、開発者はオーケストレーターを、それぞれ
+  独立して管理できます。
+- **一貫した実行アーキテクチャ**：単発のツールも、複数ステップのサブエージェント
+  も同じ実行基盤を共有するため、新しいワークロードの追加は新しい CRD を作るだけ
+  で済みます。
+- **標準ツールでの可観測性**：`kubectl get toolruns` や `kubectl describe agentrun`
+  など、標準の Kubernetes コマンドでそのまま状態を確認できます。
+
+詳細なアーキテクチャやコンポーネントの説明は、このドキュメントの以降のセクション
+（英語）をご覧ください。
+
 ## Why a controller + CRDs?
 
 Hard-coding tool definitions and Job-launching logic inside an orchestrator
