@@ -4,9 +4,11 @@ import { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
 import { decodeEncryptionKey, RedisIdentityLinkStore } from "./identity-link/store.js";
 import {
   CompositeGithubIdentityResolver,
+  GithubCollaboratorPermissionResolver,
   GithubIdentityResolver,
   GithubTeamMembershipResolver,
   loadGithubIdentitiesFromEnv,
+  loadPermissionRolesFromEnv,
   loadTeamRolesFromEnv,
 } from "./identity.js";
 import { OrchestratorClient } from "./orchestrator-client.js";
@@ -95,7 +97,30 @@ async function main(): Promise<void> {
         })
       : undefined;
 
-  const identityResolver = new CompositeGithubIdentityResolver(teamMembershipResolver, staticIdentityResolver);
+  // Same idea, but for personal-account (no-org) repos where team membership
+  // has nothing to check against -- grants roles by the sender's actual
+  // collaborator permission on the specific repo the webhook fired on.
+  const collaboratorRoles = loadPermissionRolesFromEnv(config.githubCollaboratorRoles);
+  const collaboratorPermissionResolver =
+    collaboratorRoles.size > 0
+      ? new GithubCollaboratorPermissionResolver({
+          permissionRoles: collaboratorRoles,
+          authConfig: {
+            githubToken: config.githubToken,
+            githubAppId: config.githubAppId,
+            githubAppPrivateKey: config.githubAppPrivateKey,
+            githubAppInstallationId: config.githubAppInstallationId,
+            githubApiUrl: config.githubApiUrl,
+          },
+          githubApiUrl: config.githubApiUrl,
+          botLogin: config.githubBotLogin,
+        })
+      : undefined;
+
+  const identityResolver = new CompositeGithubIdentityResolver(
+    [teamMembershipResolver, collaboratorPermissionResolver],
+    staticIdentityResolver,
+  );
 
   const orchestratorClient = new OrchestratorClient({
     baseUrl: config.orchestratorUrl,

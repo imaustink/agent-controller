@@ -210,18 +210,28 @@ integration-gateway:
     # Loop prevention — the gateway ignores comments authored by this login.
     githubBotLogin: "agent-controller[bot]"
     # DEV/TEST-GRADE static allowlist mapping GitHub logins to identities --
-    # kept only as CompositeGithubIdentityResolver's fallback now that
-    # githubTeamRoles below is the primary, prod-grade path (no
+    # kept only as CompositeGithubIdentityResolver's last-resort fallback now
+    # that githubCollaboratorRoles below is the primary, prod-grade path (no
     # commit/redeploy needed to add/remove a person). JSON:
     # {"<login>": {"subject": "...", "roles": [...]}}
     githubIdentities: '{"imaustink": {"subject": "imaustink", "roles": ["writer"]}}'
-    # PROD-GRADE primary identity source (src/identity.ts's
-    # GithubTeamMembershipResolver): grants roles by live GitHub org/team
-    # membership instead of the static map above. Set once the target
-    # org/team exists and this App/PAT has Members: Read / read:org --
-    # example: '{"my-org/writers": ["writer"]}'. Left empty (falls through
-    # entirely to githubIdentities above) until that org/team is set up.
+    # Left empty: imaustink/agent-controller is a personal-account repo, not
+    # org-owned, so there's no GitHub org/team to check membership against
+    # (src/identity.ts's GithubTeamMembershipResolver needs an org). Set this
+    # instead of/in addition to githubCollaboratorRoles below only if this
+    # repo is ever transferred to (or a team created under) a GitHub
+    # Organization -- example: '{"my-org/writers": ["writer"]}'.
     githubTeamRoles: ""
+    # PROD-GRADE primary identity source for this personal-account repo
+    # (src/identity.ts's GithubCollaboratorPermissionResolver): grants roles
+    # by the sender's actual collaborator permission on the repo the webhook
+    # fired on, instead of the static map above. "admin" is the repo owner
+    # (imaustink) and any collaborator granted Owner-equivalent access;
+    # "write" is anyone added as a collaborator with Write access -- both map
+    # to "writer" since either is sufficient to reach the SWE agent
+    # (allowedRoles: [writer]). Adding/removing a person from here on out is
+    # just a GitHub "Settings -> Collaborators" change on this repo.
+    githubCollaboratorRoles: '{"admin": ["writer"], "write": ["writer"]}'
 
   # Bring-your-own secret: GITHUB_WEBHOOK_SECRET, GATEWAY_ORCHESTRATOR_TOKEN,
   # and GITHUB_TOKEN. GATEWAY_ORCHESTRATOR_TOKEN must be a Pocket ID

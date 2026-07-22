@@ -115,7 +115,10 @@ export class GatewayServer {
     const text = event.kind === "issue-opened" ? event.body : event.commentBody;
     if (text.includes(REPLY_MARKER)) return;
 
-    const identity = await this.options.identityResolver.resolve(event.senderLogin, event.senderIsBot);
+    const identity = await this.options.identityResolver.resolve(event.senderLogin, event.senderIsBot, {
+      owner: event.owner,
+      repo: event.repo,
+    });
     if (!identity) return;
 
     const sessionId = sessionIdFor(event.owner, event.repo, event.issueNumber);

@@ -19,8 +19,10 @@ export interface AppConfig {
   orchestratorToken: string;
   /** JSON map of `{ "<github-login>": { "subject": "...", "roles": ["..."] } }` -- dev/test-grade fallback, see identity.ts. */
   githubIdentities: string | undefined;
-  /** JSON map of `{ "<org>/<team-slug>": ["role", ...] }` -- prod-grade primary identity source, see GithubTeamMembershipResolver in identity.ts. */
+  /** JSON map of `{ "<org>/<team-slug>": ["role", ...] }` -- prod-grade primary identity source for org-based deployments, see GithubTeamMembershipResolver in identity.ts. */
   githubTeamRoles: string | undefined;
+  /** JSON map of `{ "<permission-level>": ["role", ...] }` -- prod-grade primary identity source for personal-account (no-org) repos, see GithubCollaboratorPermissionResolver in identity.ts. */
+  githubCollaboratorRoles: string | undefined;
   /** Polling interval (ms) while awaiting a GET /invoke/:id result. */
   pollIntervalMs: number;
   /** Maximum total time (ms) to poll before giving up on a turn. */
@@ -68,6 +70,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     orchestratorToken: env.GATEWAY_ORCHESTRATOR_TOKEN ?? "",
     githubIdentities: env.GATEWAY_GITHUB_IDENTITIES,
     githubTeamRoles: env.GATEWAY_GITHUB_TEAM_ROLES,
+    githubCollaboratorRoles: env.GATEWAY_GITHUB_COLLABORATOR_ROLES,
     pollIntervalMs: num(env.GATEWAY_POLL_INTERVAL_MS, 3_000),
     pollTimeoutMs: num(env.GATEWAY_POLL_TIMEOUT_MS, 15 * 60 * 1000),
     githubAppClientId: env.GITHUB_APP_CLIENT_ID ?? "",
