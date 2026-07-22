@@ -35,6 +35,29 @@ describe("OrchestratorClient.invoke", () => {
     expect(fetchImpl.mock.calls[1]?.[0]).toBe("http://orchestrator:8081/invoke/run-1");
   });
 
+  it("resolves a function-provided token fresh on every request (e.g. OidcTokenProvider.getToken)", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "run-1" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "succeeded", result: "done" }) });
+    const getToken = vi.fn().mockResolvedValueOnce("tok-a").mockResolvedValueOnce("tok-b");
+
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: getToken,
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+
+    await client.invoke("do the thing", "session-1");
+
+    expect(getToken).toHaveBeenCalledTimes(2);
+    expect((fetchImpl.mock.calls[0]?.[1] as RequestInit).headers).toMatchObject({ authorization: "Bearer tok-a" });
+    expect((fetchImpl.mock.calls[1]?.[1] as RequestInit).headers).toMatchObject({ authorization: "Bearer tok-b" });
+  });
+
   it("omits identity_link_flow entirely when not passed", async () => {
     const fetchImpl = vi
       .fn()

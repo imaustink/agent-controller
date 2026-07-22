@@ -237,13 +237,28 @@ integration-gateway:
     # just a GitHub "Settings -> Collaborators" change on this repo.
     githubCollaboratorRoles: '{"admin": ["writer"], "write": ["writer"]}'
 
-  # Bring-your-own secret: GITHUB_WEBHOOK_SECRET, GATEWAY_ORCHESTRATOR_TOKEN,
-  # and GITHUB_TOKEN. GATEWAY_ORCHESTRATOR_TOKEN must be a Pocket ID
-  # client_credentials access token for the "integration-gateway" client (see
+  # Automatic OIDC client_credentials token fetch/refresh (previously a
+  # documented, unbuilt follow-up -- Pocket ID's client_credentials access
+  # tokens expire in a fixed 1 hour, and until this was built the gateway
+  # just read a static, manually-rotated GATEWAY_ORCHESTRATOR_TOKEN that went
+  # stale every hour with no one automatically noticing). Now the gateway
+  # holds the "integration-gateway" Pocket ID client's client_secret (which
+  # does not expire, only rotates if regenerated) and fetches/caches/renews
+  # its own access token as needed.
+  orchestratorOidc:
+    enabled: true
+    tokenEndpoint: "https://pocket-id.kurpuis.com/api/oidc/token"
+    clientId: "integration-gateway"
+    resource: "https://agent-orchestrator.controller-agent.svc.cluster.local"
+
+  # Bring-your-own secret: GITHUB_WEBHOOK_SECRET,
+  # GATEWAY_ORCHESTRATOR_OIDC_CLIENT_SECRET, and GITHUB_TOKEN.
+  # GATEWAY_ORCHESTRATOR_OIDC_CLIENT_SECRET is the "integration-gateway"
+  # Pocket ID client's client_secret (see
   # kubernetes/manifests/services/pocket-id/provision-agent-orchestrator.sh in
-  # imaustink/homelab) -- these expire in 1 hour, so this is a placeholder
-  # until apps/integration-gateway fetches/refreshes its own token instead of
-  # reading a static env var (tracked follow-up, not done yet).
+  # imaustink/homelab, or its "regenerate secret" endpoint) -- NOT an access
+  # token; the gateway exchanges this for a fresh access token itself as
+  # needed, so this key does not go stale on its own.
   #
   # Per-user GitHub identity linking (docs/adr/0022, identityLink.enabled
   # below) needs FOUR more keys in this same Secret: GATEWAY_IDENTITY_LINK_TOKEN
@@ -263,14 +278,14 @@ integration-gateway:
   # Create/update with:
   #   kubectl create secret generic integration-gateway-secrets -n controller-agent \
   #     --from-literal=GITHUB_WEBHOOK_SECRET="$(openssl rand -hex 32)" \
-  #     --from-literal=GATEWAY_ORCHESTRATOR_TOKEN=<Pocket ID client_credentials access token> \
+  #     --from-literal=GATEWAY_ORCHESTRATOR_OIDC_CLIENT_SECRET=<Pocket ID client_secret> \
   #     --from-literal=GITHUB_TOKEN=github_pat_... \
   #     --from-literal=GATEWAY_IDENTITY_LINK_TOKEN="$(openssl rand -hex 32)" \
   #     --from-literal=IDENTITY_LINK_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
   #     --from-literal=IDENTITY_LINK_STATE_SECRET="$(openssl rand -base64 32)" \
   #     --from-literal=GITHUB_APP_CLIENT_SECRET=<from the GitHub App's settings page>
   #   # (or `kubectl edit secret integration-gateway-secrets -n controller-agent`
-  #   # if it already exists -- just add the four new keys)
+  #   # if it already exists -- just add/replace the relevant keys)
   secrets:
     existingSecret: integration-gateway-secrets
 

@@ -30,7 +30,8 @@ config:
   # orchestrator's own identity resolver (config.staticIdentities on the
   # agent-orchestrator chart), to a role allowed to reach the SWE agent.
   # Read from a Secret (see secrets.orchestratorTokenKey below), never set
-  # here in plaintext.
+  # here in plaintext. Only used when orchestratorOidc.enabled is false --
+  # see that block below for the preferred, auto-refreshing alternative.
   #
   # GitHub API base URL (override for GitHub Enterprise Server).
   githubApiUrl: "https://api.github.com"
@@ -66,6 +67,22 @@ config:
   githubIdentities: ""
   pollIntervalMs: 3000
   pollTimeoutMs: 900000
+
+# Automatic OIDC client_credentials token fetch/refresh for this gateway's
+# own /invoke calls to agent-orchestrator -- an opt-in alternative to
+# config's static, manually-rotated orchestratorToken. Requires a real
+# client_credentials-capable IdP (e.g. Pocket ID); see
+# imaustink/homelab's kubernetes/manifests/agent-controller/README.md for
+# provisioning. Off by default: config.orchestratorToken (a Secret-backed
+# static token) is used unchanged unless this is enabled.
+orchestratorOidc:
+  enabled: false
+  # OIDC token endpoint, e.g. "https://pocket-id.example.com/api/oidc/token".
+  tokenEndpoint: ""
+  clientId: ""
+  # RFC 8707 `resource` param -- the audience the minted token should be
+  # scoped to (agent-orchestrator's own URL, matching its own oidcAudience).
+  resource: ""
 
 # Per-chat-user GitHub identity linking (OAuth Device Flow, docs/adr/0022):
 # turns this gateway into a general external-identity credential broker in
@@ -144,6 +161,7 @@ secrets:
   existingSecret: ""
   githubWebhookSecretKey: GITHUB_WEBHOOK_SECRET
   orchestratorTokenKey: GATEWAY_ORCHESTRATOR_TOKEN
+  orchestratorOidcClientSecretKey: GATEWAY_ORCHESTRATOR_OIDC_CLIENT_SECRET
   githubTokenKey: GITHUB_TOKEN
   githubAppIdKey: GITHUB_APP_ID
   githubAppPrivateKeyKey: GITHUB_APP_PRIVATE_KEY
@@ -155,6 +173,7 @@ secrets:
   # Only read when secrets.create=true.
   githubWebhookSecret: ""
   orchestratorToken: ""
+  orchestratorOidcClientSecret: ""
   githubToken: ""
   githubAppId: ""
   githubAppPrivateKey: ""

@@ -12,6 +12,7 @@ import {
   loadTeamRolesFromEnv,
 } from "./identity.js";
 import { OrchestratorClient } from "./orchestrator-client.js";
+import { OidcTokenProvider } from "./oidc-token-provider.js";
 import { GatewayServer } from "./server.js";
 
 const EXIT_STARTUP_FAILURE = 1;
@@ -44,8 +45,30 @@ async function main(): Promise<void> {
     console.error("GITHUB_WEBHOOK_SECRET is required");
     process.exit(EXIT_STARTUP_FAILURE);
   }
-  if (!config.orchestratorToken) {
-    console.error("GATEWAY_ORCHESTRATOR_TOKEN is required");
+  // OIDC client_credentials fields (automatic token fetch/refresh) are an
+  // opt-in alternative to the static GATEWAY_ORCHESTRATOR_TOKEN -- same
+  // partial-config-fails-closed discipline as identity-link below (a typo'd
+  // Secret/values file leaving some but not all four set is far more likely
+  // than an intentional partial configuration).
+  const orchestratorOidcFields = {
+    GATEWAY_ORCHESTRATOR_OIDC_TOKEN_ENDPOINT: config.orchestratorOidcTokenEndpoint,
+    GATEWAY_ORCHESTRATOR_OIDC_CLIENT_ID: config.orchestratorOidcClientId,
+    GATEWAY_ORCHESTRATOR_OIDC_CLIENT_SECRET: config.orchestratorOidcClientSecret,
+    GATEWAY_ORCHESTRATOR_OIDC_RESOURCE: config.orchestratorOidcResource,
+  };
+  const orchestratorOidcFieldEntries = Object.entries(orchestratorOidcFields);
+  const orchestratorOidcFieldsSet = orchestratorOidcFieldEntries.filter(([, value]) => Boolean(value));
+  if (orchestratorOidcFieldsSet.length > 0 && orchestratorOidcFieldsSet.length < orchestratorOidcFieldEntries.length) {
+    const missing = orchestratorOidcFieldEntries.filter(([, value]) => !value).map(([name]) => name);
+    console.error(`Partial orchestrator OIDC configuration -- missing: ${missing.join(", ")}`);
+    process.exit(EXIT_STARTUP_FAILURE);
+  }
+  const orchestratorOidcEnabled = orchestratorOidcFieldsSet.length === orchestratorOidcFieldEntries.length;
+
+  if (!orchestratorOidcEnabled && !config.orchestratorToken) {
+    console.error(
+      "GATEWAY_ORCHESTRATOR_TOKEN is required (or the four GATEWAY_ORCHESTRATOR_OIDC_* fields, for automatic token refresh)",
+    );
     process.exit(EXIT_STARTUP_FAILURE);
   }
 
@@ -122,9 +145,23 @@ async function main(): Promise<void> {
     staticIdentityResolver,
   );
 
+  // Automatic token fetch/refresh (previously a documented, unbuilt
+  // follow-up -- see imaustink/homelab's kubernetes/manifests/agent-controller
+  // /README.md's "integration-gateway token refresh (not yet built)" note)
+  // when the OIDC fields are configured; otherwise the static token, exactly
+  // as before this feature existed.
+  const orchestratorTokenProvider = orchestratorOidcEnabled
+    ? new OidcTokenProvider({
+        tokenEndpoint: config.orchestratorOidcTokenEndpoint!,
+        clientId: config.orchestratorOidcClientId!,
+        clientSecret: config.orchestratorOidcClientSecret!,
+        resource: config.orchestratorOidcResource,
+      })
+    : undefined;
+
   const orchestratorClient = new OrchestratorClient({
     baseUrl: config.orchestratorUrl,
-    token: config.orchestratorToken,
+    token: orchestratorTokenProvider ? () => orchestratorTokenProvider.getToken() : config.orchestratorToken,
     pollIntervalMs: config.pollIntervalMs,
     pollTimeoutMs: config.pollTimeoutMs,
   });

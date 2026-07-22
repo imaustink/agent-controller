@@ -23,8 +23,21 @@ export interface AppConfig {
   githubTriggerLabel: string;
   /** Base URL of agent-orchestrator's consumer-facing invoke API (ADR 0006). */
   orchestratorUrl: string;
-  /** Bearer token this gateway authenticates to agent-orchestrator's /invoke as. */
+  /**
+   * Static bearer token this gateway authenticates to agent-orchestrator's
+   * /invoke as -- only used when the OIDC client_credentials fields below
+   * are not configured (see `orchestratorOidc*`). A static token requires
+   * manual re-minting whenever it expires; prefer the OIDC fields for any
+   * deployment backed by a real client_credentials-capable IdP (e.g. Pocket
+   * ID), which fetches/caches/refreshes its own token automatically.
+   */
   orchestratorToken: string;
+  /** OIDC token endpoint for a client_credentials grant, e.g. `https://pocket-id.example.com/api/oidc/token`. Set together with the three fields below to enable automatic token refresh instead of the static `orchestratorToken`. */
+  orchestratorOidcTokenEndpoint: string | undefined;
+  orchestratorOidcClientId: string | undefined;
+  orchestratorOidcClientSecret: string | undefined;
+  /** RFC 8707 `resource` param -- the audience the minted token should be scoped to (agent-orchestrator's own URL). */
+  orchestratorOidcResource: string | undefined;
   /** JSON map of `{ "<github-login>": { "subject": "...", "roles": ["..."] } }` -- dev/test-grade fallback, see identity.ts. */
   githubIdentities: string | undefined;
   /** JSON map of `{ "<org>/<team-slug>": ["role", ...] }` -- prod-grade primary identity source for org-based deployments, see GithubTeamMembershipResolver in identity.ts. */
@@ -77,6 +90,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     githubTriggerLabel: env.GATEWAY_GITHUB_TRIGGER_LABEL ?? "",
     orchestratorUrl: env.GATEWAY_ORCHESTRATOR_URL ?? "http://agent-orchestrator:8081",
     orchestratorToken: env.GATEWAY_ORCHESTRATOR_TOKEN ?? "",
+    orchestratorOidcTokenEndpoint: env.GATEWAY_ORCHESTRATOR_OIDC_TOKEN_ENDPOINT,
+    orchestratorOidcClientId: env.GATEWAY_ORCHESTRATOR_OIDC_CLIENT_ID,
+    orchestratorOidcClientSecret: env.GATEWAY_ORCHESTRATOR_OIDC_CLIENT_SECRET,
+    orchestratorOidcResource: env.GATEWAY_ORCHESTRATOR_OIDC_RESOURCE,
     githubIdentities: env.GATEWAY_GITHUB_IDENTITIES,
     githubTeamRoles: env.GATEWAY_GITHUB_TEAM_ROLES,
     githubCollaboratorRoles: env.GATEWAY_GITHUB_COLLABORATOR_ROLES,

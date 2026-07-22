@@ -22,7 +22,17 @@ export interface OrchestratorInvokeResult {
 
 export interface OrchestratorClientOptions {
   baseUrl: string;
-  token: string;
+  /**
+   * Either a static bearer token, or a function resolving one on demand
+   * (e.g. `OidcTokenProvider.getToken`, which caches and transparently
+   * refreshes a short-lived OIDC client_credentials token). Resolved fresh
+   * before every HTTP call (both the initial accept and each poll), so a
+   * dynamic provider's caching/refresh logic governs whether that's a cheap
+   * cache hit or an actual token refresh -- important since a single
+   * `invoke()` can poll for up to `pollTimeoutMs` (default 15 minutes),
+   * comfortably longer than a token's lifetime.
+   */
+  token: string | (() => Promise<string>);
   pollIntervalMs: number;
   pollTimeoutMs: number;
   /** Injectable for tests; defaults to a real timer. */
@@ -49,6 +59,10 @@ export class OrchestratorClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
+  private resolveToken(): Promise<string> | string {
+    return typeof this.options.token === "function" ? this.options.token() : this.options.token;
+  }
+
   /**
    * Starts a new turn (or resumes an existing session's active agent run)
    * and awaits its terminal result. `identityLinkFlow`, when set, is passed
@@ -73,7 +87,7 @@ export class OrchestratorClient {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${this.options.token}`,
+        authorization: `Bearer ${await this.resolveToken()}`,
       },
       body: JSON.stringify({
         request,
@@ -92,7 +106,7 @@ export class OrchestratorClient {
       await this.sleep(this.options.pollIntervalMs);
       const pollRes = await this.fetchImpl(
         `${this.options.baseUrl.replace(/\/$/, "")}/invoke/${accepted.id}`,
-        { headers: { authorization: `Bearer ${this.options.token}` } },
+        { headers: { authorization: `Bearer ${await this.resolveToken()}` } },
       );
       if (!pollRes.ok) {
         return { status: "failed", error: `/invoke/${accepted.id} poll failed: ${pollRes.status}` };

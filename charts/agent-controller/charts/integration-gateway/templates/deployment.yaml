@@ -66,6 +66,14 @@ spec:
               value: {{ .Values.config.pollIntervalMs | quote }}
             - name: GATEWAY_POLL_TIMEOUT_MS
               value: {{ .Values.config.pollTimeoutMs | quote }}
+            {{- if .Values.orchestratorOidc.enabled }}
+            - name: GATEWAY_ORCHESTRATOR_OIDC_TOKEN_ENDPOINT
+              value: {{ .Values.orchestratorOidc.tokenEndpoint | quote }}
+            - name: GATEWAY_ORCHESTRATOR_OIDC_CLIENT_ID
+              value: {{ .Values.orchestratorOidc.clientId | quote }}
+            - name: GATEWAY_ORCHESTRATOR_OIDC_RESOURCE
+              value: {{ .Values.orchestratorOidc.resource | quote }}
+            {{- end }}
             {{- if .Values.identityLink.enabled }}
             - name: GITHUB_APP_CLIENT_ID
               value: {{ .Values.identityLink.githubAppClientId | quote }}
@@ -83,11 +91,19 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
                   key: {{ .Values.secrets.githubWebhookSecretKey }}
+            {{- if .Values.orchestratorOidc.enabled }}
+            - name: GATEWAY_ORCHESTRATOR_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.orchestratorOidcClientSecretKey }}
+            {{- else }}
             - name: GATEWAY_ORCHESTRATOR_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
                   key: {{ .Values.secrets.orchestratorTokenKey }}
+            {{- end }}
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
