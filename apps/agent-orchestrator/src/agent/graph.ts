@@ -44,6 +44,17 @@ export const AgentStateAnnotation = Annotation.Root({
   request: Annotation<string>,
   authToken: Annotation<string>,
   /**
+   * Caller's Open WebUI session id, if any (docs/adr/0012) -- forwarded
+   * verbatim to every ToolRun/AgentRun CR this turn launches, as an
+   * annotation, purely for `kubectl describe`-level debugging. Not the same
+   * concept as `sessionSubject` below (which gates active-skill/agent-run
+   * continuation), and not required for continuation to work.
+   */
+  sessionId: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
    * The conversation's active skill id from the caller's session, if any
    * (docs/adr/0012). Set by the server from the session store, consumed by
    * the `checkActiveSkill` node; absent -> stateless per-turn selection.
@@ -925,6 +936,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           timeoutSeconds: deps.agentRunTimeoutSeconds,
           ...(deps.natsUrl ? { natsUrl: deps.natsUrl, natsSubject: `callbacks.${runId}` } : {}),
           ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
+          ...(state.sessionId ? { sessionId: state.sessionId } : {}),
         });
         const reply = await awaitReply;
         const message = composeAgentTurnMessage(state, reply);
@@ -1096,6 +1108,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             timeoutSeconds: deps.agentRunTimeoutSeconds,
             ...(deps.natsUrl ? { natsUrl: deps.natsUrl, natsSubject: `callbacks.${runId}` } : {}),
             ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
+            ...(state.sessionId ? { sessionId: state.sessionId } : {}),
           });
           const reply = await awaitReply;
           // v1 scope cut: agent-backed tools support single-turn/final-reply
@@ -1129,7 +1142,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         if (!deps.localToolExecutor) {
           return { error: `tool ${tool.id} is a LocalTool but local execution is not configured` };
         }
-        event = await deps.localToolExecutor.run(tool, input);
+        event = await deps.localToolExecutor.run(tool, input, state.sessionId);
         jobId = event.job_id;
       } else if (tool.jobTemplate) {
         // Container tool (ADR 0010): create a ToolRun CR — the Go
@@ -1152,6 +1165,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               args: [input],
               natsUrl: deps.natsUrl,
               natsSubject: `callbacks.${jobId}`,
+              ...(state.sessionId ? { sessionId: state.sessionId } : {}),
             });
           } else {
             // HTTP callback mode (backward-compatible default).
@@ -1160,6 +1174,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               args: [input],
               callbackUrl,
               callbackSecret: deps.callbackSecret!,
+              ...(state.sessionId ? { sessionId: state.sessionId } : {}),
             });
           }
 

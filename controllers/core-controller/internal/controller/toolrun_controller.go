@@ -199,8 +199,9 @@ func buildJob(run *toolv1alpha1.ToolRun, tool *toolv1alpha1.Tool) (*batchv1.Job,
 	}
 
 	return buildRunJob(runJobParams{
-		jobName:   fmt.Sprintf("toolrun-%s", run.Name),
-		namespace: run.Namespace,
+		jobName:     fmt.Sprintf("toolrun-%s", run.Name),
+		namespace:   run.Namespace,
+		annotations: sessionIDAnnotations(run.Annotations),
 		labels: map[string]string{
 			"core.controller-agent.dev/toolrun": run.Name,
 			"core.controller-agent.dev/tool":    tool.Name,

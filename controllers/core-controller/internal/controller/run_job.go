@@ -28,14 +28,22 @@ import (
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 )
 
+// SessionIDAnnotation is the well-known annotation key the orchestrator sets
+// on a ToolRun/AgentRun CR to carry the caller's Open WebUI session id
+// (docs/adr/0012) through to the Job/Pod it launches, for debugging/log
+// correlation via `kubectl describe`. Copied verbatim by toolrun_controller.go
+// / agentrun_controller.go from the CR's own annotations, if present.
+const SessionIDAnnotation = "controller-agent.dev/session-id"
+
 // runJobParams is everything the shared hardened-Job builder needs, shaped
 // so both ToolRun (tool image + args) and AgentRun (agent image + goal)
 // reconcilers produce byte-identical security/callback wiring.
 type runJobParams struct {
 	// jobName must be unique per run; convention: "<kind>-<run name>".
-	jobName   string
-	namespace string
-	labels    map[string]string
+	jobName     string
+	namespace   string
+	labels      map[string]string
+	annotations map[string]string
 
 	image              string
 	serviceAccountName string
@@ -114,9 +122,10 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      p.jobName,
-			Namespace: p.namespace,
-			Labels:    p.labels,
+			Name:        p.jobName,
+			Namespace:   p.namespace,
+			Labels:      p.labels,
+			Annotations: p.annotations,
 		},
 		Spec: batchv1.JobSpec{
 			ActiveDeadlineSeconds:   ptr.To(timeout),
@@ -124,7 +133,8 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 			BackoffLimit:            ptr.To(int32(0)),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: p.labels,
+					Labels:      p.labels,
+					Annotations: p.annotations,
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: p.serviceAccountName,
@@ -170,6 +180,19 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 		},
 	}
 	return job, nil
+}
+
+// sessionIDAnnotations extracts just the SessionIDAnnotation from a ToolRun/
+// AgentRun CR's own annotations (if set) for copying onto the Job/Pod it
+// launches -- deliberately narrow rather than passing the CR's whole
+// annotation map through, so any other annotation a caller happens to set on
+// the CR (e.g. via kubectl) isn't silently propagated too.
+func sessionIDAnnotations(crAnnotations map[string]string) map[string]string {
+	sessionID, ok := crAnnotations[SessionIDAnnotation]
+	if !ok || sessionID == "" {
+		return nil
+	}
+	return map[string]string{SessionIDAnnotation: sessionID}
 }
 
 // mergeSecretEnv merges per-run secretEnv overrides over an Agent template's

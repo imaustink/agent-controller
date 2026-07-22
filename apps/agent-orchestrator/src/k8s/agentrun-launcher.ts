@@ -1,6 +1,7 @@
 import * as k8s from "@kubernetes/client-node";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import type { AgentRunTemplate } from "../agents/types.js";
+import { SESSION_ID_ANNOTATION } from "./container-tool-launcher.js";
 import type { SecretKeySelector } from "./toolrun-launcher.js";
 
 /** Plural resource name used by the `AgentRun` CRD (matches `config/crd/bases` in controllers/core-controller). */
@@ -40,6 +41,12 @@ export interface AgentLaunchOptions {
    * passed to the constructor (see `SecretApiLike` below).
    */
   secretEnv?: { name: string; value: string }[];
+  /**
+   * Caller's Open WebUI session id (docs/adr/0012), if any -- set as
+   * {@link SESSION_ID_ANNOTATION} on the launched AgentRun CR, mirroring
+   * ToolRunLauncher. Absent -> no annotation is set.
+   */
+  sessionId?: string;
 }
 
 export interface LaunchedAgentRun {
@@ -153,7 +160,11 @@ export class AgentRunLauncher implements AgentRunLauncherPort {
     const body = {
       apiVersion: `${this.group}/${this.version}`,
       kind: "AgentRun",
-      metadata: { name, namespace: template.namespace },
+      metadata: {
+        name,
+        namespace: template.namespace,
+        ...(options.sessionId ? { annotations: { [SESSION_ID_ANNOTATION]: options.sessionId } } : {}),
+      },
       spec: {
         agentRef: template.agentRef,
         goal: options.goal,

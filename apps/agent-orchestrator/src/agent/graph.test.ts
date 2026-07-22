@@ -136,6 +136,35 @@ describe("buildAgentGraph", () => {
     );
   });
 
+  it("forwards state.sessionId to the container tool launcher as options.sessionId (docs/adr/0012)", async () => {
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "extract the recipe at https://example.com/recipe",
+      authToken: "tok",
+      sessionId: "chat-42",
+    });
+
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
+      scraperTool.jobTemplate,
+      expect.objectContaining({ sessionId: "chat-42" }),
+    );
+  });
+
+  it("omits options.sessionId from the container tool launcher when the turn has no sessionId", async () => {
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    const [, options] = (deps.containerToolLauncher.launch as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      unknown,
+      { sessionId?: string },
+    ];
+    expect(options.sessionId).toBeUndefined();
+  });
+
   it("responds directly with no tool call for an in-chat edit action", async () => {
     const deps = baseDeps({
       actionPlanner: {
@@ -429,7 +458,7 @@ describe("buildAgentGraph", () => {
 
     expect(final.error).toBeUndefined();
     expect(final.result).toEqual({ status: 200, body: "hi" });
-    expect(localToolExecutor.run).toHaveBeenCalledWith(localTool, "https://example.com");
+    expect(localToolExecutor.run).toHaveBeenCalledWith(localTool, "https://example.com", undefined);
     // A LocalTool must never take the Job path.
     expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });

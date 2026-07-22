@@ -63,6 +63,13 @@ export interface AgentGraphInput {
    * `OpenWebUiForwardedUserResolver`.
    */
   forwardedUserToken?: string;
+  /**
+   * Caller's Open WebUI session id (`X-OpenWebUI-Chat-Id` or the `/invoke`
+   * `session_id` body field), if any -- forwarded to every launched
+   * ToolRun/AgentRun CR as an annotation (docs/adr/0012) so a Job/Pod can be
+   * traced back to the conversation that spawned it via `kubectl describe`.
+   */
+  sessionId?: string;
   /** Active skill id from the caller's session, if any (docs/adr/0012). */
   activeSkillId?: string;
   /** Id of the Agent CR the conversation is continuing, if any. */
@@ -168,6 +175,10 @@ export class InvokeServer {
     if (progressListener) input.progressListener = progressListener;
     if (identityLinkFlow) input.identityLinkFlow = identityLinkFlow;
     if (forwardedUserToken) input.forwardedUserToken = forwardedUserToken;
+    // Carried through to every launched ToolRun/AgentRun CR as an annotation
+    // (docs/adr/0012) purely for kubectl-level debugging -- independent of
+    // whether a session store is configured, unlike the fields below.
+    if (sessionId) input.sessionId = sessionId;
     if (!sessionId || !this.sessionStore) return input;
     const record = await this.sessionStore.get(sessionId);
     if (!record) return input;

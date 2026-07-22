@@ -168,6 +168,7 @@ describe("InvokeServer session-scoped pending identity link (GitHub OAuth Device
     expect(graph.invoke).toHaveBeenNthCalledWith(2, {
       request: "any message",
       authToken: "tok-1",
+      sessionId: "session-1",
       activeSkillId: undefined,
       activeAgentId: undefined,
       activeAgentRunId: undefined,
@@ -658,6 +659,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     expect(graph.invoke).toHaveBeenNthCalledWith(1, {
       request: "extract https://example.com",
       authToken: "tok-1",
+      sessionId: "chat-42",
     });
 
     await send();
@@ -665,6 +667,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     expect(graph.invoke).toHaveBeenNthCalledWith(2, {
       request: "extract https://example.com",
       authToken: "tok-1",
+      sessionId: "chat-42",
       activeSkillId: "recipe-skill",
       sessionSubject: "open-webui",
     });
@@ -694,7 +697,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
 
     await send();
     await send();
-    expect(graph.invoke).toHaveBeenNthCalledWith(2, { request: "do a thing", authToken: "" });
+    expect(graph.invoke).toHaveBeenNthCalledWith(2, { request: "do a thing", authToken: "", sessionId: "chat-42" });
 
     await server.close();
   });
@@ -822,6 +825,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     expect(graph.invoke).toHaveBeenNthCalledWith(2, {
       request: "extract https://example.com",
       authToken: "tok-1",
+      sessionId: "cli-7",
       activeSkillId: "recipe-skill",
       sessionSubject: "open-webui",
     });

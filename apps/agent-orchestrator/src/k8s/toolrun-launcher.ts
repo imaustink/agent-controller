@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as k8s from "@kubernetes/client-node";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import type { JobTemplate } from "../tool-descriptor.js";
-import type { ContainerToolLauncher, LaunchedJob, LaunchOptions } from "./container-tool-launcher.js";
+import { SESSION_ID_ANNOTATION, type ContainerToolLauncher, type LaunchedJob, type LaunchOptions } from "./container-tool-launcher.js";
 
 /** Plural resource name used by the `ToolRun` CRD (matches `config/crd/bases` in controllers/core-controller). */
 export const TOOLRUN_PLURAL = "toolruns";
@@ -78,7 +78,11 @@ export class ToolRunLauncher implements ContainerToolLauncher {
     const body = {
       apiVersion: `${this.group}/${this.version}`,
       kind: "ToolRun",
-      metadata: { name, namespace: template.namespace },
+      metadata: {
+        name,
+        namespace: template.namespace,
+        ...(options.sessionId ? { annotations: { [SESSION_ID_ANNOTATION]: options.sessionId } } : {}),
+      },
       spec: {
         toolRef: template.toolRef,
         args: options.args ?? template.args,
