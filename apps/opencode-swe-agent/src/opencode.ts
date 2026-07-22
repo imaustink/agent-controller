@@ -184,21 +184,40 @@ export function parseOpencodeLine(line: string): OpencodeSignal | null {
       return str(part["text"])
         ? { progress: str(part["text"])!, isDelta: type === "reasoning-delta", progressKind: "narrative" }
         : null;
+    // Confirmed against real `opencode run --format json` output (headless
+    // single-shot mode): one "tool_use" event per call, carrying BOTH the
+    // invocation and (once done) its result nested under `part.state` --
+    // there is no separate "tool-result" event to key off of. `part.tool ===
+    // "invalid"` is how a malformed tool call (bad args) surfaces; a non-zero
+    // shell exit code is not otherwise flagged as an error by opencode itself
+    // (state.status is "completed" either way), so it isn't treated as one here.
     case "tool-call":
     case "tool_use": {
-      const name = str(rec["toolName"]) ?? str(part["tool"]) ?? str(rec["tool"]);
-      return name ? { progress: `running ${name}`, progressKind: "status" } : null;
-    }
-    case "tool-result":
-    case "tool_result": {
-      const isError = rec["isError"] === true || rec["success"] === false;
-      const content = str(rec["result"]) ?? str(rec["output"]) ?? str(rec["error"]);
-      if (!content) return null;
-      if (isError) return { toolFailure: content };
+      const name = str(part["tool"]) ?? str(rec["toolName"]) ?? str(rec["tool"]);
+      const state = (typeof part["state"] === "object" && part["state"] !== null ? part["state"] : {}) as Record<
+        string,
+        unknown
+      >;
+      const output = str(state["output"]);
+      if (state["status"] !== "completed" || !output) {
+        return name ? { progress: `running ${name}`, progressKind: "status" } : null;
+      }
+      if (name === "invalid") return { toolFailure: output };
       // Successful tool output (file reads, grep/diff/command results) is the
       // substance behind the agent's narration ("let's look at X in detail")
       // -- without this, only the narration streams and the actual findings
       // vanish, since a `null` signal here never becomes a progress event at all.
+      return { progress: name ? `${name} →\n${output}` : output, progressKind: "narrative" };
+    }
+    case "tool-result":
+    case "tool_result": {
+      // Defensive fallback for the plausible-but-unobserved shape where a
+      // tool's result arrives as its own event rather than nested in
+      // "tool_use" -- real opencode output uses "tool_use" (above), not this.
+      const isError = rec["isError"] === true || rec["success"] === false;
+      const content = str(rec["result"]) ?? str(rec["output"]) ?? str(rec["error"]);
+      if (!content) return null;
+      if (isError) return { toolFailure: content };
       const name = str(rec["toolName"]) ?? str(part["tool"]) ?? str(rec["tool"]);
       return { progress: name ? `${name} →\n${content}` : content, progressKind: "narrative" };
     }
