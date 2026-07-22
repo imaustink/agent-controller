@@ -18,6 +18,8 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 
+	"durable-agents/internal/rbac"
+	"durable-agents/internal/temporal/activities"
 	"durable-agents/internal/temporal/workflows"
 )
 
@@ -34,10 +36,11 @@ const maxSeedHistoryMessages = 8
 type Server struct {
 	temporal  client.Client
 	taskQueue string
+	identity  rbac.Resolver
 }
 
-func NewServer(temporal client.Client, taskQueue string) *Server {
-	return &Server{temporal: temporal, taskQueue: taskQueue}
+func NewServer(temporal client.Client, taskQueue string, identity rbac.Resolver) *Server {
+	return &Server{temporal: temporal, taskQueue: taskQueue, identity: identity}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -103,7 +106,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 
 	sessionID, ephemeral := resolveSessionID(c)
 	workflowID := "conversation-" + sessionID
-	turnInput := workflows.TurnInput{Message: userMessage}
+	turnInput := workflows.TurnInput{Message: userMessage, Caller: resolveCaller(c, s.identity)}
 	if len(seedHistory) > 0 {
 		turnInput.SeedHistory = seedHistory
 	}
@@ -175,6 +178,20 @@ func splitMessages(messages []chatMessage) (string, []workflows.ChatMessage, err
 		history = history[len(history)-maxSeedHistoryMessages:]
 	}
 	return messages[last].Content, history, nil
+}
+
+// resolveCaller maps the bearer token to an identity. Unresolved callers get
+// an empty subject — every capability downstream fails closed on that.
+func resolveCaller(c *gin.Context, resolver rbac.Resolver) activities.Caller {
+	if resolver == nil {
+		return activities.Caller{}
+	}
+	token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+	id := resolver.Resolve(strings.TrimSpace(token))
+	if id == nil {
+		return activities.Caller{}
+	}
+	return activities.Caller{Subject: id.Subject, Roles: id.Roles}
 }
 
 // resolveSessionID returns a stable conversation id from headers, or a random

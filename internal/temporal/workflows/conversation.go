@@ -45,6 +45,10 @@ type ChatMessage struct {
 type TurnInput struct {
 	Message string `json:"message"`
 
+	// Caller is the identity the gateway resolved for this turn; retrieval
+	// and tool access are scoped to it (fail closed on empty subject).
+	Caller activities.Caller `json:"caller"`
+
 	// SeedHistory carries the client-supplied transcript, adopted only when
 	// this workflow has no durable history yet (e.g. the previous
 	// conversation workflow idled out and completed).
@@ -52,16 +56,21 @@ type TurnInput struct {
 }
 
 type TurnResult struct {
-	Reply string `json:"reply"`
-	Turn  int    `json:"turn"`
+	Reply string   `json:"reply"`
+	Turn  int      `json:"turn"`
+	Meta  TurnMeta `json:"meta"`
 }
 
 // ConversationState is the workflow's durable state, passed through
-// continue-as-new. In later milestones it also carries the active skill,
-// continuation tokens, and pending identity links (today's SessionRecord).
+// continue-as-new. In later milestones it also carries continuation tokens
+// and pending identity links (the rest of today's SessionRecord).
 type ConversationState struct {
 	History []ChatMessage `json:"history"`
 	Turns   int           `json:"turns"`
+
+	// ActiveSkillID is the conversation's current skill (ADR 0012): only the
+	// id — content is re-fetched RBAC-checked every turn.
+	ActiveSkillID string `json:"activeSkillId,omitempty"`
 }
 
 type StateSummary struct {
@@ -102,11 +111,7 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 		}
 		state.History = append(state.History, ChatMessage{Role: "user", Content: in.Message})
 
-		var reply string
-		err := workflow.ExecuteActivity(actx, activities.CompleteTurnActivityName, activities.CompleteTurnInput{
-			SystemPrompt: systemPrompt,
-			Messages:     toLLMMessages(state.History),
-		}).Get(ctx, &reply)
+		reply, meta, err := runAgentTurn(ctx, actx, state, in)
 		if err != nil {
 			// Drop the failed turn's user message so a retry re-sends it cleanly.
 			state.History = state.History[:len(state.History)-1]
@@ -115,7 +120,7 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 
 		state.History = trimHistory(append(state.History, ChatMessage{Role: "assistant", Content: reply}), maxHistoryMessages)
 		state.Turns++
-		return TurnResult{Reply: reply, Turn: state.Turns}, nil
+		return TurnResult{Reply: reply, Turn: state.Turns, Meta: meta}, nil
 	}); err != nil {
 		return err
 	}

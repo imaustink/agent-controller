@@ -51,6 +51,13 @@ func main() {
 		Name: activities.CompleteTurnActivityName,
 	})
 
+	agentLoop := &activities.AgentLoopActivities{LLM: llmClient}
+	w.RegisterActivityWithOptions(agentLoop.CheckNeedsCapability, activity.RegisterOptions{Name: activities.CheckNeedsCapabilityActivityName})
+	w.RegisterActivityWithOptions(agentLoop.CheckSkillFit, activity.RegisterOptions{Name: activities.CheckSkillFitActivityName})
+	w.RegisterActivityWithOptions(agentLoop.SelectSkill, activity.RegisterOptions{Name: activities.SelectSkillActivityName})
+	w.RegisterActivityWithOptions(agentLoop.PlanAction, activity.RegisterOptions{Name: activities.PlanActionActivityName})
+	w.RegisterActivityWithOptions(agentLoop.ComposeResponse, activity.RegisterOptions{Name: activities.ComposeResponseActivityName})
+
 	// Retrieval activities need Qdrant; without it the worker still serves
 	// plain conversations (hello-world mode).
 	if qdrantHost := os.Getenv("QDRANT_HOST"); qdrantHost != "" {

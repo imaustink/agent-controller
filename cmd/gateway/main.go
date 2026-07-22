@@ -4,10 +4,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"durable-agents/internal/gateway"
+	"durable-agents/internal/rbac"
 	"durable-agents/internal/temporal"
 )
 
@@ -46,7 +48,22 @@ func main() {
 		log.Printf("AGENT_CALLBACK_SECRET not set; callback bridge disabled")
 	}
 
-	server := gateway.NewServer(c, cfg.TaskQueue)
+	// Identity: static token map (dev-grade, like upstream's default).
+	// AGENT_DEFAULT_SUBJECT/_ROLES give tokenless callers an identity —
+	// leave unset to fail closed to no capabilities.
+	var fallback *rbac.Identity
+	if subject := os.Getenv("AGENT_DEFAULT_SUBJECT"); subject != "" {
+		fallback = &rbac.Identity{Subject: subject}
+		if roles := os.Getenv("AGENT_DEFAULT_ROLES"); roles != "" {
+			fallback.Roles = strings.Split(roles, ",")
+		}
+	}
+	resolver, err := rbac.NewStaticResolver(os.Getenv("STATIC_IDENTITIES"), fallback)
+	if err != nil {
+		log.Fatalf("build identity resolver: %v", err)
+	}
+
+	server := gateway.NewServer(c, cfg.TaskQueue, resolver)
 	log.Printf("gateway listening on %s: temporal=%s namespace=%s taskQueue=%s",
 		listenAddr, cfg.Address, cfg.Namespace, cfg.TaskQueue)
 	if err := http.ListenAndServe(listenAddr, server.Handler()); err != nil {

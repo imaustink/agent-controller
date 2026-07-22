@@ -25,6 +25,11 @@ func newTestEnv(t *testing.T, fakeLLM func(context.Context, activities.CompleteT
 	env.RegisterActivityWithOptions(fakeLLM, activity.RegisterOptions{
 		Name: activities.CompleteTurnActivityName,
 	})
+	// These tests exercise the bare-conversation path: the gate always says
+	// no capabilities needed.
+	env.RegisterActivityWithOptions(func(context.Context, string) (bool, error) {
+		return false, nil
+	}, activity.RegisterOptions{Name: activities.CheckNeedsCapabilityActivityName})
 	return env
 }
 

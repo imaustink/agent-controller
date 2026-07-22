@@ -99,7 +99,7 @@ Rebuild the agent half on Temporal; keep the tool half as-is.
    skill-access derivation.
 3. ✅ Tool execution end-to-end: ToolRun-create activity, callback→signal
    bridge, durable await with timeout, phase-mirror crash backstop.
-4. Agent-loop parity: capability gate → retrieve → select → plan⇄runTool
+4. ✅ Agent-loop parity: capability gate → retrieve → select → plan⇄runTool
    loop → compose, plus the bare-answer path.
 5. Conversation features: continuation tokens in workflow state, bounded
    history, OpenAI facade streaming via progress queries.

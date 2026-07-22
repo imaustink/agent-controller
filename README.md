@@ -29,17 +29,28 @@ design and milestone plan.
 ## How a turn flows
 
 1. `POST /v1/chat/completions` (optionally with `X-OpenWebUI-Chat-Id` or
-   `X-Session-Id` for conversation continuity).
+   `X-Session-Id` for conversation continuity; bearer token resolved to a
+   subject + roles, fail closed).
 2. The gateway does **update-with-start** on `conversation-<session-id>`:
    starts the workflow if absent, then sends the turn as a `user-turn`
    Update.
-3. The workflow appends the message to its durable history, runs the
-   `CompleteTurn` LLM activity, and returns the reply as the Update result.
+3. The workflow runs the ported agent loop, every LLM/RAG/k8s call an
+   activity: active-skill fit check (skips retrieval on a hit) → capability
+   gate (conversational turns answer directly) → RBAC-filtered skill
+   retrieval from Qdrant → skill selection → resolve the skill's declared
+   tools → plan ⇄ runTool loop (max 4 steps; tool ids re-validated; ToolRun
+   CR + durable signal wait per call) → compose the reply around the
+   verbatim tool result.
 4. The workflow idles under a 30-minute timer (then completes) and
    continues-as-new after 40 turns to bound event history.
 
 No session store, no Redis, no in-memory pending state — the workflow *is*
-the session.
+the session, including the active skill and (soon) continuation tokens.
+
+For cluster-less development: `go run ./cmd/dev-seed` populates Qdrant with
+a sample catalog, `TOOLRUN_MODE=fake` logs tool launches instead of creating
+ToolRun CRs, and you play the tool by posting HMAC-signed events to the
+callback listener.
 
 ## Local development
 
