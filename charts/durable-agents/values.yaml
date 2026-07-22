@@ -1,0 +1,43 @@
+temporal:
+  # Matches the temporalio/temporal chart's frontend service.
+  address: temporal-frontend.temporal.svc:7233
+  namespace: default
+
+taskQueue: durable-agents
+
+llm:
+  baseURL: https://api.openai.com/v1
+  model: gpt-4o-2024-08-06
+  # Secret must contain an OPENAI_API_KEY key. Create it out of band:
+  #   kubectl -n <ns> create secret generic durable-agents-secrets \
+  #     --from-literal=OPENAI_API_KEY=<key>
+  secretName: durable-agents-secrets
+
+worker:
+  replicas: 1
+  image:
+    repository: durable-agents-worker
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+gateway:
+  replicas: 1
+  image:
+    repository: durable-agents-gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
