@@ -130,10 +130,10 @@ describe("InvokeServer /invoke event field -> IntegrationRoute dispatch (ADR 002
     return registry;
   }
 
-  const assignedRouteCr = {
-    metadata: { name: "github-issue-assigned-triage" },
+  const labeledRouteCr = {
+    metadata: { name: "github-issue-labeled-triage" },
     spec: {
-      match: { source: "github", event: "issues", action: "assigned" },
+      match: { source: "github", event: "issues", action: "labeled" },
       agentRef: "opencode-swe-agent",
       promptTemplate: "Triage {{owner}}/{{repo}}#{{issueNumber}}: {{title}}",
     },
@@ -144,7 +144,7 @@ describe("InvokeServer /invoke event field -> IntegrationRoute dispatch (ADR 002
       invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "", skillCandidates: [], result: "done" } as AgentState),
       stream: vi.fn().mockResolvedValue(noStream()),
     };
-    const server = new InvokeServer(graph, undefined, undefined, await routeRegistry([assignedRouteCr]));
+    const server = new InvokeServer(graph, undefined, undefined, await routeRegistry([labeledRouteCr]));
     const port = await listenOn(server);
 
     await fetch(`http://127.0.0.1:${port}/invoke`, {
@@ -156,7 +156,7 @@ describe("InvokeServer /invoke event field -> IntegrationRoute dispatch (ADR 002
         event: {
           source: "github",
           event: "issues",
-          action: "assigned",
+          action: "labeled",
           owner: "acme",
           repo: "widgets",
           issueNumber: 7,
@@ -181,7 +181,7 @@ describe("InvokeServer /invoke event field -> IntegrationRoute dispatch (ADR 002
       invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "", skillCandidates: [], result: "done" } as AgentState),
       stream: vi.fn().mockResolvedValue(noStream()),
     };
-    const server = new InvokeServer(graph, undefined, undefined, await routeRegistry([assignedRouteCr]));
+    const server = new InvokeServer(graph, undefined, undefined, await routeRegistry([labeledRouteCr]));
     const port = await listenOn(server);
 
     await fetch(`http://127.0.0.1:${port}/invoke`, {
@@ -215,7 +215,7 @@ describe("InvokeServer /invoke event field -> IntegrationRoute dispatch (ADR 002
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         request: "please review this",
-        event: { source: "github", event: "issues", action: "assigned" },
+        event: { source: "github", event: "issues", action: "labeled" },
       }),
     });
     await new Promise((r) => setTimeout(r, 10));

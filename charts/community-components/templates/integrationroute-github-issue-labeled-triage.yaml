@@ -1,20 +1,20 @@
-{{- if .Values.integrationRoutes.githubIssueAssignedTriage.enabled }}
+{{- if .Values.integrationRoutes.githubIssueLabeledTriage.enabled }}
 apiVersion: {{ .Values.crdApiVersion }}
 kind: IntegrationRoute
 metadata:
-  name: github-issue-assigned-triage
+  name: github-issue-labeled-triage
   labels:
     {{- include "tools.labels" . | nindent 4 }}
 spec:
   match:
     source: github
     event: issues
-    action: assigned
+    action: labeled
   # No Tool wrapper needed -- dispatches straight to the Agent CR (ADR 0021),
   # same pattern as skill-self-improvement.yaml's agentRefs.
   agentRef: opencode-swe-agent
   promptTemplate: |
-    You've been assigned GitHub issue {{`{{owner}}`}}/{{`{{repo}}`}}#{{`{{issueNumber}}`}}: "{{`{{title}}`}}"
+    GitHub issue {{`{{owner}}`}}/{{`{{repo}}`}}#{{`{{issueNumber}}`}} was labeled "{{`{{labelName}}`}}": "{{`{{title}}`}}"
 
     {{`{{body}}`}}
 

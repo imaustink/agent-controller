@@ -9,10 +9,20 @@ the conversational path: every webhook event is normalized into a request
 string and relayed into `agent-orchestrator`'s existing `POST /invoke`, which
 picks a target via RAG skill retrieval. That's the right default for free
 text, where intent genuinely needs inferring — but it's the wrong tool for a
-trigger whose intent is already unambiguous. A GitHub issue being *assigned*
-to the bot's own account is exactly that: assignment is a discrete UI action,
+trigger whose intent is already unambiguous. A specific label being applied
+to a GitHub issue is exactly that: applying a label is a discrete UI action,
 not a message to interpret, and the only question is "which agent handles
 this," not "does this need a skill at all."
+
+(This mechanism was originally designed around *assignment* — a GitHub issue
+being assigned to the bot's own account — before discovering during rollout
+that GitHub App bot users generally cannot be set as issue assignees at all
+(only a small GitHub-owned allowlist, e.g. `dependabot[bot]`, gets that
+special-cased), so `issues.assigned` never actually fires for a custom App.
+A configurable label (`issues.labeled`) replaced it — same "unambiguous
+action, not free text" reasoning, but one that actually works for any GitHub
+account type. Everything below describes the label-based trigger; the CRD,
+registry, and graph-bypass mechanism are unchanged from the original design.)
 
 We considered having `integration-gateway` itself launch an `AgentRun`
 directly for this case (the "one-off/FAAS path" `docs/integrations-gateway.md`
@@ -33,7 +43,7 @@ validate the need." This is that adapter.
 
 **New CRD**, `controllers/core-controller/api/v1alpha1/integrationroute_types.go`,
 following the `Skill`/`Tool` conventions (ADR 0010): `IntegrationRouteSpec`
-has a `match` (`source`/`event`/`action`, e.g. `github`/`issues`/`assigned`)
+has a `match` (`source`/`event`/`action`, e.g. `github`/`issues`/`labeled`)
 and exactly one of `skillRef`/`agentRef`/`toolRef` (CEL-enforced, same pattern
 as `ToolSpec`'s agentRef-vs-image split), plus a `promptTemplate` string.
 `IntegrationRouteReconciler` validates the single ref resolves to a real
@@ -66,28 +76,37 @@ retrieval entirely for this turn. A miss (ref gone, roles revoked, no
 identity-link/skill-continuity chain unchanged.
 
 **`integration-gateway`** stays dumb, per the prior decision: it gains a new
-`issues`/`assigned` webhook handler (`src/webhooks/github.ts`) gated on the
-assignee being the gateway's own bot login (`GATEWAY_GITHUB_BOT_LOGIN`,
-already used elsewhere as a loop guard). On a match, it still relays through
-the same conversational `/invoke` call (same session id, same identity
-resolution on the *assigning* user, same reply-posting) — just with an
-`event` descriptor attached alongside the usual fallback request text.
+`issues`/`labeled` webhook handler (`src/webhooks/github.ts`) gated on the
+label applied matching a configured trigger label
+(`GATEWAY_GITHUB_TRIGGER_LABEL`) — GitHub sends `issues.labeled` for every
+label added, so the gateway filters to just the one that means "triage this."
+On a match, it still relays through the same conversational `/invoke` call
+(same session id, same identity resolution on the user who *applied the
+label*, same reply-posting) — just with an `event` descriptor attached
+alongside the usual fallback request text.
 
-**Sample route**: `github`/`issues`/`assigned` → `opencode-swe-agent`, wired
+**Sample route**: `github`/`issues`/`labeled` → `opencode-swe-agent`, wired
 as a Helm-templated `IntegrationRoute` (`charts/community-components/templates/
-integrationroute-github-issue-assigned-triage.yaml`, gated by
-`integrationRoutes.githubIssueAssignedTriage.enabled`), same pattern as
-`skill-self-improvement.yaml`.
+integrationroute-github-issue-labeled-triage.yaml`, gated by
+`integrationRoutes.githubIssueLabeledTriage.enabled`), same pattern as
+`skill-self-improvement.yaml`. Production's trigger label is `"ai-triage"`
+(`charts/agent-controller/values-production.yaml`'s
+`integrationGateway.config.githubTriggerLabel`).
 
 ## Consequences
 
 - RAG skill retrieval remains the default and the fallback — nothing about
   ordinary conversational turns changes; `IntegrationRoute` only activates
   when a caller explicitly sends a matching `event` descriptor.
-- The mechanism generalizes to future adapters (Slack, a specific label
-  being added, a cron trigger) with zero code changes — just a new
-  `IntegrationRoute` CR — matching the "declarative, not a rules engine"
-  non-goal `docs/integrations-gateway.md` already committed to.
+- The mechanism generalizes to future adapters (Slack, a different label,
+  a cron trigger) with zero code changes to the CRD/registry/graph-bypass —
+  just a new `IntegrationRoute` CR — matching the "declarative, not a rules
+  engine" non-goal `docs/integrations-gateway.md` already committed to. A
+  second GitHub label trigger, for example, needs only a new
+  `IntegrationRoute` CR and a gateway-side label-name check (or, if the
+  gateway should support multiple trigger labels without a redeploy, a
+  small follow-up to make `GATEWAY_GITHUB_TRIGGER_LABEL` a set rather than
+  a single string — not needed yet with only one label in use).
 - `agent-orchestrator`'s ServiceAccount RBAC gains read-only
   `get;list;watch` on `integrationroutes`
   (`charts/agent-controller/charts/agent-orchestrator/templates/rbac.yaml`) —

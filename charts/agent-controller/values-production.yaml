@@ -209,6 +209,10 @@ integration-gateway:
   config:
     # Loop prevention — the gateway ignores comments authored by this login.
     githubBotLogin: "agent-controller[bot]"
+    # Triggers automated triage (ADR 0024) when applied to a GitHub issue.
+    # A label, not an assignee — agent-controller[bot] can't be set as an
+    # issue assignee (GitHub App bot users generally can't be).
+    githubTriggerLabel: "ai-triage"
     # DEV/TEST-GRADE static allowlist mapping GitHub logins to identities --
     # kept only as CompositeGithubIdentityResolver's last-resort fallback now
     # that githubCollaboratorRoles below is the primary, prod-grade path (no

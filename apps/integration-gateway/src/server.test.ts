@@ -41,7 +41,7 @@ describe("GatewayServer", () => {
       identityResolver,
       orchestratorClient: { invoke } as unknown as OrchestratorClient,
       githubReplyClient: { postIssueComment } as unknown as GithubReplyClient,
-      githubBotLogin: "agent-controller[bot]",
+      githubTriggerLabel: "ai-triage",
     });
     await server.listen(0);
     port = (server as unknown as { server: { address: () => AddressInfo } }).server.address().port;
@@ -140,13 +140,13 @@ describe("GatewayServer", () => {
     expect(invoke).toHaveBeenCalledWith("start work", sessionIdFor("acme", "widgets", 7), "device");
   });
 
-  it("ignores an issues.assigned event when the assignee isn't the gateway's own bot", async () => {
+  it("ignores an issues.labeled event when the label isn't the configured trigger label", async () => {
     const res = await postWebhook(port, "issues", {
-      action: "assigned",
+      action: "labeled",
       repository: { owner: { login: "acme" }, name: "widgets" },
       sender: { login: "alice", type: "User" },
       issue: { number: 7, title: "t", body: "b" },
-      assignee: { login: "some-human" },
+      label: { name: "bug" },
     });
     expect(res.status).toBe(202);
     await flush();
@@ -154,44 +154,44 @@ describe("GatewayServer", () => {
     expect(postIssueComment).not.toHaveBeenCalled();
   });
 
-  it("relays an issues.assigned event to the orchestrator with an event descriptor when assigned to the bot", async () => {
+  it("relays an issues.labeled event to the orchestrator with an event descriptor when the trigger label is applied", async () => {
     const res = await postWebhook(port, "issues", {
-      action: "assigned",
+      action: "labeled",
       repository: { owner: { login: "acme" }, name: "widgets" },
       sender: { login: "alice", type: "User" },
       issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
-      assignee: { login: "agent-controller[bot]" },
+      label: { name: "ai-triage" },
     });
     expect(res.status).toBe(202);
     await flush();
 
     expect(invoke).toHaveBeenCalledWith(
-      "Issue #7 was assigned to me: Add dark mode\n\nPlease add a dark theme option.",
+      'Issue #7 was labeled "ai-triage": Add dark mode\n\nPlease add a dark theme option.',
       sessionIdFor("acme", "widgets", 7),
       "device",
       {
         source: "github",
         event: "issues",
-        action: "assigned",
+        action: "labeled",
         owner: "acme",
         repo: "widgets",
         issueNumber: 7,
         title: "Add dark mode",
         body: "Please add a dark theme option.",
         senderLogin: "alice",
-        assigneeLogin: "agent-controller[bot]",
+        labelName: "ai-triage",
       },
     );
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
   });
 
-  it("drops an issues.assigned event from an unknown GitHub identity even when assigned to the bot", async () => {
+  it("drops an issues.labeled event from an unknown GitHub identity even with the trigger label", async () => {
     const res = await postWebhook(port, "issues", {
-      action: "assigned",
+      action: "labeled",
       repository: { owner: { login: "acme" }, name: "widgets" },
       sender: { login: "mallory", type: "User" },
       issue: { number: 7, title: "t", body: "b" },
-      assignee: { login: "agent-controller[bot]" },
+      label: { name: "ai-triage" },
     });
     expect(res.status).toBe(202);
     await flush();

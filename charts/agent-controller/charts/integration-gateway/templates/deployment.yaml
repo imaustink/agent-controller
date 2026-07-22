@@ -48,6 +48,8 @@ spec:
               value: {{ .Values.config.githubApiUrl | quote }}
             - name: GATEWAY_GITHUB_BOT_LOGIN
               value: {{ .Values.config.githubBotLogin | quote }}
+            - name: GATEWAY_GITHUB_TRIGGER_LABEL
+              value: {{ .Values.config.githubTriggerLabel | quote }}
             {{- if .Values.config.githubTeamRoles }}
             - name: GATEWAY_GITHUB_TEAM_ROLES
               value: {{ .Values.config.githubTeamRoles | quote }}
