@@ -75,6 +75,11 @@ jobs:
               - 'package-lock.json'
               - 'packages/messaging/**'
               - 'tools/web-search/**'
+            web-fetch:
+              - 'package.json'
+              - 'package-lock.json'
+              - 'packages/messaging/**'
+              - 'tools/web-fetch/**'
             core-controller:
               - 'controllers/core-controller/**'
             localtool-executor:
@@ -92,6 +97,7 @@ jobs:
           RECIPE_SCRAPER: ${{ steps.filter.outputs.recipe-scraper }}
           RECIPE_PUBLISHER: ${{ steps.filter.outputs.recipe-publisher }}
           WEB_SEARCH: ${{ steps.filter.outputs.web-search }}
+          WEB_FETCH: ${{ steps.filter.outputs.web-fetch }}
           CORE_CONTROLLER: ${{ steps.filter.outputs.core-controller }}
           LOCALTOOL_EXECUTOR: ${{ steps.filter.outputs.localtool-executor }}
         run: |
@@ -103,6 +109,7 @@ jobs:
             {"image":"recipe-scraper","changed_key":"RECIPE_SCRAPER","dockerfile":"tools/recipe-scraper/Dockerfile","context":"."},
             {"image":"recipe-publisher","changed_key":"RECIPE_PUBLISHER","dockerfile":"tools/recipe-publisher/Dockerfile","context":"."},
             {"image":"web-search","changed_key":"WEB_SEARCH","dockerfile":"tools/web-search/Dockerfile","context":"."},
+            {"image":"web-fetch","changed_key":"WEB_FETCH","dockerfile":"tools/web-fetch/Dockerfile","context":"."},
             {"image":"core-controller","changed_key":"CORE_CONTROLLER","dockerfile":"controllers/core-controller/Dockerfile","context":"controllers/core-controller"},
             {"image":"localtool-executor-node","changed_key":"LOCALTOOL_EXECUTOR","dockerfile":"sidecars/localtool-executor/Dockerfile","context":"sidecars/localtool-executor","build_args":"BASE_IMAGE=node:24-bookworm-slim\nRUNTIME=node"},
             {"image":"localtool-executor-python","changed_key":"LOCALTOOL_EXECUTOR","dockerfile":"sidecars/localtool-executor/Dockerfile","context":"sidecars/localtool-executor","build_args":"BASE_IMAGE=python:3.12-slim-bookworm\nRUNTIME=python"},
@@ -124,9 +131,10 @@ jobs:
               --arg RECIPE_SCRAPER "$RECIPE_SCRAPER" \
               --arg RECIPE_PUBLISHER "$RECIPE_PUBLISHER" \
               --arg WEB_SEARCH "$WEB_SEARCH" \
+              --arg WEB_FETCH "$WEB_FETCH" \
               --arg CORE_CONTROLLER "$CORE_CONTROLLER" \
               --arg LOCALTOOL_EXECUTOR "$LOCALTOOL_EXECUTOR" \
-              '{AGENT_ORCHESTRATOR:$AGENT_ORCHESTRATOR,OPENCODE_SWE_AGENT:$OPENCODE_SWE_AGENT,INTEGRATION_GATEWAY:$INTEGRATION_GATEWAY,RECIPE_SCRAPER:$RECIPE_SCRAPER,RECIPE_PUBLISHER:$RECIPE_PUBLISHER,WEB_SEARCH:$WEB_SEARCH,CORE_CONTROLLER:$CORE_CONTROLLER,LOCALTOOL_EXECUTOR:$LOCALTOOL_EXECUTOR}')
+              '{AGENT_ORCHESTRATOR:$AGENT_ORCHESTRATOR,OPENCODE_SWE_AGENT:$OPENCODE_SWE_AGENT,INTEGRATION_GATEWAY:$INTEGRATION_GATEWAY,RECIPE_SCRAPER:$RECIPE_SCRAPER,RECIPE_PUBLISHER:$RECIPE_PUBLISHER,WEB_SEARCH:$WEB_SEARCH,WEB_FETCH:$WEB_FETCH,CORE_CONTROLLER:$CORE_CONTROLLER,LOCALTOOL_EXECUTOR:$LOCALTOOL_EXECUTOR}')
             MATRIX=$(jq -c --argjson flags "$FLAGS" 'map(select($flags[.changed_key] == "true"))' all.json)
           fi
 
