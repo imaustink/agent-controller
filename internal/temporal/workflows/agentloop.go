@@ -16,8 +16,9 @@ const maxToolSteps = 4
 
 // TurnMeta reports what the agent loop did, for TurnResult/debugging.
 type TurnMeta struct {
-	Path      string   `json:"path"`              // bare | skill | skill-continued
+	Path      string   `json:"path"`              // bare | skill | skill-continued | agent | agent-continued
 	SkillID   string   `json:"skillId,omitempty"` // active skill after this turn
+	AgentID   string   `json:"agentId,omitempty"` // agent handling this turn
 	ToolCalls []string `json:"toolCalls,omitempty"`
 	// Narration is the turn's full progress transcript — the authoritative
 	// version of what TurnProgressQuery exposed while the turn ran.
@@ -34,6 +35,22 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	meta := TurnMeta{Path: "bare"}
 	if note == nil {
 		note = func(string) {}
+	}
+
+	// 0. Mid-episode agent takes the turn outright (upstream's
+	// checkActiveAgentRun): forward the message as the HITL answer.
+	if state.ActiveAgentWorkflowID != "" {
+		note("Continuing with agent " + state.ActiveAgentID)
+		err := workflow.SignalExternalWorkflow(ctx, state.ActiveAgentWorkflowID, "", AgentPromptSignal, AgentPrompt{Message: in.Message}).Get(ctx, nil)
+		if err == nil {
+			meta.Path = "agent-continued"
+			meta.AgentID = state.ActiveAgentID
+			reply := handleAgentUp(ctx, state, state.ActiveAgentID, state.ActiveAgentWorkflowID, note)
+			return reply, meta, nil
+		}
+		// Child gone (terminated or already closed) — clear and fall through.
+		logger.Warn("active agent unreachable; falling back", "workflowId", state.ActiveAgentWorkflowID, "error", err)
+		state.ActiveAgentID, state.ActiveAgentWorkflowID = "", ""
 	}
 
 	// 1. Session continuity (ADR 0012): re-fetch the active skill under the
@@ -75,7 +92,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			return reply, meta, err
 		}
 
-		// 3. Retrieval (RBAC-filtered) + 4. selection.
+		// 3. Retrieval (RBAC-filtered), skills and agents in parallel-ish.
 		note("Selecting a skill…")
 		var skills []catalog.SkillDescriptor
 		if err := workflow.ExecuteActivity(actx, activities.RetrieveSkillsActivityName, activities.RetrieveInput{
@@ -84,16 +101,48 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		}).Get(ctx, &skills); err != nil {
 			logger.Warn("skill retrieval failed; answering bare", "error", err)
 		}
-		if len(skills) == 0 {
+		var agents []catalog.AgentDescriptor
+		if err := workflow.ExecuteActivity(actx, activities.RetrieveAgentsActivityName, activities.RetrieveInput{
+			Caller:  in.Caller,
+			Request: in.Message,
+		}).Get(ctx, &agents); err != nil {
+			logger.Warn("agent retrieval failed", "error", err)
+		}
+		if len(skills) == 0 && len(agents) == 0 {
 			reply, err := bareAnswer(ctx, actx, state)
 			return reply, meta, err
 		}
 
+		// 4. Selection: skill vs agent when both kinds are on the table,
+		// plain skill selection otherwise.
 		var skillID string
-		if err := workflow.ExecuteActivity(actx, activities.SelectSkillActivityName, activities.SelectSkillInput{
-			Request:    in.Message,
-			Candidates: skills,
-		}).Get(ctx, &skillID); err != nil || skillID == "" {
+		if len(agents) > 0 {
+			var choice activities.DelegateChoice
+			if err := workflow.ExecuteActivity(actx, activities.SelectDelegateActivityName, activities.SelectDelegateInput{
+				Request: in.Message,
+				Skills:  skills,
+				Agents:  agents,
+			}).Get(ctx, &choice); err != nil {
+				logger.Warn("delegate selection failed; answering bare", "error", err)
+			}
+			if choice.Kind == activities.DelegateAgent {
+				if agent := findAgent(choice.ID, agents); agent != nil {
+					return delegateToAgent(ctx, state, in, *agent, &meta, note)
+				}
+			}
+			skillID = ""
+			if choice.Kind == activities.DelegateSkill {
+				skillID = choice.ID
+			}
+		} else {
+			if err := workflow.ExecuteActivity(actx, activities.SelectSkillActivityName, activities.SelectSkillInput{
+				Request:    in.Message,
+				Candidates: skills,
+			}).Get(ctx, &skillID); err != nil {
+				skillID = ""
+			}
+		}
+		if skillID == "" {
 			reply, err := bareAnswer(ctx, actx, state)
 			return reply, meta, err
 		}

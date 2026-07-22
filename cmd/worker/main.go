@@ -47,6 +47,9 @@ func main() {
 	w.RegisterWorkflowWithOptions(workflows.ToolRunWorkflow, workflow.RegisterOptions{
 		Name: workflows.ToolRunWorkflowName,
 	})
+	w.RegisterWorkflowWithOptions(workflows.AgentWorkflow, workflow.RegisterOptions{
+		Name: workflows.AgentWorkflowName,
+	})
 	w.RegisterActivityWithOptions((&activities.LLMActivities{Client: llmClient}).CompleteTurn, activity.RegisterOptions{
 		Name: activities.CompleteTurnActivityName,
 	})
@@ -57,6 +60,8 @@ func main() {
 	w.RegisterActivityWithOptions(agentLoop.SelectSkill, activity.RegisterOptions{Name: activities.SelectSkillActivityName})
 	w.RegisterActivityWithOptions(agentLoop.PlanAction, activity.RegisterOptions{Name: activities.PlanActionActivityName})
 	w.RegisterActivityWithOptions(agentLoop.ComposeResponse, activity.RegisterOptions{Name: activities.ComposeResponseActivityName})
+	w.RegisterActivityWithOptions(agentLoop.SelectDelegate, activity.RegisterOptions{Name: activities.SelectDelegateActivityName})
+	w.RegisterActivityWithOptions(agentLoop.PlanAgentAction, activity.RegisterOptions{Name: activities.PlanAgentActionActivityName})
 
 	// Retrieval activities need Qdrant; without it the worker still serves
 	// plain conversations (hello-world mode).

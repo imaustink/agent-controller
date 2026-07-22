@@ -39,6 +39,11 @@ const (
 	// turn on the same session id simply starts a fresh workflow.
 	idleTimeout = 30 * time.Minute
 
+	// agentIdleTimeout applies instead while a child agent is mid-episode
+	// waiting on the human — completing the conversation would terminate it
+	// (parent close policy), so wait much longer.
+	agentIdleTimeout = 24 * time.Hour
+
 	// maxTurnsPerRun bounds event-history growth before continue-as-new.
 	maxTurnsPerRun = 40
 
@@ -87,6 +92,15 @@ type ConversationState struct {
 	// keyed by tool id. Tokens live only here — never in History, so the
 	// LLM/transcript never sees them.
 	ToolContinuations map[string]string `json:"toolContinuations,omitempty"`
+
+	// Active agent episode (mid-HITL): the child AgentWorkflow waiting for
+	// this conversation's next message.
+	ActiveAgentID         string `json:"activeAgentId,omitempty"`
+	ActiveAgentWorkflowID string `json:"activeAgentWorkflowId,omitempty"`
+
+	// AgentContinuations holds per-agent opaque episode tokens, prepended to
+	// the same agent's next goal (never shown to the transcript).
+	AgentContinuations map[string]string `json:"agentContinuations,omitempty"`
 }
 
 type StateSummary struct {
@@ -157,8 +171,12 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 
 	logger := workflow.GetLogger(ctx)
 	for {
+		timeout := idleTimeout
+		if state.ActiveAgentWorkflowID != "" {
+			timeout = agentIdleTimeout
+		}
 		turnsAtWait := state.Turns
-		completedTurn, err := workflow.AwaitWithTimeout(ctx, idleTimeout, func() bool {
+		completedTurn, err := workflow.AwaitWithTimeout(ctx, timeout, func() bool {
 			return state.Turns > turnsAtWait
 		})
 		if err != nil {

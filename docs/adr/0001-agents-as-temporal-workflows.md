@@ -103,7 +103,7 @@ Rebuild the agent half on Temporal; keep the tool half as-is.
    loop → compose, plus the bare-answer path.
 5. ✅ Conversation features: continuation tokens in workflow state, bounded
    history, OpenAI facade streaming via progress queries.
-6. Sub-agents: agent-loop as child workflow parameterized by `Agent` CRs,
+6. ✅ Sub-agents: agent-loop as child workflow parameterized by `Agent` CRs,
    depth/fan-out caps, HITL await-signal.
 7. opencode adaptation: checkpoint-resume Job pattern, identity-link
    await-signal.

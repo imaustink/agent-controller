@@ -80,7 +80,24 @@ func main() {
 		}
 	}
 
-	log.Printf("seeded %d tools and %d skills into qdrant at %s:%d", len(tools), len(skills), qdrantHost, qdrantPort)
+	agents := []catalog.AgentDescriptor{
+		{
+			ID:                 "meal-planner",
+			Description:        "Plans meals across multiple days, gathering recipes and asking the user about preferences.",
+			OrchestratorPrompt: "Delegate when the user wants multi-day meal planning rather than a single recipe.",
+			AgentPrompt:        "You are a meal planner. Gather what you need (days, preferences), collect recipes, and produce a day-by-day plan.",
+			SkillRefs:          []string{"recipe-collection"},
+			AllowedRoles:       []string{"cook", "admin"},
+			MaxIterations:      6,
+		},
+	}
+	for _, agent := range agents {
+		if err := indexer.UpsertAgent(ctx, agent); err != nil {
+			log.Fatalf("seed agent %s: %v", agent.ID, err)
+		}
+	}
+
+	log.Printf("seeded %d tools, %d skills, %d agents into qdrant at %s:%d", len(tools), len(skills), len(agents), qdrantHost, qdrantPort)
 }
 
 func getenv(key, fallback string) string {

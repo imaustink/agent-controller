@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
@@ -25,17 +26,23 @@ type loopEnv struct {
 	launched *activities.LaunchToolRunInput
 	launches []activities.LaunchToolRunInput
 
-	retrieveCalls int
-	fitCalls      int
-	planCalls     int
+	retrieveCalls      int
+	retrieveAgentCalls int
+	fitCalls           int
+	planCalls          int
 
 	// knobs
 	needsCapability bool
 	skills          []catalog.SkillDescriptor
+	agents          []catalog.AgentDescriptor
 	selected        string
+	delegate        activities.DelegateChoice
 	skillTools      *activities.SkillTools
 	fits            bool
-	plans           []activities.PlannedAction // returned in order
+	plans           []activities.PlannedAction      // returned in order
+	agentPlans      []activities.PlannedAgentAction // returned in order
+	agentPlanCalls  int
+	agentPlanInputs []activities.PlanAgentActionInput
 }
 
 func newLoopEnv(t *testing.T) *loopEnv {
@@ -45,6 +52,7 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	env := le.env
 
 	env.RegisterWorkflowWithOptions(workflows.ConversationWorkflow, workflow.RegisterOptions{Name: workflows.ConversationWorkflowName})
+	env.RegisterWorkflowWithOptions(workflows.AgentWorkflow, workflow.RegisterOptions{Name: workflows.AgentWorkflowName})
 
 	reg := func(name string, fn any) {
 		env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
@@ -58,6 +66,19 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	reg(activities.RetrieveSkillsActivityName, func(_ context.Context, in activities.RetrieveInput) ([]catalog.SkillDescriptor, error) {
 		le.retrieveCalls++
 		return le.skills, nil
+	})
+	reg(activities.RetrieveAgentsActivityName, func(_ context.Context, in activities.RetrieveInput) ([]catalog.AgentDescriptor, error) {
+		le.retrieveAgentCalls++
+		return le.agents, nil
+	})
+	reg(activities.SelectDelegateActivityName, func(context.Context, activities.SelectDelegateInput) (activities.DelegateChoice, error) {
+		return le.delegate, nil
+	})
+	reg(activities.PlanAgentActionActivityName, func(_ context.Context, in activities.PlanAgentActionInput) (activities.PlannedAgentAction, error) {
+		le.agentPlanInputs = append(le.agentPlanInputs, in)
+		plan := le.agentPlans[min(le.agentPlanCalls, len(le.agentPlans)-1)]
+		le.agentPlanCalls++
+		return plan, nil
 	})
 	reg(activities.SelectSkillActivityName, func(context.Context, activities.SelectSkillInput) (string, error) {
 		return le.selected, nil
@@ -238,6 +259,74 @@ func TestAgentLoopContinuationTokenRoundTrip(t *testing.T) {
 	// Turn 2: same tool gets the stored token prepended, server-side only.
 	require.Equal(t, "<!-- continuation: tok-abc -->\n\npublish it", le.launches[1].Args[0])
 	require.NotContains(t, second.Reply, "tok-abc")
+}
+
+func mealPlannerAgent() catalog.AgentDescriptor {
+	return catalog.AgentDescriptor{
+		ID:          "meal-planner",
+		Description: "plans meals for the week",
+		AgentPrompt: "You are a meal planner.",
+		SkillRefs:   []string{"recipes"},
+	}
+}
+
+func TestAgentDelegationHITLAcrossTurns(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.agents = []catalog.AgentDescriptor{mealPlannerAgent()}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: "meal-planner"}
+	le.skillTools = recipesSkillTools() // the child resolves its skillRefs
+	le.agentPlans = []activities.PlannedAgentAction{
+		{Action: activities.AgentActionAskUser, Question: "How many days should I plan for?"},
+		{Action: activities.AgentActionFinish, Message: "Planned five days of meals."},
+	}
+
+	var first, second workflows.TurnResult
+	le.sendTurn(t, "turn-1", "help me plan meals for the week", &first, time.Millisecond)
+	le.sendTurn(t, "turn-2", "five days", &second, 2*time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	// Turn 1: the child's question IS the reply; episode stays active.
+	require.Equal(t, "How many days should I plan for?", first.Reply)
+	require.Equal(t, "agent", first.Meta.Path)
+	require.Equal(t, "meal-planner", first.Meta.AgentID)
+
+	// Turn 2: the answer went down as a prompt signal; the child finished.
+	require.Equal(t, "Planned five days of meals.", second.Reply)
+	require.Equal(t, "agent-continued", second.Meta.Path)
+
+	// The child folded the human answer into its planner history.
+	require.Len(t, le.agentPlanInputs, 2)
+	require.Equal(t, "ask_user", le.agentPlanInputs[1].History[0].ToolID)
+	require.Equal(t, "five days", le.agentPlanInputs[1].History[0].Result)
+}
+
+func TestAgentWorkflowDepthCapDisablesDelegation(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skillTools = recipesSkillTools()
+	le.agentPlans = []activities.PlannedAgentAction{
+		{Action: activities.AgentActionFinish, Message: "done"},
+	}
+	// Executing the child directly: its parent doesn't exist in this env,
+	// so absorb the up-signals.
+	le.env.OnSignalExternalWorkflow(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	le.env.ExecuteWorkflow(workflows.AgentWorkflowName, workflows.AgentWorkflowInput{
+		Agent:            mealPlannerAgent(),
+		Goal:             "plan things",
+		Caller:           activities.Caller{Subject: "user:1", Roles: []string{"cook"}},
+		ParentWorkflowID: "some-parent",
+		Depth:            3, // at the cap
+	})
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Zero(t, le.retrieveAgentCalls, "at the depth cap the child must not even retrieve agents")
+	require.Len(t, le.agentPlanInputs, 1)
+	require.Empty(t, le.agentPlanInputs[0].Agents, "no delegable agents offered at the cap")
 }
 
 func TestAgentLoopNoMatchFallsBackToBare(t *testing.T) {
