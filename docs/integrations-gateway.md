@@ -374,10 +374,18 @@ GitHub Issues adapter for the conversational path only:
   `AgentSession.ask()` mechanism (already built for `apps/opencode-swe-agent`)
   is what actually implements "ask a clarifying question, then resume on the
   next comment" — nothing new was built in the orchestrator for this.
-- Identity resolution is a **dev/test-grade static allowlist** of GitHub
-  logins (`GATEWAY_GITHUB_IDENTITIES`), not real org/team-membership
-  verification — an explicitly flagged gap, matching the "Open questions"
-  above.
+- Identity resolution's primary path is now real, no-redeploy-needed
+  verification against GitHub itself, via two resolvers
+  (`CompositeGithubIdentityResolver` tries both):
+  `GithubTeamMembershipResolver` (`GATEWAY_GITHUB_TEAM_ROLES`) for org-owned
+  repos, and `GithubCollaboratorPermissionResolver`
+  (`GATEWAY_GITHUB_COLLABORATOR_ROLES`) for personal-account repos with no
+  Organization to hang teams off of — it checks the sender's actual
+  collaborator permission on the specific repo the webhook fired on instead.
+  The dev/test-grade static allowlist (`GATEWAY_GITHUB_IDENTITIES`) still
+  exists as a last-resort fallback for logins neither grants anything to,
+  e.g. a service account that isn't and shouldn't be a team member or
+  collaborator.
 - Result delivery is **polling** `GET /invoke/:id`, not push — the "Polling
   vs. push" open question above is deliberately left unresolved and worked
   around with a bounded poll timeout.

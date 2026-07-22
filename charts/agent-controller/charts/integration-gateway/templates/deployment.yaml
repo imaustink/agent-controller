@@ -48,6 +48,14 @@ spec:
               value: {{ .Values.config.githubApiUrl | quote }}
             - name: GATEWAY_GITHUB_BOT_LOGIN
               value: {{ .Values.config.githubBotLogin | quote }}
+            {{- if .Values.config.githubTeamRoles }}
+            - name: GATEWAY_GITHUB_TEAM_ROLES
+              value: {{ .Values.config.githubTeamRoles | quote }}
+            {{- end }}
+            {{- if .Values.config.githubCollaboratorRoles }}
+            - name: GATEWAY_GITHUB_COLLABORATOR_ROLES
+              value: {{ .Values.config.githubCollaboratorRoles | quote }}
+            {{- end }}
             {{- if .Values.config.githubIdentities }}
             - name: GATEWAY_GITHUB_IDENTITIES
               value: {{ .Values.config.githubIdentities | quote }}

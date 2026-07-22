@@ -97,6 +97,18 @@ describe("GatewayServer", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it("resolves identity with the event's repo context", async () => {
+    const resolve = vi.spyOn(identityResolver, "resolve");
+    await postWebhook(port, "issues", {
+      action: "opened",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "t", body: "b" },
+    });
+    await flush();
+    expect(resolve).toHaveBeenCalledWith("alice", false, { owner: "acme", repo: "widgets" });
+  });
+
   it("relays an issues.opened event to the orchestrator, scoped by session id, and posts the reply", async () => {
     const res = await postWebhook(port, "issues", {
       action: "opened",
