@@ -106,7 +106,13 @@ spec:
       secretRef:
         name: {{ .Values.opencodeSweAgent.secretName }}
         key: {{ .Values.opencodeSweAgent.anthropicSecretKey }}
-    {{- if not .Values.opencodeSweAgent.identityLink.enabled }}
+    {{/*
+      GITHUB_APP_* are available whenever configured, regardless of
+      identityLink -- when identityLink is also enabled, these back the
+      dual-token pattern (a per-user token gates authorization, an
+      App-installation token performs the write); when identityLink is off,
+      they're the same shared-installation-token auth as before.
+    */}}
     {{- if .Values.opencodeSweAgent.githubAppIdSecretKey }}
     - name: GITHUB_APP_ID
       secretRef:
@@ -125,5 +131,15 @@ spec:
         name: {{ .Values.opencodeSweAgent.secretName }}
         key: {{ .Values.opencodeSweAgent.githubAppInstallationIdSecretKey }}
     {{- end }}
+  {{- if or .Values.opencodeSweAgent.identityLink.enabled .Values.opencodeSweAgent.githubAppSlug }}
+  env:
+    {{- if .Values.opencodeSweAgent.identityLink.enabled }}
+    - name: GITHUB_IDENTITY_DELEGATION
+      value: "true"
     {{- end }}
+    {{- if .Values.opencodeSweAgent.githubAppSlug }}
+    - name: GITHUB_APP_SLUG
+      value: {{ .Values.opencodeSweAgent.githubAppSlug | quote }}
+    {{- end }}
+  {{- end }}
 {{- end }}

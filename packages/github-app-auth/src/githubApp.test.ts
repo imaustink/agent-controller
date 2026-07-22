@@ -78,6 +78,37 @@ describe("mintInstallationToken", () => {
     ).rejects.toThrow(/403.*installation not found/s);
   });
 
+  it("scopes the request to the given repositories when opts.repositories is set", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ token: "ghs_scoped", expires_at: "" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await mintInstallationToken({ appId: "1", privateKey, installationId: "999" }, "https://api.github.com", Date.now(), {
+      repositories: ["widgets"],
+    });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({ repositories: ["widgets"] });
+    expect(init.headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("omits a body entirely when opts.repositories is not set", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ token: "ghs_abc123", expires_at: "" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await mintInstallationToken({ appId: "1", privateKey, installationId: "999" }, "https://api.github.com", Date.now());
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(init.body).toBeUndefined();
+  });
+
   it("throws if the response has no token field", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 201, json: async () => ({}) }));
     await expect(

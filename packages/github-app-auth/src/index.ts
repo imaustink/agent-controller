@@ -5,7 +5,19 @@ export {
   type GithubAppCredentials,
   type InstallationToken,
   type GithubAuthConfig,
+  type MintInstallationTokenOptions,
 } from "./githubApp.js";
+
+export {
+  fetchGithubUser,
+  fetchCollaboratorPermission,
+  grantCollaboratorAccess,
+  resolveDelegatedWriteToken,
+  isWritePermission,
+  AuthorizationError,
+  type CollaboratorPermission,
+  type ResolveDelegatedWriteTokenOptions,
+} from "./delegatedWrite.js";
 
 export {
   startDeviceFlow,

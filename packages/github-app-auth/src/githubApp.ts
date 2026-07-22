@@ -32,16 +32,23 @@ export function signAppJwt(appId: string, privateKeyPem: string, now: number): s
   return `${signingInput}.${signature}`;
 }
 
+export interface MintInstallationTokenOptions {
+  /** Repo names (not `owner/repo`, just the repo name) to scope the minted token to — omit for the installation's full grant. */
+  repositories?: string[];
+}
+
 /**
  * Exchanges an App JWT for a short-lived (~1h) installation access token,
  * scoped to exactly the repos/permissions the installation grants — the
  * per-repo governance and short-lived-credential properties a static PAT
- * doesn't have.
+ * doesn't have. Passing `opts.repositories` narrows the token further, to
+ * just the named repos within that installation.
  */
 export async function mintInstallationToken(
   creds: GithubAppCredentials,
   apiBaseUrl: string,
   now: number,
+  opts: MintInstallationTokenOptions = {},
 ): Promise<InstallationToken> {
   const jwt = signAppJwt(creds.appId, creds.privateKey, now);
   const res = await fetch(`${apiBaseUrl}/app/installations/${creds.installationId}/access_tokens`, {
@@ -50,7 +57,9 @@ export async function mintInstallationToken(
       Authorization: `Bearer ${jwt}`,
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
+      ...(opts.repositories ? { "Content-Type": "application/json" } : {}),
     },
+    ...(opts.repositories ? { body: JSON.stringify({ repositories: opts.repositories }) } : {}),
   });
   if (!res.ok) {
     throw new Error(`Failed to mint GitHub App installation token: ${res.status} ${await res.text()}`);

@@ -81,11 +81,21 @@ opencodeSweAgent:
   secretName: opencode-swe-secrets
   secretKey: GITHUB_TOKEN
   anthropicSecretKey: ANTHROPIC_API_KEY
+  # Dual-token pattern (docs/adr/0022 update): the same GitHub App used by
+  # integration-gateway for identity-link now also backs installation-token
+  # writes here. Copied (not cross-referenced) into opencode-swe-secrets
+  # from integration-gateway-secrets so this chart doesn't depend on that
+  # one's secret name.
+  githubAppIdSecretKey: GITHUB_APP_ID
+  githubAppPrivateKeySecretKey: GITHUB_APP_PRIVATE_KEY
+  githubAppInstallationIdSecretKey: GITHUB_APP_INSTALLATION_ID
+  githubAppSlug: k5s-bot
   # Per-user GitHub identity linking (docs/adr/0022) -- agent-orchestrator/
   # integration-gateway's identityLink.enabled are already on (see
   # charts/agent-controller/values-production.yaml). Flipping this breaks
   # every opencode-swe-agent request for every caller until they complete
-  # the device-flow link.
+  # the device-flow link. Now that the App creds above are also set, this
+  # unlocks the dual-token pattern rather than pure per-user-token writes.
   identityLink:
     enabled: true
     providers:
