@@ -5,11 +5,17 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/gin-gonic/gin"
+
 	"durable-agents/internal/gateway"
 	"durable-agents/internal/temporal"
 )
 
 func main() {
+	if os.Getenv("GIN_MODE") == "" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
 	cfg := temporal.ConfigFromEnv()
 	listenAddr := os.Getenv("GATEWAY_ADDR")
 	if listenAddr == "" {
