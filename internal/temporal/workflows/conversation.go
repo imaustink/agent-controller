@@ -21,7 +21,18 @@ const (
 
 	// StateQuery exposes a small summary of the conversation for debugging.
 	StateQuery = "conversation-state"
+
+	// TurnProgressQuery exposes the in-flight turn's narration; the gateway
+	// polls it to stream status while the update runs.
+	TurnProgressQuery = "turn-progress"
 )
+
+// TurnProgress is the streamed view of one turn.
+type TurnProgress struct {
+	Turn   int      `json:"turn"`
+	Active bool     `json:"active"`
+	Lines  []string `json:"lines,omitempty"`
+}
 
 const (
 	// idleTimeout ends the conversation workflow after a quiet period; a new
@@ -62,8 +73,8 @@ type TurnResult struct {
 }
 
 // ConversationState is the workflow's durable state, passed through
-// continue-as-new. In later milestones it also carries continuation tokens
-// and pending identity links (the rest of today's SessionRecord).
+// continue-as-new. Pending identity links (the rest of today's
+// SessionRecord) arrive with sub-agent delegation.
 type ConversationState struct {
 	History []ChatMessage `json:"history"`
 	Turns   int           `json:"turns"`
@@ -71,6 +82,11 @@ type ConversationState struct {
 	// ActiveSkillID is the conversation's current skill (ADR 0012): only the
 	// id — content is re-fetched RBAC-checked every turn.
 	ActiveSkillID string `json:"activeSkillId,omitempty"`
+
+	// ToolContinuations holds each tool's opaque resume token (ADR 0017),
+	// keyed by tool id. Tokens live only here — never in History, so the
+	// LLM/transcript never sees them.
+	ToolContinuations map[string]string `json:"toolContinuations,omitempty"`
 }
 
 type StateSummary struct {
@@ -105,18 +121,32 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 		return err
 	}
 
+	// Per-run progress buffer (not durable state: streaming is best-effort
+	// and a continued-as-new run simply starts a fresh buffer).
+	var progress TurnProgress
+	if err := workflow.SetQueryHandler(ctx, TurnProgressQuery, func() (TurnProgress, error) {
+		return progress, nil
+	}); err != nil {
+		return err
+	}
+
 	if err := workflow.SetUpdateHandler(ctx, UserTurnUpdate, func(ctx workflow.Context, in TurnInput) (TurnResult, error) {
 		if len(state.History) == 0 && len(in.SeedHistory) > 0 {
 			state.History = append(state.History, in.SeedHistory...)
 		}
 		state.History = append(state.History, ChatMessage{Role: "user", Content: in.Message})
 
-		reply, meta, err := runAgentTurn(ctx, actx, state, in)
+		progress = TurnProgress{Turn: state.Turns + 1, Active: true}
+		defer func() { progress.Active = false }()
+		note := func(line string) { progress.Lines = append(progress.Lines, line) }
+
+		reply, meta, err := runAgentTurn(ctx, actx, state, in, note)
 		if err != nil {
 			// Drop the failed turn's user message so a retry re-sends it cleanly.
 			state.History = state.History[:len(state.History)-1]
 			return TurnResult{}, err
 		}
+		meta.Narration = progress.Lines
 
 		state.History = trimHistory(append(state.History, ChatMessage{Role: "assistant", Content: reply}), maxHistoryMessages)
 		state.Turns++

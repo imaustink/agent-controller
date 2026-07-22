@@ -23,6 +23,7 @@ import (
 type loopEnv struct {
 	env      *testsuite.TestWorkflowEnvironment
 	launched *activities.LaunchToolRunInput
+	launches []activities.LaunchToolRunInput
 
 	retrieveCalls int
 	fitCalls      int
@@ -78,6 +79,7 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	})
 	reg(activities.LaunchToolRunActivityName, func(_ context.Context, in activities.LaunchToolRunInput) error {
 		le.launched = &in
+		le.launches = append(le.launches, in)
 		return nil
 	})
 	reg(activities.GetToolRunPhaseActivityName, func(context.Context, string) (toolrun.Status, error) {
@@ -191,6 +193,51 @@ func TestAgentLoopRejectsOutOfScopeTool(t *testing.T) {
 	require.Nil(t, le.launched, "out-of-scope tool must never launch")
 	require.Equal(t, "I can't do that with this skill.", result.Reply)
 	require.Empty(t, result.Meta.ToolCalls)
+}
+
+func TestAgentLoopContinuationTokenRoundTrip(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.selected = "recipes"
+	le.skillTools = recipesSkillTools()
+	le.fits = true // turn 2 rides the active skill
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "recipe-scraper", ToolInput: "https://example.com/pasta"},
+		{Action: activities.ActionFinish},
+		{Action: activities.ActionCallTool, ToolID: "recipe-scraper", ToolInput: "publish it"},
+		{Action: activities.ActionFinish},
+	}
+
+	var first, second workflows.TurnResult
+	le.sendTurn(t, "turn-1", "grab https://example.com/pasta", &first, time.Millisecond)
+	le.env.RegisterDelayedCallback(func() {
+		require.Len(t, le.launches, 1)
+		le.env.SignalWorkflow(workflows.ToolEventSignalPrefix+le.launches[0].JobID, messaging.Event{
+			JobID: le.launches[0].JobID, Seq: 1, TS: "t", Type: "succeeded",
+			Result: json.RawMessage(`"<!-- continuation: tok-abc -->\n\n# Pasta\nBoil water."`),
+		})
+	}, time.Second)
+
+	le.sendTurn(t, "turn-2", "now publish it", &second, 2*time.Second)
+	le.env.RegisterDelayedCallback(func() {
+		require.Len(t, le.launches, 2)
+		le.env.SignalWorkflow(workflows.ToolEventSignalPrefix+le.launches[1].JobID, messaging.Event{
+			JobID: le.launches[1].JobID, Seq: 1, TS: "t", Type: "succeeded",
+			Result: json.RawMessage(`"published"`),
+		})
+	}, 3*time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	// Turn 1: marker stripped from everything user/LLM-visible.
+	require.NotContains(t, first.Reply, "continuation", "token must never reach the transcript")
+	require.Contains(t, first.Reply, "# Pasta")
+
+	// Turn 2: same tool gets the stored token prepended, server-side only.
+	require.Equal(t, "<!-- continuation: tok-abc -->\n\npublish it", le.launches[1].Args[0])
+	require.NotContains(t, second.Reply, "tok-abc")
 }
 
 func TestAgentLoopNoMatchFallsBackToBare(t *testing.T) {

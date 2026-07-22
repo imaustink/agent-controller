@@ -101,7 +101,7 @@ Rebuild the agent half on Temporal; keep the tool half as-is.
    bridge, durable await with timeout, phase-mirror crash backstop.
 4. ✅ Agent-loop parity: capability gate → retrieve → select → plan⇄runTool
    loop → compose, plus the bare-answer path.
-5. Conversation features: continuation tokens in workflow state, bounded
+5. ✅ Conversation features: continuation tokens in workflow state, bounded
    history, OpenAI facade streaming via progress queries.
 6. Sub-agents: agent-loop as child workflow parameterized by `Agent` CRs,
    depth/fan-out caps, HITL await-signal.

@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -80,6 +81,19 @@ type chatCompletionResponse struct {
 	Object  string                 `json:"object"`
 	Model   string                 `json:"model"`
 	Choices []chatCompletionChoice `json:"choices"`
+	// Event carries Open WebUI status updates on stream chunks; other
+	// clients ignore the unknown field.
+	Event *statusEvent `json:"event,omitempty"`
+}
+
+type statusEvent struct {
+	Type string     `json:"type"`
+	Data statusData `json:"data"`
+}
+
+type statusData struct {
+	Description string `json:"description"`
+	Done        bool   `json:"done"`
 }
 
 func (s *Server) handleModels(c *gin.Context) {
@@ -111,6 +125,16 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		turnInput.SeedHistory = seedHistory
 	}
 
+	if ephemeral {
+		log.Printf("serving ephemeral turn (no session header): workflow=%s", workflowID)
+	}
+
+	waitFor := client.WorkflowUpdateStageCompleted
+	if req.Stream {
+		// Return as soon as the update is admitted, then stream progress
+		// while it runs.
+		waitFor = client.WorkflowUpdateStageAccepted
+	}
 	startOp := s.temporal.NewWithStartWorkflowOperation(client.StartWorkflowOptions{
 		ID:                       workflowID,
 		TaskQueue:                s.taskQueue,
@@ -122,7 +146,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		UpdateOptions: client.UpdateWorkflowOptions{
 			WorkflowID:   workflowID,
 			UpdateName:   workflows.UserTurnUpdate,
-			WaitForStage: client.WorkflowUpdateStageCompleted,
+			WaitForStage: waitFor,
 			Args:         []any{turnInput},
 		},
 	})
@@ -132,20 +156,16 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		return
 	}
 
+	completionID := "chatcmpl-" + uuid.NewString()
+	if req.Stream {
+		s.streamTurn(c, workflowID, completionID, updateHandle)
+		return
+	}
+
 	var result workflows.TurnResult
 	if err := updateHandle.Get(c.Request.Context(), &result); err != nil {
 		log.Printf("turn failed: workflow=%s err=%v", workflowID, err)
 		writeError(c, http.StatusBadGateway, "turn failed: "+err.Error())
-		return
-	}
-
-	completionID := "chatcmpl-" + uuid.NewString()
-	if ephemeral {
-		log.Printf("served ephemeral turn (no session header): workflow=%s", workflowID)
-	}
-
-	if req.Stream {
-		writeStreamed(c, completionID, result.Reply)
 		return
 	}
 	stop := "stop"
@@ -217,30 +237,99 @@ func sanitizeID(s string) string {
 	}, s)
 }
 
-// writeStreamed emits the already-complete reply as a minimal SSE stream so
-// stream:true clients work. Real incremental streaming (progress queries)
-// lands in milestone 5.
-func writeStreamed(c *gin.Context, completionID, reply string) {
+const (
+	progressPollInterval = 700 * time.Millisecond
+	heartbeatInterval    = 15 * time.Second
+)
+
+// streamTurn streams a running turn: the workflow's narration as Open WebUI
+// status events (unknown fields are ignored by other OpenAI clients), SSE
+// keep-alive comments while quiet, then the reply as a content delta once
+// the update completes. Mid-turn lines come from polling TurnProgressQuery;
+// the final flush uses the authoritative narration in the turn result.
+func (s *Server) streamTurn(c *gin.Context, workflowID, completionID string, updateHandle client.WorkflowUpdateHandle) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Status(http.StatusOK)
 
-	writeChunk := func(choice chatCompletionChoice) {
-		payload, _ := json.Marshal(chatCompletionResponse{
-			ID:      completionID,
-			Object:  "chat.completion.chunk",
-			Model:   ModelID,
-			Choices: []chatCompletionChoice{choice},
-		})
+	writeChunk := func(chunk chatCompletionResponse) {
+		chunk.ID = completionID
+		chunk.Object = "chat.completion.chunk"
+		chunk.Model = ModelID
+		payload, _ := json.Marshal(chunk)
 		fmt.Fprintf(c.Writer, "data: %s\n\n", payload)
 		c.Writer.Flush()
 	}
+	writeStatus := func(line string) {
+		writeChunk(chatCompletionResponse{Event: &statusEvent{
+			Type: "status",
+			Data: statusData{Description: line},
+		}})
+	}
 
-	writeChunk(chatCompletionChoice{Delta: &chatMessage{Role: "assistant", Content: reply}})
-	stop := "stop"
-	writeChunk(chatCompletionChoice{Delta: &chatMessage{}, FinishReason: &stop})
-	fmt.Fprint(c.Writer, "data: [DONE]\n\n")
-	c.Writer.Flush()
+	writeChunk(chatCompletionResponse{Choices: []chatCompletionChoice{{Delta: &chatMessage{Role: "assistant"}}}})
+
+	type turnDone struct {
+		result workflows.TurnResult
+		err    error
+	}
+	done := make(chan turnDone, 1)
+	go func() {
+		var result workflows.TurnResult
+		err := updateHandle.Get(c.Request.Context(), &result)
+		done <- turnDone{result, err}
+	}()
+
+	poll := time.NewTicker(progressPollInterval)
+	defer poll.Stop()
+	heartbeat := time.NewTicker(heartbeatInterval)
+	defer heartbeat.Stop()
+
+	seen := 0
+	for {
+		select {
+		case d := <-done:
+			if d.err != nil {
+				log.Printf("streamed turn failed: workflow=%s err=%v", workflowID, d.err)
+				// Headers are long flushed — failure has to ride the stream.
+				writeChunk(chatCompletionResponse{Choices: []chatCompletionChoice{{Delta: &chatMessage{Content: "❌ The turn failed: " + d.err.Error()}}}})
+			} else {
+				for _, line := range d.result.Meta.Narration[min(seen, len(d.result.Meta.Narration)):] {
+					writeStatus(line)
+				}
+				writeStatus("done")
+				writeChunk(chatCompletionResponse{Choices: []chatCompletionChoice{{Delta: &chatMessage{Content: d.result.Reply}}}})
+			}
+			stop := "stop"
+			writeChunk(chatCompletionResponse{Choices: []chatCompletionChoice{{Delta: &chatMessage{}, FinishReason: &stop}}})
+			fmt.Fprint(c.Writer, "data: [DONE]\n\n")
+			c.Writer.Flush()
+			return
+
+		case <-poll.C:
+			// Best-effort: only lines from the currently-active turn buffer;
+			// the completion flush above catches anything missed.
+			resp, err := s.temporal.QueryWorkflow(c.Request.Context(), workflowID, "", workflows.TurnProgressQuery)
+			if err != nil {
+				continue
+			}
+			var progress workflows.TurnProgress
+			if resp.Get(&progress) != nil || !progress.Active {
+				continue
+			}
+			for _, line := range progress.Lines[min(seen, len(progress.Lines)):] {
+				writeStatus(line)
+			}
+			seen = max(seen, len(progress.Lines))
+
+		case <-heartbeat.C:
+			fmt.Fprint(c.Writer, ": keep-alive\n\n")
+			c.Writer.Flush()
+
+		case <-c.Request.Context().Done():
+			return
+		}
+	}
 }
 
 func writeError(c *gin.Context, status int, message string) {

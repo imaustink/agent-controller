@@ -6,6 +6,8 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"durable-agents/internal/catalog"
+	"durable-agents/internal/continuation"
+	"durable-agents/internal/messaging"
 	"durable-agents/internal/temporal/activities"
 )
 
@@ -17,6 +19,9 @@ type TurnMeta struct {
 	Path      string   `json:"path"`              // bare | skill | skill-continued
 	SkillID   string   `json:"skillId,omitempty"` // active skill after this turn
 	ToolCalls []string `json:"toolCalls,omitempty"`
+	// Narration is the turn's full progress transcript — the authoritative
+	// version of what TurnProgressQuery exposed while the turn ran.
+	Narration []string `json:"narration,omitempty"`
 }
 
 // runAgentTurn is the ported agent loop: active-skill fit check →
@@ -24,9 +29,12 @@ type TurnMeta struct {
 // compose. It returns the reply plus which skill (if any) stays active.
 // Mirrors agent-controller's graph nodes; sub-agent delegation lands in
 // milestone 6.
-func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput) (string, TurnMeta, error) {
+func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput, note func(string)) (string, TurnMeta, error) {
 	logger := workflow.GetLogger(ctx)
 	meta := TurnMeta{Path: "bare"}
+	if note == nil {
+		note = func(string) {}
+	}
 
 	// 1. Session continuity (ADR 0012): re-fetch the active skill under the
 	// caller's CURRENT roles (fail closed), then a cheap fit check. Any miss
@@ -46,6 +54,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			}).Get(ctx, &fits); err == nil && fits {
 				skillTools = resolved
 				meta.Path = "skill-continued"
+				note("Continuing with skill " + resolved.Skill.ID)
 			}
 		}
 		if skillTools == nil {
@@ -67,6 +76,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		}
 
 		// 3. Retrieval (RBAC-filtered) + 4. selection.
+		note("Selecting a skill…")
 		var skills []catalog.SkillDescriptor
 		if err := workflow.ExecuteActivity(actx, activities.RetrieveSkillsActivityName, activities.RetrieveInput{
 			Caller:  in.Caller,
@@ -98,6 +108,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			return reply, meta, err
 		}
 		meta.Path = "skill"
+		note("Using skill " + skillTools.Skill.ID)
 	}
 
 	state.ActiveSkillID = skillTools.Skill.ID
@@ -139,9 +150,24 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			break
 		}
 
+		// Re-inject the tool's stored continuation token (ADR 0017): opaque,
+		// server-side only, prepended to the SAME tool's next input.
+		toolInput := plan.ToolInput
+		if token := state.ToolContinuations[plan.ToolID]; token != "" {
+			toolInput = continuation.Prepend(token, toolInput)
+		}
+
+		note("Running " + plan.ToolID + "…")
 		outcome, err := runTool(ctx, RunToolParams{
 			ToolRef: plan.ToolID,
-			Args:    []string{plan.ToolInput},
+			Args:    []string{toolInput},
+			OnProgress: func(e messaging.Event) {
+				line := e.Message
+				if e.Stage != "" {
+					line = e.Stage + ": " + line
+				}
+				note(line)
+			},
 		})
 		if err != nil {
 			return "", meta, err
@@ -149,10 +175,23 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
 		record := activities.ActionRecord{ToolID: plan.ToolID, Input: plan.ToolInput, Succeeded: outcome.Succeeded}
 		if outcome.Succeeded {
-			record.Result = outcome.Result
+			// Strip a leading continuation marker BEFORE the result reaches
+			// planner history, compose, or the reply — the transcript never
+			// carries resume state.
+			token, stripped := continuation.Extract(outcome.Result)
+			if token != "" {
+				if state.ToolContinuations == nil {
+					state.ToolContinuations = map[string]string{}
+				}
+				state.ToolContinuations[plan.ToolID] = token
+			}
+			outcome.Result = stripped
+			record.Result = stripped
 			lastSuccess = &outcome
+			note(plan.ToolID + " finished")
 		} else {
 			record.Error = outcome.ErrorCode + ": " + outcome.ErrorMessage
+			note(plan.ToolID + " failed: " + outcome.ErrorCode)
 		}
 		history = append(history, record)
 	}
@@ -160,6 +199,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	// 7. Compose (ADR 0015): additive prefix/suffix around the verbatim
 	// result of the last successful tool call.
 	if lastSuccess != nil {
+		note("Composing reply…")
 		var framed activities.ComposedResponse
 		if err := workflow.ExecuteActivity(actx, activities.ComposeResponseActivityName, activities.ComposeResponseInput{
 			Request:       in.Message,
