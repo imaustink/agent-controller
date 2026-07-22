@@ -26,6 +26,7 @@ function runOpencode(
   env: NodeJS.ProcessEnv,
   cwd: string,
   onProgress: (text: string, kind: "narrative" | "status") => void,
+  signal?: AbortSignal,
 ): Promise<{ code: number; finalMessage: string | null; toolFailures: string[]; transcript: string }> {
   return new Promise((resolve, reject) => {
     // stdin MUST be closed (not the default open pipe): opencode probes for
@@ -34,7 +35,10 @@ function runOpencode(
     // comes -- reproduced reliably in production, never reproduced when
     // manually exec'd without a stdin attached. `ignore` gives it immediate
     // EOF, matching the working manual-invocation case exactly.
-    const child = spawn("opencode", args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    // `signal` lets a `cancel` from the orchestrator kill this subprocess
+    // directly -- without it, cancelling only rejects a pending ask() and the
+    // coding agent keeps running (and streaming progress) to completion.
+    const child = spawn("opencode", args, { cwd, env, stdio: ["ignore", "pipe", "pipe"], signal });
     let buffer = "";
     let finalMessage: string | null = null;
     const toolFailures: string[] = [];
@@ -172,7 +176,7 @@ async function runOneTurn(
     JSON.stringify(buildOpencodeConfig({ model: toolConfig.model }), null, 2),
   );
 
-  const identity = (await resolveGitIdentity(childEnv)) ?? {
+  const identity = (await resolveGitIdentity(childEnv, session.signal)) ?? {
     name: "opencode-swe",
     email: "opencode-swe@users.noreply.github.com",
   };
@@ -183,9 +187,12 @@ async function runOneTurn(
   if (marker?.repo) {
     const repoName = marker.repo.split("/")[1];
     const dest = `${toolConfig.workdir}/${repoName}`;
-    const cloneResult = await runCommand("git", ["clone", `https://${apiHost}/${marker.repo}.git`, dest], { env: childEnv });
+    const cloneResult = await runCommand("git", ["clone", `https://${apiHost}/${marker.repo}.git`, dest], {
+      env: childEnv,
+      signal: session.signal,
+    });
     if (cloneResult.code === 0 && marker.branch) {
-      await runCommand("git", ["-C", dest, "checkout", marker.branch], { env: childEnv });
+      await runCommand("git", ["-C", dest, "checkout", marker.branch], { env: childEnv, signal: session.signal });
     }
   }
 
@@ -193,11 +200,17 @@ async function runOneTurn(
   const prompt = buildPrompt(instruction, marker);
   const args = buildOpencodeArgs({ prompt, workdir: toolConfig.workdir, model: toolConfig.model });
 
-  const result = await runOpencode(args, childEnv, toolConfig.workdir, (text, kind) => {
-    // "agent-text" is a contract with the orchestrator (server.ts): it streams
-    // that stage's message as real chat content instead of a status spinner.
-    void session.progress(clip(text, 500), { stage: kind === "narrative" ? "agent-text" : "agent" });
-  });
+  const result = await runOpencode(
+    args,
+    childEnv,
+    toolConfig.workdir,
+    (text, kind) => {
+      // "agent-text" is a contract with the orchestrator (server.ts): it streams
+      // that stage's message as real chat content instead of a status spinner.
+      void session.progress(clip(text, 500), { stage: kind === "narrative" ? "agent-text" : "agent" });
+    },
+    session.signal,
+  );
 
   if (result.code !== 0) {
     const detail = result.toolFailures.length
@@ -214,7 +227,7 @@ async function runOneTurn(
 
   const summary = clip(result.finalMessage ?? result.transcript ?? "The coding agent finished without a summary.", 4000);
   const repoDir = await findRepoDir(toolConfig.workdir);
-  const discovered = repoDir ? await discoverResult(repoDir, childEnv) : null;
+  const discovered = repoDir ? await discoverResult(repoDir, childEnv, session.signal) : null;
 
   if (!discovered?.repo || !discovered.branch) {
     const cause = result.toolFailures.length
