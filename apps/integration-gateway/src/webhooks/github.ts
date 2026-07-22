@@ -40,7 +40,7 @@ export type GithubIssueEvent =
       commentBody: string;
     }
   | {
-      kind: "issue-assigned";
+      kind: "issue-labeled";
       owner: string;
       repo: string;
       issueNumber: number;
@@ -48,7 +48,7 @@ export type GithubIssueEvent =
       senderIsBot: boolean;
       title: string;
       body: string;
-      assigneeLogin: string;
+      labelName: string;
     }
   | { kind: "ignored" };
 
@@ -62,8 +62,8 @@ interface SenderPayload {
   type: string;
 }
 
-interface AssigneePayload {
-  login: string;
+interface LabelPayload {
+  name: string;
 }
 
 /**
@@ -87,7 +87,7 @@ export function parseGithubEvent(eventName: string | undefined, rawBody: string)
     sender?: SenderPayload;
     issue?: { number?: unknown; title?: unknown; body?: unknown };
     comment?: { body?: unknown };
-    assignee?: AssigneePayload;
+    label?: LabelPayload;
   };
 
   const owner = payload.repository?.owner?.login;
@@ -110,12 +110,12 @@ export function parseGithubEvent(eventName: string | undefined, rawBody: string)
     return { kind: "issue-comment-created", owner, repo, issueNumber, senderLogin, senderIsBot, commentBody };
   }
 
-  if (eventName === "issues" && payload.action === "assigned") {
-    const assigneeLogin = payload.assignee?.login;
-    if (!assigneeLogin) return { kind: "ignored" };
+  if (eventName === "issues" && payload.action === "labeled") {
+    const labelName = payload.label?.name;
+    if (!labelName) return { kind: "ignored" };
     const title = typeof payload.issue?.title === "string" ? payload.issue.title : "";
     const body = typeof payload.issue?.body === "string" ? payload.issue.body : "";
-    return { kind: "issue-assigned", owner, repo, issueNumber, senderLogin, senderIsBot, title, body, assigneeLogin };
+    return { kind: "issue-labeled", owner, repo, issueNumber, senderLogin, senderIsBot, title, body, labelName };
   }
 
   return { kind: "ignored" };

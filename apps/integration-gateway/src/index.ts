@@ -164,7 +164,7 @@ async function main(): Promise<void> {
     identityResolver,
     orchestratorClient,
     githubReplyClient,
-    githubBotLogin: config.githubBotLogin,
+    githubTriggerLabel: config.githubTriggerLabel,
     ...(identityLinkLinker ? { identityLinkLinker, identityLinkToken: config.identityLinkToken } : {}),
   });
 

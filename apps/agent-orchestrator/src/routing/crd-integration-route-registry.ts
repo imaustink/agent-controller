@@ -149,7 +149,7 @@ function toIntegrationRoute(cr: IntegrationRouteCustomResource): IntegrationRout
  * with values from the event's fields. No templating library — this is
  * deliberately a flat string-replace, not a general-purpose engine, since the
  * substitution set (owner, repo, issueNumber, title, body, senderLogin,
- * assigneeLogin, ...) is small and adapter-defined. Unmatched placeholders
+ * labelName, ...) is small and adapter-defined. Unmatched placeholders
  * are left verbatim (fail visibly rather than silently swallow a typo'd
  * field name from an operator-authored template).
  */

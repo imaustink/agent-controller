@@ -114,13 +114,18 @@ skills:
     enabled: true
 
 integrationRoutes:
-  # github-issue-assigned-triage (ADR 0024): assigning a GitHub issue to the
-  # bot dispatches deterministically to opencode-swe-agent above, bypassing
-  # RAG skill retrieval. Requires opencodeSweAgent.enabled=true (already set
-  # above) and the IntegrationRoute CRD to exist on the cluster --
-  # `helm upgrade` does NOT install/update CRDs for an existing release
+  # github-issue-labeled-triage (ADR 0024): applying integration-gateway's
+  # configured trigger label (charts/agent-controller/values-production.yaml's
+  # integrationGateway.config.githubTriggerLabel, "ai-triage") to a GitHub
+  # issue dispatches deterministically to opencode-swe-agent above, bypassing
+  # RAG skill retrieval. A label, not an assignee -- GitHub App bot users
+  # generally cannot be set as issue assignees, so `issues.assigned` (this
+  # route's original trigger) never fired in practice. Requires
+  # opencodeSweAgent.enabled=true (already set above) and the
+  # IntegrationRoute CRD to exist on the cluster -- `helm upgrade` does NOT
+  # install/update CRDs for an existing release
   # (charts/agent-controller/charts/core-controller/crds/README.md), so this
   # was applied manually once:
   #   kubectl apply -f controllers/core-controller/config/crd/bases/core.controller-agent.dev_integrationroutes.yaml
-  githubIssueAssignedTriage:
+  githubIssueLabeledTriage:
     enabled: true

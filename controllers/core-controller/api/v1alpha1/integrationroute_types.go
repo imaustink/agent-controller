@@ -79,7 +79,7 @@ type IntegrationRouteSpec struct {
 	// promptTemplate is the request sent to the target, rendered by
 	// substituting `{{field}}` placeholders with the matched event's fields
 	// (e.g. owner, repo, issueNumber, title, body, senderLogin,
-	// assigneeLogin — the exact set depends on the adapter that produced
+	// labelName — the exact set depends on the adapter that produced
 	// the event).
 	// +required
 	// +kubebuilder:validation:MinLength=1

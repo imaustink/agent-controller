@@ -84,18 +84,18 @@ describe("parseGithubEvent", () => {
     expect(event).toMatchObject({ senderIsBot: true, senderLogin: "agent-controller[bot]" });
   });
 
-  it("parses an issues.assigned event", () => {
+  it("parses an issues.labeled event", () => {
     const event = parseGithubEvent(
       "issues",
       JSON.stringify({
-        action: "assigned",
+        action: "labeled",
         ...repoSender,
         issue: { number: 42, title: "Add dark mode", body: "Please add a dark theme." },
-        assignee: { login: "agent-controller[bot]" },
+        label: { name: "ai-triage" },
       }),
     );
     expect(event).toEqual({
-      kind: "issue-assigned",
+      kind: "issue-labeled",
       owner: "acme",
       repo: "widgets",
       issueNumber: 42,
@@ -103,15 +103,15 @@ describe("parseGithubEvent", () => {
       senderIsBot: false,
       title: "Add dark mode",
       body: "Please add a dark theme.",
-      assigneeLogin: "agent-controller[bot]",
+      labelName: "ai-triage",
     });
   });
 
-  it("ignores an issues.assigned event with no assignee payload", () => {
+  it("ignores an issues.labeled event with no label payload", () => {
     expect(
       parseGithubEvent(
         "issues",
-        JSON.stringify({ action: "assigned", ...repoSender, issue: { number: 42 } }),
+        JSON.stringify({ action: "labeled", ...repoSender, issue: { number: 42 } }),
       ),
     ).toEqual({ kind: "ignored" });
   });

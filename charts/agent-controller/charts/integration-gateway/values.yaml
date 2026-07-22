@@ -37,6 +37,10 @@ config:
   # The App/bot's own GitHub login -- its own comments are ignored (loop
   # prevention). Required once the App/webhook is wired up.
   githubBotLogin: ""
+  # The label that triggers automated triage (ADR 0024) when applied to a
+  # GitHub issue. Not an assignee -- GitHub App bot users generally cannot
+  # be set as issue assignees. Empty string disables the trigger.
+  githubTriggerLabel: ""
   # PROD-GRADE, preferred for org-owned repos: grants roles based on live
   # GitHub org/team membership (see GithubTeamMembershipResolver in
   # src/identity.ts) -- JSON: {"<org>/<team-slug>": ["role", ...]}.

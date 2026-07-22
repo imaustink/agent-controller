@@ -4,8 +4,8 @@
 > implemented — see [apps/integration-gateway](../apps/integration-gateway)
 > and the "Implementation status" section at the end of this document. The
 > declarative **`IntegrationRoute` CRD** (ADR 0024) is also implemented,
-> letting a GitHub issue assigned to the bot dispatch deterministically
-> instead of through RAG retrieval. The FAAS-style direct-invoke path, and
+> letting a configured label applied to a GitHub issue dispatch
+> deterministically instead of through RAG retrieval. The FAAS-style direct-invoke path, and
 > every other channel (email, Slack, job webhooks), remain
 > proposed/unimplemented. This document was originally
 > written to the same standard as [orchestrator.md](orchestrator.md) and
@@ -351,7 +351,7 @@ turning a reply path into a new SSRF/exfil surface.
    untrusted-content handling patterns are proven out.
 4. **Job/CI webhook adapter**, once real trigger-routing needs beyond GitHub
    Issues are concrete rather than speculative. The `IntegrationRoute` CRD
-   itself (ADR 0024) is implemented, validated by a GitHub `issues.assigned`
+   itself (ADR 0024) is implemented, validated by a GitHub `issues.labeled`
    → `opencode-swe-agent` route (see [Implementation
    status](#implementation-status)).
 
@@ -364,7 +364,7 @@ convention (see [docs/adr/](adr/)).
 GitHub Issues adapter for the conversational path only:
 
 - `POST /webhooks/github` verifies GitHub's `X-Hub-Signature-256` HMAC, then
-  handles `issues.opened`, `issue_comment.created`, and `issues.assigned`
+  handles `issues.opened`, `issue_comment.created`, and `issues.labeled`
   events.
 - Session id is `github:<owner>/<repo>#<issueNumber>` — one session per
   issue, forwarded as `session_id` to `agent-orchestrator`'s existing
@@ -373,21 +373,25 @@ GitHub Issues adapter for the conversational path only:
   `AgentSession.ask()` mechanism (already built for `apps/opencode-swe-agent`)
   is what actually implements "ask a clarifying question, then resume on the
   next comment" — nothing new was built in the orchestrator for this.
-- **`issues.assigned` → deterministic dispatch (ADR 0024).** When a GitHub
-  issue is assigned to the gateway's own bot account
-  (`GATEWAY_GITHUB_BOT_LOGIN`), the gateway relays it into the same
-  conversational `/invoke` call as above, but attaches an `event` descriptor
-  (`{ source: "github", event: "issues", action: "assigned", owner, repo,
-  issueNumber, title, body, senderLogin, assigneeLogin }`). If this matches
-  an installed `IntegrationRoute` CR, `agent-orchestrator` bypasses RAG skill
-  retrieval and dispatches straight to that route's target with its
-  rendered `promptTemplate` (`CrdIntegrationRouteRegistry`,
-  `checkIntegrationRoute` graph node) — deterministic, since assignment is
-  an unambiguous action rather than free text needing intent inference. No
-  matching route falls back to ordinary RAG retrieval over a fallback
-  request string, unchanged from before this feature existed. A sample
-  route (`github`/`issues`/`assigned` → `opencode-swe-agent`) ships gated
-  behind `integrationRoutes.githubIssueAssignedTriage.enabled`.
+- **`issues.labeled` → deterministic dispatch (ADR 0024).** When the
+  gateway's configured trigger label (`GATEWAY_GITHUB_TRIGGER_LABEL`, e.g.
+  `"ai-triage"`) is applied to a GitHub issue, the gateway relays it into the
+  same conversational `/invoke` call as above, but attaches an `event`
+  descriptor (`{ source: "github", event: "issues", action: "labeled",
+  owner, repo, issueNumber, title, body, senderLogin, labelName }`). A
+  label, not an assignee: GitHub App bot users generally cannot be set as
+  issue assignees (only a small GitHub-owned allowlist, e.g.
+  `dependabot[bot]`, gets that special-cased), so a configurable label is
+  used instead. If the event matches an installed `IntegrationRoute` CR,
+  `agent-orchestrator` bypasses RAG skill retrieval and dispatches straight
+  to that route's target with its rendered `promptTemplate`
+  (`CrdIntegrationRouteRegistry`, `checkIntegrationRoute` graph node) —
+  deterministic, since applying a specific label is an unambiguous action
+  rather than free text needing intent inference. No matching route falls
+  back to ordinary RAG retrieval over a fallback request string, unchanged
+  from before this feature existed. A sample route (`github`/`issues`/
+  `labeled` → `opencode-swe-agent`) ships gated behind
+  `integrationRoutes.githubIssueLabeledTriage.enabled`.
 - Identity resolution's primary path is now real, no-redeploy-needed
   verification against GitHub itself, via two resolvers
   (`CompositeGithubIdentityResolver` tries both):

@@ -7,10 +7,10 @@ import {
   type IntegrationRouteCustomResource,
 } from "./crd-integration-route-registry.js";
 
-const assignedRoute: IntegrationRouteCustomResource = {
-  metadata: { name: "github-issue-assigned-triage" },
+const labeledRoute: IntegrationRouteCustomResource = {
+  metadata: { name: "github-issue-labeled-triage" },
   spec: {
-    match: { source: "github", event: "issues", action: "assigned" },
+    match: { source: "github", event: "issues", action: "labeled" },
     agentRef: "opencode-swe-agent",
     promptTemplate: "Triage {{owner}}/{{repo}}#{{issueNumber}}: {{title}}",
   },
@@ -18,7 +18,7 @@ const assignedRoute: IntegrationRouteCustomResource = {
 
 describe("CrdIntegrationRouteRegistry", () => {
   it("maps IntegrationRoute custom resources", async () => {
-    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [assignedRoute] });
+    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [labeledRoute] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
     const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
@@ -32,10 +32,10 @@ describe("CrdIntegrationRouteRegistry", () => {
     });
     expect(routes).toEqual([
       {
-        id: "github-issue-assigned-triage",
+        id: "github-issue-labeled-triage",
         source: "github",
         event: "issues",
-        action: "assigned",
+        action: "labeled",
         skillRef: undefined,
         agentRef: "opencode-swe-agent",
         toolRef: undefined,
@@ -49,28 +49,28 @@ describe("CrdIntegrationRouteRegistry", () => {
       metadata: { name: "broken-route" },
       spec: { match: { source: "github", event: "issues" } },
     } as IntegrationRouteCustomResource;
-    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [malformed, assignedRoute] });
+    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [malformed, labeledRoute] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
     const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     const routes = await registry.listAll();
 
     expect(routes).toHaveLength(1);
-    expect(routes[0].id).toBe("github-issue-assigned-triage");
+    expect(routes[0].id).toBe("github-issue-labeled-triage");
   });
 
   describe("match", () => {
     it("returns the route whose action matches exactly", async () => {
-      const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [assignedRoute] });
+      const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [labeledRoute] });
       const api: CustomObjectsApiLike = { listNamespacedCustomObject };
       const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
       await registry.listAll();
 
-      expect(registry.match("github", "issues", "assigned")?.id).toBe("github-issue-assigned-triage");
+      expect(registry.match("github", "issues", "labeled")?.id).toBe("github-issue-labeled-triage");
     });
 
     it("returns undefined when no route matches source/event/action", async () => {
-      const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [assignedRoute] });
+      const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [labeledRoute] });
       const api: CustomObjectsApiLike = { listNamespacedCustomObject };
       const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
       await registry.listAll();
@@ -88,13 +88,13 @@ describe("CrdIntegrationRouteRegistry", () => {
           promptTemplate: "catchall",
         },
       };
-      const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [wildcard, assignedRoute] });
+      const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [wildcard, labeledRoute] });
       const api: CustomObjectsApiLike = { listNamespacedCustomObject };
       const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
       await registry.listAll();
 
-      expect(registry.match("github", "issues", "assigned")?.id).toBe("github-issue-assigned-triage");
-      expect(registry.match("github", "issues", "labeled")?.id).toBe("github-issues-catchall");
+      expect(registry.match("github", "issues", "labeled")?.id).toBe("github-issue-labeled-triage");
+      expect(registry.match("github", "issues", "closed")?.id).toBe("github-issues-catchall");
     });
   });
 
@@ -116,11 +116,11 @@ describe("CrdIntegrationRouteRegistry", () => {
       );
       registry.watch(() => {});
 
-      onEvent("ADDED", assignedRoute);
-      expect(registry.match("github", "issues", "assigned")?.id).toBe("github-issue-assigned-triage");
+      onEvent("ADDED", labeledRoute);
+      expect(registry.match("github", "issues", "labeled")?.id).toBe("github-issue-labeled-triage");
 
-      onEvent("DELETED", assignedRoute);
-      expect(registry.match("github", "issues", "assigned")).toBeUndefined();
+      onEvent("DELETED", labeledRoute);
+      expect(registry.match("github", "issues", "labeled")).toBeUndefined();
     });
 
     it("throws when constructed without a watchFn", () => {

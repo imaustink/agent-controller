@@ -12,13 +12,14 @@ export interface GatewayServerOptions {
   orchestratorClient: OrchestratorClient;
   githubReplyClient: GithubReplyClient;
   /**
-   * The gateway's own bot's GitHub login (same value as `IdentityResolver`'s
-   * loop-guard, `GATEWAY_GITHUB_BOT_LOGIN`) -- an `issues.assigned` webhook is
-   * only actionable when the issue was assigned to THIS account; assignment
-   * to anyone else is ignored. Empty string effectively disables the
-   * assignment trigger (no assignee login can ever match).
+   * The label that triggers automated triage (ADR 0024,
+   * `GATEWAY_GITHUB_TRIGGER_LABEL`) -- an `issues.labeled` webhook is only
+   * actionable when the label applied is this one; any other label is
+   * ignored. Empty string effectively disables the trigger (no label name
+   * can ever match). Deliberately a label, not an assignee: GitHub App bot
+   * users generally cannot be set as issue assignees.
    */
-  githubBotLogin: string;
+  githubTriggerLabel: string;
   /** Called with any error from the background invoke-and-reply step; defaults to console.error. */
   onBackgroundError?: (error: unknown) => void;
   /**
@@ -118,14 +119,14 @@ export class GatewayServer {
 
     if (event.kind === "ignored") return;
 
-    if (event.kind === "issue-assigned") {
-      // Only actionable when assigned to THIS bot's own account -- assigning
-      // to a human (or a different bot) is none of our business.
-      if (event.assigneeLogin !== this.options.githubBotLogin) return;
+    if (event.kind === "issue-labeled") {
+      // Only actionable when the label applied is THE trigger label --
+      // GitHub sends `issues.labeled` for every label, not just this one.
+      if (event.labelName !== this.options.githubTriggerLabel) return;
 
-      // The sender here is whoever performed the assignment, not the bot --
-      // same identity/permission check as the other event kinds, gating on
-      // who triggered the action.
+      // The sender here is whoever applied the label, not the bot -- same
+      // identity/permission check as the other event kinds, gating on who
+      // triggered the action.
       const identity = await this.options.identityResolver.resolve(event.senderLogin, event.senderIsBot, {
         owner: event.owner,
         repo: event.repo,
@@ -136,19 +137,19 @@ export class GatewayServer {
       // Fallback request text -- only used if no IntegrationRoute CR matches
       // the `event` descriptor sent below (agent-orchestrator then falls
       // back to ordinary RAG skill retrieval over this text).
-      const request = `Issue #${event.issueNumber} was assigned to me: ${event.title}\n\n${event.body}`.trim();
+      const request = `Issue #${event.issueNumber} was labeled "${event.labelName}": ${event.title}\n\n${event.body}`.trim();
 
       this.relayAndReply(event.owner, event.repo, event.issueNumber, request, sessionId, {
         source: "github",
         event: "issues",
-        action: "assigned",
+        action: "labeled",
         owner: event.owner,
         repo: event.repo,
         issueNumber: event.issueNumber,
         title: event.title,
         body: event.body,
         senderLogin: event.senderLogin,
-        assigneeLogin: event.assigneeLogin,
+        labelName: event.labelName,
       }).catch(this.options.onBackgroundError ?? ((error: unknown) => console.error(error)));
       return;
     }

@@ -13,6 +13,14 @@ export interface AppConfig {
   githubApiUrl: string;
   /** The App/bot's own GitHub login -- events authored by it are ignored (loop prevention). */
   githubBotLogin: string;
+  /**
+   * The label that triggers automated triage (ADR 0024) when applied to a
+   * GitHub issue. Not an assignee: GitHub App bot users generally cannot be
+   * set as issue assignees (only a small GitHub-owned allowlist, e.g.
+   * `dependabot[bot]`, gets that special-cased), so `issues.labeled` is used
+   * instead of `issues.assigned`.
+   */
+  githubTriggerLabel: string;
   /** Base URL of agent-orchestrator's consumer-facing invoke API (ADR 0006). */
   orchestratorUrl: string;
   /** Bearer token this gateway authenticates to agent-orchestrator's /invoke as. */
@@ -66,6 +74,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     githubToken: env.GITHUB_TOKEN ?? "",
     githubApiUrl: env.GITHUB_API_URL ?? "https://api.github.com",
     githubBotLogin: env.GATEWAY_GITHUB_BOT_LOGIN ?? "",
+    githubTriggerLabel: env.GATEWAY_GITHUB_TRIGGER_LABEL ?? "",
     orchestratorUrl: env.GATEWAY_ORCHESTRATOR_URL ?? "http://agent-orchestrator:8081",
     orchestratorToken: env.GATEWAY_ORCHESTRATOR_TOKEN ?? "",
     githubIdentities: env.GATEWAY_GITHUB_IDENTITIES,

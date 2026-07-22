@@ -212,10 +212,13 @@ skills:
     enabled: false
 
 integrationRoutes:
-  # github-issue-assigned-triage: an IntegrationRoute CR (docs/adr/0024)
-  # dispatching a GitHub `issues`/`assigned` webhook event straight to
+  # github-issue-labeled-triage: an IntegrationRoute CR (docs/adr/0024)
+  # dispatching a GitHub `issues`/`labeled` webhook event straight to
   # opencode-swe-agent with a triage prompt, deterministically bypassing RAG
-  # skill retrieval -- integration-gateway relays the event once the issue is
-  # assigned to its own bot account. Requires opencodeSweAgent.enabled=true.
-  githubIssueAssignedTriage:
+  # skill retrieval -- integration-gateway relays the event once its
+  # configured trigger label (integration-gateway's config.githubTriggerLabel)
+  # is applied to the issue. A label, not an assignee: GitHub App bot users
+  # generally cannot be set as issue assignees. Requires
+  # opencodeSweAgent.enabled=true.
+  githubIssueLabeledTriage:
     enabled: false
