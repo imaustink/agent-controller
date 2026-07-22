@@ -95,7 +95,7 @@ Rebuild the agent half on Temporal; keep the tool half as-is.
 
 1. ✅ Scaffold: worker + gateway, hello-world `ConversationWorkflow` (one
    turn = one Update calling one LLM activity), chart, tests.
-2. Catalog + RAG: informers → Qdrant, RBAC-filtered retrieval activities,
+2. ✅ Catalog + RAG: informers → Qdrant, RBAC-filtered retrieval activities,
    skill-access derivation.
 3. Tool execution end-to-end: ToolRun-create activity, callback→signal
    bridge, durable await with timeout, phase-mirror crash backstop.

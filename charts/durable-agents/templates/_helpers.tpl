@@ -12,3 +12,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 - name: TASK_QUEUE
   value: {{ .Values.taskQueue | quote }}
 {{- end }}
+
+{{- define "durable-agents.qdrantEnv" -}}
+- name: QDRANT_HOST
+  value: {{ .Values.qdrant.host | quote }}
+- name: QDRANT_PORT
+  value: {{ .Values.qdrant.port | quote }}
+{{- end }}

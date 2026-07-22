@@ -8,10 +8,34 @@ taskQueue: durable-agents
 llm:
   baseURL: https://api.openai.com/v1
   model: gpt-4o-2024-08-06
+  embedModel: text-embedding-3-small
   # Secret must contain an OPENAI_API_KEY key. Create it out of band:
   #   kubectl -n <ns> create secret generic durable-agents-secrets \
   #     --from-literal=OPENAI_API_KEY=<key>
   secretName: durable-agents-secrets
+
+# Qdrant backs the catalog RAG index. Leave host empty to disable retrieval
+# (plain-conversation mode). Point at your own instance or the qdrant chart.
+qdrant:
+  host: ""
+  port: 6334
+
+# Where agent-controller's Tool/Skill/Agent CRs live.
+catalog:
+  namespace: controller-agent
+
+catalogSync:
+  enabled: true
+  image:
+    repository: durable-agents-catalog-sync
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 25m
+      memory: 48Mi
+    limits:
+      memory: 192Mi
 
 worker:
   replicas: 1

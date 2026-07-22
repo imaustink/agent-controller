@@ -37,6 +37,11 @@ spec:
               value: {{ .Values.llm.baseURL | quote }}
             - name: OPENAI_MODEL
               value: {{ .Values.llm.model | quote }}
+            - name: OPENAI_EMBED_MODEL
+              value: {{ .Values.llm.embedModel | quote }}
+            {{- if .Values.qdrant.host }}
+            {{- include "durable-agents.qdrantEnv" . | nindent 12 }}
+            {{- end }}
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:

@@ -15,6 +15,9 @@ design and milestone plan.
 | ---- | ---------- |
 | `cmd/gateway` | Stateless HTTP front door: OpenAI Chat Completions-compatible facade → per-session conversation workflow via update-with-start. Later also hosts the HMAC callback→signal bridge for tool Jobs. |
 | `cmd/worker` | Temporal worker hosting workflows and activities. |
+| `cmd/catalog-sync` | Watches agent-controller's Tool/Skill/Agent CRs (dynamic informers) and mirrors them into Qdrant with derived skill access roles. |
+| `internal/catalog` | CR decoding, skill-access derivation (ADR 0011 port), indexer. |
+| `internal/vectorstore` | Store port + Qdrant adapter; RBAC filters baked into every read. |
 | `internal/temporal` | Shared Temporal client/config for gateway + worker. |
 | `internal/temporal/workflows` | Deterministic workflow code only (`ConversationWorkflow`). |
 | `internal/temporal/activities` | All non-deterministic work (LLM calls; later: Qdrant, ToolRun CRs, identity). |
