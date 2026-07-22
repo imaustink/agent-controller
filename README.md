@@ -1,5 +1,8 @@
 # durable-agents
 
+> Setup: [setup-instructions.md](setup-instructions.md) — local dev with
+> zero cluster, and the full k3s deployment checklist.
+
 AI agents as **Temporal workflows** that can spin up other Temporal-workflow
 agents — the successor to
 [agent-controller](https://github.com/imaustink/agent-controller)'s
