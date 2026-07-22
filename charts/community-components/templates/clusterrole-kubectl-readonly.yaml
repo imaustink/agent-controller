@@ -1,0 +1,85 @@
+{{- /*
+Cluster-wide read-only RBAC for the kubectl-readonly Tool's launched Jobs.
+
+Scope: get/list/watch only, never create/update/patch/delete, across the
+same fixed, non-sensitive resource-kind list the tool's own in-process
+allowlist (tools/kubectl-readonly/src/allowlist.ts) independently enforces
+-- defense in depth, not a single point of failure.
+
+RBAC objects (Roles/RoleBindings/ClusterRoles/ClusterRoleBindings/
+ServiceAccounts' bound tokens), CustomResourceDefinitions, and arbitrary CRs
+are intentionally never granted here. `secrets` IS granted get/list/watch --
+see tools/kubectl-readonly/README.md's "Secrets: keys and lengths only"
+section for why that's an application-layer (not RBAC-layer) restriction,
+and the trade-off that implies: this ServiceAccount's token, if it ever
+leaked, could read full secret values directly against the API server,
+bypassing this tool's CLI entirely. If that risk isn't acceptable for your
+cluster, drop `secrets` from the rule below and lose the keys/lengths
+debugging feature.
+
+If you'd rather scope this to specific namespaces instead of the whole
+cluster, set kubectlReadonly.clusterWide=false and instead create a
+namespaced RoleBinding (roleRef: kind ClusterRole, name as below) in each
+namespace you want this tool to see.
+*/ -}}
+{{- if .Values.kubectlReadonly.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Values.kubectlReadonly.serviceAccountName }}-view
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - pods/status
+      - services
+      - endpoints
+      - events
+      - nodes
+      - namespaces
+      - configmaps
+      - secrets
+      - persistentvolumes
+      - persistentvolumeclaims
+      - resourcequotas
+      - limitranges
+      - serviceaccounts
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+      - networkpolicies
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources:
+      - storageclasses
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      - pods
+      - nodes
+    verbs: ["get", "list"]
+{{- end }}

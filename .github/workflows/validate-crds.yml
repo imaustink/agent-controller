@@ -44,6 +44,7 @@ jobs:
         run: |
           helm template community-components charts/community-components \
             --set recipeScraper.enabled=true \
+            --set kubectlReadonly.enabled=true \
             --set recipePublisher.enabled=true \
             --set recipePublisher.mealieBaseUrl=http://mealie.example.invalid \
             --set skills.recipeRefining.enabled=true \
