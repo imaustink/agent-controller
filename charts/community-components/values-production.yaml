@@ -112,3 +112,15 @@ skills:
   # Requires webSearch.enabled=true above.
   webSearch:
     enabled: true
+
+integrationRoutes:
+  # github-issue-assigned-triage (ADR 0024): assigning a GitHub issue to the
+  # bot dispatches deterministically to opencode-swe-agent above, bypassing
+  # RAG skill retrieval. Requires opencodeSweAgent.enabled=true (already set
+  # above) and the IntegrationRoute CRD to exist on the cluster --
+  # `helm upgrade` does NOT install/update CRDs for an existing release
+  # (charts/agent-controller/charts/core-controller/crds/README.md), so this
+  # was applied manually once:
+  #   kubectl apply -f controllers/core-controller/config/crd/bases/core.controller-agent.dev_integrationroutes.yaml
+  githubIssueAssignedTriage:
+    enabled: true
