@@ -41,6 +41,7 @@ describe("GatewayServer", () => {
       identityResolver,
       orchestratorClient: { invoke } as unknown as OrchestratorClient,
       githubReplyClient: { postIssueComment } as unknown as GithubReplyClient,
+      githubBotLogin: "agent-controller[bot]",
     });
     await server.listen(0);
     port = (server as unknown as { server: { address: () => AddressInfo } }).server.address().port;
@@ -137,6 +138,64 @@ describe("GatewayServer", () => {
     });
     await flush();
     expect(invoke).toHaveBeenCalledWith("start work", sessionIdFor("acme", "widgets", 7), "device");
+  });
+
+  it("ignores an issues.assigned event when the assignee isn't the gateway's own bot", async () => {
+    const res = await postWebhook(port, "issues", {
+      action: "assigned",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "t", body: "b" },
+      assignee: { login: "some-human" },
+    });
+    expect(res.status).toBe(202);
+    await flush();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(postIssueComment).not.toHaveBeenCalled();
+  });
+
+  it("relays an issues.assigned event to the orchestrator with an event descriptor when assigned to the bot", async () => {
+    const res = await postWebhook(port, "issues", {
+      action: "assigned",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
+      assignee: { login: "agent-controller[bot]" },
+    });
+    expect(res.status).toBe(202);
+    await flush();
+
+    expect(invoke).toHaveBeenCalledWith(
+      "Issue #7 was assigned to me: Add dark mode\n\nPlease add a dark theme option.",
+      sessionIdFor("acme", "widgets", 7),
+      "device",
+      {
+        source: "github",
+        event: "issues",
+        action: "assigned",
+        owner: "acme",
+        repo: "widgets",
+        issueNumber: 7,
+        title: "Add dark mode",
+        body: "Please add a dark theme option.",
+        senderLogin: "alice",
+        assigneeLogin: "agent-controller[bot]",
+      },
+    );
+    expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
+  });
+
+  it("drops an issues.assigned event from an unknown GitHub identity even when assigned to the bot", async () => {
+    const res = await postWebhook(port, "issues", {
+      action: "assigned",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "mallory", type: "User" },
+      issue: { number: 7, title: "t", body: "b" },
+      assignee: { login: "agent-controller[bot]" },
+    });
+    expect(res.status).toBe(202);
+    await flush();
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("posts a failure-explaining comment when the orchestrator turn fails", async () => {

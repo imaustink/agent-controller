@@ -39,6 +39,17 @@ export type GithubIssueEvent =
       senderIsBot: boolean;
       commentBody: string;
     }
+  | {
+      kind: "issue-assigned";
+      owner: string;
+      repo: string;
+      issueNumber: number;
+      senderLogin: string;
+      senderIsBot: boolean;
+      title: string;
+      body: string;
+      assigneeLogin: string;
+    }
   | { kind: "ignored" };
 
 interface RepoPayload {
@@ -49,6 +60,10 @@ interface RepoPayload {
 interface SenderPayload {
   login: string;
   type: string;
+}
+
+interface AssigneePayload {
+  login: string;
 }
 
 /**
@@ -72,6 +87,7 @@ export function parseGithubEvent(eventName: string | undefined, rawBody: string)
     sender?: SenderPayload;
     issue?: { number?: unknown; title?: unknown; body?: unknown };
     comment?: { body?: unknown };
+    assignee?: AssigneePayload;
   };
 
   const owner = payload.repository?.owner?.login;
@@ -92,6 +108,14 @@ export function parseGithubEvent(eventName: string | undefined, rawBody: string)
   if (eventName === "issue_comment" && payload.action === "created") {
     const commentBody = typeof payload.comment?.body === "string" ? payload.comment.body : "";
     return { kind: "issue-comment-created", owner, repo, issueNumber, senderLogin, senderIsBot, commentBody };
+  }
+
+  if (eventName === "issues" && payload.action === "assigned") {
+    const assigneeLogin = payload.assignee?.login;
+    if (!assigneeLogin) return { kind: "ignored" };
+    const title = typeof payload.issue?.title === "string" ? payload.issue.title : "";
+    const body = typeof payload.issue?.body === "string" ? payload.issue.body : "";
+    return { kind: "issue-assigned", owner, repo, issueNumber, senderLogin, senderIsBot, title, body, assigneeLogin };
   }
 
   return { kind: "ignored" };

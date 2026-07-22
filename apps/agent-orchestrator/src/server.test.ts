@@ -120,6 +120,112 @@ describe("InvokeServer", () => {
   });
 });
 
+describe("InvokeServer /invoke event field -> IntegrationRoute dispatch (ADR 0024)", () => {
+  async function routeRegistry(routes: unknown[]) {
+    const { CrdIntegrationRouteRegistry } = await import("./routing/crd-integration-route-registry.js");
+    const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", {
+      listNamespacedCustomObject: vi.fn().mockResolvedValue({ items: routes }),
+    });
+    await registry.listAll();
+    return registry;
+  }
+
+  const assignedRouteCr = {
+    metadata: { name: "github-issue-assigned-triage" },
+    spec: {
+      match: { source: "github", event: "issues", action: "assigned" },
+      agentRef: "opencode-swe-agent",
+      promptTemplate: "Triage {{owner}}/{{repo}}#{{issueNumber}}: {{title}}",
+    },
+  };
+
+  it("renders the matched route's promptTemplate and forces the target, bypassing the fallback request text", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+    const server = new InvokeServer(graph, undefined, undefined, await routeRegistry([assignedRouteCr]));
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        request: "fallback text (should be overridden)",
+        session_id: "github:acme/widgets#7",
+        event: {
+          source: "github",
+          event: "issues",
+          action: "assigned",
+          owner: "acme",
+          repo: "widgets",
+          issueNumber: 7,
+          title: "Add dark mode",
+        },
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(graph.invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: "Triage acme/widgets#7: Add dark mode",
+        forcedAgentId: "opencode-swe-agent",
+      }),
+    );
+
+    await server.close();
+  });
+
+  it("falls back to the plain request and no forced ids when the event doesn't match any route", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+    const server = new InvokeServer(graph, undefined, undefined, await routeRegistry([assignedRouteCr]));
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        request: "please review this",
+        event: { source: "github", event: "issues", action: "opened" },
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(graph.invoke).toHaveBeenCalledWith(expect.objectContaining({ request: "please review this" }));
+    const invokedInput = (graph.invoke as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(invokedInput.forcedAgentId).toBeUndefined();
+    expect(invokedInput.forcedSkillId).toBeUndefined();
+
+    await server.close();
+  });
+
+  it("ignores the event field entirely when no IntegrationRoute registry is configured", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+    const server = new InvokeServer(graph); // no registry passed
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        request: "please review this",
+        event: { source: "github", event: "issues", action: "assigned" },
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(graph.invoke).toHaveBeenCalledWith(expect.objectContaining({ request: "please review this" }));
+
+    await server.close();
+  });
+});
+
 describe("InvokeServer session-scoped pending identity link (GitHub OAuth Device Flow)", () => {
   function sessionStore() {
     return new InMemorySessionStore({ ttlMs: 60_000, maxEntries: 10 });

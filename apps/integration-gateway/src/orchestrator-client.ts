@@ -56,9 +56,19 @@ export class OrchestratorClient {
    * identity-link flow to offer this caller (e.g. this gateway's own
    * GitHub-issue-comment relay has no browser, so it always forces
    * `"device"`) -- omitted entirely (not sent as `null`) when unset, so
-   * agent-orchestrator's own default applies.
+   * agent-orchestrator's own default applies. `event`, when set, is passed
+   * through verbatim as the `event` body field so agent-orchestrator can
+   * match it against an installed `IntegrationRoute` CR and bypass RAG skill
+   * retrieval for triggers whose intent is already unambiguous (e.g. a
+   * GitHub issue assigned to the bot) -- omitted entirely when unset, same
+   * as `identityLinkFlow`.
    */
-  async invoke(request: string, sessionId: string, identityLinkFlow?: "device" | "authcode"): Promise<OrchestratorInvokeResult> {
+  async invoke(
+    request: string,
+    sessionId: string,
+    identityLinkFlow?: "device" | "authcode",
+    event?: Record<string, string | number | undefined>,
+  ): Promise<OrchestratorInvokeResult> {
     const acceptRes = await this.fetchImpl(`${this.options.baseUrl.replace(/\/$/, "")}/invoke`, {
       method: "POST",
       headers: {
@@ -69,6 +79,7 @@ export class OrchestratorClient {
         request,
         session_id: sessionId,
         ...(identityLinkFlow !== undefined ? { identity_link_flow: identityLinkFlow } : {}),
+        ...(event !== undefined ? { event } : {}),
       }),
     });
     if (!acceptRes.ok) {

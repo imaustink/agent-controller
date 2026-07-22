@@ -318,6 +318,21 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
+  /**
+   * Id of a Skill CR to dispatch to directly, set by the server when
+   * `/invoke`'s optional `event` field matched an `IntegrationRoute` CR —
+   * consumed by `checkIntegrationRoute` to bypass RAG skill retrieval for
+   * this turn. Absent for every ordinary conversational turn.
+   */
+  forcedSkillId: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /** Id of an Agent CR to dispatch to directly — see `forcedSkillId`. */
+  forcedAgentId: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
 });
 
 export type AgentState = typeof AgentStateAnnotation.State;
@@ -627,6 +642,30 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         return { error: "unauthorized: could not resolve caller identity" };
       }
       return { identity };
+    })
+    .addNode("checkIntegrationRoute", async (state) => {
+      // Deterministic dispatch for a turn whose intent is already
+      // unambiguous (e.g. a GitHub issue assigned to the bot): the server
+      // set `forcedSkillId`/`forcedAgentId` when `/invoke`'s `event` field
+      // matched an IntegrationRoute CR. Re-fetch under the caller's CURRENT
+      // roles (same RBAC discipline as checkActiveSkill/checkPendingIdentityLink)
+      // and resolve straight to that target, skipping RAG retrieval entirely.
+      // A miss (ref gone, roles revoked, neither id set) is never an error —
+      // it just falls through to ordinary skill-continuity/retrieval.
+      if (!state.identity) return {};
+      if (state.forcedSkillId) {
+        const [skill] = await deps.skillStore.getByIds([state.forcedSkillId], {
+          callerRoles: state.identity.roles,
+        });
+        if (skill) return { selectedSkill: skill };
+      }
+      if (state.forcedAgentId && deps.agentStore) {
+        const [found] = await deps.agentStore.getByIds([state.forcedAgentId], {
+          callerRoles: state.identity.roles,
+        });
+        if (found) return { selectedAgent: found.agent };
+      }
+      return {};
     })
     .addNode("checkActiveSkill", async (state) => {
       // Session-scoped skill continuity (docs/adr/0012): if the conversation
@@ -1247,7 +1286,20 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       return { result: `${prefix ?? ""}${state.result}${suffix ?? ""}` };
     })
     .addEdge(START, "resolveIdentity")
-    .addConditionalEdges("resolveIdentity", afterOrEnd("checkPendingIdentityLink"))
+    .addConditionalEdges("resolveIdentity", afterOrEnd("checkIntegrationRoute"))
+    // A matched IntegrationRoute resolves straight to its target -> skip
+    // straight to delegation/tool-loading; a miss (no event, no match, ref
+    // gone) falls through to the ordinary identity-link/skill-continuity
+    // chain exactly as before this node existed.
+    .addConditionalEdges("checkIntegrationRoute", (state) =>
+      state.error
+        ? END
+        : state.selectedAgent
+          ? "delegateToAgent"
+          : state.selectedSkill
+            ? "loadSkillTools"
+            : "checkPendingIdentityLink",
+    )
     // A pending device-flow link either just completed (an agent was
     // re-selected -> resume straight into delegateToAgent), is still being
     // waited on (identityLinkPending -> END, same "still waiting" result as

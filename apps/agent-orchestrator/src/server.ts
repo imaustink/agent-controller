@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AgentState } from "./agent/graph.js";
 import type { SessionStore } from "./session/types.js";
+import { renderPromptTemplate, type CrdIntegrationRouteRegistry } from "./routing/crd-integration-route-registry.js";
 import {
   buildAgentRequest,
   chatCompletionChunk,
@@ -102,6 +103,16 @@ export interface AgentGraphInput {
    * have their own handler (deps is shared across all requests).
    */
   progressListener?: (stage: string, message: string | undefined) => void;
+  /**
+   * Id of a Skill CR to dispatch to directly, bypassing RAG skill retrieval —
+   * set when `/invoke`'s optional `event` field matched an `IntegrationRoute`
+   * CR (deterministic event routing, e.g. a GitHub issue being assigned to
+   * the bot). Mutually exclusive with `forcedAgentId` in practice (a route
+   * has exactly one target), though the graph tolerates either being unset.
+   */
+  forcedSkillId?: string;
+  /** Id of an Agent CR to dispatch to directly — see `forcedSkillId`. */
+  forcedAgentId?: string;
 }
 
 /** The slice of the compiled LangGraph agent this server needs — kept small and mockable for tests. */
@@ -160,6 +171,14 @@ export class InvokeServer {
      * generic static reply (safety takes priority over title quality).
      */
     private readonly taskCompleter?: TaskCompleter,
+    /**
+     * Optional declarative event→Skill/Agent/Tool routing table (a new
+     * IntegrationRoute CR per docs/integrations-gateway.md's deferred "Open
+     * Questions" proposal). Absent -> `/invoke`'s `event` field, if sent, is
+     * simply ignored and every request goes through RAG retrieval exactly as
+     * before this feature existed.
+     */
+    private readonly integrationRouteRegistry?: CrdIntegrationRouteRegistry,
   ) {}
 
   /** Builds the graph input for one turn, folding in any session-scoped active skill or agent run (docs/adr/0012). */
@@ -170,11 +189,15 @@ export class InvokeServer {
     progressListener?: (stage: string, message: string | undefined) => void,
     identityLinkFlow?: "device" | "authcode",
     forwardedUserToken?: string,
+    forcedSkillId?: string,
+    forcedAgentId?: string,
   ): Promise<AgentGraphInput> {
     const input: AgentGraphInput = { request, authToken };
     if (progressListener) input.progressListener = progressListener;
     if (identityLinkFlow) input.identityLinkFlow = identityLinkFlow;
     if (forwardedUserToken) input.forwardedUserToken = forwardedUserToken;
+    if (forcedSkillId) input.forcedSkillId = forcedSkillId;
+    if (forcedAgentId) input.forcedAgentId = forcedAgentId;
     // Carried through to every launched ToolRun/AgentRun CR as an annotation
     // (docs/adr/0012) purely for kubectl-level debugging -- independent of
     // whether a session store is configured, unlike the fields below.
@@ -331,6 +354,8 @@ export class InvokeServer {
     let request: string;
     let sessionId: string | undefined;
     let identityLinkFlow: "device" | "authcode" | undefined;
+    let forcedSkillId: string | undefined;
+    let forcedAgentId: string | undefined;
     try {
       const parsed: unknown = rawBody ? JSON.parse(rawBody) : {};
       if (
@@ -349,6 +374,36 @@ export class InvokeServer {
       // "authcode" default applies) rather than 400ing the whole request.
       const rawFlow = (parsed as { identity_link_flow?: unknown }).identity_link_flow;
       identityLinkFlow = rawFlow === "device" || rawFlow === "authcode" ? rawFlow : undefined;
+
+      // Optional event descriptor (e.g. { source: "github", event: "issues",
+      // action: "assigned", owner, repo, issueNumber, ... }) -- an adapter
+      // (integration-gateway) sends this alongside `request` when the
+      // inbound trigger already names an unambiguous target via an
+      // IntegrationRoute CR, so this call can bypass RAG skill retrieval
+      // entirely. No match (or no `event` at all) leaves `request` as the
+      // request text and behaves exactly as before this field existed.
+      const rawEvent = (parsed as { event?: unknown }).event;
+      if (this.integrationRouteRegistry && rawEvent && typeof rawEvent === "object") {
+        const eventFields = rawEvent as Record<string, unknown>;
+        const source = eventFields.source;
+        const eventName = eventFields.event;
+        const action = eventFields.action;
+        if (typeof source === "string" && typeof eventName === "string") {
+          const route = this.integrationRouteRegistry.match(
+            source,
+            eventName,
+            typeof action === "string" ? action : undefined,
+          );
+          if (route) {
+            request = renderPromptTemplate(
+              route.promptTemplate,
+              eventFields as Record<string, string | number | undefined>,
+            );
+            forcedSkillId = route.skillRef;
+            forcedAgentId = route.agentRef;
+          }
+        }
+      }
     } catch {
       res.writeHead(400, { "content-type": "application/json" }).end(
         JSON.stringify({ error: "body must be JSON: { \"request\": \"<non-empty string>\" }" }),
@@ -363,7 +418,16 @@ export class InvokeServer {
     // Fire-and-forget: the HTTP response returns immediately; the graph run
     // (which blocks on the launched tool Job's callback) updates the record
     // when it eventually settles.
-    void this.buildGraphInput(request, authToken, sessionId, undefined, identityLinkFlow).then((graphInput) =>
+    void this.buildGraphInput(
+      request,
+      authToken,
+      sessionId,
+      undefined,
+      identityLinkFlow,
+      undefined,
+      forcedSkillId,
+      forcedAgentId,
+    ).then((graphInput) =>
       this.graph
         .invoke(graphInput)
         .then(async (state) => {

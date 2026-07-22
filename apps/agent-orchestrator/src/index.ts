@@ -17,6 +17,7 @@ import { CrdSkillRegistry } from "./skills/crd-skill-registry.js";
 import { deriveSkillAccess } from "./skills/derive-access.js";
 import { QdrantSkillStore } from "./skills/qdrant-skill-store.js";
 import { CrdAgentRegistry } from "./agents/crd-agent-registry.js";
+import { CrdIntegrationRouteRegistry } from "./routing/crd-integration-route-registry.js";
 import { QdrantAgentStore } from "./agents/qdrant-agent-store.js";
 import { NatsAgentChannel } from "./agents/nats-agent-channel.js";
 import { AgentRunLauncher } from "./k8s/agentrun-launcher.js";
@@ -339,6 +340,24 @@ async function main(): Promise<void> {
     };
   }
 
+  // Declarative event->Skill/Agent/Tool routing table (IntegrationRoute CRs):
+  // lets a caller (integration-gateway) send an `event` descriptor alongside
+  // `request` on /invoke and have this bypass RAG retrieval when it matches
+  // an installed route -- deterministic dispatch for triggers whose intent
+  // is already unambiguous (e.g. a GitHub issue assigned to the bot), see
+  // docs/integrations-gateway.md. No routes installed -> every request goes
+  // through RAG retrieval exactly as before this feature existed.
+  const integrationRouteRegistry = CrdIntegrationRouteRegistry.fromKubeConfig(
+    config.namespace,
+    config.crdGroup,
+    config.crdVersion,
+    kubeConfig,
+  );
+  await integrationRouteRegistry.listAll();
+  const integrationRouteWatch = integrationRouteRegistry.watch((err) =>
+    console.error("IntegrationRoute watch error:", err),
+  );
+
   let identityResolver: IdentityResolver;
   if (config.identityResolverKind === "oidc") {
     console.error(`Using OIDC identity resolver: issuer=${config.oidcIssuer}`);
@@ -485,7 +504,7 @@ async function main(): Promise<void> {
   // generation) directly, bypassing the agent graph -- see server.ts's
   // handleInternalUiTask and isInternalUiTaskRequest.
   const taskCompleter = new OpenAiTaskCompleter();
-  const invokeServer = new InvokeServer(graph, sessionStore, taskCompleter);
+  const invokeServer = new InvokeServer(graph, sessionStore, taskCompleter, integrationRouteRegistry);
 
   if (callbackReceiver) {
     await callbackReceiver.listen(config.callbackPort);
@@ -507,6 +526,7 @@ async function main(): Promise<void> {
     localToolWatch.stop();
     skillWatch.stop();
     agentWatch?.stop();
+    integrationRouteWatch.stop();
     if (skillReindexTimer) clearTimeout(skillReindexTimer);
     const closers: Promise<void>[] = [invokeServer.close()];
     if (callbackReceiver) closers.push(callbackReceiver.close());
