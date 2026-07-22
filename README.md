@@ -15,8 +15,9 @@ design and milestone plan.
 | ---- | ---------- |
 | `cmd/gateway` | Stateless HTTP front door: OpenAI Chat Completions-compatible facade → per-session conversation workflow via update-with-start. Later also hosts the HMAC callback→signal bridge for tool Jobs. |
 | `cmd/worker` | Temporal worker hosting workflows and activities. |
-| `internal/workflows` | Deterministic workflow code only (`ConversationWorkflow`). |
-| `internal/activities` | All non-deterministic work (LLM calls; later: Qdrant, ToolRun CRs, identity). |
+| `internal/temporal` | Shared Temporal client/config for gateway + worker. |
+| `internal/temporal/workflows` | Deterministic workflow code only (`ConversationWorkflow`). |
+| `internal/temporal/activities` | All non-deterministic work (LLM calls; later: Qdrant, ToolRun CRs, identity). |
 | `internal/llm` | Minimal OpenAI-compatible chat client (base URL overridable). |
 | `charts/durable-agents` | Helm chart: gateway + worker. Assumes Temporal is already installed. |
 

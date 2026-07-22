@@ -5,19 +5,17 @@ import (
 	"os"
 
 	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 
-	"durable-agents/internal/activities"
 	"durable-agents/internal/llm"
-	"durable-agents/internal/workflows"
+	"durable-agents/internal/temporal"
+	"durable-agents/internal/temporal/activities"
+	"durable-agents/internal/temporal/workflows"
 )
 
 func main() {
-	temporalAddress := getenv("TEMPORAL_ADDRESS", "127.0.0.1:7233")
-	temporalNamespace := getenv("TEMPORAL_NAMESPACE", "default")
-	taskQueue := getenv("TASK_QUEUE", "durable-agents")
+	cfg := temporal.ConfigFromEnv()
 
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
@@ -29,16 +27,13 @@ func main() {
 		getenv("OPENAI_MODEL", "gpt-4o-2024-08-06"),
 	)
 
-	c, err := client.Dial(client.Options{
-		HostPort:  temporalAddress,
-		Namespace: temporalNamespace,
-	})
+	c, err := temporal.NewClient(cfg)
 	if err != nil {
-		log.Fatalf("dial temporal at %s: %v", temporalAddress, err)
+		log.Fatalf("dial temporal at %s: %v", cfg.Address, err)
 	}
 	defer c.Close()
 
-	w := worker.New(c, taskQueue, worker.Options{})
+	w := worker.New(c, cfg.TaskQueue, worker.Options{})
 	w.RegisterWorkflowWithOptions(workflows.ConversationWorkflow, workflow.RegisterOptions{
 		Name: workflows.ConversationWorkflowName,
 	})
@@ -47,7 +42,7 @@ func main() {
 	})
 
 	log.Printf("worker starting: temporal=%s namespace=%s taskQueue=%s model=%s",
-		temporalAddress, temporalNamespace, taskQueue, llmClient.Model())
+		cfg.Address, cfg.Namespace, cfg.TaskQueue, llmClient.Model())
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("worker exited: %v", err)
 	}

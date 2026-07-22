@@ -17,7 +17,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 
-	"durable-agents/internal/workflows"
+	"durable-agents/internal/temporal/workflows"
 )
 
 // ModelID is the single model this facade advertises.

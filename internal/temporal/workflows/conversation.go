@@ -8,7 +8,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"durable-agents/internal/activities"
+	"durable-agents/internal/temporal/activities"
 	"durable-agents/internal/llm"
 )
 

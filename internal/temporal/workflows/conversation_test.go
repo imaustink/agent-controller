@@ -11,8 +11,8 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
-	"durable-agents/internal/activities"
-	"durable-agents/internal/workflows"
+	"durable-agents/internal/temporal/activities"
+	"durable-agents/internal/temporal/workflows"
 )
 
 func newTestEnv(t *testing.T, fakeLLM func(context.Context, activities.CompleteTurnInput) (string, error)) *testsuite.TestWorkflowEnvironment {
