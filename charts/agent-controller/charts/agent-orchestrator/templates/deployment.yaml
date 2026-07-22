@@ -122,6 +122,10 @@ spec:
                   name: {{ .Values.config.openWebUiUserJwtSecretExistingSecret }}
                   key: {{ .Values.config.openWebUiUserJwtSecretExistingSecretKey }}
             {{- end }}
+            {{- if .Values.config.openWebUiUserRoles }}
+            - name: AGENT_OPENWEBUI_USER_ROLES
+              value: {{ .Values.config.openWebUiUserRoles | quote }}
+            {{- end }}
             {{- if or .Values.config.natsUrl (index .Values "nats" "enabled") }}
             - name: AGENT_NATS_URL
               value: {{ include "agent-orchestrator.natsUrl" . | quote }}

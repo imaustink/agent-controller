@@ -90,6 +90,13 @@ config:
   # src/rbac/openwebui-forwarded-user-resolver.ts.
   openWebUiUserJwtSecretExistingSecret: ""
   openWebUiUserJwtSecretExistingSecretKey: AGENT_OPENWEBUI_USER_JWT_SECRET
+  # RBAC roles (this system's vocabulary, e.g. Tool/Agent allowedRoles --
+  # NOT Open WebUI's own "user"/"admin" role) granted to every Open WebUI
+  # user resolved via openWebUiUserJwtSecretExistingSecret above. Comma-
+  # separated. Defaults (in the app itself) to "reader,writer" -- the same
+  # roles the old shared AGENT_STATIC_IDENTITIES entry granted everyone --
+  # so leave unset unless you need a narrower/different grant.
+  openWebUiUserRoles: ""
   # Required when identityResolver=oidc: expected JWT `iss` claim.
   oidcIssuer: ""
   # Required when identityResolver=oidc: JWKS endpoint used to verify JWT

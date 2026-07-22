@@ -370,7 +370,7 @@ async function main(): Promise<void> {
   // Absent config -> resolveIdentity falls back to the shared-subject path,
   // same as before this resolver existed.
   const forwardedUserIdentityResolver = config.openWebUiUserJwtSecret
-    ? new OpenWebUiForwardedUserResolver({ secret: config.openWebUiUserJwtSecret })
+    ? new OpenWebUiForwardedUserResolver({ secret: config.openWebUiUserJwtSecret, roles: config.openWebUiUserRoles })
     : undefined;
 
   // Result channel: NATS when AGENT_NATS_URL is set, HTTP callback otherwise.

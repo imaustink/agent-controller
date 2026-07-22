@@ -137,6 +137,15 @@ export interface AppConfig {
    * shared-subject static/OIDC resolver (pre-existing behavior).
    */
   openWebUiUserJwtSecret: string | undefined;
+  /**
+   * RBAC roles (this system's vocabulary, e.g. `reader`/`writer` -- whatever
+   * Tool/Agent CRs declare in `allowedRoles`) granted to every caller
+   * `OpenWebUiForwardedUserResolver` resolves. Comma-separated. Defaults to
+   * the same `reader,writer` the old shared `AGENT_STATIC_IDENTITIES` entry
+   * granted every Open WebUI user, so switching to per-user subjects doesn't
+   * also silently change what any of them can see/do.
+   */
+  openWebUiUserRoles: string[];
   requestId: string;
 }
 
@@ -183,5 +192,9 @@ export const config: AppConfig = {
   identityLinkGatewayUrl: process.env.IDENTITY_LINK_GATEWAY_URL,
   identityLinkGatewayToken: process.env.IDENTITY_LINK_GATEWAY_TOKEN,
   openWebUiUserJwtSecret: process.env.AGENT_OPENWEBUI_USER_JWT_SECRET,
+  openWebUiUserRoles: (process.env.AGENT_OPENWEBUI_USER_ROLES ?? "reader,writer")
+    .split(",")
+    .map((role) => role.trim())
+    .filter((role) => role.length > 0),
   requestId: process.env.AGENT_REQUEST_ID ?? randomUUID(),
 };
