@@ -53,6 +53,7 @@ func newLoopEnv(t *testing.T) *loopEnv {
 
 	env.RegisterWorkflowWithOptions(workflows.ConversationWorkflow, workflow.RegisterOptions{Name: workflows.ConversationWorkflowName})
 	env.RegisterWorkflowWithOptions(workflows.AgentWorkflow, workflow.RegisterOptions{Name: workflows.AgentWorkflowName})
+	env.RegisterWorkflowWithOptions(workflows.PodAgentWorkflow, workflow.RegisterOptions{Name: workflows.PodAgentWorkflowName})
 
 	reg := func(name string, fn any) {
 		env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
@@ -130,6 +131,23 @@ func (le *loopEnv) sendTurn(t *testing.T, updateID, message string, result *work
 	}, at)
 }
 
+// signalToolSuccess delivers a succeeded event for launch #launchIndex once
+// that launch exists, rescheduling in virtual time until it does.
+func (le *loopEnv) signalToolSuccess(launchIndex int, resultJSON string) {
+	var attempt func()
+	attempt = func() {
+		if len(le.launches) <= launchIndex {
+			le.env.RegisterDelayedCallback(attempt, 100*time.Millisecond)
+			return
+		}
+		jobID := le.launches[launchIndex].JobID
+		le.env.SignalWorkflow(workflows.ToolEventSignalPrefix+jobID, messaging.Event{
+			JobID: jobID, Seq: 1, TS: "t", Type: "succeeded", Result: json.RawMessage(resultJSON),
+		})
+	}
+	attempt()
+}
+
 func recipesSkillTools() *activities.SkillTools {
 	return &activities.SkillTools{
 		Skill: catalog.SkillDescriptor{ID: "recipes", Description: "recipe workflows", Markdown: "# Recipes\nScrape then present."},
@@ -152,11 +170,7 @@ func TestAgentLoopFullSkillPath(t *testing.T) {
 
 	// Play the tool: terminal event once the launch is recorded.
 	le.env.RegisterDelayedCallback(func() {
-		require.NotNil(t, le.launched)
-		le.env.SignalWorkflow(workflows.ToolEventSignalPrefix+le.launched.JobID, messaging.Event{
-			JobID: le.launched.JobID, Seq: 1, TS: "t", Type: "succeeded",
-			Result: json.RawMessage(`"# Pasta\nBoil water."`),
-		})
+		le.signalToolSuccess(0, `"# Pasta\nBoil water."`)
 	}, time.Second)
 
 	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
@@ -232,20 +246,12 @@ func TestAgentLoopContinuationTokenRoundTrip(t *testing.T) {
 	var first, second workflows.TurnResult
 	le.sendTurn(t, "turn-1", "grab https://example.com/pasta", &first, time.Millisecond)
 	le.env.RegisterDelayedCallback(func() {
-		require.Len(t, le.launches, 1)
-		le.env.SignalWorkflow(workflows.ToolEventSignalPrefix+le.launches[0].JobID, messaging.Event{
-			JobID: le.launches[0].JobID, Seq: 1, TS: "t", Type: "succeeded",
-			Result: json.RawMessage(`"<!-- continuation: tok-abc -->\n\n# Pasta\nBoil water."`),
-		})
+		le.signalToolSuccess(0, `"<!-- continuation: tok-abc -->\n\n# Pasta\nBoil water."`)
 	}, time.Second)
 
 	le.sendTurn(t, "turn-2", "now publish it", &second, 2*time.Second)
 	le.env.RegisterDelayedCallback(func() {
-		require.Len(t, le.launches, 2)
-		le.env.SignalWorkflow(workflows.ToolEventSignalPrefix+le.launches[1].JobID, messaging.Event{
-			JobID: le.launches[1].JobID, Seq: 1, TS: "t", Type: "succeeded",
-			Result: json.RawMessage(`"published"`),
-		})
+		le.signalToolSuccess(1, `"published"`)
 	}, 3*time.Second)
 
 	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))

@@ -73,6 +73,7 @@ func DecodeAgent(obj *unstructured.Unstructured) (AgentDescriptor, error) {
 	}
 	return AgentDescriptor{
 		ID:                 obj.GetName(),
+		StepToolRef:        obj.GetAnnotations()[StepToolAnnotation],
 		Description:        spec.Description,
 		Input:              spec.Input,
 		Output:             spec.Output,

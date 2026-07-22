@@ -105,6 +105,8 @@ Rebuild the agent half on Temporal; keep the tool half as-is.
    history, OpenAI facade streaming via progress queries.
 6. ✅ Sub-agents: agent-loop as child workflow parameterized by `Agent` CRs,
    depth/fan-out caps, HITL await-signal.
-7. opencode adaptation: checkpoint-resume Job pattern, identity-link
-   await-signal.
+7. ✅ opencode adaptation: checkpoint-resume Job pattern, identity-link
+   await-signal. (durable-agents side complete — see docs/pod-agents.md for
+   the two upstream follow-ups: the opencode TS adapter and
+   ToolRunSpec.secretEnv for per-user token injection.)
 8. Hardening: payload-size guardrails, observability, chart polish.

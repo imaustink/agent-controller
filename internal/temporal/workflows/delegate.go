@@ -28,7 +28,7 @@ func delegateToAgent(ctx workflow.Context, state *ConversationState, in TurnInpu
 		return "", *meta, err
 	}
 	cctx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{WorkflowID: childID})
-	child := workflow.ExecuteChildWorkflow(cctx, AgentWorkflowName, AgentWorkflowInput{
+	child := workflow.ExecuteChildWorkflow(cctx, agentWorkflowNameFor(agent), AgentWorkflowInput{
 		Agent:            agent,
 		Goal:             goal,
 		Caller:           in.Caller,

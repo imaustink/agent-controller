@@ -41,27 +41,33 @@ func newToolRunEnv(t *testing.T) *toolRunEnv {
 	return te
 }
 
-// jobID reads the workflow's generated job id from the captured launch
-// input — only valid inside a delayed callback that fires after launch.
-func (te *toolRunEnv) jobID(t *testing.T) string {
-	require.NotNil(t, te.launched, "launch activity should have run")
-	require.NotEmpty(t, te.launched.JobID)
-	return te.launched.JobID
-}
-
-func (te *toolRunEnv) signalEvent(t *testing.T, jobID string, event messaging.Event) {
-	event.JobID = jobID
-	te.env.SignalWorkflow(workflows.ToolEventSignalPrefix+jobID, event)
+// signalEvents delivers events once the launch has been captured,
+// rescheduling in virtual time until it has (activity completions run on
+// real goroutines and can trail virtual-time callbacks).
+func (te *toolRunEnv) signalEvents(events ...messaging.Event) {
+	var attempt func()
+	attempt = func() {
+		if te.launched == nil {
+			te.env.RegisterDelayedCallback(attempt, 100*time.Millisecond)
+			return
+		}
+		for _, event := range events {
+			event.JobID = te.launched.JobID
+			te.env.SignalWorkflow(workflows.ToolEventSignalPrefix+te.launched.JobID, event)
+		}
+	}
+	attempt()
 }
 
 func TestToolRunWorkflowHappyPath(t *testing.T) {
 	te := newToolRunEnv(t)
 
 	te.env.RegisterDelayedCallback(func() {
-		jobID := te.jobID(t)
-		te.signalEvent(t, jobID, messaging.Event{Seq: 1, TS: "t", Type: "progress", Stage: "extract", Message: "reading page"})
-		te.signalEvent(t, jobID, messaging.Event{Seq: 1, TS: "t", Type: "progress", Stage: "extract", Message: "duplicate delivery"})
-		te.signalEvent(t, jobID, messaging.Event{Seq: 2, TS: "t", Type: "succeeded", Result: json.RawMessage(`"# Pasta\nBoil water."`)})
+		te.signalEvents(
+			messaging.Event{Seq: 1, TS: "t", Type: "progress", Stage: "extract", Message: "reading page"},
+			messaging.Event{Seq: 1, TS: "t", Type: "progress", Stage: "extract", Message: "duplicate delivery"},
+			messaging.Event{Seq: 2, TS: "t", Type: "succeeded", Result: json.RawMessage(`"# Pasta\nBoil water."`)},
+		)
 	}, time.Millisecond)
 
 	te.env.ExecuteWorkflow(workflows.ToolRunWorkflowName, workflows.ToolRunWorkflowInput{
@@ -91,7 +97,7 @@ func TestToolRunWorkflowHappyPath(t *testing.T) {
 func TestToolRunWorkflowToolFailure(t *testing.T) {
 	te := newToolRunEnv(t)
 	te.env.RegisterDelayedCallback(func() {
-		te.signalEvent(t, te.jobID(t), messaging.Event{Seq: 1, TS: "t", Type: "failed", Code: "blocked_url", Message: "SSRF guard rejected host"})
+		te.signalEvents(messaging.Event{Seq: 1, TS: "t", Type: "failed", Code: "blocked_url", Message: "SSRF guard rejected host"})
 	}, time.Millisecond)
 
 	te.env.ExecuteWorkflow(workflows.ToolRunWorkflowName, workflows.ToolRunWorkflowInput{ToolRef: "recipe-scraper", Input: "http://169.254.169.254"})

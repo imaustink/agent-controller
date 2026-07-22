@@ -50,6 +50,9 @@ func main() {
 	w.RegisterWorkflowWithOptions(workflows.AgentWorkflow, workflow.RegisterOptions{
 		Name: workflows.AgentWorkflowName,
 	})
+	w.RegisterWorkflowWithOptions(workflows.PodAgentWorkflow, workflow.RegisterOptions{
+		Name: workflows.PodAgentWorkflowName,
+	})
 	w.RegisterActivityWithOptions((&activities.LLMActivities{Client: llmClient}).CompleteTurn, activity.RegisterOptions{
 		Name: activities.CompleteTurnActivityName,
 	})
@@ -62,6 +65,13 @@ func main() {
 	w.RegisterActivityWithOptions(agentLoop.ComposeResponse, activity.RegisterOptions{Name: activities.ComposeResponseActivityName})
 	w.RegisterActivityWithOptions(agentLoop.SelectDelegate, activity.RegisterOptions{Name: activities.SelectDelegateActivityName})
 	w.RegisterActivityWithOptions(agentLoop.PlanAgentAction, activity.RegisterOptions{Name: activities.PlanAgentActionActivityName})
+
+	identityLinks, err := activities.NewStaticIdentityLinks(os.Getenv("IDENTITY_LINKS"), os.Getenv("IDENTITY_LINK_URLS"))
+	if err != nil {
+		log.Fatalf("build identity link store: %v", err)
+	}
+	identity := &activities.IdentityLinkActivities{Store: identityLinks}
+	w.RegisterActivityWithOptions(identity.GetIdentityLink, activity.RegisterOptions{Name: activities.GetIdentityLinkActivityName})
 
 	// Retrieval activities need Qdrant; without it the worker still serves
 	// plain conversations (hello-world mode).

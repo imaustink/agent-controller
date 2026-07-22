@@ -28,6 +28,12 @@ type ToolDescriptor struct {
 	AgentRef     string   `json:"agentRef,omitempty"` // set = agent-backed tool
 }
 
+// StepToolAnnotation on an Agent CR marks it as a checkpoint-resume pod
+// agent: each work step runs the named Tool as a one-shot Job speaking the
+// messaging.AgentStepResult envelope. This is a durable-agents extension —
+// upstream's Agent.spec.image/AgentRun launch path is unused here.
+const StepToolAnnotation = "durable-agents.dev/step-tool"
+
 type AgentDescriptor struct {
 	ID                 string   `json:"id"`
 	Description        string   `json:"description"`
@@ -41,6 +47,10 @@ type AgentDescriptor struct {
 	Model              string   `json:"model,omitempty"`
 	MaxIterations      int32    `json:"maxIterations,omitempty"`
 	IdentityProviders  []string `json:"identityProviders,omitempty"`
+
+	// StepToolRef (from StepToolAnnotation) switches execution from the
+	// declarative agent loop to checkpoint-resume Jobs of the named tool.
+	StepToolRef string `json:"stepToolRef,omitempty"`
 }
 
 type SkillDescriptor struct {

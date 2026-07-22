@@ -82,6 +82,15 @@ func main() {
 
 	agents := []catalog.AgentDescriptor{
 		{
+			ID:                 "swe-helper",
+			Description:        "Makes code changes: fixes bugs, adds features, opens pull requests.",
+			OrchestratorPrompt: "Delegate when the user wants code written or changed.",
+			SkillRefs:          nil,
+			AllowedRoles:       []string{"cook", "admin"}, // dev roles
+			MaxIterations:      6,
+			StepToolRef:        "swe-step", // checkpoint-resume pod agent
+		},
+		{
 			ID:                 "meal-planner",
 			Description:        "Plans meals across multiple days, gathering recipes and asking the user about preferences.",
 			OrchestratorPrompt: "Delegate when the user wants multi-day meal planning rather than a single recipe.",

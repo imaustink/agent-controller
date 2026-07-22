@@ -258,7 +258,7 @@ func superviseChildAgent(
 	cctx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 		WorkflowID: childID,
 	})
-	child := workflow.ExecuteChildWorkflow(cctx, AgentWorkflowName, AgentWorkflowInput{
+	child := workflow.ExecuteChildWorkflow(cctx, agentWorkflowNameFor(agent), AgentWorkflowInput{
 		Agent:            agent,
 		Goal:             goal,
 		Caller:           caller,
@@ -310,6 +310,16 @@ func superviseChildAgent(
 			}
 		}
 	}
+}
+
+// agentWorkflowNameFor routes by execution style: a step-tool annotation
+// makes the agent a checkpoint-resume pod agent, otherwise it runs the
+// declarative loop. Callers of either speak the same up/down protocol.
+func agentWorkflowNameFor(agent catalog.AgentDescriptor) string {
+	if agent.StepToolRef != "" {
+		return PodAgentWorkflowName
+	}
+	return AgentWorkflowName
 }
 
 func newChildAgentID(ctx workflow.Context, agentID string) (string, error) {
