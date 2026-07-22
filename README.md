@@ -2,6 +2,50 @@
 
 > [github.com/imaustink/agent-controller](https://github.com/imaustink/agent-controller)
 
+---
+
+### The Book of the Controller
+
+> <sup>1</sup> In the beginning the Operator created the Cluster and the
+> Namespace, and the Namespace was without form and void, and there were no
+> Agents upon the face of the nodes.
+>
+> <sup>2</sup> And the Operator said, Let there be Custom Resources: and there
+> were Custom Resources. And the Operator saw the CRDs, that they were good;
+> and the Operator divided the Tool from the Skill, and the Skill from the
+> Agent.
+>
+> <sup>3</sup> And the Operator said, Let there be a Controller in the midst
+> of the cluster, and let it reconcile between the desired state and the
+> actual state.
+>
+> <sup>4</sup> And the Operator made the core-controller, and set it to
+> watch over the Tool, and the Skill, and the Agent, and the ToolRun, and
+> the AgentRun; and it was so.
+>
+> <sup>5</sup> And the Operator said, Let the Job be launched as a one-shot
+> unto the Pod, and let it not tarry, but do its labor and depart.
+>
+> <sup>6</sup> And the Operator said, Let there be a Callback, that the Job
+> may declare its work finished, whether it be succeeded or whether it be
+> failed; and the Operator called the seal upon it HMAC.
+>
+> <sup>7</sup> And the Operator looked upon the Orchestrator, and said, Thou
+> shalt not create Jobs thyself, but thou shalt create a ToolRun, and the
+> Controller shall do the rest.
+>
+> <sup>8</sup> So the Operator finished the work which he had made:
+> declarative was the catalog, and `kubectl apply` was the covenant thereof.
+>
+> <sup>9</sup> And the Operator blessed the Controller, and said, Be
+> fruitful, and reconcile, and have dominion over every Job that runneth
+> upon the cluster, without the need of an image rebuilt.
+>
+> <sup>10</sup> Thus were the CRDs and the Controller finished, and all the
+> host of them: an amen, and a `kubectl get toolruns`, unto every generation.
+
+---
+
 A Kubernetes-native framework for building production AI agents. Tools, Skills,
 and Agents are declared as **custom resources** and launched as one-shot Jobs by
 a dedicated controller — so operators manage the catalog declaratively and the
