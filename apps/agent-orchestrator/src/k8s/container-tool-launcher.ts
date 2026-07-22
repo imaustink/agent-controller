@@ -26,7 +26,18 @@ export interface LaunchOptions {
    */
   natsUrl?: string;
   ttlSecondsAfterFinished?: number;
+  /**
+   * Caller's Open WebUI session id (docs/adr/0012), if any -- set as
+   * {@link SessionIDAnnotation} on the launched ToolRun CR so the Go
+   * core-controller can copy it onto the Job/Pod for `kubectl describe`
+   * debugging. Absent -> no annotation is set, same as before this field
+   * existed.
+   */
+  sessionId?: string;
 }
+
+/** Well-known annotation key mirroring `SessionIDAnnotation` in controllers/core-controller/internal/controller/run_job.go. */
+export const SESSION_ID_ANNOTATION = "controller-agent.dev/session-id";
 
 export interface LaunchedJob {
   name: string;

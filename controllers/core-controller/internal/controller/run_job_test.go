@@ -22,6 +22,52 @@ import (
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 )
 
+// TestSessionIDAnnotations is a plain (non-envtest) unit test of the helper
+// that copies just the session-id annotation off a ToolRun/AgentRun CR.
+func TestSessionIDAnnotations(t *testing.T) {
+	t.Run("copies the session-id annotation when present", func(t *testing.T) {
+		got := sessionIDAnnotations(map[string]string{SessionIDAnnotation: "chat-42"})
+		want := map[string]string{SessionIDAnnotation: "chat-42"}
+		if len(got) != len(want) || got[SessionIDAnnotation] != want[SessionIDAnnotation] {
+			t.Errorf("got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("ignores other annotations on the CR", func(t *testing.T) {
+		got := sessionIDAnnotations(map[string]string{"kubectl.kubernetes.io/last-applied-configuration": "{}"})
+		if got != nil {
+			t.Errorf("expected nil, got %+v", got)
+		}
+	})
+
+	t.Run("nil map -> nil", func(t *testing.T) {
+		if got := sessionIDAnnotations(nil); got != nil {
+			t.Errorf("expected nil, got %+v", got)
+		}
+	})
+}
+
+// TestBuildRunJobAnnotations is a plain (non-envtest) unit test confirming
+// buildRunJob copies annotations onto both the Job and its PodTemplateSpec.
+func TestBuildRunJobAnnotations(t *testing.T) {
+	job, err := buildRunJob(runJobParams{
+		jobName:     "toolrun-abc",
+		namespace:   "default",
+		annotations: map[string]string{SessionIDAnnotation: "chat-42"},
+		image:       "example/tool:latest",
+		callback:    toolv1alpha1.ToolRunCallback{NatsSubject: "callbacks.abc"},
+	})
+	if err != nil {
+		t.Fatalf("buildRunJob: %v", err)
+	}
+	if job.Annotations[SessionIDAnnotation] != "chat-42" {
+		t.Errorf("Job.Annotations[%s] = %q, want %q", SessionIDAnnotation, job.Annotations[SessionIDAnnotation], "chat-42")
+	}
+	if job.Spec.Template.Annotations[SessionIDAnnotation] != "chat-42" {
+		t.Errorf("PodTemplateSpec.Annotations[%s] = %q, want %q", SessionIDAnnotation, job.Spec.Template.Annotations[SessionIDAnnotation], "chat-42")
+	}
+}
+
 // TestMergeSecretEnv is a plain (non-envtest) unit test of the pure
 // AgentRun-over-Agent secretEnv merge helper — no cluster needed.
 func TestMergeSecretEnv(t *testing.T) {

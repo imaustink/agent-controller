@@ -145,6 +145,37 @@ describe("AgentRunLauncher", () => {
     expect(JSON.stringify(patchRequest.body)).toContain("run-5");
   });
 
+  it("sets the session-id annotation on the AgentRun CR when options.sessionId is given", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const launcher = new AgentRunLauncher("core.controller-agent.dev", "v1alpha1", api);
+
+    await launcher.launch(template, "run-7", {
+      goal: "add a health check endpoint",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+      sessionId: "chat-42",
+    });
+
+    const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { metadata: Record<string, unknown> } }];
+    expect(request.body.metadata.annotations).toEqual({ "controller-agent.dev/session-id": "chat-42" });
+  });
+
+  it("omits annotations on the AgentRun CR when no sessionId is given", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const launcher = new AgentRunLauncher("core.controller-agent.dev", "v1alpha1", api);
+
+    await launcher.launch(template, "run-8", {
+      goal: "add a health check endpoint",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+    });
+
+    const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { metadata: Record<string, unknown> } }];
+    expect(request.body.metadata.annotations).toBeUndefined();
+  });
+
   it("launch() throws if options.secretEnv is non-empty but no SecretApiLike was configured", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };

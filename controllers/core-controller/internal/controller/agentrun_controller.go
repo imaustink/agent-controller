@@ -101,8 +101,9 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 	}
 
 	job, err := buildRunJob(runJobParams{
-		jobName:   fmt.Sprintf("agentrun-%s", run.Name),
-		namespace: run.Namespace,
+		jobName:     fmt.Sprintf("agentrun-%s", run.Name),
+		namespace:   run.Namespace,
+		annotations: sessionIDAnnotations(run.Annotations),
 		labels: map[string]string{
 			"core.controller-agent.dev/agentrun": run.Name,
 			"core.controller-agent.dev/agent":    agent.Name,

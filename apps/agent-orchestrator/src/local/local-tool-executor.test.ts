@@ -87,6 +87,32 @@ describe("LocalToolExecutor", () => {
     });
   });
 
+  it("sets SESSION_ID in the tool's env when a sessionId is given (docs/adr/0012)", async () => {
+    sidecar = await startSidecar("node", () => ({ body: JSON.stringify({ type: "succeeded", result: "ok" }) }));
+    const executor = new LocalToolExecutor({
+      socketDir: sidecar.socketDir,
+      defaultTimeoutSeconds: 30,
+      secretReader: staticReader,
+    });
+
+    await executor.run(descriptor({ env: { FOO: "bar" } }), "https://example.com", "chat-42");
+
+    expect(sidecar.lastRequest).toMatchObject({ env: { FOO: "bar", SESSION_ID: "chat-42" } });
+  });
+
+  it("omits SESSION_ID from the tool's env when no sessionId is given", async () => {
+    sidecar = await startSidecar("node", () => ({ body: JSON.stringify({ type: "succeeded", result: "ok" }) }));
+    const executor = new LocalToolExecutor({
+      socketDir: sidecar.socketDir,
+      defaultTimeoutSeconds: 30,
+      secretReader: staticReader,
+    });
+
+    await executor.run(descriptor({ env: { FOO: "bar" } }), "https://example.com");
+
+    expect(sidecar.lastRequest?.env).toEqual({ FOO: "bar" });
+  });
+
   it("resolves secretEnv and passes ONLY declared env (never the orchestrator's own secrets)", async () => {
     // The orchestrator's real OPENAI_API_KEY is in this process's env...
     process.env.OPENAI_API_KEY = "sk-orchestrator-secret";

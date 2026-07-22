@@ -48,6 +48,33 @@ describe("ToolRunLauncher", () => {
     expect(JSON.stringify(body)).not.toContain("raw-secret-that-must-not-appear-in-the-cr");
   });
 
+  it("sets the session-id annotation on the ToolRun CR when options.sessionId is given", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const launcher = new ToolRunLauncher("core.controller-agent.dev", "v1alpha1", { name: "s", key: "k" }, api);
+
+    await launcher.launch(template, {
+      args: ["https://example.com/recipe"],
+      callbackUrl: "http://x",
+      callbackSecret: "s",
+      sessionId: "chat-42",
+    });
+
+    const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { metadata: Record<string, unknown> } }];
+    expect(request.body.metadata.annotations).toEqual({ "controller-agent.dev/session-id": "chat-42" });
+  });
+
+  it("omits annotations on the ToolRun CR when no sessionId is given", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const launcher = new ToolRunLauncher("core.controller-agent.dev", "v1alpha1", { name: "s", key: "k" }, api);
+
+    await launcher.launch(template, { args: ["https://example.com/recipe"], callbackUrl: "http://x", callbackSecret: "s" });
+
+    const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { metadata: Record<string, unknown> } }];
+    expect(request.body.metadata.annotations).toBeUndefined();
+  });
+
   it("throws if the template has no toolRef (i.e. was not resolved by CrdToolRegistry)", async () => {
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject: vi.fn() };
     const launcher = new ToolRunLauncher("core.controller-agent.dev", "v1alpha1", { name: "s", key: "k" }, api);

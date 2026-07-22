@@ -28,5 +28,6 @@ See [../orchestrator.md](../orchestrator.md) for how these fit together.
 | [0020](0020-crd-catalog-hot-reload-via-k8s-watch.md) | Tool/LocalTool/Skill/Agent registries hot-reload via a live k8s watch instead of only refreshing on orchestrator restart |
 | [0021](0021-skill-agent-refs.md) | `Skill.spec.agentRefs` lets a Skill delegate to an Agent directly (dispatched exactly like an agent-backed Tool) — no `Tool` wrapper CR required |
 | [0022](0022-per-user-github-device-flow-identity.md) | Identity-requiring Agents (e.g. `opencode-swe-agent`) act as the calling user's own linked GitHub identity (OAuth Device Flow via `integration-gateway`, injected per-run through a new `AgentRunSpec.SecretEnv`), replacing the shared PAT/App-installation token for those deployments |
+| [0023](0023-session-id-annotation-tractability.md) | The caller's Open WebUI session id is annotated (`controller-agent.dev/session-id`) onto every ToolRun/AgentRun CR and the Job/Pod it launches, so a conversation's Jobs can be traced/queried by session id — the building block for a future session-debugging agent |
 
 Status values: `proposed` | `accepted` | `superseded by NNNN`.
