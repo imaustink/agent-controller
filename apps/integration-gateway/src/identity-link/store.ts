@@ -187,6 +187,17 @@ export class RedisIdentityLinkStore implements IdentityLinkStore {
 
     const subscriber = this.redis.duplicate();
     try {
+      // `duplicate()` inherits `lazyConnect: true` *and* `enableOfflineQueue:
+      // false` from `this.redis` -- unlike the main client (explicitly
+      // `.connect()`-ed once at startup), a fresh duplicate's socket doesn't
+      // exist yet, so issuing `subscribe()` before this resolves rejects
+      // immediately with "Stream isn't writeable and enableOfflineQueue
+      // options is false" instead of waiting for the connection. That
+      // synchronous rejection was silently swallowed by the catch below,
+      // making every call resolve to a timeout instantly regardless of
+      // `timeoutMs` -- see the incident where identity-link's "auto-continue
+      // once you finish" never actually fired.
+      await subscriber.connect();
       await subscriber.subscribe(this.channelFor(provider, subject));
       // Re-check after subscribing to close the race between the `get` miss
       // above and the subscription taking effect -- a `set` landing in that
