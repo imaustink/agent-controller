@@ -47,6 +47,17 @@ webFetch:
   image: registry.kurpuis.com:5000/web-fetch:latest
   serviceAccountName: web-fetch
 
+# kubectl-readonly: cluster debugging tool. Grants its ServiceAccount a
+# cluster-wide read-only ClusterRole (see
+# charts/community-components/templates/clusterrole-kubectl-readonly.yaml),
+# including get/list/watch on Secrets -- the tool's own code (not RBAC) is
+# what keeps values out of its output. See tools/kubectl-readonly/README.md
+# before flipping this off elsewhere if that trade-off isn't acceptable.
+kubectlReadonly:
+  enabled: true
+  image: registry.kurpuis.com:5000/kubectl-readonly:latest
+  serviceAccountName: kubectl-readonly
+
 recipePublisher:
   enabled: true
   image: registry.kurpuis.com:5000/recipe-publisher:latest

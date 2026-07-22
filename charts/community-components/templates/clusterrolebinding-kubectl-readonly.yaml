@@ -1,0 +1,16 @@
+{{- if .Values.kubectlReadonly.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Values.kubectlReadonly.serviceAccountName }}-view
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.kubectlReadonly.serviceAccountName }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ .Values.kubectlReadonly.serviceAccountName }}-view
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

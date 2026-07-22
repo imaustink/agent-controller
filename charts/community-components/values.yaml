@@ -77,6 +77,27 @@ webFetch:
     annotations: {}
     automount: true
 
+# kubectl-readonly: runs a single allowlisted read-only kubectl command
+# (get/describe/logs/events/top) for cluster debugging. Disabled by default:
+# unlike every other tool in this chart, enabling it grants its
+# ServiceAccount a cluster-wide ClusterRole (get/list/watch across a fixed
+# resource-kind list, including `secrets` -- see
+# tools/kubectl-readonly/README.md's "Secrets: keys and lengths only"
+# section for the trade-off that implies before turning this on).
+kubectlReadonly:
+  enabled: false
+  image: kubectl-readonly:latest
+  serviceAccountName: kubectl-readonly
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own. Note this does NOT gate the ClusterRole/
+  # ClusterRoleBinding -- those are always created when kubectlReadonly.enabled
+  # is true, regardless of who owns the ServiceAccount.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+
 # recipe-publisher: publishes/updates a recipe on a Mealie instance.
 recipePublisher:
   enabled: true
