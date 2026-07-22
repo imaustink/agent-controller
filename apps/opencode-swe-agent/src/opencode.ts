@@ -193,7 +193,14 @@ export function parseOpencodeLine(line: string): OpencodeSignal | null {
     case "tool_result": {
       const isError = rec["isError"] === true || rec["success"] === false;
       const content = str(rec["result"]) ?? str(rec["output"]) ?? str(rec["error"]);
-      return isError && content ? { toolFailure: content } : null;
+      if (!content) return null;
+      if (isError) return { toolFailure: content };
+      // Successful tool output (file reads, grep/diff/command results) is the
+      // substance behind the agent's narration ("let's look at X in detail")
+      // -- without this, only the narration streams and the actual findings
+      // vanish, since a `null` signal here never becomes a progress event at all.
+      const name = str(rec["toolName"]) ?? str(part["tool"]) ?? str(rec["tool"]);
+      return { progress: name ? `${name} →\n${content}` : content, progressKind: "narrative" };
     }
     case "error":
       return str(rec["message"]) ? { toolFailure: str(rec["message"])! } : null;
