@@ -17,10 +17,10 @@ export interface CommandResult {
 export function runCommand(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {},
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env ?? process.env });
+    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env ?? process.env, signal: opts.signal });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d.toString()));
@@ -41,8 +41,8 @@ export interface GitIdentity {
  * failure the caller falls back to a generic identity. This doubles as a
  * lightweight token sanity check (a bad token makes `gh api user` fail).
  */
-export async function resolveGitIdentity(env: NodeJS.ProcessEnv): Promise<GitIdentity | null> {
-  const res = await runCommand("gh", ["api", "user"], { env });
+export async function resolveGitIdentity(env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<GitIdentity | null> {
+  const res = await runCommand("gh", ["api", "user"], { env, signal });
   if (res.code !== 0) return null;
   try {
     const user = JSON.parse(res.stdout) as { login?: string; id?: number; name?: string };
@@ -150,25 +150,34 @@ export interface RepoResult {
  * for an open PR on that branch. Best-effort: a missing PR is reported as
  * null rather than failing.
  */
-export async function discoverResult(repoDir: string, env: NodeJS.ProcessEnv): Promise<RepoResult | null> {
-  const remote = await runCommand("git", ["-C", repoDir, "remote", "get-url", "origin"], { env });
+export async function discoverResult(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<RepoResult | null> {
+  const remote = await runCommand("git", ["-C", repoDir, "remote", "get-url", "origin"], { env, signal });
   if (remote.code !== 0) return null;
   const repo = parseOwnerRepoFromRemote(remote.stdout);
   if (!repo) return null;
 
-  const branchRes = await runCommand("git", ["-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD"], { env });
+  const branchRes = await runCommand("git", ["-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD"], { env, signal });
   const branch = branchRes.code === 0 ? branchRes.stdout.trim() : "";
   if (!branch || branch === "HEAD") return { repo, branch: branch || "", pr: null, prUrl: null };
 
-  const pr = await findOpenPr(repo, branch, env);
+  const pr = await findOpenPr(repo, branch, env, signal);
   return { repo, branch, pr: pr?.number ?? null, prUrl: pr?.url ?? null };
 }
 
-async function findOpenPr(repo: string, branch: string, env: NodeJS.ProcessEnv): Promise<{ number: string; url: string } | null> {
+async function findOpenPr(
+  repo: string,
+  branch: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<{ number: string; url: string } | null> {
   const res = await runCommand(
     "gh",
     ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,url", "--limit", "1"],
-    { env },
+    { env, signal },
   );
   if (res.code !== 0) return null;
   try {
