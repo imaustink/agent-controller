@@ -36,6 +36,7 @@ subjects:
     name: {{ .Release.Name }}-catalog-sync
     namespace: {{ .Release.Namespace }}
 ---
+{{- if .Values.catalogSync.image.tag }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -85,4 +86,5 @@ spec:
                   key: OPENAI_API_KEY
           resources:
             {{- toYaml .Values.catalogSync.resources | nindent 12 }}
+{{- end }}
 {{- end }}

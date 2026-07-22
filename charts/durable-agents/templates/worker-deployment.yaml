@@ -1,3 +1,4 @@
+{{- if .Values.worker.image.tag }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -64,3 +65,4 @@ spec:
                   key: OPENAI_API_KEY
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
+{{- end }}

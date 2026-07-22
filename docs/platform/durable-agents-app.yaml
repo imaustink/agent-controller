@@ -27,6 +27,32 @@ spec:
         releaseName: durable-agents
         valueFiles:
           - $values/gitops/durable-agents/values.yaml
+    # AWS footprint: the three ECR repos, platform-managed (Crossplane).
+    # Deployments are gated on image.tag, so first sync creates the repos
+    # with the workloads dormant; images are built/pushed locally (the
+    # source repo is private — no CI), then image.tag in
+    # gitops/durable-agents/values.yaml activates them. eso off: nothing to
+    # push to a GitHub repo. The conventional OIDC push role is unused.
+    - repoURL: https://github.com/bitovi/bitovi-platform-services.git
+      targetRevision: main
+      path: charts/platform-app-resources
+      helm:
+        releaseName: durable-agents-aws
+        valuesObject:
+          app:
+            name: durable-agents-gateway
+            repo: bitovi/bitovi-platform-services
+          kind: container
+          crossplane:
+            enabled: true
+            awsXR: true
+            deletionProtection: true
+          eso:
+            enabled: false
+          ecr:
+            additionalRepositories:
+              - durable-agents-worker
+              - durable-agents-catalog-sync
   destination:
     server: https://kubernetes.default.svc
     namespace: agent-controller

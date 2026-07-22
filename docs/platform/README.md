@@ -25,30 +25,14 @@ instead of it — same namespace, same controller, same catalog:
 
 ## Steps
 
-Everything below is your call to run — cluster + work-repo changes.
+The ordering matters: the platform owns the ECR repos (Crossplane, created
+by the Argo app), and the chart's Deployments are **gated on image.tag** —
+so the first merge deploys everything dormant, then images are pushed, then
+a tag bump activates it. agent-controller's images build in the pipeline
+because that source is public; durable-agents is private/local, so images
+build and push from your machine.
 
-### 1. ECR repos + images (manual for the first stand-up)
-
-The platform's pipeline builds agent-controller's images because that
-source is public; durable-agents is private/local, so build and push from
-your machine (needs platform-account AWS credentials):
-
-```bash
-cd ~/personal/durable-agents
-make ecr-push        # login, create repos if missing, build linux/amd64, push
-                     # prints the tag to set in gitops/durable-agents/values.yaml
-```
-
-Tag = 12-char git SHA, matching the platform's version.yaml convention.
-Images are `--platform linux/amd64` for the EKS nodes; pulls use the node
-IAM role (same account), so no imagePullSecrets.
-
-(Longer-term options if this graduates from testing: make durable-agents a
-private GitHub repo with its own OIDC push role via platform-app-resources,
-or move the ECR repos under the platform's Crossplane management to avoid
-IaC drift from the manually-created repos.)
-
-### 2. 1Password item
+### 1. 1Password item
 
 Create item `durable-agents-callback` in the `bitovi-platform` vault with a
 single field named `AGENT_CALLBACK_SECRET` (value: `openssl rand -hex 32`).
@@ -56,19 +40,33 @@ The chart's `onePasswordItems` entry syncs it into the namespace; both the
 gateway and the tool Jobs' `secretRef` read this one Secret (everything is
 in `agent-controller`, so no dual-namespace copy needed here).
 
-### 3. Vendor + wire into the platform repo (a PR to bitovi-platform-services)
+### 2. PR #1 to bitovi-platform-services (dormant deploy + ECR repos)
 
 1. Copy `charts/durable-agents/` from this repo into
    `bitovi-platform-services/charts/durable-agents/`.
 2. Copy `docs/platform/durable-agents-values.yaml` to
-   `gitops/durable-agents/values.yaml`, setting the three `image.tag`
-   values to the tag you pushed.
+   `gitops/durable-agents/values.yaml` — leave the three `image.tag`
+   values empty.
 3. Copy `docs/platform/durable-agents-app.yaml` to
    `gitops/apps/durable-agents.yaml`.
-4. PR → merge → ArgoCD auto-syncs (wave 43). Remember: merging to main
-   **deploys** — Argo has automated sync + selfHeal.
+4. Merge → ArgoCD syncs (wave 43): ECR repos + services + RBAC + the
+   callback Secret sync exist; no pods yet (tags empty).
 
-### 4. Verify
+### 3. Push images
+
+```bash
+cd ~/personal/durable-agents
+make ecr-push        # aws --profile platform; linux/amd64; prints the tag
+```
+
+### 4. PR #2: set the tag
+
+Set the printed tag on all three `image.tag` fields in
+`gitops/durable-agents/values.yaml`, merge — Argo rolls the Deployments
+out. (Later image updates are the same two commands: `make ecr-push`, bump
+the tag.)
+
+### 5. Verify
 
 ```bash
 kubectl -n agent-controller logs deploy/durable-agents-catalog-sync | tail
@@ -83,7 +81,7 @@ kubectl -n agent-controller get toolruns          # the real recipe-scraper Job
 kubectl -n temporal port-forward svc/temporal-web 8081:8080   # watch workflows
 ```
 
-### 5. Point Open WebUI at it (optional, after the curl shakedown)
+### 6. Point Open WebUI at it (optional, after the curl shakedown)
 
 Open WebUI supports multiple OpenAI endpoints — add ours alongside the
 upstream orchestrator in `gitops/apps/agent-orchestrator.yaml`:
