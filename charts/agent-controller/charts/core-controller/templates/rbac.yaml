@@ -25,13 +25,13 @@ rules:
     resources: ["jobs/status"]
     verbs: ["get"]
   - apiGroups: ["core.controller-agent.dev"]
-    resources: ["tools", "skills", "agents", "toolruns", "agentruns", "localtools"]
+    resources: ["tools", "skills", "agents", "toolruns", "agentruns", "localtools", "integrationroutes"]
     verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
   - apiGroups: ["core.controller-agent.dev"]
-    resources: ["tools/finalizers", "skills/finalizers", "agents/finalizers", "toolruns/finalizers", "agentruns/finalizers", "localtools/finalizers"]
+    resources: ["tools/finalizers", "skills/finalizers", "agents/finalizers", "toolruns/finalizers", "agentruns/finalizers", "localtools/finalizers", "integrationroutes/finalizers"]
     verbs: ["update"]
   - apiGroups: ["core.controller-agent.dev"]
-    resources: ["tools/status", "skills/status", "agents/status", "toolruns/status", "agentruns/status", "localtools/status"]
+    resources: ["tools/status", "skills/status", "agents/status", "toolruns/status", "agentruns/status", "localtools/status", "integrationroutes/status"]
     verbs: ["get", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
