@@ -2,6 +2,47 @@
 
 > [github.com/imaustink/agent-controller](https://github.com/imaustink/agent-controller)
 
+---
+
+### The Book of the Controller, Chapter 1
+
+**1** In the beginning was the Cluster, and the Cluster was without form and
+void, and hard-coded configuration moved upon the face of the deployment.
+
+**2** And the Operator said, Let there be Custom Resources: and there were
+Custom Resources.
+
+**3** And the Operator saw the Custom Resources, that they were good: and
+the Operator divided the Tool from the Skill, and the Skill from the Agent.
+
+**4** And the Operator called the watcher of these things Controller, and
+the doer of reasoning he called Orchestrator; and the evening and the
+morning were the first reconciliation.
+
+**5** And the Controller said, Let there be a Job for every ToolRun and
+every AgentRun, launched one-shot beneath the Custom Resources, and let it
+be so.
+
+**6** And it was so: and the Controller saw that the Job was good, and set
+it to run its course, and to return by way of the Callback, saying,
+Verily, I am finished.
+
+**7** And no longer did the rebuilding of images plague the land, nor did
+the redeployment of orchestrators trouble the operators thereof; for
+`kubectl apply` was upon the earth, and it was declarative, and it was
+enough.
+
+**8** So the Controller reconciled the Custom Resources after their kind,
+and the Jobs after their kind, and the secrets were injected in their
+season: and the Operator saw every thing that was made, and behold, it was
+very good.
+
+**9** Let him that hath ears to `kubectl get`, hear: the catalog is
+declared, the audit trail is kept, and the agent shall not want for
+infrastructure it did not ask for.
+
+---
+
 A Kubernetes-native framework for building production AI agents. Tools, Skills,
 and Agents are declared as **custom resources** and launched as one-shot Jobs by
 a dedicated controller — so operators manage the catalog declaratively and the
