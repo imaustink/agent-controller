@@ -7,5 +7,5 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/catalog-sync ./cmd/catalog-sync
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/catalog-sync /catalog-sync
-USER nonroot
+USER 65532:65532
 ENTRYPOINT ["/catalog-sync"]
