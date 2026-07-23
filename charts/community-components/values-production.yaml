@@ -186,3 +186,24 @@ integrationRoutes:
   githubIssueLabeledTriage:
     enabled: true
     agentRef: claude-code-swe-agent
+  # github-pr-labeled-review: applying integration-gateway's configured review
+  # label (charts/agent-controller/values-production.yaml's
+  # integrationGateway.config.githubReviewLabel, "ai-review") to a PR
+  # dispatches deterministically to the agentRef below, bypassing RAG skill
+  # retrieval. A human applies the label -- the gateway drops bot-authored
+  # events, so the agent that opened the PR can't review its own work; a
+  # maintainer requests the review by labeling the PR.
+  #
+  # agentRef is claude-code-swe-agent (same engine as triage above). Because
+  # that agent's identityLink.providers is ["claude"], the person who applied
+  # the label must have a linked Claude token for the review to launch -- the
+  # same per-user gate the ai-triage path already uses.
+  #
+  # Requires claudeCodeSweAgent.enabled=true (set above) and the
+  # IntegrationRoute CRD to exist on the cluster -- `helm upgrade` does NOT
+  # install/update CRDs for an existing release, so if it isn't already
+  # present it must be applied manually once:
+  #   kubectl apply -f controllers/core-controller/config/crd/bases/core.controller-agent.dev_integrationroutes.yaml
+  githubPrLabeledReview:
+    enabled: true
+    agentRef: claude-code-swe-agent

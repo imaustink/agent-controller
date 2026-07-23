@@ -1,0 +1,36 @@
+{{- if .Values.integrationRoutes.githubPrLabeledReview.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: IntegrationRoute
+metadata:
+  name: github-pr-labeled-review
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  match:
+    source: github
+    event: pull_request
+    action: labeled
+  # No Tool wrapper needed -- dispatches straight to the Agent CR (ADR 0021),
+  # same pattern as integrationroute-github-issue-labeled-triage.yaml. Which
+  # SWE Agent CR reviews the PR is value-driven (default opencode-swe-agent)
+  # so an environment can point it at claude-code-swe-agent instead without
+  # editing this template -- whichever it names must have enabled=true in the
+  # same values file, or this route dispatches to a non-existent Agent.
+  #
+  # Triggered when integration-gateway relays a pull_request.labeled event
+  # whose label matches its configured review label (integration-gateway's
+  # config.githubReviewLabel, e.g. "ai-review"). A human applies that label:
+  # the gateway drops bot-authored events, so the agent that opened the PR
+  # cannot self-trigger a review of its own pull request.
+  agentRef: {{ .Values.integrationRoutes.githubPrLabeledReview.agentRef | default "opencode-swe-agent" }}
+  promptTemplate: |
+    Pull request {{`{{owner}}`}}/{{`{{repo}}`}}#{{`{{prNumber}}`}} was labeled "{{`{{labelName}}`}}": "{{`{{title}}`}}"
+
+    {{`{{body}}`}}
+
+    Review this pull request. Check out the branch, examine the diff, and
+    assess correctness, test coverage, security, and any risks. Post your
+    review on the PR (e.g. `gh pr review {{`{{prNumber}}`}}` with inline
+    comments where a specific file/line is at issue), being concrete and
+    citing file:line. Do not merge or push changes -- only review.
+{{- end }}

@@ -53,6 +53,8 @@ spec:
               value: {{ .Values.config.githubBotLogin | quote }}
             - name: GATEWAY_GITHUB_TRIGGER_LABEL
               value: {{ .Values.config.githubTriggerLabel | quote }}
+            - name: GATEWAY_GITHUB_REVIEW_LABEL
+              value: {{ .Values.config.githubReviewLabel | quote }}
             {{- if .Values.config.githubTeamRoles }}
             - name: GATEWAY_GITHUB_TEAM_ROLES
               value: {{ .Values.config.githubTeamRoles | quote }}

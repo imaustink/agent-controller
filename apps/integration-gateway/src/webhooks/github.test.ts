@@ -125,6 +125,47 @@ describe("parseGithubEvent", () => {
     });
   });
 
+  it("parses a pull_request.labeled event (number from pull_request, not issue)", () => {
+    const event = parseGithubEvent(
+      "pull_request",
+      JSON.stringify({
+        action: "labeled",
+        ...repoSender,
+        pull_request: { number: 99, title: "Add dark mode", body: "Implements the dark theme." },
+        label: { name: "ai-review" },
+      }),
+    );
+    expect(event).toEqual({
+      kind: "pull-request-labeled",
+      owner: "acme",
+      repo: "widgets",
+      prNumber: 99,
+      senderLogin: "alice",
+      senderIsBot: false,
+      title: "Add dark mode",
+      body: "Implements the dark theme.",
+      labelName: "ai-review",
+    });
+  });
+
+  it("ignores a pull_request.labeled event with no label payload", () => {
+    expect(
+      parseGithubEvent(
+        "pull_request",
+        JSON.stringify({ action: "labeled", ...repoSender, pull_request: { number: 99 } }),
+      ),
+    ).toEqual({ kind: "ignored" });
+  });
+
+  it("ignores a pull_request event with a non-labeled action", () => {
+    expect(
+      parseGithubEvent(
+        "pull_request",
+        JSON.stringify({ action: "synchronize", ...repoSender, pull_request: { number: 99 } }),
+      ),
+    ).toEqual({ kind: "ignored" });
+  });
+
   it("ignores an issues.labeled event with no label payload", () => {
     expect(
       parseGithubEvent(

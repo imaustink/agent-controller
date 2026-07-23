@@ -247,6 +247,7 @@ async function main(): Promise<void> {
     orchestratorClient,
     githubReplyClient,
     githubTriggerLabel: config.githubTriggerLabel,
+    githubReviewLabel: config.githubReviewLabel,
     ...(identityLinkLinker ? { identityLinkLinker, identityLinkToken: config.identityLinkToken } : {}),
     ...(sessionPageStore ? { sessionPageStore, publicBaseUrl: config.publicUrl } : {}),
     ...(claudeAuthFlows && claudeTokenStore ? { claudeAuthFlows, claudeAuthStore: claudeTokenStore } : {}),

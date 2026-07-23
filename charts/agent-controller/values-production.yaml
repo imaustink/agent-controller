@@ -213,6 +213,12 @@ integration-gateway:
     # A label, not an assignee — agent-controller[bot] can't be set as an
     # issue assignee (GitHub App bot users generally can't be).
     githubTriggerLabel: "ai-triage"
+    # Triggers an automated PR review when applied to a pull request. A human
+    # applies this label (the gateway drops bot-authored events, so the agent
+    # that opened the PR can't self-trigger). Matches the community-components
+    # github-pr-labeled-review IntegrationRoute (event: pull_request,
+    # action: labeled) -> claude-code-swe-agent.
+    githubReviewLabel: "ai-review"
     # DEV/TEST-GRADE static allowlist mapping GitHub logins to identities --
     # kept only as CompositeGithubIdentityResolver's last-resort fallback now
     # that githubCollaboratorRoles below is the primary, prod-grade path (no
