@@ -101,6 +101,29 @@ opencodeSweAgent:
     providers:
       - github
 
+# claude-code-swe-agent: disabled until the image is built/pushed and
+# claude-code-swe-secrets exists (see values.yaml's comment block for this
+# key for the exact `kubectl create secret` invocation). Flip `enabled` and
+# fill in `image` below to turn it on; the rest mirrors opencodeSweAgent's
+# production config above.
+claudeCodeSweAgent:
+  enabled: false
+  image: registry.kurpuis.com:5000/claude-code-swe-agent:latest
+  serviceAccountName: claude-code-swe-agent
+  secretName: claude-code-swe-secrets
+  secretKey: GITHUB_TOKEN
+  anthropicSecretKey: ANTHROPIC_API_KEY
+  claudeCodeOAuthTokenSecretKey: ""
+  githubAppIdSecretKey: GITHUB_APP_ID
+  githubAppPrivateKeySecretKey: GITHUB_APP_PRIVATE_KEY
+  githubAppInstallationIdSecretKey: GITHUB_APP_INSTALLATION_ID
+  githubAppSlug: k5s-bot
+  model: ""
+  identityLink:
+    enabled: true
+    providers:
+      - github
+
 skills:
   recipeRefining:
     enabled: true

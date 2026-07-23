@@ -22,6 +22,7 @@ import { QdrantAgentStore } from "./agents/qdrant-agent-store.js";
 import { NatsAgentChannel } from "./agents/nats-agent-channel.js";
 import { AgentRunLauncher } from "./k8s/agentrun-launcher.js";
 import { IdentityLinkGatewayClient } from "./identity-link/gateway-client.js";
+import { ClaudeAuthGatewayClient } from "./identity-link/claude-auth-gateway-client.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { QdrantToolStore } from "./vector-store/qdrant-store.js";
 import { OpenAiActionPlanner } from "./agent/action-planner.js";
@@ -433,6 +434,21 @@ async function main(): Promise<void> {
         })
       : undefined;
 
+  // Per-caller Claude Code OAuth credential (docs/adr/0027) -- the `claude`
+  // provider's counterpart to `identityLinkGateway` above, reusing the SAME
+  // gateway host/bearer token (no separate config): whether integration-
+  // gateway's own `/claude-auth/*` routes are actually reachable there is
+  // gated by ITS OWN `claudeAuth.enabled`/`GATEWAY_CLAUDE_AUTH_ENABLED`
+  // config, not this one -- an Agent that never declares
+  // `identityProviders: ["claude"]` never calls this client regardless.
+  const claudeAuthGateway =
+    config.identityLinkGatewayUrl && config.identityLinkGatewayToken
+      ? new ClaudeAuthGatewayClient({
+          baseUrl: config.identityLinkGatewayUrl,
+          token: config.identityLinkGatewayToken,
+        })
+      : undefined;
+
   // Executes LocalTools by RPC to the per-language sidecars over the shared
   // unix-socket dir (ADR 0014). Secret-backed env is resolved here (the
   // orchestrator holds the k8s identity; the sidecars deliberately do not).
@@ -463,6 +479,7 @@ async function main(): Promise<void> {
     bestEffortResponder,
     capabilityNeedChecker,
     ...(identityLinkGateway ? { identityLinkGateway } : {}),
+    ...(claudeAuthGateway ? { claudeAuthGateway } : {}),
     ...(agentDelegation
       ? {
           agentStore: agentDelegation.agentStore,

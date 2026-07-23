@@ -2,6 +2,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { REPLY_MARKER, type GithubReplyClient } from "./github-client.js";
 import type { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
 import { IdentityLinkApi } from "./identity-link/api.js";
+import { ClaudeAuthApi } from "./claude-auth/api.js";
+import type { ClaudeSetupTokenFlows } from "./claude-auth/pty-setup-token.js";
+import type { ClaudeTokenStore } from "./claude-auth/store.js";
 import type { IdentityResolver } from "./identity.js";
 import type { OrchestratorClient, OrchestratorInvokeResult } from "./orchestrator-client.js";
 import { renderSessionPage } from "./session-page.js";
@@ -37,6 +40,17 @@ export interface GatewayServerOptions {
   identityLinkLinker?: GithubDeviceFlowLinker;
   identityLinkToken?: string;
   /**
+   * Per-user Claude Code OAuth `setup-token` flow (docs/adr/0027) -- a
+   * sibling to identity-link above, but PTY-driven rather than an HTTP
+   * device flow. All three must be set together (mirroring
+   * `identityLinkLinker`/`identityLinkToken`'s pairing) to enable
+   * `/claude-auth/*`; reuses `identityLinkToken` as its own bearer secret
+   * rather than minting a new one. Requires `publicBaseUrl` (below) to be
+   * set too, since the page link handed back needs a reachable host.
+   */
+  claudeAuthFlows?: ClaudeSetupTokenFlows;
+  claudeAuthStore?: ClaudeTokenStore;
+  /**
    * Session-page feature (issue #81) -- both fields must be set together to
    * enable it: a "starting work" comment posted right when an
    * `issues.labeled` triage trigger fires (rather than only after the whole
@@ -68,11 +82,16 @@ export function sessionIdFor(owner: string, repo: string, issueNumber: number): 
 export class GatewayServer {
   private server: Server | undefined;
   private readonly identityLinkApi: IdentityLinkApi | undefined;
+  private readonly claudeAuthApi: ClaudeAuthApi | undefined;
 
   constructor(private readonly options: GatewayServerOptions) {
     this.identityLinkApi =
       options.identityLinkLinker && options.identityLinkToken
         ? new IdentityLinkApi(options.identityLinkLinker, options.identityLinkToken)
+        : undefined;
+    this.claudeAuthApi =
+      options.claudeAuthFlows && options.claudeAuthStore && options.identityLinkToken && options.publicBaseUrl
+        ? new ClaudeAuthApi(options.claudeAuthFlows, options.claudeAuthStore, options.identityLinkToken, options.publicBaseUrl)
         : undefined;
   }
 
@@ -132,6 +151,16 @@ export class GatewayServer {
     // GitHub's redirect), which cannot carry our internal bearer token, and
     // `identityLinkApi.handle`'s own bearer check would otherwise 401 it.
     if (this.identityLinkApi && (await this.identityLinkApi.handleCallback(req, res, url))) {
+      return;
+    }
+    // Same reasoning as the identity-link callback above: the claude-auth
+    // page/submit routes are hit directly by the human's browser (capability
+    // via `flowId` in the URL, not a bearer token), so they must be
+    // dispatched before `claudeAuthApi.handle`'s bearer check.
+    if (this.claudeAuthApi && (await this.claudeAuthApi.handlePage(req, res, url))) {
+      return;
+    }
+    if (this.claudeAuthApi && (await this.claudeAuthApi.handle(req, res, url))) {
       return;
     }
     if (this.identityLinkApi && (await this.identityLinkApi.handle(req, res, url))) {
