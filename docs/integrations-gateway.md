@@ -411,6 +411,20 @@ GitHub Issues adapter for the conversational path only:
   `apps/opencode-swe-agent`) is shared by both apps for GitHub App JWT
   signing / installation-token minting (ADR 0018), rather than duplicating
   that security-sensitive code.
+- **Upfront acknowledgment + session-viewer page (ADR 0025).** A triaged
+  issue (the `issues.labeled` trigger above) now gets a short "I'm starting
+  to look into this" comment posted *before* the orchestrator turn runs,
+  instead of staying silent until the one eventual reply comment. When
+  `GATEWAY_SESSION_VIEWER_BASE_URL`/`GATEWAY_SESSION_VIEWER_SECRET` are
+  configured, that comment also links to a session-viewer page
+  (`GET /sessions/:sessionId`, hosted by this gateway) showing the
+  conversation's transcript (`SessionRecord.transcript`, agent-orchestrator)
+  and a form (`POST /sessions/:sessionId/messages`) to send the agent
+  another instruction without waiting for its final reply — reusing the
+  existing `relayAndReply` path unchanged, so it's just another way to talk
+  to the same conversation, not a parallel channel. Off by default; see
+  ADR 0025 for the full design (including the capability-token model a
+  public issue's comment link requires).
 
 **Not implemented:** the FAAS/direct-invoke path (§4), and every other
 channel (Slack, email, job webhooks).

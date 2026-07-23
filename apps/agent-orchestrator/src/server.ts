@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AgentState } from "./agent/graph.js";
-import type { SessionStore } from "./session/types.js";
+import type { SessionStore, SessionTranscriptEntry } from "./session/types.js";
 import { renderPromptTemplate, type CrdIntegrationRouteRegistry } from "./routing/crd-integration-route-registry.js";
 import {
   buildAgentRequest,
@@ -34,6 +34,13 @@ export interface InvocationRecord {
 
 /** How often to emit an SSE keep-alive comment while waiting on a slow graph step (e.g. a tool Job). */
 const HEARTBEAT_MS = 15_000;
+
+/**
+ * Cap on `SessionRecord.transcript` entries -- oldest entries are dropped
+ * first once exceeded. A display aid only (see `SessionTranscriptEntry`'s
+ * doc comment), so an aggressive cap is fine.
+ */
+const MAX_TRANSCRIPT_ENTRIES = 20;
 
 /**
  * Conversation-id header forwarded by Open WebUI on every upstream request
@@ -153,6 +160,17 @@ export interface AgentGraphLike {
 export class InvokeServer {
   private server: Server | undefined;
   private readonly invocations = new Map<string, InvocationRecord>();
+  /**
+   * Session ids with a `/invoke` turn currently in flight -- purely a
+   * transient, in-memory display hint for the session-viewer route
+   * (`GET /sessions/:sessionId`, see integration-gateway's session-viewer
+   * page) so it can show "still working" instead of a stale last-known
+   * state. Never persisted (a restart just loses the "pending" flag, same
+   * "never correctness-critical" discipline as `SessionStore` itself) and
+   * only tracked for the fire-and-forget `/invoke` path (chat-completions
+   * callers hold their own HTTP connection open for the duration already).
+   */
+  private readonly pendingInvokeSessions = new Set<string>();
 
   constructor(
     private readonly graph: AgentGraphLike,
@@ -243,6 +261,14 @@ export class InvokeServer {
       pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number };
       identityLinkPending?: boolean;
     },
+    /**
+     * This turn's request text and (if the turn reached a terminal reply)
+     * response text -- appended to `SessionRecord.transcript` for the
+     * session-viewer route. Absent -> no transcript entries recorded for
+     * this turn (e.g. a turn that errored before producing any result),
+     * same as before this parameter existed.
+     */
+    turn?: { request: string; resultText?: string },
   ): Promise<void> {
     if (!sessionId || !this.sessionStore || !identity) return;
 
@@ -259,13 +285,25 @@ export class InvokeServer {
       if (token) agentContinuations[agentId] = token;
       else delete agentContinuations[agentId];
     }
-    // Omit empty maps rather than persisting `{}` -- keeps a plain session
-    // record (no continuations in play) identical to how it looked before
-    // this feature existed.
+    // Append this turn's request/response onto the rolling transcript
+    // (session-viewer display aid, see `SessionTranscriptEntry`), capped to
+    // MAX_TRANSCRIPT_ENTRIES oldest-first entries.
+    const transcript: SessionTranscriptEntry[] = [...(existing?.transcript ?? [])];
+    if (turn) {
+      transcript.push({ role: "user", text: turn.request, at: Date.now() });
+      if (turn.resultText !== undefined) {
+        transcript.push({ role: "agent", text: turn.resultText, at: Date.now() });
+      }
+      while (transcript.length > MAX_TRANSCRIPT_ENTRIES) transcript.shift();
+    }
+    // Omit empty maps/arrays rather than persisting `{}`/`[]` -- keeps a
+    // plain session record (no continuations/transcript in play) identical
+    // to how it looked before these features existed.
     const base = {
       subject: identity.subject,
       ...(Object.keys(toolContinuations).length > 0 ? { toolContinuations } : {}),
       ...(Object.keys(agentContinuations).length > 0 ? { agentContinuations } : {}),
+      ...(transcript.length > 0 ? { transcript } : {}),
     };
 
     if (outcome.identityLinkPending) {
@@ -296,9 +334,11 @@ export class InvokeServer {
       return;
     }
     // Neither branch fired (e.g. tool ran under a fresh/unrelated skill
-    // that didn't set selectedSkill for some reason) -- still persist any
-    // continuation tokens merged in above rather than silently dropping them.
-    if (outcome.extractedContinuation || outcome.extractedAgentContinuation) {
+    // that didn't set selectedSkill for some reason, or a skill/agent-less
+    // bareAnswer/planAction-respond turn) -- still persist any continuation
+    // tokens merged in above, and/or this turn's transcript entries, rather
+    // than silently dropping them.
+    if (outcome.extractedContinuation || outcome.extractedAgentContinuation || turn) {
       await this.sessionStore.set(sessionId, base);
     }
   }
@@ -332,6 +372,15 @@ export class InvokeServer {
     const match = /^\/invoke\/([^/]+)$/.exec(url.pathname);
     if (req.method === "GET" && match) {
       this.handleGetInvocation(res, match[1] as string);
+      return;
+    }
+
+    // sessionId (e.g. "github:acme/widgets#7") may itself contain "/" --
+    // callers must percent-encode it into a single path segment (decoded
+    // below), same discipline the session-viewer client is expected to use.
+    const sessionMatch = /^\/sessions\/([^/]+)$/.exec(url.pathname);
+    if (req.method === "GET" && sessionMatch) {
+      await this.handleGetSession(res, decodeURIComponent(sessionMatch[1] as string));
       return;
     }
 
@@ -414,6 +463,10 @@ export class InvokeServer {
     const authToken = bearerToken(req.headers.authorization);
     const id = randomUUID();
     this.invocations.set(id, { id, status: "pending" });
+    // Marks the session as "still working" for the session-viewer route
+    // (GET /sessions/:sessionId) for the duration of this turn -- cleared in
+    // both the success and failure branches below.
+    if (sessionId) this.pendingInvokeSessions.add(sessionId);
 
     // Fire-and-forget: the HTTP response returns immediately; the graph run
     // (which blocks on the launched tool Job's callback) updates the record
@@ -431,16 +484,22 @@ export class InvokeServer {
       this.graph
         .invoke(graphInput)
         .then(async (state) => {
-          await this.persistSession(sessionId, state.identity, {
-            selectedSkill: state.selectedSkill,
-            selectedAgent: state.selectedAgent,
-            agentRunId: state.agentRunId,
-            agentAwaitingReply: state.agentAwaitingReply,
-            extractedContinuation: state.extractedContinuation,
-            extractedAgentContinuation: state.extractedAgentContinuation,
-            pendingIdentityLink: state.pendingIdentityLink,
-            identityLinkPending: state.identityLinkPending,
-          });
+          await this.persistSession(
+            sessionId,
+            state.identity,
+            {
+              selectedSkill: state.selectedSkill,
+              selectedAgent: state.selectedAgent,
+              agentRunId: state.agentRunId,
+              agentAwaitingReply: state.agentAwaitingReply,
+              extractedContinuation: state.extractedContinuation,
+              extractedAgentContinuation: state.extractedAgentContinuation,
+              pendingIdentityLink: state.pendingIdentityLink,
+              identityLinkPending: state.identityLinkPending,
+            },
+            { request, resultText: state.error ? `❌ ${state.error}` : renderResult(state.result) },
+          );
+          if (sessionId) this.pendingInvokeSessions.delete(sessionId);
           this.invocations.set(id, {
             id,
             status: state.error ? "failed" : "succeeded",
@@ -449,6 +508,7 @@ export class InvokeServer {
           });
         })
         .catch((err: unknown) => {
+          if (sessionId) this.pendingInvokeSessions.delete(sessionId);
           this.invocations.set(id, {
             id,
             status: "failed",
@@ -469,6 +529,41 @@ export class InvokeServer {
       return;
     }
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(record));
+  }
+
+  /**
+   * Read-only session-viewer data source: not meant to be internet-facing
+   * itself (this port is typically only reachable from `integration-gateway`
+   * and Open WebUI in-cluster) -- the public-facing viewer page lives in
+   * whichever adapter is actually internet-reachable (integration-gateway's
+   * `GET /sessions/:sessionId`), which proxies this endpoint using the same
+   * service-to-service bearer token it already authenticates its `/invoke`
+   * calls with. 404s when no session store is configured (feature entirely
+   * off) or when the session id is unknown and no turn is currently pending
+   * for it.
+   */
+  private async handleGetSession(res: ServerResponse, sessionId: string): Promise<void> {
+    if (!this.sessionStore) {
+      res.writeHead(404).end();
+      return;
+    }
+    const record = await this.sessionStore.get(sessionId);
+    const pending = this.pendingInvokeSessions.has(sessionId);
+    if (!record && !pending) {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" }).end(
+      JSON.stringify({
+        sessionId,
+        pending,
+        activeSkillId: record?.activeSkillId,
+        activeAgentId: record?.activeAgentId,
+        activeAgentRunId: record?.activeAgentRunId,
+        updatedAt: record?.updatedAt,
+        transcript: record?.transcript ?? [],
+      }),
+    );
   }
 
   private async handleChatCompletions(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -566,18 +661,23 @@ export class InvokeServer {
       res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(openAiError(state.error, code)));
       return;
     }
-    await this.persistSession(sessionId, state.identity, {
-      selectedSkill: state.selectedSkill,
-      selectedAgent: state.selectedAgent,
-      agentRunId: state.agentRunId,
-      agentAwaitingReply: state.agentAwaitingReply,
-      extractedContinuation: state.extractedContinuation,
-      extractedAgentContinuation: state.extractedAgentContinuation,
-      pendingIdentityLink: state.pendingIdentityLink,
-      identityLinkPending: state.identityLinkPending,
-    });
-    const id = chatCompletionId();
     const content = renderResult(state.result);
+    await this.persistSession(
+      sessionId,
+      state.identity,
+      {
+        selectedSkill: state.selectedSkill,
+        selectedAgent: state.selectedAgent,
+        agentRunId: state.agentRunId,
+        agentAwaitingReply: state.agentAwaitingReply,
+        extractedContinuation: state.extractedContinuation,
+        extractedAgentContinuation: state.extractedAgentContinuation,
+        pendingIdentityLink: state.pendingIdentityLink,
+        identityLinkPending: state.identityLinkPending,
+      },
+      { request, resultText: content },
+    );
+    const id = chatCompletionId();
     res.writeHead(200, { "content-type": "application/json" }).end(
       JSON.stringify(chatCompletionResponse(id, model, content, "stop")),
     );
@@ -661,16 +761,21 @@ export class InvokeServer {
         | undefined;
       let identityLinkPending: boolean | undefined;
       const persist = (): Promise<void> =>
-        this.persistSession(sessionId, identity, {
-          selectedSkill,
-          selectedAgent,
-          agentRunId,
-          agentAwaitingReply,
-          extractedContinuation,
-          extractedAgentContinuation,
-          pendingIdentityLink,
-          identityLinkPending,
-        });
+        this.persistSession(
+          sessionId,
+          identity,
+          {
+            selectedSkill,
+            selectedAgent,
+            agentRunId,
+            agentAwaitingReply,
+            extractedContinuation,
+            extractedAgentContinuation,
+            pendingIdentityLink,
+            identityLinkPending,
+          },
+          { request, resultText: renderResult(result) },
+        );
       for await (const item of withHeartbeat(source, HEARTBEAT_MS)) {
         if (item.type === "heartbeat") {
           writeSseComment(res, "keep-alive");

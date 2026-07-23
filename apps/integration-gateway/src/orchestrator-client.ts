@@ -50,6 +50,24 @@ interface InvokePollBody {
   error?: string;
 }
 
+/** One entry in `SessionView.transcript` -- mirrors agent-orchestrator's `SessionTranscriptEntry`. */
+export interface SessionTranscriptEntry {
+  role: "user" | "agent";
+  text: string;
+  at: number;
+}
+
+/** Body shape of agent-orchestrator's `GET /sessions/:sessionId` (see its server.ts). */
+export interface SessionView {
+  sessionId: string;
+  pending: boolean;
+  activeSkillId?: string;
+  activeAgentId?: string;
+  activeAgentRunId?: string;
+  updatedAt?: number;
+  transcript: SessionTranscriptEntry[];
+}
+
 export class OrchestratorClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly fetchImpl: typeof fetch;
@@ -121,5 +139,26 @@ export class OrchestratorClient {
       // status === "pending" -- keep polling.
     }
     return { status: "timed_out", error: `no terminal result within ${this.options.pollTimeoutMs}ms` };
+  }
+
+  /**
+   * Service-to-service read of a session's current state/transcript, for the
+   * session-viewer page (`GET /sessions/:sessionId` on this gateway, see
+   * server.ts). Uses the same bearer token this client already
+   * authenticates its `/invoke` calls with -- agent-orchestrator's
+   * `GET /sessions/:sessionId` is not itself internet-facing, only reachable
+   * from trusted in-cluster callers like this one. Returns `undefined` on a
+   * 404 (unknown session, or the orchestrator has no session store
+   * configured) or any other non-2xx response, rather than throwing --
+   * callers treat "no session data available" as a normal, displayable
+   * state, not an error.
+   */
+  async getSession(sessionId: string): Promise<SessionView | undefined> {
+    const res = await this.fetchImpl(
+      `${this.options.baseUrl.replace(/\/$/, "")}/sessions/${encodeURIComponent(sessionId)}`,
+      { headers: { authorization: `Bearer ${await this.resolveToken()}` } },
+    );
+    if (!res.ok) return undefined;
+    return (await res.json()) as SessionView;
   }
 }

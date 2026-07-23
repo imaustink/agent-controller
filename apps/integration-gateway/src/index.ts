@@ -95,6 +95,23 @@ async function main(): Promise<void> {
   }
   const identityLinkEnabled = identityLinkFieldsSet.length === identityLinkFieldEntries.length;
 
+  // Session-viewer page (see session-viewer.ts) is off by default -- same
+  // partial-config-fails-closed discipline as identity-link/orchestrator
+  // OIDC above: a typo'd Secret/values file leaving only one of the two
+  // fields set is far more likely than an intentional partial config.
+  const sessionViewerFields = {
+    GATEWAY_SESSION_VIEWER_BASE_URL: config.sessionViewerBaseUrl,
+    GATEWAY_SESSION_VIEWER_SECRET: config.sessionViewerSecret,
+  };
+  const sessionViewerFieldEntries = Object.entries(sessionViewerFields);
+  const sessionViewerFieldsSet = sessionViewerFieldEntries.filter(([, value]) => Boolean(value));
+  if (sessionViewerFieldsSet.length > 0 && sessionViewerFieldsSet.length < sessionViewerFieldEntries.length) {
+    const missing = sessionViewerFieldEntries.filter(([, value]) => !value).map(([name]) => name);
+    console.error(`Partial session-viewer configuration -- missing: ${missing.join(", ")}`);
+    process.exit(EXIT_STARTUP_FAILURE);
+  }
+  const sessionViewerEnabled = sessionViewerFieldsSet.length === sessionViewerFieldEntries.length;
+
   const identities = loadGithubIdentitiesFromEnv(config.githubIdentities);
   const staticIdentityResolver = new GithubIdentityResolver(identities, config.githubBotLogin);
 
@@ -203,6 +220,9 @@ async function main(): Promise<void> {
     githubReplyClient,
     githubTriggerLabel: config.githubTriggerLabel,
     ...(identityLinkLinker ? { identityLinkLinker, identityLinkToken: config.identityLinkToken } : {}),
+    ...(sessionViewerEnabled
+      ? { sessionViewer: { baseUrl: config.sessionViewerBaseUrl!, secret: config.sessionViewerSecret! } }
+      : {}),
   });
 
   await server.listen(config.httpPort);

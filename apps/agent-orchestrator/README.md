@@ -162,6 +162,24 @@ See [ADR 0006](../../docs/adr/0006-async-http-invoke-interface.md) for why
 this is async-poll rather than a blocking request/response, and why it runs
 on a separate port from the Job-callback receiver.
 
+### Reading back a session (ADR 0025)
+
+When a `session_id` is used and a session store is configured,
+`GET /sessions/:sessionId` returns that conversation's current state and a
+small rolling transcript:
+
+```bash
+curl -s http://localhost:8081/sessions/github%3Aacme%2Fwidgets%237
+# => 200 {"sessionId":"github:acme/widgets#7","pending":false,"transcript":[...],...}
+```
+
+Not internet-facing by itself — this port is typically only reachable from
+`integration-gateway` and Open WebUI in-cluster. `integration-gateway`'s own
+session-viewer page (see its README) proxies this endpoint to render an
+externally-shareable transcript view. 404s when no session store is
+configured, or the session id is unknown and no turn is currently pending
+for it.
+
 ### OpenAI-compatible chat interface
 
 The same agent is also reachable as if it were an OpenAI chat model (ADR 0007)

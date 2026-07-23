@@ -64,6 +64,17 @@ export interface AppConfig {
   identityLinkStateSecret: string;
   /** Must exactly match the GitHub App's registered OAuth callback URL (not a secret); only required when the authcode identity-link flow is actually used. */
   githubOauthRedirectUri: string;
+  /**
+   * This gateway's own public base URL (e.g. `https://gateway.example.com`),
+   * used to build the session-viewer link posted in the "starting work"
+   * comment (see session-viewer.ts). Set together with
+   * `sessionViewerSecret` to enable `GET/POST /sessions/*`; either unset ->
+   * the feature is off (no link, both routes 404), same partial-config-
+   * fails-closed discipline as identity-link's fields.
+   */
+  sessionViewerBaseUrl: string | undefined;
+  /** HMAC secret signing/verifying the session-viewer's per-session capability token -- see `sessionViewerBaseUrl`. */
+  sessionViewerSecret: string | undefined;
 }
 
 function num(raw: string | undefined, fallback: number): number {
@@ -107,6 +118,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     githubAppClientSecret: env.GITHUB_APP_CLIENT_SECRET ?? "",
     identityLinkStateSecret: env.IDENTITY_LINK_STATE_SECRET ?? "",
     githubOauthRedirectUri: env.GITHUB_OAUTH_REDIRECT_URI ?? "",
+    sessionViewerBaseUrl: env.GATEWAY_SESSION_VIEWER_BASE_URL,
+    sessionViewerSecret: env.GATEWAY_SESSION_VIEWER_SECRET,
   };
 }
 

@@ -25,6 +25,12 @@ intentionally out of scope here.
 5. When the reporter says "start work" (or anything else), that's just more
    turn text — opencode-swe-agent decides internally when to stop asking
    and start coding, and opens the PR itself.
+6. For the deterministic triage trigger (`GATEWAY_GITHUB_TRIGGER_LABEL`,
+   ADR 0024), the gateway posts a short "I'm starting to look into this"
+   acknowledgment comment *before* step 2's orchestrator call even runs, so
+   the requester isn't left staring at silence while the (possibly
+   long-running) agent Job works. See "Triage acknowledgment +
+   session-viewer page" below (ADR 0025).
 
 ## Configuration
 
@@ -82,6 +88,28 @@ See `src/config.ts` for the full list. Notable ones:
   the "gateway registers its own callback URL" open question in
   `docs/integrations-gateway.md` — push-based delivery is a documented
   follow-up, not built in this phase.
+
+## Triage acknowledgment + session-viewer page
+
+(ADR 0025.) Independent config, off by default:
+
+- `GATEWAY_SESSION_VIEWER_BASE_URL` / `GATEWAY_SESSION_VIEWER_SECRET` — set
+  both together to enable a link, in the triage acknowledgment comment
+  (see "Flow" step 6 above), to a session-viewer page hosted by this same
+  gateway: `GET /sessions/:sessionId` renders the conversation's transcript
+  (proxied from a new read-only `GET /sessions/:sessionId` on
+  `agent-orchestrator`'s invoke API) and a form; `POST
+  /sessions/:sessionId/messages` sends whatever was typed there through the
+  same `relayAndReply` path a new GitHub issue comment would use — it's
+  another way to talk to the same conversation, not a parallel one.
+  `GATEWAY_SESSION_VIEWER_BASE_URL` must be this gateway's own
+  externally-reachable base URL (e.g. `https://gateway.example.com`);
+  `GATEWAY_SESSION_VIEWER_SECRET` is any random string used to HMAC-sign
+  each session's unguessable capability token (see `src/session-viewer.ts`'s
+  doc comment for why a signed token rather than a stored one — the link
+  can end up on a public GitHub issue). Leaving either unset keeps the
+  acknowledgment comment (Flow step 6) without a link, and both routes
+  404, same as before this feature existed.
 
 ## Identity-link credential broker
 

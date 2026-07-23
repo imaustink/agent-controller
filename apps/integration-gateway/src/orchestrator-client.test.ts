@@ -156,3 +156,43 @@ describe("OrchestratorClient.invoke", () => {
     vi.restoreAllMocks();
   });
 });
+
+describe("OrchestratorClient.getSession", () => {
+  it("fetches and returns the session view, authenticated with the same bearer token", async () => {
+    const view = {
+      sessionId: "github:acme/widgets#7",
+      pending: false,
+      transcript: [{ role: "user", text: "hi", at: 1 }],
+    };
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => view });
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+
+    const result = await client.getSession("github:acme/widgets#7");
+    expect(result).toEqual(view);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://orchestrator:8081/sessions/github%3Aacme%2Fwidgets%237",
+      expect.objectContaining({ headers: { authorization: "Bearer tok" } }),
+    );
+  });
+
+  it("returns undefined on a non-2xx response instead of throwing", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 404 });
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+
+    expect(await client.getSession("unknown-session")).toBeUndefined();
+  });
+});

@@ -289,6 +289,23 @@ integration-gateway:
   secrets:
     existingSecret: integration-gateway-secrets
 
+  # Session-viewer page (an interactive page showing an agent's session
+  # transcript, with a form to send it additional instructions) -- linked
+  # from the "starting work" comment the gateway now leaves on a triaged
+  # GitHub issue before delegating to the agent. Left OFF here on purpose:
+  # flipping this to true requires adding GATEWAY_SESSION_VIEWER_SECRET to
+  # integration-gateway-secrets FIRST (any random string --
+  #   kubectl create secret generic integration-gateway-secrets -n controller-agent \
+  #     --from-literal=GATEWAY_SESSION_VIEWER_SECRET="$(openssl rand -hex 32)" \
+  #     --dry-run=client -o yaml | kubectl apply -f -
+  # ), same "create the secret before flipping enabled" discipline as
+  # identityLink below -- deploy.yml auto-applies on every push to main, and
+  # integration-gateway will otherwise fail to start
+  # (CreateContainerConfigError, missing Secret key).
+  sessionViewer:
+    enabled: false
+    baseUrl: "https://gateway.kurpuis.com"
+
   # Per-user GitHub identity linking (docs/adr/0022) -- see the secrets
   # comment above for the required Secret keys, and the setup checklist in
   # this PR's description for the GitHub App-side steps (Device Flow

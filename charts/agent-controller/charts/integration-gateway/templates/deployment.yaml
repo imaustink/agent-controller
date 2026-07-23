@@ -66,6 +66,10 @@ spec:
               value: {{ .Values.config.pollIntervalMs | quote }}
             - name: GATEWAY_POLL_TIMEOUT_MS
               value: {{ .Values.config.pollTimeoutMs | quote }}
+            {{- if .Values.sessionViewer.enabled }}
+            - name: GATEWAY_SESSION_VIEWER_BASE_URL
+              value: {{ .Values.sessionViewer.baseUrl | quote }}
+            {{- end }}
             {{- if .Values.orchestratorOidc.enabled }}
             - name: GATEWAY_ORCHESTRATOR_OIDC_TOKEN_ENDPOINT
               value: {{ .Values.orchestratorOidc.tokenEndpoint | quote }}
@@ -149,6 +153,13 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
                   key: {{ .Values.secrets.identityLinkStateSecretKey }}
+            {{- end }}
+            {{- if .Values.sessionViewer.enabled }}
+            - name: GATEWAY_SESSION_VIEWER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.sessionViewerSecretKey }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

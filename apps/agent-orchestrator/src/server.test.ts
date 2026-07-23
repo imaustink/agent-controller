@@ -992,3 +992,115 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     await server.close();
   });
 });
+
+describe("InvokeServer session-viewer route (GET /sessions/:sessionId)", () => {
+  function sessionStore() {
+    return new InMemorySessionStore({ ttlMs: 60_000, maxEntries: 10 });
+  }
+
+  it("404s when no session store is configured", async () => {
+    const graph: AgentGraphLike = { invoke: vi.fn(), stream: vi.fn() };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/sessions/${encodeURIComponent("github:acme/widgets#7")}`);
+    expect(res.status).toBe(404);
+
+    await server.close();
+  });
+
+  it("404s for an unknown session id that isn't currently pending", async () => {
+    const graph: AgentGraphLike = { invoke: vi.fn(), stream: vi.fn() };
+    const server = new InvokeServer(graph, sessionStore());
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/sessions/${encodeURIComponent("github:acme/widgets#7")}`);
+    expect(res.status).toBe(404);
+
+    await server.close();
+  });
+
+  it("reports pending=true while a fire-and-forget /invoke turn is still in flight, then returns the persisted transcript once it settles", async () => {
+    let resolveGraph!: (state: AgentState) => void;
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockReturnValue(new Promise<AgentState>((resolve) => (resolveGraph = resolve))),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph, sessionStore());
+    const port = await listenOn(server);
+    const sessionId = "github:acme/widgets#7";
+    const encoded = encodeURIComponent(sessionId);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "Triage this issue", session_id: sessionId }),
+    });
+
+    const pendingRes = await fetch(`http://127.0.0.1:${port}/sessions/${encoded}`);
+    expect(pendingRes.status).toBe(200);
+    expect((await pendingRes.json()) as { pending: boolean; sessionId: string }).toMatchObject({
+      pending: true,
+      sessionId,
+    });
+
+    resolveGraph({
+      request: "x",
+      authToken: "tok-1",
+      skillCandidates: [],
+      identity: { subject: "gh:alice", roles: ["reporter"] },
+      result: "Opened PR #12",
+    } as AgentState);
+    await new Promise((r) => setTimeout(r, 10));
+
+    const settledRes = await fetch(`http://127.0.0.1:${port}/sessions/${encoded}`);
+    expect(settledRes.status).toBe(200);
+    const body = (await settledRes.json()) as {
+      pending: boolean;
+      transcript: { role: string; text: string }[];
+    };
+    expect(body.pending).toBe(false);
+    expect(body.transcript).toEqual([
+      { role: "user", text: "Triage this issue", at: expect.any(Number) },
+      { role: "agent", text: "Opened PR #12", at: expect.any(Number) },
+    ]);
+
+    await server.close();
+  });
+
+  it("caps the transcript to the most recent entries across many turns", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockImplementation((input: { request: string }) =>
+        Promise.resolve({
+          request: input.request,
+          authToken: "tok-1",
+          skillCandidates: [],
+          identity: { subject: "gh:alice", roles: ["reporter"] },
+          result: `reply to: ${input.request}`,
+        } as unknown as AgentState),
+      ),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph, sessionStore());
+    const port = await listenOn(server);
+    const sessionId = "github:acme/widgets#9";
+    const encoded = encodeURIComponent(sessionId);
+
+    for (let i = 0; i < 15; i++) {
+      await fetch(`http://127.0.0.1:${port}/invoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+        body: JSON.stringify({ request: `turn ${i}`, session_id: sessionId }),
+      });
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    const res = await fetch(`http://127.0.0.1:${port}/sessions/${encoded}`);
+    const body = (await res.json()) as { transcript: { role: string; text: string }[] };
+    expect(body.transcript.length).toBe(20); // MAX_TRANSCRIPT_ENTRIES
+    expect(body.transcript[0]).toMatchObject({ role: "user", text: "turn 5" });
+    expect(body.transcript.at(-1)).toMatchObject({ role: "agent", text: "reply to: turn 14" });
+
+    await server.close();
+  });
+});

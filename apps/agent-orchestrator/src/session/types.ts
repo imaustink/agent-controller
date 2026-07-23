@@ -65,8 +65,27 @@ export interface SessionRecord {
    * can poll it without the caller having to repeat their request.
    */
   pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number };
+  /**
+   * Recent request/response history for this conversation, oldest first,
+   * capped to a small rolling window (`MAX_TRANSCRIPT_ENTRIES` in
+   * server.ts) -- purely a display aid for the session-viewer surface
+   * (`GET /sessions/:sessionId`, see integration-gateway's session-viewer
+   * page) so a human can see what an agent has been doing/saying without
+   * grepping Job logs. Best-effort only, same as every other field here:
+   * losing it (restart, TTL, eviction) never affects correctness, only what
+   * the viewer can show.
+   */
+  transcript?: SessionTranscriptEntry[];
   /** Last touch time (ms since epoch); used for sliding TTL expiry. */
   updatedAt: number;
+}
+
+/** One entry in `SessionRecord.transcript` -- see its doc comment. */
+export interface SessionTranscriptEntry {
+  role: "user" | "agent";
+  text: string;
+  /** Wall-clock time (ms since epoch) the entry was recorded. */
+  at: number;
 }
 
 /**

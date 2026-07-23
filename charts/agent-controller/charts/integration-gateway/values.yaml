@@ -68,6 +68,22 @@ config:
   pollIntervalMs: 3000
   pollTimeoutMs: 900000
 
+# Session-viewer page (an interactive page showing an agent's session
+# transcript, with a form to send it additional instructions): posted as a
+# link in the "starting work" comment this gateway now leaves on a triaged
+# GitHub issue before delegating to the agent. Off by default: unset ->
+# the starting-work comment is still posted, just without the link, and
+# GET/POST /sessions/* both 404 -- existing deployments are unaffected
+# either way.
+sessionViewer:
+  enabled: false
+  # This gateway's own public base URL, e.g. "https://gateway.example.com"
+  # -- MUST match how this Service is actually reachable externally (same
+  # host as `ingress.host` below, scheme included). The gateway has no
+  # reliable way to know its own externally-visible URL, so this must be
+  # set explicitly.
+  baseUrl: ""
+
 # Automatic OIDC client_credentials token fetch/refresh for this gateway's
 # own /invoke calls to agent-orchestrator -- an opt-in alternative to
 # config's static, manually-rotated orchestratorToken. Requires a real
@@ -156,6 +172,12 @@ identityLink:
 # `existingSecret` (see charts/agent-orchestrator's values.yaml for the same
 # convention/rationale). `secrets.create: true` is for local/dev convenience
 # only.
+#
+# When sessionViewer.enabled=true, also required:
+# GATEWAY_SESSION_VIEWER_SECRET (an HMAC key signing/verifying each
+# session's viewer-page capability token, see session-viewer.ts -- any
+# random string; rotating it invalidates every previously-posted viewer
+# link, same tradeoff as rotating IDENTITY_LINK_STATE_SECRET).
 secrets:
   create: false
   existingSecret: ""
@@ -170,6 +192,7 @@ secrets:
   identityLinkTokenKey: GATEWAY_IDENTITY_LINK_TOKEN
   githubAppClientSecretKey: GITHUB_APP_CLIENT_SECRET
   identityLinkStateSecretKey: IDENTITY_LINK_STATE_SECRET
+  sessionViewerSecretKey: GATEWAY_SESSION_VIEWER_SECRET
   # Only read when secrets.create=true.
   githubWebhookSecret: ""
   orchestratorToken: ""
@@ -182,6 +205,7 @@ secrets:
   identityLinkToken: ""
   githubAppClientSecret: ""
   identityLinkStateSecret: ""
+  sessionViewerSecret: ""
 
 service:
   type: ClusterIP
