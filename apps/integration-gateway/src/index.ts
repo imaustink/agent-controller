@@ -1,4 +1,6 @@
 import { config } from "./config.js";
+import { ClaudeSetupTokenFlows } from "./claude-auth/pty-setup-token.js";
+import { RedisClaudeTokenStore } from "./claude-auth/store.js";
 import { GithubReplyClient } from "./github-client.js";
 import { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
 import { decodeEncryptionKey, RedisIdentityLinkStore } from "./identity-link/store.js";
@@ -213,6 +215,32 @@ async function main(): Promise<void> {
     );
   }
 
+  // Claude-auth (docs/adr/0027) is opt-in and layered on top of
+  // identity-link's Redis/encryption-key/bearer-token config and
+  // session-page's publicUrl -- fail closed (not silently disabled) if
+  // enabled without those, since a misconfigured deployment here means every
+  // Claude-Code-swe-agent delegation that needs a per-user token silently
+  // has nowhere to send the user, not a graceful degradation.
+  if (config.claudeAuthEnabled && !(identityLinkEnabled && sessionPageEnabled)) {
+    console.error(
+      "GATEWAY_CLAUDE_AUTH_ENABLED=true requires identity-link (GATEWAY_IDENTITY_LINK_TOKEN/GITHUB_APP_CLIENT_ID/IDENTITY_LINK_ENCRYPTION_KEY/AGENT_REDIS_URL) and GATEWAY_PUBLIC_URL to also be configured",
+    );
+    process.exit(EXIT_STARTUP_FAILURE);
+  }
+  let claudeTokenStore: RedisClaudeTokenStore | undefined;
+  let claudeAuthFlows: ClaudeSetupTokenFlows | undefined;
+  if (config.claudeAuthEnabled) {
+    const redisUrl = config.redisUrl!;
+    claudeTokenStore = new RedisClaudeTokenStore(redisUrl, decodeEncryptionKey(config.identityLinkEncryptionKey));
+    await retryWithBackoff("redis startup check (claude-auth store)", () => claudeTokenStore!.connect(), {
+      attempts: 12,
+      initialDelayMs: 1_000,
+      maxDelayMs: 15_000,
+    });
+    claudeAuthFlows = new ClaudeSetupTokenFlows();
+    console.error("Claude Code per-user OAuth linking enabled");
+  }
+
   const server = new GatewayServer({
     githubWebhookSecret: config.githubWebhookSecret,
     identityResolver,
@@ -221,6 +249,7 @@ async function main(): Promise<void> {
     githubTriggerLabel: config.githubTriggerLabel,
     ...(identityLinkLinker ? { identityLinkLinker, identityLinkToken: config.identityLinkToken } : {}),
     ...(sessionPageStore ? { sessionPageStore, publicBaseUrl: config.publicUrl } : {}),
+    ...(claudeAuthFlows && claudeTokenStore ? { claudeAuthFlows, claudeAuthStore: claudeTokenStore } : {}),
   });
 
   await server.listen(config.httpPort);
@@ -233,6 +262,7 @@ async function main(): Promise<void> {
     console.error(`Received ${signal}; shutting down integration-gateway...`);
     await server.close();
     await identityLinkStore?.close();
+    await claudeTokenStore?.close();
     if (sessionPageStore instanceof RedisSessionPageStore) await sessionPageStore.close();
     process.exit(0);
   };

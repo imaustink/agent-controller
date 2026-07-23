@@ -27,18 +27,33 @@ export interface IdentityLinkAuthCodeStart {
   expiresInSeconds: number;
 }
 
-/** Discriminated by `flow`, matching the gateway's `/identity-link/:provider/start` response shape. */
-export type IdentityLinkStartResult = IdentityLinkStart | IdentityLinkAuthCodeStart;
+/**
+ * The `claude` provider's flow (docs/adr/0027) -- a PTY-driven `setup-token`
+ * session, not an HTTP device/authcode exchange, so there's no device code to
+ * poll and no separate browser-redirect callback: the caller (delegateToAgent)
+ * just shows `pageUrl` and resolves via `getToken`/`waitForCompletion` once
+ * the user has pasted the code into that page, same as the authcode flow.
+ */
+export interface IdentityLinkPageStart {
+  flow: "page";
+  pageUrl: string;
+  expiresInSeconds: number;
+}
+
+/** Discriminated by `flow`, matching the gateway's `/identity-link/:provider/start` (or claude-auth's equivalent) response shape. */
+export type IdentityLinkStartResult = IdentityLinkStart | IdentityLinkAuthCodeStart | IdentityLinkPageStart;
 
 export type IdentityLinkPollStatus = "pending" | "complete" | "expired" | "denied";
 
 export interface IdentityLinkToken {
   token: string;
-  githubLogin: string;
+  /** GitHub-specific; absent for other providers (e.g. `claude`, docs/adr/0027) which have no equivalent concept. Never read outside display/logging. */
+  githubLogin?: string;
 }
 
 export interface IdentityLinkPort {
   start(provider: string, subject: string, flow: "device" | "authcode"): Promise<IdentityLinkStartResult>;
+  /** Only ever called for a `"device"`-flow pending link (see graph.ts's `checkPendingIdentityLink`) -- a provider whose `start` never returns `flow: "device"` need not meaningfully implement this. */
   poll(provider: string, subject: string, deviceCode: string): Promise<IdentityLinkPollStatus>;
   /** Returns `undefined` when nothing is linked yet for this (provider, subject) -- a 404, not an error. */
   getToken(provider: string, subject: string): Promise<IdentityLinkToken | undefined>;
@@ -52,6 +67,16 @@ export interface IdentityLinkPort {
    * implement it (e.g. existing test doubles).
    */
   waitForCompletion?(provider: string, subject: string, timeoutMs: number): Promise<IdentityLinkToken | undefined>;
+  /**
+   * Invalidates a subject's stored link (docs/adr/0027's re-auth path):
+   * called when a delegated agent run reports its credential as
+   * expired/invalid mid-run, so the NEXT delegation attempt's `getToken`
+   * finds nothing and starts a fresh link instead of repeating a bad token
+   * forever. Optional -- GitHub's own token refresh (`getValidToken` on the
+   * gateway side) already handles GitHub's version of this, so
+   * `IdentityLinkGatewayClient` doesn't need to implement it.
+   */
+  invalidate?(provider: string, subject: string): Promise<void>;
 }
 
 export interface IdentityLinkGatewayClientOptions {

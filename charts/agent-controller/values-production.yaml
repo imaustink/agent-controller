@@ -315,6 +315,27 @@ integration-gateway:
     # GOOGLE_REDIRECT_URI already follows elsewhere in this file.
     githubOauthRedirectUri: "https://gateway.kurpuis.com/identity-link/github/callback"
 
+  # Session page (issue #81/ADR 0025/0026) -- was never turned on in
+  # production before now; required as a prerequisite for claudeAuth below
+  # (the claude-auth link page needs a reachable public host the same way
+  # the session page itself does), and as a side effect also turns on the
+  # "starting work" comment + live turn-history page for the ai-triage
+  # trigger generally. redisUrl is left unset -- it falls back to
+  # identityLink's own Redis instance (see that field's comment in
+  # charts/agent-controller/charts/integration-gateway/values.yaml).
+  sessionPage:
+    publicBaseUrl: "https://gateway.kurpuis.com"
+
+  # Per-user Claude Code OAuth linking (docs/adr/0027) -- the `claude`
+  # provider's counterpart to identityLink above, for claude-code-swe-agent
+  # (charts/community-components/values-production.yaml). Reuses
+  # identityLink's Redis/encryption-key/bearer-token config and requires
+  # sessionPage.publicBaseUrl above; requires this integration-gateway image
+  # to actually have the `claude` CLI + node-pty compiled in (both stages of
+  # apps/integration-gateway/Dockerfile changed for this).
+  claudeAuth:
+    enabled: true
+
   # GitHub must reach this Service directly (unlike the orchestrator's
   # in-cluster-only callback port).
   ingress:

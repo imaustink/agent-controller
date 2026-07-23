@@ -1,3 +1,6 @@
+{{- if and .Values.claudeAuth.enabled (not (and .Values.identityLink.enabled .Values.sessionPage.publicBaseUrl)) }}
+{{- fail "claudeAuth.enabled requires identityLink.enabled and sessionPage.publicBaseUrl to also be set (docs/adr/0027)" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -158,9 +161,23 @@ spec:
                   name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
                   key: {{ .Values.secrets.identityLinkStateSecretKey }}
             {{- end }}
+            {{- if .Values.claudeAuth.enabled }}
+            - name: GATEWAY_CLAUDE_AUTH_ENABLED
+              value: "true"
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- if .Values.claudeAuth.enabled }}
+          volumeMounts:
+            # `claude setup-token` (docs/adr/0027) needs a writable HOME for
+            # its own config/session state -- this container otherwise holds
+            # nothing on disk, so this mount is only added when the feature
+            # that needs it is actually enabled (the readOnlyRootFilesystem
+            # securityContext above would otherwise make even /tmp read-only).
+            - name: tmp
+              mountPath: /tmp
+          {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -186,4 +203,9 @@ spec:
       {{- with .Values.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.claudeAuth.enabled }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
       {{- end }}

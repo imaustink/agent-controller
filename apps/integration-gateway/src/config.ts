@@ -79,6 +79,17 @@ export interface AppConfig {
    * -- fine for single-replica/dev, but lost on restart -- when neither is set.
    */
   sessionPageRedisUrl: string | undefined;
+  /**
+   * Enables the per-user Claude Code OAuth `setup-token` flow (docs/adr/0027)
+   * -- opt-in via its own flag (unlike identity-link/session-page, which turn
+   * on automatically once their required fields are set) because it also
+   * requires the `claude` CLI binary to actually be present in this
+   * container image, a real build-time dependency, not just config. Reuses
+   * identity-link's Redis/encryption-key/bearer-token config and the
+   * session-page `publicUrl` -- fails startup if enabled without all of
+   * those also being configured (see index.ts).
+   */
+  claudeAuthEnabled: boolean;
 }
 
 function num(raw: string | undefined, fallback: number): number {
@@ -124,6 +135,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     githubOauthRedirectUri: env.GITHUB_OAUTH_REDIRECT_URI ?? "",
     publicUrl: env.GATEWAY_PUBLIC_URL ?? "",
     sessionPageRedisUrl: env.SESSION_PAGE_REDIS_URL,
+    claudeAuthEnabled: env.GATEWAY_CLAUDE_AUTH_ENABLED === "true",
   };
 }
 

@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "@controller-agent/github-app-auth": "0.1.0",
-    "ioredis": "^5.11.1"
+    "ioredis": "^5.11.1",
+    "node-pty": "^1.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.16.5",

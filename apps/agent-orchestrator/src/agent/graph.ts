@@ -463,14 +463,37 @@ export interface AgentGraphDeps {
    * clear `state.error` rather than silently skipping the identity check.
    */
   identityLinkGateway?: IdentityLinkPort;
+  /**
+   * Client for apps/integration-gateway's claude-auth API (docs/adr/0027) --
+   * the `claude`-provider counterpart of `identityLinkGateway`, kept as a
+   * separate optional dep (not folded into one multi-provider client) since
+   * it's a genuinely different flow (PTY `setup-token`, not HTTP device/
+   * authcode). Resolved via `identityGatewayFor` below, never referenced
+   * directly by provider-generic code.
+   */
+  claudeAuthGateway?: IdentityLinkPort;
 }
 
 /**
  * Maps an identity-linked provider (Agent.identityProviders, e.g. "github")
  * to the env var name its linked token is injected as (AgentLaunchOptions'
- * secretEnv, agentrun-launcher.ts). Phase A supports exactly one provider.
+ * secretEnv, agentrun-launcher.ts).
  */
-const PROVIDER_ENV_VAR: Record<string, string> = { github: "GITHUB_TOKEN" };
+const PROVIDER_ENV_VAR: Record<string, string> = { github: "GITHUB_TOKEN", claude: "CLAUDE_CODE_OAUTH_TOKEN" };
+
+/** Human-facing label for a provider, used in link prompts/messages. */
+const PROVIDER_LABEL: Record<string, string> = { github: "GitHub", claude: "Claude" };
+
+/**
+ * Resolves which gateway client backs a given identity provider (docs/adr/0027)
+ * -- the one place that knows `"claude"` routes to `deps.claudeAuthGateway`
+ * instead of the (GitHub-only-in-practice) `deps.identityLinkGateway`, so the
+ * three call sites below (`checkPendingIdentityLink`, `delegateToAgent`, the
+ * agent-backed-tool path) stay provider-agnostic.
+ */
+function identityGatewayFor(provider: string, deps: AgentGraphDeps): IdentityLinkPort | undefined {
+  return provider === "claude" ? deps.claudeAuthGateway : deps.identityLinkGateway;
+}
 
 /**
  * Caps how many tool calls a skill's planAction<->runTool loop may chain in a
@@ -489,6 +512,40 @@ function agentTurnErrorMessage(err: unknown): string {
   if (err instanceof AgentTurnFailedError) return `agent failed (${err.code}): ${err.message}`;
   if (err instanceof AgentTurnTimeoutError) return err.message;
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Failure `code` a Claude-Code-backed agent reports (via the plain
+ * `runAgent()` failed-message contract, `packages/agent-runtime`) when its
+ * Claude Code CLI credential looks expired or invalid mid-run (docs/adr/0027).
+ */
+const CLAUDE_AUTH_EXPIRED_CODE = "claude_auth_expired";
+
+/**
+ * Handles a delegated agent turn's failure, recognizing the one recoverable
+ * case (docs/adr/0027's re-auth path) specially: an expired/invalid Claude
+ * Code credential. Rather than surfacing that as a hard `state.error` (which
+ * the caller has no useful way to act on), it invalidates the stale stored
+ * token -- so the caller's NEXT delegation attempt finds nothing linked and
+ * `delegateToAgent` starts a fresh link automatically -- and returns a plain
+ * `result` telling the user what happened and that simply retrying will
+ * prompt them to relink. Every other failure falls back to the ordinary
+ * `state.error` path, unchanged.
+ */
+async function handleAgentTurnFailure(
+  err: unknown,
+  deps: AgentGraphDeps,
+  state: AgentState,
+): Promise<Partial<AgentState>> {
+  if (err instanceof AgentTurnFailedError && err.code === CLAUDE_AUTH_EXPIRED_CODE && deps.claudeAuthGateway && state.identity) {
+    await deps.claudeAuthGateway.invalidate?.("claude", state.identity.subject).catch(() => {});
+    return {
+      result:
+        "Your linked Claude account's credential looks expired or invalid, so this request couldn't complete. " +
+        "Send your request again and I'll walk you through relinking it.",
+    };
+  }
+  return { error: agentTurnErrorMessage(err) };
 }
 
 /**
@@ -710,30 +767,33 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // ordinary retrieval/selection -- a miss is never an error.
       if (!state.identity || !state.pendingIdentityLink) return {};
       if (state.sessionSubject !== state.identity.subject) return {};
-      if (!deps.identityLinkGateway || !deps.agentStore) return {};
       const pending = state.pendingIdentityLink;
+      const gateway = identityGatewayFor(pending.provider, deps);
+      if (!gateway || !deps.agentStore) return {};
 
       // Resolve "is this pending link now complete, still pending, or
       // expired/denied" per flow -- device polls GitHub's device-code
-      // endpoint; authcode has nothing analogous to poll against (the
-      // browser redirect completes out-of-band via integration-gateway's own
-      // callback route), so it just checks whether a token has landed yet.
+      // endpoint; authcode/page have nothing analogous to poll against (the
+      // browser round-trip completes out-of-band, via integration-gateway's
+      // own OAuth callback route or claude-auth's code-paste page
+      // respectively), so both just check whether a token has landed yet.
       const status =
         pending.flow === "device"
-          ? await deps.identityLinkGateway.poll(pending.provider, state.identity.subject, pending.deviceCode!)
-          : (await deps.identityLinkGateway.getToken(pending.provider, state.identity.subject))
+          ? await gateway.poll(pending.provider, state.identity.subject, pending.deviceCode!)
+          : (await gateway.getToken(pending.provider, state.identity.subject))
             ? "complete"
             : Date.now() < pending.expiresAt
               ? "pending"
               : "expired";
 
       if (status === "pending" && Date.now() < pending.expiresAt) {
+        const label = PROVIDER_LABEL[pending.provider] ?? pending.provider;
         return {
           identityLinkPending: true,
           result:
             pending.flow === "device"
-              ? "Still waiting for you to authorize GitHub access. Visit the link and enter the code you were given, then send any message to continue."
-              : "Still waiting for you to authorize GitHub access. Visit the link and complete it in your browser, then send any message to continue.",
+              ? `Still waiting for you to authorize ${label} access. Visit the link and enter the code you were given, then send any message to continue.`
+              : `Still waiting for you to authorize ${label} access. Visit the link and complete it in your browser, then send any message to continue.`,
         };
       }
       if (status === "pending" || status === "expired" || status === "denied") {
@@ -801,7 +861,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
-        return { agentRunId: state.activeAgentRunId, error: agentTurnErrorMessage(err) };
+        return { agentRunId: state.activeAgentRunId, ...(await handleAgentTurnFailure(err, deps, state)) };
       }
     })
     .addNode("checkNeedsCapability", async (state) => {
@@ -895,20 +955,23 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
 
       // Per-caller identity gate (replaces the old shared static credential
       // for any Agent that declares `identityProviders`): the FIRST time this
-      // caller delegates to such an agent, they must link their own GitHub
-      // account (one-time OAuth Device Flow) before a launch is even
-      // attempted. Phase A supports exactly one provider end-to-end
-      // ("github" -> GITHUB_TOKEN); the loop below is written to extend to
-      // multiple providers later without reshaping state.
+      // caller delegates to such an agent, they must link their own account
+      // with that provider (one-time OAuth device/authcode flow for
+      // "github", or a PTY `setup-token` flow for "claude", docs/adr/0027)
+      // before a launch is even attempted. Only the FIRST declared provider
+      // is gated end-to-end today (multi-provider agents aren't expected in
+      // practice yet); `identityGatewayFor` is what lets this stay
+      // provider-agnostic as more are added.
       let identitySecretEnv: { name: string; value: string }[] | undefined;
       if (agent.identityProviders && agent.identityProviders.length > 0) {
-        if (!deps.identityLinkGateway) {
+        const provider = agent.identityProviders[0]!;
+        const gateway = identityGatewayFor(provider, deps);
+        if (!gateway) {
           return {
-            error: `agent ${agent.id} requires identity providers (${agent.identityProviders.join(", ")}) but no identity-link gateway is configured`,
+            error: `agent ${agent.id} requires identity providers (${agent.identityProviders.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
           };
         }
-        const provider = agent.identityProviders[0]!;
-        let existing = await deps.identityLinkGateway.getToken(provider, state.identity.subject);
+        let existing = await gateway.getToken(provider, state.identity.subject);
         console.log(
           "[identity-gate-debug] getToken",
           JSON.stringify({ provider, subject: state.identity.subject, found: Boolean(existing) }),
@@ -918,13 +981,17 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // they default to the browser-redirect authcode flow; a headless
           // direct `/invoke` caller (e.g. integration-gateway's own
           // GitHub-issue relay) can force the device flow instead, since it
-          // has no browser to redirect.
+          // has no browser to redirect. Ignored by the `claude` provider's
+          // gateway client (it only has one flow shape).
           const flow = state.identityLinkFlow ?? "authcode";
-          const started = await deps.identityLinkGateway.start(provider, state.identity.subject, flow);
+          const started = await gateway.start(provider, state.identity.subject, flow);
+          const label = PROVIDER_LABEL[provider] ?? provider;
           const linkUrlText =
             started.flow === "device"
-              ? `[link your GitHub account](${started.verificationUri}) and enter code \`${started.userCode}\``
-              : `[link your GitHub account](${started.authorizeUrl})`;
+              ? `[link your ${label} account](${started.verificationUri}) and enter code \`${started.userCode}\``
+              : started.flow === "authcode"
+                ? `[link your ${label} account](${started.authorizeUrl})`
+                : `[link your ${label} account](${started.pageUrl})`;
 
           // Block for up to this flow's own expiry waiting for the caller to
           // complete authorization -- `waitForCompletion` blocks on the
@@ -940,7 +1007,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // present, only adds narration while waiting; it does not gate
           // whether we wait at all.
           state.progressListener?.("identity-link", `To continue, please ${linkUrlText}. This is a one-time step — I'll continue automatically once you finish.`);
-          existing = await deps.identityLinkGateway.waitForCompletion?.(
+          existing = await gateway.waitForCompletion?.(
             provider,
             state.identity.subject,
             started.expiresInSeconds * 1000,
@@ -1017,7 +1084,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
-        return { agentRunId: runId, error: agentTurnErrorMessage(err) };
+        return { agentRunId: runId, ...(await handleAgentTurnFailure(err, deps, state)) };
       }
     })
     .addNode("loadSkillTools", async (state) => {
@@ -1140,13 +1207,14 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // delegation to the same agent before a Skill can reach it here.
         let identitySecretEnv: { name: string; value: string }[] | undefined;
         if (tool.identityProviders && tool.identityProviders.length > 0) {
-          if (!deps.identityLinkGateway || !state.identity) {
+          const provider = tool.identityProviders[0]!;
+          const gateway = identityGatewayFor(provider, deps);
+          if (!gateway || !state.identity) {
             return {
-              error: `tool ${tool.id} requires identity providers (${tool.identityProviders.join(", ")}) but no identity-link gateway is configured`,
+              error: `tool ${tool.id} requires identity providers (${tool.identityProviders.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
             };
           }
-          const provider = tool.identityProviders[0]!;
-          const existing = await deps.identityLinkGateway.getToken(provider, state.identity.subject);
+          const existing = await gateway.getToken(provider, state.identity.subject);
           if (!existing) {
             return {
               error: `tool ${tool.id} requires linking your ${provider} account first -- start a direct conversation with this agent to link it, then retry`,

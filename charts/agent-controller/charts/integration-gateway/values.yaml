@@ -155,6 +155,18 @@ sessionPage:
   # reuse it rather than standing up a second one.
   redisUrl: ""
 
+# Per-user Claude Code OAuth `setup-token` linking (docs/adr/0027) -- lets a
+# chat user authorize claude-code-swe-agent to run as THEIR OWN Claude
+# subscription/Enterprise seat instead of a shared ANTHROPIC_API_KEY, mirroring
+# identityLink above but for the Anthropic credential. Requires
+# identityLink.enabled=true (reuses its Redis/encryption-key/bearer-token
+# config -- no separate secret) AND sessionPage.publicBaseUrl to be set (the
+# page link handed back needs a reachable host) -- the chart fails to render
+# if this is enabled without both. Also requires the `claude` CLI to actually
+# be present in this image (see the Dockerfile) -- harmless if left disabled.
+claudeAuth:
+  enabled: false
+
 # Secrets: GITHUB_WEBHOOK_SECRET (required), GATEWAY_ORCHESTRATOR_TOKEN
 # (required), and either GITHUB_TOKEN or the three GITHUB_APP_* fields
 # (required for posting issue comments). When identityLink.enabled=true,

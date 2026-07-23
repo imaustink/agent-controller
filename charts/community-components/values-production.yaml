@@ -101,6 +101,47 @@ opencodeSweAgent:
     providers:
       - github
 
+# claude-code-swe-agent: requires claude-code-swe-secrets to exist (see
+# values.yaml's comment block for this key for the exact `kubectl create
+# secret` invocation) -- CI builds/pushes the image, but Helm can't source
+# secret VALUES on its own, so that Secret is still a manual prerequisite.
+#
+# identityLink.providers is ["claude"] only, not ["github", "claude"]:
+# agent-orchestrator's per-caller identity gate (docs/adr/0022, extended by
+# 0027) only resolves the FIRST declared provider end-to-end today -- a
+# second entry would never actually be linked/injected. Git/gh operations
+# still work without per-user GitHub attribution: resolveGithubToken prefers
+# the GitHub App installation token (githubAppIdSecretKey/etc. below) over
+# any static PAT whenever all three App fields are configured, regardless of
+# identityLink, so commits/PRs attribute to the k5s-bot App identity instead
+# of the specific calling user -- same as opencode-swe-agent's own non-
+# identity-linked-GitHub posture, just for this agent's git side specifically.
+#
+# No static anthropicSecretKey/claudeCodeOAuthTokenSecretKey needed here:
+# with "claude" in identityLink.providers, delegateToAgent (agent-
+# orchestrator) refuses to launch a Job at all until the caller has a linked
+# Claude token, so a per-run CLAUDE_CODE_OAUTH_TOKEN is always present by the
+# time this agent actually runs -- a static fallback key would just be dead
+# config nobody ever reads (claude-code-swe-secrets therefore only needs the
+# three GITHUB_APP_* keys below).
+claudeCodeSweAgent:
+  enabled: true
+  image: registry.kurpuis.com:5000/claude-code-swe-agent:latest
+  serviceAccountName: claude-code-swe-agent
+  secretName: claude-code-swe-secrets
+  secretKey: GITHUB_TOKEN
+  anthropicSecretKey: ""
+  claudeCodeOAuthTokenSecretKey: ""
+  githubAppIdSecretKey: GITHUB_APP_ID
+  githubAppPrivateKeySecretKey: GITHUB_APP_PRIVATE_KEY
+  githubAppInstallationIdSecretKey: GITHUB_APP_INSTALLATION_ID
+  githubAppSlug: k5s-bot
+  model: ""
+  identityLink:
+    enabled: true
+    providers:
+      - claude
+
 skills:
   recipeRefining:
     enabled: true

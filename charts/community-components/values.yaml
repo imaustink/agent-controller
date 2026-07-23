@@ -190,6 +190,67 @@ opencodeSweAgent:
     providers:
       - github
 
+# claude-code-swe-agent: Agent-SDK software-engineering sub-agent (same job as
+# opencodeSweAgent above, different engine) that runs the Claude Code CLI
+# headless, one `claude -p` invocation per turn -- no long-lived local server
+# to keep resident (unlike opencode-swe-agent since ADR 0026), so continuation
+# across turns comes from re-cloning the saved repo/branch rather than a live
+# session resume.
+#
+# GitHub credential: same three mutually-exclusive options as opencodeSweAgent
+# above (GITHUB_TOKEN PAT / GitHub App installation token / per-user identity
+# linking) -- see that block's comments, unchanged here.
+#
+# Claude/model credential: exactly one of anthropicSecretKey (metered API-key
+# billing) or claudeCodeOAuthTokenSecretKey (a Claude subscription/Enterprise
+# seat's long-lived token from `claude setup-token`) must resolve to a real
+# secret key -- the Agent CR template fails the chart render if neither is
+# set. Prerequisite either way (out-of-band -- Helm can't source secret
+# values on its own):
+#   kubectl -n <ns> create secret generic claude-code-swe-secrets \
+#     --from-literal=GITHUB_TOKEN=github_pat_... \
+#     --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+#   # or, for the OAuth-token option instead of/alongside the API key:
+#   #   --from-literal=CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+claudeCodeSweAgent:
+  enabled: false
+  image: claude-code-swe-agent:latest
+  serviceAccountName: claude-code-swe-agent
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+  secretName: claude-code-swe-secrets
+  secretKey: GITHUB_TOKEN
+  # At least one of these two must be set (validated at render time).
+  anthropicSecretKey: ANTHROPIC_API_KEY
+  claudeCodeOAuthTokenSecretKey: ""
+  # Optional (ADR 0018): GitHub App installation-token auth, preferred over
+  # the GITHUB_TOKEN PAT above when all three keys below are set. Leave all
+  # three empty (the default) to keep using the PAT.
+  githubAppIdSecretKey: ""
+  githubAppPrivateKeySecretKey: ""
+  githubAppInstallationIdSecretKey: ""
+  githubAppSlug: ""
+  # Claude Code model id/alias (e.g. "sonnet", "claude-sonnet-5"). Empty uses
+  # the CLI's own default.
+  model: ""
+  # Per-user identity linking. `providers` may list "github" (docs/adr/0022,
+  # same semantics as opencodeSweAgent.identityLink above -- a per-user
+  # GitHub token gates/attributes writes) AND/OR "claude" (docs/adr/0027 --
+  # a per-user Claude Code OAuth token, from `claude setup-token`, replaces
+  # the static anthropicSecretKey/claudeCodeOAuthTokenSecretKey above
+  # entirely for THIS agent's launches once linked). Requires
+  # agent-orchestrator's own identityLink.enabled=true either way; the
+  # "claude" provider additionally requires integration-gateway's
+  # claudeAuth.enabled=true (see that chart's values.yaml) -- the `claude`
+  # CLI must be present in ITS image for the setup-token PTY flow to work.
+  identityLink:
+    enabled: false
+    providers:
+      - github
+      # - claude
+
 skills:
   # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +
   # recipe-publisher). Enable both those tools above for its derived audience
