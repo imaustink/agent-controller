@@ -39,6 +39,16 @@ export interface SessionRecord {
    */
   activeAgentRunId?: string;
   /**
+   * The most recent AgentRun id this conversation delegated to, kept even
+   * after the run concludes and `activeAgentRunId` is cleared (ADR 0026) --
+   * NOT used for routing/continuation (that's `activeAgentRunId`/
+   * `agentContinuations`), only as a hint for a live-session viewer to probe
+   * ("is this Pod still up and tunnelable?") via a real-time NATS round trip
+   * rather than trusting any cached liveness flag, which could go stale if
+   * the Pod crashed unexpectedly.
+   */
+  lastAgentRunId?: string;
+  /**
    * Per-tool continuation tokens for this conversation, keyed by tool id
    * (docs/adr/0016). When the orchestrator's `runTool` node extracts a
    * `<!-- continuation: ... -->` marker from a tool's success output, the

@@ -39,7 +39,9 @@ export interface SweMarker {
 const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const REF_RE = /^[A-Za-z0-9._/-]+$/;
 const PR_RE = /^\d+$/;
-const SESSION_RE = /^[A-Za-z0-9-]+$/;
+// Allows an underscore: since ADR 0026, `session` is the REAL opencode
+// session id (e.g. "ses_abc123"), not a locally-generated UUID.
+const SESSION_RE = /^[A-Za-z0-9_-]+$/;
 
 function parseFields(body: string): Record<string, string> {
   const out: Record<string, string> = {};
