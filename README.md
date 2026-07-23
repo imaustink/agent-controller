@@ -45,7 +45,7 @@ graph TD
     subgraph CRDs["Custom Resources (core.controller-agent.dev/v1alpha1)"]
         ToolCR[Tool CR\nimage · SA · secretEnv · allowedRoles]
         SkillCR[Skill CR\nmarkdown · toolRefs]
-        AgentCR[Agent CR\nimage · SA · skillRefs]
+        AgentCR[Agent CR\nimage · SA · skillRefs · toolRefs]
         ToolRunCR[ToolRun CR\ntoolRef · args · callback]
         AgentRunCR[AgentRun CR\nagentRef · goal · callback]
     end

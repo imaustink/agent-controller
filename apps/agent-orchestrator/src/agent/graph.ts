@@ -24,6 +24,7 @@ import type { ResponseComposer } from "./response-composer.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
+import { makeSubAgentToolCallHandler, type ToolCatalog } from "./dispatch-tool.js";
 
 /**
  * Agent state threaded through the graph (docs/adr/0008, docs/adr/0012,
@@ -490,6 +491,18 @@ export interface AgentGraphDeps {
    * directly by provider-generic code.
    */
   claudeAuthGateway?: IdentityLinkPort;
+  /**
+   * Direct (non-RAG) lookup of the full tool catalog by id (docs/adr/0028),
+   * used ONLY to resolve a running sub-agent's own `tool_call` requests
+   * against its launching Agent's `toolRefs` allowlist -- deliberately NOT
+   * the RBAC-filtered `vectorStore`: an Agent's `toolRefs` is a static,
+   * operator-declared allowlist for THAT AGENT (re-validated by the Go
+   * controller independent of the walk-in caller's roles), not a per-caller
+   * retrieval filter. Backed by the same `toolsById` map ADR 0020 already
+   * builds in `index.ts`. Optional: absent -> a sub-agent's tool_call
+   * requests fail closed with a clear error instead of silently hanging.
+   */
+  toolCatalog?: ToolCatalog;
 }
 
 /**
@@ -873,6 +886,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         const awaitReply = deps.agentChannel.awaitReply(state.activeAgentRunId, {
           timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
           onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+          onToolCall: makeSubAgentToolCallHandler(state.activeAgentRunId, found.agent, deps.agentChannel, deps.toolCatalog, deps, {
+            sessionId: state.sessionId,
+          }),
         });
         await deps.agentChannel.sendPrompt(state.activeAgentRunId, state.request);
         const reply = await awaitReply;
@@ -1149,6 +1165,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         const awaitReply = deps.agentChannel.awaitReply(runId, {
           timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
           onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+          onToolCall: makeSubAgentToolCallHandler(runId, agent, deps.agentChannel, deps.toolCatalog, deps, {
+            sessionId: state.sessionId,
+          }),
         });
         await deps.agentRunLauncher.launch(agent.agentRunTemplate, runId, {
           goal,

@@ -2,6 +2,7 @@ export { loadConfig, AgentConfigError, type AgentRuntimeConfig } from "./config.
 export { NatsChannel, type AgentChannel } from "./channel.js";
 export {
   runAgent,
+  ToolCallError,
   type AgentSession,
   type AgentHandler,
   type AgentReply,

@@ -66,7 +66,7 @@ allowedRoles · description"]
         SkillCR["Skill CR
 markdown · toolRefs"]
         AgentCR["Agent CR
-image · SA · skillRefs"]
+image · SA · skillRefs · toolRefs"]
         ToolRunCR["ToolRun CR
 toolRef · args · callback"]
         AgentRunCR["AgentRun CR
