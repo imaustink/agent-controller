@@ -3,7 +3,15 @@ import { join } from "node:path";
 import { loadConfig, NatsChannel, type AgentChannel } from "@controller-agent/agent-runtime";
 import type { AgentDownMessage, AgentUpMessage } from "@controller-agent/messaging";
 import { buildOpencodeConfig, buildPrompt } from "./opencode.js";
-import { createSession, forwardRequest, sendMessage, startOpencodeServer, subscribeEvents, type OpencodeServerHandle } from "./opencode-server.js";
+import {
+  createSession,
+  forwardRequest,
+  sendMessage,
+  startOpencodeServer,
+  subscribeEvents,
+  type OpencodeAuth,
+  type OpencodeServerHandle,
+} from "./opencode-server.js";
 import { appendCoAuthorTrailer, discoverResult, ensureDir, findRepoDir, resolveGitIdentity, runCommand, setupGitAuth } from "./git.js";
 import { extractContinuationToken } from "./continuation.js";
 import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./marker.js";
@@ -27,6 +35,7 @@ interface TurnOutcome {
 
 interface TurnContext {
   serverBaseUrl: string;
+  auth: OpencodeAuth;
   sessionId: string;
   childEnv: NodeJS.ProcessEnv;
   apiHost: string;
@@ -72,7 +81,7 @@ async function runTurn(ctx: TurnContext, instruction: string, marker: SweMarker 
   // environment description, continuation context) -- opencode already has
   // that context in the session's own history for every turn after.
   const promptText = isFirstTurn ? buildPrompt(instruction, marker) : instruction;
-  const result = await sendMessage(ctx.serverBaseUrl, ctx.sessionId, promptText, ctx.signal);
+  const result = await sendMessage(ctx.serverBaseUrl, ctx.sessionId, promptText, ctx.auth, ctx.signal);
 
   if (result.failed) {
     return {
@@ -215,7 +224,7 @@ async function main(): Promise<void> {
         // Any live-viewer activity resets the idle clock (only meaningful
         // once we've actually gone idle; harmless no-op before that).
         if (idleTimer) scheduleIdleShutdown();
-        forwardRequest(server.baseUrl, { method: msg.method, path: msg.path, body: msg.body })
+        forwardRequest(server.baseUrl, { method: msg.method, path: msg.path, body: msg.body }, server.auth)
           .then((res) => publishUp({ type: "opencode_response", requestId: msg.requestId, status: res.status, body: res.body }))
           .catch((err) =>
             publishUp({
@@ -324,16 +333,17 @@ async function main(): Promise<void> {
     server = startOpencodeServer({ port: OPENCODE_PORT, cwd: toolConfig.workdir, env: childEnv });
     await server.waitForHealth();
 
-    const session = await createSession(server.baseUrl);
+    const session = await createSession(server.baseUrl, server.auth);
     // Forward every local opencode event onto NATS for a live viewer
     // (ADR 0026) -- fire-and-forget, never awaited; never load-bearing for
     // the reply/prompt contract below.
-    void subscribeEvents(server.baseUrl, (event) => void publishUp({ type: "opencode_event", event }), abort.signal);
+    void subscribeEvents(server.baseUrl, server.auth, (event) => void publishUp({ type: "opencode_event", event }), abort.signal);
 
     await publishUp({ type: "progress", message: "Running coding agent…", stage: "agent" });
     const outcome = await runTurn(
       {
         serverBaseUrl: server.baseUrl,
+        auth: server.auth,
         sessionId: session.id,
         childEnv,
         apiHost,

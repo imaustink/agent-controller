@@ -9,17 +9,24 @@ import { createSession, forwardRequest, sendMessage, subscribeEvents } from "./o
  * server shaped like opencode's own confirmed `/doc` OpenAPI responses,
  * without needing the real `opencode` CLI installed in CI.
  */
+const auth = { username: "opencode-swe-agent", password: "test-password" };
+
 describe("opencode-server HTTP client", () => {
   let server: Server;
   let baseUrl: string;
-  let lastRequest: { method: string; url: string; body: unknown } | undefined;
+  let lastRequest: { method: string; url: string; body: unknown; authorization?: string } | undefined;
 
   beforeEach(async () => {
     server = createServer((req, res) => {
       let raw = "";
       req.on("data", (chunk: Buffer) => (raw += chunk.toString()));
       req.on("end", () => {
-        lastRequest = { method: req.method ?? "", url: req.url ?? "", body: raw ? JSON.parse(raw) : undefined };
+        lastRequest = {
+          method: req.method ?? "",
+          url: req.url ?? "",
+          body: raw ? JSON.parse(raw) : undefined,
+          authorization: req.headers.authorization,
+        };
 
         if (req.url === "/session" && req.method === "POST") {
           res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: "ses_abc123" }));
@@ -65,14 +72,15 @@ describe("opencode-server HTTP client", () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
-  it("creates a session", async () => {
-    await expect(createSession(baseUrl)).resolves.toEqual({ id: "ses_abc123" });
+  it("creates a session, authenticated with Basic auth", async () => {
+    await expect(createSession(baseUrl, auth)).resolves.toEqual({ id: "ses_abc123" });
+    expect(lastRequest?.authorization).toBe(`Basic ${Buffer.from("opencode-swe-agent:test-password").toString("base64")}`);
   });
 
   it("sends a message and extracts the final text on success", async () => {
-    const result = await sendMessage(baseUrl, "ses_abc123", "add a health check");
+    const result = await sendMessage(baseUrl, "ses_abc123", "add a health check", auth);
     expect(result).toEqual({ finalMessage: "Opened PR #7", failed: false, failureDetail: null });
-    expect(lastRequest).toEqual({
+    expect(lastRequest).toMatchObject({
       method: "POST",
       url: "/session/ses_abc123/message",
       body: { parts: [{ type: "text", text: "add a health check" }] },
@@ -80,14 +88,18 @@ describe("opencode-server HTTP client", () => {
   });
 
   it("reports a failed turn via info.error", async () => {
-    const result = await sendMessage(baseUrl, "ses_fail", "do the thing");
+    const result = await sendMessage(baseUrl, "ses_fail", "do the thing", auth);
     expect(result).toEqual({ finalMessage: null, failed: true, failureDetail: "provider auth failed" });
   });
 
   it("forwards an arbitrary proxied request and returns its status/body", async () => {
-    const result = await forwardRequest(baseUrl, { method: "POST", path: "/session/ses_abc123/permission/req-1/reply", body: { approved: true } });
+    const result = await forwardRequest(
+      baseUrl,
+      { method: "POST", path: "/session/ses_abc123/permission/req-1/reply", body: { approved: true } },
+      auth,
+    );
     expect(result.status).toBe(204);
-    expect(lastRequest).toEqual({
+    expect(lastRequest).toMatchObject({
       method: "POST",
       url: "/session/ses_abc123/permission/req-1/reply",
       body: { approved: true },
@@ -97,7 +109,7 @@ describe("opencode-server HTTP client", () => {
   it("streams and parses SSE events until the response ends", async () => {
     const events: unknown[] = [];
     const abort = new AbortController();
-    await subscribeEvents(baseUrl, (event) => events.push(event), abort.signal);
+    await subscribeEvents(baseUrl, auth, (event) => events.push(event), abort.signal);
     expect(events).toEqual([{ type: "message.part.updated", part: { text: "hi" } }, { type: "session.idle" }]);
   });
 });

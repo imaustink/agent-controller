@@ -80,15 +80,30 @@ both already exported) directly:
    publishing `session_ended` and exiting. Still hard-capped by the Job's
    existing `TimeoutSeconds`.
 
-**`agent-orchestrator`** gains: a `liveAgentRunId`/`liveExpiresAt` pair on
-`SessionRecord` (`session/types.ts`) — deliberately separate from
-`activeAgentRunId`, which keeps its exact current meaning for graph
-routing/continuation logic; a long-lived NATS subscription
+**`agent-orchestrator`** gains: a `lastAgentRunId` field on `SessionRecord`
+(`session/types.ts`) — kept even after `activeAgentRunId` is cleared on a
+final reply, deliberately separate from it (which keeps its exact current
+meaning for graph routing/continuation logic) and used for nothing but
+"which run id should a live viewer probe"; a long-lived NATS subscription
 (`subscribeLive`) and a request/response forwarder
 (`forwardOpencodeRequest`) alongside `NatsAgentChannel`; and three new
 routes on the existing bearer-gated invoke-port server — no new Service or
-port — `GET /sessions/:sessionId/live`, `GET /agent-runs/:runId/events`
-(SSE), `POST /agent-runs/:runId/opencode`.
+port — `GET /sessions/live?sessionId=...`, `GET /agent-runs/:runId/events`
+(SSE), `POST /agent-runs/:runId/opencode` (`sessionId` travels as a query
+param on all three since it commonly contains `#`/`/`).
+
+Liveness itself is answered by a **real-time round trip**, not a cached
+flag: `GET /sessions/live` forwards a cheap `GET /global/health` through
+`forwardOpencodeRequest` and reports `live` based on whether that actually
+succeeds within a couple seconds. Considered instead: threading a
+`session_idle` up-message's `liveUntil` timestamp through `awaitReply`
+(caching "should still be live until this time" on the session record).
+Rejected — LangGraph's `AgentState` and both of `server.ts`'s consumption
+paths (blocking `/invoke` and the streaming chat-completions facade) would
+need a new field threaded through just to carry a timestamp that could go
+stale anyway if the Pod crashed or was evicted without a clean
+`session_ended`. The live probe is simpler (no graph changes at all) and
+self-correcting.
 
 **`integration-gateway`'s session page** (ADR 0025) checks live status on
 load; when live, it renders the streamed events and posts prompts straight
@@ -111,7 +126,7 @@ ADR 0025's exact turn-history behavior unchanged.
   than before (task time + idle window, not just task time), since the Pod
   is no longer done the instant the coding task is.
 - `activeAgentRunId` (graph routing/continuation semantics) and
-  `liveAgentRunId` (whether a live tunnel has somewhere to point) are
+  `lastAgentRunId` (a live viewer's only hint of which run id to probe) are
   deliberately independent fields — conflating them would let a live-page
   implementation detail leak into and change the orchestrator's existing,
   already-shipped conversational-continuation behavior.

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { clip } from "./security/redact.js";
 
@@ -13,23 +14,47 @@ import { clip } from "./security/redact.js";
  * NATS-forwarded `opencode_request`/`opencode_event` messages in index.ts.
  */
 
+/** Basic-auth credentials protecting the local opencode server (see {@link startOpencodeServer}). */
+export interface OpencodeAuth {
+  username: string;
+  password: string;
+}
+
 export interface OpencodeServerHandle {
   readonly baseUrl: string;
+  readonly auth: OpencodeAuth;
   /** Resolves once `/global/health` responds OK, or rejects after boundedly retrying. */
   waitForHealth(): Promise<void>;
   kill(): void;
 }
 
-/** Spawns `opencode serve`, mirroring its stdout/stderr to ours so `kubectl logs` still shows it (same reasoning as the old CLI invocation). */
+function authHeader(auth: OpencodeAuth): string {
+  return `Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString("base64")}`;
+}
+
+/**
+ * Spawns `opencode serve`, mirroring its stdout/stderr to ours so
+ * `kubectl logs` still shows it (same reasoning as the old CLI invocation).
+ * Protected with a freshly generated Basic Auth password
+ * (`OPENCODE_SERVER_PASSWORD`) even though it only ever binds to
+ * `127.0.0.1` -- cheap defense-in-depth against anything else that might
+ * end up sharing this Pod's network namespace, not a real trust boundary
+ * (the loopback bind already is one).
+ */
 export function startOpencodeServer(opts: {
   port: number;
   cwd: string;
   env: NodeJS.ProcessEnv;
 }): OpencodeServerHandle {
+  const auth: OpencodeAuth = { username: "opencode-swe-agent", password: randomBytes(24).toString("base64url") };
   const child: ChildProcess = spawn(
     "opencode",
     ["serve", "--hostname", "127.0.0.1", "--port", String(opts.port), "--print-logs"],
-    { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"] },
+    {
+      cwd: opts.cwd,
+      env: { ...opts.env, OPENCODE_SERVER_USERNAME: auth.username, OPENCODE_SERVER_PASSWORD: auth.password },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
   );
   child.stdout?.on("data", (chunk: Buffer) => process.stdout.write(chunk));
   child.stderr?.on("data", (chunk: Buffer) => process.stderr.write(clip(chunk.toString(), 2000)));
@@ -38,12 +63,13 @@ export function startOpencodeServer(opts: {
 
   return {
     baseUrl,
+    auth,
     async waitForHealth(): Promise<void> {
       const deadline = Date.now() + 30_000;
       let lastError: unknown;
       while (Date.now() < deadline) {
         try {
-          const res = await fetch(`${baseUrl}/global/health`);
+          const res = await fetch(`${baseUrl}/global/health`, { headers: { authorization: authHeader(auth) } });
           if (res.ok) return;
         } catch (err) {
           lastError = err;
@@ -65,8 +91,12 @@ export interface OpencodeMessageResult {
 }
 
 /** Creates a new opencode session. */
-export async function createSession(baseUrl: string): Promise<{ id: string }> {
-  const res = await fetch(`${baseUrl}/session`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+export async function createSession(baseUrl: string, auth: OpencodeAuth): Promise<{ id: string }> {
+  const res = await fetch(`${baseUrl}/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: authHeader(auth) },
+    body: "{}",
+  });
   if (!res.ok) throw new Error(`opencode session create failed: ${res.status} ${await res.text()}`);
   const body = (await res.json()) as { id: string };
   return { id: body.id };
@@ -79,10 +109,16 @@ export async function createSession(baseUrl: string): Promise<{ id: string }> {
  * arrives once the turn is done), so this plays the same role the old code's
  * `await` on the one-shot CLI process exiting did.
  */
-export async function sendMessage(baseUrl: string, sessionId: string, text: string, signal?: AbortSignal): Promise<OpencodeMessageResult> {
+export async function sendMessage(
+  baseUrl: string,
+  sessionId: string,
+  text: string,
+  auth: OpencodeAuth,
+  signal?: AbortSignal,
+): Promise<OpencodeMessageResult> {
   const res = await fetch(`${baseUrl}/session/${sessionId}/message`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", authorization: authHeader(auth) },
     body: JSON.stringify({ parts: [{ type: "text", text }] }),
     signal,
   });
@@ -109,10 +145,11 @@ export async function sendMessage(baseUrl: string, sessionId: string, text: stri
 export async function forwardRequest(
   baseUrl: string,
   req: { method: string; path: string; body?: unknown },
+  auth: OpencodeAuth,
 ): Promise<{ status: number; body: unknown }> {
   const res = await fetch(`${baseUrl}${req.path}`, {
     method: req.method,
-    headers: req.body !== undefined ? { "content-type": "application/json" } : undefined,
+    headers: { authorization: authHeader(auth), ...(req.body !== undefined ? { "content-type": "application/json" } : {}) },
     body: req.body !== undefined ? JSON.stringify(req.body) : undefined,
   });
   const text = await res.text();
@@ -134,9 +171,9 @@ export async function forwardRequest(
  * -- this is purely for a live viewer's benefit, never load-bearing for the
  * ordinary reply/prompt contract.
  */
-export async function subscribeEvents(baseUrl: string, onEvent: (event: unknown) => void, signal: AbortSignal): Promise<void> {
+export async function subscribeEvents(baseUrl: string, auth: OpencodeAuth, onEvent: (event: unknown) => void, signal: AbortSignal): Promise<void> {
   try {
-    const res = await fetch(`${baseUrl}/event`, { headers: { accept: "text/event-stream" }, signal });
+    const res = await fetch(`${baseUrl}/event`, { headers: { accept: "text/event-stream", authorization: authHeader(auth) }, signal });
     if (!res.ok || !res.body) return;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
