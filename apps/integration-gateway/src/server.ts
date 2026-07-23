@@ -3,8 +3,13 @@ import { REPLY_MARKER, type GithubReplyClient } from "./github-client.js";
 import type { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
 import { IdentityLinkApi } from "./identity-link/api.js";
 import type { IdentityResolver } from "./identity.js";
-import type { OrchestratorClient } from "./orchestrator-client.js";
+import type { OrchestratorClient, OrchestratorInvokeResult } from "./orchestrator-client.js";
+import { renderSessionPage } from "./session-page.js";
+import type { SessionPageStore } from "./session-page-store.js";
 import { parseGithubEvent, verifyGithubSignature, WebhookAuthError } from "./webhooks/github.js";
+
+const SESSION_PAGE_PATH = /^\/sessions\/([^/]+)$/;
+const SESSION_PROMPT_PATH = /^\/sessions\/([^/]+)\/prompts$/;
 
 export interface GatewayServerOptions {
   githubWebhookSecret: string;
@@ -29,6 +34,19 @@ export interface GatewayServerOptions {
    */
   identityLinkLinker?: GithubDeviceFlowLinker;
   identityLinkToken?: string;
+  /**
+   * Session-page feature (issue #81) -- both fields must be set together to
+   * enable it: a "starting work" comment posted right when an
+   * `issues.labeled` triage trigger fires (rather than only after the whole
+   * turn completes), linking to a minimal `GET /sessions/:token` page that
+   * shows that session's turn history and lets a caller `POST` it follow-up
+   * prompts. Omitted entirely (leaving both undefined) preserves this
+   * gateway's exact pre-#81 behavior -- no page routes are reachable, and
+   * plain conversational (non-labeled) relays are completely unaffected
+   * either way.
+   */
+  sessionPageStore?: SessionPageStore;
+  publicBaseUrl?: string;
 }
 
 /** `owner/repo#issueNumber` scoped session id -- see docs/integrations-gateway.md's conversational path. */
@@ -84,6 +102,18 @@ export class GatewayServer {
     if (req.method === "POST" && url.pathname === "/webhooks/github") {
       await this.handleGithubWebhook(req, res);
       return;
+    }
+    if (this.options.sessionPageStore) {
+      const pageMatch = req.method === "GET" ? SESSION_PAGE_PATH.exec(url.pathname) : null;
+      if (pageMatch) {
+        await this.handleSessionPage(res, pageMatch[1] as string);
+        return;
+      }
+      const promptMatch = req.method === "POST" ? SESSION_PROMPT_PATH.exec(url.pathname) : null;
+      if (promptMatch) {
+        await this.handleSessionPrompt(req, res, promptMatch[1] as string);
+        return;
+      }
     }
     // The authcode callback route is intercepted BEFORE the bearer-gated
     // dispatch below -- it's hit directly by the end user's browser (via
@@ -181,20 +211,98 @@ export class GatewayServer {
     sessionId: string,
     event?: Record<string, string | number | undefined>,
   ): Promise<void> {
+    // Only the deterministic issues.labeled trigger (the actual "triage"
+    // path -- long-running investigate-and-PR work, ADR 0024) gets a
+    // session page and an upfront "starting work" comment (issue #81); the
+    // `event` descriptor is only ever set on that path (see
+    // `handleGithubWebhook`'s issue-labeled branch), which doubles as the
+    // discriminator here. Ordinary conversational opened/comment replies are
+    // meant to feel like near-instant chat, so an extra comment there would
+    // just be noise -- and they're unaffected either way if the feature is
+    // disabled (`sessionPageStore`/`publicBaseUrl` unset).
+    if (event && this.options.sessionPageStore && this.options.publicBaseUrl) {
+      const page = await this.options.sessionPageStore.getOrCreate(sessionId, { owner, repo, issueNumber });
+      const pageUrl = `${this.options.publicBaseUrl.replace(/\/$/, "")}/sessions/${page.token}`;
+      await this.options.githubReplyClient.postIssueComment(
+        owner,
+        repo,
+        issueNumber,
+        `Starting work on this now. Track progress or send follow-up prompts at ${pageUrl}`,
+      );
+    }
+    await this.runTurn(owner, repo, issueNumber, sessionId, request, event);
+  }
+
+  /**
+   * Shared by `relayAndReply` (webhook-triggered turns) and
+   * `handleSessionPrompt` (turns submitted through an existing session
+   * page). Tracks the turn in `sessionPageStore` when (and only when) an
+   * entry for `sessionId` already exists -- `addTurn` is deliberately a
+   * no-op otherwise, so a plain issue that was never triaged never gets a
+   * page just because a turn ran on its session id.
+   */
+  private async runTurn(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    sessionId: string,
+    request: string,
+    event?: Record<string, string | number | undefined>,
+  ): Promise<void> {
+    const tracked = await this.options.sessionPageStore?.addTurn(sessionId, request);
+
     // This relay has no browser -- always force device flow explicitly
     // rather than relying on agent-orchestrator's own default (which is
     // "authcode", intended for browser-based callers). Only pass a 4th
     // argument when there's an event descriptor -- keeps the call shape
     // identical to before this feature existed for the ordinary
     // opened/comment paths.
-    const outcome = event
+    const outcome: OrchestratorInvokeResult = event
       ? await this.options.orchestratorClient.invoke(request, sessionId, "device", event)
       : await this.options.orchestratorClient.invoke(request, sessionId, "device");
     const reply =
       outcome.status === "succeeded"
         ? (outcome.result ?? "")
         : `Something went wrong processing this: ${outcome.error ?? "unknown error"}`;
+
+    if (tracked) {
+      await this.options.sessionPageStore!.completeTurn(
+        sessionId,
+        tracked.turnIndex,
+        outcome.status === "succeeded"
+          ? { status: "succeeded", result: reply }
+          : { status: "failed", error: outcome.error ?? "unknown error" },
+      );
+    }
     await this.options.githubReplyClient.postIssueComment(owner, repo, issueNumber, reply);
+  }
+
+  private async handleSessionPage(res: ServerResponse, token: string): Promise<void> {
+    const entry = await this.options.sessionPageStore!.getByToken(token);
+    if (!entry) {
+      res.writeHead(404).end("Not found");
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(renderSessionPage(entry));
+  }
+
+  private async handleSessionPrompt(req: IncomingMessage, res: ServerResponse, token: string): Promise<void> {
+    const entry = await this.options.sessionPageStore!.getByToken(token);
+    if (!entry) {
+      res.writeHead(404).end("Not found");
+      return;
+    }
+    const rawBody = await readBody(req);
+    const prompt = new URLSearchParams(rawBody).get("prompt")?.trim() ?? "";
+    if (prompt) {
+      this.runTurn(entry.owner, entry.repo, entry.issueNumber, entry.sessionId, prompt).catch(
+        this.options.onBackgroundError ?? ((error: unknown) => console.error(error)),
+      );
+    }
+    // Redirect back to the page immediately -- the new turn shows as
+    // "pending" there (meta-refreshing) rather than blocking this response
+    // on the orchestrator's full turn, same async posture as the webhook path.
+    res.writeHead(303, { location: `/sessions/${token}` }).end();
   }
 }
 

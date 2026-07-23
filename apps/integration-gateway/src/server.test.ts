@@ -5,6 +5,7 @@ import { REPLY_MARKER, type GithubReplyClient } from "./github-client.js";
 import { GithubIdentityResolver } from "./identity.js";
 import type { OrchestratorClient } from "./orchestrator-client.js";
 import { GatewayServer, sessionIdFor } from "./server.js";
+import { InMemorySessionPageStore } from "./session-page-store.js";
 
 const SECRET = "test-secret";
 
@@ -208,6 +209,115 @@ describe("GatewayServer", () => {
     });
     await flush();
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, expect.stringContaining("boom"));
+  });
+});
+
+describe("GatewayServer session pages", () => {
+  let server: GatewayServer;
+  let port: number;
+  let identityResolver: GithubIdentityResolver;
+  let invoke: ReturnType<typeof vi.fn>;
+  let postIssueComment: ReturnType<typeof vi.fn>;
+  let sessionPageStore: InMemorySessionPageStore;
+
+  beforeEach(async () => {
+    identityResolver = new GithubIdentityResolver(new Map([["alice", { subject: "alice", roles: ["reporter"] }]]), "agent-controller[bot]");
+    invoke = vi.fn().mockResolvedValue({ status: "succeeded", result: "Working on it." });
+    postIssueComment = vi.fn().mockResolvedValue(undefined);
+    sessionPageStore = new InMemorySessionPageStore();
+
+    server = new GatewayServer({
+      githubWebhookSecret: SECRET,
+      identityResolver,
+      orchestratorClient: { invoke } as unknown as OrchestratorClient,
+      githubReplyClient: { postIssueComment } as unknown as GithubReplyClient,
+      githubTriggerLabel: "ai-triage",
+      sessionPageStore,
+      publicBaseUrl: "https://gateway.example.com",
+    });
+    await server.listen(0);
+    port = (server as unknown as { server: { address: () => AddressInfo } }).server.address().port;
+  });
+
+  afterEach(async () => {
+    await server.close();
+  });
+
+  it("posts a starting-work comment with a session page link before the labeled-triage turn completes, then the result", async () => {
+    await postWebhook(port, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
+      label: { name: "ai-triage" },
+    });
+    await flush();
+
+    expect(postIssueComment).toHaveBeenNthCalledWith(
+      1,
+      "acme",
+      "widgets",
+      7,
+      expect.stringMatching(/^Starting work on this now.*https:\/\/gateway\.example\.com\/sessions\/\S+$/),
+    );
+    expect(postIssueComment).toHaveBeenNthCalledWith(2, "acme", "widgets", 7, "Working on it.");
+
+    const entry = await sessionPageStore.getOrCreate(sessionIdFor("acme", "widgets", 7), {
+      owner: "acme",
+      repo: "widgets",
+      issueNumber: 7,
+    });
+    expect(entry.turns).toHaveLength(1);
+    expect(entry.turns[0]).toMatchObject({ status: "succeeded", result: "Working on it." });
+  });
+
+  it("does not post a session page link for plain (non-labeled) conversational replies", async () => {
+    await postWebhook(port, "issues", {
+      action: "opened",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 9, title: "t", body: "b" },
+    });
+    await flush();
+
+    expect(postIssueComment).toHaveBeenCalledTimes(1);
+    expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 9, "Working on it.");
+  });
+
+  it("serves the rendered session page for a valid token", async () => {
+    const entry = await sessionPageStore.getOrCreate("github:acme/widgets#7", { owner: "acme", repo: "widgets", issueNumber: 7 });
+    await sessionPageStore.addTurn(entry.sessionId, "do the thing");
+
+    const res = await fetch(`http://localhost:${port}/sessions/${entry.token}`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("acme/widgets #7");
+    expect(html).toContain("do the thing");
+  });
+
+  it("404s on an unknown session page token", async () => {
+    const res = await fetch(`http://localhost:${port}/sessions/does-not-exist`);
+    expect(res.status).toBe(404);
+  });
+
+  it("accepts a follow-up prompt submitted through the session page and relays it into the same session", async () => {
+    const entry = await sessionPageStore.getOrCreate("github:acme/widgets#7", { owner: "acme", repo: "widgets", issueNumber: 7 });
+
+    const res = await fetch(`http://localhost:${port}/sessions/${entry.token}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ prompt: "actually, target the develop branch" }).toString(),
+      redirect: "manual",
+    });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe(`/sessions/${entry.token}`);
+    await flush();
+
+    expect(invoke).toHaveBeenCalledWith("actually, target the develop branch", "github:acme/widgets#7", "device");
+    expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "Working on it.");
+    const updated = await sessionPageStore.getByToken(entry.token);
+    expect(updated?.turns).toHaveLength(1);
+    expect(updated?.turns[0]).toMatchObject({ status: "succeeded", result: "Working on it." });
   });
 });
 

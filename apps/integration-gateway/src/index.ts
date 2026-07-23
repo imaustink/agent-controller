@@ -14,6 +14,7 @@ import {
 import { OrchestratorClient } from "./orchestrator-client.js";
 import { OidcTokenProvider } from "./oidc-token-provider.js";
 import { GatewayServer } from "./server.js";
+import { InMemorySessionPageStore, RedisSessionPageStore } from "./session-page-store.js";
 
 const EXIT_STARTUP_FAILURE = 1;
 
@@ -196,6 +197,22 @@ async function main(): Promise<void> {
     });
   }
 
+  // Session page (issue #81) is opt-in: only enabled once a public base URL
+  // is configured, since a page link with nowhere reachable to send it is
+  // useless. The Redis-backed store is preferred (survives a pod restart --
+  // this link is posted into a GitHub comment and may be revisited days
+  // later) but falls back to in-memory, sharing the same
+  // "works standalone, better with Redis" posture as elsewhere in this app.
+  const sessionPageEnabled = Boolean(config.publicUrl);
+  const sessionPageRedisUrl = config.sessionPageRedisUrl ?? config.redisUrl;
+  let sessionPageStore: RedisSessionPageStore | InMemorySessionPageStore | undefined;
+  if (sessionPageEnabled) {
+    sessionPageStore = sessionPageRedisUrl ? new RedisSessionPageStore(sessionPageRedisUrl) : new InMemorySessionPageStore();
+    console.error(
+      `Session pages enabled at ${config.publicUrl} (${sessionPageRedisUrl ? `Redis: ${sessionPageRedisUrl}` : "in-memory"})`,
+    );
+  }
+
   const server = new GatewayServer({
     githubWebhookSecret: config.githubWebhookSecret,
     identityResolver,
@@ -203,6 +220,7 @@ async function main(): Promise<void> {
     githubReplyClient,
     githubTriggerLabel: config.githubTriggerLabel,
     ...(identityLinkLinker ? { identityLinkLinker, identityLinkToken: config.identityLinkToken } : {}),
+    ...(sessionPageStore ? { sessionPageStore, publicBaseUrl: config.publicUrl } : {}),
   });
 
   await server.listen(config.httpPort);
@@ -215,6 +233,7 @@ async function main(): Promise<void> {
     console.error(`Received ${signal}; shutting down integration-gateway...`);
     await server.close();
     await identityLinkStore?.close();
+    if (sessionPageStore instanceof RedisSessionPageStore) await sessionPageStore.close();
     process.exit(0);
   };
 

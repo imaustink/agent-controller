@@ -64,6 +64,21 @@ export interface AppConfig {
   identityLinkStateSecret: string;
   /** Must exactly match the GitHub App's registered OAuth callback URL (not a secret); only required when the authcode identity-link flow is actually used. */
   githubOauthRedirectUri: string;
+  /**
+   * Public base URL this gateway is reachable at (e.g.
+   * `https://gateway.example.com`), used to build the session-page link
+   * (issue #81) posted alongside the "starting work" comment on an
+   * `issues.labeled` triage trigger. Empty disables the whole session-page
+   * feature: no page link is ever posted, and `GET /sessions/*` 404s.
+   */
+  publicUrl: string;
+  /**
+   * Redis URL backing the session-page store, so a posted page link (and its
+   * turn history) survives a gateway pod restart. Falls back to `redisUrl`
+   * (the identity-link Redis instance) when unset, and to an in-memory store
+   * -- fine for single-replica/dev, but lost on restart -- when neither is set.
+   */
+  sessionPageRedisUrl: string | undefined;
 }
 
 function num(raw: string | undefined, fallback: number): number {
@@ -107,6 +122,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     githubAppClientSecret: env.GITHUB_APP_CLIENT_SECRET ?? "",
     identityLinkStateSecret: env.IDENTITY_LINK_STATE_SECRET ?? "",
     githubOauthRedirectUri: env.GITHUB_OAUTH_REDIRECT_URI ?? "",
+    publicUrl: env.GATEWAY_PUBLIC_URL ?? "",
+    sessionPageRedisUrl: env.SESSION_PAGE_REDIS_URL,
   };
 }
 
