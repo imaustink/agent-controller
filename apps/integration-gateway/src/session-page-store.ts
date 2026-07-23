@@ -28,6 +28,15 @@ export interface SessionPageEntry {
   repo: string;
   issueNumber: number;
   turns: SessionTurn[];
+  /**
+   * Live-session tunnel info (ADR 0026), cached so a repeat page load/prompt
+   * doesn't need to rediscover it. `agentRunId` is refreshed on every page
+   * load from agent-orchestrator's own real-time liveness probe; `sessionId`
+   * (opencode's OWN session id, e.g. "ses_abc123" -- unrelated to this
+   * entry's own `sessionId` field) is discovered lazily, once, the first
+   * time a prompt is actually submitted through the live tunnel.
+   */
+  live?: { agentRunId: string; opencodeSessionId?: string };
 }
 
 export interface CompletedOutcome {
@@ -59,6 +68,11 @@ export interface SessionPageStore {
    */
   addTurn(sessionId: string, request: string): Promise<AddedTurn | undefined>;
   completeTurn(sessionId: string, turnIndex: number, outcome: CompletedOutcome): Promise<void>;
+  /**
+   * Updates (or clears, passing `undefined`) the cached live-tunnel info for
+   * an EXISTING entry (ADR 0026); a no-op if the entry doesn't exist.
+   */
+  setLive(sessionId: string, live: SessionPageEntry["live"]): Promise<void>;
 }
 
 /** 32 random bytes, base64url-encoded (43 chars, no padding) -- a bearer-capability token, not a lookup key, so it needs real entropy. */
@@ -98,6 +112,12 @@ export class InMemorySessionPageStore implements SessionPageStore {
     const turn = this.bySessionId.get(sessionId)?.turns[turnIndex];
     if (!turn) return;
     Object.assign(turn, outcome, { completedAt: new Date().toISOString() });
+  }
+
+  async setLive(sessionId: string, live: SessionPageEntry["live"]): Promise<void> {
+    const entry = this.bySessionId.get(sessionId);
+    if (!entry) return;
+    entry.live = live;
   }
 }
 
@@ -190,6 +210,13 @@ export class RedisSessionPageStore implements SessionPageStore {
     const turn = entry?.turns[turnIndex];
     if (!entry || !turn) return;
     entry.turns[turnIndex] = { ...turn, ...outcome, completedAt: new Date().toISOString() };
+    await this.write(entry);
+  }
+
+  async setLive(sessionId: string, live: SessionPageEntry["live"]): Promise<void> {
+    const entry = await this.readSession(sessionId);
+    if (!entry) return;
+    entry.live = live;
     await this.write(entry);
   }
 

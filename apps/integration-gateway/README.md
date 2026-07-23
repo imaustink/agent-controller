@@ -111,6 +111,25 @@ answering proactively.
   submit a prompt, same trust model as e.g. a calendar ICS share link. Treat
   it as sensitive as the GitHub issue it's linked from.
 
+### Live session tunnel (ADR 0026)
+
+On each page load the gateway asks agent-orchestrator, in real time, whether
+the session's `opencode-swe-agent` Pod is still resident and tunnelable
+(`OrchestratorClient.checkLive`). When it is, the page renders a **LIVE**
+badge, a live event log (`GET /sessions/:token/live-events`, proxying
+agent-orchestrator's SSE stream straight through), and its prompt form posts
+to `POST /sessions/:token/live-prompt` instead of the plain `/prompts`
+route — submitting directly into the running opencode session
+(`prompt_async`, fire-and-forget; the response streams back through the
+live log) rather than queuing another RAG turn via `/invoke`. Falls back to
+the exact pre-ADR-0026 turn-history behavior whenever the Pod isn't (or is
+no longer) live — nothing else about the page changes in that case.
+
+This is the one place this app's session page uses client-side JavaScript
+(a small inline `EventSource`) — genuine real-time streaming can't be done
+with pure server-rendered HTML, unlike the rest of this page's meta-refresh
+based polling.
+
 ## Identity-link credential broker
 
 Independent of the GitHub-webhook relay above, this gateway also exposes an

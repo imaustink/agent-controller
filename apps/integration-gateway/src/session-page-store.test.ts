@@ -38,4 +38,23 @@ describe("InMemorySessionPageStore", () => {
     const entry = await store.getOrCreate("github:acme/widgets#1", { owner: "acme", repo: "widgets", issueNumber: 1 });
     await expect(store.completeTurn(entry.sessionId, 5, { status: "succeeded", result: "done" })).resolves.toBeUndefined();
   });
+
+  it("sets and clears cached live-tunnel info (ADR 0026)", async () => {
+    const store = new InMemorySessionPageStore();
+    const entry = await store.getOrCreate("github:acme/widgets#1", { owner: "acme", repo: "widgets", issueNumber: 1 });
+
+    await store.setLive(entry.sessionId, { agentRunId: "run-42" });
+    expect((await store.getByToken(entry.token))?.live).toEqual({ agentRunId: "run-42" });
+
+    await store.setLive(entry.sessionId, { agentRunId: "run-42", opencodeSessionId: "ses_abc123" });
+    expect((await store.getByToken(entry.token))?.live).toEqual({ agentRunId: "run-42", opencodeSessionId: "ses_abc123" });
+
+    await store.setLive(entry.sessionId, undefined);
+    expect((await store.getByToken(entry.token))?.live).toBeUndefined();
+  });
+
+  it("setLive on an unknown session id is a no-op", async () => {
+    const store = new InMemorySessionPageStore();
+    await expect(store.setLive("github:acme/widgets#404", { agentRunId: "run-1" })).resolves.toBeUndefined();
+  });
 });

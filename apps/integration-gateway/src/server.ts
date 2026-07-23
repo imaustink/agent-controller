@@ -10,6 +10,8 @@ import { parseGithubEvent, verifyGithubSignature, WebhookAuthError } from "./web
 
 const SESSION_PAGE_PATH = /^\/sessions\/([^/]+)$/;
 const SESSION_PROMPT_PATH = /^\/sessions\/([^/]+)\/prompts$/;
+const SESSION_LIVE_EVENTS_PATH = /^\/sessions\/([^/]+)\/live-events$/;
+const SESSION_LIVE_PROMPT_PATH = /^\/sessions\/([^/]+)\/live-prompt$/;
 
 export interface GatewayServerOptions {
   githubWebhookSecret: string;
@@ -104,6 +106,16 @@ export class GatewayServer {
       return;
     }
     if (this.options.sessionPageStore) {
+      const liveEventsMatch = req.method === "GET" ? SESSION_LIVE_EVENTS_PATH.exec(url.pathname) : null;
+      if (liveEventsMatch) {
+        await this.handleSessionLiveEvents(res, liveEventsMatch[1] as string);
+        return;
+      }
+      const livePromptMatch = req.method === "POST" ? SESSION_LIVE_PROMPT_PATH.exec(url.pathname) : null;
+      if (livePromptMatch) {
+        await this.handleSessionLivePrompt(req, res, livePromptMatch[1] as string);
+        return;
+      }
       const pageMatch = req.method === "GET" ? SESSION_PAGE_PATH.exec(url.pathname) : null;
       if (pageMatch) {
         await this.handleSessionPage(res, pageMatch[1] as string);
@@ -283,7 +295,100 @@ export class GatewayServer {
       res.writeHead(404).end("Not found");
       return;
     }
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(renderSessionPage(entry));
+    // Real-time liveness check (ADR 0026) -- refreshed on every page load
+    // rather than trusted from a stale cache, since the underlying Pod could
+    // have exited since the last check.
+    const liveStatus = await this.options.orchestratorClient.checkLive(entry.sessionId);
+    if (liveStatus.live && liveStatus.agentRunId) {
+      if (entry.live?.agentRunId !== liveStatus.agentRunId) {
+        await this.options.sessionPageStore!.setLive(entry.sessionId, { agentRunId: liveStatus.agentRunId });
+        entry.live = { agentRunId: liveStatus.agentRunId };
+      }
+    } else if (entry.live) {
+      await this.options.sessionPageStore!.setLive(entry.sessionId, undefined);
+      entry.live = undefined;
+    }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(renderSessionPage(entry, { live: liveStatus.live }));
+  }
+
+  /**
+   * `GET /sessions/:token/live-events` (ADR 0026): proxies
+   * agent-orchestrator's `GET /agent-runs/:runId/events` SSE stream straight
+   * through to the browser's `EventSource` -- piped, not buffered.
+   */
+  private async handleSessionLiveEvents(res: ServerResponse, token: string): Promise<void> {
+    const entry = await this.options.sessionPageStore!.getByToken(token);
+    if (!entry?.live?.agentRunId) {
+      res.writeHead(404).end("Not found");
+      return;
+    }
+    const upstream = await this.options.orchestratorClient.openEventStream(entry.live.agentRunId, entry.sessionId);
+    if (!upstream.ok || !upstream.body) {
+      res.writeHead(502).end("Live session unavailable");
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+    res.flushHeaders?.();
+    const reader = upstream.body.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+    } catch {
+      // Client disconnected or upstream dropped -- nothing to recover.
+    } finally {
+      res.end();
+    }
+  }
+
+  /**
+   * `POST /sessions/:token/live-prompt` (ADR 0026): submits a prompt
+   * directly into the live opencode session (fire-and-forget via
+   * `prompt_async` -- the response streams back through the SSE view the
+   * caller is presumably already watching), discovering and caching the
+   * underlying opencode session id on first use.
+   */
+  private async handleSessionLivePrompt(req: IncomingMessage, res: ServerResponse, token: string): Promise<void> {
+    const entry = await this.options.sessionPageStore!.getByToken(token);
+    if (!entry?.live?.agentRunId) {
+      res.writeHead(404).end("Not found");
+      return;
+    }
+    const rawBody = await readBody(req);
+    const prompt = new URLSearchParams(rawBody).get("prompt")?.trim() ?? "";
+    if (prompt) {
+      this.submitLivePrompt(entry.sessionId, entry.live.agentRunId, entry.live.opencodeSessionId, prompt).catch(
+        this.options.onBackgroundError ?? ((error: unknown) => console.error(error)),
+      );
+    }
+    res.writeHead(303, { location: `/sessions/${token}` }).end();
+  }
+
+  private async submitLivePrompt(
+    sessionId: string,
+    agentRunId: string,
+    opencodeSessionId: string | undefined,
+    prompt: string,
+  ): Promise<void> {
+    let sessionIdToUse = opencodeSessionId;
+    if (!sessionIdToUse) {
+      const listed = await this.options.orchestratorClient.forwardOpencode(agentRunId, sessionId, {
+        method: "GET",
+        path: "/session",
+      });
+      const sessions = Array.isArray(listed.body) ? (listed.body as Array<{ id?: unknown }>) : [];
+      const discovered = sessions.find((s) => typeof s.id === "string")?.id as string | undefined;
+      if (!discovered) throw new Error("could not discover the live opencode session id");
+      sessionIdToUse = discovered;
+      await this.options.sessionPageStore!.setLive(sessionId, { agentRunId, opencodeSessionId: discovered });
+    }
+    await this.options.orchestratorClient.forwardOpencode(agentRunId, sessionId, {
+      method: "POST",
+      path: `/session/${sessionIdToUse}/prompt_async`,
+      body: { parts: [{ type: "text", text: prompt }] },
+    });
   }
 
   private async handleSessionPrompt(req: IncomingMessage, res: ServerResponse, token: string): Promise<void> {
