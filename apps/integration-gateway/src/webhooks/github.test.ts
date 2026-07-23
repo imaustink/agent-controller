@@ -46,7 +46,25 @@ describe("parseGithubEvent", () => {
       senderIsBot: false,
       title: "Add dark mode",
       body: "Please add a dark theme.",
+      labelNames: [],
     });
+  });
+
+  it("parses an issues.opened event's labels already attached at creation time", () => {
+    const event = parseGithubEvent(
+      "issues",
+      JSON.stringify({
+        action: "opened",
+        ...repoSender,
+        issue: {
+          number: 42,
+          title: "Add dark mode",
+          body: "Please add a dark theme.",
+          labels: [{ name: "ai-triage" }, { name: "enhancement" }],
+        },
+      }),
+    );
+    expect(event).toMatchObject({ kind: "issue-opened", labelNames: ["ai-triage", "enhancement"] });
   });
 
   it("parses an issue_comment.created event", () => {

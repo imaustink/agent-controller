@@ -128,6 +128,41 @@ describe("GatewayServer", () => {
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
   });
 
+  it("skips relaying issues.opened when the trigger label is already attached (the guaranteed-to-follow issues.labeled event handles it instead)", async () => {
+    const res = await postWebhook(port, "issues", {
+      action: "opened",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: {
+        number: 7,
+        title: "Add dark mode",
+        body: "Please add a dark theme option.",
+        labels: [{ name: "ai-triage" }],
+      },
+    });
+    expect(res.status).toBe(202);
+    await flush();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(postIssueComment).not.toHaveBeenCalled();
+  });
+
+  it("still relays issues.opened normally when other (non-trigger) labels are already attached", async () => {
+    const res = await postWebhook(port, "issues", {
+      action: "opened",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: {
+        number: 7,
+        title: "Add dark mode",
+        body: "Please add a dark theme option.",
+        labels: [{ name: "enhancement" }],
+      },
+    });
+    expect(res.status).toBe(202);
+    await flush();
+    expect(invoke).toHaveBeenCalled();
+  });
+
   it("relays an issue_comment.created follow-up on the same session id", async () => {
     await postWebhook(port, "issue_comment", {
       action: "created",

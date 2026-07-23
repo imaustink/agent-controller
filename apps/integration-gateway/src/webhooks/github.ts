@@ -29,6 +29,17 @@ export type GithubIssueEvent =
       senderIsBot: boolean;
       title: string;
       body: string;
+      /**
+       * Labels already attached at creation time -- GitHub fires a
+       * SEPARATE `issues.labeled` webhook delivery (one per label) for an
+       * issue created with labels already set, a second or two after
+       * `opened`. Lets the caller skip relaying `opened` when the trigger
+       * label is already here, so the guaranteed-to-follow `labeled`
+       * event is the only one that dispatches (see server.ts) -- without
+       * this, both events independently delegate to the same agent for
+       * the same session, racing each other into two AgentRuns.
+       */
+      labelNames: string[];
     }
   | {
       kind: "issue-comment-created";
@@ -85,7 +96,7 @@ export function parseGithubEvent(eventName: string | undefined, rawBody: string)
     action?: unknown;
     repository?: RepoPayload;
     sender?: SenderPayload;
-    issue?: { number?: unknown; title?: unknown; body?: unknown };
+    issue?: { number?: unknown; title?: unknown; body?: unknown; labels?: LabelPayload[] };
     comment?: { body?: unknown };
     label?: LabelPayload;
   };
@@ -102,7 +113,8 @@ export function parseGithubEvent(eventName: string | undefined, rawBody: string)
   if (eventName === "issues" && payload.action === "opened") {
     const title = typeof payload.issue?.title === "string" ? payload.issue.title : "";
     const body = typeof payload.issue?.body === "string" ? payload.issue.body : "";
-    return { kind: "issue-opened", owner, repo, issueNumber, senderLogin, senderIsBot, title, body };
+    const labelNames = (payload.issue?.labels ?? []).map((label) => label.name).filter((name) => typeof name === "string");
+    return { kind: "issue-opened", owner, repo, issueNumber, senderLogin, senderIsBot, title, body, labelNames };
   }
 
   if (eventName === "issue_comment" && payload.action === "created") {
