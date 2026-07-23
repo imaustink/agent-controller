@@ -180,6 +180,14 @@ core-controller:
     tag: latest
     pullPolicy: Always
 
+  # Every tool/agent image here (recipe-scraper, claude-code-swe-agent, etc.)
+  # is also pushed to registry.kurpuis.com under a mutable ":latest" tag, same
+  # as core-controller's own image above -- so the Jobs core-controller
+  # launches need "Always" too, or a node that already pulled a tag once will
+  # keep running that stale digest through every later push+redeploy.
+  runJob:
+    imagePullPolicy: Always
+
   # Must match the actual in-cluster NATS Service (the release-name-prefixed
   # "agent-controller-nats", not the chart's placeholder default
   # "nats://nats:4222", which doesn't resolve to anything in this namespace).

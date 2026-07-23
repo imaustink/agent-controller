@@ -18,6 +18,7 @@ package controller
 
 import (
 	"fmt"
+	"os"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -27,6 +28,24 @@ import (
 
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 )
+
+// imagePullPolicy resolves the run Job's ImagePullPolicy from AGENT_IMAGE_PULL_POLICY
+// (values: "Always", "IfNotPresent", "Never"), defaulting to IfNotPresent -- the right
+// default for local/minikube dev, where images are built straight into the cluster's own
+// container runtime and never pushed to a registry (see buildRunJob's Container comment).
+// Deployments that push run images to a real registry under a mutable tag (e.g. ":latest")
+// must set this to "Always", or a kubelet that already pulled that tag once will keep
+// reusing the stale cached image on every subsequent redeploy.
+func imagePullPolicy() corev1.PullPolicy {
+	switch os.Getenv("AGENT_IMAGE_PULL_POLICY") {
+	case "Always":
+		return corev1.PullAlways
+	case "Never":
+		return corev1.PullNever
+	default:
+		return corev1.PullIfNotPresent
+	}
+}
 
 // SessionIDAnnotation is the well-known annotation key the orchestrator sets
 // on a ToolRun/AgentRun CR to carry the caller's Open WebUI session id
@@ -160,7 +179,9 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 							// runtime (e.g. minikube's docker daemon) for local/dev use,
 							// never pushed to a registry, so "Always" would wrongly try
 							// to pull from Docker Hub and fail with ImagePullBackOff.
-							ImagePullPolicy: corev1.PullIfNotPresent,
+							// Overridable via AGENT_IMAGE_PULL_POLICY (see imagePullPolicy
+							// above) for deployments that do push to a real registry.
+							ImagePullPolicy: imagePullPolicy(),
 							Args:            p.args,
 							Env:             env,
 							Resources:       resources,
