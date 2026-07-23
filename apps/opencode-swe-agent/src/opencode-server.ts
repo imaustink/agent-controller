@@ -202,3 +202,31 @@ export async function subscribeEvents(baseUrl: string, auth: OpencodeAuth, onEve
     // Aborted, or the connection dropped -- best-effort, nothing to recover.
   }
 }
+
+/**
+ * Extracts a chat-worthy narration from one raw opencode SSE event, if any
+ * (confirmed against opencode serve's own `/doc` OpenAPI spec). Unlike the
+ * old one-shot `opencode run --format json` mode (which only ever emitted
+ * whole message/tool-output blocks, prompting PR #82's `ProgressStreamer`
+ * synthetic-typing-effect workaround), `opencode serve`'s event stream
+ * carries genuine per-token deltas -- `session.next.text.delta` -- so each
+ * one is already the right granularity to forward as-is; no artificial
+ * smoothing needed, and `stage: "agent-text"` is the same contract
+ * `agent-orchestrator`'s server.ts already treats as real chat content.
+ * `session.next.tool.called` is forwarded as a terse `stage: "agent"`
+ * status line, matching the old CLI mode's "running <tool>" narration.
+ */
+export function narrateOpencodeEvent(event: unknown): { message: string; stage: "agent-text" | "agent" } | undefined {
+  if (typeof event !== "object" || event === null) return undefined;
+  const rec = event as Record<string, unknown>;
+  const type = typeof rec.type === "string" ? rec.type : "";
+  const props = (typeof rec.properties === "object" && rec.properties !== null ? rec.properties : {}) as Record<string, unknown>;
+
+  if (type === "session.next.text.delta" && typeof props.delta === "string" && props.delta) {
+    return { message: props.delta, stage: "agent-text" };
+  }
+  if (type === "session.next.tool.called" && typeof props.tool === "string" && props.tool) {
+    return { message: `running ${props.tool}`, stage: "agent" };
+  }
+  return undefined;
+}

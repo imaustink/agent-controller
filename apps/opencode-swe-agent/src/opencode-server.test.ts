@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createSession, forwardRequest, sendMessage, subscribeEvents } from "./opencode-server.js";
+import { createSession, forwardRequest, narrateOpencodeEvent, sendMessage, subscribeEvents } from "./opencode-server.js";
 
 /**
  * Stands in for a real `opencode serve` process (ADR 0026) -- these tests
@@ -111,5 +111,32 @@ describe("opencode-server HTTP client", () => {
     const abort = new AbortController();
     await subscribeEvents(baseUrl, auth, (event) => events.push(event), abort.signal);
     expect(events).toEqual([{ type: "message.part.updated", part: { text: "hi" } }, { type: "session.idle" }]);
+  });
+});
+
+describe("narrateOpencodeEvent", () => {
+  it("narrates a real per-token text delta as agent-text", () => {
+    expect(
+      narrateOpencodeEvent({
+        type: "session.next.text.delta",
+        properties: { sessionID: "ses_1", assistantMessageID: "msg_1", textID: "txt_1", delta: "Let's look at " },
+      }),
+    ).toEqual({ message: "Let's look at ", stage: "agent-text" });
+  });
+
+  it("narrates a tool call as a terse agent status line", () => {
+    expect(
+      narrateOpencodeEvent({
+        type: "session.next.tool.called",
+        properties: { sessionID: "ses_1", assistantMessageID: "msg_1", callID: "call_1", tool: "bash", input: {} },
+      }),
+    ).toEqual({ message: "running bash", stage: "agent" });
+  });
+
+  it("ignores event types with no chat-worthy narration", () => {
+    expect(narrateOpencodeEvent({ type: "session.next.step.started", properties: {} })).toBeUndefined();
+    expect(narrateOpencodeEvent({ type: "session.next.text.delta", properties: { delta: "" } })).toBeUndefined();
+    expect(narrateOpencodeEvent(null)).toBeUndefined();
+    expect(narrateOpencodeEvent("not an object")).toBeUndefined();
   });
 });

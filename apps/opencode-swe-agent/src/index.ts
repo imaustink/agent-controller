@@ -6,6 +6,7 @@ import { buildOpencodeConfig, buildPrompt } from "./opencode.js";
 import {
   createSession,
   forwardRequest,
+  narrateOpencodeEvent,
   sendMessage,
   startOpencodeServer,
   subscribeEvents,
@@ -334,10 +335,21 @@ async function main(): Promise<void> {
     await server.waitForHealth();
 
     const session = await createSession(server.baseUrl, server.auth);
-    // Forward every local opencode event onto NATS for a live viewer
-    // (ADR 0026) -- fire-and-forget, never awaited; never load-bearing for
-    // the reply/prompt contract below.
-    void subscribeEvents(server.baseUrl, server.auth, (event) => void publishUp({ type: "opencode_event", event }), abort.signal);
+    // Forward every local opencode event onto NATS for a live viewer (ADR
+    // 0026), AND narrate text-delta/tool-call events as ordinary `progress`
+    // messages so the ordinary (non-live-page) chat streaming path keeps
+    // seeing the agent's real narrative as it works -- fire-and-forget,
+    // never awaited; never load-bearing for the reply/prompt contract below.
+    void subscribeEvents(
+      server.baseUrl,
+      server.auth,
+      (event) => {
+        void publishUp({ type: "opencode_event", event });
+        const narrated = narrateOpencodeEvent(event);
+        if (narrated) void publishUp({ type: "progress", message: clip(narrated.message, 500), stage: narrated.stage });
+      },
+      abort.signal,
+    );
 
     await publishUp({ type: "progress", message: "Running coding agent…", stage: "agent" });
     const outcome = await runTurn(
