@@ -1729,6 +1729,7 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       flow: "device",
       deviceCode: "raw-device-code",
       expiresAt: expect.any(Number),
+      request: "open a PR that fixes the bug",
     });
     expect(final.result).toMatch(/github\.com\/login\/device/);
     expect(final.result).toMatch(/ABCD-1234/);
@@ -1759,6 +1760,7 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       provider: "github",
       flow: "authcode",
       expiresAt: expect.any(Number),
+      request: "open a PR that fixes the bug",
     });
     expect(final.pendingIdentityLink?.deviceCode).toBeUndefined();
     expect(final.result).toMatch(/github\.com\/login\/oauth\/authorize/);
@@ -1793,6 +1795,48 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(final.agentRunId).toBeDefined();
   });
 
+  it("resumes automatically via waitForCompletion for a device-flow, non-streaming caller (e.g. integration-gateway's fire-and-forget relay) with no progressListener", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "device" as const,
+        verificationUri: "https://github.com/login/device",
+        userCode: "ABCD-1234",
+        deviceCode: "raw-device-code",
+        expiresInSeconds: 900,
+        pollIntervalSeconds: 5,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      waitForCompletion: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    // No progressListener -- this is exactly integration-gateway's relay
+    // shape (fire-and-forget /invoke, polled for a result), not a streaming
+    // chat turn. waitForCompletion is not gated on progressListener, so this
+    // should still resume within the SAME turn instead of ending on a
+    // pendingIdentityLink message.
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      identityLinkFlow: "device",
+    });
+
+    expect(identityLinkGateway.waitForCompletion).toHaveBeenCalledWith("github", "alice", 900_000);
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      githubAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({
+        secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }],
+        goal: "triage and resolve this issue",
+      }),
+    );
+    expect(final.identityLinkPending).toBeFalsy();
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(final.agentRunId).toBeDefined();
+  });
+
   it("falls back to the pending-link message when waitForCompletion times out on a streaming call", async () => {
     const identityLinkGateway: IdentityLinkPort = {
       start: vi.fn().mockResolvedValue({
@@ -1817,6 +1861,7 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       provider: "github",
       flow: "authcode",
       expiresAt: expect.any(Number),
+      request: "open a PR that fixes the bug",
     });
     expect(final.result).toMatch(/send any message once you're done/);
   });
@@ -1852,6 +1897,70 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     );
     expect(final.pendingIdentityLink).toBeUndefined();
     expect(final.agentRunId).toBeDefined();
+  });
+
+  it("resumes with the ORIGINAL request captured at pause time, not the resuming turn's throwaway text", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn().mockResolvedValue("complete"),
+      getToken: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      // The resuming turn's own text is just an unrelated ack -- the agent
+      // must be launched with the ORIGINAL goal below, not this.
+      request: "Done!",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: {
+        agentId: "opencode-swe",
+        provider: "github",
+        flow: "device",
+        deviceCode: "raw-device-code",
+        expiresAt: Date.now() + 900_000,
+        request: "triage and resolve this issue: add dark mode",
+      },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      githubAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ goal: "triage and resolve this issue: add dark mode" }),
+    );
+  });
+
+  it("falls back to the resuming turn's own text when the pending link predates the request field (older in-flight session)", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn().mockResolvedValue("complete"),
+      getToken: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "continue please",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: {
+        agentId: "opencode-swe",
+        provider: "github",
+        flow: "device",
+        deviceCode: "raw-device-code",
+        expiresAt: Date.now() + 900_000,
+        // No `request` field -- simulates a session paused before this fix.
+      },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      githubAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ goal: "continue please" }),
+    );
   });
 
   it("ends the turn with identityLinkPending true and the pending link preserved when poll reports still-pending before expiry", async () => {
@@ -1925,6 +2034,7 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       flow: "device",
       deviceCode: "new-device-code",
       expiresAt: expect.any(Number),
+      request: "let's try again",
     });
   });
 

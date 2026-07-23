@@ -275,7 +275,23 @@ export const AgentStateAnnotation = Annotation.Root({
    * chance to authorize (or the attempt times out/is denied).
    */
   pendingIdentityLink: Annotation<
-    | { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number }
+    | {
+        agentId: string;
+        provider: string;
+        flow: "device" | "authcode";
+        deviceCode?: string;
+        expiresAt: number;
+        /**
+         * The turn's original request, captured when the pause started, so
+         * resuming re-delegates with the ORIGINAL goal instead of whatever
+         * throwaway text (e.g. "done") the caller happened to send on the
+         * turn that finally noticed the link completed. Optional so a
+         * session already mid-pause before this field existed still falls
+         * back to the old (buggy but non-crashing) behavior rather than
+         * erroring.
+         */
+        request?: string;
+      }
     | undefined
   >({
     reducer: (_current, update) => update,
@@ -733,7 +749,17 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // delegation with it.
       const [found] = await deps.agentStore.getByIds([pending.agentId], { callerRoles: state.identity.roles });
       if (!found) return { pendingIdentityLink: undefined }; // agent gone/revoked -- fall through to fresh selection
-      return { selectedAgent: found.agent, pendingIdentityLink: undefined };
+      return {
+        selectedAgent: found.agent,
+        pendingIdentityLink: undefined,
+        // Restore the ORIGINAL request captured when the pause started, so
+        // delegateToAgent re-delegates with THAT goal -- not whatever text
+        // this resuming turn happens to carry (e.g. a plain "done" sent
+        // just to nudge the conversation along). Absent only for a session
+        // that paused before this field existed, in which case state.request
+        // (this turn's text) is the best available fallback, same as before.
+        ...(pending.request !== undefined ? { request: pending.request } : {}),
+      };
     })
     .addNode("checkActiveAgentRun", async (state) => {
       // Agent-continuation counterpart to checkActiveSkill: if the
@@ -895,45 +921,44 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // has no browser to redirect.
           const flow = state.identityLinkFlow ?? "authcode";
           const started = await deps.identityLinkGateway.start(provider, state.identity.subject, flow);
-          if (started.flow === "device") {
-            return {
-              result: `To continue, please [link your GitHub account](${started.verificationUri}) and enter code \`${started.userCode}\`. This is a one-time step -- send any message once you're done.`,
-              pendingIdentityLink: {
-                agentId: agent.id,
-                provider,
-                flow: "device",
-                deviceCode: started.deviceCode,
-                expiresAt: Date.now() + started.expiresInSeconds * 1000,
-              },
-              identityLinkPending: true,
-            };
-          }
-          // Streaming turns can hold the SSE connection open (withHeartbeat
-          // keeps it alive) while integration-gateway's OAuth callback
-          // publishes completion over the identity-link Redis instance the
-          // two services already share -- so the caller never has to send a
-          // follow-up "done" message. Non-streaming (blocking) callers have
-          // no connection to hold open, so they keep the original
-          // wait-for-the-next-message behavior below.
-          if (state.progressListener) {
-            state.progressListener(
-              "identity-link",
-              `To continue, please [link your GitHub account](${started.authorizeUrl}). This is a one-time step — I'll continue automatically once you finish.`,
-            );
-            existing = await deps.identityLinkGateway.waitForCompletion?.(
-              provider,
-              state.identity.subject,
-              started.expiresInSeconds * 1000,
-            );
-          }
+          const linkUrlText =
+            started.flow === "device"
+              ? `[link your GitHub account](${started.verificationUri}) and enter code \`${started.userCode}\``
+              : `[link your GitHub account](${started.authorizeUrl})`;
+
+          // Block for up to this flow's own expiry waiting for the caller to
+          // complete authorization -- `waitForCompletion` blocks on the
+          // gateway's own Redis-backed wait (not local polling) purely by
+          // (provider, subject), so it resolves the moment EITHER flow lands
+          // a token, regardless of which one was started. This is what lets
+          // ANY caller resume automatically without a follow-up message, not
+          // just SSE-streaming ones: `/invoke`'s own async accept/poll
+          // contract (ADR 0006) already tolerates a graph run taking several
+          // minutes, so a fire-and-forget caller (e.g. integration-gateway's
+          // GitHub relay, always device flow) benefits from this exactly the
+          // same way a streaming chat turn does. `progressListener`, when
+          // present, only adds narration while waiting; it does not gate
+          // whether we wait at all.
+          state.progressListener?.("identity-link", `To continue, please ${linkUrlText}. This is a one-time step — I'll continue automatically once you finish.`);
+          existing = await deps.identityLinkGateway.waitForCompletion?.(
+            provider,
+            state.identity.subject,
+            started.expiresInSeconds * 1000,
+          );
+
           if (!existing) {
             return {
-              result: `To continue, please [link your GitHub account](${started.authorizeUrl}). This is a one-time step -- send any message once you're done.`,
+              result: `To continue, please ${linkUrlText}. This is a one-time step -- send any message once you're done.`,
               pendingIdentityLink: {
                 agentId: agent.id,
                 provider,
-                flow: "authcode",
+                flow: started.flow,
+                ...(started.flow === "device" ? { deviceCode: started.deviceCode } : {}),
                 expiresAt: Date.now() + started.expiresInSeconds * 1000,
+                // Captured so the eventual resume (checkPendingIdentityLink)
+                // re-delegates with THIS goal, not whatever text the turn
+                // that finally notices completion happens to carry.
+                request: state.request,
               },
               identityLinkPending: true,
             };
