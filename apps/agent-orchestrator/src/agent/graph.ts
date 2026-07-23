@@ -239,6 +239,21 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => undefined,
   }),
   /**
+   * Fired the instant `delegateToAgent` decides this caller must link an
+   * identity (getToken miss) -- BEFORE the potentially slow `start()` (the
+   * claude provider spawns a `setup-token` PTY that can take seconds). Lets a
+   * fire-and-forget caller (integration-gateway's triage relay) mark its
+   * in-flight `/invoke` job as identity-link-pending immediately, so that
+   * caller can withhold a premature "starting work" acknowledgement while the
+   * link is still being set up (issue: "check auth before saying work has
+   * started"). Absent on paths that don't need it (streaming chat, tests) --
+   * dropped silently, same as `progressListener`.
+   */
+  reportIdentityLinkPending: Annotation<((info: { provider: string; subject: string }) => void) | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
    * True when `selectDelegate` found no matching Skill/Agent candidate at
    * all and `noMatchFallback` handled the turn instead — either a relevance-
    * gated direct tool call (selectFallbackTool) or a bare best-effort LLM
@@ -980,6 +995,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           JSON.stringify({ provider, subject: state.identity.subject, found: Boolean(existing) }),
         );
         if (!existing) {
+          // Signal "this turn needs a link" NOW, before the (possibly slow)
+          // start() below -- a fire-and-forget caller uses this to avoid
+          // prematurely announcing that work has started while the link is
+          // still being set up. Safe to fire before we even have the link URL.
+          state.reportIdentityLinkPending?.({ provider, subject: state.identity.subject });
           // Ordinary Open WebUI chat turns never set `identityLinkFlow`, so
           // they default to the browser-redirect authcode flow; a headless
           // direct `/invoke` caller (e.g. integration-gateway's own

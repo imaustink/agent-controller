@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ClaudeTokenStore } from "./claude-auth/store.js";
 import { REPLY_MARKER, type GithubReplyClient } from "./github-client.js";
 import { GithubIdentityResolver } from "./identity.js";
 import type { OrchestratorClient } from "./orchestrator-client.js";
@@ -126,6 +127,8 @@ describe("GatewayServer", () => {
       "Add dark mode\n\nPlease add a dark theme option.",
       sessionIdFor("acme", "widgets", 7),
       "device",
+      undefined,
+      undefined,
     );
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
   });
@@ -174,7 +177,7 @@ describe("GatewayServer", () => {
       comment: { body: "start work" },
     });
     await flush();
-    expect(invoke).toHaveBeenCalledWith("start work", sessionIdFor("acme", "widgets", 7), "device");
+    expect(invoke).toHaveBeenCalledWith("start work", sessionIdFor("acme", "widgets", 7), "device", undefined, undefined);
   });
 
   it("ignores an issues.labeled event when the label isn't the configured trigger label", async () => {
@@ -218,6 +221,7 @@ describe("GatewayServer", () => {
         senderLogin: "alice",
         labelName: "ai-triage",
       },
+      undefined,
     );
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
   });
@@ -263,6 +267,7 @@ describe("GatewayServer", () => {
         senderLogin: "alice",
         labelName: "ai-review",
       },
+      undefined,
     );
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 12, "What repo/branch should this target?");
   });
@@ -317,7 +322,14 @@ describe("GatewayServer session pages", () => {
 
   beforeEach(async () => {
     identityResolver = new GithubIdentityResolver(new Map([["alice", { subject: "alice", roles: ["reporter"] }]]), "agent-controller[bot]");
-    invoke = vi.fn().mockResolvedValue({ status: "succeeded", result: "Working on it." });
+    // Simulate the real client's onRunning callback (5th arg): it fires once the
+    // turn is genuinely running, which is what drives the deferred "starting
+    // work" comment. A plain mockResolvedValue would never post it.
+    invoke = vi.fn().mockImplementation(async (..._args: unknown[]) => {
+      const onRunning = _args[4];
+      if (typeof onRunning === "function") await (onRunning as () => Promise<void> | void)();
+      return { status: "succeeded", result: "Working on it." };
+    });
     // Not-live by default -- these tests exercise the #83 turn-history
     // fallback path; live-mode behavior has its own describe block below.
     checkLive = vi.fn().mockResolvedValue({ live: false });
@@ -411,11 +423,106 @@ describe("GatewayServer session pages", () => {
     expect(res.headers.get("location")).toBe(`/sessions/${entry.token}`);
     await flush();
 
-    expect(invoke).toHaveBeenCalledWith("actually, target the develop branch", "github:acme/widgets#7", "device");
+    expect(invoke).toHaveBeenCalledWith("actually, target the develop branch", "github:acme/widgets#7", "device", undefined, undefined);
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "Working on it.");
     const updated = await sessionPageStore.getByToken(entry.token);
     expect(updated?.turns).toHaveLength(1);
     expect(updated?.turns[0]).toMatchObject({ status: "succeeded", result: "Working on it." });
+  });
+});
+
+describe("GatewayServer unauthenticated triage: deferred ack + auto-resume", () => {
+  let server: GatewayServer;
+  let port: number;
+  let invoke: ReturnType<typeof vi.fn>;
+  let postIssueComment: ReturnType<typeof vi.fn>;
+  let waitForCompletion: ReturnType<typeof vi.fn>;
+  let sessionPageStore: InMemorySessionPageStore;
+
+  beforeEach(async () => {
+    const identityResolver = new GithubIdentityResolver(
+      new Map([["alice", { subject: "alice", roles: ["reporter"] }]]),
+      "agent-controller[bot]",
+    );
+    // First invoke: caller isn't linked -> the turn's "result" is a link
+    // prompt (identityLinkPending), and onRunning is NOT fired. Second invoke
+    // (the auto-resume, after the link lands): fires onRunning and returns the
+    // real result.
+    let call = 0;
+    invoke = vi.fn().mockImplementation(async (..._args: unknown[]) => {
+      const onRunning = _args[4];
+      call += 1;
+      if (call === 1) {
+        return {
+          status: "succeeded",
+          identityLinkPending: true,
+          identityLink: { provider: "claude", subject: "client-integration-gateway" },
+          result: "To continue, please [link your Claude account](https://gateway.example.com/claude-auth/abc).",
+        };
+      }
+      if (typeof onRunning === "function") await (onRunning as () => Promise<void> | void)();
+      return { status: "succeeded", result: "Opened PR #42." };
+    });
+    postIssueComment = vi.fn().mockResolvedValue(undefined);
+    waitForCompletion = vi.fn().mockResolvedValue({ token: "sk-ant-oat01-linked", createdAt: "2026-01-01T00:00:00Z" });
+    sessionPageStore = new InMemorySessionPageStore();
+
+    server = new GatewayServer({
+      githubWebhookSecret: SECRET,
+      identityResolver,
+      orchestratorClient: { invoke, checkLive: vi.fn().mockResolvedValue({ live: false }) } as unknown as OrchestratorClient,
+      githubReplyClient: { postIssueComment } as unknown as GithubReplyClient,
+      githubTriggerLabel: "ai-triage",
+      sessionPageStore,
+      publicBaseUrl: "https://gateway.example.com",
+      claudeAuthStore: { get: vi.fn(), set: vi.fn(), delete: vi.fn(), waitForCompletion } as unknown as ClaudeTokenStore,
+    });
+    await server.listen(0);
+    port = (server as unknown as { server: { address: () => AddressInfo } }).server.address().port;
+  });
+
+  afterEach(async () => {
+    await server.close();
+  });
+
+  it("posts the auth prompt FIRST (no premature 'starting work'), then waits for the link and auto-resumes the same request", async () => {
+    await postWebhook(port, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
+      label: { name: "ai-triage" },
+    });
+    await flush();
+
+    // The very first comment is the auth prompt -- NOT a "starting work" ack.
+    expect(postIssueComment.mock.calls[0]?.[3]).toMatch(/link your Claude account/i);
+    expect(postIssueComment.mock.calls[0]?.[3]).not.toMatch(/starting work/i);
+    // Then, after the link lands, "starting work" and the real result follow.
+    expect(postIssueComment.mock.calls[1]?.[3]).toMatch(/^Starting work on this now/);
+    expect(postIssueComment.mock.calls[2]?.[3]).toBe("Opened PR #42.");
+
+    // Waited on the gateway-owned claude token store for the gateway subject,
+    // and re-invoked the SAME triage request once it landed.
+    expect(waitForCompletion).toHaveBeenCalledWith("client-integration-gateway", 10 * 60 * 1000);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves the prompt standing (no resume) when the link is never completed in time", async () => {
+    waitForCompletion.mockResolvedValueOnce(undefined);
+
+    await postWebhook(port, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
+      label: { name: "ai-triage" },
+    });
+    await flush();
+
+    expect(postIssueComment).toHaveBeenCalledTimes(1);
+    expect(postIssueComment.mock.calls[0]?.[3]).toMatch(/link your Claude account/i);
+    expect(invoke).toHaveBeenCalledTimes(1);
   });
 });
 

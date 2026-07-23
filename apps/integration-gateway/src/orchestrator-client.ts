@@ -18,6 +18,10 @@ export interface OrchestratorInvokeResult {
   status: "succeeded" | "failed" | "timed_out";
   result?: string;
   error?: string;
+  /** True when this turn's `result` is an "link your account" prompt rather than finished work -- the caller needs the linked identity before any agent runs (see agent-orchestrator's `InvocationRecord.identityLinkPending`). */
+  identityLinkPending?: boolean;
+  /** Provider + subject the pending link is keyed on, for a caller that can wait on its own token store and auto-resume once linked. Present only alongside `identityLinkPending`. */
+  identityLink?: { provider: string; subject: string };
 }
 
 export interface OrchestratorClientOptions {
@@ -48,6 +52,8 @@ interface InvokePollBody {
   status: "pending" | "succeeded" | "failed";
   result?: unknown;
   error?: string;
+  identityLinkPending?: boolean;
+  identityLink?: { provider: string; subject: string };
 }
 
 /** Result of `checkLive` (ADR 0026). */
@@ -156,6 +162,15 @@ export class OrchestratorClient {
     sessionId: string,
     identityLinkFlow?: "device" | "authcode",
     event?: Record<string, string | number | undefined>,
+    /**
+     * Fired at most once, the first poll that shows the turn genuinely
+     * running (status `pending` and NOT identity-link-pending) -- i.e. past
+     * the auth pre-flight, an agent actually launching. A caller uses this to
+     * post a "starting work" acknowledgement only when work has really begun,
+     * withholding it while an identity link is still being set up. Never fired
+     * for a turn that ends up identity-link-pending.
+     */
+    onRunning?: () => void | Promise<void>,
   ): Promise<OrchestratorInvokeResult> {
     const acceptRes = await this.fetchImpl(`${this.baseUrl()}/invoke`, {
       method: "POST",
@@ -176,6 +191,7 @@ export class OrchestratorClient {
     const accepted = (await acceptRes.json()) as InvokeAcceptedBody;
 
     const deadline = Date.now() + this.options.pollTimeoutMs;
+    let announcedRunning = false;
     while (Date.now() < deadline) {
       await this.sleep(this.options.pollIntervalMs);
       const pollRes = await this.fetchImpl(
@@ -187,12 +203,25 @@ export class OrchestratorClient {
       }
       const polled = (await pollRes.json()) as InvokePollBody;
       if (polled.status === "succeeded") {
-        return { status: "succeeded", result: typeof polled.result === "string" ? polled.result : JSON.stringify(polled.result) };
+        return {
+          status: "succeeded",
+          result: typeof polled.result === "string" ? polled.result : JSON.stringify(polled.result),
+          identityLinkPending: polled.identityLinkPending,
+          identityLink: polled.identityLink,
+        };
       }
       if (polled.status === "failed") {
         return { status: "failed", error: polled.error ?? "orchestrator turn failed" };
       }
-      // status === "pending" -- keep polling.
+      // status === "pending". Announce "running" the first time we see the
+      // turn is past its auth pre-flight (not identity-link-pending) -- an
+      // agent is genuinely launching, so it's honest to say work has started.
+      // While identityLinkPending is still set, hold the announcement back.
+      if (!announcedRunning && !polled.identityLinkPending) {
+        announcedRunning = true;
+        await onRunning?.();
+      }
+      // keep polling.
     }
     return { status: "timed_out", error: `no terminal result within ${this.options.pollTimeoutMs}ms` };
   }
