@@ -1824,7 +1824,54 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
   });
 
-  it("resumes automatically via waitForCompletion for a device-flow, non-streaming caller (e.g. integration-gateway's fire-and-forget relay) with no progressListener", async () => {
+  it("posts the link immediately and parks a pending link (does NOT block on waitForCompletion) for a fire-and-forget caller with no progressListener, e.g. integration-gateway's GitHub-issue relay", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "device" as const,
+        verificationUri: "https://github.com/login/device",
+        userCode: "ABCD-1234",
+        deviceCode: "raw-device-code",
+        expiresInSeconds: 900,
+        pollIntervalSeconds: 5,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      // Would resolve a token if awaited -- the point of this test is that on a
+      // no-progressListener caller it is NEVER awaited.
+      waitForCompletion: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    // No progressListener -- integration-gateway's relay shape (fire-and-forget
+    // /invoke, polled for a result). There is no live channel to show the link
+    // on, so it reaches the user only in the final result comment. Blocking on
+    // waitForCompletion would hide the link for the whole wait window (nobody
+    // can complete a link they can't see), so the link must be posted
+    // immediately and the pending link parked for checkPendingIdentityLink to
+    // resume on the next trigger.
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      identityLinkFlow: "device",
+    });
+
+    expect(identityLinkGateway.waitForCompletion).not.toHaveBeenCalled();
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual({
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "device",
+      deviceCode: "raw-device-code",
+      expiresAt: expect.any(Number),
+      request: "triage and resolve this issue",
+    });
+    expect(final.result).toMatch(/link your GitHub account/i);
+    expect(final.result).toMatch(/enter code `ABCD-1234`/);
+  });
+
+  it("resumes automatically via waitForCompletion within the same turn for a streaming caller (progressListener present)", async () => {
     const identityLinkGateway: IdentityLinkPort = {
       start: vi.fn().mockResolvedValue({
         flow: "device" as const,
@@ -1840,18 +1887,19 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     };
     const deps = identityLinkDeps({ identityLinkGateway });
     const graph = buildAgentGraph(deps);
+    const progressListener = vi.fn();
 
-    // No progressListener -- this is exactly integration-gateway's relay
-    // shape (fire-and-forget /invoke, polled for a result), not a streaming
-    // chat turn. waitForCompletion is not gated on progressListener, so this
-    // should still resume within the SAME turn instead of ending on a
-    // pendingIdentityLink message.
+    // A streaming chat turn HAS a live channel: the link is surfaced live via
+    // progressListener, so it is safe (and desirable) to block up to expiry and
+    // resume the SAME turn once the user links -- no follow-up message needed.
     const final = await graph.invoke({
       request: "triage and resolve this issue",
       authToken: "tok",
       identityLinkFlow: "device",
+      progressListener,
     });
 
+    expect(progressListener).toHaveBeenCalledWith("identity-link", expect.stringMatching(/link your GitHub account/i));
     expect(identityLinkGateway.waitForCompletion).toHaveBeenCalledWith("github", "alice", 900_000);
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
       githubAgent.agentRunTemplate,
@@ -2233,7 +2281,7 @@ describe("buildAgentGraph per-caller Claude Code OAuth linking (docs/adr/0027)",
     expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
   });
 
-  it("launches with CLAUDE_CODE_OAUTH_TOKEN once waitForCompletion resolves a linked token", async () => {
+  it("launches with CLAUDE_CODE_OAUTH_TOKEN once waitForCompletion resolves a linked token (streaming caller)", async () => {
     const claudeAuthGateway: IdentityLinkPort = {
       start: vi.fn().mockResolvedValue({
         flow: "page" as const,
@@ -2246,8 +2294,11 @@ describe("buildAgentGraph per-caller Claude Code OAuth linking (docs/adr/0027)",
     };
     const deps = claudeAuthDeps({ claudeAuthGateway });
     const graph = buildAgentGraph(deps);
+    // Same-turn resume only happens on a caller with a live channel; the
+    // page-flow link is surfaced live via progressListener before the wait.
+    const progressListener = vi.fn();
 
-    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok", progressListener });
 
     expect(claudeAuthGateway.waitForCompletion).toHaveBeenCalledWith("claude", "alice", 600_000);
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
