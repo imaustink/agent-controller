@@ -50,6 +50,19 @@ function looksLikeAuthError(text: string): boolean {
 }
 
 /**
+ * Mirrors every progress event to this process's own stderr (visible via
+ * `kubectl logs`), in addition to whatever `onProgress` forwards over NATS.
+ * The stream-json events consumed from the child's stdout are otherwise
+ * never echoed anywhere a human running `kubectl logs` would see them --
+ * only the child's own stderr gets forwarded (see the `child.stderr` handler
+ * below) -- so without this, the Job pod's logs show none of the agent's
+ * actual tool-call trail.
+ */
+function logProgress(stage: "agent-text" | "agent", message: string): void {
+  process.stderr.write(`[claude-runner] [${stage}] ${message}\n`);
+}
+
+/**
  * How often to emit a "still working" heartbeat while the CLI is silent.
  * Claude Code narrates a `tool_use` event when a tool STARTS but nothing
  * until it finishes, so a single long-running command (e.g. a full test
@@ -126,10 +139,12 @@ export function runClaudeTurn(prompt: string, opts: ClaudeRunOptions): Promise<C
           if (typeof block !== "object" || block === null) continue;
           const b = block as Record<string, unknown>;
           if (b.type === "text" && typeof b.text === "string" && b.text) {
+            logProgress("agent-text", b.text);
             opts.onProgress?.(b.text, "agent-text");
           } else if (b.type === "tool_use" && typeof b.name === "string") {
             lastTool = b.name;
             currentToolStartedAt = Date.now();
+            logProgress("agent", `running ${b.name}`);
             opts.onProgress?.(`running ${b.name}`, "agent");
           }
         }
@@ -174,7 +189,9 @@ export function runClaudeTurn(prompt: string, opts: ClaudeRunOptions): Promise<C
     const heartbeat = setInterval(() => {
       if (Date.now() - lastActivityAt < heartbeatMs) return;
       const secs = Math.round((Date.now() - currentToolStartedAt) / 1000);
-      opts.onProgress?.(lastTool ? `still running ${lastTool}… (${secs}s)` : `still working… (${secs}s)`, "agent");
+      const heartbeatMessage = lastTool ? `still running ${lastTool}… (${secs}s)` : `still working… (${secs}s)`;
+      logProgress("agent", heartbeatMessage);
+      opts.onProgress?.(heartbeatMessage, "agent");
     }, heartbeatMs);
     heartbeat.unref?.();
 
