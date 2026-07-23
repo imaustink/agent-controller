@@ -36,8 +36,22 @@ interface Flow {
   proc: pty.IPty;
   subject: string;
   output: string;
+  exited: boolean;
   killed: boolean;
   idleTimer: ReturnType<typeof setTimeout>;
+  /**
+   * Callbacks interested in "something changed" (new output, or exit) --
+   * `start()`'s wait-for-URL and `submitCode()`'s wait-for-token logic each
+   * register their own here and remove ONLY their own entry once satisfied.
+   * Deliberately separate from the single persistent `proc.onData`/`onExit`
+   * subscription below (registered once, for the flow's whole life) -- a
+   * previous version had `start()` dispose that subscription itself the
+   * moment it found the URL, which stopped `flow.output` from ever growing
+   * again and made every `submitCode()` call hang until its own timeout,
+   * since it had nothing new to see. Never make that mistake again: nothing
+   * but `reap()` may ever tear down the data/exit subscription.
+   */
+  listeners: Set<() => void>;
 }
 
 /**
@@ -68,10 +82,22 @@ export class ClaudeSetupTokenFlows {
       proc,
       subject,
       output: "",
+      exited: false,
       killed: false,
       idleTimer: setTimeout(() => this.reap(flowId), FLOW_IDLE_TIMEOUT_MS),
+      listeners: new Set(),
     };
     this.flows.set(flowId, flow);
+
+    // Permanent for the flow's whole life -- see the doc comment on `Flow.listeners`.
+    proc.onData((chunk) => {
+      flow.output += chunk;
+      for (const listener of flow.listeners) listener();
+    });
+    proc.onExit(() => {
+      flow.exited = true;
+      for (const listener of flow.listeners) listener();
+    });
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -80,27 +106,26 @@ export class ClaudeSetupTokenFlows {
         reject(new Error("claude setup-token did not print an authorize URL in time"));
       }, URL_WAIT_TIMEOUT_MS);
 
-      const onData = (chunk: string): void => {
-        flow.output += chunk;
+      const check = (): void => {
         const match = flow.output.match(URL_RE);
         if (match) {
           cleanup();
           resolve({ flowId, authorizeUrl: match[1]! });
+          return;
         }
-      };
-      const onExit = (): void => {
-        cleanup();
-        this.reap(flowId);
-        reject(new Error(`claude setup-token exited before printing an authorize URL: ${clip(flow.output)}`));
+        if (flow.exited) {
+          cleanup();
+          this.reap(flowId);
+          reject(new Error(`claude setup-token exited before printing an authorize URL: ${clip(flow.output)}`));
+        }
       };
       const cleanup = (): void => {
         clearTimeout(timer);
-        dataSub.dispose();
-        exitSub.dispose();
+        flow.listeners.delete(check);
       };
 
-      const dataSub = proc.onData(onData);
-      const exitSub = proc.onExit(onExit);
+      flow.listeners.add(check);
+      check(); // in case output/exit already happened synchronously before this listener was registered
     });
   }
 
@@ -128,32 +153,24 @@ export class ClaudeSetupTokenFlows {
         () => finish({ status: "error", message: "Timed out waiting for a response after submitting the code." }),
         CODE_SUBMIT_TIMEOUT_MS,
       );
-      const onData = (): void => {
+      const check = (): void => {
         const newOutput = flow.output.slice(outputBefore);
         const match = newOutput.match(TOKEN_RE);
-        if (match) finish({ status: "complete", token: match[1]! });
-      };
-      const onExit = (): void => {
-        const newOutput = flow.output.slice(outputBefore);
-        const match = newOutput.match(TOKEN_RE);
-        finish(
-          match
-            ? { status: "complete", token: match[1]! }
-            : { status: "error", message: `claude setup-token exited without producing a token: ${clip(newOutput)}` },
-        );
+        if (match) {
+          finish({ status: "complete", token: match[1]! });
+          return;
+        }
+        if (flow.exited) {
+          finish({ status: "error", message: `claude setup-token exited without producing a token: ${clip(newOutput)}` });
+        }
       };
       const cleanup = (): void => {
         clearTimeout(timer);
-        dataSub.dispose();
-        exitSub.dispose();
+        flow.listeners.delete(check);
       };
 
-      const dataSub = flow.proc.onData(() => onData());
-      const exitSub = flow.proc.onExit(onExit);
-      // Also check output already buffered from the URL-wait phase, in case
-      // the token appeared on the very same chunk as the URL (unlikely, but
-      // avoids a race waiting for a data event that already happened).
-      onData();
+      flow.listeners.add(check);
+      check(); // in case the token already arrived (or the process already exited) before this listener was registered
     });
   }
 
@@ -162,6 +179,7 @@ export class ClaudeSetupTokenFlows {
     if (!flow || flow.killed) return;
     flow.killed = true;
     clearTimeout(flow.idleTimer);
+    flow.listeners.clear();
     try {
       flow.proc.kill();
     } catch {
