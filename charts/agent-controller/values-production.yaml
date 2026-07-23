@@ -236,6 +236,15 @@ integration-gateway:
     # (allowedRoles: [writer]). Adding/removing a person from here on out is
     # just a GitHub "Settings -> Collaborators" change on this repo.
     githubCollaboratorRoles: '{"admin": ["writer"], "write": ["writer"]}'
+    # Must comfortably exceed agent-orchestrator's own AGENT_RUN_TIMEOUT_SECONDS
+    # (default 3600s/1h -- how long a real opencode-swe-agent run is allowed
+    # to take: clone, run Claude, open a PR). The default here (15 min) is
+    # far shorter, so a real task taking longer than 15 minutes but less than
+    # an hour would finish successfully just AFTER the gateway had already
+    # given up polling and posted a "no terminal result within 900000ms"
+    # comment -- confirmed happening in practice. 65 minutes leaves a 5-minute
+    # buffer past the 1h agent-run ceiling.
+    pollTimeoutMs: "3900000"
 
   # Automatic OIDC client_credentials token fetch/refresh (previously a
   # documented, unbuilt follow-up -- Pocket ID's client_credentials access
