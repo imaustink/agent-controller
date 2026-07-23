@@ -987,7 +987,33 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // has no browser to redirect. Ignored by the `claude` provider's
           // gateway client (it only has one flow shape).
           const flow = state.identityLinkFlow ?? "authcode";
-          const started = await gateway.start(provider, state.identity.subject, flow);
+          // Starting the link flow can itself fail before there is any URL to
+          // show. For "github" this is a plain HTTP call and rarely throws;
+          // for "claude" (docs/adr/0027) start() spawns a `claude setup-token`
+          // PTY and scrapes the authorize URL within a timeout, so a
+          // missing/slow CLI, a crashed PTY, or a URL that never prints all
+          // surface here as a throw. That must NOT crash the turn into a raw
+          // "Something went wrong" -- on the fire-and-forget GitHub-issue
+          // triage path that error is what gets posted to the ticket. Unlike
+          // the waitForCompletion catch below, there is no started flow to
+          // park a pendingIdentityLink against, so end the turn with a
+          // friendly, retryable message instead. Re-triggering (re-applying
+          // the label, or any follow-up message in the session) re-enters this
+          // node and retries start().
+          const started = await gateway
+            .start(provider, state.identity.subject, flow)
+            .catch((err) => {
+              console.error(
+                `[identity-gate] start threw for provider ${provider}; ending turn with a retryable message instead of a hard error: ${err instanceof Error ? err.message : String(err)}`,
+              );
+              return null;
+            });
+          if (!started) {
+            const startLabel = PROVIDER_LABEL[provider] ?? provider;
+            return {
+              result: `I couldn't start the one-time ${startLabel} account-linking step just now. Please try again in a moment -- re-apply the label or send any message and I'll retry.`,
+            };
+          }
           const label = PROVIDER_LABEL[provider] ?? provider;
           const linkUrlText =
             started.flow === "device"
