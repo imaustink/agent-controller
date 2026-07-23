@@ -1,0 +1,47 @@
+{{- if .Values.githubTool.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: Tool
+metadata:
+  name: github
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Runs a single GitHub CLI (gh) command -- view/list/comment/create/edit on
+    issues and pull requests, view repos and releases, search GitHub, merge
+    or review a PR, inspect Actions workflows/runs -- authenticated as the
+    CALLING user's own linked GitHub identity, not a shared bot credential.
+    Use this for quick, targeted GitHub operations; for anything requiring
+    cloning a repo, reading/writing files, or opening a pull request from
+    code changes, delegate to a coding agent instead.
+  input: >-
+    A single gh CLI command line, everything after "gh" (e.g.
+    "issue view 86 --repo imaustink/agent-controller --json title,body",
+    "issue comment 86 --repo imaustink/agent-controller --body "thanks!"",
+    "pr list --repo imaustink/agent-controller --state open",
+    "search issues "is:open label:bug" --repo imaustink/agent-controller").
+    Only a fixed allowlist of commands/subcommands is accepted (see
+    tools/github/README.md); anything else is rejected before it reaches
+    GitHub.
+  output: >-
+    gh's own stdout (JSON when --json was requested, otherwise gh's normal
+    text output), wrapped in a fenced code block.
+  allowedRoles:
+    - writer
+  tier: standard
+  {{- if .Values.githubTool.identityLink.enabled }}
+  identityProviders:
+    {{- range .Values.githubTool.identityLink.providers }}
+    - {{ . }}
+    {{- end }}
+  {{- end }}
+  image: {{ .Values.githubTool.image | quote }}
+  serviceAccountName: {{ .Values.githubTool.serviceAccountName | quote }}
+  {{- if not .Values.githubTool.identityLink.enabled }}
+  secretEnv:
+    - name: GITHUB_TOKEN
+      secretRef:
+        name: {{ .Values.githubTool.secretName | quote }}
+        key: {{ .Values.githubTool.secretKey | quote }}
+  {{- end }}
+{{- end }}

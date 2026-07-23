@@ -141,6 +141,19 @@ type ToolSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
+
+	// identityProviders declares which external identity providers (e.g.
+	// "github") must be linked for the calling user before this Tool can be
+	// launched (ADR 0022/0027). Only meaningful for a container Tool
+	// (image/serviceAccountName) -- an agent-backed Tool (agentRef) carries
+	// this instead on the wrapped Agent CR. This controller does not consume
+	// the field itself -- it is read by the agent-orchestrator when deciding
+	// whether/how to launch a ToolRun for a given user (resolving and
+	// injecting a per-user token via ToolRunSpec.SecretEnv) -- but it belongs
+	// on the CRD as the source of truth an operator deploys alongside the
+	// rest of the Tool catalog entry.
+	// +optional
+	IdentityProviders []string `json:"identityProviders,omitempty"`
 }
 
 // ToolStatus defines the observed state of Tool.

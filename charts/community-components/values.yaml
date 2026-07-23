@@ -190,6 +190,50 @@ opencodeSweAgent:
     providers:
       - github
 
+# github: runs a single allowlisted gh CLI command (issue/pr/repo/release/
+# search/workflow/run), preferably authenticated as the calling user's own
+# linked GitHub identity rather than a shared bot credential (ADR 0022/0027).
+#
+# Two mutually-exclusive ways to give it a GitHub credential:
+#   1. GITHUB_TOKEN PAT (default) -- prerequisite (out-of-band -- Helm can't
+#      source secret values on its own):
+#        kubectl -n <ns> create secret generic github-tool-secrets \
+#          --from-literal=GITHUB_TOKEN=github_pat_...
+#   2. Per-user identity linking (identityLink block below) -- no static
+#      GitHub credential is baked into this Tool's template at all;
+#      agent-orchestrator resolves and injects the CALLING USER's own linked
+#      GitHub token per-invocation instead, exactly like opencodeSweAgent's
+#      identityLink option. Requires agent-orchestrator's own
+#      identityLink.enabled=true and a configured integration-gateway (see
+#      those charts' values.yaml), AND core-controller/agent-orchestrator
+#      built with ToolRun-level secretEnv support (ADR 0027).
+githubTool:
+  enabled: false
+  image: github:latest
+  serviceAccountName: github-tool
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+  # Secret (must already exist) supplying the tool's GITHUB_TOKEN. Ignored
+  # when identityLink.enabled below.
+  secretName: github-tool-secrets
+  secretKey: GITHUB_TOKEN
+  # Per-user GitHub identity linking (docs/adr/0022, extended to container
+  # Tools by ADR 0027): when enabled, no static GITHUB_TOKEN secretEnv is set
+  # on the Tool CR at all -- agent-orchestrator resolves the calling user's
+  # own linked token per-invocation and injects it via ToolRunSpec.secretEnv
+  # instead. Requires agent-orchestrator's own identityLink.enabled=true and
+  # a configured integration-gateway. Leave disabled (default) for the
+  # shared-credential (GITHUB_TOKEN PAT) behavior unchanged.
+  identityLink:
+    enabled: false
+    providers:
+      - github
+
 skills:
   # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +
   # recipe-publisher). Enable both those tools above for its derived audience
