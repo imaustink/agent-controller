@@ -70,12 +70,17 @@ recipePublisher:
   secretName: recipe-publisher-secrets
   secretKey: MEALIE_API_TOKEN
 
-# opencode-swe-agent: privileged GitHub coding sub-agent. Cut over from
-# PAT-only (Phase A) to per-user GitHub identity linking (docs/adr/0022,
-# Phase B) -- the opencode-swe-secrets GITHUB_TOKEN key is retired as part
-# of this cutover; ANTHROPIC_API_KEY remains PAT-based.
+# opencode-swe-agent: privileged GitHub coding sub-agent. DISABLED in prod --
+# the Claude Code engine (claudeCodeSweAgent below) is now the SWE agent for
+# every path: the auto-triage IntegrationRoute and the self-improvement skill
+# both point their agentRef at claude-code-swe-agent (see integrationRoutes
+# and skills below). Re-enable only if reverting those back to opencode.
+#
+# History: cut over from PAT-only (Phase A) to per-user GitHub identity
+# linking (docs/adr/0022, Phase B) -- the opencode-swe-secrets GITHUB_TOKEN
+# key is retired as part of that cutover; ANTHROPIC_API_KEY remains PAT-based.
 opencodeSweAgent:
-  enabled: true
+  enabled: false
   image: registry.kurpuis.com:5000/opencode-swe-agent:latest
   serviceAccountName: opencode-swe-agent
   secretName: opencode-swe-secrets
@@ -146,10 +151,12 @@ skills:
   recipeRefining:
     enabled: true
   # self-improvement: drafts a new Skill/Tool CR from a successful ad-hoc
-  # turn and opens a PR, via opencode-swe-agent above (ADR 0021 -- Skill
-  # delegates straight to the Agent CR, no Tool wrapper needed).
+  # turn and opens a PR, via claude-code-swe-agent (ADR 0021 -- Skill
+  # delegates straight to the Agent CR, no Tool wrapper needed). Moved off
+  # opencode-swe-agent (now disabled above) onto the Claude Code engine.
   selfImprovement:
     enabled: true
+    agentRef: claude-code-swe-agent
   # Requires webSearch.enabled=true above.
   webSearch:
     enabled: true
@@ -158,11 +165,19 @@ integrationRoutes:
   # github-issue-labeled-triage (ADR 0024): applying integration-gateway's
   # configured trigger label (charts/agent-controller/values-production.yaml's
   # integrationGateway.config.githubTriggerLabel, "ai-triage") to a GitHub
-  # issue dispatches deterministically to opencode-swe-agent above, bypassing
-  # RAG skill retrieval. A label, not an assignee -- GitHub App bot users
+  # issue dispatches deterministically to the agentRef below, bypassing RAG
+  # skill retrieval. A label, not an assignee -- GitHub App bot users
   # generally cannot be set as issue assignees, so `issues.assigned` (this
-  # route's original trigger) never fired in practice. Requires
-  # opencodeSweAgent.enabled=true (already set above) and the
+  # route's original trigger) never fired in practice.
+  #
+  # agentRef is claude-code-swe-agent: triage now runs on the Claude Code
+  # engine (claudeCodeSweAgent.enabled=true above), replacing the disabled
+  # opencode-swe-agent. Because that agent's identityLink.providers is
+  # ["claude"], the issue's sender must have a linked Claude token for a
+  # triage run to launch -- the same per-user gate the whole ai-triage path
+  # already uses (agent-controller values' claudeAuth.enabled).
+  #
+  # Requires claudeCodeSweAgent.enabled=true (set above) and the
   # IntegrationRoute CRD to exist on the cluster -- `helm upgrade` does NOT
   # install/update CRDs for an existing release
   # (charts/agent-controller/charts/core-controller/crds/README.md), so this
@@ -170,3 +185,4 @@ integrationRoutes:
   #   kubectl apply -f controllers/core-controller/config/crd/bases/core.controller-agent.dev_integrationroutes.yaml
   githubIssueLabeledTriage:
     enabled: true
+    agentRef: claude-code-swe-agent

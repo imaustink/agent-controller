@@ -11,8 +11,12 @@ spec:
     event: issues
     action: labeled
   # No Tool wrapper needed -- dispatches straight to the Agent CR (ADR 0021),
-  # same pattern as skill-self-improvement.yaml's agentRefs.
-  agentRef: opencode-swe-agent
+  # same pattern as skill-self-improvement.yaml's agentRefs. Which SWE Agent
+  # CR handles triage is value-driven (default opencode-swe-agent) so an
+  # environment can point it at claude-code-swe-agent instead without editing
+  # this template -- whichever it names must have enabled=true in the same
+  # values file, or this route dispatches to a non-existent Agent.
+  agentRef: {{ .Values.integrationRoutes.githubIssueLabeledTriage.agentRef | default "opencode-swe-agent" }}
   promptTemplate: |
     GitHub issue {{`{{owner}}`}}/{{`{{repo}}`}}#{{`{{issueNumber}}`}} was labeled "{{`{{labelName}}`}}": "{{`{{title}}`}}"
 

@@ -2207,6 +2207,32 @@ describe("buildAgentGraph per-caller Claude Code OAuth linking (docs/adr/0027)",
     expect(final.result).toMatch(/link your Claude account/i);
   });
 
+  it("ends the turn with a friendly retryable message (not a crashed turn) when start() itself throws -- e.g. the Claude setup-token PTY never prints a URL", async () => {
+    // Regression guard for the triage path: start() for the "claude" provider
+    // spawns a `claude setup-token` PTY and scrapes the authorize URL within a
+    // timeout, so it can throw before any link exists. On the fire-and-forget
+    // GitHub-issue relay a thrown node would be posted to the ticket as a raw
+    // "Something went wrong: ...setup-token did not print...". Instead the turn
+    // must end cleanly with a retryable message and NOT launch the agent.
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn().mockRejectedValue(new Error("claude setup-token did not print an authorize URL in time")),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok", identityLinkFlow: "device" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).not.toMatch(/something went wrong/i);
+    expect(final.result).not.toMatch(/setup-token/i);
+    expect(final.result).toMatch(/couldn't start the one-time Claude account-linking/i);
+    expect(final.identityLinkPending).toBeFalsy();
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
   it("launches with CLAUDE_CODE_OAUTH_TOKEN once waitForCompletion resolves a linked token", async () => {
     const claudeAuthGateway: IdentityLinkPort = {
       start: vi.fn().mockResolvedValue({

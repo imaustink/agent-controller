@@ -259,11 +259,16 @@ skills:
     enabled: true
   # self-improvement: drafts a new Skill/Tool CR from a successful fallback
   # turn (graph.ts's selectDelegate fallback) and opens a PR against
-  # imaustink/agent-controller by delegating straight to the opencode-swe-agent
-  # Agent CR (ADR 0021 -- no Tool wrapper needed). Requires
-  # opencodeSweAgent.enabled=true for its derived audience to be non-empty.
+  # imaustink/agent-controller by delegating straight to a SWE Agent CR
+  # (ADR 0021 -- no Tool wrapper needed).
   selfImprovement:
     enabled: false
+    # Which SWE Agent CR this skill delegates to. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to run it on the Claude Code engine instead). The
+    # named agent's enabled=true is what makes this skill's derived audience
+    # (ADR 0011) non-empty.
+    agentRef: opencode-swe-agent
   # web-search: answers a request using an in-cluster SearXNG search, and can
   # follow up with web-fetch to read a promising result's full page (see
   # webSearch and webFetch Tools above). Enable both webSearch.enabled=true
@@ -279,7 +284,10 @@ integrationRoutes:
   # skill retrieval -- integration-gateway relays the event once its
   # configured trigger label (integration-gateway's config.githubTriggerLabel)
   # is applied to the issue. A label, not an assignee: GitHub App bot users
-  # generally cannot be set as issue assignees. Requires
-  # opencodeSweAgent.enabled=true.
+  # generally cannot be set as issue assignees.
   githubIssueLabeledTriage:
     enabled: false
+    # Which SWE Agent CR handles a labeled issue. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to triage on the Claude Code engine instead).
+    agentRef: opencode-swe-agent
