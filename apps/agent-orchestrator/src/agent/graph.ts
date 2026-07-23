@@ -588,15 +588,26 @@ function dropStreamedNarrative(message: string): string {
 }
 
 /**
- * Composes the visible message for a finished (or paused) agent turn.
- * Non-streaming callers (no progress listener) never saw any of this live,
- * so they get the collected narration prepended as a fallback transcript.
- * Streaming callers already watched the narrative go by as content deltas,
- * so duplicating it here would repeat the whole summary in the chat.
+ * Composes the visible message for a finished (or paused) agent turn -- the
+ * agent's final reply only, NOT the progress narration.
+ *
+ * `reply.narration` is the collected progress trail ("Authenticating…",
+ * "running Bash", tool-by-tool status, ...). It's useful live, but it does not
+ * belong in a durable, one-shot delivery like a GitHub issue comment: an
+ * earlier version prepended the whole trail on the non-streaming path, which
+ * turned every triage reply into a giant transcript ending in the actual
+ * summary. Both paths now yield just the final answer:
+ *   - Streaming caller (progress listener): the narrative already went by as
+ *     live content deltas, so drop it from the final message
+ *     (`dropStreamedNarrative`) to avoid repeating it.
+ *   - Non-streaming caller (e.g. integration-gateway's triage relay): never
+ *     saw the trail, but shouldn't -- the durable comment is the summary;
+ *     live progress belongs on the session page instead. Post `reply.message`
+ *     as-is.
  */
 function composeAgentTurnMessage(state: Pick<AgentState, "progressListener">, reply: AgentTurnResult): string {
   if (state.progressListener) return dropStreamedNarrative(reply.message);
-  return reply.narration.length > 0 ? `${reply.narration.join("\n")}\n\n${reply.message}` : reply.message;
+  return reply.message;
 }
 
 /**

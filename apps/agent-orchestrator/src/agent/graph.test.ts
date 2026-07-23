@@ -1095,6 +1095,54 @@ describe("buildAgentGraph checkIntegrationRoute (IntegrationRoute-forced dispatc
     expect(agentRunLauncher.launch).toHaveBeenCalled();
   });
 
+  it("returns only the agent's final message (NOT the progress narration) for a non-streaming caller, e.g. a GitHub triage comment", async () => {
+    // Regression: the triage relay is fire-and-forget (no progressListener),
+    // and it used to get the entire narration trail prepended -- turning the
+    // issue comment into a giant "Authenticating… / running Bash / …"
+    // transcript ending in the actual summary. The durable comment must be
+    // just the final answer.
+    const codingAgent: AgentDescriptor = {
+      id: "claude-code-swe-agent",
+      name: "claude-code-swe-agent",
+      description: "Does software engineering tasks",
+      allowedRoles: ["reader"],
+      agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe-agent" },
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened a pull request: https://github.com/acme/widgets/pull/42\n\n## Summary\nAdded dark mode.",
+        final: true,
+        narration: ["Authenticating…", "Running Claude Code…", "running Bash", "running Read"],
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = baseDeps({
+      agentStore: {
+        upsert: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([{ agent: codingAgent }]),
+      },
+      agentChannel,
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+    const graph = buildAgentGraph(deps);
+
+    // No progressListener -- exactly the fire-and-forget triage relay shape.
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      forcedAgentId: "claude-code-swe-agent",
+    });
+
+    expect(final.result).toBe(
+      "Opened a pull request: https://github.com/acme/widgets/pull/42\n\n## Summary\nAdded dark mode.",
+    );
+    expect(final.result).not.toMatch(/Authenticating|running Bash|running Read/);
+  });
+
   it("falls through to ordinary retrieval when forcedSkillId doesn't resolve to any Skill", async () => {
     const skillStore: SkillStore = {
       upsert: vi.fn(),
