@@ -101,13 +101,23 @@ opencodeSweAgent:
     providers:
       - github
 
-# claude-code-swe-agent: disabled until the image is built/pushed and
-# claude-code-swe-secrets exists (see values.yaml's comment block for this
-# key for the exact `kubectl create secret` invocation). Flip `enabled` and
-# fill in `image` below to turn it on; the rest mirrors opencodeSweAgent's
-# production config above.
+# claude-code-swe-agent: requires claude-code-swe-secrets to exist (see
+# values.yaml's comment block for this key for the exact `kubectl create
+# secret` invocation) -- CI builds/pushes the image, but Helm can't source
+# secret VALUES on its own, so that Secret is still a manual prerequisite.
+#
+# identityLink.providers is ["claude"] only, not ["github", "claude"]:
+# agent-orchestrator's per-caller identity gate (docs/adr/0022, extended by
+# 0027) only resolves the FIRST declared provider end-to-end today -- a
+# second entry would never actually be linked/injected. Git/gh operations
+# still work without per-user GitHub attribution: resolveGithubToken prefers
+# the GitHub App installation token (githubAppIdSecretKey/etc. below) over
+# any static PAT whenever all three App fields are configured, regardless of
+# identityLink, so commits/PRs attribute to the k5s-bot App identity instead
+# of the specific calling user -- same as opencode-swe-agent's own non-
+# identity-linked-GitHub posture, just for this agent's git side specifically.
 claudeCodeSweAgent:
-  enabled: false
+  enabled: true
   image: registry.kurpuis.com:5000/claude-code-swe-agent:latest
   serviceAccountName: claude-code-swe-agent
   secretName: claude-code-swe-secrets
@@ -122,7 +132,7 @@ claudeCodeSweAgent:
   identityLink:
     enabled: true
     providers:
-      - github
+      - claude
 
 skills:
   recipeRefining:
