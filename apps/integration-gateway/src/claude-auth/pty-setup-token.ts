@@ -108,6 +108,17 @@ const FLOW_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
  * noticeable latency.
  */
 const PASTE_SUBMIT_DELAY_MS = 500;
+/**
+ * The code is fed to the CLI in chunks of this many chars, this many ms
+ * apart, rather than one write -- a single large write overwhelms the Ink
+ * TUI's input handling and silently drops most of the code (a 229-char code
+ * arrived as ~10 chars), so Anthropic received a truncated code and returned
+ * 400. Confirmed against the live CLI that paced chunks deliver the whole
+ * code intact. Small/slow enough to be reliable, fast enough that even a
+ * long code finishes feeding in well under a second.
+ */
+const CODE_CHUNK_SIZE = 16;
+const CODE_CHUNK_GAP_MS = 30;
 
 export type SubmitCodeResult = { status: "complete"; token: string } | { status: "error"; message: string };
 
@@ -222,22 +233,44 @@ export class ClaudeSetupTokenFlows {
 
     clearTimeout(flow.idleTimer);
     const outputBefore = flow.output.length;
-    // Write the code and the Enter keypress as TWO separate writes, with a
-    // settle delay between them. THE bug behind "submit hangs then times
-    // out": the CLI's Ink TUI treats a fast input burst ending in `\r` as
-    // pasted text -- the `\r` becomes a literal newline in the masked field
-    // instead of a submit keypress -- so a long pasted code (real ones are
-    // ~100+ chars) was entered but never submitted, and the flow sat until
-    // timeout. Confirmed empirically against the live CLI: `code\r` in one
-    // write hangs (masked asterisks, no result); `code`, then `\r` as its
-    // own write ~500ms later, submits and the server processes it. A short
-    // code happening to submit in one write is what masked this for so long.
-    flow.proc.write(code);
-    const enterTimer = setTimeout(() => {
-      // Guard: the flow may already have been reaped (e.g. a fast error) by
-      // the time this fires.
-      if (!flow.killed) flow.proc.write("\r");
-    }, PASTE_SUBMIT_DELAY_MS);
+
+    // Feeding the code to the CLI, confirmed empirically against the live
+    // binary, needs BOTH of these -- each fixed a distinct "submit hangs /
+    // fails" report:
+    //
+    // 1. Write it in small PACED chunks, not one big write. A single large
+    //    write overwhelms the Ink TUI's input handling and most of the code
+    //    is silently dropped -- e.g. a 229-char code arrived as ~10 chars,
+    //    so Anthropic got a truncated code and returned 400 ("Request failed
+    //    with status code 400"). Real `code#state` values run well past the
+    //    ~105 chars that happened to squeak through in one write, which is
+    //    why short test codes masked this. Chunked, the full code arrives.
+    // 2. Send Enter as a SEPARATE write after a settle delay. The TUI folds
+    //    a `\r` arriving in the same burst as the code into the field as
+    //    literal text instead of submitting, so a fused `code\r` never
+    //    submits and the flow sits until timeout.
+    //
+    // Timers are tracked so `cleanup()` can cancel any still-pending write if
+    // the flow finishes (or is reaped) first.
+    let chunkTimer: ReturnType<typeof setTimeout> | undefined;
+    let enterTimer: ReturnType<typeof setTimeout> | undefined;
+    const feedCode = (): void => {
+      let i = 0;
+      const writeNext = (): void => {
+        if (flow.killed) return;
+        if (i < code.length) {
+          flow.proc.write(code.slice(i, i + CODE_CHUNK_SIZE));
+          i += CODE_CHUNK_SIZE;
+          chunkTimer = setTimeout(writeNext, CODE_CHUNK_GAP_MS);
+        } else {
+          enterTimer = setTimeout(() => {
+            if (!flow.killed) flow.proc.write("\r");
+          }, PASTE_SUBMIT_DELAY_MS);
+        }
+      };
+      writeNext();
+    };
+    feedCode();
 
     return new Promise((resolve) => {
       const finish = (result: SubmitCodeResult): void => {
@@ -278,6 +311,12 @@ export class ClaudeSetupTokenFlows {
         // trying to support the CLI's own in-place retry.
         const oauthError = newOutput.match(OAUTH_ERROR_RE);
         if (oauthError) {
+          // Diagnostic (docs/adr/0027 follow-up): log the redacted output so
+          // a token-exchange rejection (e.g. "Request failed with status
+          // code 400") can be correlated with the submitted code's shape
+          // logged by the API layer -- to tell a genuinely bad/expired code
+          // apart from one this pipeline corrupted or truncated.
+          console.error(`[claude-auth] submitCode OAuth error for flow ${flowId}: ${oauthError[1]!.trim()}`);
           finish({ status: "error", message: `OAuth error: ${oauthError[1]!.trim()}` });
           return;
         }
@@ -288,7 +327,8 @@ export class ClaudeSetupTokenFlows {
       };
       const cleanup = (): void => {
         clearTimeout(timer);
-        clearTimeout(enterTimer);
+        if (chunkTimer) clearTimeout(chunkTimer);
+        if (enterTimer) clearTimeout(enterTimer);
         flow.listeners.delete(check);
       };
 

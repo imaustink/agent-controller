@@ -149,12 +149,15 @@ describe("ClaudeSetupTokenFlows", () => {
     expect(result.authorizeUrl).toBe(realUrl);
   });
 
-  it("regression: submits the Enter keypress as a SEPARATE write after the code, not fused as `code\\r`", async () => {
-    // THE bug behind "submit hangs then times out" for real (long) codes:
-    // the CLI's Ink TUI folds a `\r` arriving in the same input burst as the
-    // pasted code into the field as literal text instead of submitting, so
-    // the code is entered but never sent. Confirmed against the live CLI
-    // that `code` then a separate later `\r` submits. This locks that in.
+  it("regression: feeds a long code in paced chunks, then submits Enter as its own write", async () => {
+    // Two distinct live-confirmed bugs locked in together:
+    //  (1) a single large write drops most of a long code (a 229-char code
+    //      arrived as ~10 chars -> Anthropic got a truncated code -> 400), so
+    //      the code must be fed in paced chunks that reassemble to the whole;
+    //  (2) the Enter must be a SEPARATE later write -- a `\r` fused into the
+    //      code burst is folded into the field as text and never submits.
+    // Asserted generally (reassembly + standalone trailing \r) so it isn't
+    // coupled to the exact chunk size.
     vi.useFakeTimers();
     let fake!: FakePty;
     const flows = new ClaudeSetupTokenFlows(() => (fake = new FakePty()) as unknown as ReturnType<typeof import("node-pty").spawn>);
@@ -163,13 +166,22 @@ describe("ClaudeSetupTokenFlows", () => {
     fake.emitData("Visit https://claude.ai/oauth/authorize?x=1\n");
     const { flowId } = await startPromise;
 
-    void flows.submitCode(flowId, "a-long-pasted-code");
-    // Immediately after submit: the code is written, the Enter is NOT yet.
-    expect(fake.written).toEqual(["a-long-pasted-code"]);
+    // Longer than one chunk and than the ~105 chars that used to squeak
+    // through a single write.
+    const code = "authcode0123456789abcdefghijklmnopqrstuvwxyz-_#state0123456789abcdefghijklmnopqrstuvwxyz-_ABCDEFGHIJKLMNOP";
+    void flows.submitCode(flowId, code);
 
-    // After the paste-settle delay, the Enter arrives as its own write.
-    await vi.advanceTimersByTimeAsync(600);
-    expect(fake.written).toEqual(["a-long-pasted-code", "\r"]);
+    // Drive all paced-chunk + settle timers to completion.
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    const writes = fake.written;
+    // Final write is a standalone Enter; nothing else contains a CR.
+    expect(writes[writes.length - 1]).toBe("\r");
+    expect(writes.slice(0, -1).every((w) => !w.includes("\r"))).toBe(true);
+    // The pieces before the Enter reassemble to exactly the pasted code.
+    expect(writes.slice(0, -1).join("")).toBe(code);
+    // And it really was chunked, not one big write.
+    expect(writes.length).toBeGreaterThan(2);
   });
 
   it("regression: spawns the PTY wide enough that the CLI's long lines never wrap", async () => {

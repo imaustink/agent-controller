@@ -88,6 +88,13 @@ export class ClaudeAuthApi {
         sendHtml(res, 400, renderClaudeAuthResultPage({ success: false, message: "This authorization link has expired, or no code was submitted." }));
         return true;
       }
+      // Diagnostic (docs/adr/0027 follow-up): a real code was reaching the
+      // token exchange but getting a 400 from Anthropic, indistinguishable in
+      // the error text from an invalid code. Log only the code's LENGTH and
+      // whether it has the `#state` half -- never any of its characters,
+      // since it's a live one-time credential -- which is enough to confirm
+      // the truncation fix (the full length now arrives at this layer).
+      console.error(`[claude-auth] submit received for flow ${flowId}: len=${code.length} hasHash=${code.includes("#")}`);
       const result = await this.flows.submitCode(flowId, code);
       if (result.status === "error") {
         sendHtml(res, 200, renderClaudeAuthResultPage({ success: false, message: result.message }));
