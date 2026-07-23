@@ -55,6 +55,13 @@ jobs:
               - 'packages/agent-runtime/**'
               - 'packages/github-app-auth/**'
               - 'apps/opencode-swe-agent/**'
+            claude-code-swe-agent:
+              - 'package.json'
+              - 'package-lock.json'
+              - 'packages/messaging/**'
+              - 'packages/agent-runtime/**'
+              - 'packages/github-app-auth/**'
+              - 'apps/claude-code-swe-agent/**'
             integration-gateway:
               - 'package.json'
               - 'package-lock.json'
@@ -98,6 +105,7 @@ jobs:
           WORKFLOW_CHANGED: ${{ steps.filter.outputs.workflow }}
           AGENT_ORCHESTRATOR: ${{ steps.filter.outputs.agent-orchestrator }}
           OPENCODE_SWE_AGENT: ${{ steps.filter.outputs.opencode-swe-agent }}
+          CLAUDE_CODE_SWE_AGENT: ${{ steps.filter.outputs.claude-code-swe-agent }}
           INTEGRATION_GATEWAY: ${{ steps.filter.outputs.integration-gateway }}
           RECIPE_SCRAPER: ${{ steps.filter.outputs.recipe-scraper }}
           RECIPE_PUBLISHER: ${{ steps.filter.outputs.recipe-publisher }}
@@ -111,6 +119,7 @@ jobs:
           [
             {"image":"agent-orchestrator","changed_key":"AGENT_ORCHESTRATOR","dockerfile":"apps/agent-orchestrator/Dockerfile","context":"."},
             {"image":"opencode-swe-agent","changed_key":"OPENCODE_SWE_AGENT","dockerfile":"apps/opencode-swe-agent/Dockerfile","context":"."},
+            {"image":"claude-code-swe-agent","changed_key":"CLAUDE_CODE_SWE_AGENT","dockerfile":"apps/claude-code-swe-agent/Dockerfile","context":"."},
             {"image":"integration-gateway","changed_key":"INTEGRATION_GATEWAY","dockerfile":"apps/integration-gateway/Dockerfile","context":"."},
             {"image":"recipe-scraper","changed_key":"RECIPE_SCRAPER","dockerfile":"tools/recipe-scraper/Dockerfile","context":"."},
             {"image":"recipe-publisher","changed_key":"RECIPE_PUBLISHER","dockerfile":"tools/recipe-publisher/Dockerfile","context":"."},
@@ -134,6 +143,7 @@ jobs:
             FLAGS=$(jq -n \
               --arg AGENT_ORCHESTRATOR "$AGENT_ORCHESTRATOR" \
               --arg OPENCODE_SWE_AGENT "$OPENCODE_SWE_AGENT" \
+              --arg CLAUDE_CODE_SWE_AGENT "$CLAUDE_CODE_SWE_AGENT" \
               --arg INTEGRATION_GATEWAY "$INTEGRATION_GATEWAY" \
               --arg RECIPE_SCRAPER "$RECIPE_SCRAPER" \
               --arg RECIPE_PUBLISHER "$RECIPE_PUBLISHER" \
@@ -142,7 +152,7 @@ jobs:
               --arg KUBECTL_READONLY "$KUBECTL_READONLY" \
               --arg CORE_CONTROLLER "$CORE_CONTROLLER" \
               --arg LOCALTOOL_EXECUTOR "$LOCALTOOL_EXECUTOR" \
-              '{AGENT_ORCHESTRATOR:$AGENT_ORCHESTRATOR,OPENCODE_SWE_AGENT:$OPENCODE_SWE_AGENT,INTEGRATION_GATEWAY:$INTEGRATION_GATEWAY,RECIPE_SCRAPER:$RECIPE_SCRAPER,RECIPE_PUBLISHER:$RECIPE_PUBLISHER,WEB_SEARCH:$WEB_SEARCH,WEB_FETCH:$WEB_FETCH,KUBECTL_READONLY:$KUBECTL_READONLY,CORE_CONTROLLER:$CORE_CONTROLLER,LOCALTOOL_EXECUTOR:$LOCALTOOL_EXECUTOR}')
+              '{AGENT_ORCHESTRATOR:$AGENT_ORCHESTRATOR,OPENCODE_SWE_AGENT:$OPENCODE_SWE_AGENT,CLAUDE_CODE_SWE_AGENT:$CLAUDE_CODE_SWE_AGENT,INTEGRATION_GATEWAY:$INTEGRATION_GATEWAY,RECIPE_SCRAPER:$RECIPE_SCRAPER,RECIPE_PUBLISHER:$RECIPE_PUBLISHER,WEB_SEARCH:$WEB_SEARCH,WEB_FETCH:$WEB_FETCH,KUBECTL_READONLY:$KUBECTL_READONLY,CORE_CONTROLLER:$CORE_CONTROLLER,LOCALTOOL_EXECUTOR:$LOCALTOOL_EXECUTOR}')
             MATRIX=$(jq -c --argjson flags "$FLAGS" 'map(select($flags[.changed_key] == "true"))' all.json)
           fi
 
