@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AgentState } from "./agent/graph.js";
-import type { AgentOrchestratorChannel } from "./agents/nats-agent-channel.js";
 import type { SessionStore } from "./session/types.js";
 import { renderPromptTemplate, type CrdIntegrationRouteRegistry } from "./routing/crd-integration-route-registry.js";
 import {
@@ -180,14 +179,6 @@ export class InvokeServer {
      * before this feature existed.
      */
     private readonly integrationRouteRegistry?: CrdIntegrationRouteRegistry,
-    /**
-     * Optional live-session tunnel (ADR 0026): lets `GET /sessions/:id/live`,
-     * `GET /agent-runs/:id/events`, and `POST /agent-runs/:id/opencode`
-     * probe/stream/proxy a still-resident agent Pod. Absent (e.g. no NATS
-     * configured) -> those three routes 404, same as if this feature didn't
-     * exist; `/invoke` and the chat-completions facade are unaffected either way.
-     */
-    private readonly agentChannel?: AgentOrchestratorChannel,
   ) {}
 
   /** Builds the graph input for one turn, folding in any session-scoped active skill or agent run (docs/adr/0012). */
@@ -275,9 +266,6 @@ export class InvokeServer {
       subject: identity.subject,
       ...(Object.keys(toolContinuations).length > 0 ? { toolContinuations } : {}),
       ...(Object.keys(agentContinuations).length > 0 ? { agentContinuations } : {}),
-      // Kept even once activeAgentRunId is cleared below (ADR 0026) -- a
-      // live-session viewer's only way to know which run id to probe.
-      ...(outcome.agentRunId ? { lastAgentRunId: outcome.agentRunId } : { lastAgentRunId: existing?.lastAgentRunId }),
     };
 
     if (outcome.identityLinkPending) {
@@ -357,150 +345,7 @@ export class InvokeServer {
       return;
     }
 
-    // Live-session tunnel (ADR 0026) -- `sessionId` travels as a query param
-    // rather than a path segment since it commonly contains `#`/`/`
-    // (`github:<owner>/<repo>#<issueNumber>`).
-    if (req.method === "GET" && url.pathname === "/sessions/live") {
-      await this.handleSessionLive(req, res, url);
-      return;
-    }
-    const eventsMatch = /^\/agent-runs\/([^/]+)\/events$/.exec(url.pathname);
-    if (req.method === "GET" && eventsMatch) {
-      await this.handleAgentRunEvents(req, res, url, eventsMatch[1] as string);
-      return;
-    }
-    const opencodeMatch = /^\/agent-runs\/([^/]+)\/opencode$/.exec(url.pathname);
-    if (req.method === "POST" && opencodeMatch) {
-      await this.handleAgentRunOpencode(req, res, url, opencodeMatch[1] as string);
-      return;
-    }
-
     res.writeHead(404).end();
-  }
-
-  /**
-   * `GET /sessions/live?sessionId=...` -> `{ live, agentRunId? }` (ADR 0026).
-   * Deliberately a real-time NATS round trip against the session's
-   * `lastAgentRunId` (a cheap `GET /global/health` proxied through
-   * `forwardOpencodeRequest`) rather than trusting any cached liveness flag
-   * -- self-corrects if the Pod crashed/was evicted without a clean
-   * `session_ended`.
-   */
-  private async handleSessionLive(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-    if (!this.agentChannel?.forwardOpencodeRequest || !this.sessionStore) {
-      res.writeHead(404).end();
-      return;
-    }
-    if (!bearerToken(req.headers.authorization)) {
-      res.writeHead(401).end();
-      return;
-    }
-    const sessionId = url.searchParams.get("sessionId");
-    if (!sessionId) {
-      res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "sessionId query param is required" }));
-      return;
-    }
-    const record = await this.sessionStore.get(sessionId);
-    const agentRunId = record?.lastAgentRunId;
-    if (!agentRunId) {
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ live: false }));
-      return;
-    }
-    try {
-      const probe = await this.agentChannel.forwardOpencodeRequest(agentRunId, { method: "GET", path: "/global/health" }, 2_000);
-      const live = probe.status >= 200 && probe.status < 300;
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(live ? { live: true, agentRunId } : { live: false }));
-    } catch {
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ live: false }));
-    }
-  }
-
-  /**
-   * `GET /agent-runs/:runId/events?sessionId=...` -> SSE stream of the run's
-   * `opencode_event`s (ADR 0026). `sessionId` is cross-checked against the
-   * session store's OWN record of `lastAgentRunId` -- a bare `runId` alone
-   * is never trusted, since it's the only thing standing between "watch
-   * your own session" and "watch anyone's".
-   */
-  private async handleAgentRunEvents(req: IncomingMessage, res: ServerResponse, url: URL, runId: string): Promise<void> {
-    if (!this.agentChannel?.subscribeLive || !this.sessionStore) {
-      res.writeHead(404).end();
-      return;
-    }
-    if (!bearerToken(req.headers.authorization)) {
-      res.writeHead(401).end();
-      return;
-    }
-    const sessionId = url.searchParams.get("sessionId");
-    const record = sessionId ? await this.sessionStore.get(sessionId) : undefined;
-    if (!sessionId || record?.lastAgentRunId !== runId) {
-      res.writeHead(404).end();
-      return;
-    }
-
-    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-    res.flushHeaders?.();
-
-    const live = this.agentChannel.subscribeLive(runId, (msg) => {
-      if (msg.type === "opencode_event") {
-        res.write(`data: ${JSON.stringify(msg.event ?? null)}\n\n`);
-      } else if (msg.type === "session_ended") {
-        res.write(`event: session_ended\ndata: ${JSON.stringify({ reason: msg.reason })}\n\n`);
-        res.end();
-      }
-    });
-    req.on("close", () => live.unsubscribe());
-  }
-
-  /**
-   * `POST /agent-runs/:runId/opencode?sessionId=...` -> forwards
-   * `{ method, path, body? }` into the run's local opencode server and
-   * returns `{ status, body? }` (ADR 0026). Same session/runId cross-check
-   * as `handleAgentRunEvents`.
-   */
-  private async handleAgentRunOpencode(req: IncomingMessage, res: ServerResponse, url: URL, runId: string): Promise<void> {
-    if (!this.agentChannel?.forwardOpencodeRequest || !this.sessionStore) {
-      res.writeHead(404).end();
-      return;
-    }
-    if (!bearerToken(req.headers.authorization)) {
-      res.writeHead(401).end();
-      return;
-    }
-    const sessionId = url.searchParams.get("sessionId");
-    const record = sessionId ? await this.sessionStore.get(sessionId) : undefined;
-    if (!sessionId || record?.lastAgentRunId !== runId) {
-      res.writeHead(404).end();
-      return;
-    }
-
-    const rawBody = await readBody(req);
-    let parsed: { method?: unknown; path?: unknown; body?: unknown };
-    try {
-      parsed = rawBody ? (JSON.parse(rawBody) as typeof parsed) : {};
-    } catch {
-      res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "body must be JSON" }));
-      return;
-    }
-    if (typeof parsed.method !== "string" || typeof parsed.path !== "string") {
-      res.writeHead(400, { "content-type": "application/json" }).end(
-        JSON.stringify({ error: '"method" and "path" are required strings' }),
-      );
-      return;
-    }
-
-    try {
-      const result = await this.agentChannel.forwardOpencodeRequest(runId, {
-        method: parsed.method,
-        path: parsed.path,
-        body: parsed.body,
-      });
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
-    } catch (err) {
-      res.writeHead(502, { "content-type": "application/json" }).end(
-        JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
-      );
-    }
   }
 
   private async handleInvoke(req: IncomingMessage, res: ServerResponse): Promise<void> {

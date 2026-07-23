@@ -411,22 +411,6 @@ GitHub Issues adapter for the conversational path only:
   `apps/opencode-swe-agent`) is shared by both apps for GitHub App JWT
   signing / installation-token minting (ADR 0018), rather than duplicating
   that security-sensitive code.
-- **Triage agent improvements (issue #81).** The `issues.labeled` path now
-  posts an upfront "starting work" comment (rather than only replying once
-  the whole turn completes) linking to a minimal server-rendered **session
-  page** (`GET /sessions/:token`, `SessionPageStore` in
-  `src/session-page-store.ts`) that shows that session's turn history and
-  lets a caller `POST /sessions/:token/prompts` to send it a follow-up
-  prompt without posting another GitHub comment. Ordinary conversational
-  (non-labeled) replies are unaffected — this is scoped to the deterministic
-  triage trigger only, since that's the long-running path where "is it
-  actually working yet?" is a real question. `token` is a 256-bit
-  bearer-capability credential (nothing else gates access to the page), and
-  the whole feature is opt-in: unset `GATEWAY_PUBLIC_URL` (no configured
-  public base URL) disables it entirely — no link is posted and the page
-  routes are never wired up. State is Redis-backed when `SESSION_PAGE_REDIS_URL`
-  (or the identity-link Redis instance) is set, in-memory otherwise (lost on
-  a pod restart).
 
 **Not implemented:** the FAAS/direct-invoke path (§4), and every other
 channel (Slack, email, job webhooks).

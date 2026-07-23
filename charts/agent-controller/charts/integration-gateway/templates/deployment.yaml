@@ -66,14 +66,6 @@ spec:
               value: {{ .Values.config.pollIntervalMs | quote }}
             - name: GATEWAY_POLL_TIMEOUT_MS
               value: {{ .Values.config.pollTimeoutMs | quote }}
-            {{- if .Values.sessionPage.publicBaseUrl }}
-            - name: GATEWAY_PUBLIC_URL
-              value: {{ .Values.sessionPage.publicBaseUrl | quote }}
-            {{- if .Values.sessionPage.redisUrl }}
-            - name: SESSION_PAGE_REDIS_URL
-              value: {{ .Values.sessionPage.redisUrl | quote }}
-            {{- end }}
-            {{- end }}
             {{- if .Values.orchestratorOidc.enabled }}
             - name: GATEWAY_ORCHESTRATOR_OIDC_TOKEN_ENDPOINT
               value: {{ .Values.orchestratorOidc.tokenEndpoint | quote }}

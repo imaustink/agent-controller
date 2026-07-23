@@ -83,53 +83,6 @@ See `src/config.ts` for the full list. Notable ones:
   `docs/integrations-gateway.md` — push-based delivery is a documented
   follow-up, not built in this phase.
 
-## Session pages (issue #81)
-
-When the configured trigger label is applied (the `issues.labeled` →
-`opencode-swe-agent` triage path), the gateway now posts a **"starting
-work"** comment right away — before that turn even runs — rather than only
-replying once the whole (potentially many-minutes-long) turn completes.
-That comment links to a minimal server-rendered **session page**
-(`GET /sessions/:token`, `src/session-page.ts` / `src/session-page-store.ts`)
-showing the session's turn history and a form to send it a follow-up prompt
-(`POST /sessions/:token/prompts`) without needing to post another GitHub
-comment. Ordinary conversational (non-labeled) opened/comment replies are
-unaffected — this only applies to the deterministic triage trigger, since
-that's the long-running path where "did it actually start?" is worth
-answering proactively.
-
-- Off by default: unset `GATEWAY_PUBLIC_URL` disables the whole feature (no
-  comment link is ever posted, and the page routes 404/are unreachable in
-  practice since no token is ever minted).
-- `GATEWAY_PUBLIC_URL` -- this service's own public base URL (e.g.
-  `https://gateway.example.com`), used to build the page link.
-- `SESSION_PAGE_REDIS_URL` (optional) -- Redis connection string so a posted
-  link (and its turn history) survives a pod restart. Falls back to
-  in-memory (lost on restart, fine for a single-replica/dev setup) if unset.
-- The page's `token` is a 256-bit random bearer-capability credential --
-  possession of the URL is the only thing gating who can view the history or
-  submit a prompt, same trust model as e.g. a calendar ICS share link. Treat
-  it as sensitive as the GitHub issue it's linked from.
-
-### Live session tunnel (ADR 0026)
-
-On each page load the gateway asks agent-orchestrator, in real time, whether
-the session's `opencode-swe-agent` Pod is still resident and tunnelable
-(`OrchestratorClient.checkLive`). When it is, the page renders a **LIVE**
-badge, a live event log (`GET /sessions/:token/live-events`, proxying
-agent-orchestrator's SSE stream straight through), and its prompt form posts
-to `POST /sessions/:token/live-prompt` instead of the plain `/prompts`
-route — submitting directly into the running opencode session
-(`prompt_async`, fire-and-forget; the response streams back through the
-live log) rather than queuing another RAG turn via `/invoke`. Falls back to
-the exact pre-ADR-0026 turn-history behavior whenever the Pod isn't (or is
-no longer) live — nothing else about the page changes in that case.
-
-This is the one place this app's session page uses client-side JavaScript
-(a small inline `EventSource`) — genuine real-time streaming can't be done
-with pure server-rendered HTML, unlike the rest of this page's meta-refresh
-based polling.
-
 ## Identity-link credential broker
 
 Independent of the GitHub-webhook relay above, this gateway also exposes an
@@ -211,7 +164,3 @@ Required env vars for this API:
   turn that runs longer than that is reported as timed out even if the
   underlying agent run is still in progress.
 - No rate limiting/abuse controls per repo or sender.
-- Session pages (issue #81) have no auth beyond the unguessable `token` in
-  the URL -- no per-user identity check on `POST /sessions/:token/prompts`,
-  unlike the webhook path's GitHub identity resolution. Anyone who obtains a
-  page link can send it prompts.

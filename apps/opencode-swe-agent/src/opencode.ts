@@ -30,38 +30,10 @@ export interface OpencodeConfigOptions {
 }
 
 /**
- * Every other opencode permission category (confirmed against its own
- * `/doc` OpenAPI spec's `PermissionConfig` schema), set to a blanket
- * `"allow"` since `opencode serve` (ADR 0026) has no `--auto` CLI flag --
- * unlike the old one-shot `opencode run --auto`, non-interactivity for
- * these has to come entirely from config now. `bash` is deliberately NOT
- * listed here -- it keeps its own glob-keyed deny rules below, the one
- * category with a real "irreversible action" risk worth denying outright
- * rather than just defaulting to allow.
- */
-const ALLOW_ALL_OTHER_CATEGORIES: Record<string, string> = {
-  read: "allow",
-  edit: "allow",
-  glob: "allow",
-  grep: "allow",
-  list: "allow",
-  task: "allow",
-  external_directory: "allow",
-  lsp: "allow",
-  skill: "allow",
-  todowrite: "allow",
-  question: "allow",
-  webfetch: "allow",
-  websearch: "allow",
-};
-
-/**
  * Builds the opencode.json config (schema: https://opencode.ai/config.json)
- * written to `$XDG_CONFIG_HOME/opencode/opencode.json` before opencode serve
- * (ADR 0026) is spawned. Pins the model and bakes in the non-negotiable bash
- * deny rules; everything else defaults to "allow" (see
- * {@link ALLOW_ALL_OTHER_CATEGORIES}) so `opencode serve` never blocks
- * waiting on an interactive permission prompt nobody's there to answer.
+ * written to `$XDG_CONFIG_HOME/opencode/opencode.json` before each run. Pins
+ * the model and bakes in the non-negotiable bash deny rules; `"*": "allow"`
+ * plus `--auto` on the CLI keeps everything else non-interactive.
  */
 export function buildOpencodeConfig(opts: OpencodeConfigOptions): object {
   const bash: Record<string, string> = { "*": "allow" };
@@ -69,8 +41,33 @@ export function buildOpencodeConfig(opts: OpencodeConfigOptions): object {
   return {
     $schema: "https://opencode.ai/config.json",
     model: opts.model,
-    permission: { ...ALLOW_ALL_OTHER_CATEGORIES, bash },
+    permission: { bash },
   };
+}
+
+export interface OpencodeArgsOptions {
+  prompt: string;
+  workdir: string;
+  /** opencode model id in `provider/model` form; empty => opencode's configured default. */
+  model?: string;
+}
+
+/**
+ * Builds the argv for a headless, autonomous, non-interactive opencode run.
+ *  - `run <prompt>`   the headless single-shot subcommand (opencode.ai/docs/cli)
+ *  - `--auto`         auto-approve anything not resolved by an explicit
+ *                      permission rule (opencode's analogue of `--allow-all-tools`);
+ *                      explicit `deny` rules in opencode.json still win
+ *  - `--dir`          working directory for the run
+ *  - `--format json`  machine-readable event stream we turn into progress events
+ *  - `--model`        overrides the opencode.json default when set
+ */
+export function buildOpencodeArgs(opts: OpencodeArgsOptions): string[] {
+  const args = ["run", opts.prompt, "--auto", "--dir", opts.workdir, "--format", "json"];
+  if (opts.model) {
+    args.push("--model", opts.model);
+  }
+  return args;
 }
 
 /**
@@ -114,10 +111,125 @@ export function buildPrompt(instruction: string, marker: SweMarker | null): stri
   ].join("\n");
 }
 
-// Event parsing/completion-detection for opencode's headless CLI
-// (`opencode run --format json`) used to live here. Superseded by ADR 0026:
-// `opencode-swe-agent` now drives a long-lived `opencode serve` process
-// instead (see `opencode-server.ts`) -- `sendMessage`'s HTTP response is
-// already the completed assistant message (no stdout JSONL to parse), and
-// the raw `/event` SSE stream is forwarded verbatim for a live viewer
-// (index.ts), not parsed here.
+/**
+ * A parsed signal from one line of opencode's `--format json` event stream.
+ *
+ * NOTE: opencode's exact JSON event schema for headless `run --format json`
+ * is not fully documented publicly at the time this was written (opencode is
+ * built on the Vercel AI SDK, whose stream parts commonly look like
+ * `{"type":"text-delta","text":"..."}` / `{"type":"tool-call",...}` /
+ * `{"type":"tool-result",...}`, and opencode's own server/TUI model exposes
+ * "message part" updates like `{"type":"message.part.updated", ...}`). This
+ * parser is deliberately defensive: it tries several plausible shapes and
+ * falls back to generic text-bearing keys, the same way the previous Copilot
+ * parser had a fallback branch for unknown shapes. Verify against real
+ * `opencode run --format json` output and tighten this once confirmed.
+ */
+export interface OpencodeSignal {
+  /** Human-readable text to narrate as progress. */
+  progress?: string;
+  /**
+   * True when `progress` is a streaming token delta. Callers should
+   * accumulate these into a buffer and flush as a single chunk rather than
+   * forwarding each token individually.
+   */
+  isDelta?: boolean;
+  /**
+   * "narrative" is the agent's own words (assistant text/reasoning) — worth
+   * showing to the user as real conversation content. "status" is mechanical
+   * bookkeeping (tool invocations, fallback shapes) — worth a terse spinner
+   * line, not a paragraph in the chat. Defaults to "status" when omitted.
+   */
+  progressKind?: "narrative" | "status";
+  /** Content of an assistant message (the final summary is the last of these). */
+  finalMessage?: string;
+  /** Output of a tool execution that failed (non-zero exit / success:false). */
+  toolFailure?: string;
+}
+
+/** Parses one JSONL line from opencode into an {@link OpencodeSignal}. Never throws; unknown shapes yield null. */
+export function parseOpencodeLine(line: string): OpencodeSignal | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (typeof obj !== "object" || obj === null) return null;
+  const rec = obj as Record<string, unknown>;
+  const type = typeof rec["type"] === "string" ? (rec["type"] as string) : "";
+  const part = (typeof rec["part"] === "object" && rec["part"] !== null ? rec["part"] : rec) as Record<
+    string,
+    unknown
+  >;
+
+  const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+
+  switch (type) {
+    case "text":
+    case "text-delta":
+    case "assistant.message":
+    case "message.part.updated": {
+      const content = str(part["text"]) ?? str(part["content"]) ?? str(rec["text"]) ?? str(rec["content"]);
+      if (!content) return null;
+      const isDelta = type === "text-delta";
+      return isDelta
+        ? { progress: content, isDelta: true, progressKind: "narrative" }
+        : { finalMessage: content, progress: content, progressKind: "narrative" };
+    }
+    case "reasoning":
+    case "reasoning-delta":
+      return str(part["text"])
+        ? { progress: str(part["text"])!, isDelta: type === "reasoning-delta", progressKind: "narrative" }
+        : null;
+    // Confirmed against real `opencode run --format json` output (headless
+    // single-shot mode): one "tool_use" event per call, carrying BOTH the
+    // invocation and (once done) its result nested under `part.state` --
+    // there is no separate "tool-result" event to key off of. `part.tool ===
+    // "invalid"` is how a malformed tool call (bad args) surfaces; a non-zero
+    // shell exit code is not otherwise flagged as an error by opencode itself
+    // (state.status is "completed" either way), so it isn't treated as one here.
+    case "tool-call":
+    case "tool_use": {
+      const name = str(part["tool"]) ?? str(rec["toolName"]) ?? str(rec["tool"]);
+      const state = (typeof part["state"] === "object" && part["state"] !== null ? part["state"] : {}) as Record<
+        string,
+        unknown
+      >;
+      const output = str(state["output"]);
+      if (state["status"] !== "completed" || !output) {
+        return name ? { progress: `running ${name}`, progressKind: "status" } : null;
+      }
+      if (name === "invalid") return { toolFailure: output };
+      // Successful tool output (file reads, grep/diff/command results) is the
+      // substance behind the agent's narration ("let's look at X in detail")
+      // -- without this, only the narration streams and the actual findings
+      // vanish, since a `null` signal here never becomes a progress event at all.
+      return { progress: name ? `${name} →\n${output}` : output, progressKind: "narrative" };
+    }
+    case "tool-result":
+    case "tool_result": {
+      // Defensive fallback for the plausible-but-unobserved shape where a
+      // tool's result arrives as its own event rather than nested in
+      // "tool_use" -- real opencode output uses "tool_use" (above), not this.
+      const isError = rec["isError"] === true || rec["success"] === false;
+      const content = str(rec["result"]) ?? str(rec["output"]) ?? str(rec["error"]);
+      if (!content) return null;
+      if (isError) return { toolFailure: content };
+      const name = str(rec["toolName"]) ?? str(part["tool"]) ?? str(rec["tool"]);
+      return { progress: name ? `${name} →\n${content}` : content, progressKind: "narrative" };
+    }
+    case "error":
+      return str(rec["message"]) ? { toolFailure: str(rec["message"])! } : null;
+    default: {
+      // Fallback for unconfirmed/other shapes.
+      for (const key of ["text", "content", "message", "delta"]) {
+        const v = str(rec[key]) ?? str(part[key]);
+        if (v) return { progress: v };
+      }
+      return null;
+    }
+  }
+}

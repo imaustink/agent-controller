@@ -1,18 +1,14 @@
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { loadConfig, NatsChannel, type AgentChannel } from "@controller-agent/agent-runtime";
-import type { AgentDownMessage, AgentUpMessage } from "@controller-agent/messaging";
-import { buildOpencodeConfig, buildPrompt } from "./opencode.js";
+import { runAgent, type AgentSession } from "@controller-agent/agent-runtime";
 import {
-  createSession,
-  forwardRequest,
-  narrateOpencodeEvent,
-  sendMessage,
-  startOpencodeServer,
-  subscribeEvents,
-  type OpencodeAuth,
-  type OpencodeServerHandle,
-} from "./opencode-server.js";
+  buildOpencodeArgs,
+  buildOpencodeConfig,
+  buildPrompt,
+  parseOpencodeLine,
+} from "./opencode.js";
 import { appendCoAuthorTrailer, discoverResult, ensureDir, findRepoDir, resolveGitIdentity, runCommand, setupGitAuth } from "./git.js";
 import { extractContinuationToken } from "./continuation.js";
 import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./marker.js";
@@ -20,98 +16,314 @@ import { loadToolConfig } from "./config.js";
 import { resolveGithubToken } from "@controller-agent/github-app-auth";
 import { AuthorizationError, finalizeDelegatedWrite, isDelegating, resolveDelegatedToken } from "./identityDelegation.js";
 import { clip } from "./security/redact.js";
+import { ProgressStreamer } from "./progress-streamer.js";
 
 const toolConfig = loadToolConfig();
 
-/** Distributive Omit so each union variant keeps its own fields (a plain Omit over a union keeps only common keys). */
-type WithoutEnvelope<T> = T extends unknown ? Omit<T, "agent_run_id" | "seq" | "ts"> : never;
+/** Spawns the opencode CLI, streaming its JSON event output into progress events via
+ * `session.progress()`. Returns the final assistant message, any tool failures,
+ * and a bounded transcript. */
+function runOpencode(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  onProgress: (text: string, kind: "narrative" | "status") => void,
+  signal?: AbortSignal,
+): Promise<{ code: number; finalMessage: string | null; toolFailures: string[]; transcript: string }> {
+  return new Promise((resolve, reject) => {
+    // stdin MUST be closed (not the default open pipe): opencode probes for
+    // piped input right after startup, and an open-but-silent pipe (Node's
+    // default child stdio) makes it block forever waiting for EOF that never
+    // comes -- reproduced reliably in production, never reproduced when
+    // manually exec'd without a stdin attached. `ignore` gives it immediate
+    // EOF, matching the working manual-invocation case exactly.
+    // `signal` lets a `cancel` from the orchestrator kill this subprocess
+    // directly -- without it, cancelling only rejects a pending ask() and the
+    // coding agent keeps running (and streaming progress) to completion.
+    const child = spawn("opencode", args, { cwd, env, stdio: ["ignore", "pipe", "pipe"], signal });
+    let buffer = "";
+    let finalMessage: string | null = null;
+    const toolFailures: string[] = [];
+    const parts: string[] = [];
+    let transcriptLen = 0;
+    /** Accumulates streaming token deltas before flushing as a single chunk. */
+    let deltaBuffer = "";
+    // Whether the in-flight delta buffer is a continuation of the same
+    // narrative unit as the last emission (no separator needed) versus the
+    // start of a fresh one (opencode emits a burst of deltas per message/tool
+    // cycle, back-to-back with no whitespace of its own between cycles).
+    let deltaBufferOpen = false;
+    let pendingPrefix = "";
+    let anyNarrativeEmitted = false;
 
-const OPENCODE_PORT = 4096;
+    // Deltas only ever come from narrative signals (text-delta/reasoning-delta,
+    // see opencode.ts) — the buffer never mixes in mechanical tool-call text.
+    const flushDelta = (): void => {
+      if (!deltaBuffer) return;
+      const raw = deltaBuffer;
+      deltaBuffer = "";
+      const text = pendingPrefix ? `${pendingPrefix}${raw}` : raw;
+      pendingPrefix = "";
+      anyNarrativeEmitted = true;
+      onProgress(text, "narrative");
+      if (transcriptLen < 8000) {
+        parts.push(raw);
+        transcriptLen += raw.length + 1;
+      }
+    };
 
-interface TurnOutcome {
-  reply: string;
-  nextMarker: SweMarker | null;
-  succeeded: boolean;
-}
+    const handleLine = (line: string): void => {
+      const sig = parseOpencodeLine(line);
+      if (!sig) return;
+      if (sig.finalMessage) finalMessage = sig.finalMessage;
+      if (sig.toolFailure) toolFailures.push(sig.toolFailure);
 
-interface TurnContext {
-  serverBaseUrl: string;
-  auth: OpencodeAuth;
-  sessionId: string;
-  childEnv: NodeJS.ProcessEnv;
-  apiHost: string;
-  token: string;
-  delegating: boolean;
-  attribution: { githubLogin: string; githubId: number } | null;
-  turnStartedAt: number;
-  signal: AbortSignal;
+      if (sig.progress && sig.isDelta) {
+        // Continuation of the same in-flight message -- no unit boundary.
+        if (!deltaBufferOpen && anyNarrativeEmitted) pendingPrefix = "\n\n";
+        deltaBufferOpen = true;
+        deltaBuffer += sig.progress;
+        // Flush early if the buffer has grown to a reasonable sentence chunk.
+        if (deltaBuffer.length >= 500) flushDelta();
+        return;
+      }
+
+      // Anything else (a whole message, a tool call/failure, an unrecognized
+      // shape) ends whatever delta run was in progress and starts a fresh unit.
+      flushDelta();
+      deltaBufferOpen = false;
+
+      if (sig.progress) {
+        const kind = sig.progressKind ?? "status";
+        let text = sig.progress;
+        if (kind === "narrative") {
+          if (anyNarrativeEmitted) text = `\n\n${text}`;
+          anyNarrativeEmitted = true;
+        }
+        onProgress(text, kind);
+        if (transcriptLen < 8000) {
+          parts.push(sig.progress);
+          transcriptLen += sig.progress.length + 1;
+        }
+      }
+    };
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      const s = chunk.toString();
+      // Mirror raw opencode output to our own stdout as it arrives so
+      // `kubectl logs -f` shows progress live instead of only at process
+      // exit (previously this was only ever written once, in the `close`
+      // handler below, which made the pod look hung until the job finished).
+      process.stdout.write(s);
+      buffer += s;
+      let idx: number;
+      while ((idx = buffer.indexOf("\n")) >= 0) {
+        handleLine(buffer.slice(0, idx));
+        buffer = buffer.slice(idx + 1);
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => process.stderr.write(clip(chunk.toString(), 2000)));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (buffer.trim()) handleLine(buffer);
+      flushDelta();
+      resolve({ code: code ?? 1, finalMessage, toolFailures, transcript: parts.join("\n") });
+    });
+  });
 }
 
 /**
- * Runs one turn against the already-running opencode session: clones/checks
- * out the target repo (first turn of a continuation only -- later turns
- * reuse the same on-disk clone, since the Pod itself now persists across
- * turns instead of restarting per turn), sends the instruction, and applies
- * the same post-processing as before ADR 0026 (PR discovery, identity-
- * delegation finalize/revoke, co-author trailer, continuation marker).
+ * Runs one coding turn (one `session.goal` or one continued instruction),
+ * pushing progress via `session.progress()`. Returns the reply text to surface
+ * to the user — either a completion summary or an error message.
+ *
+ * If the opencode CLI needs clarification before it can act, the caller is
+ * responsible for asking via `session.ask()` and then calling this again with
+ * the updated instruction. In this first version the agent runs the entire task
+ * without mid-turn HITL; `session.ask()` is used only to handle the start-of-
+ * session case where the instruction might be ambiguous.
  */
-async function runTurn(ctx: TurnContext, instruction: string, marker: SweMarker | null, isFirstTurn: boolean): Promise<TurnOutcome> {
-  if (isFirstTurn && marker?.repo) {
+async function runOneTurn(
+  session: AgentSession,
+  instruction: string,
+  marker: SweMarker | null,
+  anthropicApiKey: string,
+  turnStartedAt: number,
+): Promise<{ reply: string; nextMarker: SweMarker | null; succeeded: boolean }> {
+  const apiHost = new URL(toolConfig.githubApiUrl).host === "api.github.com" ? "github.com" : new URL(toolConfig.githubApiUrl).host;
+
+  // Dual-token identity delegation (docs/adr — see identityDelegation.ts):
+  // when enabled, the user's own linked token only ever gates *whether* a
+  // write happens; the write itself is done with a freshly minted App
+  // installation token, so commits/PRs attribute to the bot. Falls back to
+  // resolveGithubToken's single-token behavior (static PAT, or whatever's
+  // configured) when delegation isn't configured.
+  const delegating = isDelegating(toolConfig);
+  let token: string;
+  let attribution: { githubLogin: string; githubId: number } | null = null;
+  if (delegating) {
+    try {
+      const resolved = await resolveDelegatedToken(toolConfig, marker?.repo ?? null, turnStartedAt);
+      token = resolved.token;
+      attribution = resolved.attribution;
+    } catch (err) {
+      if (err instanceof AuthorizationError) {
+        return {
+          reply: `You don't have write access to \`${marker?.repo}\`: ${err.message}`,
+          nextMarker: marker,
+          succeeded: false,
+        };
+      }
+      throw err;
+    }
+  } else {
+    token = await resolveGithubToken(toolConfig);
+  }
+
+  // opencode reads its config (model, permission rules) from
+  // $XDG_CONFIG_HOME/opencode/opencode.json. Point that at a writable
+  // location under our /tmp-based HOME and write it out before spawning.
+  const xdgConfigHome = `${toolConfig.homeDir}/.config`;
+  const xdgDataHome = `${toolConfig.homeDir}/.local/share`;
+
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: toolConfig.homeDir,
+    XDG_CONFIG_HOME: xdgConfigHome,
+    XDG_DATA_HOME: xdgDataHome,
+    // opencode's Anthropic provider (built on @ai-sdk/anthropic) reads this
+    // directly — no interactive `opencode auth login` / `/connect` step needed.
+    ANTHROPIC_API_KEY: anthropicApiKey,
+    GH_TOKEN: token,
+    GITHUB_TOKEN: token,
+    GIT_TERMINAL_PROMPT: "0",
+  };
+
+  const opencodeConfigDir = join(xdgConfigHome, "opencode");
+  await mkdir(opencodeConfigDir, { recursive: true });
+  await writeFile(
+    join(opencodeConfigDir, "opencode.json"),
+    JSON.stringify(buildOpencodeConfig({ model: toolConfig.model }), null, 2),
+  );
+
+  // Once delegating, the token authenticating git/gh is an installation
+  // token, which can't call `GET /user` (403 — App tokens aren't user
+  // tokens), so resolveGitIdentity's own lookup would always miss. Construct
+  // the bot identity directly when the App's slug is configured; otherwise
+  // fall back to the generic placeholder (unchanged prior behavior).
+  const identity =
+    delegating && toolConfig.githubAppSlug
+      ? {
+          name: `${toolConfig.githubAppSlug}[bot]`,
+          email: `${toolConfig.githubAppId}+${toolConfig.githubAppSlug}[bot]@users.noreply.github.com`,
+        }
+      : ((await resolveGitIdentity(childEnv, session.signal)) ?? {
+          name: "opencode-swe",
+          email: "opencode-swe@users.noreply.github.com",
+        });
+  await setupGitAuth({ homeDir: toolConfig.homeDir, token, apiHost, identity });
+
+  await session.progress("Preparing workspace…");
+
+  let priorHeadSha: string | null = null;
+  if (marker?.repo) {
     const repoName = marker.repo.split("/")[1];
     const dest = `${toolConfig.workdir}/${repoName}`;
-    const cloneResult = await runCommand("git", ["clone", `https://${ctx.apiHost}/${marker.repo}.git`, dest], {
-      env: ctx.childEnv,
-      signal: ctx.signal,
+    const cloneResult = await runCommand("git", ["clone", `https://${apiHost}/${marker.repo}.git`, dest], {
+      env: childEnv,
+      signal: session.signal,
     });
     if (cloneResult.code === 0 && marker.branch) {
-      await runCommand("git", ["-C", dest, "checkout", marker.branch], { env: ctx.childEnv, signal: ctx.signal });
+      await runCommand("git", ["-C", dest, "checkout", marker.branch], { env: childEnv, signal: session.signal });
+    }
+    if (cloneResult.code === 0) {
+      const headRes = await runCommand("git", ["-C", dest, "rev-parse", "HEAD"], {
+        env: childEnv,
+        signal: session.signal,
+      });
+      if (headRes.code === 0) priorHeadSha = headRes.stdout.trim();
     }
   }
 
-  let priorHeadSha: string | null = null;
-  const repoDirBeforeTurn = await findRepoDir(toolConfig.workdir);
-  if (repoDirBeforeTurn) {
-    const headRes = await runCommand("git", ["-C", repoDirBeforeTurn, "rev-parse", "HEAD"], {
-      env: ctx.childEnv,
-      signal: ctx.signal,
-    });
-    if (headRes.code === 0) priorHeadSha = headRes.stdout.trim();
-  }
+  await session.progress("Running coding agent…");
+  const prompt = buildPrompt(instruction, marker);
+  const args = buildOpencodeArgs({ prompt, workdir: toolConfig.workdir, model: toolConfig.model });
 
-  // Only the FIRST turn gets the full framing prompt (workflow rules,
-  // environment description, continuation context) -- opencode already has
-  // that context in the session's own history for every turn after.
-  const promptText = isFirstTurn ? buildPrompt(instruction, marker) : instruction;
-  const result = await sendMessage(ctx.serverBaseUrl, ctx.sessionId, promptText, ctx.auth, ctx.signal);
+  // opencode's headless `run --format json` mode narrates in whole
+  // message/tool-output blocks, not per-token deltas (see opencode.test.ts).
+  // Forwarding each block as a single progress call makes the chat UI's
+  // stream pop in whole paragraphs at once, which reads as jarring rather
+  // than a smooth response. The streamer re-slices each block into small
+  // chunks emitted a short delay apart so it reads like a live stream.
+  const narrativeStreamer = new ProgressStreamer((chunk) => void session.progress(chunk, { stage: "agent-text" }), {
+    signal: session.signal,
+  });
 
-  if (result.failed) {
+  const result = await runOpencode(
+    args,
+    childEnv,
+    toolConfig.workdir,
+    (text, kind) => {
+      const clipped = clip(text, 500);
+      if (kind === "narrative") {
+        // "agent-text" is a contract with the orchestrator (server.ts): it
+        // streams that stage's message as real chat content instead of a
+        // status spinner.
+        narrativeStreamer.push(clipped);
+        return;
+      }
+      // Status/spinner lines (e.g. "running bash") are already terse --
+      // forward immediately, no typing effect needed.
+      void session.progress(clipped, { stage: "agent" });
+    },
+    session.signal,
+  );
+  // Let any still-queued narrative chunks finish emitting before moving on,
+  // so progress messages stay in the order opencode actually produced them.
+  await narrativeStreamer.waitUntilDrained();
+
+  if (result.code !== 0) {
+    const detail = result.toolFailures.length
+      ? `: ${clip(result.toolFailures[result.toolFailures.length - 1]!, 800)}`
+      : "";
     return {
-      reply: `The coding agent reported an error${result.failureDetail ? `: ${clip(result.failureDetail, 800)}` : ""}`,
+      reply: `The coding agent exited with code ${result.code}${detail}`,
       nextMarker: marker,
       succeeded: false,
     };
   }
 
-  const summary = clip(result.finalMessage ?? "The coding agent finished without a summary.", 4000);
+  await session.progress("Discovering result…", { stage: "finalize" });
+
+  const summary = clip(result.finalMessage ?? result.transcript ?? "The coding agent finished without a summary.", 4000);
   const repoDir = await findRepoDir(toolConfig.workdir);
-  const discovered = repoDir ? await discoverResult(repoDir, ctx.childEnv, ctx.signal) : null;
+  const discovered = repoDir ? await discoverResult(repoDir, childEnv, session.signal) : null;
 
   if (!discovered?.repo || !discovered.branch) {
+    const cause = result.toolFailures.length
+      ? clip(result.toolFailures[result.toolFailures.length - 1]!, 1200)
+      : clip(summary, 1200);
     return {
-      reply: `The agent produced no pushable repository or pull request. Details: ${clip(summary, 1200)}`,
+      reply: `The agent produced no pushable repository or pull request. Details: ${cause}`,
       nextMarker: marker,
       succeeded: false,
     };
   }
 
-  if (ctx.delegating && ctx.attribution) {
+  if (delegating && attribution) {
+    // marker.repo known -> access was already verified pre-flight above.
+    // marker.repo unknown -> this is the first point the actual repo is
+    // known, so it's the first point we CAN check: distinguish "the bot
+    // just created this" (grant the human access) from "this repo already
+    // existed" (retroactively verify access; revoke the PR if insufficient)
+    // via GitHub's own created_at timestamp — not the LLM's say-so.
     if (!marker?.repo) {
       const outcome = await finalizeDelegatedWrite({
-        token: ctx.token,
-        attribution: ctx.attribution,
+        token,
+        attribution,
         repo: discovered.repo,
         githubApiUrl: toolConfig.githubApiUrl,
-        turnStartedAt: ctx.turnStartedAt,
+        turnStartedAt,
       });
       if (outcome.kind === "revoke") {
         if (discovered.pr) {
@@ -126,7 +338,7 @@ async function runTurn(ctx: TurnContext, instruction: string, marker: SweMarker 
               "--comment",
               "Closed automatically: the initiating user does not have write access to this repository.",
             ],
-            { env: ctx.childEnv, signal: ctx.signal },
+            { env: childEnv, signal: session.signal },
           );
         }
         return {
@@ -139,8 +351,8 @@ async function runTurn(ctx: TurnContext, instruction: string, marker: SweMarker 
 
     await appendCoAuthorTrailer(
       repoDir!,
-      ctx.childEnv,
-      { login: ctx.attribution.githubLogin, id: ctx.attribution.githubId },
+      childEnv,
+      { login: attribution.githubLogin, id: attribution.githubId },
       priorHeadSha,
     );
   }
@@ -149,7 +361,7 @@ async function runTurn(ctx: TurnContext, instruction: string, marker: SweMarker 
     repo: discovered.repo,
     branch: discovered.branch,
     pr: discovered.pr,
-    session: marker?.session ?? ctx.sessionId,
+    session: marker?.session ?? randomUUID(),
   };
 
   const prLine = discovered.prUrl
@@ -164,235 +376,58 @@ async function runTurn(ctx: TurnContext, instruction: string, marker: SweMarker 
 }
 
 /**
- * Agent entry point (ADR 0026). Bypasses `runAgent()` -- its contract is
- * deliberately "one goal in, one reply out, then exit," which every other
- * agent relies on unchanged; generalizing it just for this one agent would
- * ripple everywhere. Instead this drives the lower-level primitives
- * `runAgent` itself is built on (`loadConfig()` + `NatsChannel`) directly, so
- * the process can stay resident: spawn a long-lived `opencode serve`
- * (loopback-only), run the initial goal, publish the exact same final
- * `reply`/continuation-token contract as before this ADR, then -- instead of
- * exiting -- stay up for a bounded idle window, tunneling a live viewer's
- * `opencode_request`s straight into the local server and forwarding its
- * `/event` SSE stream out as `opencode_event`s.
+ * Agent entry point: wired into the `@controller-agent/agent-runtime` SDK's
+ * `runAgent()` loop. The session's `goal` is the initial instruction (delivered
+ * by the orchestrator via `AgentRun.spec.goal`, injected as `AGENT_GOAL` env).
+ * Follow-up prompts from the user (HITL continuation) arrive as further
+ * `session.goal`-style strings via NATS `prompt` messages, handled by the SDK's
+ * `awaitReply` mechanism automatically when `session.ask()` emits a non-final
+ * reply and the next turn calls `runAgent` again via the orchestrator's
+ * `checkActiveAgentRun` node.
+ *
+ * Multi-turn continuity across separate AgentRun invocations (docs/adr/0017)
+ * is maintained via the orchestrator's session store, not the chat
+ * transcript: this agent's `reply.result` carries the encoded repo/branch/
+ * pr/session as an opaque token (see ./marker.ts), and on the NEXT episode
+ * the orchestrator prepends `<!-- continuation: <token> -->` to `goal` (see
+ * ./continuation.ts for stripping it back off) — the value never appears in
+ * anything the user or the orchestrator's LLM planner reads. Within a single
+ * AgentRun episode (i.e. for HITL during one coding task) we use native
+ * `session.ask()` to pause and resume instead.
  */
-async function main(): Promise<void> {
-  const runtimeConfig = loadConfig();
-  const channel: AgentChannel = await NatsChannel.connect(runtimeConfig);
-
-  let seq = 0;
-  // Plain `Omit` over a union collapses to only the common keys -- this
-  // distributive form (matching `packages/agent-runtime`'s own internal
-  // `WithoutEnvelope`) keeps each variant's own fields intact.
-  const publishUp = (msg: WithoutEnvelope<AgentUpMessage>): Promise<void> =>
-    channel.publishUp({
-      ...msg,
-      agent_run_id: runtimeConfig.runId,
-      seq: seq++,
-      ts: new Date().toISOString(),
-    } as AgentUpMessage);
-
-  const abort = new AbortController();
-  let server: OpencodeServerHandle | undefined;
-  let idleTimer: ReturnType<typeof setTimeout> | undefined;
-  let ended = false;
-
-  const endSession = async (reason: string): Promise<void> => {
-    if (ended) return;
-    ended = true;
-    if (idleTimer) clearTimeout(idleTimer);
-    abort.abort(new Error(reason));
-    await publishUp({ type: "session_ended", reason }).catch(() => {});
-    server?.kill();
-    await channel.close();
-    process.exit(0);
-  };
-
-  const scheduleIdleShutdown = (): void => {
-    if (idleTimer) clearTimeout(idleTimer);
-    const liveUntil = new Date(Date.now() + toolConfig.liveIdleTimeoutMs).toISOString();
-    void publishUp({ type: "session_idle", liveUntil });
-    idleTimer = setTimeout(() => void endSession("idle timeout"), toolConfig.liveIdleTimeoutMs);
-  };
-
-  channel.onDown((msg: AgentDownMessage) => {
-    switch (msg.type) {
-      case "opencode_request":
-        if (!server) {
-          void publishUp({ type: "opencode_response", requestId: msg.requestId, status: 503, body: { error: "opencode server not ready" } });
-          return;
-        }
-        // Any live-viewer activity resets the idle clock (only meaningful
-        // once we've actually gone idle; harmless no-op before that).
-        if (idleTimer) scheduleIdleShutdown();
-        forwardRequest(server.baseUrl, { method: msg.method, path: msg.path, body: msg.body }, server.auth)
-          .then((res) => publishUp({ type: "opencode_response", requestId: msg.requestId, status: res.status, body: res.body }))
-          .catch((err) =>
-            publishUp({
-              type: "opencode_response",
-              requestId: msg.requestId,
-              status: 502,
-              body: { error: err instanceof Error ? err.message : String(err) },
-            }),
-          );
-        return;
-      case "cancel":
-        void endSession(msg.reason ?? "cancelled");
-        return;
-      case "prompt":
-      case "signal":
-        // This agent never calls ask() (no pending-answer HITL), and once a
-        // final reply is sent the orchestrator no longer considers this run
-        // "active" for ordinary conversational routing -- a live viewer's
-        // follow-up prompt arrives as `opencode_request`, not `prompt`. Any
-        // `prompt` here is therefore unexpected; drop it (same discipline as
-        // `packages/agent-runtime`'s own `onDown` handler).
-        return;
-    }
-  });
-
-  await publishUp({ type: "ready" });
-
-  try {
-    const anthropicApiKey = toolConfig.anthropicApiKey;
-    if (!anthropicApiKey) {
-      throw new Error("ANTHROPIC_API_KEY is required — inject via secretEnv/secretKeyRef on the Agent CR");
-    }
-
-    await ensureDir(toolConfig.homeDir);
-    await ensureDir(toolConfig.workdir);
-
-    await publishUp({ type: "progress", message: "Authenticating…", stage: "authenticate" });
-
-    const { token: continuationToken, text: instruction } = extractContinuationToken(runtimeConfig.goal);
-    const marker = decodeSweContinuation(continuationToken);
-    if (!instruction.trim()) {
-      throw new Error("Goal must not be empty after removing any continuation marker");
-    }
-
-    const turnStartedAt = Date.now();
-    const apiHost = new URL(toolConfig.githubApiUrl).host === "api.github.com" ? "github.com" : new URL(toolConfig.githubApiUrl).host;
-
-    const delegating = isDelegating(toolConfig);
-    let token: string;
-    let attribution: { githubLogin: string; githubId: number } | null = null;
-    if (delegating) {
-      try {
-        const resolved = await resolveDelegatedToken(toolConfig, marker?.repo ?? null, turnStartedAt);
-        token = resolved.token;
-        attribution = resolved.attribution;
-      } catch (err) {
-        if (err instanceof AuthorizationError) {
-          await publishUp({
-            type: "reply",
-            message: `You don't have write access to \`${marker?.repo}\`: ${err.message}`,
-            final: true,
-          });
-          await endSession("unauthorized");
-          return;
-        }
-        throw err;
-      }
-    } else {
-      token = await resolveGithubToken(toolConfig);
-    }
-
-    const xdgConfigHome = `${toolConfig.homeDir}/.config`;
-    const xdgDataHome = `${toolConfig.homeDir}/.local/share`;
-
-    const childEnv: NodeJS.ProcessEnv = {
-      ...process.env,
-      HOME: toolConfig.homeDir,
-      XDG_CONFIG_HOME: xdgConfigHome,
-      XDG_DATA_HOME: xdgDataHome,
-      ANTHROPIC_API_KEY: anthropicApiKey,
-      GH_TOKEN: token,
-      GITHUB_TOKEN: token,
-      GIT_TERMINAL_PROMPT: "0",
-    };
-
-    const opencodeConfigDir = join(xdgConfigHome, "opencode");
-    await mkdir(opencodeConfigDir, { recursive: true });
-    await writeFile(
-      join(opencodeConfigDir, "opencode.json"),
-      JSON.stringify(buildOpencodeConfig({ model: toolConfig.model }), null, 2),
-    );
-
-    const identity =
-      delegating && toolConfig.githubAppSlug
-        ? {
-            name: `${toolConfig.githubAppSlug}[bot]`,
-            email: `${toolConfig.githubAppId}+${toolConfig.githubAppSlug}[bot]@users.noreply.github.com`,
-          }
-        : ((await resolveGitIdentity(childEnv, abort.signal)) ?? {
-            name: "opencode-swe",
-            email: "opencode-swe@users.noreply.github.com",
-          });
-    await setupGitAuth({ homeDir: toolConfig.homeDir, token, apiHost, identity });
-
-    await publishUp({ type: "progress", message: "Starting opencode…" });
-    server = startOpencodeServer({ port: OPENCODE_PORT, cwd: toolConfig.workdir, env: childEnv });
-    await server.waitForHealth();
-
-    const session = await createSession(server.baseUrl, server.auth);
-    // Forward every local opencode event onto NATS for a live viewer (ADR
-    // 0026), AND narrate text-delta/tool-call events as ordinary `progress`
-    // messages so the ordinary (non-live-page) chat streaming path keeps
-    // seeing the agent's real narrative as it works -- fire-and-forget,
-    // never awaited; never load-bearing for the reply/prompt contract below.
-    void subscribeEvents(
-      server.baseUrl,
-      server.auth,
-      (event) => {
-        void publishUp({ type: "opencode_event", event });
-        const narrated = narrateOpencodeEvent(event);
-        if (narrated) void publishUp({ type: "progress", message: clip(narrated.message, 500), stage: narrated.stage });
-      },
-      abort.signal,
-    );
-
-    await publishUp({ type: "progress", message: "Running coding agent…", stage: "agent" });
-    const outcome = await runTurn(
-      {
-        serverBaseUrl: server.baseUrl,
-        auth: server.auth,
-        sessionId: session.id,
-        childEnv,
-        apiHost,
-        token,
-        delegating,
-        attribution,
-        turnStartedAt,
-        signal: abort.signal,
-      },
-      instruction,
-      marker,
-      true,
-    );
-
-    if (!outcome.succeeded) {
-      await publishUp({ type: "failed", code: "agent_error", message: outcome.reply });
-      await endSession("turn failed");
-      return;
-    }
-
-    await publishUp({
-      type: "reply",
-      message: outcome.reply,
-      final: true,
-      result: outcome.nextMarker ? encodeSweContinuation(outcome.nextMarker) : undefined,
-    });
-
-    // Stay resident instead of exiting immediately -- a live viewer can keep
-    // tunneling `opencode_request`s into this same session until the idle
-    // window (reset by any such activity) elapses.
-    scheduleIdleShutdown();
-  } catch (err) {
-    if (!ended) {
-      await publishUp({ type: "failed", code: "agent_error", message: err instanceof Error ? err.message : String(err) }).catch(() => {});
-      await endSession("startup error");
-    }
+runAgent(async (session) => {
+  const turnStartedAt = Date.now();
+  const anthropicApiKey = toolConfig.anthropicApiKey;
+  if (!anthropicApiKey) {
+    throw new Error("ANTHROPIC_API_KEY is required — inject via secretEnv/secretKeyRef on the Agent CR");
   }
-}
 
-void main();
+  await ensureDir(toolConfig.homeDir);
+  await ensureDir(toolConfig.workdir);
+
+  await session.progress("Authenticating…", { stage: "authenticate" });
+
+  // Strip the generic continuation marker (if this is a continuation
+  // episode) and decode it back into repo/branch/pr/session.
+  const { token: continuationToken, text: instruction } = extractContinuationToken(session.goal);
+  const marker = decodeSweContinuation(continuationToken);
+  if (!instruction.trim()) {
+    throw new Error("Goal must not be empty after removing any continuation marker");
+  }
+
+  // If the instruction is genuinely ambiguous (e.g. no target repo specified
+  // and no prior marker), ask for clarification before spinning up opencode.
+  // Note: this is currently a simple heuristic — a more sophisticated agent
+  // would use an LLM pre-flight check here. For now, always proceed to the
+  // coding turn and let the opencode CLI surface missing-context errors.
+  // (Token resolution — including the dual-token identity-delegation path —
+  // happens inside runOneTurn, since it needs `marker` to decide whether the
+  // target repo is already known.)
+  const { reply, nextMarker, succeeded } = await runOneTurn(session, instruction, marker, anthropicApiKey, turnStartedAt);
+
+  if (!succeeded) {
+    throw new Error(reply);
+  }
+
+  return { message: reply, result: nextMarker ? encodeSweContinuation(nextMarker) : undefined };
+});

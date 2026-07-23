@@ -31,9 +31,4 @@ describe("encodeSweContinuation / decodeSweContinuation", () => {
   it("rejects a branch value containing shell metacharacters", () => {
     expect(decodeSweContinuation("repo=owner/repo branch=main;rm session=abc")).toBeNull();
   });
-
-  it("round-trips a real opencode session id containing an underscore (ADR 0026)", () => {
-    const marker = { repo: "owner/repo", branch: "feature/x", pr: null, session: "ses_abc123" };
-    expect(decodeSweContinuation(encodeSweContinuation(marker))).toEqual(marker);
-  });
 });

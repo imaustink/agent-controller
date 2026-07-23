@@ -135,26 +135,6 @@ identityLink:
   # authcode flow enabled.
   githubOauthRedirectUri: ""
 
-# Session page (issue #81): when the ai-triage label kicks off a run, the
-# gateway posts a "starting work" comment linking to a minimal
-# server-rendered page (served by this same app, GET /sessions/:token) that
-# shows that session's turn history and lets you send it follow-up prompts
-# without posting another GitHub comment. Off by default -- an empty
-# publicBaseUrl disables the whole feature (no link is ever posted, and the
-# page routes are never wired up).
-sessionPage:
-  # Public base URL this Service is reachable at, e.g. matching ingress.host
-  # below (with scheme, no trailing slash) -- required to enable the feature.
-  publicBaseUrl: ""
-  # Redis URL for session-page state, so a posted link (and its turn
-  # history) survives a pod restart. Empty by default -- an in-memory store
-  # is used instead (fine for a single-replica/dev setup, lost on restart).
-  # If identityLink.enabled=true this Release already has a Redis reachable
-  # at "redis://agent-orchestrator-redis:6379" (see that field's comment for
-  # why cross-subchart DNS just works) -- point this at the same instance to
-  # reuse it rather than standing up a second one.
-  redisUrl: ""
-
 # Secrets: GITHUB_WEBHOOK_SECRET (required), GATEWAY_ORCHESTRATOR_TOKEN
 # (required), and either GITHUB_TOKEN or the three GITHUB_APP_* fields
 # (required for posting issue comments). When identityLink.enabled=true,

@@ -50,18 +50,6 @@ interface InvokePollBody {
   error?: string;
 }
 
-/** Result of `checkLive` (ADR 0026). */
-export interface LiveStatus {
-  live: boolean;
-  agentRunId?: string;
-}
-
-/** Result of a forwarded opencode call via `forwardOpencode` (ADR 0026). */
-export interface OpencodeForwardResult {
-  status: number;
-  body?: unknown;
-}
-
 export class OrchestratorClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly fetchImpl: typeof fetch;
@@ -73,68 +61,6 @@ export class OrchestratorClient {
 
   private resolveToken(): Promise<string> | string {
     return typeof this.options.token === "function" ? this.options.token() : this.options.token;
-  }
-
-  private baseUrl(): string {
-    return this.options.baseUrl.replace(/\/$/, "");
-  }
-
-  /**
-   * Checks whether `sessionId`'s most recent agent run is still resident and
-   * tunnelable (ADR 0026), via agent-orchestrator's `GET /sessions/live` --
-   * a real-time probe on the orchestrator's end, not a cached flag, so this
-   * always reflects whether the Pod is ACTUALLY reachable right now.
-   */
-  async checkLive(sessionId: string): Promise<LiveStatus> {
-    try {
-      const res = await this.fetchImpl(`${this.baseUrl()}/sessions/live?sessionId=${encodeURIComponent(sessionId)}`, {
-        headers: { authorization: `Bearer ${await this.resolveToken()}` },
-      });
-      if (!res.ok) return { live: false };
-      return (await res.json()) as LiveStatus;
-    } catch {
-      return { live: false };
-    }
-  }
-
-  /**
-   * Opens agent-orchestrator's `GET /agent-runs/:runId/events` SSE stream
-   * (ADR 0026) and returns the raw `Response` so the caller can pipe its
-   * body straight through to its own client -- proxying, not buffering.
-   */
-  async openEventStream(runId: string, sessionId: string): Promise<Response> {
-    return this.fetchImpl(
-      `${this.baseUrl()}/agent-runs/${encodeURIComponent(runId)}/events?sessionId=${encodeURIComponent(sessionId)}`,
-      { headers: { authorization: `Bearer ${await this.resolveToken()}`, accept: "text/event-stream" } },
-    );
-  }
-
-  /**
-   * Forwards an HTTP call into `runId`'s local opencode server via
-   * agent-orchestrator's `POST /agent-runs/:runId/opencode` (ADR 0026).
-   */
-  async forwardOpencode(
-    runId: string,
-    sessionId: string,
-    req: { method: string; path: string; body?: unknown },
-  ): Promise<OpencodeForwardResult> {
-    const res = await this.fetchImpl(
-      `${this.baseUrl()}/agent-runs/${encodeURIComponent(runId)}/opencode?sessionId=${encodeURIComponent(sessionId)}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${await this.resolveToken()}` },
-        body: JSON.stringify(req),
-      },
-    );
-    const text = await res.text();
-    if (!res.ok) throw new Error(`forwardOpencode failed: ${res.status} ${text}`);
-    let parsed: OpencodeForwardResult;
-    try {
-      parsed = JSON.parse(text) as OpencodeForwardResult;
-    } catch {
-      throw new Error(`forwardOpencode returned non-JSON: ${text}`);
-    }
-    return parsed;
   }
 
   /**
@@ -157,7 +83,7 @@ export class OrchestratorClient {
     identityLinkFlow?: "device" | "authcode",
     event?: Record<string, string | number | undefined>,
   ): Promise<OrchestratorInvokeResult> {
-    const acceptRes = await this.fetchImpl(`${this.baseUrl()}/invoke`, {
+    const acceptRes = await this.fetchImpl(`${this.options.baseUrl.replace(/\/$/, "")}/invoke`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -179,7 +105,7 @@ export class OrchestratorClient {
     while (Date.now() < deadline) {
       await this.sleep(this.options.pollIntervalMs);
       const pollRes = await this.fetchImpl(
-        `${this.baseUrl()}/invoke/${accepted.id}`,
+        `${this.options.baseUrl.replace(/\/$/, "")}/invoke/${accepted.id}`,
         { headers: { authorization: `Bearer ${await this.resolveToken()}` } },
       );
       if (!pollRes.ok) {

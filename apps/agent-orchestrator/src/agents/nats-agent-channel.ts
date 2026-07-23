@@ -1,5 +1,4 @@
-import { randomUUID } from "node:crypto";
-import { connect, JSONCodec, type NatsConnection, type Subscription } from "nats";
+import { connect, JSONCodec, type NatsConnection } from "nats";
 import {
   AgentUpMessageSchema,
   agentSubjects,
@@ -27,12 +26,6 @@ export class AgentTurnFailedError extends Error {
   }
 }
 
-/** Result of a forwarded live-tunnel HTTP call (ADR 0026). */
-export interface OpencodeProxyResult {
-  status: number;
-  body?: unknown;
-}
-
 /**
  * Orchestrator-side counterpart to `@controller-agent/agent-runtime`'s
  * `NatsChannel` — subscribes to an agent run's up subject and publishes to
@@ -57,33 +50,10 @@ export interface AgentOrchestratorChannel {
   ): Promise<AgentTurnResult>;
   /** Sends a follow-up user turn to an already-running agent (HITL continuation, or a fresh follow-up turn). */
   sendPrompt(agentRunId: string, message: string): Promise<void>;
-  /**
-   * Long-lived subscription to `agentRunId`'s up subject (ADR 0026), for a
-   * live viewer -- forwards every validated up-message (not just
-   * `opencode_event`; the caller filters) until `unsubscribe()` is called.
-   * Unlike `awaitReply`, never resolves/unsubscribes on its own. Optional --
-   * only `NatsAgentChannel` implements it; existing test fakes that only
-   * exercise the ordinary conversational path don't need to.
-   */
-  subscribeLive?(agentRunId: string, onMessage: (msg: AgentUpMessage) => void): { unsubscribe(): void };
-  /**
-   * Forwards an HTTP call into `agentRunId`'s local opencode server (ADR
-   * 0026) as an `opencode_request` down-message, and awaits the correlated
-   * `opencode_response`. `timeoutMs` defaults generously (a live prompt can
-   * take as long as an ordinary agent turn). Optional, same reason as
-   * `subscribeLive`.
-   */
-  forwardOpencodeRequest?(
-    agentRunId: string,
-    req: { method: string; path: string; body?: unknown },
-    timeoutMs?: number,
-  ): Promise<OpencodeProxyResult>;
   close(): Promise<void>;
 }
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 min — an agent may be waiting on a human.
-/** Default bound for a forwarded `opencode_request` -- as long as an ordinary agent turn might take. */
-const DEFAULT_OPENCODE_PROXY_TIMEOUT_MS = 10 * 60 * 1000;
 
 export class NatsAgentChannel implements AgentOrchestratorChannel {
   private readonly codec = JSONCodec<unknown>();
@@ -99,17 +69,6 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
     return new NatsAgentChannel(nc, subjectPrefix);
   }
 
-  private decode(data: Uint8Array): AgentUpMessage | undefined {
-    let decoded: unknown;
-    try {
-      decoded = this.codec.decode(data);
-    } catch {
-      return undefined; // ignore non-JSON garbage on the subject
-    }
-    const parsed = AgentUpMessageSchema.safeParse(decoded);
-    return parsed.success ? parsed.data : undefined;
-  }
-
   async awaitReply(
     agentRunId: string,
     opts: { timeoutMs?: number; onProgress?: (stage: string | undefined, message: string) => void } = {},
@@ -121,8 +80,15 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
 
     try {
       for await (const m of sub) {
-        const msg = this.decode(m.data);
-        if (!msg) continue;
+        let decoded: unknown;
+        try {
+          decoded = this.codec.decode(m.data);
+        } catch {
+          continue; // ignore non-JSON garbage on the subject
+        }
+        const parsed = AgentUpMessageSchema.safeParse(decoded);
+        if (!parsed.success) continue;
+        const msg: AgentUpMessage = parsed.data;
 
         switch (msg.type) {
           case "ready":
@@ -141,8 +107,6 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
           case "failed":
             sub.unsubscribe();
             throw new AgentTurnFailedError(msg.code, msg.message);
-          default:
-            break; // opencode_event/opencode_response/session_idle/session_ended (ADR 0026) irrelevant here -- see subscribeLive/forwardOpencodeRequest
         }
       }
       throw new AgentTurnTimeoutError(`agent run ${agentRunId} produced no reply within ${timeoutMs}ms`);
@@ -164,63 +128,6 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
       ts: new Date().toISOString(),
     };
     this.nc.publish(down, this.codec.encode(msg));
-  }
-
-  subscribeLive(agentRunId: string, onMessage: (msg: AgentUpMessage) => void): { unsubscribe(): void } {
-    const { up } = agentSubjects(agentRunId, this.subjectPrefix);
-    const sub: Subscription = this.nc.subscribe(up);
-    void (async () => {
-      for await (const m of sub) {
-        const msg = this.decode(m.data);
-        if (msg) onMessage(msg);
-      }
-    })().catch(() => {
-      // Subscription closed (unsubscribe()) or connection dropped -- nothing to recover, caller already knows via disconnect.
-    });
-    return { unsubscribe: () => sub.unsubscribe() };
-  }
-
-  async forwardOpencodeRequest(
-    agentRunId: string,
-    req: { method: string; path: string; body?: unknown },
-    timeoutMs = DEFAULT_OPENCODE_PROXY_TIMEOUT_MS,
-  ): Promise<OpencodeProxyResult> {
-    const { up, down } = agentSubjects(agentRunId, this.subjectPrefix);
-    const requestId = randomUUID();
-    // Subscribe BEFORE publishing (same discipline as awaitReply) so a fast
-    // response can never be missed by a late subscription.
-    const sub = this.nc.subscribe(up, { timeout: timeoutMs });
-
-    const waitForResponse = (async (): Promise<OpencodeProxyResult> => {
-      for await (const m of sub) {
-        const msg = this.decode(m.data);
-        if (msg?.type === "opencode_response" && msg.requestId === requestId) {
-          return { status: msg.status, body: msg.body };
-        }
-      }
-      throw new AgentTurnTimeoutError(`agent run ${agentRunId} did not respond to opencode_request ${requestId} within ${timeoutMs}ms`);
-    })();
-
-    const downMsg: AgentDownMessage = {
-      type: "opencode_request",
-      requestId,
-      method: req.method,
-      path: req.path,
-      body: req.body,
-      agent_run_id: agentRunId,
-      seq: this.seq++,
-      ts: new Date().toISOString(),
-    };
-    this.nc.publish(down, this.codec.encode(downMsg));
-
-    try {
-      return await waitForResponse;
-    } catch (err) {
-      if (err instanceof AgentTurnTimeoutError) throw err;
-      throw new AgentTurnTimeoutError(`agent run ${agentRunId} did not respond to opencode_request ${requestId} within ${timeoutMs}ms`);
-    } finally {
-      sub.unsubscribe();
-    }
   }
 
   async close(): Promise<void> {

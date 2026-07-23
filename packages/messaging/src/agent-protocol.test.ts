@@ -32,11 +32,6 @@ describe("AgentUpMessageSchema", () => {
       { ...base, type: "reply", message: "Which branch?", final: false },
       { ...base, type: "reply", message: "Opened PR #1", final: true, result: { pr: 1 } },
       { ...base, type: "failed", code: "clone_failed", message: "no such repo" },
-      { ...base, type: "opencode_event", event: { type: "message.part.updated", part: { text: "hi" } } },
-      { ...base, type: "opencode_response", requestId: "req-1", status: 204 },
-      { ...base, type: "opencode_response", requestId: "req-1", status: 200, body: { ok: true } },
-      { ...base, type: "session_idle", liveUntil: "2026-07-13T00:20:00.000Z" },
-      { ...base, type: "session_ended", reason: "idle timeout" },
     ]) {
       expect(AgentUpMessageSchema.safeParse(msg).success).toBe(true);
     }
@@ -56,8 +51,6 @@ describe("AgentDownMessageSchema", () => {
       { ...base, type: "prompt", message: "add a health check endpoint" },
       { ...base, type: "cancel", reason: "user left" },
       { ...base, type: "signal", name: "pause" },
-      { ...base, type: "opencode_request", requestId: "req-1", method: "POST", path: "/session/ses_1/prompt_async", body: { text: "continue" } },
-      { ...base, type: "opencode_request", requestId: "req-2", method: "GET", path: "/session/ses_1/message" },
     ]) {
       expect(AgentDownMessageSchema.safeParse(msg).success).toBe(true);
     }

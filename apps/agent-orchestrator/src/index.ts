@@ -504,13 +504,7 @@ async function main(): Promise<void> {
   // generation) directly, bypassing the agent graph -- see server.ts's
   // handleInternalUiTask and isInternalUiTaskRequest.
   const taskCompleter = new OpenAiTaskCompleter();
-  const invokeServer = new InvokeServer(
-    graph,
-    sessionStore,
-    taskCompleter,
-    integrationRouteRegistry,
-    agentDelegation?.agentChannel,
-  );
+  const invokeServer = new InvokeServer(graph, sessionStore, taskCompleter, integrationRouteRegistry);
 
   if (callbackReceiver) {
     await callbackReceiver.listen(config.callbackPort);
