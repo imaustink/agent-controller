@@ -278,7 +278,10 @@ export const AgentStateAnnotation = Annotation.Root({
     | {
         agentId: string;
         provider: string;
-        flow: "device" | "authcode";
+        // "page" is the claude provider's PTY setup-token flow (docs/adr/0027)
+        // -- like "authcode" it has nothing to poll; checkPendingIdentityLink
+        // resolves it via getToken once the user completes the page.
+        flow: "device" | "authcode" | "page";
         deviceCode?: string;
         expiresAt: number;
         /**
@@ -1007,11 +1010,29 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // present, only adds narration while waiting; it does not gate
           // whether we wait at all.
           state.progressListener?.("identity-link", `To continue, please ${linkUrlText}. This is a one-time step — I'll continue automatically once you finish.`);
-          existing = await gateway.waitForCompletion?.(
-            provider,
-            state.identity.subject,
-            started.expiresInSeconds * 1000,
-          );
+          try {
+            existing = await gateway.waitForCompletion?.(
+              provider,
+              state.identity.subject,
+              started.expiresInSeconds * 1000,
+            );
+          } catch (err) {
+            // The long-held wait is inherently fragile: the gateway pod can
+            // roll (a deploy mid-flow), an intermediary can drop an idle
+            // connection, or undici can abort a multi-minute request on its
+            // own headers timeout -- all surface here as a thrown "fetch
+            // failed". None of that means the LINK failed: the user can still
+            // complete it in their browser. So swallow the throw and fall
+            // through to the same pending-link state a plain timeout produces
+            // -- the user links, sends any message, and
+            // checkPendingIdentityLink resumes via getToken. Previously this
+            // threw straight out of the node and surfaced to the user as a
+            // bare "❌ fetch failed", aborting an otherwise-fine link attempt.
+            console.error(
+              `[identity-gate] waitForCompletion threw for provider ${provider}; treating as not-yet-linked and parking pending: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            existing = undefined;
+          }
 
           if (!existing) {
             return {

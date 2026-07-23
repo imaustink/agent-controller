@@ -74,7 +74,7 @@ export interface SessionRecord {
    * comment). Persisted so the NEXT turn's `checkPendingIdentityLink` node
    * can poll it without the caller having to repeat their request.
    */
-  pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number };
+  pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number };
   /** Last touch time (ms since epoch); used for sliding TTL expiry. */
   updatedAt: number;
 }
