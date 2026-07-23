@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeSetupTokenFlows } from "./pty-setup-token.js";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /**
  * Fake `IPty` -- just enough of node-pty's surface (`onData`/`onExit`/
@@ -65,7 +69,10 @@ describe("ClaudeSetupTokenFlows", () => {
     const { flowId } = await startPromise;
 
     const submitPromise = flows.submitCode(flowId, "abc-123-code");
-    expect(fake.written).toContain("abc-123-code\r");
+    // The code is written on its own, WITHOUT a trailing \r -- the Enter is a
+    // separate later write (see the dedicated regression test below for why).
+    expect(fake.written).toContain("abc-123-code");
+    expect(fake.written).not.toContain("abc-123-code\r");
     fake.emitData("Success! Your token: sk-ant-oat01-abcdefghijklmnop\n");
 
     await expect(submitPromise).resolves.toEqual({ status: "complete", token: "sk-ant-oat01-abcdefghijklmnop" });
@@ -140,6 +147,29 @@ describe("ClaudeSetupTokenFlows", () => {
 
     const result = await startPromise;
     expect(result.authorizeUrl).toBe(realUrl);
+  });
+
+  it("regression: submits the Enter keypress as a SEPARATE write after the code, not fused as `code\\r`", async () => {
+    // THE bug behind "submit hangs then times out" for real (long) codes:
+    // the CLI's Ink TUI folds a `\r` arriving in the same input burst as the
+    // pasted code into the field as literal text instead of submitting, so
+    // the code is entered but never sent. Confirmed against the live CLI
+    // that `code` then a separate later `\r` submits. This locks that in.
+    vi.useFakeTimers();
+    let fake!: FakePty;
+    const flows = new ClaudeSetupTokenFlows(() => (fake = new FakePty()) as unknown as ReturnType<typeof import("node-pty").spawn>);
+
+    const startPromise = flows.start("user-enter");
+    fake.emitData("Visit https://claude.ai/oauth/authorize?x=1\n");
+    const { flowId } = await startPromise;
+
+    void flows.submitCode(flowId, "a-long-pasted-code");
+    // Immediately after submit: the code is written, the Enter is NOT yet.
+    expect(fake.written).toEqual(["a-long-pasted-code"]);
+
+    // After the paste-settle delay, the Enter arrives as its own write.
+    await vi.advanceTimersByTimeAsync(600);
+    expect(fake.written).toEqual(["a-long-pasted-code", "\r"]);
   });
 
   it("regression: spawns the PTY wide enough that the CLI's long lines never wrap", async () => {

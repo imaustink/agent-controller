@@ -98,6 +98,16 @@ const URL_WAIT_TIMEOUT_MS = 30_000;
 const CODE_SUBMIT_TIMEOUT_MS = 60_000;
 /** Hard ceiling on how long a flow can sit unattended between `start` and `submitCode` before it's reaped. */
 const FLOW_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * Delay between writing the pasted code and writing the Enter keypress that
+ * submits it. They MUST be separate writes (see `submitCode`): the CLI's Ink
+ * TUI folds a `\r` arriving in the same input burst as the code into the
+ * field as literal pasted text instead of treating it as submit, so a long
+ * pasted code never submits. 500ms was confirmed sufficient against the live
+ * CLI; kept comfortably above any paste-detection window without adding
+ * noticeable latency.
+ */
+const PASTE_SUBMIT_DELAY_MS = 500;
 
 export type SubmitCodeResult = { status: "complete"; token: string } | { status: "error"; message: string };
 
@@ -212,7 +222,22 @@ export class ClaudeSetupTokenFlows {
 
     clearTimeout(flow.idleTimer);
     const outputBefore = flow.output.length;
-    flow.proc.write(`${code}\r`);
+    // Write the code and the Enter keypress as TWO separate writes, with a
+    // settle delay between them. THE bug behind "submit hangs then times
+    // out": the CLI's Ink TUI treats a fast input burst ending in `\r` as
+    // pasted text -- the `\r` becomes a literal newline in the masked field
+    // instead of a submit keypress -- so a long pasted code (real ones are
+    // ~100+ chars) was entered but never submitted, and the flow sat until
+    // timeout. Confirmed empirically against the live CLI: `code\r` in one
+    // write hangs (masked asterisks, no result); `code`, then `\r` as its
+    // own write ~500ms later, submits and the server processes it. A short
+    // code happening to submit in one write is what masked this for so long.
+    flow.proc.write(code);
+    const enterTimer = setTimeout(() => {
+      // Guard: the flow may already have been reaped (e.g. a fast error) by
+      // the time this fires.
+      if (!flow.killed) flow.proc.write("\r");
+    }, PASTE_SUBMIT_DELAY_MS);
 
     return new Promise((resolve) => {
       const finish = (result: SubmitCodeResult): void => {
@@ -263,6 +288,7 @@ export class ClaudeSetupTokenFlows {
       };
       const cleanup = (): void => {
         clearTimeout(timer);
+        clearTimeout(enterTimer);
         flow.listeners.delete(check);
       };
 
