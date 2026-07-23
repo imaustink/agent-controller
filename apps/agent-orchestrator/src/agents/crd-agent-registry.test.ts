@@ -12,6 +12,7 @@ const validAgent: AgentCustomResource = {
     allowedRoles: ["writer"],
     tier: "privileged",
     orchestratorPrompt: "Delegate the whole request verbatim as the goal.",
+    toolRefs: ["kubectl-readonly"],
   },
 };
 
@@ -36,6 +37,7 @@ describe("CrdAgentRegistry", () => {
       allowedRoles: ["writer"],
       tier: "privileged",
       orchestratorPrompt: "Delegate the whole request verbatim as the goal.",
+      toolRefs: ["kubectl-readonly"],
       agentRunTemplate: { namespace: "default", agentRef: "software-engineering-agent" },
     });
     expect(agents[0]?.description).toContain("Performs software-engineering work on GitHub");

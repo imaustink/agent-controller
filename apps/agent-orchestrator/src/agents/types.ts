@@ -38,6 +38,14 @@ export interface AgentDescriptor {
    * required (today's behavior, unchanged).
    */
   identityProviders?: string[];
+  /**
+   * Names of `Tool` CRs this Agent's OWN internal loop may call at run time
+   * (`AgentSpec.ToolRefs`, docs/adr/0028) — NOT a retrieval-relevant field
+   * (unlike `description`), only consulted while a launched AgentRun is live,
+   * to validate an incoming `tool_call` up-message before dispatching it.
+   * Absent/empty means the sub-agent has no callable tools.
+   */
+  toolRefs?: string[];
   /** Everything needed to launch an AgentRun CR referencing this Agent. */
   agentRunTemplate: AgentRunTemplate;
 }

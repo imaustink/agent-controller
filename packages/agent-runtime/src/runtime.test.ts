@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentDownMessage, AgentUpMessage } from "@controller-agent/messaging";
 import type { AgentChannel } from "./channel.js";
-import { runAgent, type AgentRuntimeConfig } from "./index.js";
+import { runAgent, ToolCallError, type AgentRuntimeConfig } from "./index.js";
 
 const config: AgentRuntimeConfig = {
   natsUrl: "nats://test",
@@ -96,6 +96,99 @@ describe("runAgent", () => {
 
     expect(ch.types()).toEqual(["ready", "failed"]);
     expect(ch.up[1]).toMatchObject({ type: "failed", code: "agent_error", message: "boom" });
+  });
+
+  it("callTool() publishes a tool_call and resolves from the correlated tool_result", async () => {
+    const ch = new FakeChannel();
+    const done = runAgent(
+      async (s) => {
+        const result = await s.callTool("kubectl-readonly", "get pods -n default");
+        return { message: "ok", result };
+      },
+      { channel: ch, config },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+    const call = ch.up.find((m) => m.type === "tool_call") as Extract<AgentUpMessage, { type: "tool_call" }>;
+    expect(call).toMatchObject({ tool: "kubectl-readonly", input: "get pods -n default" });
+
+    ch.send({ type: "tool_result", callId: call.callId, ok: true, result: { pods: [] } });
+    await done;
+
+    const reply = ch.up.filter((m) => m.type === "reply").at(-1) as Extract<AgentUpMessage, { type: "reply" }>;
+    expect(reply).toMatchObject({ message: "ok", final: true, result: { pods: [] } });
+  });
+
+  it("callTool() throws ToolCallError when the tool_result reports ok: false", async () => {
+    const ch = new FakeChannel();
+    const done = runAgent(
+      async (s) => {
+        await s.callTool("kubectl-readonly", "get pods -n default");
+        return "unreachable";
+      },
+      { channel: ch, config },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+    const call = ch.up.find((m) => m.type === "tool_call") as Extract<AgentUpMessage, { type: "tool_call" }>;
+    ch.send({ type: "tool_result", callId: call.callId, ok: false, error: "tool not declared in toolRefs" });
+    await done;
+
+    expect(ch.types()).toEqual(["ready", "tool_call", "failed"]);
+    expect(ch.up[2]).toMatchObject({ type: "failed", message: "tool not declared in toolRefs" });
+  });
+
+  it("callTool() correlates multiple concurrent calls by callId", async () => {
+    const ch = new FakeChannel();
+    const done = runAgent(
+      async (s) => {
+        const [a, b] = await Promise.all([s.callTool("tool-a", "x"), s.callTool("tool-b", "y")]);
+        return { message: "ok", result: { a, b } };
+      },
+      { channel: ch, config },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+    const calls = ch.up.filter((m) => m.type === "tool_call") as Extract<AgentUpMessage, { type: "tool_call" }>[];
+    expect(calls).toHaveLength(2);
+    const callA = calls.find((c) => c.tool === "tool-a")!;
+    const callB = calls.find((c) => c.tool === "tool-b")!;
+
+    // Resolve out of order to prove correlation isn't positional.
+    ch.send({ type: "tool_result", callId: callB.callId, ok: true, result: "B" });
+    ch.send({ type: "tool_result", callId: callA.callId, ok: true, result: "A" });
+    await done;
+
+    const reply = ch.up.filter((m) => m.type === "reply").at(-1) as Extract<AgentUpMessage, { type: "reply" }>;
+    expect(reply.result).toEqual({ a: "A", b: "B" });
+  });
+
+  it("cancel rejects a pending tool call and fires the abort signal without a failed reply", async () => {
+    const ch = new FakeChannel();
+    let aborted = false;
+    const done = runAgent(
+      async (s) => {
+        s.signal.addEventListener("abort", () => {
+          aborted = true;
+        });
+        try {
+          await s.callTool("kubectl-readonly", "get pods");
+          return "unreachable";
+        } catch (err) {
+          expect(err).not.toBeInstanceOf(ToolCallError);
+          throw err;
+        }
+      },
+      { channel: ch, config },
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+    ch.send({ type: "cancel", reason: "user left" });
+    await done;
+
+    expect(aborted).toBe(true);
+    expect(ch.types()).toEqual(["ready", "tool_call"]);
+    expect(ch.closed).toBe(true);
   });
 
   it("cancel rejects a pending ask and fires the abort signal without a failed reply", async () => {

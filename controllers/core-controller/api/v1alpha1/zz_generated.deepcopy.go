@@ -218,6 +218,11 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.ToolRefs != nil {
+		in, out := &in.ToolRefs, &out.ToolRefs
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.IdentityProviders != nil {
 		in, out := &in.IdentityProviders, &out.IdentityProviders
 		*out = make([]string, len(*in))

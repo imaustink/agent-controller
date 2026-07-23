@@ -473,6 +473,10 @@ async function main(): Promise<void> {
     callbackBaseUrl: config.callbackBaseUrl,
     callbackSecret: config.callbackSecret,
     natsUrl: config.natsUrl,
+    // Direct (non-RAG) tool lookup for a running sub-agent's own tool_call
+    // requests (docs/adr/0028) -- reuses the same live-updated toolsById map
+    // built above for skill re-derivation, rather than a second catalog.
+    toolCatalog: { getById: (id: string) => toolsById.get(id) },
     skillTopK: config.skillTopK,
     fallbackToolTopK: config.fallbackToolTopK,
     toolFitChecker,
