@@ -142,6 +142,38 @@ describe("ClaudeSetupTokenFlows", () => {
     expect(result.authorizeUrl).toBe(realUrl);
   });
 
+  it("regression: spawns the PTY wide enough that the CLI's long lines never wrap", async () => {
+    // THE fix for valid codes timing out: at a narrow width (the old 120)
+    // the CLI hard-wraps its ~110-char token and redraws it with cursor
+    // escapes spliced into the value, so `sk-ant-oat01-…` never appears
+    // contiguously and never matches. Confirmed empirically that the longest
+    // line the CLI prints is the ~346-char authorize URL. Lock in a width
+    // comfortably past that so nobody silently reintroduces the wrap bug.
+    let capturedOpts: { cols?: number } | undefined;
+    const flows = new ClaudeSetupTokenFlows(((_file: string, _args: string[], opts: { cols?: number }) => {
+      capturedOpts = opts;
+      return new FakePty() as unknown as ReturnType<typeof import("node-pty").spawn>;
+    }) as unknown as typeof import("node-pty").spawn);
+
+    void flows.start("user-width");
+    expect(capturedOpts?.cols).toBeGreaterThanOrEqual(400);
+  });
+
+  it("regression: captures a token even when wrapped in color escapes (escape-stripping)", async () => {
+    let fake!: FakePty;
+    const flows = new ClaudeSetupTokenFlows(() => (fake = new FakePty()) as unknown as ReturnType<typeof import("node-pty").spawn>);
+
+    const startPromise = flows.start("user-color");
+    fake.emitData("Visit https://claude.ai/oauth/authorize?x=1\n");
+    const { flowId } = await startPromise;
+
+    const submitPromise = flows.submitCode(flowId, "good-code");
+    // Token bracketed by SGR color escapes, as the TUI is apt to render it.
+    fake.emitData("\x1b[1m\x1b[32msk-ant-oat01-abcdefghijklmnop\x1b[39m\x1b[22m\r\n");
+
+    await expect(submitPromise).resolves.toEqual({ status: "complete", token: "sk-ant-oat01-abcdefghijklmnop" });
+  });
+
   it("regression: resolves immediately (not after the full timeout) with a clear message when the pasted code is rejected", async () => {
     // Confirmed empirically: an invalid/incomplete code makes the CLI print
     // this and wait for "Enter" to retry -- it neither exits nor prints a

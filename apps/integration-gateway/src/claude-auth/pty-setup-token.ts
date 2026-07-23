@@ -33,6 +33,15 @@ import * as pty from "node-pty";
  * inside the escape sequence itself; `URL_RE` is only a fallback for a CLI
  * build/terminal negotiation that doesn't emit OSC 8, and stops at the next
  * escape/BEL/whitespace rather than consuming everything after "https://".
+ *
+ * The same wrapping behaviour is why VALID codes timed out (the reported
+ * "submit hangs then linking failed"): on success the CLI prints the
+ * ~110-char `sk-ant-oat01-…` token (docs confirm setup-token prints it and
+ * saves it nowhere), and at the old 120-col PTY width that token wrapped and
+ * was redrawn with cursor-repositioning escapes spliced into it -- so unlike
+ * the URL it had no OSC-8 clean copy to fall back on, and `TOKEN_RE` never
+ * saw a contiguous match. The fix is {@link PTY_COLS}: make the PTY wide
+ * enough that nothing the CLI prints ever wraps. See its doc.
  */
 const OSC8_URL_RE = /\x1b\]8;[^;]*;(https:\/\/[^\x07\x1b]+)\x07/;
 const URL_RE = /(https:\/\/[^\s\x07\x1b]+)/;
@@ -40,8 +49,40 @@ const TOKEN_RE = /(sk-ant-oat01-[A-Za-z0-9_-]+)/;
 /** The CLI's own error text for a wrong/incomplete/expired pasted code (confirmed empirically -- see file header). Stops at CR/LF/ESC so the captured message is a clean single line, not the rest of the redrawn prompt. */
 const OAUTH_ERROR_RE = /OAuth error: ([^\r\n\x1b]+)/;
 
+/**
+ * The PTY width, deliberately far wider than any line the CLI prints (its
+ * longest is the ~346-char authorize URL; the token is ~110). This is THE
+ * fix for tokens timing out on success: the CLI's Ink TUI hard-wraps output
+ * to the terminal width and redraws wrapped lines with cursor-repositioning
+ * escapes SPLICED INTO the value, so at the old 120-col width a ~110-char
+ * token (plus any label/box padding) wrapped and `sk-ant-oat01-…` never
+ * appeared as one contiguous, matchable run -> TOKEN_RE never matched ->
+ * timeout. Confirmed empirically: at 120 cols the visible URL truncates to
+ * exactly 120 chars; at 400+ it stays whole on one line. The authorize URL
+ * survived narrow widths only because it ALSO ships as an OSC-8 hyperlink
+ * (a clean out-of-band copy); the token has no such channel, so not wrapping
+ * in the first place is the only robust option.
+ */
+const PTY_COLS = 512;
+
+/**
+ * Strips OSC (incl. OSC-8 hyperlink) and CSI (color/cursor) escape sequences,
+ * leaving only visible text -- defense-in-depth on top of {@link PTY_COLS} so
+ * a value still matches even if a color escape sits adjacent to it. Does NOT
+ * (and cannot) reassemble a value that was split across wrapped lines by
+ * cursor repositioning -- that's exactly what the wide PTY prevents upstream.
+ */
+function stripAnsi(s: string): string {
+  return s
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "") // OSC sequences (BEL- or ST-terminated)
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "") // CSI sequences (SGR color, cursor movement, etc.)
+    .replace(/\x1b[@-Z\\-_]/g, ""); // lone 2-byte C1 escapes
+}
+
 function extractAuthorizeUrl(output: string): string | undefined {
-  return (output.match(OSC8_URL_RE) ?? output.match(URL_RE))?.[1];
+  // OSC-8 hyperlink target first (always the full, untruncated url); fall
+  // back to a plain-text match over escape-stripped output.
+  return (output.match(OSC8_URL_RE)?.[1]) ?? stripAnsi(output).match(URL_RE)?.[1];
 }
 
 /** How long to wait for the authorize URL to appear after spawning. */
@@ -101,8 +142,8 @@ export class ClaudeSetupTokenFlows {
     const flowId = randomUUID();
     const proc = this.spawnImpl("claude", ["setup-token"], {
       name: "xterm-color",
-      cols: 120,
-      rows: 30,
+      cols: PTY_COLS,
+      rows: 50,
       env: process.env as Record<string, string>,
     });
 
@@ -193,7 +234,10 @@ export class ClaudeSetupTokenFlows {
         finish({ status: "error", message: "Timed out waiting for a response after submitting the code." });
       }, CODE_SUBMIT_TIMEOUT_MS);
       const check = (): void => {
-        const newOutput = flow.output.slice(outputBefore);
+        // Match against escape-stripped output so a color/cursor escape
+        // adjacent to the value can't hide it (the wide PTY already prevents
+        // the worse case -- an escape spliced mid-value by line wrapping).
+        const newOutput = stripAnsi(flow.output.slice(outputBefore));
         const match = newOutput.match(TOKEN_RE);
         if (match) {
           finish({ status: "complete", token: match[1]! });
