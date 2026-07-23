@@ -93,7 +93,7 @@ describe("CrdToolRegistry", () => {
     expect(tools[0].jobTemplate).toBeUndefined();
   });
 
-  it("carries Tool.spec.identityProviders through to the ToolDescriptor for a container Tool (ADR 0027, e.g. the github Tool)", async () => {
+  it("carries Tool.spec.identityProviders through to the ToolDescriptor for a container Tool (ADR 0028, e.g. the github Tool)", async () => {
     const identityLinked: ToolCustomResource = {
       metadata: { name: "github" },
       spec: {

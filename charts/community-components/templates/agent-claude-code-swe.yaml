@@ -1,0 +1,151 @@
+{{- if .Values.claudeCodeSweAgent.enabled }}
+{{- $identityLinkCoversClaude := and .Values.claudeCodeSweAgent.identityLink.enabled (has "claude" .Values.claudeCodeSweAgent.identityLink.providers) }}
+{{- if not (or .Values.claudeCodeSweAgent.anthropicSecretKey .Values.claudeCodeSweAgent.claudeCodeOAuthTokenSecretKey $identityLinkCoversClaude) }}
+{{- fail "claudeCodeSweAgent requires anthropicSecretKey, claudeCodeOAuthTokenSecretKey, or identityLink.providers to include \"claude\" -- some model credential must be guaranteed at launch time" }}
+{{- end }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: Agent
+metadata:
+  name: claude-code-swe-agent
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Performs software-engineering work on GitHub end-to-end. Runs the Claude
+    Code CLI headless — which has bash, file-read/write, grep, and glob
+    tools — plus the git and gh (GitHub CLI) command-line tools, so it can
+    clone, browse, and read any repository's files and history, not only
+    write to them. That means it covers both: (1) read-only questions
+    about what is actually in a repository, e.g. "how many levels does my
+    lander game have, check GitHub" or "what does this repo's config
+    say" — it clones/inspects the repo and answers directly, no code
+    change required; and (2) changes — creating or cloning repositories,
+    implementing features and fixes, writing code and tests, and opening
+    or updating pull requests. Handles multi-turn refinement across
+    separate requests in the same conversation via the saved repo/branch/PR
+    context.
+  input: >-
+    A natural-language software-engineering instruction or question about
+    a GitHub repository's contents (e.g. "create a repo called hello-svc
+    with a Node HTTP server and open a PR", or "how many levels does my
+    lander-game repo have?"), or a follow-up refinement instruction for a
+    task that is already in progress.
+  output: >-
+    A summary of the changes plus a link to the opened/updated pull
+    request when the task changed code; a direct answer when the task
+    was only a question about a repository's contents.
+  allowedRoles:
+    - writer
+  tier: privileged
+  {{- if .Values.claudeCodeSweAgent.identityLink.enabled }}
+  identityProviders:
+    {{- range .Values.claudeCodeSweAgent.identityLink.providers }}
+    - {{ . }}
+    {{- end }}
+  {{- end }}
+  image: {{ .Values.claudeCodeSweAgent.image }}
+  serviceAccountName: {{ .Values.claudeCodeSweAgent.serviceAccountName }}
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+      ephemeral-storage: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+      ephemeral-storage: "8Gi"
+  orchestratorPrompt: |
+    Delegate to this agent for any software-engineering request AND for any
+    question that requires actually looking at a GitHub repository's
+    contents to answer — it has git/gh CLIs plus file read/search tools, so
+    it can clone and inspect a repo instead of guessing. This covers both:
+    creating or cloning repositories, implementing features, fixing bugs,
+    writing tests, and opening or updating pull requests; and answering
+    read-only questions about what is in a repo (e.g. "how many levels
+    does my lander game have, check GitHub" or "what does this repo's
+    README say").
+
+    Pass the user's request verbatim as the goal. Continuing a pull request
+    across separate turns needs no special handling from you: the
+    orchestrator itself carries the repo/branch/PR forward server-side
+    (docs/adr/0017) and prepends it to the goal automatically whenever this
+    agent already has one in progress for the conversation.
+  agentPrompt: |
+    You are a software-engineering sub-agent. Using the Claude Code CLI
+    (running headless, with its bash/file-read/edit/grep/glob tools) and
+    the gh/git CLIs, satisfy the request: implement the requested coding
+    task and return a summary and PR link, or, if it's a read-only question
+    about a repository's contents, clone or inspect it with git/gh and
+    answer directly — no commit or PR is needed unless the task actually
+    calls for a change. Never perform irreversible operations (force-push,
+    delete branches/repos).
+
+    If the request depends on reading specific source material you were
+    given (a repo, a PR, a file, an issue) and you cannot actually access
+    it — clone/read fails, or the API returns 403/404 — you CANNOT proceed
+    without the user's answer: stop immediately and report exactly what you
+    couldn't access and why (e.g. "I can't read imaustink/ai-experiments#1
+    — my GitHub access doesn't include that repo"). Do not substitute a
+    different repo, a different task, or invented content for material you
+    couldn't read, and do not report success on work that doesn't actually
+    satisfy the original request.
+  secretEnv:
+    {{- if not .Values.claudeCodeSweAgent.identityLink.enabled }}
+    - name: GITHUB_TOKEN
+      secretRef:
+        name: {{ .Values.claudeCodeSweAgent.secretName }}
+        key: {{ .Values.claudeCodeSweAgent.secretKey }}
+    {{- end }}
+    {{- if .Values.claudeCodeSweAgent.anthropicSecretKey }}
+    - name: ANTHROPIC_API_KEY
+      secretRef:
+        name: {{ .Values.claudeCodeSweAgent.secretName }}
+        key: {{ .Values.claudeCodeSweAgent.anthropicSecretKey }}
+    {{- end }}
+    {{- if .Values.claudeCodeSweAgent.claudeCodeOAuthTokenSecretKey }}
+    - name: CLAUDE_CODE_OAUTH_TOKEN
+      secretRef:
+        name: {{ .Values.claudeCodeSweAgent.secretName }}
+        key: {{ .Values.claudeCodeSweAgent.claudeCodeOAuthTokenSecretKey }}
+    {{- end }}
+    {{/*
+      GITHUB_APP_* are available whenever configured, regardless of
+      identityLink -- when identityLink is also enabled, these back the
+      dual-token pattern (a per-user token gates authorization, an
+      App-installation token performs the write); when identityLink is off,
+      they're the same shared-installation-token auth as before.
+    */}}
+    {{- if .Values.claudeCodeSweAgent.githubAppIdSecretKey }}
+    - name: GITHUB_APP_ID
+      secretRef:
+        name: {{ .Values.claudeCodeSweAgent.secretName }}
+        key: {{ .Values.claudeCodeSweAgent.githubAppIdSecretKey }}
+    {{- end }}
+    {{- if .Values.claudeCodeSweAgent.githubAppPrivateKeySecretKey }}
+    - name: GITHUB_APP_PRIVATE_KEY
+      secretRef:
+        name: {{ .Values.claudeCodeSweAgent.secretName }}
+        key: {{ .Values.claudeCodeSweAgent.githubAppPrivateKeySecretKey }}
+    {{- end }}
+    {{- if .Values.claudeCodeSweAgent.githubAppInstallationIdSecretKey }}
+    - name: GITHUB_APP_INSTALLATION_ID
+      secretRef:
+        name: {{ .Values.claudeCodeSweAgent.secretName }}
+        key: {{ .Values.claudeCodeSweAgent.githubAppInstallationIdSecretKey }}
+    {{- end }}
+  {{- if or .Values.claudeCodeSweAgent.identityLink.enabled .Values.claudeCodeSweAgent.githubAppSlug .Values.claudeCodeSweAgent.model }}
+  env:
+    {{- if .Values.claudeCodeSweAgent.identityLink.enabled }}
+    - name: GITHUB_IDENTITY_DELEGATION
+      value: "true"
+    {{- end }}
+    {{- if .Values.claudeCodeSweAgent.githubAppSlug }}
+    - name: GITHUB_APP_SLUG
+      value: {{ .Values.claudeCodeSweAgent.githubAppSlug | quote }}
+    {{- end }}
+    {{- if .Values.claudeCodeSweAgent.model }}
+    - name: CLAUDE_CODE_MODEL
+      value: {{ .Values.claudeCodeSweAgent.model | quote }}
+    {{- end }}
+  {{- end }}
+{{- end }}

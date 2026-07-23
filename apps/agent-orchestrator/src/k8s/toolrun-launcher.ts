@@ -85,7 +85,7 @@ export class ToolRunLauncher implements ContainerToolLauncher {
       : { url: options.callbackUrl, secretRef: this.callbackSecretRef };
 
     // Per-invocation identity secretEnv (e.g. GITHUB_TOKEN for the CALLING
-    // user, not any shared bot credential, ADR 0027): create a dedicated k8s
+    // user, not any shared bot credential, ADR 0028): create a dedicated k8s
     // Secret up front and reference it from the CR by name/key only -- the
     // plaintext value must never be embedded in the ToolRun CR itself, since
     // CRs aren't RBAC-hidden the way Secrets are. Mirrors AgentRunLauncher's

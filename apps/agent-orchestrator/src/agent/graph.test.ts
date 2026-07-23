@@ -14,7 +14,7 @@ import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { AgentDescriptor, AgentStore } from "../agents/types.js";
 import type { DelegateSelector } from "./delegate-selector.js";
-import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-agent-channel.js";
+import { AgentTurnFailedError, type AgentOrchestratorChannel, type AgentTurnResult } from "../agents/nats-agent-channel.js";
 import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
 import type { BestEffortResponder } from "./best-effort-responder.js";
@@ -1286,7 +1286,7 @@ describe("buildAgentGraph agent-backed Tool (runTool via AgentRun)", () => {
   });
 });
 
-describe("buildAgentGraph identity-gated container Tool (ADR 0027, e.g. the github Tool)", () => {
+describe("buildAgentGraph identity-gated container Tool (ADR 0028, e.g. the github Tool)", () => {
   const githubTool: ToolDescriptor = {
     id: "github",
     name: "github",
@@ -1882,6 +1882,35 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(final.agentRunId).toBeDefined();
   });
 
+  it("degrades to the pending-link state (not a crashed turn) when waitForCompletion throws a network error", async () => {
+    // Regression for the reported "❌ fetch failed": the long-held wait can
+    // throw (gateway pod rolled mid-deploy, idle connection dropped, undici
+    // headers-timeout) -- that must NOT surface as a raw error, since the
+    // link itself is still completable. It should park pendingIdentityLink
+    // exactly like a plain timeout.
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "authcode" as const,
+        authorizeUrl: "https://github.com/login/oauth/authorize?state=xyz",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      waitForCompletion: vi.fn().mockRejectedValue(new TypeError("fetch failed")),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "open a PR that fixes the bug", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).not.toMatch(/fetch failed/i);
+    expect(final.result).toMatch(/link your GitHub account/i);
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toMatchObject({ agentId: "opencode-swe", provider: "github", flow: "authcode" });
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
   it("resumes automatically via waitForCompletion for a device-flow, non-streaming caller (e.g. integration-gateway's fire-and-forget relay) with no progressListener", async () => {
     const identityLinkGateway: IdentityLinkPort = {
       start: vi.fn().mockResolvedValue({
@@ -2187,6 +2216,161 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(final.pendingIdentityLink).toEqual(pending);
     expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
     expect(final.result).toMatch(/still waiting/i);
+  });
+});
+
+describe("buildAgentGraph per-caller Claude Code OAuth linking (docs/adr/0027)", () => {
+  const claudeAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks with Claude Code",
+    allowedRoles: ["reader"],
+    identityProviders: ["claude"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  function claudeAuthDeps(overrides: Partial<AgentGraphDeps> = {}, reply: Partial<AgentTurnResult> = {}) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: claudeAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([claudeAgent]),
+    };
+    const delegateSelector: DelegateSelector = {
+      select: vi.fn().mockResolvedValue({ type: "agent", agent: claudeAgent }),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened a pull request",
+        final: true,
+        narration: [],
+        ...reply,
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-1?u=https://claude.ai/oauth/authorize",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher,
+      claudeAuthGateway,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("starts a page-flow Claude link and does NOT launch the agent when the caller has no linked token yet", async () => {
+    const deps = claudeAuthDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.claudeAuthGateway!.getToken).toHaveBeenCalledWith("claude", "alice");
+    expect(deps.claudeAuthGateway!.start).toHaveBeenCalled();
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual({
+      agentId: "claude-code-swe",
+      provider: "claude",
+      flow: "page",
+      expiresAt: expect.any(Number),
+      request: "fix the failing test",
+    });
+    expect(final.result).toMatch(/claude-auth\/flow-1/);
+    expect(final.result).toMatch(/link your Claude account/i);
+  });
+
+  it("launches with CLAUDE_CODE_OAUTH_TOKEN once waitForCompletion resolves a linked token", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-1?u=...",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      waitForCompletion: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(claudeAuthGateway.waitForCompletion).toHaveBeenCalledWith("claude", "alice", 600_000);
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      claudeAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ secretEnv: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-resolved" }] }),
+    );
+    expect(final.pendingIdentityLink).toBeUndefined();
+  });
+
+  it("resumes delegation via getToken (not poll) when a pending page-flow link's token has landed", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "continue please",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: {
+        agentId: "claude-code-swe",
+        provider: "claude",
+        flow: "page",
+        expiresAt: Date.now() + 900_000,
+      },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(claudeAuthGateway.poll).not.toHaveBeenCalled();
+    expect(claudeAuthGateway.getToken).toHaveBeenCalledWith("claude", "alice");
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      claudeAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ secretEnv: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-resolved" }] }),
+    );
+    expect(final.pendingIdentityLink).toBeUndefined();
+  });
+
+  it("invalidates the stored token and returns a friendly retry message when the agent reports an expired Claude credential mid-run", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-stale" }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockRejectedValue(new AgentTurnFailedError("claude_auth_expired", "credential expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway, agentChannel });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(claudeAuthGateway.invalidate).toHaveBeenCalledWith("claude", "alice");
+    expect(final.error).toBeUndefined();
+    expect(final.result).toMatch(/expired or invalid/i);
   });
 });
 

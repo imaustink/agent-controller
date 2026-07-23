@@ -76,7 +76,7 @@ export interface AgentRunLauncherPort {
  * {@link CustomObjectsApiLike}. Optional on the constructor: only required
  * when a caller ever launches with `options.secretEnv` non-empty. Shared
  * with {@link ../k8s/toolrun-launcher.ts!ToolRunLauncher}, which backs the
- * same per-invocation `secretEnv` mechanism for container Tools (ADR 0027).
+ * same per-invocation `secretEnv` mechanism for container Tools (ADR 0028).
  */
 export interface SecretApiLike {
   createNamespacedSecret(request: { namespace: string; body: unknown }): Promise<{ metadata?: { name?: string } }>;

@@ -135,7 +135,7 @@ var _ = Describe("ToolRun Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("merges ToolRun.Spec.SecretEnv over the Tool template's static secretEnv by name (ADR 0027)", func() {
+		It("merges ToolRun.Spec.SecretEnv over the Tool template's static secretEnv by name (ADR 0028)", func() {
 			By("creating a Tool with a static secretEnv entry and identityProviders declared")
 			identityToolName := fmt.Sprintf("%s-identity-tool", resourceName)
 			identityTool := &toolv1alpha1.Tool{

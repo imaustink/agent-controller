@@ -178,7 +178,7 @@ Which tools even show up as retrieval candidates depends on **who is asking**:
   controller, which also mirrors terminal Job state onto the `ToolRun` as a
   fallback for crashes that never emit a `failed` callback event.
 - A container Tool can optionally declare `identityProviders` (e.g.
-  `["github"]`, ADR 0027 — extending the Agent-only mechanism from ADR 0022):
+  `["github"]`, ADR 0028 — extending the Agent-only mechanism from ADR 0022):
   before launching, `runTool` resolves the calling user's own linked token via
   `agent-orchestrator`'s identity-link gateway client and passes it as
   `ToolRunLauncher.launch()`'s `options.secretEnv`, which creates a per-run k8s

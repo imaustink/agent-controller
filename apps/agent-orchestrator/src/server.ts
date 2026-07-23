@@ -85,7 +85,7 @@ export interface AgentGraphInput {
   /** Per-agent continuation tokens from the caller's session, keyed by agent id (docs/adr/0017). */
   agentContinuations?: Record<string, string>;
   /** A device-flow identity-link attempt this conversation is waiting on, if any (see `SessionRecord.pendingIdentityLink`). */
-  pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number };
+  pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number };
   /**
    * Per-request override of which OAuth flow `delegateToAgent` starts if
    * this caller needs to link an identity (see `AgentState.identityLinkFlow`
@@ -249,7 +249,7 @@ export class InvokeServer {
       agentAwaitingReply?: boolean;
       extractedContinuation?: { toolId: string; token: string };
       extractedAgentContinuation?: { agentId: string; token: string };
-      pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number };
+      pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number };
       identityLinkPending?: boolean;
     },
   ): Promise<void> {
@@ -812,7 +812,7 @@ export class InvokeServer {
       let extractedContinuation: { toolId: string; token: string } | undefined;
       let extractedAgentContinuation: { agentId: string; token: string } | undefined;
       let pendingIdentityLink:
-        | { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number }
+        | { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number }
         | undefined;
       let identityLinkPending: boolean | undefined;
       const persist = (): Promise<void> =>
@@ -849,7 +849,7 @@ export class InvokeServer {
         }
         if ("pendingIdentityLink" in update) {
           pendingIdentityLink = update.pendingIdentityLink as
-            | { agentId: string; provider: string; flow: "device" | "authcode"; deviceCode?: string; expiresAt: number }
+            | { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number }
             | undefined;
         }
         if ("identityLinkPending" in update) identityLinkPending = update.identityLinkPending as boolean | undefined;

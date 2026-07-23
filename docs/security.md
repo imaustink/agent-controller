@@ -169,7 +169,7 @@ addition specific to it:
   within the same authenticated Mealie account/group (`MEALIE_API_TOKEN`
   can't reach other tenants).
 
-## tools/github: a container Tool authenticated as the calling user (ADR 0027)
+## tools/github: a container Tool authenticated as the calling user (ADR 0028)
 
 [tools/github](../tools/github/) runs a single allowlisted `gh` CLI command,
 authenticated with a `GITHUB_TOKEN` that -- when
@@ -178,7 +178,7 @@ authenticated with a `GITHUB_TOKEN` that -- when
 identity-linked GitHub token, resolved and injected per-invocation via
 `ToolRunSpec.secretEnv` exactly the way `AgentRunSpec.secretEnv` already
 worked for `opencode-swe-agent` (ADR 0022), extended one CRD kind further
-(ADR 0027) since `ToolRun` previously had no per-invocation secretEnv
+(ADR 0028) since `ToolRun` previously had no per-invocation secretEnv
 mechanism at all. This means:
 
 - **The primary authorization boundary is GitHub itself**, not this

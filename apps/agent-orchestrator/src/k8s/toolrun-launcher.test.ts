@@ -87,7 +87,7 @@ describe("ToolRunLauncher", () => {
     ).rejects.toThrow(/toolRef/);
   });
 
-  describe("per-invocation identity secretEnv (ADR 0027)", () => {
+  describe("per-invocation identity secretEnv (ADR 0028)", () => {
     it("launch() without options.secretEnv never touches the Secret API", async () => {
       const createNamespacedCustomObject = vi.fn().mockResolvedValue({ metadata: { uid: "uid-1" } });
       const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
