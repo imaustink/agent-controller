@@ -42,6 +42,15 @@ config:
   # GitHub issue. Not an assignee -- GitHub App bot users generally cannot
   # be set as issue assignees. Empty string disables the trigger.
   githubTriggerLabel: ""
+  # The label that triggers an automated PR review when applied to a pull
+  # request (a pull_request.labeled event) -- sibling to githubTriggerLabel
+  # but for PRs, so triage and review stay independent. The review runs as
+  # whoever applied the label (same identity gate as triage), and the gateway
+  # drops bot-authored events, so a human must apply it -- the agent that
+  # opened the PR (a bot) can't self-trigger a review. Must match the
+  # community-components chart's integrationRoutes.githubPrLabeledReview
+  # route (event: pull_request, action: labeled). Empty string disables it.
+  githubReviewLabel: ""
   # PROD-GRADE, preferred for org-owned repos: grants roles based on live
   # GitHub org/team membership (see GithubTeamMembershipResolver in
   # src/identity.ts) -- JSON: {"<org>/<team-slug>": ["role", ...]}.

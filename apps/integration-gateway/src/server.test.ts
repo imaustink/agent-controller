@@ -43,6 +43,7 @@ describe("GatewayServer", () => {
       orchestratorClient: { invoke } as unknown as OrchestratorClient,
       githubReplyClient: { postIssueComment } as unknown as GithubReplyClient,
       githubTriggerLabel: "ai-triage",
+      githubReviewLabel: "ai-review",
     });
     await server.listen(0);
     port = (server as unknown as { server: { address: () => AddressInfo } }).server.address().port;
@@ -219,6 +220,64 @@ describe("GatewayServer", () => {
       },
     );
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
+  });
+
+  it("ignores a pull_request.labeled event when the label isn't the configured review label", async () => {
+    const res = await postWebhook(port, "pull_request", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      pull_request: { number: 12, title: "t", body: "b" },
+      label: { name: "bug" },
+    });
+    expect(res.status).toBe(202);
+    await flush();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(postIssueComment).not.toHaveBeenCalled();
+  });
+
+  it("relays a pull_request.labeled event with an event descriptor when the review label is applied", async () => {
+    const res = await postWebhook(port, "pull_request", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      pull_request: { number: 12, title: "Add dark mode", body: "Implements the dark theme." },
+      label: { name: "ai-review" },
+    });
+    expect(res.status).toBe(202);
+    await flush();
+
+    expect(invoke).toHaveBeenCalledWith(
+      'Pull request #12 was labeled "ai-review": Add dark mode\n\nImplements the dark theme.',
+      sessionIdFor("acme", "widgets", 12),
+      "device",
+      {
+        source: "github",
+        event: "pull_request",
+        action: "labeled",
+        owner: "acme",
+        repo: "widgets",
+        prNumber: 12,
+        title: "Add dark mode",
+        body: "Implements the dark theme.",
+        senderLogin: "alice",
+        labelName: "ai-review",
+      },
+    );
+    expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 12, "What repo/branch should this target?");
+  });
+
+  it("drops a pull_request.labeled review trigger from an unknown identity (e.g. the bot that opened the PR)", async () => {
+    const res = await postWebhook(port, "pull_request", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "agent-controller[bot]", type: "Bot" },
+      pull_request: { number: 12, title: "t", body: "b" },
+      label: { name: "ai-review" },
+    });
+    expect(res.status).toBe(202);
+    await flush();
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("drops an issues.labeled event from an unknown GitHub identity even with the trigger label", async () => {

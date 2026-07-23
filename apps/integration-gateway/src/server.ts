@@ -30,6 +30,16 @@ export interface GatewayServerOptions {
    * users generally cannot be set as issue assignees.
    */
   githubTriggerLabel: string;
+  /**
+   * The label that triggers an automated PR review when applied to a pull
+   * request (`pull_request.labeled`, `GATEWAY_GITHUB_REVIEW_LABEL`) --
+   * sibling to `githubTriggerLabel` but for PRs, so review and triage stay
+   * independent. Optional/empty disables it (no label name can ever match).
+   * The review runs as whoever applied the label, so the bot loop-guard in
+   * `identityResolver` means a human must apply it -- the agent that opened
+   * the PR (a bot) cannot self-trigger a review of its own PR.
+   */
+  githubReviewLabel?: string;
   /** Called with any error from the background invoke-and-reply step; defaults to console.error. */
   onBackgroundError?: (error: unknown) => void;
   /**
@@ -189,6 +199,44 @@ export class GatewayServer {
     res.writeHead(202).end();
 
     if (event.kind === "ignored") return;
+
+    if (event.kind === "pull-request-labeled") {
+      // Only actionable when the label applied is THE review label -- GitHub
+      // sends `pull_request.labeled` for every label, not just this one.
+      if (event.labelName !== this.options.githubReviewLabel) return;
+
+      // Runs as whoever applied the label (same identity/permission gate as
+      // the other kinds). The gateway drops bot-authored events, so the
+      // agent that opened the PR can't self-trigger a review -- a human
+      // applies the label to request one.
+      const identity = await this.options.identityResolver.resolve(event.senderLogin, event.senderIsBot, {
+        owner: event.owner,
+        repo: event.repo,
+      });
+      if (!identity) return;
+
+      // A PR and an issue never share a number in the same repo, so this
+      // session id can't collide with a triaged issue's session id.
+      const sessionId = sessionIdFor(event.owner, event.repo, event.prNumber);
+      // Fallback request text -- only used if no IntegrationRoute CR matches
+      // the `event` descriptor below (agent-orchestrator then falls back to
+      // ordinary RAG skill retrieval over this text).
+      const request = `Pull request #${event.prNumber} was labeled "${event.labelName}": ${event.title}\n\n${event.body}`.trim();
+
+      this.relayAndReply(event.owner, event.repo, event.prNumber, request, sessionId, {
+        source: "github",
+        event: "pull_request",
+        action: "labeled",
+        owner: event.owner,
+        repo: event.repo,
+        prNumber: event.prNumber,
+        title: event.title,
+        body: event.body,
+        senderLogin: event.senderLogin,
+        labelName: event.labelName,
+      }).catch(this.options.onBackgroundError ?? ((error: unknown) => console.error(error)));
+      return;
+    }
 
     if (event.kind === "issue-labeled") {
       // Only actionable when the label applied is THE trigger label --

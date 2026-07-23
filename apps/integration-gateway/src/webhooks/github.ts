@@ -61,6 +61,26 @@ export type GithubIssueEvent =
       body: string;
       labelName: string;
     }
+  | {
+      /**
+       * A label was applied to a pull request. Mirrors `issue-labeled` but
+       * for the `pull_request` webhook event: the number lives under
+       * `pull_request.number`, not `issue.number` (a PR is not delivered as
+       * an `issues` event). Used to trigger an automated PR review when the
+       * configured review label is applied (see server.ts). PRs and issues
+       * share a single per-repo number space, so `prNumber` never collides
+       * with an `issueNumber` for session-id purposes.
+       */
+      kind: "pull-request-labeled";
+      owner: string;
+      repo: string;
+      prNumber: number;
+      senderLogin: string;
+      senderIsBot: boolean;
+      title: string;
+      body: string;
+      labelName: string;
+    }
   | { kind: "ignored" };
 
 interface RepoPayload {
@@ -78,11 +98,12 @@ interface LabelPayload {
 }
 
 /**
- * Parses a verified GitHub `issues`/`issue_comment` webhook payload into a
- * minimal normalized shape. Any event shape this gateway doesn't act on
- * (other actions, other event types) maps to `{ kind: "ignored" }` rather
- * than throwing -- GitHub sends far more event types/actions than this
- * adapter cares about, and an unrecognized payload is not an error.
+ * Parses a verified GitHub `issues`/`issue_comment`/`pull_request` webhook
+ * payload into a minimal normalized shape. Any event shape this gateway
+ * doesn't act on (other actions, other event types) maps to
+ * `{ kind: "ignored" }` rather than throwing -- GitHub sends far more event
+ * types/actions than this adapter cares about, and an unrecognized payload is
+ * not an error.
  */
 export function parseGithubEvent(eventName: string | undefined, rawBody: string): GithubIssueEvent {
   let parsed: unknown;
@@ -97,6 +118,7 @@ export function parseGithubEvent(eventName: string | undefined, rawBody: string)
     repository?: RepoPayload;
     sender?: SenderPayload;
     issue?: { number?: unknown; title?: unknown; body?: unknown; labels?: LabelPayload[] };
+    pull_request?: { number?: unknown; title?: unknown; body?: unknown };
     comment?: { body?: unknown };
     label?: LabelPayload;
   };
@@ -104,11 +126,26 @@ export function parseGithubEvent(eventName: string | undefined, rawBody: string)
   const owner = payload.repository?.owner?.login;
   const repo = payload.repository?.name;
   const sender = payload.sender;
-  const issueNumber = payload.issue?.number;
-  if (!owner || !repo || !sender || typeof issueNumber !== "number") return { kind: "ignored" };
+  if (!owner || !repo || !sender) return { kind: "ignored" };
 
   const senderLogin = sender.login;
   const senderIsBot = sender.type === "Bot";
+
+  // A `pull_request` event carries its number under `pull_request.number`,
+  // not `issue.number` -- handled before the `issueNumber` guard below (which
+  // gates only the `issues`/`issue_comment` branches).
+  if (eventName === "pull_request" && payload.action === "labeled") {
+    const prNumber = payload.pull_request?.number;
+    if (typeof prNumber !== "number") return { kind: "ignored" };
+    const labelName = payload.label?.name;
+    if (!labelName) return { kind: "ignored" };
+    const title = typeof payload.pull_request?.title === "string" ? payload.pull_request.title : "";
+    const body = typeof payload.pull_request?.body === "string" ? payload.pull_request.body : "";
+    return { kind: "pull-request-labeled", owner, repo, prNumber, senderLogin, senderIsBot, title, body, labelName };
+  }
+
+  const issueNumber = payload.issue?.number;
+  if (typeof issueNumber !== "number") return { kind: "ignored" };
 
   if (eventName === "issues" && payload.action === "opened") {
     const title = typeof payload.issue?.title === "string" ? payload.issue.title : "";

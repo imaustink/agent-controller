@@ -291,3 +291,16 @@ integrationRoutes:
     # enabled in this same values file (default opencode-swe-agent; set to
     # claude-code-swe-agent to triage on the Claude Code engine instead).
     agentRef: opencode-swe-agent
+  # github-pr-labeled-review: an IntegrationRoute CR dispatching a GitHub
+  # `pull_request`/`labeled` webhook straight to a SWE Agent with a review
+  # prompt, bypassing RAG skill retrieval -- integration-gateway relays the
+  # event once its configured review label
+  # (integration-gateway's config.githubReviewLabel) is applied to a PR. A
+  # human applies that label: the gateway drops bot-authored events, so the
+  # agent that opened the PR cannot self-trigger a review of its own PR.
+  githubPrLabeledReview:
+    enabled: false
+    # Which SWE Agent CR reviews a labeled PR. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to review on the Claude Code engine instead).
+    agentRef: opencode-swe-agent

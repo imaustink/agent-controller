@@ -26,4 +26,9 @@ spec:
     fix or feature if the issue calls for one, and open a pull request. If
     the issue is unclear or you need more context before proceeding, post a
     comment asking a clarifying question instead of guessing.
+
+    When you open a pull request, end its description with a short note
+    inviting a maintainer to apply the "ai-review" label to the PR to request
+    an automated code review. (The automation cannot apply that label to its
+    own PR, so a human applies it.)
 {{- end }}

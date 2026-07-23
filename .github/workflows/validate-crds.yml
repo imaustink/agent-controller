@@ -52,6 +52,8 @@ jobs:
             --set skills.selfImprovement.enabled=true \
             --set opencodeSweAgent.enabled=true \
             --set opencodeSweAgentTool.enabled=true \
+            --set integrationRoutes.githubIssueLabeledTriage.enabled=true \
+            --set integrationRoutes.githubPrLabeledReview.enabled=true \
             > /tmp/community-components-rendered.yaml
 
       - name: Validate rendered CRs against the API server

@@ -21,6 +21,16 @@ export interface AppConfig {
    * instead of `issues.assigned`.
    */
   githubTriggerLabel: string;
+  /**
+   * The label that triggers an automated PR review when applied to a pull
+   * request (a `pull_request.labeled` event). Sibling to
+   * `githubTriggerLabel`: a distinct label so triage (on issues) and review
+   * (on PRs) stay independent. Same identity gate applies -- the review runs
+   * as whoever applied the label, so the gateway's bot loop-guard means the
+   * label must be applied by a human, not the agent that opened the PR. Empty
+   * string disables the trigger (no label name can ever match).
+   */
+  githubReviewLabel: string;
   /** Base URL of agent-orchestrator's consumer-facing invoke API (ADR 0006). */
   orchestratorUrl: string;
   /**
@@ -114,6 +124,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     githubApiUrl: env.GITHUB_API_URL ?? "https://api.github.com",
     githubBotLogin: env.GATEWAY_GITHUB_BOT_LOGIN ?? "",
     githubTriggerLabel: env.GATEWAY_GITHUB_TRIGGER_LABEL ?? "",
+    githubReviewLabel: env.GATEWAY_GITHUB_REVIEW_LABEL ?? "",
     orchestratorUrl: env.GATEWAY_ORCHESTRATOR_URL ?? "http://agent-orchestrator:8081",
     orchestratorToken: env.GATEWAY_ORCHESTRATOR_TOKEN ?? "",
     orchestratorOidcTokenEndpoint: env.GATEWAY_ORCHESTRATOR_OIDC_TOKEN_ENDPOINT,
