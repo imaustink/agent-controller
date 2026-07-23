@@ -1022,42 +1022,54 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
                 ? `[link your ${label} account](${started.authorizeUrl})`
                 : `[link your ${label} account](${started.pageUrl})`;
 
-          // Block for up to this flow's own expiry waiting for the caller to
-          // complete authorization -- `waitForCompletion` blocks on the
-          // gateway's own Redis-backed wait (not local polling) purely by
-          // (provider, subject), so it resolves the moment EITHER flow lands
-          // a token, regardless of which one was started. This is what lets
-          // ANY caller resume automatically without a follow-up message, not
-          // just SSE-streaming ones: `/invoke`'s own async accept/poll
-          // contract (ADR 0006) already tolerates a graph run taking several
-          // minutes, so a fire-and-forget caller (e.g. integration-gateway's
-          // GitHub relay, always device flow) benefits from this exactly the
-          // same way a streaming chat turn does. `progressListener`, when
-          // present, only adds narration while waiting; it does not gate
-          // whether we wait at all.
-          state.progressListener?.("identity-link", `To continue, please ${linkUrlText}. This is a one-time step — I'll continue automatically once you finish.`);
-          try {
-            existing = await gateway.waitForCompletion?.(
-              provider,
-              state.identity.subject,
-              started.expiresInSeconds * 1000,
-            );
-          } catch (err) {
-            // The long-held wait is inherently fragile: the gateway pod can
-            // roll (a deploy mid-flow), an intermediary can drop an idle
-            // connection, or undici can abort a multi-minute request on its
-            // own headers timeout -- all surface here as a thrown "fetch
-            // failed". None of that means the LINK failed: the user can still
-            // complete it in their browser. So swallow the throw and fall
-            // through to the same pending-link state a plain timeout produces
-            // -- the user links, sends any message, and
-            // checkPendingIdentityLink resumes via getToken. Previously this
-            // threw straight out of the node and surfaced to the user as a
-            // bare "❌ fetch failed", aborting an otherwise-fine link attempt.
-            console.error(
-              `[identity-gate] waitForCompletion threw for provider ${provider}; treating as not-yet-linked and parking pending: ${err instanceof Error ? err.message : String(err)}`,
-            );
-            existing = undefined;
+          // How the link reaches the caller depends on whether this turn has a
+          // live channel (a streaming `progressListener`):
+          //
+          // - Streaming chat turn (progressListener present): surface the link
+          //   LIVE now, then block up to the flow's expiry on
+          //   `waitForCompletion` -- the gateway's Redis-backed wait by
+          //   (provider, subject), which resolves the moment EITHER flow lands
+          //   a token -- so the SAME turn resumes automatically once the user
+          //   links, no follow-up message needed. `/invoke`'s async accept/poll
+          //   contract (ADR 0006) tolerates the multi-minute run.
+          //
+          // - Fire-and-forget caller (no progressListener -- e.g.
+          //   integration-gateway's GitHub-issue triage relay): there is NO
+          //   live channel, so the link reaches the user ONLY in this turn's
+          //   final `result` (posted as an issue comment). Blocking here would
+          //   hide the link for the entire wait window -- nobody can complete a
+          //   link they can't see yet, so the wait can only ever time out. So
+          //   skip the wait: post the link IMMEDIATELY (fall straight through
+          //   to the pending-link return below) and let checkPendingIdentityLink
+          //   resume on the next trigger (a follow-up comment, or re-applying
+          //   the label) once the token lands. This makes an unauthenticated
+          //   triage prompt for auth up front -- the same immediacy the chat
+          //   flow gets from surfacing the prompt live.
+          if (state.progressListener) {
+            state.progressListener("identity-link", `To continue, please ${linkUrlText}. This is a one-time step — I'll continue automatically once you finish.`);
+            try {
+              existing = await gateway.waitForCompletion?.(
+                provider,
+                state.identity.subject,
+                started.expiresInSeconds * 1000,
+              );
+            } catch (err) {
+              // The long-held wait is inherently fragile: the gateway pod can
+              // roll (a deploy mid-flow), an intermediary can drop an idle
+              // connection, or undici can abort a multi-minute request on its
+              // own headers timeout -- all surface here as a thrown "fetch
+              // failed". None of that means the LINK failed: the user can still
+              // complete it in their browser. So swallow the throw and fall
+              // through to the same pending-link state a plain timeout produces
+              // -- the user links, sends any message, and
+              // checkPendingIdentityLink resumes via getToken. Previously this
+              // threw straight out of the node and surfaced to the user as a
+              // bare "❌ fetch failed", aborting an otherwise-fine link attempt.
+              console.error(
+                `[identity-gate] waitForCompletion threw for provider ${provider}; treating as not-yet-linked and parking pending: ${err instanceof Error ? err.message : String(err)}`,
+              );
+              existing = undefined;
+            }
           }
 
           if (!existing) {
