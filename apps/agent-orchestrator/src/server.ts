@@ -31,6 +31,18 @@ export interface InvocationRecord {
   status: InvocationStatus;
   result?: unknown;
   error?: string;
+  /**
+   * True once this turn has determined the caller must link an identity
+   * before any agent can run. Set EARLY (mid-run, before the link URL even
+   * exists) via the graph's `reportIdentityLinkPending`, and reaffirmed at
+   * terminal from `state.identityLinkPending`. A polling caller
+   * (integration-gateway's triage relay) reads this to withhold a premature
+   * "starting work" comment and, once terminal, to drive the link-then-resume
+   * flow instead of treating the link prompt as a finished result.
+   */
+  identityLinkPending?: boolean;
+  /** Provider + subject the pending link is keyed on, so a caller that owns the token store can wait for completion and auto-resume. Present only alongside `identityLinkPending`. */
+  identityLink?: { provider: string; subject: string };
 }
 
 /** How often to emit an SSE keep-alive comment while waiting on a slow graph step (e.g. a tool Job). */
@@ -104,6 +116,13 @@ export interface AgentGraphInput {
    * have their own handler (deps is shared across all requests).
    */
   progressListener?: (stage: string, message: string | undefined) => void;
+  /**
+   * Fired the instant this turn decides the caller must link an identity,
+   * before the (possibly slow) link `start()`. Set only by `handleInvoke` for
+   * the fire-and-forget `/invoke` path, so it can mark the in-flight job
+   * identity-link-pending immediately (see `InvocationRecord.identityLinkPending`).
+   */
+  reportIdentityLinkPending?: (info: { provider: string; subject: string }) => void;
   /**
    * Id of a Skill CR to dispatch to directly, bypassing RAG skill retrieval —
    * set when `/invoke`'s optional `event` field matched an `IntegrationRoute`
@@ -582,8 +601,18 @@ export class InvokeServer {
       undefined,
       forcedSkillId,
       forcedAgentId,
-    ).then((graphInput) =>
-      this.graph
+    ).then((graphInput) => {
+      // Mark the in-flight job identity-link-pending the moment the graph
+      // decides a link is needed (before the link URL exists), so a polling
+      // caller can withhold a premature "starting work" ack. Only mutate while
+      // still pending -- never clobber a terminal record.
+      graphInput.reportIdentityLinkPending = (info) => {
+        const current = this.invocations.get(id);
+        if (current && current.status === "pending") {
+          this.invocations.set(id, { ...current, identityLinkPending: true, identityLink: info });
+        }
+      };
+      return this.graph
         .invoke(graphInput)
         .then(async (state) => {
           await this.persistSession(sessionId, state.identity, {
@@ -601,6 +630,12 @@ export class InvokeServer {
             status: state.error ? "failed" : "succeeded",
             result: state.result,
             error: state.error,
+            ...(state.identityLinkPending && state.pendingIdentityLink && state.identity
+              ? {
+                  identityLinkPending: true,
+                  identityLink: { provider: state.pendingIdentityLink.provider, subject: state.identity.subject },
+                }
+              : {}),
           });
         })
         .catch((err: unknown) => {
@@ -609,8 +644,8 @@ export class InvokeServer {
             status: "failed",
             error: err instanceof Error ? err.message : String(err),
           });
-        }),
-    );
+        });
+    });
 
     res.writeHead(202, { "content-type": "application/json", location: `/invoke/${id}` }).end(
       JSON.stringify({ id, status: "pending" }),

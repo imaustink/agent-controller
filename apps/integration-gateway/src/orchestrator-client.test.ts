@@ -132,6 +132,63 @@ describe("OrchestratorClient.invoke", () => {
     expect(result.error).toMatch(/401/);
   });
 
+  it("fires onRunning once on the first non-identity-pending `pending` poll", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "run-r" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "pending" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "pending" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "succeeded", result: "opened PR #9" }) });
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+    const onRunning = vi.fn();
+
+    const result = await client.invoke("do the thing", "session-1", "device", undefined, onRunning);
+
+    expect(result.status).toBe("succeeded");
+    expect(onRunning).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT fire onRunning while the turn is identity-link-pending, and surfaces identityLinkPending + identityLink from the terminal poll", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "run-p" }) })
+      // pending polls carry the early identity-link-pending signal (set before
+      // the link URL exists), so onRunning must stay silent.
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "pending", identityLinkPending: true }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          status: "succeeded",
+          result: "To continue, please [link your Claude account](https://gw/claude-auth/x).",
+          identityLinkPending: true,
+          identityLink: { provider: "claude", subject: "client-integration-gateway" },
+        }),
+      });
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+    const onRunning = vi.fn();
+
+    const result = await client.invoke("triage this", "session-1", "device", { source: "github" }, onRunning);
+
+    expect(onRunning).not.toHaveBeenCalled();
+    expect(result.identityLinkPending).toBe(true);
+    expect(result.identityLink).toEqual({ provider: "claude", subject: "client-integration-gateway" });
+    expect(result.result).toMatch(/link your Claude account/);
+  });
+
   it("times out if the turn never reaches a terminal state", async () => {
     let now = 0;
     const fetchImpl = vi

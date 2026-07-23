@@ -49,7 +49,7 @@ describe("InvokeServer", () => {
     expect(postRes.status).toBe(202);
     const { id, status } = (await postRes.json()) as { id: string; status: string };
     expect(status).toBe("pending");
-    expect(graph.invoke).toHaveBeenCalledWith({ request: "scrape https://example.com/recipe", authToken: "tok-1" });
+    expect(graph.invoke).toHaveBeenCalledWith({ request: "scrape https://example.com/recipe", authToken: "tok-1", reportIdentityLinkPending: expect.any(Function) });
 
     const pendingRes = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
     expect(pendingRes.status).toBe(200);
@@ -81,7 +81,7 @@ describe("InvokeServer", () => {
       body: JSON.stringify({ request: "do a thing" }),
     });
     const { id } = (await postRes.json()) as { id: string };
-    expect(graph.invoke).toHaveBeenCalledWith({ request: "do a thing", authToken: "" });
+    expect(graph.invoke).toHaveBeenCalledWith({ request: "do a thing", authToken: "", reportIdentityLinkPending: expect.any(Function) });
 
     await new Promise((r) => setTimeout(r, 10));
     const res = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
@@ -275,6 +275,7 @@ describe("InvokeServer session-scoped pending identity link (GitHub OAuth Device
     expect(graph.invoke).toHaveBeenNthCalledWith(2, {
       request: "any message",
       authToken: "tok-1",
+      reportIdentityLinkPending: expect.any(Function),
       sessionId: "session-1",
       activeSkillId: undefined,
       activeAgentId: undefined,
@@ -932,6 +933,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     expect(graph.invoke).toHaveBeenNthCalledWith(2, {
       request: "extract https://example.com",
       authToken: "tok-1",
+      reportIdentityLinkPending: expect.any(Function),
       sessionId: "cli-7",
       activeSkillId: "recipe-skill",
       sessionSubject: "open-webui",
@@ -959,6 +961,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
       request: "open a PR",
       authToken: "tok-1",
       identityLinkFlow: "device",
+      reportIdentityLinkPending: expect.any(Function),
     });
 
     await server.close();
@@ -979,7 +982,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     });
     expect(omittedRes.status).toBe(202);
     await new Promise((r) => setTimeout(r, 10));
-    expect(graph.invoke).toHaveBeenLastCalledWith({ request: "open a PR", authToken: "tok-1" });
+    expect(graph.invoke).toHaveBeenLastCalledWith({ request: "open a PR", authToken: "tok-1", reportIdentityLinkPending: expect.any(Function) });
 
     const invalidRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
       method: "POST",
@@ -988,7 +991,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     });
     expect(invalidRes.status).toBe(202);
     await new Promise((r) => setTimeout(r, 10));
-    expect(graph.invoke).toHaveBeenLastCalledWith({ request: "open a PR", authToken: "tok-1" });
+    expect(graph.invoke).toHaveBeenLastCalledWith({ request: "open a PR", authToken: "tok-1", reportIdentityLinkPending: expect.any(Function) });
 
     await server.close();
   });

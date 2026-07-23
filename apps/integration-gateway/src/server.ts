@@ -312,25 +312,40 @@ export class GatewayServer {
   ): Promise<void> {
     // Only the deterministic issues.labeled trigger (the actual "triage"
     // path -- long-running investigate-and-PR work, ADR 0024) gets a
-    // session page and an upfront "starting work" comment (issue #81); the
-    // `event` descriptor is only ever set on that path (see
-    // `handleGithubWebhook`'s issue-labeled branch), which doubles as the
-    // discriminator here. Ordinary conversational opened/comment replies are
-    // meant to feel like near-instant chat, so an extra comment there would
-    // just be noise -- and they're unaffected either way if the feature is
-    // disabled (`sessionPageStore`/`publicBaseUrl` unset).
+    // session page and a "starting work" comment (issue #81); the `event`
+    // descriptor is only ever set on that path (see `handleGithubWebhook`'s
+    // issue-labeled branch), which doubles as the discriminator here.
+    // Ordinary conversational opened/comment replies are meant to feel like
+    // near-instant chat, so an extra comment there would just be noise -- and
+    // they're unaffected either way if the feature is disabled
+    // (`sessionPageStore`/`publicBaseUrl` unset).
+    //
+    // The session page is created upfront (so its link is valid), but the
+    // "starting work" comment is NOT posted here -- it's deferred to
+    // `announce`, fired by `runTurn` only once the turn is genuinely running
+    // past any auth pre-flight. Otherwise an unauthenticated triage would
+    // claim work had started and THEN ask the user to link an account.
+    let announce: (() => Promise<void>) | undefined;
     if (event && this.options.sessionPageStore && this.options.publicBaseUrl) {
       const page = await this.options.sessionPageStore.getOrCreate(sessionId, { owner, repo, issueNumber });
       const pageUrl = `${this.options.publicBaseUrl.replace(/\/$/, "")}/sessions/${page.token}`;
-      await this.options.githubReplyClient.postIssueComment(
-        owner,
-        repo,
-        issueNumber,
-        `Starting work on this now. Track progress or send follow-up prompts at ${pageUrl}`,
-      );
+      let announced = false;
+      announce = async () => {
+        if (announced) return;
+        announced = true;
+        await this.options.githubReplyClient.postIssueComment(
+          owner,
+          repo,
+          issueNumber,
+          `Starting work on this now. Track progress or send follow-up prompts at ${pageUrl}`,
+        );
+      };
     }
-    await this.runTurn(owner, repo, issueNumber, sessionId, request, event);
+    await this.runTurn(owner, repo, issueNumber, sessionId, request, event, announce);
   }
+
+  /** How long to hold a triage turn open waiting for the user to finish linking their account before giving up (they can always re-trigger the issue later). Matches the link flow's own ~10-minute expiry. */
+  private static readonly RESUME_WAIT_MS = 10 * 60 * 1000;
 
   /**
    * Shared by `relayAndReply` (webhook-triggered turns) and
@@ -347,33 +362,76 @@ export class GatewayServer {
     sessionId: string,
     request: string,
     event?: Record<string, string | number | undefined>,
+    announce?: () => Promise<void>,
   ): Promise<void> {
-    const tracked = await this.options.sessionPageStore?.addTurn(sessionId, request);
+    // This relay has no browser -- always force device flow explicitly rather
+    // than relying on agent-orchestrator's own default ("authcode", intended
+    // for browser-based callers). `announce` (when set) is the deferred
+    // "starting work" comment, posted only once the turn is actually running.
+    // Only pass an `event` when there is one -- keeps the call shape identical
+    // for the ordinary opened/comment paths.
+    const invokeOnce = (): Promise<OrchestratorInvokeResult> =>
+      event
+        ? this.options.orchestratorClient.invoke(request, sessionId, "device", event, announce)
+        : this.options.orchestratorClient.invoke(request, sessionId, "device", undefined, announce);
 
-    // This relay has no browser -- always force device flow explicitly
-    // rather than relying on agent-orchestrator's own default (which is
-    // "authcode", intended for browser-based callers). Only pass a 4th
-    // argument when there's an event descriptor -- keeps the call shape
-    // identical to before this feature existed for the ordinary
-    // opened/comment paths.
-    const outcome: OrchestratorInvokeResult = event
-      ? await this.options.orchestratorClient.invoke(request, sessionId, "device", event)
-      : await this.options.orchestratorClient.invoke(request, sessionId, "device");
-    const reply =
-      outcome.status === "succeeded"
-        ? (outcome.result ?? "")
-        : `Something went wrong processing this: ${outcome.error ?? "unknown error"}`;
-
-    if (tracked) {
-      await this.options.sessionPageStore!.completeTurn(
-        sessionId,
-        tracked.turnIndex,
+    const finishTurn = async (
+      tracked: { turnIndex: number } | undefined,
+      outcome: OrchestratorInvokeResult,
+    ): Promise<void> => {
+      const reply =
         outcome.status === "succeeded"
-          ? { status: "succeeded", result: reply }
-          : { status: "failed", error: outcome.error ?? "unknown error" },
-      );
+          ? (outcome.result ?? "")
+          : `Something went wrong processing this: ${outcome.error ?? "unknown error"}`;
+      if (tracked) {
+        await this.options.sessionPageStore!.completeTurn(
+          sessionId,
+          tracked.turnIndex,
+          outcome.status === "succeeded"
+            ? { status: "succeeded", result: reply }
+            : { status: "failed", error: outcome.error ?? "unknown error" },
+        );
+      }
+      await this.options.githubReplyClient.postIssueComment(owner, repo, issueNumber, reply);
+    };
+
+    const tracked = await this.options.sessionPageStore?.addTurn(sessionId, request);
+    const outcome = await invokeOnce();
+
+    // Unauthenticated turn: `result` is a "link your account" prompt, not
+    // finished work. Post the prompt, then -- for a provider whose token store
+    // this gateway owns -- wait for the link to complete and resume the SAME
+    // request automatically, so the user doesn't have to re-trigger the issue
+    // by hand after linking. If the link isn't completed in time, the prompt
+    // stands and a later re-trigger picks up where this left off.
+    if (outcome.status === "succeeded" && outcome.identityLinkPending && outcome.identityLink) {
+      await finishTurn(tracked, outcome);
+      const resumed = await this.waitAndResume(outcome.identityLink, invokeOnce);
+      if (resumed) await finishTurn(await this.options.sessionPageStore?.addTurn(sessionId, request), resumed);
+      return;
     }
-    await this.options.githubReplyClient.postIssueComment(owner, repo, issueNumber, reply);
+
+    await finishTurn(tracked, outcome);
+  }
+
+  /**
+   * Waits for a pending identity link to complete, then re-runs the turn.
+   * Only providers whose token store this gateway itself owns can be waited on
+   * (today: `claude`, via `claudeAuthStore`'s pub/sub `waitForCompletion`);
+   * for anything else -- e.g. a GitHub triage using the already-linked shared
+   * identity -- this returns `undefined` and the caller leaves the link prompt
+   * standing for a manual re-trigger. Returns the resumed turn's outcome, or
+   * `undefined` if the link never landed within the wait window.
+   */
+  private async waitAndResume(
+    identityLink: { provider: string; subject: string },
+    reinvoke: () => Promise<OrchestratorInvokeResult>,
+  ): Promise<OrchestratorInvokeResult | undefined> {
+    const store = identityLink.provider === "claude" ? this.options.claudeAuthStore : undefined;
+    if (!store) return undefined;
+    const record = await store.waitForCompletion(identityLink.subject, GatewayServer.RESUME_WAIT_MS);
+    if (!record) return undefined;
+    return reinvoke();
   }
 
   private async handleSessionPage(res: ServerResponse, token: string): Promise<void> {

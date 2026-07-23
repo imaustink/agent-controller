@@ -2255,6 +2255,46 @@ describe("buildAgentGraph per-caller Claude Code OAuth linking (docs/adr/0027)",
     expect(final.result).toMatch(/link your Claude account/i);
   });
 
+  it("fires reportIdentityLinkPending (with provider + subject) as soon as the token is missing, before start()", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-1?u=...",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway });
+    const graph = buildAgentGraph(deps);
+    const reportIdentityLinkPending = vi.fn();
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok", reportIdentityLinkPending });
+
+    expect(reportIdentityLinkPending).toHaveBeenCalledWith({ provider: "claude", subject: "alice" });
+    // Signalled before start() resolves the URL -- i.e. its invocation order
+    // precedes start()'s.
+    expect(reportIdentityLinkPending.mock.invocationCallOrder[0]).toBeLessThan(
+      (claudeAuthGateway.start as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("does NOT fire reportIdentityLinkPending when the caller already has a linked token", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-existing" }),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway });
+    const graph = buildAgentGraph(deps);
+    const reportIdentityLinkPending = vi.fn();
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok", reportIdentityLinkPending });
+
+    expect(reportIdentityLinkPending).not.toHaveBeenCalled();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalled();
+  });
+
   it("ends the turn with a friendly retryable message (not a crashed turn) when start() itself throws -- e.g. the Claude setup-token PTY never prints a URL", async () => {
     // Regression guard for the triage path: start() for the "claude" provider
     // spawns a `claude setup-token` PTY and scrapes the authorize URL within a
