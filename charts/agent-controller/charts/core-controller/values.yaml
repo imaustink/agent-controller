@@ -48,6 +48,18 @@ nats:
   agentUrl: "nats://nats:4222"
   subjectPrefix: "agent"
 
+# Controls the ImagePullPolicy the controller sets on every ToolRun/AgentRun
+# Job it creates (not this controller's own Deployment -- that's image.pullPolicy
+# above). Leave unset/empty for local/minikube dev, where run images are built
+# straight into the cluster's own container runtime and never pushed to a
+# registry -- IfNotPresent is the safe default there (see run_job.go). Set to
+# "Always" for any deployment that pushes run images to a real registry under
+# a mutable tag (e.g. ":latest"), or the kubelet will keep reusing whatever
+# digest it already pulled for that tag and redeploys of tool/agent images
+# will silently have no effect.
+runJob:
+  imagePullPolicy: ""
+
 leaderElection:
   # Only matters when replicaCount > 1.
   enabled: false
