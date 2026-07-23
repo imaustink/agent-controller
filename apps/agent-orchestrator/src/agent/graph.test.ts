@@ -1795,6 +1795,35 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(final.agentRunId).toBeDefined();
   });
 
+  it("degrades to the pending-link state (not a crashed turn) when waitForCompletion throws a network error", async () => {
+    // Regression for the reported "❌ fetch failed": the long-held wait can
+    // throw (gateway pod rolled mid-deploy, idle connection dropped, undici
+    // headers-timeout) -- that must NOT surface as a raw error, since the
+    // link itself is still completable. It should park pendingIdentityLink
+    // exactly like a plain timeout.
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "authcode" as const,
+        authorizeUrl: "https://github.com/login/oauth/authorize?state=xyz",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      waitForCompletion: vi.fn().mockRejectedValue(new TypeError("fetch failed")),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "open a PR that fixes the bug", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).not.toMatch(/fetch failed/i);
+    expect(final.result).toMatch(/link your GitHub account/i);
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toMatchObject({ agentId: "opencode-swe", provider: "github", flow: "authcode" });
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
   it("resumes automatically via waitForCompletion for a device-flow, non-streaming caller (e.g. integration-gateway's fire-and-forget relay) with no progressListener", async () => {
     const identityLinkGateway: IdentityLinkPort = {
       start: vi.fn().mockResolvedValue({
