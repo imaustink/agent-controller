@@ -46,8 +46,15 @@ function extractAuthorizeUrl(output: string): string | undefined {
 
 /** How long to wait for the authorize URL to appear after spawning. */
 const URL_WAIT_TIMEOUT_MS = 30_000;
-/** How long to wait for a token (or a clear error) after the code is submitted. */
-const CODE_SUBMIT_TIMEOUT_MS = 30_000;
+/**
+ * How long to wait for a token (or a clear error) after the code is
+ * submitted. A malformed code is rejected locally/near-instantly (confirmed
+ * empirically), but a well-formed, network-validated code presumably takes
+ * an actual round-trip to Anthropic -- widened from 30s while diagnosing a
+ * real report of this timing out even for a correctly-copied code, in case
+ * that's genuinely just slower than expected rather than actually stuck.
+ */
+const CODE_SUBMIT_TIMEOUT_MS = 60_000;
 /** Hard ceiling on how long a flow can sit unattended between `start` and `submitCode` before it's reaped. */
 const FLOW_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -122,6 +129,7 @@ export class ClaudeSetupTokenFlows {
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        console.error(`[claude-auth] start() timed out waiting for the authorize URL for flow ${flowId} -- redacted output:\n${redactSecrets(flow.output)}`);
         cleanup();
         this.reap(flowId);
         reject(new Error("claude setup-token did not print an authorize URL in time"));
@@ -135,6 +143,7 @@ export class ClaudeSetupTokenFlows {
           return;
         }
         if (flow.exited) {
+          console.error(`[claude-auth] start() process exited before printing a URL for flow ${flowId} -- redacted output:\n${redactSecrets(flow.output)}`);
           cleanup();
           this.reap(flowId);
           reject(new Error(`claude setup-token exited before printing an authorize URL: ${clip(flow.output)}`));
@@ -170,10 +179,19 @@ export class ClaudeSetupTokenFlows {
         this.reap(flowId);
         resolve(result);
       };
-      const timer = setTimeout(
-        () => finish({ status: "error", message: "Timed out waiting for a response after submitting the code." }),
-        CODE_SUBMIT_TIMEOUT_MS,
-      );
+      const timer = setTimeout(() => {
+        // Diagnostic only (docs/adr/0027 follow-up): a real, correctly-typed
+        // code was reported to still hit this exact timeout in production,
+        // meaning the CLI's actual success (or its own error) text doesn't
+        // match TOKEN_RE/OAUTH_ERROR_RE the way the empirically-confirmed
+        // "wrong code" case did. Logging the redacted raw output here is the
+        // fastest way to see the real text and fix the regex, without
+        // needing to `kubectl exec` into a live pod again for every retry.
+        console.error(
+          `[claude-auth] submitCode timed out for flow ${flowId} -- redacted output since last write:\n${redactSecrets(flow.output.slice(outputBefore))}`,
+        );
+        finish({ status: "error", message: "Timed out waiting for a response after submitting the code." });
+      }, CODE_SUBMIT_TIMEOUT_MS);
       const check = (): void => {
         const newOutput = flow.output.slice(outputBefore);
         const match = newOutput.match(TOKEN_RE);
@@ -195,7 +213,8 @@ export class ClaudeSetupTokenFlows {
           return;
         }
         if (flow.exited) {
-          finish({ status: "error", message: `claude setup-token exited without producing a token: ${clip(newOutput)}` });
+          console.error(`[claude-auth] submitCode: process exited without a token for flow ${flowId} -- redacted output:\n${redactSecrets(newOutput)}`);
+          finish({ status: "error", message: `claude setup-token exited without producing a token: ${clip(redactSecrets(newOutput))}` });
         }
       };
       const cleanup = (): void => {
@@ -226,4 +245,15 @@ export class ClaudeSetupTokenFlows {
 function clip(text: string, max = 500): string {
   const trimmed = text.trim();
   return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
+}
+
+/**
+ * Masks anything Anthropic-secret-shaped before it's ever logged (diagnostic
+ * logging only, see `submitCode`'s timeout handler) -- keeps enough of the
+ * prefix to identify the credential's format/shape without leaking the full
+ * value, in case the real success text turns out to use a different token
+ * prefix than the `sk-ant-oat01-` this file assumed.
+ */
+function redactSecrets(text: string): string {
+  return text.replace(/sk-ant-[A-Za-z0-9_-]{10,}/g, (m) => `${m.slice(0, 12)}…[REDACTED len=${m.length}]`);
 }
