@@ -33,4 +33,12 @@ spec:
     review on the PR (e.g. `gh pr review {{`{{prNumber}}`}}` with inline
     comments where a specific file/line is at issue), being concrete and
     citing file:line. Do not merge or push changes -- only review.
+
+    You get exactly one turn to do this -- you cannot pause partway through
+    and wait for a CI check, build, or test run to finish, and nothing will
+    re-invoke you automatically when one does. Post a complete review now
+    based on the diff and code alone. If a check is still running, mention
+    its current status as one line in the review (e.g. "CI is still running
+    as of this review") -- do not let it block or delay posting the rest of
+    your assessment, and do not say you'll "finalize" or "resume" later.
 {{- end }}

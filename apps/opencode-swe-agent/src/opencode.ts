@@ -110,6 +110,7 @@ export function buildPrompt(instruction: string, marker: SweMarker | null): stri
     `- Commit with clear messages and push the branch to the remote.`,
     `- Open a pull request with \`gh pr create\` describing the change, or push to the existing PR branch if one is already open. Do NOT merge it.`,
     `- NEVER force-push, delete branches/repositories, run \`git reset --hard\`, or run other destructive/irreversible commands.`,
+    `- You get exactly ONE turn to complete this task, and this process exits as soon as you reply -- there is no scheduler, cron, or webhook that will wake it back up later. You cannot pause partway through and wait for something external (a CI run, a build, a test job) to finish. Finish the task now with whatever information is available; if something is still pending, say so as a caveat in your final reply instead of deferring completion on it. Do NOT say you'll "resume automatically", "finalize later", or "when the check completes" -- that will never happen, and it leaves the task looking incomplete with no way for anyone to know a human needs to re-trigger you.`,
     `- When finished, print a short summary of what you changed and the pull request URL.`,
   ].join("\n");
 }
