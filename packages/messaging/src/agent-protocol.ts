@@ -149,7 +149,10 @@ export type AgentUpMessage<TResult = unknown> =
   | (AgentMessageBase & { type: "warning"; message: string })
   | (AgentMessageBase & { type: "reply"; message: string; final: boolean; result?: TResult })
   | (AgentMessageBase & { type: "failed"; code: string; message: string })
-  | (AgentMessageBase & { type: "opencode_event"; event: unknown })
+  // `event?` (not required) matches Zod's own inference for a `z.unknown()`
+  // field (which admits `undefined`) -- keeping the hand-written type and
+  // the schema's `z.infer` shape assignable to each other.
+  | (AgentMessageBase & { type: "opencode_event"; event?: unknown })
   | (AgentMessageBase & { type: "opencode_response"; requestId: string; status: number; body?: unknown })
   | (AgentMessageBase & { type: "session_idle"; liveUntil: string })
   | (AgentMessageBase & { type: "session_ended"; reason: string });

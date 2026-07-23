@@ -68,6 +68,14 @@ export interface AgentToolConfig {
    * under /tmp for the same reason as workdir.
    */
   homeDir: string;
+  /**
+   * How long (ms) to stay resident, tunnelable, after the coding task's
+   * final reply before exiting (ADR 0026) -- reset by any live-viewer
+   * activity. Must comfortably fit, together with actual task time, under
+   * agent-orchestrator's own `AGENT_RUN_TIMEOUT_SECONDS` (default 3600s),
+   * which hard-caps this Job's total lifetime regardless.
+   */
+  liveIdleTimeoutMs: number;
 }
 
 /**
@@ -94,5 +102,6 @@ export function loadToolConfig(env: NodeJS.ProcessEnv = process.env): AgentToolC
     githubApiUrl: env.GITHUB_API_URL ?? "https://api.github.com",
     workdir: env.SWE_WORKDIR ?? `/tmp/swe-${randomUUID()}`,
     homeDir: env.SWE_HOME ?? "/tmp/home",
+    liveIdleTimeoutMs: Number(env.AGENT_LIVE_IDLE_TIMEOUT_MS) || 20 * 60 * 1000,
   };
 }
