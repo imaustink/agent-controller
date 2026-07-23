@@ -18,6 +18,8 @@ export interface ClaudeRunOptions {
   model?: string;
   signal?: AbortSignal;
   onProgress?: (message: string, stage: "agent-text" | "agent") => void;
+  /** Override the "still working" heartbeat cadence (ms). Defaults to {@link HEARTBEAT_INTERVAL_MS}; injectable for tests. */
+  heartbeatIntervalMs?: number;
 }
 
 /**
@@ -46,6 +48,18 @@ function looksLikeAuthError(text: string): boolean {
   const lower = text.toLowerCase();
   return AUTH_ERROR_SUBSTRINGS.some((s) => lower.includes(s));
 }
+
+/**
+ * How often to emit a "still working" heartbeat while the CLI is silent.
+ * Claude Code narrates a `tool_use` event when a tool STARTS but nothing
+ * until it finishes, so a single long-running command (e.g. a full test
+ * suite -- observed taking many minutes in a Job container) produces one
+ * "running Bash" line and then total silence, which reads as a frozen
+ * agent. A periodic heartbeat proves the run is alive; a real completion or
+ * new event resets the idle clock so heartbeats only fire during genuine
+ * silence.
+ */
+const HEARTBEAT_INTERVAL_MS = 20_000;
 
 /**
  * Runs one `claude -p` turn to completion, parsing its
@@ -84,7 +98,18 @@ export function runClaudeTurn(prompt: string, opts: ClaudeRunOptions): Promise<C
     let stdoutLineBuf = "";
     let sawAnyJson = false;
 
+    // Heartbeat state: the tool most recently started, when the CLI last
+    // emitted anything, and when the current in-flight tool began -- so a
+    // heartbeat can say what's running and for how long.
+    let lastTool: string | null = null;
+    let lastActivityAt = Date.now();
+    let currentToolStartedAt = Date.now();
+    const markActivity = (): void => {
+      lastActivityAt = Date.now();
+    };
+
     const handleEvent = (event: unknown): void => {
+      markActivity();
       if (typeof event !== "object" || event === null) return;
       const rec = event as Record<string, unknown>;
       const type = typeof rec.type === "string" ? rec.type : "";
@@ -103,6 +128,8 @@ export function runClaudeTurn(prompt: string, opts: ClaudeRunOptions): Promise<C
           if (b.type === "text" && typeof b.text === "string" && b.text) {
             opts.onProgress?.(b.text, "agent-text");
           } else if (b.type === "tool_use" && typeof b.name === "string") {
+            lastTool = b.name;
+            currentToolStartedAt = Date.now();
             opts.onProgress?.(`running ${b.name}`, "agent");
           }
         }
@@ -135,10 +162,24 @@ export function runClaudeTurn(prompt: string, opts: ClaudeRunOptions): Promise<C
     child.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       stderrBuf += text;
+      markActivity();
       process.stderr.write(clip(text, 2000));
     });
 
+    // Fire a heartbeat only after a full interval of genuine silence (no
+    // stream events, no stderr), so a long-running tool visibly stays alive
+    // instead of looking hung. `unref()` so a stray interval can never keep
+    // the process up past the child's own exit.
+    const heartbeatMs = opts.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
+    const heartbeat = setInterval(() => {
+      if (Date.now() - lastActivityAt < heartbeatMs) return;
+      const secs = Math.round((Date.now() - currentToolStartedAt) / 1000);
+      opts.onProgress?.(lastTool ? `still running ${lastTool}… (${secs}s)` : `still working… (${secs}s)`, "agent");
+    }, heartbeatMs);
+    heartbeat.unref?.();
+
     child.on("error", (err) => {
+      clearInterval(heartbeat);
       resolve({
         finalMessage,
         failed: true,
@@ -149,6 +190,7 @@ export function runClaudeTurn(prompt: string, opts: ClaudeRunOptions): Promise<C
     });
 
     child.on("close", (code) => {
+      clearInterval(heartbeat);
       const trailing = stdoutLineBuf.trim();
       if (trailing) {
         try {

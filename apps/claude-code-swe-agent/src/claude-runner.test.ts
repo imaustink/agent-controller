@@ -95,4 +95,38 @@ describe("runClaudeTurn", () => {
     expect(result.failed).toBe(true);
     expect(result.failureDetail).toContain("boom");
   });
+
+  it("emits 'still running' heartbeats while a tool stays silent, and stops on completion", async () => {
+    // Fake CLI that starts a Bash tool, then goes silent for ~300ms (a long
+    // command) before finishing -- mirrors the real "runs the full test
+    // suite, no output for minutes" case that read as a freeze. With a short
+    // heartbeat interval, the silent stretch should produce at least one
+    // "still running Bash…" progress line.
+    await installFakeClaude(`
+      console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "s1" }));
+      console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: {} }] } }));
+      setTimeout(() => {
+        console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id: "s1", result: "done" }));
+        process.exit(0);
+      }, 300);
+    `);
+
+    const progress: Array<{ message: string; stage: string }> = [];
+    const result = await runClaudeTurn("do the thing", {
+      cwd: process.cwd(),
+      env: env(),
+      settings: {},
+      heartbeatIntervalMs: 40,
+      onProgress: (message, stage) => progress.push({ message, stage }),
+    });
+
+    expect(result.failed).toBe(false);
+    const heartbeats = progress.filter((p) => /still running Bash/.test(p.message));
+    expect(heartbeats.length).toBeGreaterThanOrEqual(1);
+    // The heartbeat interval is cleared on completion: waiting well past
+    // another interval produces no further heartbeats.
+    const countAtResolve = progress.length;
+    await new Promise((r) => setTimeout(r, 150));
+    expect(progress.length).toBe(countAtResolve);
+  });
 });
