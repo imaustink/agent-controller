@@ -1,6 +1,7 @@
 {{- if .Values.claudeCodeSweAgent.enabled }}
-{{- if not (or .Values.claudeCodeSweAgent.anthropicSecretKey .Values.claudeCodeSweAgent.claudeCodeOAuthTokenSecretKey) }}
-{{- fail "claudeCodeSweAgent requires at least one of anthropicSecretKey or claudeCodeOAuthTokenSecretKey to be set" }}
+{{- $identityLinkCoversClaude := and .Values.claudeCodeSweAgent.identityLink.enabled (has "claude" .Values.claudeCodeSweAgent.identityLink.providers) }}
+{{- if not (or .Values.claudeCodeSweAgent.anthropicSecretKey .Values.claudeCodeSweAgent.claudeCodeOAuthTokenSecretKey $identityLinkCoversClaude) }}
+{{- fail "claudeCodeSweAgent requires anthropicSecretKey, claudeCodeOAuthTokenSecretKey, or identityLink.providers to include \"claude\" -- some model credential must be guaranteed at launch time" }}
 {{- end }}
 apiVersion: {{ .Values.crdApiVersion }}
 kind: Agent
