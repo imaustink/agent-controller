@@ -2,10 +2,10 @@
 # Platform-specific values for the vendored charts/durable-agents.
 
 temporal:
-  # The platform's Temporal (gitops/apps/temporal.yaml), "default" namespace
-  # pre-registered.
+  # The platform's Temporal (gitops/apps/temporal.yaml). durable-agents
+  # registers this namespace itself on startup (72h retention).
   address: temporal-frontend.temporal.svc:7233
-  namespace: default
+  namespace: agent-controller
 
 taskQueue: durable-agents
 

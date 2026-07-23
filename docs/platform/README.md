@@ -112,6 +112,6 @@ vs `durable-agents`) — a live side-by-side of the two architectures.
   (docs/pod-agents.md). Skill/tool turns (recipe-scraper) work end to end
   today. Declarative agents need an Agent CR with no image expectations —
   seed one via a new CR in agent-catalog when ready.
-- Temporal namespace retention on the platform is **1 day** — fine for
-  shakedown; long-lived HITL episodes (24h idle window) sit right at that
-  edge. Bump retention if agent episodes should survive longer.
+- durable-agents registers its own Temporal namespace (agent-controller, 72h
+  retention via TEMPORAL_NAMESPACE_RETENTION) on startup - closed histories
+  outlive the platform default namespace 1d retention.
