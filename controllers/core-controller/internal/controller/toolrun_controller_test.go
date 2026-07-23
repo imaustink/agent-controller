@@ -134,5 +134,97 @@ var _ = Describe("ToolRun Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		It("merges ToolRun.Spec.SecretEnv over the Tool template's static secretEnv by name (ADR 0028)", func() {
+			By("creating a Tool with a static secretEnv entry and identityProviders declared")
+			identityToolName := fmt.Sprintf("%s-identity-tool", resourceName)
+			identityTool := &toolv1alpha1.Tool{
+				ObjectMeta: metav1.ObjectMeta{Name: identityToolName, Namespace: "default"},
+				Spec: toolv1alpha1.ToolSpec{
+					Description:        "identity-linked test tool",
+					Input:              "a gh CLI command line",
+					Output:             "gh's own output",
+					AllowedRoles:       []string{"writer"},
+					Image:              "example.com/github:latest",
+					ServiceAccountName: "github-tool",
+					IdentityProviders:  []string{"github"},
+					SecretEnv: []toolv1alpha1.SecretEnvVar{
+						{
+							Name: "GITHUB_TOKEN",
+							SecretRef: toolv1alpha1.SecretKeySelector{
+								Name: "github-tool-secrets",
+								Key:  "GITHUB_TOKEN",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, identityTool)).To(Succeed())
+			defer func() {
+				Expect(k8sClient.Delete(ctx, identityTool)).To(Succeed())
+			}()
+
+			By("creating a ToolRun with a per-run SecretEnv override for the same GITHUB_TOKEN key")
+			identityRunName := fmt.Sprintf("%s-identity-run", resourceName)
+			identityRunKey := types.NamespacedName{Name: identityRunName, Namespace: "default"}
+			identityRun := &toolv1alpha1.ToolRun{
+				ObjectMeta: metav1.ObjectMeta{Name: identityRunName, Namespace: "default"},
+				Spec: toolv1alpha1.ToolRunSpec{
+					ToolRef: identityToolName,
+					Args:    []string{"issue view 86 --repo imaustink/agent-controller"},
+					Callback: toolv1alpha1.ToolRunCallback{
+						URL: "http://agent-orchestrator-callback.default.svc.cluster.local:8080",
+						SecretRef: toolv1alpha1.SecretKeySelector{
+							Name: "agent-orchestrator-secrets",
+							Key:  "AGENT_CALLBACK_SECRET",
+						},
+					},
+					SecretEnv: []toolv1alpha1.SecretEnvVar{
+						{
+							Name: "GITHUB_TOKEN",
+							SecretRef: toolv1alpha1.SecretKeySelector{
+								Name: identityRunName + "-identity",
+								Key:  "GITHUB_TOKEN",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, identityRun)).To(Succeed())
+			defer func() {
+				Expect(k8sClient.Delete(ctx, identityRun)).To(Succeed())
+			}()
+
+			By("reconciling the ToolRun")
+			controllerReconciler := &ToolRunReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityRunKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated toolv1alpha1.ToolRun
+			Expect(k8sClient.Get(ctx, identityRunKey, &updated)).To(Succeed())
+			Expect(updated.Status.JobName).NotTo(BeEmpty())
+
+			var job batchv1.Job
+			jobKey := types.NamespacedName{Name: updated.Status.JobName, Namespace: "default"}
+			Expect(k8sClient.Get(ctx, jobKey, &job)).To(Succeed())
+
+			container := job.Spec.Template.Spec.Containers[0]
+			findEnv := func(name string) *corev1.EnvVar {
+				for i := range container.Env {
+					if container.Env[i].Name == name {
+						return &container.Env[i]
+					}
+				}
+				return nil
+			}
+
+			By("the ToolRun-level GITHUB_TOKEN entry winning over the Tool's static one")
+			githubTokenEnv := findEnv("GITHUB_TOKEN")
+			Expect(githubTokenEnv).NotTo(BeNil())
+			Expect(githubTokenEnv.ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal(identityRunName + "-identity"))
+		})
 	})
 })

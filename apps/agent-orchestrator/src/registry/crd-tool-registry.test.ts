@@ -93,6 +93,39 @@ describe("CrdToolRegistry", () => {
     expect(tools[0].jobTemplate).toBeUndefined();
   });
 
+  it("carries Tool.spec.identityProviders through to the ToolDescriptor for a container Tool (ADR 0028, e.g. the github Tool)", async () => {
+    const identityLinked: ToolCustomResource = {
+      metadata: { name: "github" },
+      spec: {
+        description: "Runs a gh CLI command against GitHub",
+        input: "a gh CLI command line",
+        output: "gh's own output",
+        allowedRoles: ["writer"],
+        image: "example.com/github:latest",
+        serviceAccountName: "github-tool",
+        identityProviders: ["github"],
+      },
+    };
+    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [identityLinked] });
+    const api: CustomObjectsApiLike = { listNamespacedCustomObject };
+    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+
+    const tools = await registry.listAll();
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0]!.identityProviders).toEqual(["github"]);
+  });
+
+  it("omits identityProviders when the Tool CR does not declare any", async () => {
+    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [validTool] });
+    const api: CustomObjectsApiLike = { listNamespacedCustomObject };
+    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+
+    const tools = await registry.listAll();
+
+    expect(tools[0]!.identityProviders).toBeUndefined();
+  });
+
   it("returns an empty catalog when there are zero Tool resources", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };

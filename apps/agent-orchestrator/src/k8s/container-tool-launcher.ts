@@ -34,6 +34,18 @@ export interface LaunchOptions {
    * existed.
    */
   sessionId?: string;
+  /**
+   * Per-invocation plaintext values (e.g. the calling user's own linked
+   * GitHub token, ADR 0022/0027) that must reach the launched Job as env
+   * vars WITHOUT ever being embedded as plaintext in the ToolRun CR itself
+   * -- CRs aren't RBAC-hidden the way k8s Secrets are. When non-empty,
+   * `ToolRunLauncher.launch()` creates a dedicated k8s Secret first and
+   * references it via `ToolRunSpec.secretEnv` (`SecretEnvVar`,
+   * controllers/core-controller/api/v1alpha1/toolrun_types.go), which the Go
+   * reconciler merges on top of the Tool template's own static `secretEnv`
+   * when building the Job. Mirrors `AgentLaunchOptions.secretEnv` exactly.
+   */
+  secretEnv?: { name: string; value: string }[];
 }
 
 /** Well-known annotation key mirroring `SessionIDAnnotation` in controllers/core-controller/internal/controller/run_job.go. */

@@ -142,6 +142,24 @@ claudeCodeSweAgent:
     providers:
       - claude
 
+# github: single allowlisted gh CLI command tool (issue/pr/repo/release/
+# search/workflow/run), authenticated as the calling user's own linked
+# GitHub identity (ADR 0022/0028) -- reuses the exact same identity-link
+# plumbing already enabled for opencodeSweAgent above (agent-orchestrator's
+# and integration-gateway's identityLink.enabled, see
+# charts/agent-controller/values-production.yaml), no new gateway/App
+# configuration needed. Lighter-weight than delegating to opencode-swe-agent
+# for a quick, targeted GitHub read/write that doesn't need a clone or code
+# change.
+githubTool:
+  enabled: true
+  image: registry.kurpuis.com:5000/github:latest
+  serviceAccountName: github-tool
+  identityLink:
+    enabled: true
+    providers:
+      - github
+
 skills:
   recipeRefining:
     enabled: true

@@ -1301,6 +1301,35 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // Container tool (ADR 0010): create a ToolRun CR — the Go
         // core-controller reconciles it into a hardened Job. The orchestrator
         // itself never creates a Job.
+
+        // Same per-caller identity gate as delegateToAgent/the agent-backed
+        // tool branch above (ADR 0022/0028) — e.g. the `github` Tool, which
+        // needs the calling user's own linked GitHub token rather than a
+        // shared credential. v1 scope cut: same as the agent-backed branch,
+        // this path never STARTS a fresh device-flow/authcode link -- a
+        // caller must link once via direct chat delegation to an
+        // identity-requiring Agent before a container Tool can reach it here.
+        let identitySecretEnv: { name: string; value: string }[] | undefined;
+        if (tool.identityProviders && tool.identityProviders.length > 0) {
+          if (!deps.identityLinkGateway || !state.identity) {
+            return {
+              error: `tool ${tool.id} requires identity providers (${tool.identityProviders.join(", ")}) but no identity-link gateway is configured`,
+            };
+          }
+          const provider = tool.identityProviders[0]!;
+          const existing = await deps.identityLinkGateway.getToken(provider, state.identity.subject);
+          if (!existing) {
+            return {
+              error: `tool ${tool.id} requires linking your ${provider} account first -- start a direct conversation with an agent that uses ${provider} identity linking to link it, then retry`,
+            };
+          }
+          const envVarName = PROVIDER_ENV_VAR[provider];
+          if (!envVarName) {
+            return { error: `tool ${tool.id} declares unsupported identity provider "${provider}"` };
+          }
+          identitySecretEnv = [{ name: envVarName, value: existing.token }];
+        }
+
         jobId = randomUUID();
         const awaitResult = deps.jobResultReceiver.awaitJob(jobId);
 
@@ -1319,6 +1348,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               natsUrl: deps.natsUrl,
               natsSubject: `callbacks.${jobId}`,
               ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+              ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
             });
           } else {
             // HTTP callback mode (backward-compatible default).
@@ -1328,6 +1358,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               callbackUrl,
               callbackSecret: deps.callbackSecret!,
               ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+              ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
             });
           }
 

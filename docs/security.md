@@ -169,6 +169,49 @@ addition specific to it:
   within the same authenticated Mealie account/group (`MEALIE_API_TOKEN`
   can't reach other tenants).
 
+## tools/github: a container Tool authenticated as the calling user (ADR 0028)
+
+[tools/github](../tools/github/) runs a single allowlisted `gh` CLI command,
+authenticated with a `GITHUB_TOKEN` that -- when
+`Tool.spec.identityProviders: [github]` is set (the recommended, default-in-
+`values-production.yaml` configuration) -- is the **calling user's own**
+identity-linked GitHub token, resolved and injected per-invocation via
+`ToolRunSpec.secretEnv` exactly the way `AgentRunSpec.secretEnv` already
+worked for `opencode-swe-agent` (ADR 0022), extended one CRD kind further
+(ADR 0028) since `ToolRun` previously had no per-invocation secretEnv
+mechanism at all. This means:
+
+- **The primary authorization boundary is GitHub itself**, not this
+  container's ServiceAccount/RBAC (which grants nothing beyond ordinary pod
+  scheduling) -- a caller can only do what they could already do on GitHub
+  directly with their own account. This is the same posture as
+  `opencode-swe-agent` below, not a new trust model.
+- **In-process command allowlist** (`src/allowlist.ts`) is defense-in-depth
+  clarity about the tool's intended purpose (issue/PR/repo-read/release/
+  search/workflow-read operations), not the primary control -- `auth`/`api`/
+  `config`/`secret`/`ssh-key`/etc. are excluded entirely, and a handful of
+  individually irreversible-ish subcommands (`repo delete`, `issue delete`/
+  `transfer`, `workflow run`, `run cancel`/`rerun`, `release`/`label delete`)
+  are excluded even within an otherwise-allowed command. Unlike
+  `kubectl-readonly` (whose fixed cluster-wide ServiceAccount is the same
+  regardless of caller, so flag-level restriction is the only thing standing
+  between "get pods" and "get secrets -o json"), this tool does not
+  additionally restrict flags/values, since GitHub's own per-user
+  authorization already gates what a write can actually do.
+- **No persisted credentials.** `GH_CONFIG_DIR` points at the container's
+  writable `/tmp` (wiped every run); the token lives only in this process's
+  env for the run's duration, sourced from a per-run k8s Secret
+  (`<toolrun-name>-identity`) that is garbage-collected with its `ToolRun`.
+- A caller who has not yet linked their GitHub account gets an explicit
+  error directing them to link it via a direct conversation with an
+  identity-linking-capable agent (e.g. `opencode-swe-agent`) first -- the
+  same v1 scope cut as the agent-backed-tool identity gate in `graph.ts`'s
+  `runTool`: this call path cannot itself start a fresh device-flow link.
+- A deployment that does not want per-user delegation can instead configure
+  `githubTool.identityLink.enabled: false` (the chart default) with a static
+  `GITHUB_TOKEN` PAT in a Secret, same as any other tool's `secretEnv` --
+  the blast radius then reverts to whatever that shared PAT is scoped to.
+
 ## opencode-swe-agent: a deliberately privileged agent
 
 `apps/opencode-swe-agent` (an agentic opencode CLI wrapper, calling Anthropic

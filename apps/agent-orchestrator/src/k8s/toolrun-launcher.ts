@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as k8s from "@kubernetes/client-node";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import type { JobTemplate } from "../tool-descriptor.js";
+import type { SecretApiLike } from "./agentrun-launcher.js";
 import { SESSION_ID_ANNOTATION, type ContainerToolLauncher, type LaunchedJob, type LaunchOptions } from "./container-tool-launcher.js";
 
 /** Plural resource name used by the `ToolRun` CRD (matches `config/crd/bases` in controllers/core-controller). */
@@ -40,8 +41,10 @@ export class ToolRunLauncher implements ContainerToolLauncher {
         namespace: string;
         plural: string;
         body: unknown;
-      }): Promise<unknown>;
+      }): Promise<{ metadata?: { uid?: string } }>;
     },
+    /** Absent in callers/tests that never launch with `options.secretEnv` (today's default). Real instances constructed via `fromKubeConfig` always pass one. */
+    private readonly secretApi?: SecretApiLike,
   ) {}
 
   static fromKubeConfig(
@@ -50,7 +53,13 @@ export class ToolRunLauncher implements ContainerToolLauncher {
     callbackSecretRef: SecretKeySelector,
     kubeConfig: k8s.KubeConfig,
   ): ToolRunLauncher {
-    return new ToolRunLauncher(group, version, callbackSecretRef, kubeConfig.makeApiClient(k8s.CustomObjectsApi));
+    return new ToolRunLauncher(
+      group,
+      version,
+      callbackSecretRef,
+      kubeConfig.makeApiClient(k8s.CustomObjectsApi),
+      kubeConfig.makeApiClient(k8s.CoreV1Api),
+    );
   }
 
   async launch(template: JobTemplate, options: LaunchOptions): Promise<LaunchedJob> {
@@ -75,6 +84,38 @@ export class ToolRunLauncher implements ContainerToolLauncher {
       ? { natsSubject: options.natsSubject, natsUrl: options.natsUrl }
       : { url: options.callbackUrl, secretRef: this.callbackSecretRef };
 
+    // Per-invocation identity secretEnv (e.g. GITHUB_TOKEN for the CALLING
+    // user, not any shared bot credential, ADR 0028): create a dedicated k8s
+    // Secret up front and reference it from the CR by name/key only -- the
+    // plaintext value must never be embedded in the ToolRun CR itself, since
+    // CRs aren't RBAC-hidden the way Secrets are. Mirrors AgentRunLauncher's
+    // identical mechanism (agentrun-launcher.ts).
+    let secretName: string | undefined;
+    let secretEnvSpec: { name: string; secretRef: { name: string; key: string } }[] | undefined;
+    if (options.secretEnv && options.secretEnv.length > 0) {
+      if (!this.secretApi) {
+        throw new Error(
+          "ToolRunLauncher.launch() was given options.secretEnv but no SecretApiLike was configured -- " +
+            "construct via fromKubeConfig (which wires a CoreV1Api client) to use per-invocation identity secretEnv",
+        );
+      }
+      // `name` is a randomUUID() above, so this suffix is still a valid
+      // DNS-1123 Secret name.
+      secretName = `${name}-identity`;
+      const stringData: Record<string, string> = {};
+      for (const entry of options.secretEnv) stringData[entry.name] = entry.value;
+      // No ownerReference yet -- the ToolRun CR doesn't exist (no uid) until
+      // createNamespacedCustomObject below succeeds; patched in afterward.
+      await this.secretApi.createNamespacedSecret({
+        namespace: template.namespace,
+        body: { metadata: { name: secretName }, stringData },
+      });
+      secretEnvSpec = options.secretEnv.map((entry) => ({
+        name: entry.name,
+        secretRef: { name: secretName!, key: entry.name },
+      }));
+    }
+
     const body = {
       apiVersion: `${this.group}/${this.version}`,
       kind: "ToolRun",
@@ -87,16 +128,49 @@ export class ToolRunLauncher implements ContainerToolLauncher {
         toolRef: template.toolRef,
         args: options.args ?? template.args,
         callback,
+        ...(secretEnvSpec ? { secretEnv: secretEnvSpec } : {}),
       },
     };
 
-    await this.api.createNamespacedCustomObject({
+    const created = await this.api.createNamespacedCustomObject({
       group: this.group,
       version: this.version,
       namespace: template.namespace,
       plural: TOOLRUN_PLURAL,
       body,
     });
+
+    if (secretName) {
+      const uid = created?.metadata?.uid;
+      // A real cluster always returns the created object's uid; skip the
+      // ownerReference patch rather than fail the whole launch if it's ever
+      // missing (e.g. a bare-bones test double) -- the Secret is still
+      // created and correctly referenced, just without GC-on-delete.
+      if (uid) {
+        await this.secretApi!.patchNamespacedSecret({
+          name: secretName,
+          namespace: template.namespace,
+          // Same JSON-Patch media-type quirk as AgentRunLauncher -- see its
+          // comment on the equivalent patch call.
+          body: [
+            {
+              op: "add",
+              path: "/metadata/ownerReferences",
+              value: [
+                {
+                  apiVersion: `${this.group}/${this.version}`,
+                  kind: "ToolRun",
+                  name,
+                  uid,
+                  controller: true,
+                  blockOwnerDeletion: true,
+                },
+              ],
+            },
+          ],
+        });
+      }
+    }
 
     return { name, namespace: template.namespace };
   }

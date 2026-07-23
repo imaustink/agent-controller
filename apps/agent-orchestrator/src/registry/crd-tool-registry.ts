@@ -23,6 +23,14 @@ export interface ToolCustomResource {
       requests?: Record<string, string>;
       limits?: Record<string, string>;
     };
+    /**
+     * External identity providers the CALLING user must have linked (ADR
+     * 0022/0027) before this container Tool can be launched -- read straight
+     * onto the resulting `ToolDescriptor.identityProviders` (see
+     * `graph.ts`'s `runTool`, which gates on it the same way `delegateToAgent`
+     * gates an identity-linked Agent).
+     */
+    identityProviders?: string[];
   };
 }
 
@@ -155,5 +163,8 @@ export function toToolDescriptor(cr: ToolCustomResource, namespace: string): Too
       // re-embedding image/serviceAccount into a Job itself (ADR 0010).
       toolRef: name,
     },
+    ...(spec.identityProviders && spec.identityProviders.length > 0
+      ? { identityProviders: spec.identityProviders }
+      : {}),
   };
 }

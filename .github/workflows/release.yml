@@ -92,6 +92,11 @@ jobs:
               - 'package-lock.json'
               - 'packages/messaging/**'
               - 'tools/kubectl-readonly/**'
+            github-tool:
+              - 'package.json'
+              - 'package-lock.json'
+              - 'packages/messaging/**'
+              - 'tools/github/**'
             core-controller:
               - 'controllers/core-controller/**'
             localtool-executor:
@@ -112,6 +117,7 @@ jobs:
           WEB_SEARCH: ${{ steps.filter.outputs.web-search }}
           WEB_FETCH: ${{ steps.filter.outputs.web-fetch }}
           KUBECTL_READONLY: ${{ steps.filter.outputs.kubectl-readonly }}
+          GITHUB_TOOL: ${{ steps.filter.outputs.github-tool }}
           CORE_CONTROLLER: ${{ steps.filter.outputs.core-controller }}
           LOCALTOOL_EXECUTOR: ${{ steps.filter.outputs.localtool-executor }}
         run: |
@@ -126,6 +132,7 @@ jobs:
             {"image":"web-search","changed_key":"WEB_SEARCH","dockerfile":"tools/web-search/Dockerfile","context":"."},
             {"image":"web-fetch","changed_key":"WEB_FETCH","dockerfile":"tools/web-fetch/Dockerfile","context":"."},
             {"image":"kubectl-readonly","changed_key":"KUBECTL_READONLY","dockerfile":"tools/kubectl-readonly/Dockerfile","context":"."},
+            {"image":"github","changed_key":"GITHUB_TOOL","dockerfile":"tools/github/Dockerfile","context":"."},
             {"image":"core-controller","changed_key":"CORE_CONTROLLER","dockerfile":"controllers/core-controller/Dockerfile","context":"controllers/core-controller"},
             {"image":"localtool-executor-node","changed_key":"LOCALTOOL_EXECUTOR","dockerfile":"sidecars/localtool-executor/Dockerfile","context":"sidecars/localtool-executor","build_args":"BASE_IMAGE=node:24-bookworm-slim\nRUNTIME=node"},
             {"image":"localtool-executor-python","changed_key":"LOCALTOOL_EXECUTOR","dockerfile":"sidecars/localtool-executor/Dockerfile","context":"sidecars/localtool-executor","build_args":"BASE_IMAGE=python:3.12-slim-bookworm\nRUNTIME=python"},
@@ -150,9 +157,10 @@ jobs:
               --arg WEB_SEARCH "$WEB_SEARCH" \
               --arg WEB_FETCH "$WEB_FETCH" \
               --arg KUBECTL_READONLY "$KUBECTL_READONLY" \
+              --arg GITHUB_TOOL "$GITHUB_TOOL" \
               --arg CORE_CONTROLLER "$CORE_CONTROLLER" \
               --arg LOCALTOOL_EXECUTOR "$LOCALTOOL_EXECUTOR" \
-              '{AGENT_ORCHESTRATOR:$AGENT_ORCHESTRATOR,OPENCODE_SWE_AGENT:$OPENCODE_SWE_AGENT,CLAUDE_CODE_SWE_AGENT:$CLAUDE_CODE_SWE_AGENT,INTEGRATION_GATEWAY:$INTEGRATION_GATEWAY,RECIPE_SCRAPER:$RECIPE_SCRAPER,RECIPE_PUBLISHER:$RECIPE_PUBLISHER,WEB_SEARCH:$WEB_SEARCH,WEB_FETCH:$WEB_FETCH,KUBECTL_READONLY:$KUBECTL_READONLY,CORE_CONTROLLER:$CORE_CONTROLLER,LOCALTOOL_EXECUTOR:$LOCALTOOL_EXECUTOR}')
+              '{AGENT_ORCHESTRATOR:$AGENT_ORCHESTRATOR,OPENCODE_SWE_AGENT:$OPENCODE_SWE_AGENT,CLAUDE_CODE_SWE_AGENT:$CLAUDE_CODE_SWE_AGENT,INTEGRATION_GATEWAY:$INTEGRATION_GATEWAY,RECIPE_SCRAPER:$RECIPE_SCRAPER,RECIPE_PUBLISHER:$RECIPE_PUBLISHER,WEB_SEARCH:$WEB_SEARCH,WEB_FETCH:$WEB_FETCH,KUBECTL_READONLY:$KUBECTL_READONLY,GITHUB_TOOL:$GITHUB_TOOL,CORE_CONTROLLER:$CORE_CONTROLLER,LOCALTOOL_EXECUTOR:$LOCALTOOL_EXECUTOR}')
             MATRIX=$(jq -c --argjson flags "$FLAGS" 'map(select($flags[.changed_key] == "true"))' all.json)
           fi
 

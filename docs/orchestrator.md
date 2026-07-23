@@ -177,6 +177,16 @@ Which tools even show up as retrieval candidates depends on **who is asking**:
 - Job retry/backoff and TTL cleanup (`ttlSecondsAfterFinished`) are owned by the
   controller, which also mirrors terminal Job state onto the `ToolRun` as a
   fallback for crashes that never emit a `failed` callback event.
+- A container Tool can optionally declare `identityProviders` (e.g.
+  `["github"]`, ADR 0028 — extending the Agent-only mechanism from ADR 0022):
+  before launching, `runTool` resolves the calling user's own linked token via
+  `agent-orchestrator`'s identity-link gateway client and passes it as
+  `ToolRunLauncher.launch()`'s `options.secretEnv`, which creates a per-run k8s
+  Secret and references it from `ToolRunSpec.secretEnv` — the Go controller
+  merges that over the Tool's own static `secretEnv` when building the Job.
+  The `github` Tool (`tools/github/`) is the reference implementation: it runs
+  `gh` authenticated as the caller's own GitHub identity rather than a shared
+  bot credential.
 
 ### 4b. LocalTool executor sidecars (ADR 0014)
 

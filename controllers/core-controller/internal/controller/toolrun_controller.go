@@ -210,10 +210,15 @@ func buildJob(run *toolv1alpha1.ToolRun, tool *toolv1alpha1.Tool) (*batchv1.Job,
 		serviceAccountName: tool.Spec.ServiceAccountName,
 		args:               args,
 		staticEnv:          tool.Spec.Env,
-		secretEnv:          tool.Spec.SecretEnv,
-		resources:          tool.Spec.Resources,
-		callback:           run.Spec.Callback,
-		timeoutSeconds:     timeoutSeconds,
+		// mergeSecretEnv lets a caller inject a per-invocation credential
+		// (e.g. a per-user GitHub identity-link token, ADR 0028) that
+		// overrides or adds to the Tool's baked-in static secretEnv for this
+		// one run only, without mutating the Tool CR -- same mechanism
+		// AgentRunReconciler already uses for Agent/AgentRun.
+		secretEnv:      mergeSecretEnv(tool.Spec.SecretEnv, run.Spec.SecretEnv),
+		resources:      tool.Spec.Resources,
+		callback:       run.Spec.Callback,
+		timeoutSeconds: timeoutSeconds,
 	})
 }
 

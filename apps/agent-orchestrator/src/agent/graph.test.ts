@@ -1286,6 +1286,93 @@ describe("buildAgentGraph agent-backed Tool (runTool via AgentRun)", () => {
   });
 });
 
+describe("buildAgentGraph identity-gated container Tool (ADR 0028, e.g. the github Tool)", () => {
+  const githubTool: ToolDescriptor = {
+    id: "github",
+    name: "github",
+    description: "Runs a single gh CLI command against GitHub, authenticated as the calling user",
+    allowedRoles: ["writer"],
+    jobTemplate: { image: "example.com/github:latest", namespace: "default", serviceAccountName: "github-tool" },
+    identityProviders: ["github"],
+  };
+
+  const githubToolSkill: SkillDescriptor = {
+    id: "github-cli-skill",
+    name: "GitHub CLI",
+    description: "Runs gh CLI commands against GitHub",
+    markdown: "# instructions",
+    toolIds: ["github"],
+    agentIds: [],
+  };
+
+  function githubToolDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    const skillStore: SkillStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ skill: githubToolSkill, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([githubToolSkill]),
+    };
+    const vectorStore: VectorStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ tool: githubTool, score: 1 }]),
+    };
+    const actionPlanner: ActionPlanner = {
+      plan: vi.fn().mockResolvedValue({
+        action: "call_tool",
+        toolId: "github",
+        toolArgs: "issue view 86 --repo imaustink/agent-controller",
+      } satisfies PlannedAction),
+    };
+    return baseDeps({ skillStore, vectorStore, actionPlanner, ...overrides });
+  }
+
+  it("injects the caller's already-linked token as secretEnv instead of erroring", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "gho_alice-token" }),
+    };
+    const deps = githubToolDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "what does issue 86 say", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(identityLinkGateway.getToken).toHaveBeenCalledWith("github", "alice");
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
+      githubTool.jobTemplate,
+      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_alice-token" }] }),
+    );
+  });
+
+  it("errors (without launching) instead of silently running credential-less when the caller has no linked token", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = githubToolDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "what does issue 86 say", authToken: "tok" });
+
+    expect(final.error).toMatch(/requires linking your github account/);
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+
+  it("errors when identity providers are declared but no identity-link gateway is configured", async () => {
+    const deps = githubToolDeps({ identityLinkGateway: undefined });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "what does issue 86 say", authToken: "tok" });
+
+    expect(final.error).toMatch(/no identity-link gateway is configured/);
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+});
+
 describe("buildAgentGraph Skill.agentRefs (ADR 0021, no Tool wrapper)", () => {
   const opencodeAgent: AgentDescriptor = {
     id: "opencode-swe-agent",
