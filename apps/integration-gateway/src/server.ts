@@ -196,6 +196,16 @@ export class GatewayServer {
       return;
     }
 
+    // An issue created WITH the trigger label already attached fires a
+    // SEPARATE `issues.labeled` webhook delivery a moment after `opened`
+    // (one per label present at creation) -- skip relaying `opened` here so
+    // that guaranteed-to-follow `labeled` event is the only one that
+    // dispatches. Without this, both events independently delegate the same
+    // session to the same agent, racing each other into two AgentRuns.
+    if (event.kind === "issue-opened" && this.options.githubTriggerLabel && event.labelNames.includes(this.options.githubTriggerLabel)) {
+      return;
+    }
+
     // Belt-and-suspenders loop guard: skip our own bot/replies even if a
     // login isn't flagged as `type: "Bot"` (e.g. a PAT-backed account).
     const text = event.kind === "issue-opened" ? event.body : event.commentBody;

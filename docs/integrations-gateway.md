@@ -392,6 +392,16 @@ GitHub Issues adapter for the conversational path only:
   from before this feature existed. A sample route (`github`/`issues`/
   `labeled` → `opencode-swe-agent`) ships gated behind
   `integrationRoutes.githubIssueLabeledTriage.enabled`.
+  - **Dedup with `issues.opened`**: GitHub fires a *separate* `issues.opened`
+    delivery **and** one `issues.labeled` delivery per label already present
+    when an issue is created with labels attached — the common case for this
+    trigger (label set at creation time). Both would otherwise independently
+    delegate the same session to the same agent (RAG picking it for `opened`,
+    the deterministic route picking it for `labeled`), racing each other into
+    two `AgentRun`s before either turn's session state is persisted. The
+    gateway skips relaying `opened` whenever the issue's labels already
+    include the configured trigger label, since the guaranteed-to-follow
+    `labeled` event is the only one that needs to dispatch.
 - Identity resolution's primary path is now real, no-redeploy-needed
   verification against GitHub itself, via two resolvers
   (`CompositeGithubIdentityResolver` tries both):
