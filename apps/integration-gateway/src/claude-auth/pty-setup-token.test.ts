@@ -117,4 +117,49 @@ describe("ClaudeSetupTokenFlows", () => {
 
     await expect(submitPromise).resolves.toEqual({ status: "complete", token: "sk-ant-oat01-abcdefghijklmnop" });
   });
+
+  it("regression: extracts the clean url from a real OSC 8 terminal hyperlink instead of the garbled wrapped-duplicate text", async () => {
+    // Byte-for-byte shape confirmed by actually running `claude setup-token`
+    // v2.1.218 in a real PTY: the CLI emits the url as a genuine OSC 8
+    // hyperlink (ESC ] 8 ; id=... ; <url> BEL), immediately followed by a
+    // human-readable fallback rendering of the SAME url wrapped across
+    // several cursor-positioned cells for terminals that don't support
+    // hyperlinks. A naive `https://\S+` match has no whitespace to stop at
+    // until well past the BEL/escape codes, so it swallows the real url,
+    // the escapes, AND the wrapped duplicate into one garbled string.
+    const realUrl =
+      "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=ZKANrZFlr20DBvod-WsVO1-Gb5SZLcRNJOdo_h0ZWh0&code_challenge_method=S256&state=4Wxdim99pDUHYXgnPicljuRRCv0HiWqdEIsJvkiTREo";
+    const rawChunk =
+      `\x1b[37m *\x1b[36G░░░░\x1b[39m\r\r\n\x1b]8;id=7kcak1;${realUrl}\x07\x1b[37m${realUrl.slice(0, 90)}\x1b[39m\x1b]8;;\x07\r\r\n` +
+      `\x1b]8;id=7kcak1;${realUrl}\x07\x1b[37m${realUrl.slice(90, 130)}\x1b[39m\x1b]8;;\x07\r\r\n\r\r\n`;
+
+    let fake!: FakePty;
+    const flows = new ClaudeSetupTokenFlows(() => (fake = new FakePty()) as unknown as ReturnType<typeof import("node-pty").spawn>);
+    const startPromise = flows.start("user-5");
+    fake.emitData(rawChunk);
+
+    const result = await startPromise;
+    expect(result.authorizeUrl).toBe(realUrl);
+  });
+
+  it("regression: resolves immediately (not after the full timeout) with a clear message when the pasted code is rejected", async () => {
+    // Confirmed empirically: an invalid/incomplete code makes the CLI print
+    // this and wait for "Enter" to retry -- it neither exits nor prints a
+    // token, so without detecting this text explicitly, submitCode() would
+    // sit through the entire CODE_SUBMIT_TIMEOUT_MS for the single most
+    // common failure (a mistyped or truncated paste), which reads exactly
+    // like a hang.
+    let fake!: FakePty;
+    const flows = new ClaudeSetupTokenFlows(() => (fake = new FakePty()) as unknown as ReturnType<typeof import("node-pty").spawn>);
+
+    const startPromise = flows.start("user-6");
+    fake.emitData("Visit https://claude.ai/oauth/authorize?x=1\n");
+    const { flowId } = await startPromise;
+
+    const submitPromise = flows.submitCode(flowId, "wrong-code");
+    fake.emitData("\x1b[95mOAuth error: Invalid code. Please make sure the full code was copied\x1b[39m\r\r\n");
+
+    const result = await submitPromise;
+    expect(result).toEqual({ status: "error", message: "OAuth error: Invalid code. Please make sure the full code was copied" });
+  });
 });

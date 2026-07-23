@@ -18,10 +18,31 @@ import * as pty from "node-pty";
  * Code CLI versions -- pin the version wherever this actually runs and
  * re-verify these regexes whenever it's bumped, same caveat as
  * claude-code-swe-agent's own `claude-runner.ts`.
+ *
+ * Confirmed empirically (CLI v2.1.218, by actually spawning it in a real PTY
+ * and inspecting the raw bytes -- this whole file was originally written
+ * from `claude setup-token --help` alone, which does NOT describe any of
+ * this): the CLI renders the authorize URL as a real terminal hyperlink --
+ * `ESC ] 8 ; id=<id> ; <full url> BEL` (OSC 8) -- immediately followed by a
+ * human-readable fallback rendering of the SAME url, wrapped across several
+ * cursor-positioned terminal cells for non-hyperlink-aware terminals. A
+ * naive "https://\S+" match runs straight through the OSC 8 escapes with no
+ * whitespace to stop at, concatenating the real url with fragments of the
+ * wrapped duplicate into one garbled string -- exactly what made every real
+ * link unreliable. `OSC8_URL_RE` extracts the one authoritative copy from
+ * inside the escape sequence itself; `URL_RE` is only a fallback for a CLI
+ * build/terminal negotiation that doesn't emit OSC 8, and stops at the next
+ * escape/BEL/whitespace rather than consuming everything after "https://".
  */
-
-const URL_RE = /(https:\/\/[^\s]+)/;
+const OSC8_URL_RE = /\x1b\]8;[^;]*;(https:\/\/[^\x07\x1b]+)\x07/;
+const URL_RE = /(https:\/\/[^\s\x07\x1b]+)/;
 const TOKEN_RE = /(sk-ant-oat01-[A-Za-z0-9_-]+)/;
+/** The CLI's own error text for a wrong/incomplete/expired pasted code (confirmed empirically -- see file header). Stops at CR/LF/ESC so the captured message is a clean single line, not the rest of the redrawn prompt. */
+const OAUTH_ERROR_RE = /OAuth error: ([^\r\n\x1b]+)/;
+
+function extractAuthorizeUrl(output: string): string | undefined {
+  return (output.match(OSC8_URL_RE) ?? output.match(URL_RE))?.[1];
+}
 
 /** How long to wait for the authorize URL to appear after spawning. */
 const URL_WAIT_TIMEOUT_MS = 30_000;
@@ -107,10 +128,10 @@ export class ClaudeSetupTokenFlows {
       }, URL_WAIT_TIMEOUT_MS);
 
       const check = (): void => {
-        const match = flow.output.match(URL_RE);
-        if (match) {
+        const authorizeUrl = extractAuthorizeUrl(flow.output);
+        if (authorizeUrl) {
           cleanup();
-          resolve({ flowId, authorizeUrl: match[1]! });
+          resolve({ flowId, authorizeUrl });
           return;
         }
         if (flow.exited) {
@@ -158,6 +179,19 @@ export class ClaudeSetupTokenFlows {
         const match = newOutput.match(TOKEN_RE);
         if (match) {
           finish({ status: "complete", token: match[1]! });
+          return;
+        }
+        // On a wrong/incomplete code the CLI prints this and waits for
+        // "Enter" to retry -- it neither exits nor prints a token, so
+        // without this check the caller would sit through the full
+        // CODE_SUBMIT_TIMEOUT_MS for the single most common failure mode
+        // (a mistyped/truncated paste), which reads exactly like a hang.
+        // Confirmed empirically (see file header) -- treated as terminal for
+        // this flow (kill and require restarting the link) rather than
+        // trying to support the CLI's own in-place retry.
+        const oauthError = newOutput.match(OAUTH_ERROR_RE);
+        if (oauthError) {
+          finish({ status: "error", message: `OAuth error: ${oauthError[1]!.trim()}` });
           return;
         }
         if (flow.exited) {
