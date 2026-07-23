@@ -16,6 +16,7 @@ import { loadToolConfig } from "./config.js";
 import { resolveGithubToken } from "@controller-agent/github-app-auth";
 import { AuthorizationError, finalizeDelegatedWrite, isDelegating, resolveDelegatedToken } from "./identityDelegation.js";
 import { clip } from "./security/redact.js";
+import { ProgressStreamer } from "./progress-streamer.js";
 
 const toolConfig = loadToolConfig();
 
@@ -248,17 +249,38 @@ async function runOneTurn(
   const prompt = buildPrompt(instruction, marker);
   const args = buildOpencodeArgs({ prompt, workdir: toolConfig.workdir, model: toolConfig.model });
 
+  // opencode's headless `run --format json` mode narrates in whole
+  // message/tool-output blocks, not per-token deltas (see opencode.test.ts).
+  // Forwarding each block as a single progress call makes the chat UI's
+  // stream pop in whole paragraphs at once, which reads as jarring rather
+  // than a smooth response. The streamer re-slices each block into small
+  // chunks emitted a short delay apart so it reads like a live stream.
+  const narrativeStreamer = new ProgressStreamer((chunk) => void session.progress(chunk, { stage: "agent-text" }), {
+    signal: session.signal,
+  });
+
   const result = await runOpencode(
     args,
     childEnv,
     toolConfig.workdir,
     (text, kind) => {
-      // "agent-text" is a contract with the orchestrator (server.ts): it streams
-      // that stage's message as real chat content instead of a status spinner.
-      void session.progress(clip(text, 500), { stage: kind === "narrative" ? "agent-text" : "agent" });
+      const clipped = clip(text, 500);
+      if (kind === "narrative") {
+        // "agent-text" is a contract with the orchestrator (server.ts): it
+        // streams that stage's message as real chat content instead of a
+        // status spinner.
+        narrativeStreamer.push(clipped);
+        return;
+      }
+      // Status/spinner lines (e.g. "running bash") are already terse --
+      // forward immediately, no typing effect needed.
+      void session.progress(clipped, { stage: "agent" });
     },
     session.signal,
   );
+  // Let any still-queued narrative chunks finish emitting before moving on,
+  // so progress messages stay in the order opencode actually produced them.
+  await narrativeStreamer.waitUntilDrained();
 
   if (result.code !== 0) {
     const detail = result.toolFailures.length
