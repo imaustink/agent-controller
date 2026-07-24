@@ -52,7 +52,7 @@ describe("InvokeServer", () => {
     expect(graph.invoke).toHaveBeenCalledWith({
       request: "scrape https://example.com/recipe",
       authToken: "tok-1",
-      progressListener: expect.any(Function),
+      remoteControlUrlListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
     });
 
@@ -75,11 +75,11 @@ describe("InvokeServer", () => {
   it("surfaces remoteControlUrl on GET /invoke/:id once a 'remote-control-url' progress event lands, and carries it through to the terminal response", async () => {
     let resolveGraph!: (state: AgentState) => void;
     const graph: AgentGraphLike = {
-      invoke: vi.fn().mockImplementation((input: { progressListener?: (stage: string, message?: string) => void }) => {
-        // Simulate the delegated agent's progress stream: an unrelated stage
-        // first (must be ignored), then the remote-control-url event.
-        input.progressListener?.("agent-text", "working on it");
-        input.progressListener?.("remote-control-url", "https://claude.ai/code/session_abc123");
+      invoke: vi.fn().mockImplementation((input: { remoteControlUrlListener?: (url: string) => void }) => {
+        // Simulate the delegate node forwarding a remote-control-url event --
+        // this fire-and-forget /invoke path never sets `progressListener`
+        // (see server.ts's doc on why), only `remoteControlUrlListener`.
+        input.remoteControlUrlListener?.("https://claude.ai/code/session_abc123");
         return new Promise<AgentState>((resolve) => (resolveGraph = resolve));
       }),
       stream: vi.fn().mockResolvedValue(noStream()),
@@ -153,7 +153,7 @@ describe("InvokeServer", () => {
     expect(graph.invoke).toHaveBeenCalledWith({
       request: "do a thing",
       authToken: "",
-      progressListener: expect.any(Function),
+      remoteControlUrlListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
     });
 
@@ -349,7 +349,7 @@ describe("InvokeServer session-scoped pending identity link (GitHub OAuth Device
     expect(graph.invoke).toHaveBeenNthCalledWith(2, {
       request: "any message",
       authToken: "tok-1",
-      progressListener: expect.any(Function),
+      remoteControlUrlListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
       sessionId: "session-1",
       activeSkillId: undefined,
@@ -1008,7 +1008,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     expect(graph.invoke).toHaveBeenNthCalledWith(2, {
       request: "extract https://example.com",
       authToken: "tok-1",
-      progressListener: expect.any(Function),
+      remoteControlUrlListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
       sessionId: "cli-7",
       activeSkillId: "recipe-skill",
@@ -1036,7 +1036,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     expect(graph.invoke).toHaveBeenCalledWith({
       request: "open a PR",
       authToken: "tok-1",
-      progressListener: expect.any(Function),
+      remoteControlUrlListener: expect.any(Function),
       identityLinkFlow: "device",
       reportIdentityLinkPending: expect.any(Function),
     });
@@ -1062,7 +1062,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     expect(graph.invoke).toHaveBeenLastCalledWith({
       request: "open a PR",
       authToken: "tok-1",
-      progressListener: expect.any(Function),
+      remoteControlUrlListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
     });
 
@@ -1076,7 +1076,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     expect(graph.invoke).toHaveBeenLastCalledWith({
       request: "open a PR",
       authToken: "tok-1",
-      progressListener: expect.any(Function),
+      remoteControlUrlListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
     });
 
