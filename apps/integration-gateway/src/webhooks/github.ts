@@ -21,36 +21,6 @@ export function verifyGithubSignature(rawBody: string, signatureHeader: string |
 
 export type GithubIssueEvent =
   | {
-      kind: "issue-opened";
-      owner: string;
-      repo: string;
-      issueNumber: number;
-      senderLogin: string;
-      senderIsBot: boolean;
-      title: string;
-      body: string;
-      /**
-       * Labels already attached at creation time -- GitHub fires a
-       * SEPARATE `issues.labeled` webhook delivery (one per label) for an
-       * issue created with labels already set, a second or two after
-       * `opened`. Lets the caller skip relaying `opened` when the trigger
-       * label is already here, so the guaranteed-to-follow `labeled`
-       * event is the only one that dispatches (see server.ts) -- without
-       * this, both events independently delegate to the same agent for
-       * the same session, racing each other into two AgentRuns.
-       */
-      labelNames: string[];
-    }
-  | {
-      kind: "issue-comment-created";
-      owner: string;
-      repo: string;
-      issueNumber: number;
-      senderLogin: string;
-      senderIsBot: boolean;
-      commentBody: string;
-    }
-  | {
       kind: "issue-labeled";
       owner: string;
       repo: string;
@@ -98,12 +68,13 @@ interface LabelPayload {
 }
 
 /**
- * Parses a verified GitHub `issues`/`issue_comment`/`pull_request` webhook
- * payload into a minimal normalized shape. Any event shape this gateway
- * doesn't act on (other actions, other event types) maps to
- * `{ kind: "ignored" }` rather than throwing -- GitHub sends far more event
- * types/actions than this adapter cares about, and an unrecognized payload is
- * not an error.
+ * Parses a verified GitHub `issues`/`pull_request` webhook payload into a
+ * minimal normalized shape. Only an explicit label application
+ * (`issues.labeled` / `pull_request.labeled`) is ever actionable -- unlabeled
+ * events (`issues.opened`, `issue_comment.created`, any other action/event)
+ * all map to `{ kind: "ignored" }` rather than throwing. GitHub sends far more
+ * event types/actions than this adapter cares about, and an unrecognized
+ * payload is not an error.
  */
 export function parseGithubEvent(eventName: string | undefined, rawBody: string): GithubIssueEvent {
   let parsed: unknown;
@@ -147,18 +118,10 @@ export function parseGithubEvent(eventName: string | undefined, rawBody: string)
   const issueNumber = payload.issue?.number;
   if (typeof issueNumber !== "number") return { kind: "ignored" };
 
-  if (eventName === "issues" && payload.action === "opened") {
-    const title = typeof payload.issue?.title === "string" ? payload.issue.title : "";
-    const body = typeof payload.issue?.body === "string" ? payload.issue.body : "";
-    const labelNames = (payload.issue?.labels ?? []).map((label) => label.name).filter((name) => typeof name === "string");
-    return { kind: "issue-opened", owner, repo, issueNumber, senderLogin, senderIsBot, title, body, labelNames };
-  }
-
-  if (eventName === "issue_comment" && payload.action === "created") {
-    const commentBody = typeof payload.comment?.body === "string" ? payload.comment.body : "";
-    return { kind: "issue-comment-created", owner, repo, issueNumber, senderLogin, senderIsBot, commentBody };
-  }
-
+  // `issues.opened` and `issue_comment.created` are deliberately NOT
+  // actionable: an unlabeled issue/comment must be a no-op. Only an explicit
+  // `issues.labeled` (with the configured trigger label) dispatches anything
+  // -- see server.ts.
   if (eventName === "issues" && payload.action === "labeled") {
     const labelName = payload.label?.name;
     if (!labelName) return { kind: "ignored" };

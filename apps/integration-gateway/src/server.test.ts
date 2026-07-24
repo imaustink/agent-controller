@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeTokenStore } from "./claude-auth/store.js";
-import { REPLY_MARKER, type GithubReplyClient } from "./github-client.js";
+import type { GithubReplyClient } from "./github-client.js";
 import { GithubIdentityResolver } from "./identity.js";
 import type { OrchestratorClient } from "./orchestrator-client.js";
 import { GatewayServer, sessionIdFor } from "./server.js";
@@ -76,44 +76,8 @@ describe("GatewayServer", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("drops events from an unknown GitHub identity", async () => {
-    const res = await postWebhook(port, "issues", {
-      action: "opened",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "mallory", type: "User" },
-      issue: { number: 1, title: "t", body: "b" },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-    expect(invoke).not.toHaveBeenCalled();
-  });
-
-  it("drops the gateway's own bot comments (loop guard)", async () => {
-    const res = await postWebhook(port, "issue_comment", {
-      action: "created",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "agent-controller[bot]", type: "Bot" },
-      issue: { number: 1 },
-      comment: { body: `${REPLY_MARKER}\nprevious reply` },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-    expect(invoke).not.toHaveBeenCalled();
-  });
-
-  it("resolves identity with the event's repo context", async () => {
+  it("never resolves identity or invokes the orchestrator for an unlabeled issues.opened event", async () => {
     const resolve = vi.spyOn(identityResolver, "resolve");
-    await postWebhook(port, "issues", {
-      action: "opened",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "t", body: "b" },
-    });
-    await flush();
-    expect(resolve).toHaveBeenCalledWith("alice", false, { owner: "acme", repo: "widgets" });
-  });
-
-  it("relays an issues.opened event to the orchestrator, scoped by session id, and posts the reply", async () => {
     const res = await postWebhook(port, "issues", {
       action: "opened",
       repository: { owner: { login: "acme" }, name: "widgets" },
@@ -122,18 +86,12 @@ describe("GatewayServer", () => {
     });
     expect(res.status).toBe(202);
     await flush();
-
-    expect(invoke).toHaveBeenCalledWith(
-      "Add dark mode\n\nPlease add a dark theme option.",
-      sessionIdFor("acme", "widgets", 7),
-      "device",
-      undefined,
-      undefined,
-    );
-    expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
+    expect(resolve).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(postIssueComment).not.toHaveBeenCalled();
   });
 
-  it("skips relaying issues.opened when the trigger label is already attached (the guaranteed-to-follow issues.labeled event handles it instead)", async () => {
+  it("still ignores issues.opened even when the trigger label is already attached at creation time", async () => {
     const res = await postWebhook(port, "issues", {
       action: "opened",
       repository: { owner: { login: "acme" }, name: "widgets" },
@@ -151,33 +109,31 @@ describe("GatewayServer", () => {
     expect(postIssueComment).not.toHaveBeenCalled();
   });
 
-  it("still relays issues.opened normally when other (non-trigger) labels are already attached", async () => {
-    const res = await postWebhook(port, "issues", {
-      action: "opened",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: {
-        number: 7,
-        title: "Add dark mode",
-        body: "Please add a dark theme option.",
-        labels: [{ name: "enhancement" }],
-      },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-    expect(invoke).toHaveBeenCalled();
-  });
-
-  it("relays an issue_comment.created follow-up on the same session id", async () => {
-    await postWebhook(port, "issue_comment", {
+  it("never invokes the orchestrator for an issue_comment.created event, regardless of sender", async () => {
+    const res = await postWebhook(port, "issue_comment", {
       action: "created",
       repository: { owner: { login: "acme" }, name: "widgets" },
       sender: { login: "alice", type: "User" },
       issue: { number: 7 },
       comment: { body: "start work" },
     });
+    expect(res.status).toBe(202);
     await flush();
-    expect(invoke).toHaveBeenCalledWith("start work", sessionIdFor("acme", "widgets", 7), "device", undefined, undefined);
+    expect(invoke).not.toHaveBeenCalled();
+    expect(postIssueComment).not.toHaveBeenCalled();
+  });
+
+  it("resolves identity with the event's repo context on issues.labeled", async () => {
+    const resolve = vi.spyOn(identityResolver, "resolve");
+    await postWebhook(port, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "t", body: "b" },
+      label: { name: "ai-triage" },
+    });
+    await flush();
+    expect(resolve).toHaveBeenCalledWith("alice", false, { owner: "acme", repo: "widgets" });
   });
 
   it("ignores an issues.labeled event when the label isn't the configured trigger label", async () => {
@@ -301,10 +257,11 @@ describe("GatewayServer", () => {
   it("posts a failure-explaining comment when the orchestrator turn fails", async () => {
     invoke.mockResolvedValue({ status: "failed", error: "boom" });
     await postWebhook(port, "issues", {
-      action: "opened",
+      action: "labeled",
       repository: { owner: { login: "acme" }, name: "widgets" },
       sender: { login: "alice", type: "User" },
       issue: { number: 7, title: "t", body: "b" },
+      label: { name: "ai-triage" },
     });
     await flush();
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, expect.stringContaining("boom"));
@@ -381,7 +338,7 @@ describe("GatewayServer session pages", () => {
     expect(entry.turns[0]).toMatchObject({ status: "succeeded", result: "Working on it." });
   });
 
-  it("does not post a session page link for plain (non-labeled) conversational replies", async () => {
+  it("does nothing for an unlabeled issues.opened event, even with a session page store configured", async () => {
     await postWebhook(port, "issues", {
       action: "opened",
       repository: { owner: { login: "acme" }, name: "widgets" },
@@ -390,8 +347,8 @@ describe("GatewayServer session pages", () => {
     });
     await flush();
 
-    expect(postIssueComment).toHaveBeenCalledTimes(1);
-    expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 9, "Working on it.");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(postIssueComment).not.toHaveBeenCalled();
   });
 
   it("serves the rendered session page for a valid token", async () => {

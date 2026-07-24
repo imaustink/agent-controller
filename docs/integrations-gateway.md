@@ -361,47 +361,35 @@ convention (see [docs/adr/](adr/)).
 ## Implementation status
 
 **Implemented:** [apps/integration-gateway](../apps/integration-gateway) — a
-GitHub Issues adapter for the conversational path only:
+GitHub Issues adapter, actionable ONLY on an explicit label application:
 
 - `POST /webhooks/github` verifies GitHub's `X-Hub-Signature-256` HMAC, then
-  handles `issues.opened`, `issue_comment.created`, and `issues.labeled`
-  events.
+  handles `issues.labeled` and `pull_request.labeled` events.
+  `issues.opened`, `issue_comment.created`, and every other event/action are a
+  strict no-op — `parseGithubEvent` maps them straight to `{ kind: "ignored" }`
+  before any identity resolution or orchestrator call happens. Opening an
+  issue, or commenting on one, never causes the agent to run; only applying
+  the trigger label does.
 - Session id is `github:<owner>/<repo>#<issueNumber>` — one session per
   issue, forwarded as `session_id` to `agent-orchestrator`'s existing
-  `POST /invoke`. No `target`/FAAS shortcut: every event goes through normal
-  RAG skill retrieval, so the existing `checkActiveAgentRun`/
-  `AgentSession.ask()` mechanism (already built for `apps/opencode-swe-agent`)
-  is what actually implements "ask a clarifying question, then resume on the
-  next comment" — nothing new was built in the orchestrator for this.
+  `POST /invoke`.
 - **`issues.labeled` → deterministic dispatch (ADR 0024).** When the
   gateway's configured trigger label (`GATEWAY_GITHUB_TRIGGER_LABEL`, e.g.
-  `"ai-triage"`) is applied to a GitHub issue, the gateway relays it into the
-  same conversational `/invoke` call as above, but attaches an `event`
-  descriptor (`{ source: "github", event: "issues", action: "labeled",
-  owner, repo, issueNumber, title, body, senderLogin, labelName }`). A
-  label, not an assignee: GitHub App bot users generally cannot be set as
-  issue assignees (only a small GitHub-owned allowlist, e.g.
+  `"ai-triage"`) is applied to a GitHub issue, the gateway calls `/invoke`
+  with an `event` descriptor (`{ source: "github", event: "issues",
+  action: "labeled", owner, repo, issueNumber, title, body, senderLogin,
+  labelName }`). A label, not an assignee: GitHub App bot users generally
+  cannot be set as issue assignees (only a small GitHub-owned allowlist, e.g.
   `dependabot[bot]`, gets that special-cased), so a configurable label is
   used instead. If the event matches an installed `IntegrationRoute` CR,
-  `agent-orchestrator` bypasses RAG skill retrieval and dispatches straight
-  to that route's target with its rendered `promptTemplate`
-  (`CrdIntegrationRouteRegistry`, `checkIntegrationRoute` graph node) —
-  deterministic, since applying a specific label is an unambiguous action
-  rather than free text needing intent inference. No matching route falls
-  back to ordinary RAG retrieval over a fallback request string, unchanged
-  from before this feature existed. A sample route (`github`/`issues`/
+  `agent-orchestrator` dispatches straight to that route's target with its
+  rendered `promptTemplate` (`CrdIntegrationRouteRegistry`,
+  `checkIntegrationRoute` graph node) — deterministic, since applying a
+  specific label is an unambiguous action rather than free text needing
+  intent inference. No matching route falls back to ordinary RAG retrieval
+  over a fallback request string. A sample route (`github`/`issues`/
   `labeled` → `opencode-swe-agent`) ships gated behind
   `integrationRoutes.githubIssueLabeledTriage.enabled`.
-  - **Dedup with `issues.opened`**: GitHub fires a *separate* `issues.opened`
-    delivery **and** one `issues.labeled` delivery per label already present
-    when an issue is created with labels attached — the common case for this
-    trigger (label set at creation time). Both would otherwise independently
-    delegate the same session to the same agent (RAG picking it for `opened`,
-    the deterministic route picking it for `labeled`), racing each other into
-    two `AgentRun`s before either turn's session state is persisted. The
-    gateway skips relaying `opened` whenever the issue's labels already
-    include the configured trigger label, since the guaranteed-to-follow
-    `labeled` event is the only one that needs to dispatch.
 - Identity resolution's primary path is now real, no-redeploy-needed
   verification against GitHub itself, via two resolvers
   (`CompositeGithubIdentityResolver` tries both):
@@ -427,10 +415,9 @@ GitHub Issues adapter for the conversational path only:
   page** (`GET /sessions/:token`, `SessionPageStore` in
   `src/session-page-store.ts`) that shows that session's turn history and
   lets a caller `POST /sessions/:token/prompts` to send it a follow-up
-  prompt without posting another GitHub comment. Ordinary conversational
-  (non-labeled) replies are unaffected — this is scoped to the deterministic
-  triage trigger only, since that's the long-running path where "is it
-  actually working yet?" is a real question. `token` is a 256-bit
+  prompt without posting another GitHub comment — this is the only way to
+  continue a triage turn's conversation, since unlabeled `issue_comment`
+  events are a no-op (see above). `token` is a 256-bit
   bearer-capability credential (nothing else gates access to the page), and
   the whole feature is opt-in: unset `GATEWAY_PUBLIC_URL` (no configured
   public base URL) disables it entirely — no link is posted and the page
