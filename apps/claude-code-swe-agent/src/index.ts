@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { runAgent, type AgentReply, type AgentSession } from "@controller-agent/agent-runtime";
@@ -42,7 +43,7 @@ async function handler(session: AgentSession): Promise<AgentReply> {
 
   if (toolConfig.remoteControlEnabled) {
     // A separate Go/Helm phase's init container is responsible for seeding
-    // this file before the Job container starts (see config.ts's
+    // the credentials file before the Job container starts (see config.ts's
     // `homeDir`/`remoteControlEnabled` docs) -- its absence here is logged,
     // not thrown, both because that phase's exact seeding behavior can't be
     // verified from this app, and because `claude --remote-control` itself is
@@ -55,6 +56,29 @@ async function handler(session: AgentSession): Promise<AgentReply> {
           "the Remote Control turn will likely fail to authenticate unless the init container seeds it before this point.",
       );
     }
+
+    // `claude --bg` combined with bypassPermissions refuses to start
+    // ("requires accepting the disclaimer first") unless
+    // ~/.claude/settings.json has `skipDangerousModePermissionPrompt: true`
+    // ON DISK -- confirmed empirically (diffing a real interactive
+    // acceptance in a throwaway pod on this same image) that the CLI's `-p`/
+    // `--bg` `--settings` flag does NOT satisfy this specific check; only
+    // the literal on-disk file does. Written directly here (not via the
+    // credentials-seeding init container) since this is a fixed,
+    // account-independent value -- no per-user credential involved.
+    const settingsPath = join(toolConfig.homeDir, ".claude", "settings.json");
+    await ensureDir(join(toolConfig.homeDir, ".claude"));
+    let existingSettings: Record<string, unknown> = {};
+    try {
+      existingSettings = JSON.parse(await readFile(settingsPath, "utf8"));
+    } catch {
+      // No existing settings.json (the common case) or it's not valid JSON
+      // -- either way, start fresh rather than fail the turn over this.
+    }
+    await writeFile(
+      settingsPath,
+      JSON.stringify({ ...existingSettings, skipDangerousModePermissionPrompt: true }, null, 2),
+    );
   }
 
   await session.progress("Authenticating…", { stage: "authenticate" });
