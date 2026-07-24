@@ -146,6 +146,22 @@ claudeCodeSweAgent:
     enabled: true
     providers:
       - claude
+      # Required for Remote Control (see remoteControl below) -- without
+      # this, agent-orchestrator never resolves/injects the per-run
+      # CLAUDE_LOGIN_CREDENTIALS_JSON secret the seed-claude-credentials
+      # init container reads, and remoteControl.enabled alone does nothing.
+      - claude-remote
+  # Claude Code Remote Control (claude.ai/code session takeover) for
+  # ai-triage runs, replacing the old session-page link in the triage
+  # comment. Also requires: (1) the cluster's Agent CRD to actually have the
+  # initContainers field -- `helm upgrade` never updates CRDs on an existing
+  # release, so this must be applied manually once:
+  #   kubectl apply -f controllers/core-controller/config/crd/bases/core.controller-agent.dev_agents.yaml
+  # (2) integration-gateway's claudeAuth.enabled=true (see
+  # charts/agent-controller/values-production.yaml) so its `mode=login` PTY
+  # flow is actually wired up, not just the setup-token one.
+  remoteControl:
+    enabled: true
 
 skills:
   recipeRefining:
