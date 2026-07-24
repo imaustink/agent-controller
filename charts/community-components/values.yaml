@@ -250,6 +250,26 @@ claudeCodeSweAgent:
     providers:
       - github
       # - claude
+  # Remote Control (Claude Code's headless session takeover) needs a full
+  # ~/.claude/.credentials.json seeded into the pod before the main container
+  # starts. Enabling this adds an init container, sharing the main
+  # container's tmp emptyDir mount, that writes CLAUDE_LOGIN_CREDENTIALS_JSON
+  # to $SWE_HOME/.claude/.credentials.json, and sets CLAUDE_REMOTE_CONTROL=true
+  # on the main container so it actually runs claude-runner.ts's
+  # `--bg --remote-control` path instead of the plain one-shot `-p` turn.
+  # `identityLink.providers` above MUST also include "claude-remote" --
+  # without it, agent-orchestrator never resolves/injects the per-run
+  # CLAUDE_LOGIN_CREDENTIALS_JSON secret this init container reads, so
+  # remoteControl.enabled alone is not sufficient.
+  remoteControl:
+    enabled: false
+    # Static fallback secretRef for CLAUDE_LOGIN_CREDENTIALS_JSON, only used
+    # when both are set. In the common case this is left empty: the real
+    # per-user credential secret is resolved and injected at AgentRun launch
+    # time by agent-orchestrator's delegation logic (a later phase), not
+    # baked into this catalog entry.
+    credentialsSecretName: ""
+    credentialsSecretKey: ""
 
 skills:
   # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +
@@ -304,3 +324,25 @@ integrationRoutes:
     # enabled in this same values file (default opencode-swe-agent; set to
     # claude-code-swe-agent to review on the Claude Code engine instead).
     agentRef: opencode-swe-agent
+    # Which label selects this route rather than githubPrLabeledTriage below
+    # (both match pull_request/labeled -- the label is the only thing telling
+    # them apart). Must equal integration-gateway's config.githubReviewLabel.
+    labelName: ai-review
+  # github-pr-labeled-triage: an IntegrationRoute CR dispatching a GitHub
+  # `pull_request`/`labeled` webhook to a SWE Agent with a "pick this PR back
+  # up" prompt -- address the review feedback on it, push the updates, and sync
+  # the branch with its base. Triggered by the SAME label as issue triage
+  # (integration-gateway's config.githubTriggerLabel): "triage this" means
+  # investigate-and-open-a-PR on an issue and address-feedback-and-update on a
+  # PR, so which work it means is decided by what got labeled. Unlike the
+  # review route above, this one pushes commits. The gateway removes the label
+  # when the run ends, so re-applying it re-triggers.
+  githubPrLabeledTriage:
+    enabled: false
+    # Which SWE Agent CR updates a labeled PR. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to run on the Claude Code engine instead).
+    agentRef: opencode-swe-agent
+    # Which label selects this route rather than githubPrLabeledReview above.
+    # Must equal integration-gateway's config.githubTriggerLabel.
+    labelName: ai-triage

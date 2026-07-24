@@ -41,6 +41,17 @@ type IntegrationRouteMatch struct {
 	// matches any action for this source/event pair.
 	// +optional
 	Action string `json:"action,omitempty"`
+
+	// labelName further narrows a match to events carrying this exact label
+	// (the event descriptor's `labelName` field, e.g. "ai-triage" vs
+	// "ai-review"). Omitted matches any label. Needed because a single
+	// source/event/action triple — GitHub's `pull_request`/`labeled` — carries
+	// more than one distinct intent, distinguished only by which label was
+	// applied; without this, two such routes would be indistinguishable.
+	// A route naming a labelName wins over an otherwise-equal route that
+	// omits it.
+	// +optional
+	LabelName string `json:"labelName,omitempty"`
 }
 
 // IntegrationRouteSpec defines a declarative mapping from an inbound

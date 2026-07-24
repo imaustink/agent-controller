@@ -116,6 +116,7 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 		staticEnv:      append(agent.Spec.Env, r.agentRuntimeEnv(run.Name, run.Spec.Goal)...),
 		secretEnv:      mergeSecretEnv(agent.Spec.SecretEnv, run.Spec.SecretEnv),
 		resources:      agent.Spec.Resources,
+		initContainers: agent.Spec.InitContainers,
 		callback:       run.Spec.Callback,
 		timeoutSeconds: run.Spec.TimeoutSeconds,
 	})

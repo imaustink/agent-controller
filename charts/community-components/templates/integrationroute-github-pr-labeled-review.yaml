@@ -10,6 +10,13 @@ spec:
     source: github
     event: pull_request
     action: labeled
+    # This route and github-pr-labeled-triage share the exact same
+    # source/event/action triple -- the label is the ONLY thing distinguishing
+    # "review this PR" from "triage this PR", so both must pin match.labelName
+    # or the two are indistinguishable and one silently swallows the other.
+    # Must equal integration-gateway's config.githubReviewLabel (the gateway
+    # ignores a pull_request.labeled event for any other label).
+    labelName: {{ .Values.integrationRoutes.githubPrLabeledReview.labelName | default "ai-review" | quote }}
   # No Tool wrapper needed -- dispatches straight to the Agent CR (ADR 0021),
   # same pattern as integrationroute-github-issue-labeled-triage.yaml. Which
   # SWE Agent CR reviews the PR is value-driven (default opencode-swe-agent)
@@ -33,4 +40,12 @@ spec:
     review on the PR (e.g. `gh pr review {{`{{prNumber}}`}}` with inline
     comments where a specific file/line is at issue), being concrete and
     citing file:line. Do not merge or push changes -- only review.
+
+    You get exactly one turn to do this -- you cannot pause partway through
+    and wait for a CI check, build, or test run to finish, and nothing will
+    re-invoke you automatically when one does. Post a complete review now
+    based on the diff and code alone. If a check is still running, mention
+    its current status as one line in the review (e.g. "CI is still running
+    as of this review") -- do not let it block or delay posting the rest of
+    your assessment, and do not say you'll "finalize" or "resume" later.
 {{- end }}

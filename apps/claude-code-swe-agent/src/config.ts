@@ -74,6 +74,15 @@ export interface AgentToolConfig {
    * dir. Also under /tmp for the same reason as workdir.
    */
   homeDir: string;
+  /**
+   * When true, run turns via `claude --bg --remote-control` (see
+   * claude-runner.ts's `runClaudeTurnRemoteControlled`) instead of the default
+   * one-shot `claude -p`. Requires a separate Go/Helm phase's init container
+   * to have already seeded `$SWE_HOME/.claude/.credentials.json` before this
+   * process starts -- this flag alone does not provision credentials, it only
+   * selects which invocation shape to use.
+   */
+  remoteControlEnabled: boolean;
 }
 
 /**
@@ -101,5 +110,6 @@ export function loadToolConfig(env: NodeJS.ProcessEnv = process.env): AgentToolC
     githubApiUrl: env.GITHUB_API_URL ?? "https://api.github.com",
     workdir: env.SWE_WORKDIR ?? `/tmp/swe-${randomUUID()}`,
     homeDir: env.SWE_HOME ?? "/tmp/home",
+    remoteControlEnabled: env.CLAUDE_REMOTE_CONTROL === "true",
   };
 }

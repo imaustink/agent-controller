@@ -180,6 +180,14 @@ core-controller:
     tag: latest
     pullPolicy: Always
 
+  # Every tool/agent image here (recipe-scraper, claude-code-swe-agent, etc.)
+  # is also pushed to registry.kurpuis.com under a mutable ":latest" tag, same
+  # as core-controller's own image above -- so the Jobs core-controller
+  # launches need "Always" too, or a node that already pulled a tag once will
+  # keep running that stale digest through every later push+redeploy.
+  runJob:
+    imagePullPolicy: Always
+
   # Must match the actual in-cluster NATS Service (the release-name-prefixed
   # "agent-controller-nats", not the chart's placeholder default
   # "nats://nats:4222", which doesn't resolve to anything in this namespace).
@@ -209,15 +217,23 @@ integration-gateway:
   config:
     # Loop prevention — the gateway ignores comments authored by this login.
     githubBotLogin: "agent-controller[bot]"
-    # Triggers automated triage (ADR 0024) when applied to a GitHub issue.
-    # A label, not an assignee — agent-controller[bot] can't be set as an
-    # issue assignee (GitHub App bot users generally can't be).
+    # Triggers automated triage (ADR 0024) when applied to a GitHub issue
+    # (investigate and open a PR -> community-components'
+    # github-issue-labeled-triage route) or to a pull request (address the
+    # feedback on it, push the updates, sync it with its base branch ->
+    # github-pr-labeled-triage). One label, two routes, told apart by
+    # event + match.labelName. Removed from the issue/PR once the run ends, so
+    # re-applying it re-triggers. A label, not an assignee —
+    # agent-controller[bot] can't be set as an issue assignee (GitHub App bot
+    # users generally can't be).
     githubTriggerLabel: "ai-triage"
-    # Triggers an automated PR review when applied to a pull request. A human
-    # applies this label (the gateway drops bot-authored events, so the agent
-    # that opened the PR can't self-trigger). Matches the community-components
-    # github-pr-labeled-review IntegrationRoute (event: pull_request,
-    # action: labeled) -> claude-code-swe-agent.
+    # Triggers an automated PR review when applied to a pull request — a
+    # read-only review, distinct from the trigger label above, which changes
+    # the PR. A human applies this label (the gateway drops bot-authored
+    # events, so the agent that opened the PR can't self-trigger). Matches the
+    # community-components github-pr-labeled-review IntegrationRoute
+    # (event: pull_request, action: labeled, labelName: ai-review) ->
+    # claude-code-swe-agent. Also removed once the review finishes.
     githubReviewLabel: "ai-review"
     # DEV/TEST-GRADE static allowlist mapping GitHub logins to identities --
     # kept only as CompositeGithubIdentityResolver's last-resort fallback now

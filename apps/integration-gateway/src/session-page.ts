@@ -1,3 +1,4 @@
+import { marked } from "marked";
 import type { SessionPageEntry, SessionTurn } from "./session-page-store.js";
 
 function escapeHtml(raw: string): string {
@@ -9,13 +10,22 @@ function escapeHtml(raw: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// Escaping the raw text before handing it to marked neutralizes any literal
+// HTML in the source (e.g. a prompt containing "<script>") into inert
+// entities, while markdown syntax -- which uses none of &<>"' -- still
+// renders normally.
+function renderMarkdown(raw: string): string {
+  return marked.parse(escapeHtml(raw), { async: false });
+}
+
 function turnHtml(turn: SessionTurn, index: number): string {
   const statusLabel = turn.status === "pending" ? "working…" : turn.status;
-  const body = turn.status === "pending" ? "" : escapeHtml(turn.result ?? turn.error ?? "");
+  const body = turn.status === "pending" ? "" : renderMarkdown(turn.result ?? turn.error ?? "");
   return `<article class="turn">
-  <p class="request"><strong>#${index + 1}</strong> ${escapeHtml(turn.request)}</p>
+  <p class="turn-index">#${index + 1}</p>
+  <div class="request">${renderMarkdown(turn.request)}</div>
   <p class="status status-${turn.status}">${statusLabel}</p>
-  ${body ? `<pre class="response">${body}</pre>` : ""}
+  ${body ? `<div class="response">${body}</div>` : ""}
 </article>`;
 }
 
@@ -47,7 +57,12 @@ ${pending && !opts.live ? '<meta http-equiv="refresh" content="5">' : ""}
   .turn { border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1rem; }
   .status { text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.04em; color: #666; }
   .status-failed { color: #b00020; }
-  .response { white-space: pre-wrap; word-break: break-word; background: #f6f6f6; padding: 0.75rem; border-radius: 6px; }
+  .turn-index { font-weight: 600; margin: 0 0 0.25rem; }
+  .request, .response { word-break: break-word; }
+  .response { background: #f6f6f6; padding: 0.75rem; border-radius: 6px; }
+  .request > :first-child, .response > :first-child { margin-top: 0; }
+  .request > :last-child, .response > :last-child { margin-bottom: 0; }
+  .request pre, .response pre { white-space: pre-wrap; }
   .live-badge { display: inline-block; background: #0a7a2f; color: #fff; font-size: 0.75rem; font-weight: 600; padding: 0.15rem 0.5rem; border-radius: 999px; vertical-align: middle; }
   #live-log { white-space: pre-wrap; word-break: break-word; background: #0d1117; color: #c9d1d9; padding: 0.75rem; border-radius: 6px; max-height: 24rem; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 0.85rem; }
   textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 0.5rem; }

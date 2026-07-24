@@ -189,6 +189,30 @@ export interface RepoResult {
 }
 
 /**
+ * Counts commits on HEAD that are NOT on the clone's default branch tip
+ * (`origin/HEAD`). Used as the "did this turn actually commit pushable work"
+ * signal when there was no prior HEAD to diff against -- i.e. the repo was
+ * cloned DURING the turn (a first, marker-less turn) rather than before it.
+ *
+ * A turn that only READ the repo (e.g. cloned it to file a GitHub issue) leaves
+ * HEAD exactly at `origin/HEAD`, so this is 0 -- whereas naively treating "a
+ * repo now exists with a non-null HEAD" as new commits produced a false
+ * "no open pull request was found" warning on every such turn. Best-effort:
+ * any git error (e.g. no `origin/HEAD` ref) yields 0, erring toward silence
+ * rather than a spurious warning.
+ */
+export async function countCommitsAheadOfOriginHead(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<number> {
+  const res = await runCommand("git", ["-C", repoDir, "rev-list", "--count", "origin/HEAD..HEAD"], { env, signal });
+  if (res.code !== 0) return 0;
+  const n = Number.parseInt(res.stdout.trim(), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
  * Inspects the produced working tree to discover repo/branch, and asks `gh`
  * for an open PR on that branch. Best-effort: a missing PR is reported as
  * null rather than failing.

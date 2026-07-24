@@ -14,8 +14,12 @@ export interface AppConfig {
   /** The App/bot's own GitHub login -- events authored by it are ignored (loop prevention). */
   githubBotLogin: string;
   /**
-   * The label that triggers automated triage (ADR 0024) when applied to a
-   * GitHub issue. Not an assignee: GitHub App bot users generally cannot be
+   * The label that triggers automated triage (ADR 0024), on either a GitHub
+   * issue (`issues.labeled` -- investigate and open a PR) or a pull request
+   * (`pull_request.labeled` -- address the feedback on it, push updates, sync
+   * with its base branch). One label for both: "triage this" is the same
+   * request either way, and which work it means is fully determined by what
+   * was labeled. Not an assignee: GitHub App bot users generally cannot be
    * set as issue assignees (only a small GitHub-owned allowlist, e.g.
    * `dependabot[bot]`, gets that special-cased), so `issues.labeled` is used
    * instead of `issues.assigned`.
@@ -24,8 +28,9 @@ export interface AppConfig {
   /**
    * The label that triggers an automated PR review when applied to a pull
    * request (a `pull_request.labeled` event). Sibling to
-   * `githubTriggerLabel`: a distinct label so triage (on issues) and review
-   * (on PRs) stay independent. Same identity gate applies -- the review runs
+   * `githubTriggerLabel`: a distinct label, so requesting a read-only review
+   * of a PR stays separate from asking triage to change it. Same identity
+   * gate applies -- the review runs
    * as whoever applied the label, so the gateway's bot loop-guard means the
    * label must be applied by a human, not the agent that opened the PR. Empty
    * string disables the trigger (no label name can ever match).

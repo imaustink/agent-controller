@@ -43,6 +43,17 @@ export interface InvocationRecord {
   identityLinkPending?: boolean;
   /** Provider + subject the pending link is keyed on, so a caller that owns the token store can wait for completion and auto-resume. Present only alongside `identityLinkPending`. */
   identityLink?: { provider: string; subject: string };
+  /**
+   * The most recent progress message seen with `stage: "remote-control-url"`
+   * (a Remote Control session URL, `https://claude.ai/code/session_...`) --
+   * only ever set when the delegated agent actually emits one (today: a
+   * later phase of `claude-code-swe-agent`; `opencode-swe-agent` and every
+   * other run never sets it). A polling caller (integration-gateway's triage
+   * relay) uses this to prefer linking a live Remote Control session over its
+   * own session page once available. Omitted/undefined for every run that
+   * never emits this progress event -- fully backward compatible.
+   */
+  remoteControlUrl?: string;
 }
 
 /** How often to emit an SSE keep-alive comment while waiting on a slow graph step (e.g. a tool Job). */
@@ -116,6 +127,18 @@ export interface AgentGraphInput {
    * have their own handler (deps is shared across all requests).
    */
   progressListener?: (stage: string, message: string | undefined) => void;
+  /**
+   * Separate from `progressListener` above on purpose: `delegateToAgent`
+   * treats a set `progressListener` as "this caller has a live channel,
+   * synchronously wait for an identity link to land." A fire-and-forget
+   * `/invoke` caller that only wants to capture a `remote-control-url`
+   * progress event (to post a Remote Control link on a GitHub issue) must
+   * NOT be treated as a live channel, or the whole turn silently blocks for
+   * minutes with nothing posted anywhere -- exactly the regression this
+   * field exists to avoid. See `AgentState.remoteControlUrlListener`'s doc
+   * in agent/graph.ts for the full incident writeup.
+   */
+  remoteControlUrlListener?: (url: string) => void;
   /**
    * Fired the instant this turn decides the caller must link an identity,
    * before the (possibly slow) link `start()`. Set only by `handleInvoke` for
@@ -219,9 +242,17 @@ export class InvokeServer {
     forwardedUserToken?: string,
     forcedSkillId?: string,
     forcedAgentId?: string,
+    // Deliberately a separate trailing param, not folded into
+    // `progressListener` -- see `AgentGraphInput.remoteControlUrlListener`'s
+    // doc for why conflating the two caused a real incident (a fire-and-
+    // forget triage turn silently blocking for minutes on identity-link's
+    // synchronous wait, because setting `progressListener` made
+    // delegateToAgent think this caller had a live channel).
+    remoteControlUrlListener?: (url: string) => void,
   ): Promise<AgentGraphInput> {
     const input: AgentGraphInput = { request, authToken };
     if (progressListener) input.progressListener = progressListener;
+    if (remoteControlUrlListener) input.remoteControlUrlListener = remoteControlUrlListener;
     if (identityLinkFlow) input.identityLinkFlow = identityLinkFlow;
     if (forwardedUserToken) input.forwardedUserToken = forwardedUserToken;
     if (forcedSkillId) input.forcedSkillId = forcedSkillId;
@@ -562,11 +593,17 @@ export class InvokeServer {
         const source = eventFields.source;
         const eventName = eventFields.event;
         const action = eventFields.action;
+        // `labelName` participates in matching too: GitHub's
+        // `pull_request`/`labeled` triple carries more than one intent (a
+        // review request vs. a triage request), told apart only by which
+        // label was applied.
+        const labelName = eventFields.labelName;
         if (typeof source === "string" && typeof eventName === "string") {
           const route = this.integrationRouteRegistry.match(
             source,
             eventName,
             typeof action === "string" ? action : undefined,
+            typeof labelName === "string" ? labelName : undefined,
           );
           if (route) {
             request = renderPromptTemplate(
@@ -596,11 +633,30 @@ export class InvokeServer {
       request,
       authToken,
       sessionId,
+      // Deliberately `undefined` -- this is a fire-and-forget caller with no
+      // live channel, so `progressListener` must stay unset here (see its
+      // doc and `remoteControlUrlListener`'s doc below for why: setting it
+      // makes `delegateToAgent` treat this as a live channel and
+      // synchronously `waitForCompletion` an identity link for minutes,
+      // which is exactly the regression that caused a real triage turn to
+      // silently hang with nothing posted to the issue).
       undefined,
       identityLinkFlow,
       undefined,
       forcedSkillId,
       forcedAgentId,
+      // Tracks the latest "remote-control-url" progress message onto this
+      // invocation's record (see `InvocationRecord.remoteControlUrl`) --
+      // passed via the dedicated `remoteControlUrlListener` param, NOT
+      // `progressListener` (see above). Only mutate while still pending --
+      // never clobber a terminal record (mirrors `reportIdentityLinkPending`
+      // below).
+      (url) => {
+        const current = this.invocations.get(id);
+        if (current && current.status === "pending") {
+          this.invocations.set(id, { ...current, remoteControlUrl: url });
+        }
+      },
     ).then((graphInput) => {
       // Mark the in-flight job identity-link-pending the moment the graph
       // decides a link is needed (before the link URL exists), so a polling
@@ -625,11 +681,16 @@ export class InvokeServer {
             pendingIdentityLink: state.pendingIdentityLink,
             identityLinkPending: state.identityLinkPending,
           });
+          // Carry forward any remoteControlUrl already recorded by the
+          // progress listener above -- this terminal write replaces the whole
+          // record, so it would otherwise be dropped on a successful/failed turn.
+          const remoteControlUrl = this.invocations.get(id)?.remoteControlUrl;
           this.invocations.set(id, {
             id,
             status: state.error ? "failed" : "succeeded",
             result: state.result,
             error: state.error,
+            ...(remoteControlUrl ? { remoteControlUrl } : {}),
             ...(state.identityLinkPending && state.pendingIdentityLink && state.identity
               ? {
                   identityLinkPending: true,
@@ -639,10 +700,12 @@ export class InvokeServer {
           });
         })
         .catch((err: unknown) => {
+          const remoteControlUrl = this.invocations.get(id)?.remoteControlUrl;
           this.invocations.set(id, {
             id,
             status: "failed",
             error: err instanceof Error ? err.message : String(err),
+            ...(remoteControlUrl ? { remoteControlUrl } : {}),
           });
         });
     });
@@ -749,6 +812,12 @@ export class InvokeServer {
     sessionId: string | undefined,
     forwardedUserToken?: string,
   ): Promise<void> {
+    // A Remote Control session URL is deliberately NOT surfaced on the
+    // non-streaming path: RC's whole value is a LIVE session to watch/steer,
+    // and a blocking response only returns once the turn is already complete
+    // (nothing live left to join). The streaming path -- the actual Open WebUI
+    // chat surface -- streams it inline as it arrives (see
+    // handleChatCompletionsStreaming).
     const graphInput = await this.buildGraphInput(request, authToken, sessionId, undefined, undefined, forwardedUserToken);
     const state = await this.graph.invoke(graphInput);
     if (state.error) {
@@ -817,6 +886,24 @@ export class InvokeServer {
         // "please link your GitHub account" prompt -- also real content, not
         // a status step, since the status label is truncated to 120 chars
         // and would mangle the markdown link/URL.
+        // "remote-control-url" (claude-code-swe-agent's live Remote Control
+        // session link) is likewise streamed as real content -- a clickable
+        // "watch live / take over" link -- for the same reason (a truncated
+        // status label would mangle the URL). This gives a chat turn the same
+        // live Remote Control surface the GitHub triage path already posts
+        // (integration-gateway's relayAndReply), replacing the deprecated
+        // session-page link for Claude-backed sessions.
+        if (stage === "remote-control-url" && message) {
+          // Leading AND trailing blank lines so this link stands as its own
+          // paragraph -- an earlier streamed chunk (e.g. agent-text) may not
+          // end in a newline, and without the leading break the two run
+          // together into one mangled line in the chat client.
+          writeSseChunk(
+            res,
+            chatCompletionChunk(id, model, { content: `\n\n🤖 Watch live or take over this session here: ${message}\n\n` }, null),
+          );
+          return;
+        }
         if ((stage === "agent-text" || stage === "identity-link") && message) {
           writeSseChunk(res, chatCompletionChunk(id, model, { content: message }, null));
           return;

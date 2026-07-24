@@ -240,6 +240,27 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => undefined,
   }),
   /**
+   * A second, narrower progress hook -- deliberately SEPARATE from
+   * `progressListener` above. `progressListener`'s presence is also what the
+   * identity-link gate (below) uses to decide "does this caller have a live
+   * channel to show a link on right now, so it's worth synchronously
+   * `waitForCompletion`-ing" vs. "fire-and-forget: post the link and return
+   * immediately, let a later re-trigger resume." A fire-and-forget caller
+   * (integration-gateway's GitHub-issue triage relay) still wants to capture
+   * a `remote-control-url` progress event when one arrives, but attaching
+   * THAT capture via `progressListener` would wrongly make delegateToAgent
+   * treat it as a live channel and block the whole turn on
+   * `waitForCompletion` for up to the link flow's full expiry -- exactly the
+   * regression this field exists to avoid (a real incident: triage silently
+   * hung for minutes with nothing posted to the issue, traced to this
+   * conflation). Every delegate node forwards `remote-control-url` events to
+   * this listener regardless of whether `progressListener` is also set.
+   */
+  remoteControlUrlListener: Annotation<((url: string) => void) | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
    * Fired the instant `delegateToAgent` decides this caller must link an
    * identity (getToken miss) -- BEFORE the potentially slow `start()` (the
    * claude provider spawns a `setup-token` PTY that can take seconds). Lets a
@@ -503,6 +524,17 @@ export interface AgentGraphDeps {
    * requests fail closed with a clear error instead of silently hanging.
    */
   toolCatalog?: ToolCatalog;
+  /**
+   * Client for apps/integration-gateway's claude-auth API in its `"login"`
+   * mode -- the `claude-remote`-provider counterpart of `claudeAuthGateway`,
+   * kept as its own optional dep (not folded into `claudeAuthGateway`) since
+   * the two flows resolve to differently-shaped credentials (a single OAuth
+   * token vs. a whole `credentialsJson` blob) that get injected into a
+   * launched run under different env vars (`PROVIDER_ENV_VAR` below).
+   * Resolved via `identityGatewayFor`, never referenced directly by
+   * provider-generic code.
+   */
+  claudeRemoteGateway?: IdentityLinkPort;
 }
 
 /**
@@ -510,20 +542,27 @@ export interface AgentGraphDeps {
  * to the env var name its linked token is injected as (AgentLaunchOptions'
  * secretEnv, agentrun-launcher.ts).
  */
-const PROVIDER_ENV_VAR: Record<string, string> = { github: "GITHUB_TOKEN", claude: "CLAUDE_CODE_OAUTH_TOKEN" };
+const PROVIDER_ENV_VAR: Record<string, string> = {
+  github: "GITHUB_TOKEN",
+  claude: "CLAUDE_CODE_OAUTH_TOKEN",
+  "claude-remote": "CLAUDE_LOGIN_CREDENTIALS_JSON",
+};
 
 /** Human-facing label for a provider, used in link prompts/messages. */
-const PROVIDER_LABEL: Record<string, string> = { github: "GitHub", claude: "Claude" };
+const PROVIDER_LABEL: Record<string, string> = { github: "GitHub", claude: "Claude", "claude-remote": "Claude" };
 
 /**
  * Resolves which gateway client backs a given identity provider (docs/adr/0027)
  * -- the one place that knows `"claude"` routes to `deps.claudeAuthGateway`
- * instead of the (GitHub-only-in-practice) `deps.identityLinkGateway`, so the
- * three call sites below (`checkPendingIdentityLink`, `delegateToAgent`, the
+ * and `"claude-remote"` routes to `deps.claudeRemoteGateway`, instead of the
+ * (GitHub-only-in-practice) `deps.identityLinkGateway`, so the three call
+ * sites below (`checkPendingIdentityLink`, `delegateToAgent`, the
  * agent-backed-tool path) stay provider-agnostic.
  */
 function identityGatewayFor(provider: string, deps: AgentGraphDeps): IdentityLinkPort | undefined {
-  return provider === "claude" ? deps.claudeAuthGateway : deps.identityLinkGateway;
+  if (provider === "claude") return deps.claudeAuthGateway;
+  if (provider === "claude-remote") return deps.claudeRemoteGateway;
+  return deps.identityLinkGateway;
 }
 
 /**
@@ -562,19 +601,34 @@ const CLAUDE_AUTH_EXPIRED_CODE = "claude_auth_expired";
  * `result` telling the user what happened and that simply retrying will
  * prompt them to relink. Every other failure falls back to the ordinary
  * `state.error` path, unchanged.
+ *
+ * `CLAUDE_AUTH_EXPIRED_CODE` is provider-agnostic: both the `claude`
+ * (setup-token) and `claude-remote` (login) providers' agent runs report the
+ * SAME code on a stale/expired credential, since the underlying failure mode
+ * (Claude Code CLI rejects its stored credential mid-run) is identical.
+ * `Identity` itself carries no provider (a caller isn't tied to one), so the
+ * caller passes the delegated agent's OWN first declared provider (the one
+ * actually gated/used for this run) to know which gateway's stored
+ * credential to invalidate -- defaulting to `"claude"` only for the sake of
+ * older call sites that predate this parameter.
  */
 async function handleAgentTurnFailure(
   err: unknown,
   deps: AgentGraphDeps,
   state: AgentState,
+  provider: string = "claude",
 ): Promise<Partial<AgentState>> {
-  if (err instanceof AgentTurnFailedError && err.code === CLAUDE_AUTH_EXPIRED_CODE && deps.claudeAuthGateway && state.identity) {
-    await deps.claudeAuthGateway.invalidate?.("claude", state.identity.subject).catch(() => {});
-    return {
-      result:
-        "Your linked Claude account's credential looks expired or invalid, so this request couldn't complete. " +
-        "Send your request again and I'll walk you through relinking it.",
-    };
+  if (err instanceof AgentTurnFailedError && err.code === CLAUDE_AUTH_EXPIRED_CODE && state.identity) {
+    const gateway = identityGatewayFor(provider, deps);
+    if (gateway) {
+      await gateway.invalidate?.(provider, state.identity.subject).catch(() => {});
+      const label = PROVIDER_LABEL[provider] ?? provider;
+      return {
+        result:
+          `Your linked ${label} account's credential looks expired or invalid, so this request couldn't complete. ` +
+          "Send your request again and I'll walk you through relinking it.",
+      };
+    }
   }
   return { error: agentTurnErrorMessage(err) };
 }
@@ -885,7 +939,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       try {
         const awaitReply = deps.agentChannel.awaitReply(state.activeAgentRunId, {
           timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
-          onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+          onProgress:
+            state.progressListener || state.remoteControlUrlListener
+              ? (stage, message) => {
+                  state.progressListener?.(stage ?? "agent", message);
+                  if (stage === "remote-control-url" && message) state.remoteControlUrlListener?.(message);
+                }
+              : undefined,
           onToolCall: makeSubAgentToolCallHandler(state.activeAgentRunId, found.agent, deps.agentChannel, deps.toolCatalog, deps, {
             sessionId: state.sessionId,
           }),
@@ -906,7 +966,10 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
-        return { agentRunId: state.activeAgentRunId, ...(await handleAgentTurnFailure(err, deps, state)) };
+        return {
+          agentRunId: state.activeAgentRunId,
+          ...(await handleAgentTurnFailure(err, deps, state, found.agent.identityProviders?.[0])),
+        };
       }
     })
     .addNode("checkNeedsCapability", async (state) => {
@@ -1007,13 +1070,23 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // is gated end-to-end today (multi-provider agents aren't expected in
       // practice yet); `identityGatewayFor` is what lets this stay
       // provider-agnostic as more are added.
+      // Resolves EVERY declared identityProviders entry, not just the first --
+      // an Agent can legitimately need more than one linked identity at once
+      // (e.g. claude-code-swe-agent's ["claude", "claude-remote"]: the
+      // setup-token flow for model calls plus the separate full-login flow
+      // Remote Control needs). Previously this only ever checked index 0, so
+      // a second provider's token was silently never resolved/injected --
+      // whatever secretEnv name it mapped to reached the Job as an empty/
+      // unset value instead of erroring or prompting to link it. Each
+      // provider still gets the exact same getToken -> (missing? start/wait/
+      // pend, else accumulate) handling as before; the loop just repeats it
+      // per provider instead of doing it once.
       let identitySecretEnv: { name: string; value: string }[] | undefined;
-      if (agent.identityProviders && agent.identityProviders.length > 0) {
-        const provider = agent.identityProviders[0]!;
+      for (const provider of agent.identityProviders ?? []) {
         const gateway = identityGatewayFor(provider, deps);
         if (!gateway) {
           return {
-            error: `agent ${agent.id} requires identity providers (${agent.identityProviders.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
+            error: `agent ${agent.id} requires identity providers (${agent.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
           };
         }
         let existing = await gateway.getToken(provider, state.identity.subject);
@@ -1120,8 +1193,21 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           }
 
           if (!existing) {
+            // On a streaming chat turn we ALREADY surfaced the full link prompt
+            // live via `progressListener` above; repeating the same
+            // `[link your account](url)` markdown in the terminal `result`
+            // makes the caller render the auth prompt twice (the "doubled up"
+            // message on the chat side). So once it's been surfaced live, the
+            // final result is just a short, non-duplicative nudge -- the link
+            // itself is still visible in the streamed message above. The
+            // fire-and-forget triage path (no `progressListener` -- the link
+            // reaches the user ONLY in `result`, posted as an issue comment)
+            // is unchanged: it still prints the full prompt here.
+            const result = state.progressListener
+              ? `I haven't received your ${label} account link yet. Send any message once you're done and I'll continue.`
+              : `To continue, please ${linkUrlText}. This is a one-time step -- send any message once you're done.`;
             return {
-              result: `To continue, please ${linkUrlText}. This is a one-time step -- send any message once you're done.`,
+              result,
               pendingIdentityLink: {
                 agentId: agent.id,
                 provider,
@@ -1141,7 +1227,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         if (!envVarName) {
           return { error: `agent ${agent.id} declares unsupported identity provider "${provider}"` };
         }
-        identitySecretEnv = [{ name: envVarName, value: existing.token }];
+        identitySecretEnv = [...(identitySecretEnv ?? []), { name: envVarName, value: existing.token }];
       }
       console.log(
         "[identity-gate-debug] pre-launch",
@@ -1164,7 +1250,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // can never publish before our subscription exists.
         const awaitReply = deps.agentChannel.awaitReply(runId, {
           timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
-          onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+          onProgress:
+            state.progressListener || state.remoteControlUrlListener
+              ? (stage, message) => {
+                  state.progressListener?.(stage ?? "agent", message);
+                  if (stage === "remote-control-url" && message) state.remoteControlUrlListener?.(message);
+                }
+              : undefined,
           onToolCall: makeSubAgentToolCallHandler(runId, agent, deps.agentChannel, deps.toolCatalog, deps, {
             sessionId: state.sessionId,
           }),
@@ -1193,7 +1285,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
-        return { agentRunId: runId, ...(await handleAgentTurnFailure(err, deps, state)) };
+        return { agentRunId: runId, ...(await handleAgentTurnFailure(err, deps, state, agent.identityProviders?.[0])) };
       }
     })
     .addNode("loadSkillTools", async (state) => {
@@ -1314,13 +1406,14 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // pendingIdentityLink for a paused tool call, only for a paused
         // agent delegation. A caller must link once via direct chat
         // delegation to the same agent before a Skill can reach it here.
+        // Loops over every declared provider, not just index 0 -- see the
+        // identical fix/comment on delegateToAgent's own identity-gate above.
         let identitySecretEnv: { name: string; value: string }[] | undefined;
-        if (tool.identityProviders && tool.identityProviders.length > 0) {
-          const provider = tool.identityProviders[0]!;
+        for (const provider of tool.identityProviders ?? []) {
           const gateway = identityGatewayFor(provider, deps);
           if (!gateway || !state.identity) {
             return {
-              error: `tool ${tool.id} requires identity providers (${tool.identityProviders.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
+              error: `tool ${tool.id} requires identity providers (${tool.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
             };
           }
           const existing = await gateway.getToken(provider, state.identity.subject);
@@ -1333,14 +1426,20 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           if (!envVarName) {
             return { error: `tool ${tool.id} declares unsupported identity provider "${provider}"` };
           }
-          identitySecretEnv = [{ name: envVarName, value: existing.token }];
+          identitySecretEnv = [...(identitySecretEnv ?? []), { name: envVarName, value: existing.token }];
         }
         const runId = randomUUID();
         const callbackUrl = `${deps.callbackBaseUrl}/callback/${randomUUID()}`;
         try {
           const awaitReply = deps.agentChannel.awaitReply(runId, {
             timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
-            onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+            onProgress:
+              state.progressListener || state.remoteControlUrlListener
+                ? (stage, message) => {
+                    state.progressListener?.(stage ?? "agent", message);
+                    if (stage === "remote-control-url" && message) state.remoteControlUrlListener?.(message);
+                  }
+                : undefined,
           });
           await deps.agentRunLauncher.launch(tool.agentRunTemplate, runId, {
             goal: input,
