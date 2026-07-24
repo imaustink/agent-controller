@@ -254,7 +254,13 @@ claudeCodeSweAgent:
   # ~/.claude/.credentials.json seeded into the pod before the main container
   # starts. Enabling this adds an init container, sharing the main
   # container's tmp emptyDir mount, that writes CLAUDE_LOGIN_CREDENTIALS_JSON
-  # to $SWE_HOME/.claude/.credentials.json.
+  # to $SWE_HOME/.claude/.credentials.json, and sets CLAUDE_REMOTE_CONTROL=true
+  # on the main container so it actually runs claude-runner.ts's
+  # `--bg --remote-control` path instead of the plain one-shot `-p` turn.
+  # `identityLink.providers` above MUST also include "claude-remote" --
+  # without it, agent-orchestrator never resolves/injects the per-run
+  # CLAUDE_LOGIN_CREDENTIALS_JSON secret this init container reads, so
+  # remoteControl.enabled alone is not sufficient.
   remoteControl:
     enabled: false
     # Static fallback secretRef for CLAUDE_LOGIN_CREDENTIALS_JSON, only used

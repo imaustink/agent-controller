@@ -136,12 +136,21 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 	if len(p.initContainers) > 0 {
 		initContainers = make([]corev1.Container, 0, len(p.initContainers))
 		for _, ic := range p.initContainers {
+			// An init container's own SecretEnv (from the Agent template's
+			// static AgentSpec.InitContainers) is layered ON TOP OF the same
+			// per-run merged secretEnv (p.secretEnv, already
+			// mergeSecretEnv(agent.Spec.SecretEnv, run.Spec.SecretEnv)) the
+			// main "run" container gets -- otherwise a per-invocation
+			// credential a caller injects via AgentRun.Spec.SecretEnv (e.g. a
+			// delegated CLAUDE_LOGIN_CREDENTIALS_JSON) would silently never
+			// reach a credential-seeding init container, which is the whole
+			// point of having one.
 			initContainers = append(initContainers, corev1.Container{
 				Name:    ic.Name,
 				Image:   ic.Image,
 				Command: ic.Command,
 				Args:    ic.Args,
-				Env:     toCoreEnv(ic.Env, ic.SecretEnv, 0),
+				Env:     toCoreEnv(ic.Env, mergeSecretEnv(p.secretEnv, ic.SecretEnv), 0),
 				VolumeMounts: []corev1.VolumeMount{
 					{Name: "tmp", MountPath: "/tmp"},
 				},
