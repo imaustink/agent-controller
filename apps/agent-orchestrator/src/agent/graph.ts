@@ -1177,8 +1177,21 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           }
 
           if (!existing) {
+            // On a streaming chat turn we ALREADY surfaced the full link prompt
+            // live via `progressListener` above; repeating the same
+            // `[link your account](url)` markdown in the terminal `result`
+            // makes the caller render the auth prompt twice (the "doubled up"
+            // message on the chat side). So once it's been surfaced live, the
+            // final result is just a short, non-duplicative nudge -- the link
+            // itself is still visible in the streamed message above. The
+            // fire-and-forget triage path (no `progressListener` -- the link
+            // reaches the user ONLY in `result`, posted as an issue comment)
+            // is unchanged: it still prints the full prompt here.
+            const result = state.progressListener
+              ? `I haven't received your ${label} account link yet. Send any message once you're done and I'll continue.`
+              : `To continue, please ${linkUrlText}. This is a one-time step -- send any message once you're done.`;
             return {
-              result: `To continue, please ${linkUrlText}. This is a one-time step -- send any message once you're done.`,
+              result,
               pendingIdentityLink: {
                 agentId: agent.id,
                 provider,

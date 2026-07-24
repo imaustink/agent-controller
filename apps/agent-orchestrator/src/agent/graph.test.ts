@@ -1988,7 +1988,16 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       expiresAt: expect.any(Number),
       request: "open a PR that fixes the bug",
     });
-    expect(final.result).toMatch(/send any message once you're done/);
+    // Streaming turn: the link was already surfaced live via progressListener,
+    // so the terminal result is a short nudge that does NOT repeat the
+    // `[link your account](url)` markdown -- otherwise the caller renders the
+    // auth prompt twice (the "doubled up" chat message).
+    expect(progressListener).toHaveBeenCalledWith(
+      "identity-link",
+      expect.stringContaining("I'll continue automatically once you finish"),
+    );
+    expect(final.result).toMatch(/Send any message once you're done and I'll continue/);
+    expect(final.result).not.toContain("](");
   });
 
   it("resumes delegation and launches with secretEnv once a pending link's poll reports complete", async () => {

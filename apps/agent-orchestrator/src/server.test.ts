@@ -980,6 +980,55 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     await server.close();
   });
 
+  it("streams a Remote Control session URL as inline chat content, never a truncated status label", async () => {
+    const rcUrl = "https://claude.ai/code/session_abc123";
+    const graph: AgentGraphLike = {
+      invoke: vi.fn(),
+      // The delegate node forwards the agent's `remote-control-url` progress
+      // event through `progressListener` (agent/graph.ts). The chat facade
+      // must render it as real, clickable content -- routing it through a
+      // status label (truncated to 120 chars) would mangle the URL.
+      stream: vi.fn().mockImplementation((input: { progressListener?: (stage: string, message: string | undefined) => void }) => {
+        input.progressListener?.("remote-control-url", rcUrl);
+        return toStream([{ planAction: { identity, result: "Opened PR #42." } }]);
+      }),
+    };
+    const server = new InvokeServer(graph, sessionStore());
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer tok-1",
+        "x-openwebui-chat-id": "chat-rc",
+      },
+      body: JSON.stringify({ stream: true, messages: [{ role: "user", content: "fix the bug" }] }),
+    });
+
+    const chunks = (await readSse(res)) as {
+      event?: { type?: string; data?: { description?: string } };
+      choices?: { delta: { content?: string } }[];
+    }[];
+    const allContent = chunks
+      .filter((c) => c.choices)
+      .map((c) => c.choices![0]?.delta.content ?? "")
+      .join("");
+    const statusDescriptions = chunks
+      .filter((c) => c.event?.type === "status")
+      .map((c) => c.event?.data?.description ?? "");
+
+    // The full URL is delivered as content with a "watch live" affordance...
+    expect(allContent).toContain(rcUrl);
+    expect(allContent).toContain("Watch live or take over");
+    // ...the actual turn result still follows...
+    expect(allContent).toContain("Opened PR #42.");
+    // ...and the URL never leaks into a (truncated) status label.
+    expect(statusDescriptions.every((d) => !d.includes("claude.ai/code"))).toBe(true);
+
+    await server.close();
+  });
+
   it("accepts an optional session_id on POST /invoke for non-chat callers", async () => {
     const graph: AgentGraphLike = {
       invoke: vi.fn().mockResolvedValue({
