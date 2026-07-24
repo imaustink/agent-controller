@@ -553,6 +553,37 @@ function identityGatewayFor(provider: string, deps: AgentGraphDeps): IdentityLin
 }
 
 /**
+ * The subject a provider's linked credential is keyed under.
+ *
+ * For everything EXCEPT `claude-remote`, this is just the caller's own subject
+ * -- strictly per-caller, unchanged.
+ *
+ * `claude-remote` (the Remote Control login) is special: its credential is a
+ * full `claude login` hosting a live session that acts as the caller's GitHub
+ * user, and the SAME human reaches it through two entry points that otherwise
+ * resolve DIFFERENT subjects -- Open WebUI chat (`openwebui:<id>`) vs the
+ * GitHub-triage relay (a shared service-token subject). Keying it by the raw
+ * per-flow subject therefore made a credential linked in one flow invisible to
+ * the other, forcing a re-link on every switch. So instead key it by the ONE
+ * identity both flows can resolve for the same human: their GitHub login
+ * (`github:<login>`), read from the caller's already-linked GitHub credential.
+ * This stays strictly per-user (distinct GitHub users -> distinct keys; never
+ * a single shared account), it just recognises the same user across flows.
+ *
+ * Falls back to the caller's raw subject when no GitHub login can be resolved
+ * (no GitHub link yet, or no GitHub gateway configured) -- still per-user, just
+ * not yet cross-flow. In practice the Remote Control agent also requires GitHub
+ * for repo writes, so the link is normally already present.
+ */
+async function linkSubjectFor(deps: AgentGraphDeps, provider: string, callerSubject: string): Promise<string> {
+  if (provider !== "claude-remote") return callerSubject;
+  const githubGateway = identityGatewayFor("github", deps);
+  if (!githubGateway) return callerSubject;
+  const github = await githubGateway.getToken("github", callerSubject).catch(() => undefined);
+  return github?.githubLogin ? `github:${github.githubLogin}` : callerSubject;
+}
+
+/**
  * Caps how many tool calls a skill's planAction<->runTool loop may chain in a
  * single turn (docs/adr/0008 update: multi-step tool use) -- generous enough
  * for a realistic research chain (e.g. search, then fetch two candidate
@@ -608,7 +639,7 @@ async function handleAgentTurnFailure(
   if (err instanceof AgentTurnFailedError && err.code === CLAUDE_AUTH_EXPIRED_CODE && state.identity) {
     const gateway = identityGatewayFor(provider, deps);
     if (gateway) {
-      await gateway.invalidate?.(provider, state.identity.subject).catch(() => {});
+      await gateway.invalidate?.(provider, await linkSubjectFor(deps, provider, state.identity.subject)).catch(() => {});
       const label = PROVIDER_LABEL[provider] ?? provider;
       return {
         result:
@@ -853,6 +884,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       const pending = state.pendingIdentityLink;
       const gateway = identityGatewayFor(pending.provider, deps);
       if (!gateway || !deps.agentStore) return {};
+      // `claude-remote` resolves against the caller's GitHub identity; every
+      // other provider against their raw subject (see linkSubjectFor).
+      const linkSubject = await linkSubjectFor(deps, pending.provider, state.identity.subject);
 
       // Resolve "is this pending link now complete, still pending, or
       // expired/denied" per flow -- device polls GitHub's device-code
@@ -862,8 +896,8 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // respectively), so both just check whether a token has landed yet.
       const status =
         pending.flow === "device"
-          ? await gateway.poll(pending.provider, state.identity.subject, pending.deviceCode!)
-          : (await gateway.getToken(pending.provider, state.identity.subject))
+          ? await gateway.poll(pending.provider, linkSubject, pending.deviceCode!)
+          : (await gateway.getToken(pending.provider, linkSubject))
             ? "complete"
             : Date.now() < pending.expiresAt
               ? "pending"
@@ -1073,17 +1107,21 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             error: `agent ${agent.id} requires identity providers (${agent.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
           };
         }
-        let existing = await gateway.getToken(provider, state.identity.subject);
+        // `claude-remote` resolves against the caller's GitHub identity so a
+        // single per-user link serves both the chat and triage flows; every
+        // other provider stays keyed on the raw subject (see linkSubjectFor).
+        const linkSubject = await linkSubjectFor(deps, provider, state.identity.subject);
+        let existing = await gateway.getToken(provider, linkSubject);
         console.log(
           "[identity-gate-debug] getToken",
-          JSON.stringify({ provider, subject: state.identity.subject, found: Boolean(existing) }),
+          JSON.stringify({ provider, subject: linkSubject, found: Boolean(existing) }),
         );
         if (!existing) {
           // Signal "this turn needs a link" NOW, before the (possibly slow)
           // start() below -- a fire-and-forget caller uses this to avoid
           // prematurely announcing that work has started while the link is
           // still being set up. Safe to fire before we even have the link URL.
-          state.reportIdentityLinkPending?.({ provider, subject: state.identity.subject });
+          state.reportIdentityLinkPending?.({ provider, subject: linkSubject });
           // Ordinary Open WebUI chat turns never set `identityLinkFlow`, so
           // they default to the browser-redirect authcode flow; a headless
           // direct `/invoke` caller (e.g. integration-gateway's own
@@ -1105,7 +1143,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // the label, or any follow-up message in the session) re-enters this
           // node and retries start().
           const started = await gateway
-            .start(provider, state.identity.subject, flow)
+            .start(provider, linkSubject, flow)
             .catch((err) => {
               console.error(
                 `[identity-gate] start threw for provider ${provider}; ending turn with a retryable message instead of a hard error: ${err instanceof Error ? err.message : String(err)}`,
@@ -1154,7 +1192,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             try {
               existing = await gateway.waitForCompletion?.(
                 provider,
-                state.identity.subject,
+                linkSubject,
                 started.expiresInSeconds * 1000,
               );
             } catch (err) {
@@ -1397,7 +1435,10 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               error: `tool ${tool.id} requires identity providers (${tool.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
             };
           }
-          const existing = await gateway.getToken(provider, state.identity.subject);
+          // Same keying as delegateToAgent's gate: `claude-remote` resolves
+          // against the caller's GitHub identity, every other provider against
+          // their raw subject (see linkSubjectFor).
+          const existing = await gateway.getToken(provider, await linkSubjectFor(deps, provider, state.identity.subject));
           if (!existing) {
             return {
               error: `tool ${tool.id} requires linking your ${provider} account first -- start a direct conversation with this agent to link it, then retry`,

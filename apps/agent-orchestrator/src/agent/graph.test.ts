@@ -2563,5 +2563,42 @@ describe("buildAgentGraph delegation with multiple identityProviders", () => {
     expect(final.pendingIdentityLink?.provider).toBe("claude-remote");
     expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
   });
+
+  it("keys the claude-remote (Remote Control) credential under the caller's GitHub identity, so one per-user link is shared across the chat and triage flows", async () => {
+    // The caller has a linked GitHub account, so their GitHub login is the one
+    // identity both the Open WebUI chat flow (openwebui:<id>) and the GitHub
+    // triage flow (a shared service subject) can agree on for the same human.
+    // The GitHub gateway is queried by subject even though this agent doesn't
+    // declare `github` -- linkSubjectFor resolves it independently.
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "gho_alice", githubLogin: "alice-gh" }),
+    };
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"full-login-blob"}' }),
+    };
+    const deps = multiProviderDeps({ identityLinkGateway, claudeAuthGateway, claudeRemoteGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // claude-remote is keyed under the GitHub identity, NOT the raw "alice"
+    // subject -- so the SAME credential is found whether the request came from
+    // chat or triage...
+    expect(claudeRemoteGateway.getToken).toHaveBeenCalledWith("claude-remote", "github:alice-gh");
+    // ...while the setup-token `claude` provider stays strictly per-caller.
+    expect(claudeAuthGateway.getToken).toHaveBeenCalledWith("claude", "alice");
+    expect(final.error).toBeUndefined();
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalled();
+  });
 });
 
