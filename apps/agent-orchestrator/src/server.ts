@@ -43,6 +43,17 @@ export interface InvocationRecord {
   identityLinkPending?: boolean;
   /** Provider + subject the pending link is keyed on, so a caller that owns the token store can wait for completion and auto-resume. Present only alongside `identityLinkPending`. */
   identityLink?: { provider: string; subject: string };
+  /**
+   * The most recent progress message seen with `stage: "remote-control-url"`
+   * (a Remote Control session URL, `https://claude.ai/code/session_...`) --
+   * only ever set when the delegated agent actually emits one (today: a
+   * later phase of `claude-code-swe-agent`; `opencode-swe-agent` and every
+   * other run never sets it). A polling caller (integration-gateway's triage
+   * relay) uses this to prefer linking a live Remote Control session over its
+   * own session page once available. Omitted/undefined for every run that
+   * never emits this progress event -- fully backward compatible.
+   */
+  remoteControlUrl?: string;
 }
 
 /** How often to emit an SSE keep-alive comment while waiting on a slow graph step (e.g. a tool Job). */
@@ -596,7 +607,18 @@ export class InvokeServer {
       request,
       authToken,
       sessionId,
-      undefined,
+      // Tracks the latest "remote-control-url" progress message onto this
+      // invocation's record (see `InvocationRecord.remoteControlUrl`) -- a
+      // generic listener for any stage name, but only this one stage is
+      // acted on today. Only mutate while still pending -- never clobber a
+      // terminal record (mirrors `reportIdentityLinkPending` below).
+      (stage, message) => {
+        if (stage !== "remote-control-url" || !message) return;
+        const current = this.invocations.get(id);
+        if (current && current.status === "pending") {
+          this.invocations.set(id, { ...current, remoteControlUrl: message });
+        }
+      },
       identityLinkFlow,
       undefined,
       forcedSkillId,
@@ -625,11 +647,16 @@ export class InvokeServer {
             pendingIdentityLink: state.pendingIdentityLink,
             identityLinkPending: state.identityLinkPending,
           });
+          // Carry forward any remoteControlUrl already recorded by the
+          // progress listener above -- this terminal write replaces the whole
+          // record, so it would otherwise be dropped on a successful/failed turn.
+          const remoteControlUrl = this.invocations.get(id)?.remoteControlUrl;
           this.invocations.set(id, {
             id,
             status: state.error ? "failed" : "succeeded",
             result: state.result,
             error: state.error,
+            ...(remoteControlUrl ? { remoteControlUrl } : {}),
             ...(state.identityLinkPending && state.pendingIdentityLink && state.identity
               ? {
                   identityLinkPending: true,
@@ -639,10 +666,12 @@ export class InvokeServer {
           });
         })
         .catch((err: unknown) => {
+          const remoteControlUrl = this.invocations.get(id)?.remoteControlUrl;
           this.invocations.set(id, {
             id,
             status: "failed",
             error: err instanceof Error ? err.message : String(err),
+            ...(remoteControlUrl ? { remoteControlUrl } : {}),
           });
         });
     });

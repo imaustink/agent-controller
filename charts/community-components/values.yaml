@@ -250,6 +250,20 @@ claudeCodeSweAgent:
     providers:
       - github
       # - claude
+  # Remote Control (Claude Code's headless session takeover) needs a full
+  # ~/.claude/.credentials.json seeded into the pod before the main container
+  # starts. Enabling this adds an init container, sharing the main
+  # container's tmp emptyDir mount, that writes CLAUDE_LOGIN_CREDENTIALS_JSON
+  # to $SWE_HOME/.claude/.credentials.json.
+  remoteControl:
+    enabled: false
+    # Static fallback secretRef for CLAUDE_LOGIN_CREDENTIALS_JSON, only used
+    # when both are set. In the common case this is left empty: the real
+    # per-user credential secret is resolved and injected at AgentRun launch
+    # time by agent-orchestrator's delegation logic (a later phase), not
+    # baked into this catalog entry.
+    credentialsSecretName: ""
+    credentialsSecretKey: ""
 
 skills:
   # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +

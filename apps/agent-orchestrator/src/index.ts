@@ -23,6 +23,7 @@ import { NatsAgentChannel } from "./agents/nats-agent-channel.js";
 import { AgentRunLauncher } from "./k8s/agentrun-launcher.js";
 import { IdentityLinkGatewayClient } from "./identity-link/gateway-client.js";
 import { ClaudeAuthGatewayClient } from "./identity-link/claude-auth-gateway-client.js";
+import { ClaudeRemoteGatewayClient } from "./identity-link/claude-remote-gateway-client.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { QdrantToolStore } from "./vector-store/qdrant-store.js";
 import { OpenAiActionPlanner } from "./agent/action-planner.js";
@@ -449,6 +450,19 @@ async function main(): Promise<void> {
         })
       : undefined;
 
+  // Per-caller Claude Code `login` credential (the remote-control invocation
+  // counterpart to `claudeAuthGateway` above) -- same gateway host/bearer
+  // token, same `GATEWAY_CLAUDE_AUTH_ENABLED` posture (it's the same
+  // integration-gateway feature, just a different `mode`), gated by whether
+  // an Agent declares `identityProviders: ["claude-remote"]`.
+  const claudeRemoteGateway =
+    config.identityLinkGatewayUrl && config.identityLinkGatewayToken
+      ? new ClaudeRemoteGatewayClient({
+          baseUrl: config.identityLinkGatewayUrl,
+          token: config.identityLinkGatewayToken,
+        })
+      : undefined;
+
   // Executes LocalTools by RPC to the per-language sidecars over the shared
   // unix-socket dir (ADR 0014). Secret-backed env is resolved here (the
   // orchestrator holds the k8s identity; the sidecars deliberately do not).
@@ -480,6 +494,7 @@ async function main(): Promise<void> {
     capabilityNeedChecker,
     ...(identityLinkGateway ? { identityLinkGateway } : {}),
     ...(claudeAuthGateway ? { claudeAuthGateway } : {}),
+    ...(claudeRemoteGateway ? { claudeRemoteGateway } : {}),
     ...(agentDelegation
       ? {
           agentStore: agentDelegation.agentStore,

@@ -49,7 +49,12 @@ describe("InvokeServer", () => {
     expect(postRes.status).toBe(202);
     const { id, status } = (await postRes.json()) as { id: string; status: string };
     expect(status).toBe("pending");
-    expect(graph.invoke).toHaveBeenCalledWith({ request: "scrape https://example.com/recipe", authToken: "tok-1", reportIdentityLinkPending: expect.any(Function) });
+    expect(graph.invoke).toHaveBeenCalledWith({
+      request: "scrape https://example.com/recipe",
+      authToken: "tok-1",
+      progressListener: expect.any(Function),
+      reportIdentityLinkPending: expect.any(Function),
+    });
 
     const pendingRes = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
     expect(pendingRes.status).toBe(200);
@@ -63,6 +68,70 @@ describe("InvokeServer", () => {
       status: "succeeded",
       result: { title: "Pancakes" },
     });
+
+    await server.close();
+  });
+
+  it("surfaces remoteControlUrl on GET /invoke/:id once a 'remote-control-url' progress event lands, and carries it through to the terminal response", async () => {
+    let resolveGraph!: (state: AgentState) => void;
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockImplementation((input: { progressListener?: (stage: string, message?: string) => void }) => {
+        // Simulate the delegated agent's progress stream: an unrelated stage
+        // first (must be ignored), then the remote-control-url event.
+        input.progressListener?.("agent-text", "working on it");
+        input.progressListener?.("remote-control-url", "https://claude.ai/code/session_abc123");
+        return new Promise<AgentState>((resolve) => (resolveGraph = resolve));
+      }),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const postRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "triage this", event: { source: "github" } }),
+    });
+    const { id } = (await postRes.json()) as { id: string };
+
+    const pendingRes = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
+    expect((await pendingRes.json()) as { remoteControlUrl?: string }).toMatchObject({
+      status: "pending",
+      remoteControlUrl: "https://claude.ai/code/session_abc123",
+    });
+
+    resolveGraph({ request: "x", authToken: "tok-1", skillCandidates: [], result: "opened PR #7" } as AgentState);
+    await new Promise((r) => setTimeout(r, 10));
+
+    const doneRes = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
+    expect((await doneRes.json()) as { status: string; remoteControlUrl?: string }).toMatchObject({
+      status: "succeeded",
+      remoteControlUrl: "https://claude.ai/code/session_abc123",
+    });
+
+    await server.close();
+  });
+
+  it("omits remoteControlUrl entirely when no 'remote-control-url' progress event ever arrives", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "tok-1", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const postRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "open a PR" }),
+    });
+    const { id } = (await postRes.json()) as { id: string };
+    await new Promise((r) => setTimeout(r, 10));
+
+    const doneRes = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
+    const body = (await doneRes.json()) as Record<string, unknown>;
+    expect(body.status).toBe("succeeded");
+    expect(Object.keys(body)).not.toContain("remoteControlUrl");
 
     await server.close();
   });
@@ -81,7 +150,12 @@ describe("InvokeServer", () => {
       body: JSON.stringify({ request: "do a thing" }),
     });
     const { id } = (await postRes.json()) as { id: string };
-    expect(graph.invoke).toHaveBeenCalledWith({ request: "do a thing", authToken: "", reportIdentityLinkPending: expect.any(Function) });
+    expect(graph.invoke).toHaveBeenCalledWith({
+      request: "do a thing",
+      authToken: "",
+      progressListener: expect.any(Function),
+      reportIdentityLinkPending: expect.any(Function),
+    });
 
     await new Promise((r) => setTimeout(r, 10));
     const res = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
@@ -275,6 +349,7 @@ describe("InvokeServer session-scoped pending identity link (GitHub OAuth Device
     expect(graph.invoke).toHaveBeenNthCalledWith(2, {
       request: "any message",
       authToken: "tok-1",
+      progressListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
       sessionId: "session-1",
       activeSkillId: undefined,
@@ -933,6 +1008,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     expect(graph.invoke).toHaveBeenNthCalledWith(2, {
       request: "extract https://example.com",
       authToken: "tok-1",
+      progressListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
       sessionId: "cli-7",
       activeSkillId: "recipe-skill",
@@ -960,6 +1036,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     expect(graph.invoke).toHaveBeenCalledWith({
       request: "open a PR",
       authToken: "tok-1",
+      progressListener: expect.any(Function),
       identityLinkFlow: "device",
       reportIdentityLinkPending: expect.any(Function),
     });
@@ -982,7 +1059,12 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     });
     expect(omittedRes.status).toBe(202);
     await new Promise((r) => setTimeout(r, 10));
-    expect(graph.invoke).toHaveBeenLastCalledWith({ request: "open a PR", authToken: "tok-1", reportIdentityLinkPending: expect.any(Function) });
+    expect(graph.invoke).toHaveBeenLastCalledWith({
+      request: "open a PR",
+      authToken: "tok-1",
+      progressListener: expect.any(Function),
+      reportIdentityLinkPending: expect.any(Function),
+    });
 
     const invalidRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
       method: "POST",
@@ -991,7 +1073,12 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     });
     expect(invalidRes.status).toBe(202);
     await new Promise((r) => setTimeout(r, 10));
-    expect(graph.invoke).toHaveBeenLastCalledWith({ request: "open a PR", authToken: "tok-1", reportIdentityLinkPending: expect.any(Function) });
+    expect(graph.invoke).toHaveBeenLastCalledWith({
+      request: "open a PR",
+      authToken: "tok-1",
+      progressListener: expect.any(Function),
+      reportIdentityLinkPending: expect.any(Function),
+    });
 
     await server.close();
   });
