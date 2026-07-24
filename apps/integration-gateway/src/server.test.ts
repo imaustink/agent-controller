@@ -508,7 +508,44 @@ describe("GatewayServer unauthenticated triage: deferred ack + auto-resume", () 
 
     // Waited on the gateway-owned claude token store for the gateway subject,
     // and re-invoked the SAME triage request once it landed.
-    expect(waitForCompletion).toHaveBeenCalledWith("client-integration-gateway", 10 * 60 * 1000);
+    expect(waitForCompletion).toHaveBeenCalledWith("client-integration-gateway", 10 * 60 * 1000, "setup-token");
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("also auto-resumes for the claude-remote provider (waitForCompletion called with kind 'login', not 'setup-token')", async () => {
+    // Regression test: waitAndResume used to hardcode
+    // `identityLink.provider === "claude"`, so a claude-remote link prompt
+    // posted correctly but NEVER auto-resumed -- the user had to manually
+    // re-trigger after linking, which is the exact bug this fixes.
+    let call = 0;
+    invoke.mockImplementation(async (..._args: unknown[]) => {
+      const onRunning = _args[4];
+      call += 1;
+      if (call === 1) {
+        return {
+          status: "succeeded",
+          identityLinkPending: true,
+          identityLink: { provider: "claude-remote", subject: "client-integration-gateway" },
+          result: "To continue, please [link your Claude account](https://gateway.example.com/claude-auth/xyz?mode=login).",
+        };
+      }
+      if (typeof onRunning === "function") await (onRunning as () => Promise<void> | void)();
+      return { status: "succeeded", result: "Opened PR #42." };
+    });
+
+    await postWebhook(port, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
+      label: { name: "ai-triage" },
+    });
+    await flush();
+
+    expect(postIssueComment.mock.calls[0]?.[3]).toMatch(/link your Claude account/i);
+    expect(postIssueComment.mock.calls[1]?.[3]).toBe("Opened PR #42.");
+    expect(postIssueComment).toHaveBeenCalledTimes(2);
+    expect(waitForCompletion).toHaveBeenCalledWith("client-integration-gateway", 10 * 60 * 1000, "login");
     expect(invoke).toHaveBeenCalledTimes(2);
   });
 
