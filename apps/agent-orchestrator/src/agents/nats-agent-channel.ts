@@ -122,6 +122,17 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
     return new NatsAgentChannel(nc, subjectPrefix);
   }
 
+  /**
+   * Test-only constructor bypass: builds a channel over an already-established
+   * (or faked) connection instead of dialing NATS via {@link connect}. Keeps
+   * the `private constructor` invariant ("channels are built via `.connect()`")
+   * intact for production callers while letting unit tests inject an in-memory
+   * `NatsConnection` stand-in without a type cast around the private ctor.
+   */
+  static forTest(nc: NatsConnection, subjectPrefix = "agent"): NatsAgentChannel {
+    return new NatsAgentChannel(nc, subjectPrefix);
+  }
+
   private decode(data: Uint8Array): AgentUpMessage | undefined {
     let decoded: unknown;
     try {
@@ -169,6 +180,15 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
             sub.unsubscribe();
             throw new AgentTurnFailedError(msg.code, msg.message);
           case "tool_call":
+            // A `tool_call` shares this subscription's single idle-timeout
+            // budget (`timeoutMs`, default 30 min) with everything else the
+            // sub-agent might do: a container tool that runs long while
+            // emitting no `progress`/`warning` up-messages can exhaust that
+            // window with no other traffic keeping the subscription alive,
+            // surfacing as a generic AgentTurnTimeoutError rather than a
+            // "tool X took too long" error. This mirrors the pre-existing
+            // agent-backed-Tool `runTool` path (same dispatch shape/timeout),
+            // so it is not new -- see docs/adr/0028 "Consequences".
             opts.onToolCall?.({ callId: msg.callId, tool: msg.tool, input: msg.input });
             break;
           default:

@@ -133,3 +133,20 @@ sub-agent tool call either; each `callTool()` is a one-shot request/response.
 - Agent-backed tools are not yet reachable from a sub-agent's own `toolRefs`
   (see scope cut above) — only from the orchestrator's own Skill-mediated
   path, same as before this ADR.
+- `dispatchResolvedTool`'s container-Job branch deliberately does NOT subscribe
+  to `jobResultReceiver.onJobProgress`, unlike the otherwise-equivalent branch
+  in `runTool`: `AgentSession.callTool()` (`packages/agent-runtime`) resolves to
+  a single result with no progress channel back to the calling sub-agent, so
+  there is nowhere to route progress events. The omission is intentional, not
+  copy-paste drift; it can be revisited if/when the two dispatch paths converge
+  (see the duplication note above).
+- A sub-agent `tool_call` shares the same single idle-timeout budget
+  (`agentAwaitReplyTimeoutMs`, default 30 min) as the rest of `awaitReply`'s
+  message loop. A container tool that runs long while emitting no
+  `progress`/`warning` up-messages can exhaust that window with no other traffic
+  keeping the NATS subscription alive, surfacing as a generic
+  `AgentTurnTimeoutError` rather than a "tool X took too long" error. This
+  mirrors the pre-existing agent-backed-`Tool` `runTool` path (same dispatch
+  shape and timeout), so it is not a new risk — but sub-agent tool calls make it
+  more likely to manifest, since there is no human pause to justify long
+  silences the way HITL waits do.

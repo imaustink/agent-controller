@@ -53,6 +53,12 @@ export async function dispatchResolvedTool(
     event = await deps.localToolExecutor.run(tool, input, opts.sessionId);
   } else if (tool.jobTemplate) {
     const jobId = randomUUID();
+    // Intentionally NOT subscribing to `jobResultReceiver.onJobProgress` here,
+    // unlike `runTool`'s equivalent container-Job branch (agent/graph.ts): a
+    // sub-agent tool call has nowhere to route progress events, since
+    // `AgentSession.callTool()` (packages/agent-runtime) exposes only a single
+    // resolved result, no progress channel back to the calling sub-agent. The
+    // omission is deliberate, not copy-paste drift from `runTool` (docs/adr/0028).
     const awaitResult = deps.jobResultReceiver.awaitJob(jobId);
     if (deps.natsUrl) {
       await deps.containerToolLauncher.launch(tool.jobTemplate, {

@@ -5,10 +5,9 @@ import { NatsAgentChannel } from "./nats-agent-channel.js";
 /**
  * Minimal in-memory stand-in for the subset of `nats.NatsConnection` this
  * module uses (`subscribe`/`publish`) — enough to drive `NatsAgentChannel`'s
- * subject-keyed pub/sub without a real NATS server. `NatsAgentChannel`'s
- * constructor is `private` at the type level only; esbuild (vitest's
- * transform) doesn't enforce it at runtime, so it's constructed directly here
- * via a type cast.
+ * subject-keyed pub/sub without a real NATS server. Injected via the
+ * `NatsAgentChannel.forTest()` factory, which bypasses the `.connect()` dial
+ * without poking a hole in the `private constructor` invariant.
  */
 class FakeNatsConnection {
   private readonly subscribers = new Map<string, Set<(data: Uint8Array) => void>>();
@@ -65,8 +64,11 @@ class FakeNatsConnection {
 
 function makeChannel(): { channel: NatsAgentChannel; nc: FakeNatsConnection } {
   const nc = new FakeNatsConnection();
-  const ChannelCtor = NatsAgentChannel as unknown as new (nc: unknown, subjectPrefix: string) => NatsAgentChannel;
-  return { channel: new ChannelCtor(nc, "agent"), nc };
+  // `forTest` takes a real `NatsConnection`; the fake implements only the
+  // subset this module touches (`subscribe`/`publish`), hence the cast on the
+  // argument (not around the private constructor).
+  const channel = NatsAgentChannel.forTest(nc as unknown as Parameters<typeof NatsAgentChannel.forTest>[0], "agent");
+  return { channel, nc };
 }
 
 function publishUp(nc: FakeNatsConnection, runId: string, msg: Record<string, unknown>): void {
