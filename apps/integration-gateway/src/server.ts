@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { REPLY_MARKER, type GithubReplyClient } from "./github-client.js";
+import type { GithubReplyClient } from "./github-client.js";
 import type { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
 import { IdentityLinkApi } from "./identity-link/api.js";
 import { ClaudeAuthApi } from "./claude-auth/api.js";
@@ -67,15 +67,13 @@ export interface GatewayServerOptions {
    * turn completes), linking to a minimal `GET /sessions/:token` page that
    * shows that session's turn history and lets a caller `POST` it follow-up
    * prompts. Omitted entirely (leaving both undefined) preserves this
-   * gateway's exact pre-#81 behavior -- no page routes are reachable, and
-   * plain conversational (non-labeled) relays are completely unaffected
-   * either way.
+   * gateway's exact pre-#81 behavior -- no page routes are reachable.
    */
   sessionPageStore?: SessionPageStore;
   publicBaseUrl?: string;
 }
 
-/** `owner/repo#issueNumber` scoped session id -- see docs/integrations-gateway.md's conversational path. */
+/** `owner/repo#issueNumber` scoped session id -- see docs/integrations-gateway.md. */
 export function sessionIdFor(owner: string, repo: string, issueNumber: number): string {
   return `github:${owner}/${repo}#${issueNumber}`;
 }
@@ -84,10 +82,10 @@ export function sessionIdFor(owner: string, repo: string, issueNumber: number): 
  * Consumer-facing HTTP surface for the GitHub Issues adapter: verifies each
  * webhook, maps it onto a per-issue orchestrator session, and relays the
  * eventual result back as an issue comment. See docs/integrations-gateway.md
- * -- this implements only the conversational path (no `target`/FAAS
- * shortcut): every event goes through agent-orchestrator's existing RAG
- * skill retrieval, which already owns deciding whether to ask a clarifying
- * question or delegate to the SWE agent.
+ * -- only an explicit label application (`issues.labeled` with the
+ * configured trigger label, or `pull_request.labeled` with the review label)
+ * is ever actionable; an unlabeled `issues.opened`/`issue_comment.created` is
+ * a strict no-op (`parseGithubEvent` maps it straight to `{ kind: "ignored" }`).
  */
 export class GatewayServer {
   private server: Server | undefined;
@@ -272,34 +270,6 @@ export class GatewayServer {
       }).catch(this.options.onBackgroundError ?? ((error: unknown) => console.error(error)));
       return;
     }
-
-    // An issue created WITH the trigger label already attached fires a
-    // SEPARATE `issues.labeled` webhook delivery a moment after `opened`
-    // (one per label present at creation) -- skip relaying `opened` here so
-    // that guaranteed-to-follow `labeled` event is the only one that
-    // dispatches. Without this, both events independently delegate the same
-    // session to the same agent, racing each other into two AgentRuns.
-    if (event.kind === "issue-opened" && this.options.githubTriggerLabel && event.labelNames.includes(this.options.githubTriggerLabel)) {
-      return;
-    }
-
-    // Belt-and-suspenders loop guard: skip our own bot/replies even if a
-    // login isn't flagged as `type: "Bot"` (e.g. a PAT-backed account).
-    const text = event.kind === "issue-opened" ? event.body : event.commentBody;
-    if (text.includes(REPLY_MARKER)) return;
-
-    const identity = await this.options.identityResolver.resolve(event.senderLogin, event.senderIsBot, {
-      owner: event.owner,
-      repo: event.repo,
-    });
-    if (!identity) return;
-
-    const sessionId = sessionIdFor(event.owner, event.repo, event.issueNumber);
-    const request = event.kind === "issue-opened" ? `${event.title}\n\n${event.body}`.trim() : event.commentBody;
-
-    this.relayAndReply(event.owner, event.repo, event.issueNumber, request, sessionId).catch(
-      this.options.onBackgroundError ?? ((error: unknown) => console.error(error)),
-    );
   }
 
   private async relayAndReply(

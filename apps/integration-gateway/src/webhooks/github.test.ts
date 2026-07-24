@@ -28,7 +28,7 @@ const repoSender = {
 };
 
 describe("parseGithubEvent", () => {
-  it("parses an issues.opened event", () => {
+  it("ignores an issues.opened event (unlabeled events are always a no-op)", () => {
     const event = parseGithubEvent(
       "issues",
       JSON.stringify({
@@ -37,37 +37,10 @@ describe("parseGithubEvent", () => {
         issue: { number: 42, title: "Add dark mode", body: "Please add a dark theme." },
       }),
     );
-    expect(event).toEqual({
-      kind: "issue-opened",
-      owner: "acme",
-      repo: "widgets",
-      issueNumber: 42,
-      senderLogin: "alice",
-      senderIsBot: false,
-      title: "Add dark mode",
-      body: "Please add a dark theme.",
-      labelNames: [],
-    });
+    expect(event).toEqual({ kind: "ignored" });
   });
 
-  it("parses an issues.opened event's labels already attached at creation time", () => {
-    const event = parseGithubEvent(
-      "issues",
-      JSON.stringify({
-        action: "opened",
-        ...repoSender,
-        issue: {
-          number: 42,
-          title: "Add dark mode",
-          body: "Please add a dark theme.",
-          labels: [{ name: "ai-triage" }, { name: "enhancement" }],
-        },
-      }),
-    );
-    expect(event).toMatchObject({ kind: "issue-opened", labelNames: ["ai-triage", "enhancement"] });
-  });
-
-  it("parses an issue_comment.created event", () => {
+  it("ignores an issue_comment.created event (unlabeled events are always a no-op)", () => {
     const event = parseGithubEvent(
       "issue_comment",
       JSON.stringify({
@@ -77,26 +50,18 @@ describe("parseGithubEvent", () => {
         comment: { body: "start work" },
       }),
     );
-    expect(event).toEqual({
-      kind: "issue-comment-created",
-      owner: "acme",
-      repo: "widgets",
-      issueNumber: 42,
-      senderLogin: "alice",
-      senderIsBot: false,
-      commentBody: "start work",
-    });
+    expect(event).toEqual({ kind: "ignored" });
   });
 
-  it("flags a Bot sender", () => {
+  it("flags a Bot sender on issues.labeled", () => {
     const event = parseGithubEvent(
-      "issue_comment",
+      "issues",
       JSON.stringify({
-        action: "created",
+        action: "labeled",
         repository: { owner: { login: "acme" }, name: "widgets" },
         sender: { login: "agent-controller[bot]", type: "Bot" },
-        issue: { number: 42 },
-        comment: { body: "the reply" },
+        issue: { number: 42, title: "t", body: "b" },
+        label: { name: "ai-triage" },
       }),
     );
     expect(event).toMatchObject({ senderIsBot: true, senderLogin: "agent-controller[bot]" });
