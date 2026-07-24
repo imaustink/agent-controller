@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -244,6 +244,68 @@ describe("runClaudeTurnRemoteControlled", () => {
       authError: false,
       sessionId: "ab12cd34",
     });
+  });
+
+  it("detects completion via 'state: done' (status stays 'idle') and reads the final message from the session's own JSONL transcript -- regression for a real hang after a real task finished", async () => {
+    // Confirmed empirically against the real CLI: a finished background
+    // session reports `status: "idle"` (checking only `status`, an earlier
+    // version of this code, never sees a terminal value there) alongside
+    // the REAL lifecycle signal in a separate `state: "done"` field -- and
+    // there is no result/output/message field at all, ever, for a finished
+    // session. This is exactly what caused a real triage run to open a PR
+    // successfully and then hang anyway: this code never noticed it had
+    // finished. The fix checks both `status` and `state`, and falls back to
+    // reading the session's own JSONL transcript for the final reply text.
+    const homeDir = await mkdtemp(join(tmpdir(), "claude-runner-rc-test-home-"));
+    const cwd = process.cwd();
+    const longSessionId = "4ebeef3c-aca9-4f63-84b4-a503a95bbb12";
+    const projectDirName = cwd.replace(/[/.]/g, "-");
+    const transcriptDir = join(homeDir, ".claude", "projects", projectDirName);
+    await mkdir(transcriptDir, { recursive: true });
+    await writeFile(
+      join(transcriptDir, `${longSessionId}.jsonl`),
+      [
+        JSON.stringify({ type: "system", subtype: "init", session_id: longSessionId }),
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "Opened PR #131" }] },
+        }),
+        JSON.stringify({ type: "system", subtype: "turn_duration" }),
+      ].join("\n") + "\n",
+    );
+
+    try {
+      await installFakeClaude(`
+        const args = process.argv.slice(2);
+        if (args[0] === "agents") {
+          console.log(JSON.stringify([
+            { name: "autonomous coding agent", id: "4ebeef3c", sessionId: "${longSessionId}", status: "idle", state: "done" },
+          ]));
+          process.exit(0);
+        } else {
+          console.log("Starting background service…\\nbackgrounded · 4ebeef3c");
+          process.exit(0);
+        }
+      `);
+
+      const result = await runClaudeTurnRemoteControlled("create test.md", {
+        cwd,
+        env: { ...env(), HOME: homeDir },
+        settings: {},
+        runId: "run-8",
+        pollIntervalMs: 5,
+      });
+
+      expect(result).toEqual({
+        finalMessage: "Opened PR #131",
+        failed: false,
+        failureDetail: null,
+        authError: false,
+        sessionId: "4ebeef3c",
+      });
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
   });
 
   it("times out and reports failure if the session never reports completion", async () => {
