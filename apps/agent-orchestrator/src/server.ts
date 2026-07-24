@@ -128,6 +128,18 @@ export interface AgentGraphInput {
    */
   progressListener?: (stage: string, message: string | undefined) => void;
   /**
+   * Separate from `progressListener` above on purpose: `delegateToAgent`
+   * treats a set `progressListener` as "this caller has a live channel,
+   * synchronously wait for an identity link to land." A fire-and-forget
+   * `/invoke` caller that only wants to capture a `remote-control-url`
+   * progress event (to post a Remote Control link on a GitHub issue) must
+   * NOT be treated as a live channel, or the whole turn silently blocks for
+   * minutes with nothing posted anywhere -- exactly the regression this
+   * field exists to avoid. See `AgentState.remoteControlUrlListener`'s doc
+   * in agent/graph.ts for the full incident writeup.
+   */
+  remoteControlUrlListener?: (url: string) => void;
+  /**
    * Fired the instant this turn decides the caller must link an identity,
    * before the (possibly slow) link `start()`. Set only by `handleInvoke` for
    * the fire-and-forget `/invoke` path, so it can mark the in-flight job
@@ -230,9 +242,17 @@ export class InvokeServer {
     forwardedUserToken?: string,
     forcedSkillId?: string,
     forcedAgentId?: string,
+    // Deliberately a separate trailing param, not folded into
+    // `progressListener` -- see `AgentGraphInput.remoteControlUrlListener`'s
+    // doc for why conflating the two caused a real incident (a fire-and-
+    // forget triage turn silently blocking for minutes on identity-link's
+    // synchronous wait, because setting `progressListener` made
+    // delegateToAgent think this caller had a live channel).
+    remoteControlUrlListener?: (url: string) => void,
   ): Promise<AgentGraphInput> {
     const input: AgentGraphInput = { request, authToken };
     if (progressListener) input.progressListener = progressListener;
+    if (remoteControlUrlListener) input.remoteControlUrlListener = remoteControlUrlListener;
     if (identityLinkFlow) input.identityLinkFlow = identityLinkFlow;
     if (forwardedUserToken) input.forwardedUserToken = forwardedUserToken;
     if (forcedSkillId) input.forcedSkillId = forcedSkillId;
@@ -607,22 +627,30 @@ export class InvokeServer {
       request,
       authToken,
       sessionId,
-      // Tracks the latest "remote-control-url" progress message onto this
-      // invocation's record (see `InvocationRecord.remoteControlUrl`) -- a
-      // generic listener for any stage name, but only this one stage is
-      // acted on today. Only mutate while still pending -- never clobber a
-      // terminal record (mirrors `reportIdentityLinkPending` below).
-      (stage, message) => {
-        if (stage !== "remote-control-url" || !message) return;
-        const current = this.invocations.get(id);
-        if (current && current.status === "pending") {
-          this.invocations.set(id, { ...current, remoteControlUrl: message });
-        }
-      },
+      // Deliberately `undefined` -- this is a fire-and-forget caller with no
+      // live channel, so `progressListener` must stay unset here (see its
+      // doc and `remoteControlUrlListener`'s doc below for why: setting it
+      // makes `delegateToAgent` treat this as a live channel and
+      // synchronously `waitForCompletion` an identity link for minutes,
+      // which is exactly the regression that caused a real triage turn to
+      // silently hang with nothing posted to the issue).
+      undefined,
       identityLinkFlow,
       undefined,
       forcedSkillId,
       forcedAgentId,
+      // Tracks the latest "remote-control-url" progress message onto this
+      // invocation's record (see `InvocationRecord.remoteControlUrl`) --
+      // passed via the dedicated `remoteControlUrlListener` param, NOT
+      // `progressListener` (see above). Only mutate while still pending --
+      // never clobber a terminal record (mirrors `reportIdentityLinkPending`
+      // below).
+      (url) => {
+        const current = this.invocations.get(id);
+        if (current && current.status === "pending") {
+          this.invocations.set(id, { ...current, remoteControlUrl: url });
+        }
+      },
     ).then((graphInput) => {
       // Mark the in-flight job identity-link-pending the moment the graph
       // decides a link is needed (before the link URL exists), so a polling

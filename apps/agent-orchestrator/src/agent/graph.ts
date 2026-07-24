@@ -239,6 +239,27 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => undefined,
   }),
   /**
+   * A second, narrower progress hook -- deliberately SEPARATE from
+   * `progressListener` above. `progressListener`'s presence is also what the
+   * identity-link gate (below) uses to decide "does this caller have a live
+   * channel to show a link on right now, so it's worth synchronously
+   * `waitForCompletion`-ing" vs. "fire-and-forget: post the link and return
+   * immediately, let a later re-trigger resume." A fire-and-forget caller
+   * (integration-gateway's GitHub-issue triage relay) still wants to capture
+   * a `remote-control-url` progress event when one arrives, but attaching
+   * THAT capture via `progressListener` would wrongly make delegateToAgent
+   * treat it as a live channel and block the whole turn on
+   * `waitForCompletion` for up to the link flow's full expiry -- exactly the
+   * regression this field exists to avoid (a real incident: triage silently
+   * hung for minutes with nothing posted to the issue, traced to this
+   * conflation). Every delegate node forwards `remote-control-url` events to
+   * this listener regardless of whether `progressListener` is also set.
+   */
+  remoteControlUrlListener: Annotation<((url: string) => void) | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
    * Fired the instant `delegateToAgent` decides this caller must link an
    * identity (getToken miss) -- BEFORE the potentially slow `start()` (the
    * claude provider spawns a `setup-token` PTY that can take seconds). Lets a
@@ -905,7 +926,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       try {
         const awaitReply = deps.agentChannel.awaitReply(state.activeAgentRunId, {
           timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
-          onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+          onProgress:
+            state.progressListener || state.remoteControlUrlListener
+              ? (stage, message) => {
+                  state.progressListener?.(stage ?? "agent", message);
+                  if (stage === "remote-control-url" && message) state.remoteControlUrlListener?.(message);
+                }
+              : undefined,
         });
         await deps.agentChannel.sendPrompt(state.activeAgentRunId, state.request);
         const reply = await awaitReply;
@@ -1194,7 +1221,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // can never publish before our subscription exists.
         const awaitReply = deps.agentChannel.awaitReply(runId, {
           timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
-          onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+          onProgress:
+            state.progressListener || state.remoteControlUrlListener
+              ? (stage, message) => {
+                  state.progressListener?.(stage ?? "agent", message);
+                  if (stage === "remote-control-url" && message) state.remoteControlUrlListener?.(message);
+                }
+              : undefined,
         });
         await deps.agentRunLauncher.launch(agent.agentRunTemplate, runId, {
           goal,
@@ -1368,7 +1401,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         try {
           const awaitReply = deps.agentChannel.awaitReply(runId, {
             timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
-            onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+            onProgress:
+              state.progressListener || state.remoteControlUrlListener
+                ? (stage, message) => {
+                    state.progressListener?.(stage ?? "agent", message);
+                    if (stage === "remote-control-url" && message) state.remoteControlUrlListener?.(message);
+                  }
+                : undefined,
           });
           await deps.agentRunLauncher.launch(tool.agentRunTemplate, runId, {
             goal: input,
