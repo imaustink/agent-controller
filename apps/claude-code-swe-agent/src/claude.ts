@@ -28,12 +28,26 @@ export const DENY_BASH_PATTERNS: string[] = [
 ];
 
 /**
- * Builds the `--settings` JSON handed to `claude -p`. Non-negotiable
- * `permissions.deny` bash guardrails plus, since this agent runs headless
- * with nobody to answer a permission prompt, `bypassPermissions` is also set
- * here (in addition to being passed as `--permission-mode` — belt and
- * braces, matching how CLI flags and settings.json can each independently
- * express the same setting).
+ * Builds the `--settings` JSON handed to `claude -p` (or, for Remote
+ * Control runs, `claude --bg --remote-control` — see claude-runner.ts's
+ * `runClaudeTurnRemoteControlled`). Non-negotiable `permissions.deny` bash
+ * guardrails plus, since this agent runs headless with nobody to answer a
+ * permission prompt, `bypassPermissions` is also set here (in addition to
+ * being passed as `--permission-mode` — belt and braces, matching how CLI
+ * flags and settings.json can each independently express the same setting).
+ *
+ * `skipDangerousModePermissionPrompt: true` -- confirmed empirically (not
+ * from any documentation): `claude --bg` combined with `bypassPermissions`
+ * refuses to start with "requires accepting the disclaimer first" unless
+ * this is set. Found by running `claude --dangerously-skip-permissions`
+ * interactively in a throwaway pod on this same image and diffing
+ * `~/.claude/settings.json` before/after -- this key appeared there, top
+ * level, set to `true`. Setting it directly here means this agent never
+ * needs an actual human to interactively accept that disclaimer once per
+ * container: the `--settings` JSON this function returns is loaded with the
+ * same schema as `~/.claude/settings.json`, so setting the key here is
+ * equivalent. Harmless for the plain one-shot `-p` path too (that path
+ * never hits the `--bg`-specific check this key exists for).
  */
 export function buildClaudeSettings(): object {
   return {
@@ -41,6 +55,7 @@ export function buildClaudeSettings(): object {
       defaultMode: "bypassPermissions",
       deny: DENY_BASH_PATTERNS,
     },
+    skipDangerousModePermissionPrompt: true,
   };
 }
 
