@@ -2520,8 +2520,11 @@ describe("buildAgentGraph delegation with multiple identityProviders", () => {
 
     const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
 
+    // `claude` (setup-token) stays keyed per-user on the caller's subject...
     expect(claudeAuthGateway.getToken).toHaveBeenCalledWith("claude", "alice");
-    expect(claudeRemoteGateway.getToken).toHaveBeenCalledWith("claude-remote", "alice");
+    // ...while `claude-remote` (the Remote Control login) is keyed under the
+    // single shared subject, so one link serves every flow/user.
+    expect(claudeRemoteGateway.getToken).toHaveBeenCalledWith("claude-remote", "shared:claude-remote");
     expect(final.error).toBeUndefined();
     expect(final.pendingIdentityLink).toBeUndefined();
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
@@ -2556,9 +2559,14 @@ describe("buildAgentGraph delegation with multiple identityProviders", () => {
 
     const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
 
+    // `claude` (setup-token) stays keyed per-user on the caller's subject...
     expect(claudeAuthGateway.getToken).toHaveBeenCalledWith("claude", "alice");
-    expect(claudeRemoteGateway.getToken).toHaveBeenCalledWith("claude-remote", "alice");
-    expect(claudeRemoteGateway.start).toHaveBeenCalled();
+    // ...while `claude-remote` (the Remote Control login) is keyed under the
+    // single shared subject, so one link serves every flow/user.
+    expect(claudeRemoteGateway.getToken).toHaveBeenCalledWith("claude-remote", "shared:claude-remote");
+    // The link is STARTED under the shared subject too, so the credential it
+    // eventually produces lands under the key every flow looks it up by.
+    expect(claudeRemoteGateway.start).toHaveBeenCalledWith("claude-remote", "shared:claude-remote", expect.any(String));
     expect(final.identityLinkPending).toBe(true);
     expect(final.pendingIdentityLink?.provider).toBe("claude-remote");
     expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
