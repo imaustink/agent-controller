@@ -888,9 +888,13 @@ export class InvokeServer {
         // (integration-gateway's relayAndReply), replacing the deprecated
         // session-page link for Claude-backed sessions.
         if (stage === "remote-control-url" && message) {
+          // Leading AND trailing blank lines so this link stands as its own
+          // paragraph -- an earlier streamed chunk (e.g. agent-text) may not
+          // end in a newline, and without the leading break the two run
+          // together into one mangled line in the chat client.
           writeSseChunk(
             res,
-            chatCompletionChunk(id, model, { content: `🤖 Watch live or take over this session here: ${message}\n\n` }, null),
+            chatCompletionChunk(id, model, { content: `\n\n🤖 Watch live or take over this session here: ${message}\n\n` }, null),
           );
           return;
         }
