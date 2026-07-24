@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { clip } from "./security/redact.js";
 
@@ -251,71 +252,92 @@ export function runClaudeTurn(prompt: string, opts: ClaudeRunOptions): Promise<C
 }
 
 // ---------------------------------------------------------------------------
-// Remote Control path (`claude --bg --remote-control`).
+// Remote Control path (interactive `claude --remote-control`, PTY-driven).
 //
-// Everything below this point is built against flags confirmed to exist via
-// `claude --help` (`--bg`/`--background`, `--remote-control [name]`,
-// `claude agents --json`) but an UNCONFIRMED runtime contract: the exact
-// stdout printed on handoff, the exact JSON shape `claude agents --json`
-// returns, and how a finished/failed background session is distinguished from
-// a still-running one. There is no way to verify any of this in this sandbox
-// (no real Claude subscription login), so every guess is called out inline.
-// The intent is that a human can re-point `scrapeRemoteControlUrl` and
-// `parseAgentSessionEntry` at the real shapes after running one real spike,
-// without needing to touch the polling/heartbeat/auth-classification
-// scaffolding around them.
+// Every fact below is CONFIRMED against a real logged-in CLI (v2.1.218) in a
+// container matching the deployed image (see the commit message for the full
+// investigation), NOT guessed:
+//
+//  - `--bg` does NOT establish a Remote Control bridge and never yields a
+//    claude.ai URL. Only an INTERACTIVE `claude --remote-control` session
+//    registers with claude.ai and produces a shareable link. So this runs
+//    the CLI interactively, not backgrounded.
+//  - Interactive claude needs a TTY, so it's launched under `script -q -c ...
+//    /dev/null` (util-linux, already in the image) -- a real pty with no
+//    native dependency. The prompt/settings/name travel via env vars so the
+//    large, newline/quote-heavy prompt never has to be shell-escaped.
+//  - The session id, remote URL, final reply, and completion marker all live
+//    in the session's own JSONL transcript at
+//    `~/.claude/projects/<cwd with / and . replaced by ->/<sessionId>.jsonl`:
+//      * `bridgeSessionId` ("cse_XXXX")  -> URL https://claude.ai/code/session_XXXX
+//      * last {type:"assistant"} text     -> the final reply
+//      * a {type:"system",subtype:"turn_duration"} entry -> the turn finished
+//    (`claude agents --json --all` is used only to discover our session's id;
+//    it carries no URL/result field.)
+//  - A fresh HOME must have onboarding + workspace-trust pre-seeded or the TUI
+//    blocks on the theme picker / "trust this folder?" prompt before ever
+//    registering (see `seedRemoteControlConfig`).
 // ---------------------------------------------------------------------------
 
-/** Cadence for polling `claude agents --json` while waiting for the background session to conclude. */
-const REMOTE_CONTROL_POLL_INTERVAL_MS = 5_000;
+/** Cadence for polling `claude agents --json` (to find our session id) + re-reading the transcript. */
+const REMOTE_CONTROL_POLL_INTERVAL_MS = 3_000;
 
-/** Upper bound on how long to wait for a Remote Control session to conclude before giving up. */
+/** Upper bound on how long to wait for the interactive session's turn to finish before giving up. */
 const REMOTE_CONTROL_MAX_WAIT_MS = 30 * 60_000;
 
-// Guess: the URL printed to stdout on `--bg --remote-control` handoff looks
-// like the session URLs used elsewhere in this codebase's Remote Control login
-// flow (integration-gateway's claude-auth phase).
-//
-// NOTE: `claude --bg` does NOT print this URL anywhere, and it is absent
-// from `claude agents --json` too (both confirmed empirically). So this
-// scrape almost never fires -- the URL is instead CONSTRUCTED from the
-// session id (see `buildRemoteControlUrl`), which is how the CLI itself
-// builds it. The scrape is kept only as a belt-and-braces first choice in
-// case a future CLI version does start printing it.
-const REMOTE_CONTROL_URL_RE = /https:\/\/claude\.ai\/code\/[A-Za-z0-9_-]+/;
-
 /**
- * Builds the Remote Control session URL from a session id, mirroring the
- * `claude` CLI's own construction (decompiled from v2.1.218:
- * `https://claude.ai/code/${toCompatSessionId(id)}`, where
- * `toCompatSessionId` rewrites only a `cse_`-prefixed id to `session_<rest>`
- * and passes everything else through unchanged). This is the reliable path
- * to the URL because the CLI never emits it in `--bg` mode -- we already
- * capture the session id from `claude agents --json --all`, so we can derive
- * the exact same URL a human would get from `/remote-control` interactively.
- * Returns null for an empty id.
+ * Builds the Remote Control URL from a transcript `bridgeSessionId`, mirroring
+ * the CLI's own `toCompatSessionId` (decompiled v2.1.218): a `cse_`-prefixed
+ * id becomes `session_<rest>`, anything else passes through. Confirmed live:
+ * transcript `bridgeSessionId: "cse_01YBWpf…"` yields exactly the
+ * `https://claude.ai/code/session_01YBWpf…` the CLI itself prints.
  */
-function buildRemoteControlUrl(sessionId: string | null | undefined): string | null {
-  if (!sessionId) return null;
-  const compat = sessionId.startsWith("cse_") ? `session_${sessionId.slice(4)}` : sessionId;
+function remoteControlUrlFromBridge(bridgeSessionId: string): string {
+  const compat = bridgeSessionId.startsWith("cse_") ? `session_${bridgeSessionId.slice(4)}` : bridgeSessionId;
   return `https://claude.ai/code/${compat}`;
 }
-/**
- * Confirmed empirically (real `claude --bg --remote-control` invocation,
- * see claude-runner-remote-control.test.ts): the initial handoff prints
- * `backgrounded · <shortId>` (the separator observed was a middle dot,
- * U+00B7 -- tolerating a bullet/hyphen too in case that varies by
- * terminal/version), and THIS short id -- NOT the `--remote-control <name>`
- * value we pass -- is what `claude agents --json`'s own `id` field holds.
- * The `name` field in that JSON is the prompt text, unrelated to the name
- * we passed. Matching on `name` (an earlier, unverified guess) meant the
- * poll loop below could never find its own session and looped forever.
- */
-const BACKGROUNDED_ID_RE = /backgrounded\s*[·•-]\s*([A-Za-z0-9]+)/i;
 
-function scrapeRemoteControlUrl(text: string): string | null {
-  const match = text.match(REMOTE_CONTROL_URL_RE);
-  return match ? match[0] : null;
+/**
+ * Pre-seeds the run's HOME so an interactive `claude` goes straight to
+ * remote-control registration instead of stalling on a first-run prompt:
+ *   - settings.json: `skipDangerousModePermissionPrompt` (the `--bg`/
+ *     bypassPermissions disclaimer gate reads the ON-DISK file, not
+ *     `--settings`), plus a theme so the theme picker never shows.
+ *   - .claude.json: `hasCompletedOnboarding`, and per-cwd workspace trust so
+ *     the "Is this a project you trust?" prompt never shows for `cwd`.
+ * All confirmed necessary live -- without the trust entry for the exact cwd,
+ * the session sits at the trust prompt and never registers. Merges rather
+ * than clobbers (the login credentials/state also live in .claude.json).
+ */
+function seedRemoteControlConfig(homeDir: string, cwd: string): void {
+  const claudeDir = join(homeDir, ".claude");
+  mkdirSync(claudeDir, { recursive: true });
+
+  const settingsPath = join(claudeDir, "settings.json");
+  let settings: Record<string, unknown> = {};
+  try {
+    settings = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+  } catch {
+    // no existing settings.json, or not valid JSON -- start fresh
+  }
+  settings.skipDangerousModePermissionPrompt = true;
+  if (!settings.theme) settings.theme = "dark";
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+
+  const cfgPath = join(homeDir, ".claude.json");
+  let cfg: Record<string, unknown> = {};
+  try {
+    cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
+  } catch {
+    // no existing .claude.json yet
+  }
+  cfg.hasCompletedOnboarding = true;
+  const projects =
+    typeof cfg.projects === "object" && cfg.projects !== null ? (cfg.projects as Record<string, unknown>) : {};
+  const existing = typeof projects[cwd] === "object" && projects[cwd] !== null ? (projects[cwd] as object) : {};
+  projects[cwd] = { ...existing, hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, projectOnboardingSeenCount: 5 };
+  cfg.projects = projects;
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 }
 
 interface CapturedChild {
@@ -375,85 +397,25 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-interface ParsedAgentSession {
-  name: string | null;
-  /** The short id (e.g. "4ebeef3c") -- the CLI's own stable per-session identifier, confirmed via a real "backgrounded · <id>" handoff plus a matching `agents --json` "id" field. */
-  id: string | null;
-  /** The long UUID-shaped session id (e.g. "4ebeef3c-aca9-4f63-84b4-a503a95bbb12") -- distinct from `id` above; this is what names the session's own JSONL transcript file under `~/.claude/projects/<hashed-cwd>/`. */
-  longSessionId: string | null;
-  url: string | null;
-  finished: boolean;
+interface InteractiveSession {
+  /** The long UUID-shaped session id -- names the transcript file `<sessionId>.jsonl`. */
+  sessionId: string;
+  /** The short id (e.g. "9594acac"), used only for a best-effort `claude stop` on cleanup. */
+  shortId: string | null;
+  /** True when `agents --json` reports this session in a terminal-failed lifecycle state. */
   failed: boolean;
-  resultText: string | null;
 }
 
 /**
- * Parses one entry from a real (confirmed via a throwaway local session,
- * see claude-runner-remote-control.test.ts) `claude agents --json` array
- * entry. Two confirmed surprises this now accounts for:
- *
- * 1. A finished background session reports `status: "idle"` (an activity
- *    indicator, not a lifecycle one) alongside the ACTUAL lifecycle signal
- *    in a separate `state` field (`"done"`, or `"blocked"` when stuck e.g.
- *    on an auth failure) -- checking only one of the two fields (an earlier
- *    version of this code picked whichever was present first) missed
- *    exactly the real-world "status idle, state done" combination, so a
- *    genuinely finished session was never detected as finished.
- * 2. There is no `result`/`output`/`message`/`summary` field at all --
- *    `resultText` legitimately stays `null` for a real finished session;
- *    the caller must read the session's own JSONL transcript (see
- *    `readFinalMessageFromTranscript`) to get the actual final reply text.
- *
- * Every access is still guarded so an entirely different real shape (a
- * future CLI version) degrades to "doesn't look finished yet" rather than
- * throwing -- a parse surprise should never crash the run, only delay
- * detecting completion until the next poll or the maxWait timeout.
+ * Finds OUR interactive Remote Control session in a `claude agents --json
+ * --all` payload -- the one whose `cwd` is (or is under) this run's working
+ * directory and whose `kind` is `"interactive"`. Confirmed live: the session
+ * the CLI registers for `--remote-control` shows up as `kind: "interactive"`;
+ * its `name` is an auto-generated label (NOT the `--remote-control <name>` we
+ * pass), so matching is by kind + cwd, not name. Returns `null` (never
+ * throws) until the session appears / on any unexpected shape.
  */
-function parseAgentSessionEntry(entry: unknown): ParsedAgentSession | null {
-  if (typeof entry !== "object" || entry === null) return null;
-  const rec = entry as Record<string, unknown>;
-  const pickString = (...keys: string[]): string | null => {
-    for (const key of keys) {
-      const value = rec[key];
-      if (typeof value === "string" && value) return value;
-    }
-    return null;
-  };
-  const name = pickString("name", "sessionName", "session_name");
-  const id = pickString("id");
-  const longSessionId = pickString("sessionId", "session_id");
-  const url = pickString("url", "remoteControlUrl", "remote_control_url", "link");
-  const status = (pickString("status") ?? "").toLowerCase();
-  const state = (pickString("state") ?? "").toLowerCase();
-  const resultText = pickString("result", "output", "message", "summary");
-  const TERMINAL_DONE = ["completed", "finished", "done", "stopped", "exited", "ended"];
-  const TERMINAL_FAILED = ["failed", "error", "errored"];
-  const finished = TERMINAL_DONE.includes(status) || TERMINAL_DONE.includes(state);
-  const failed =
-    TERMINAL_FAILED.includes(status) ||
-    TERMINAL_FAILED.includes(state) ||
-    rec.failed === true ||
-    rec.isError === true ||
-    rec.is_error === true;
-  return { name, id, longSessionId, url, finished, failed, resultText };
-}
-
-/**
- * Finds the entry for this run in a `claude agents --json` payload. Matches
- * by `id` (the short id scraped from the initial handoff's "backgrounded ·
- * <id>" line, e.g. "dd527d1c") when known -- confirmed empirically that
- * this is the CLI's own stable identifier for the session, unlike `name`
- * (which is the prompt text, not the `--remote-control <name>` value we
- * pass -- matching on that, an earlier unverified guess, meant this could
- * never find its own session at all). Falls back to matching on
- * `sessionName` only if the id was never captured, purely as a defensive
- * last resort. Tolerates the top-level value being either a bare array (per
- * `--help`'s "Print active sessions ... as a JSON array") or, in case
- * that's imprecise, an object wrapping the array under a `sessions` key --
- * and returns `null` (never throws) for anything else, including malformed
- * JSON.
- */
-function findSession(raw: string, ids: { backgroundedId: string | null; sessionName: string }): ParsedAgentSession | null {
+function findInteractiveSession(raw: string, cwd: string): InteractiveSession | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -467,13 +429,82 @@ function findSession(raw: string, ids: { backgroundedId: string | null; sessionN
       : null;
   if (!list) return null;
   for (const entry of list) {
-    const parsedEntry = parseAgentSessionEntry(entry);
-    if (!parsedEntry) continue;
-    if (ids.backgroundedId ? parsedEntry.id === ids.backgroundedId : parsedEntry.name === ids.sessionName) {
-      return parsedEntry;
-    }
+    if (typeof entry !== "object" || entry === null) continue;
+    const rec = entry as Record<string, unknown>;
+    if (rec.kind !== "interactive") continue;
+    const entryCwd = typeof rec.cwd === "string" ? rec.cwd : "";
+    if (entryCwd !== cwd && !entryCwd.startsWith(`${cwd}/`) && !entryCwd.startsWith(cwd)) continue;
+    const sessionId = typeof rec.sessionId === "string" ? rec.sessionId : "";
+    if (!sessionId) continue;
+    const state = String(rec.state ?? "").toLowerCase();
+    const status = String(rec.status ?? "").toLowerCase();
+    const TERMINAL_FAILED = ["failed", "error", "errored"];
+    const failed = TERMINAL_FAILED.includes(state) || TERMINAL_FAILED.includes(status);
+    return { sessionId, shortId: typeof rec.id === "string" ? rec.id : null, failed };
   }
   return null;
+}
+
+interface TranscriptState {
+  /** The `bridgeSessionId` (e.g. "cse_01YB…") -> feeds `remoteControlUrlFromBridge`. Null until it appears. */
+  bridgeSessionId: string | null;
+  /** The last assistant text block -- the final reply, since `agents --json` carries no result field. */
+  finalText: string | null;
+  /** True once a `{type:"system",subtype:"turn_duration"}` entry appears, i.e. the turn finished. */
+  turnComplete: boolean;
+}
+
+/**
+ * Parses the session's JSONL transcript for everything the poll loop needs:
+ * the `bridgeSessionId` (early summary line), the last assistant text (the
+ * final reply), and whether a `turn_duration` system entry has appeared
+ * (turn finished). All three confirmed present in a real interactive
+ * Remote Control transcript. Defensive: skips unparseable lines, never
+ * throws.
+ */
+function parseTranscript(raw: string): TranscriptState {
+  let bridgeSessionId: string | null = null;
+  let finalText: string | null = null;
+  let turnComplete = false;
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof entry !== "object" || entry === null) continue;
+    const rec = entry as Record<string, unknown>;
+    if (typeof rec.bridgeSessionId === "string" && rec.bridgeSessionId) bridgeSessionId = rec.bridgeSessionId;
+    if (rec.type === "system" && rec.subtype === "turn_duration") turnComplete = true;
+    if (rec.type === "assistant" && typeof rec.message === "object" && rec.message !== null) {
+      const content = (rec.message as Record<string, unknown>).content;
+      if (Array.isArray(content)) {
+        const text = content
+          .filter(
+            (b): b is { type: string; text: string } =>
+              typeof b === "object" &&
+              b !== null &&
+              (b as { type?: unknown }).type === "text" &&
+              typeof (b as { text?: unknown }).text === "string",
+          )
+          .map((b) => b.text)
+          .join("");
+        if (text) finalText = text;
+      }
+    }
+  }
+  return { bridgeSessionId, finalText, turnComplete };
+}
+
+/** Reads the session's transcript, or null if it doesn't exist yet / can't be read. */
+async function readTranscript(homeDir: string, cwd: string, sessionId: string): Promise<string | null> {
+  try {
+    return await readFile(join(homeDir, ".claude", "projects", claudeProjectDirName(cwd), `${sessionId}.jsonl`), "utf8");
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -490,88 +521,83 @@ function claudeProjectDirName(cwd: string): string {
 }
 
 /**
- * Reads the final assistant message out of a finished background session's
- * own JSONL transcript (`~/.claude/projects/<hashed-cwd>/<longSessionId>.jsonl`)
- * -- necessary because `claude agents --json` never includes a result/output/
- * message field for a finished session (confirmed empirically), unlike the
- * one-shot `-p --output-format stream-json` path's `result` event. Returns
- * the LAST `type: "assistant"` entry's concatenated text content, or `null`
- * if the file can't be read/parsed or contains no assistant text -- treated
- * as "no result text available" by the caller, not a hard failure.
- */
-async function readFinalMessageFromTranscript(homeDir: string, cwd: string, longSessionId: string): Promise<string | null> {
-  const path = join(homeDir, ".claude", "projects", claudeProjectDirName(cwd), `${longSessionId}.jsonl`);
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch {
-    return null;
-  }
-  let lastText: string | null = null;
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    let entry: unknown;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (typeof entry !== "object" || entry === null) continue;
-    const rec = entry as Record<string, unknown>;
-    if (rec.type !== "assistant") continue;
-    const message = rec.message as Record<string, unknown> | undefined;
-    const content = Array.isArray(message?.content) ? message!.content : [];
-    const text = content
-      .filter((block): block is { type: string; text: string } => typeof block === "object" && block !== null && (block as { type?: unknown }).type === "text" && typeof (block as { text?: unknown }).text === "string")
-      .map((block) => block.text)
-      .join("");
-    if (text) lastText = text;
-  }
-  return lastText;
-}
-
-/**
- * Runs one turn via `claude --bg --remote-control`, the alternative to
- * `runClaudeTurn`'s one-shot `-p` invocation used when Remote Control is
- * enabled for the Agent (see config.ts's `remoteControlEnabled` / the Go/Helm
- * init-container phase that seeds `~/.claude/.credentials.json` beforehand).
+ * Runs one turn via an INTERACTIVE `claude --remote-control` session, driven
+ * under a pty via `script`. Used instead of `runClaudeTurn`'s one-shot `-p`
+ * when Remote Control is enabled for the Agent (config.ts `remoteControlEnabled`;
+ * `~/.claude/.credentials.json` seeded by the Go/Helm init-container first).
+ * See the "Remote Control path" comment block above for why interactive (not
+ * `--bg`) is the only mode that actually registers a claude.ai session + URL.
  *
- * `--bg` returns immediately after handing off to a background-managed
- * session (per `--help`), so unlike `runClaudeTurn` there is no single
- * long-lived child whose stdout can be parsed for completion. Instead this:
- *   1. spawns the handoff, best-effort-scrapes a Remote Control URL from
- *      whatever it prints, and surfaces it via `onProgress` as soon as known;
- *   2. polls `claude agents --json` on an interval (mirroring the existing
- *      heartbeat cadence) for the named session, parsing defensively since the
- *      real JSON shape is unconfirmed (see `parseAgentSessionEntry`);
- *   3. resolves with the same `ClaudeRunResult` shape as `runClaudeTurn` once
- *      that session reports finished, or after `maxWaitMs` elapses.
+ *   1. Seed onboarding/trust/disclaimer config for this run's HOME.
+ *   2. Launch `claude --remote-control <name> --permission-mode bypassPermissions
+ *      --settings <json> -- <prompt>` under `script -q -c … /dev/null` (a pty),
+ *      passing name/settings/prompt via env vars (no shell-escaping the prompt).
+ *   3. Poll `claude agents --json --all` to discover our interactive session's
+ *      id, then read its JSONL transcript for the URL (`bridgeSessionId`), the
+ *      final reply (last assistant text), and completion (`turn_duration`).
+ *   4. Emit the URL via `onProgress` as soon as it's known (near the start),
+ *      and resolve with the same `ClaudeRunResult` shape as `runClaudeTurn`
+ *      once the turn completes / fails / the child exits / `maxWaitMs` elapses.
+ *      The interactive session stays resident after its turn, so it's killed
+ *      on the way out.
  */
 export async function runClaudeTurnRemoteControlled(
   prompt: string,
   opts: RemoteControlRunOptions,
 ): Promise<ClaudeRunResult> {
-  // Deterministic, unique-per-run session name so the poll below can find
-  // exactly this session rather than guessing by recency/prompt text.
-  const sessionName = `swe-${opts.runId}`;
+  const homeDir = opts.env.HOME ?? "";
+  seedRemoteControlConfig(homeDir, opts.cwd);
 
-  // Flag order/positioning mirrors `runClaudeTurn`'s where possible, but the
-  // overall shape here is a guess: `--help` confirms `--bg` and
-  // `--remote-control [name]` exist, but not where the prompt goes for a
-  // background/remote-controlled session (there is no `-p` in this mode).
-  // Assuming it's a trailing positional argument, same as an ordinary
-  // interactive `claude <prompt>` invocation.
-  const args = [
-    "--bg",
-    "--remote-control",
-    sessionName,
-    "--permission-mode",
-    "bypassPermissions",
-    "--settings",
-    JSON.stringify(opts.settings),
-  ];
-  if (opts.model) args.push("--model", opts.model);
-  args.push(prompt);
+  const sessionName = `swe-${opts.runId}`;
+  // Prompt/settings/name travel via env vars referenced (quoted) inside a
+  // fixed wrapper string, so the large newline/quote/backtick-heavy prompt is
+  // never shell-escaped by us. `exec` makes `script`'s child BE claude (clean
+  // process-group kill). `script` supplies the pty interactive claude needs.
+  const wrapper =
+    'exec claude --remote-control "$RC_NAME" --permission-mode bypassPermissions --settings "$RC_SETTINGS"' +
+    (opts.model ? ' --model "$RC_MODEL"' : "") +
+    ' -- "$RC_PROMPT"';
+
+  const child = spawn("script", ["-q", "-c", wrapper, "/dev/null"], {
+    cwd: opts.cwd,
+    env: {
+      ...opts.env,
+      RC_NAME: sessionName,
+      RC_SETTINGS: JSON.stringify(opts.settings),
+      RC_PROMPT: prompt,
+      ...(opts.model ? { RC_MODEL: opts.model } : {}),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
+  });
+
+  // Buffer the pty output ONLY for auth-error classification on a startup
+  // failure -- not mirrored to stderr (it's redraw-heavy TUI noise that would
+  // swamp `kubectl logs`; progress is surfaced via heartbeats + the URL event).
+  let ptyOutput = "";
+  let childExited = false;
+  let childExitCode: number | null = null;
+  child.stdout?.on("data", (c: Buffer) => {
+    ptyOutput += c.toString();
+  });
+  child.stderr?.on("data", (c: Buffer) => {
+    ptyOutput += c.toString();
+  });
+  child.on("close", (code) => {
+    childExited = true;
+    childExitCode = code;
+  });
+  child.on("error", () => {
+    childExited = true;
+  });
+
+  const kill = (): void => {
+    try {
+      if (child.pid) process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  };
 
   let urlReported = false;
   const reportUrl = (url: string): void => {
@@ -581,122 +607,79 @@ export async function runClaudeTurnRemoteControlled(
     opts.onProgress?.(url, "remote-control-url");
   };
 
-  const initial = await spawnAndCapture(args, { cwd: opts.cwd, env: opts.env, signal: opts.signal, mirrorStderr: true });
-  if (initial.error) {
-    return {
-      finalMessage: null,
-      failed: true,
-      failureDetail: initial.error.message,
-      authError: looksLikeAuthError(initial.error.message),
-      sessionId: null,
-    };
-  }
-
-  const initialUrl = scrapeRemoteControlUrl(initial.stdout) ?? scrapeRemoteControlUrl(initial.stderr);
-  if (initialUrl) reportUrl(initialUrl);
-
-  // The actual, reliable key for finding this session again on a later
-  // `claude agents --json` poll -- see BACKGROUNDED_ID_RE's doc. `null` if
-  // the handoff's output didn't match (unconfirmed format change, or a
-  // startup failure below), in which case polling falls back to matching on
-  // `sessionName` against the (wrong, but better than nothing) `name` field.
-  const backgroundedId =
-    (initial.stdout.match(BACKGROUNDED_ID_RE)?.[1] ?? initial.stderr.match(BACKGROUNDED_ID_RE)?.[1]) || null;
-
-  if (initial.code !== 0) {
-    const combined = `${initial.stdout}\n${initial.stderr}`;
-    return {
-      finalMessage: null,
-      failed: true,
-      failureDetail: clip(initial.stderr.trim() || `claude exited with code ${initial.code ?? "null"}`, 800),
-      authError: looksLikeAuthError(combined),
-      sessionId: null,
-    };
-  }
-
   const pollIntervalMs = opts.pollIntervalMs ?? REMOTE_CONTROL_POLL_INTERVAL_MS;
   const maxWaitMs = opts.maxWaitMs ?? REMOTE_CONTROL_MAX_WAIT_MS;
   const heartbeatMs = opts.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
   const deadline = Date.now() + maxWaitMs;
   let lastHeartbeatAt = Date.now();
 
-  while (Date.now() < deadline) {
-    if (opts.signal?.aborted) {
-      return {
-        finalMessage: null,
-        failed: true,
-        failureDetail: "Aborted while waiting for the remote-control session to conclude",
-        authError: false,
-        sessionId: null,
-      };
-    }
+  try {
+    while (Date.now() < deadline) {
+      if (opts.signal?.aborted) {
+        return { finalMessage: null, failed: true, failureDetail: "Aborted while waiting for the remote-control session", authError: false, sessionId: null };
+      }
 
-    // `--all` is REQUIRED, not optional: confirmed empirically (a real
-    // logged-in `--bg --remote-control` session, driven under a pipe exactly
-    // as spawned here) that plain `claude agents --json` returns `[]` the
-    // instant a session leaves the running state -- a terminated session
-    // (whether `state: "done"` or `state: "failed"`) is omitted entirely
-    // unless `--all` is passed (`claude agents --help`: "--all  With --json:
-    // also include completed background sessions"). Without it, a session
-    // that finishes between two polls (or faster than the first poll) simply
-    // vanishes from the list and this loop waits until `maxWaitMs` -- THE
-    // actual cause of every Remote Control run hanging to the Job timeout.
-    const poll = await spawnAndCapture(["agents", "--json", "--all"], {
-      cwd: opts.cwd,
-      env: opts.env,
-      signal: opts.signal,
-      mirrorStderr: false,
-    });
+      const poll = await spawnAndCapture(["agents", "--json", "--all"], {
+        cwd: opts.cwd,
+        env: opts.env,
+        signal: opts.signal,
+        mirrorStderr: false,
+      });
+      const session = poll.error ? null : findInteractiveSession(poll.stdout, opts.cwd);
 
-    if (!poll.error) {
-      const found = findSession(poll.stdout, { backgroundedId, sessionName });
-      if (found) {
-        // The URL is essentially always constructed, not scraped: the CLI
-        // doesn't expose it in `agents --json`. Emit it the moment the
-        // session first appears in a poll (running or done) so the caller
-        // can post the "work started, watch it here" comment near the start
-        // of the run, which is the whole point of the feature. `found.url`
-        // is preferred only if a future CLI version ever populates one.
-        const url = found.url ?? buildRemoteControlUrl(found.longSessionId ?? found.id);
-        if (url) reportUrl(url);
-        if (found.finished || found.failed) {
-          // `agents --json` never includes a result/output/message field for
-          // a finished session (confirmed empirically) -- fall back to the
-          // session's own JSONL transcript for the actual final reply text.
-          const resultText =
-            found.resultText ??
-            (found.longSessionId ? await readFinalMessageFromTranscript(opts.env.HOME ?? "", opts.cwd, found.longSessionId) : null);
-          const combined = `${resultText ?? ""}\n${poll.stderr}`;
+      if (session) {
+        const raw = await readTranscript(homeDir, opts.cwd, session.sessionId);
+        if (raw) {
+          const st = parseTranscript(raw);
+          // Emit the URL the moment it's known (well before completion) so the
+          // caller posts the "watch it here" comment near the start of the run.
+          if (st.bridgeSessionId) reportUrl(remoteControlUrlFromBridge(st.bridgeSessionId));
+          if (st.turnComplete) {
+            return { finalMessage: st.finalText, failed: false, failureDetail: null, authError: false, sessionId: session.sessionId };
+          }
+        }
+        if (session.failed) {
           return {
-            finalMessage: resultText,
-            failed: found.failed,
-            failureDetail: found.failed ? (resultText ?? "The remote-control session reported a failure") : null,
-            authError: found.failed && looksLikeAuthError(combined),
-            sessionId: found.id,
+            finalMessage: null,
+            failed: true,
+            failureDetail: clip(ptyOutput.trim(), 800) || "The remote-control session reported a failure",
+            authError: looksLikeAuthError(ptyOutput),
+            sessionId: session.sessionId,
           };
         }
       }
-    }
-    // A poll spawn error or an unparseable/unmatched payload is treated as
-    // "still in progress" rather than a hard failure -- see the module
-    // doc-comment above for why: a transient poll hiccup shouldn't fail a run
-    // that's genuinely still going, and `maxWaitMs` is the real backstop.
 
-    if (Date.now() - lastHeartbeatAt >= heartbeatMs) {
-      lastHeartbeatAt = Date.now();
-      const heartbeatMessage = `still waiting for the remote-control session "${sessionName}" to finish…`;
-      logProgress("agent", heartbeatMessage);
-      opts.onProgress?.(heartbeatMessage, "agent");
+      // The interactive session stays resident after finishing its turn, so a
+      // child exit BEFORE we saw `turn_duration` means it ended without
+      // completing -- a startup failure (auth, an unexpected prompt, a crash).
+      if (childExited) {
+        return {
+          finalMessage: null,
+          failed: true,
+          failureDetail: clip(ptyOutput.trim() || `claude exited with code ${childExitCode ?? "null"}`, 800),
+          authError: looksLikeAuthError(ptyOutput),
+          sessionId: session?.sessionId ?? null,
+        };
+      }
+
+      if (Date.now() - lastHeartbeatAt >= heartbeatMs) {
+        lastHeartbeatAt = Date.now();
+        const heartbeatMessage = "still running the remote-control session…";
+        logProgress("agent", heartbeatMessage);
+        opts.onProgress?.(heartbeatMessage, "agent");
+      }
+
+      await sleep(pollIntervalMs, opts.signal);
     }
 
-    await sleep(pollIntervalMs, opts.signal);
+    return {
+      finalMessage: null,
+      failed: true,
+      failureDetail: `Timed out after ${maxWaitMs}ms waiting for the remote-control session to finish`,
+      authError: false,
+      sessionId: null,
+    };
+  } finally {
+    kill();
   }
-
-  return {
-    finalMessage: null,
-    failed: true,
-    failureDetail: `Timed out after ${maxWaitMs}ms waiting for the remote-control session "${sessionName}" to conclude`,
-    authError: false,
-    sessionId: null,
-  };
 }
