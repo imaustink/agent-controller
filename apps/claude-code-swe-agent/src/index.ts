@@ -32,7 +32,10 @@ const toolConfig = loadToolConfig();
  * re-framing the task with the saved PR context (see marker.ts/claude.ts).
  */
 async function handler(session: AgentSession): Promise<AgentReply> {
-  if (!toolConfig.anthropicApiKey && !toolConfig.claudeCodeOAuthToken) {
+  // Remote Control authenticates from the seeded ~/.claude/.credentials.json
+  // full login instead of an env credential (see the childEnv block below),
+  // so neither of these is required in that mode.
+  if (!toolConfig.remoteControlEnabled && !toolConfig.anthropicApiKey && !toolConfig.claudeCodeOAuthToken) {
     throw new Error(
       "Either ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN is required — inject via secretEnv/secretKeyRef on the Agent CR",
     );
@@ -118,11 +121,27 @@ async function handler(session: AgentSession): Promise<AgentReply> {
     GITHUB_TOKEN: token,
     GIT_TERMINAL_PROMPT: "0",
   };
-  // Claude Code CLI prefers CLAUDE_CODE_OAUTH_TOKEN over ANTHROPIC_API_KEY
-  // when both are set; drop the API key entirely when a delegated/static
-  // OAuth token is present so there's no ambiguity about which credential is
-  // actually in effect.
-  if (toolConfig.claudeCodeOAuthToken) {
+  // Model-credential selection.
+  //
+  // Remote Control is the exception and MUST come first: it refuses to
+  // establish a session when the CLI is authenticated via
+  // CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY ("these tokens can only make
+  // model requests"), and an env credential takes precedence over the
+  // on-disk ~/.claude/.credentials.json. So when remote control is enabled we
+  // deliberately inject NEITHER -- forcing the CLI to use the full-login
+  // credentials.json the init container seeded (its `user:inference` scope
+  // covers model calls too). Confirmed empirically: with CLAUDE_CODE_OAUTH_TOKEN
+  // present the bridge silently never registers (task still runs, but no URL);
+  // with it absent the bridge registers and the claude.ai/code URL appears.
+  //
+  // Otherwise (one-shot `-p` path): the CLI prefers CLAUDE_CODE_OAUTH_TOKEN
+  // over ANTHROPIC_API_KEY when both are set; drop the API key when an OAuth
+  // token is present so there's no ambiguity about which credential is in
+  // effect.
+  if (toolConfig.remoteControlEnabled) {
+    delete childEnv.CLAUDE_CODE_OAUTH_TOKEN;
+    delete childEnv.ANTHROPIC_API_KEY;
+  } else if (toolConfig.claudeCodeOAuthToken) {
     childEnv.CLAUDE_CODE_OAUTH_TOKEN = toolConfig.claudeCodeOAuthToken;
     delete childEnv.ANTHROPIC_API_KEY;
   } else {
