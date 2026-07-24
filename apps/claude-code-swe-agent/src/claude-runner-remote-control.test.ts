@@ -70,6 +70,52 @@ describe("runClaudeTurnRemoteControlled", () => {
     expect(result.failureDetail).toBeNull();
   });
 
+  it("CONSTRUCTS the Remote Control URL from the session id (the CLI never prints one) and emits it as soon as the session appears", async () => {
+    // The real CLI exposes no URL in `--bg` output or `agents --json`
+    // (confirmed empirically) -- the URL is built from the session id, the
+    // same way the CLI builds it: https://claude.ai/code/<sessionId>. Here
+    // the poll entry has NO url field, only a full `sessionId`; the harness
+    // must derive and emit the URL from that. It's emitted on the first poll
+    // (session still running) so the caller can post the link near the start.
+    await installFakeClaude(`
+      const args = process.argv.slice(2);
+      if (args[0] === "agents") {
+        const fs = require("fs");
+        const stateFile = process.env.RC_STATE_FILE;
+        let count = 0; try { count = Number(fs.readFileSync(stateFile,"utf8")); } catch {}
+        count += 1; fs.writeFileSync(stateFile, String(count));
+        const base = { name: "do the thing", id: "5f0e1d2c", sessionId: "5f0e1d2c-1111-2222-3333-444455556666" };
+        // First poll: still running (no url field). Second: done.
+        console.log(JSON.stringify(args.includes("--all")
+          ? [count === 1 ? { ...base, state: "running" } : { ...base, state: "done" }]
+          : []));
+        process.exit(0);
+      } else {
+        console.log("Starting background service…\\nbackgrounded · 5f0e1d2c");
+        process.exit(0);
+      }
+    `);
+    const stateFile = join(binDir, "poll-count-url");
+    await writeFile(stateFile, "0");
+
+    const progress = [];
+    const result = await runClaudeTurnRemoteControlled("do the thing", {
+      cwd: process.cwd(),
+      env: { ...env(), RC_STATE_FILE: stateFile },
+      settings: {},
+      runId: "run-url",
+      pollIntervalMs: 5,
+      onProgress: (message, stage) => progress.push({ message, stage }),
+    });
+
+    // URL derived from the FULL sessionId (preferred over the short id), emitted once.
+    expect(progress).toEqual([
+      { message: "https://claude.ai/code/5f0e1d2c-1111-2222-3333-444455556666", stage: "remote-control-url" },
+    ]);
+    expect(result.failed).toBe(false);
+    expect(result.sessionId).toBe("5f0e1d2c");
+  });
+
   it("scrapes the Remote Control URL from the initial --bg handoff's stdout", async () => {
     await installFakeClaude(`
       const args = process.argv.slice(2);
