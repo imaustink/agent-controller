@@ -34,6 +34,42 @@ function env(): NodeJS.ProcessEnv {
 }
 
 describe("runClaudeTurnRemoteControlled", () => {
+  it("polls `agents --json --all` (a terminated session is invisible without --all) -- regression for the real hang", async () => {
+    // Confirmed empirically against the real logged-in CLI: plain
+    // `claude agents --json` returns [] the instant a session terminates;
+    // only `--all` includes done/failed sessions. This fake reproduces that
+    // exactly -- it returns the finished entry ONLY when --all is present,
+    // and [] otherwise. Under the pre-fix code (no --all) this would hang to
+    // the maxWait timeout; the test asserts it completes promptly instead.
+    await installFakeClaude(`
+      const args = process.argv.slice(2);
+      if (args[0] === "agents") {
+        const all = args.includes("--all");
+        console.log(JSON.stringify(all ? [
+          { name: "do the thing", id: "term1", status: "idle", state: "done" },
+        ] : []));
+        process.exit(0);
+      } else {
+        console.log("Starting background service…\\nbackgrounded · term1");
+        process.exit(0);
+      }
+    `);
+
+    const result = await runClaudeTurnRemoteControlled("do the thing", {
+      cwd: process.cwd(),
+      env: env(),
+      settings: {},
+      runId: "run-all",
+      pollIntervalMs: 5,
+      maxWaitMs: 2000,
+    });
+
+    // Found via --all and reported terminal (state: done) -- NOT a timeout.
+    expect(result.failed).toBe(false);
+    expect(result.sessionId).toBe("term1");
+    expect(result.failureDetail).toBeNull();
+  });
+
   it("scrapes the Remote Control URL from the initial --bg handoff's stdout", async () => {
     await installFakeClaude(`
       const args = process.argv.slice(2);

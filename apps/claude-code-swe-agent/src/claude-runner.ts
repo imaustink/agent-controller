@@ -608,7 +608,17 @@ export async function runClaudeTurnRemoteControlled(
       };
     }
 
-    const poll = await spawnAndCapture(["agents", "--json"], {
+    // `--all` is REQUIRED, not optional: confirmed empirically (a real
+    // logged-in `--bg --remote-control` session, driven under a pipe exactly
+    // as spawned here) that plain `claude agents --json` returns `[]` the
+    // instant a session leaves the running state -- a terminated session
+    // (whether `state: "done"` or `state: "failed"`) is omitted entirely
+    // unless `--all` is passed (`claude agents --help`: "--all  With --json:
+    // also include completed background sessions"). Without it, a session
+    // that finishes between two polls (or faster than the first poll) simply
+    // vanishes from the list and this loop waits until `maxWaitMs` -- THE
+    // actual cause of every Remote Control run hanging to the Job timeout.
+    const poll = await spawnAndCapture(["agents", "--json", "--all"], {
       cwd: opts.cwd,
       env: opts.env,
       signal: opts.signal,
