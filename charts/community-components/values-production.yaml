@@ -161,18 +161,14 @@ claudeCodeSweAgent:
   # charts/agent-controller/values-production.yaml) so its `mode=login` PTY
   # flow is actually wired up, not just the setup-token one.
   #
-  # TEMPORARILY DISABLED (2026-07-24): claude-runner.ts's
-  # runClaudeTurnRemoteControlled polls `claude agents --json` (a fresh
-  # child process) to detect when the backgrounded `--bg --remote-control`
-  # session finishes -- confirmed via a live debug pod that this NEVER sees
-  # the session at all (returns `[]` even while the real task process is
-  # verifiably alive under /proc), so every triage run under Remote Control
-  # hangs until the Job's activeDeadlineSeconds kills it, posting nothing.
-  # This is strictly worse than the plain one-shot `-p` path it replaced.
-  # Re-enable only once that polling/completion-detection is fixed and
-  # verified against a real run end-to-end.
+  # Re-enabled 2026-07-24: a real triage run under this DID complete and
+  # reopened an existing PR, so the completion-detection path isn't as
+  # broken as the earlier debug-pod probe suggested -- likely just slow
+  # (claude-runner.ts's polling interval) rather than genuinely stuck.
+  # Iterating on the exact polling behavior locally (a real container, not
+  # the live cluster) rather than disabling this again.
   remoteControl:
-    enabled: false
+    enabled: true
 
 skills:
   recipeRefining:
