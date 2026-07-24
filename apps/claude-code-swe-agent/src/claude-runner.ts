@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { clip } from "./security/redact.js";
 
 export interface ClaudeRunResult {
@@ -352,7 +354,10 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 interface ParsedAgentSession {
   name: string | null;
+  /** The short id (e.g. "4ebeef3c") -- the CLI's own stable per-session identifier, confirmed via a real "backgrounded · <id>" handoff plus a matching `agents --json` "id" field. */
   id: string | null;
+  /** The long UUID-shaped session id (e.g. "4ebeef3c-aca9-4f63-84b4-a503a95bbb12") -- distinct from `id` above; this is what names the session's own JSONL transcript file under `~/.claude/projects/<hashed-cwd>/`. */
+  longSessionId: string | null;
   url: string | null;
   finished: boolean;
   failed: boolean;
@@ -360,11 +365,24 @@ interface ParsedAgentSession {
 }
 
 /**
- * Parses one entry from the (unconfirmed) `claude agents --json` array.
- * Guesses at plausible field names (`name`/`sessionName`, `status`/`state`,
- * `url`/`remoteControlUrl`, `result`/`output`/`message`) since there is no way
- * to inspect the real shape here. Every access is guarded so an entirely
- * different real shape degrades to "doesn't look finished yet" rather than
+ * Parses one entry from a real (confirmed via a throwaway local session,
+ * see claude-runner-remote-control.test.ts) `claude agents --json` array
+ * entry. Two confirmed surprises this now accounts for:
+ *
+ * 1. A finished background session reports `status: "idle"` (an activity
+ *    indicator, not a lifecycle one) alongside the ACTUAL lifecycle signal
+ *    in a separate `state` field (`"done"`, or `"blocked"` when stuck e.g.
+ *    on an auth failure) -- checking only one of the two fields (an earlier
+ *    version of this code picked whichever was present first) missed
+ *    exactly the real-world "status idle, state done" combination, so a
+ *    genuinely finished session was never detected as finished.
+ * 2. There is no `result`/`output`/`message`/`summary` field at all --
+ *    `resultText` legitimately stays `null` for a real finished session;
+ *    the caller must read the session's own JSONL transcript (see
+ *    `readFinalMessageFromTranscript`) to get the actual final reply text.
+ *
+ * Every access is still guarded so an entirely different real shape (a
+ * future CLI version) degrades to "doesn't look finished yet" rather than
  * throwing -- a parse surprise should never crash the run, only delay
  * detecting completion until the next poll or the maxWait timeout.
  */
@@ -379,14 +397,22 @@ function parseAgentSessionEntry(entry: unknown): ParsedAgentSession | null {
     return null;
   };
   const name = pickString("name", "sessionName", "session_name");
-  const id = pickString("id", "sessionId", "session_id");
+  const id = pickString("id");
+  const longSessionId = pickString("sessionId", "session_id");
   const url = pickString("url", "remoteControlUrl", "remote_control_url", "link");
-  const status = (pickString("status", "state") ?? "").toLowerCase();
+  const status = (pickString("status") ?? "").toLowerCase();
+  const state = (pickString("state") ?? "").toLowerCase();
   const resultText = pickString("result", "output", "message", "summary");
-  const finished = ["completed", "finished", "done", "stopped", "exited", "ended"].includes(status);
+  const TERMINAL_DONE = ["completed", "finished", "done", "stopped", "exited", "ended"];
+  const TERMINAL_FAILED = ["failed", "error", "errored"];
+  const finished = TERMINAL_DONE.includes(status) || TERMINAL_DONE.includes(state);
   const failed =
-    ["failed", "error", "errored"].includes(status) || rec.failed === true || rec.isError === true || rec.is_error === true;
-  return { name, id, url, finished, failed, resultText };
+    TERMINAL_FAILED.includes(status) ||
+    TERMINAL_FAILED.includes(state) ||
+    rec.failed === true ||
+    rec.isError === true ||
+    rec.is_error === true;
+  return { name, id, longSessionId, url, finished, failed, resultText };
 }
 
 /**
@@ -425,6 +451,60 @@ function findSession(raw: string, ids: { backgroundedId: string | null; sessionN
     }
   }
   return null;
+}
+
+/**
+ * Turns an absolute cwd into Claude Code's own project-directory naming
+ * convention under `~/.claude/projects/` -- confirmed empirically (a real
+ * session's transcript directory): every `/` AND every `.` in the absolute
+ * path is replaced with `-` (e.g. `/tmp/swe-x/agent-controller/.claude/y`
+ * becomes `-tmp-swe-x-agent-controller--claude-y` -- note the double dash
+ * where a path segment starting with `.` follows a `/`, since both
+ * characters are replaced independently).
+ */
+function claudeProjectDirName(cwd: string): string {
+  return cwd.replace(/[/.]/g, "-");
+}
+
+/**
+ * Reads the final assistant message out of a finished background session's
+ * own JSONL transcript (`~/.claude/projects/<hashed-cwd>/<longSessionId>.jsonl`)
+ * -- necessary because `claude agents --json` never includes a result/output/
+ * message field for a finished session (confirmed empirically), unlike the
+ * one-shot `-p --output-format stream-json` path's `result` event. Returns
+ * the LAST `type: "assistant"` entry's concatenated text content, or `null`
+ * if the file can't be read/parsed or contains no assistant text -- treated
+ * as "no result text available" by the caller, not a hard failure.
+ */
+async function readFinalMessageFromTranscript(homeDir: string, cwd: string, longSessionId: string): Promise<string | null> {
+  const path = join(homeDir, ".claude", "projects", claudeProjectDirName(cwd), `${longSessionId}.jsonl`);
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch {
+    return null;
+  }
+  let lastText: string | null = null;
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof entry !== "object" || entry === null) continue;
+    const rec = entry as Record<string, unknown>;
+    if (rec.type !== "assistant") continue;
+    const message = rec.message as Record<string, unknown> | undefined;
+    const content = Array.isArray(message?.content) ? message!.content : [];
+    const text = content
+      .filter((block): block is { type: string; text: string } => typeof block === "object" && block !== null && (block as { type?: unknown }).type === "text" && typeof (block as { text?: unknown }).text === "string")
+      .map((block) => block.text)
+      .join("");
+    if (text) lastText = text;
+  }
+  return lastText;
 }
 
 /**
@@ -540,11 +620,17 @@ export async function runClaudeTurnRemoteControlled(
       if (found) {
         if (found.url) reportUrl(found.url);
         if (found.finished || found.failed) {
-          const combined = `${found.resultText ?? ""}\n${poll.stderr}`;
+          // `agents --json` never includes a result/output/message field for
+          // a finished session (confirmed empirically) -- fall back to the
+          // session's own JSONL transcript for the actual final reply text.
+          const resultText =
+            found.resultText ??
+            (found.longSessionId ? await readFinalMessageFromTranscript(opts.env.HOME ?? "", opts.cwd, found.longSessionId) : null);
+          const combined = `${resultText ?? ""}\n${poll.stderr}`;
           return {
-            finalMessage: found.resultText,
+            finalMessage: resultText,
             failed: found.failed,
-            failureDetail: found.failed ? (found.resultText ?? "The remote-control session reported a failure") : null,
+            failureDetail: found.failed ? (resultText ?? "The remote-control session reported a failure") : null,
             authError: found.failed && looksLikeAuthError(combined),
             sessionId: found.id,
           };
