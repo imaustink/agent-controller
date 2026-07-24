@@ -71,6 +71,13 @@ type runJobParams struct {
 	secretEnv          []toolv1alpha1.SecretEnvVar
 	resources          toolv1alpha1.ResourceRequirements
 
+	// initContainers, if non-empty, run before the "run" container starts,
+	// each sharing the same "tmp" emptyDir mount at /tmp (e.g. to seed a
+	// credential file the main container's HOME reads from). Left nil for
+	// every Agent/Tool that doesn't set AgentSpec.InitContainers, in which
+	// case the Job pod's InitContainers field is left unset entirely.
+	initContainers []toolv1alpha1.InitContainer
+
 	callback       toolv1alpha1.ToolRunCallback
 	timeoutSeconds int32
 }
@@ -94,21 +101,7 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 		timeout = int64(p.timeoutSeconds)
 	}
 
-	env := make([]corev1.EnvVar, 0, len(p.staticEnv)+len(p.secretEnv)+3)
-	for _, e := range p.staticEnv {
-		env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
-	}
-	for _, e := range p.secretEnv {
-		env = append(env, corev1.EnvVar{
-			Name: e.Name,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: e.SecretRef.Name},
-					Key:                  e.SecretRef.Key,
-				},
-			},
-		})
-	}
+	env := toCoreEnv(p.staticEnv, p.secretEnv, 3)
 
 	if p.callback.NatsSubject != "" {
 		// NATS delivery mode: no HMAC secret needed; subject is the capability.
@@ -137,6 +130,32 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 	resources, err := toCoreResourceRequirements(p.resources)
 	if err != nil {
 		return nil, err
+	}
+
+	var initContainers []corev1.Container
+	if len(p.initContainers) > 0 {
+		initContainers = make([]corev1.Container, 0, len(p.initContainers))
+		for _, ic := range p.initContainers {
+			// An init container's own SecretEnv (from the Agent template's
+			// static AgentSpec.InitContainers) is layered ON TOP OF the same
+			// per-run merged secretEnv (p.secretEnv, already
+			// mergeSecretEnv(agent.Spec.SecretEnv, run.Spec.SecretEnv)) the
+			// main "run" container gets -- otherwise a per-invocation
+			// credential a caller injects via AgentRun.Spec.SecretEnv (e.g. a
+			// delegated CLAUDE_LOGIN_CREDENTIALS_JSON) would silently never
+			// reach a credential-seeding init container, which is the whole
+			// point of having one.
+			initContainers = append(initContainers, corev1.Container{
+				Name:    ic.Name,
+				Image:   ic.Image,
+				Command: ic.Command,
+				Args:    ic.Args,
+				Env:     toCoreEnv(ic.Env, mergeSecretEnv(p.secretEnv, ic.SecretEnv), 0),
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "tmp", MountPath: "/tmp"},
+				},
+			})
+		}
 	}
 
 	job := &batchv1.Job{
@@ -169,6 +188,7 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 					Volumes: []corev1.Volume{
 						{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 					},
+					InitContainers: initContainers,
 					Containers: []corev1.Container{
 						{
 							Name:  "run",
@@ -201,6 +221,31 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 		},
 	}
 	return job, nil
+}
+
+// toCoreEnv builds a corev1.EnvVar list from static name/value pairs plus
+// secretEnv references (resolved via SecretKeyRef), in that order. Shared by
+// the main "run" container and any initContainers so both get identical
+// env-building behavior. extraCap is additional capacity to reserve for
+// env vars the caller appends afterward (e.g. the main container's
+// transport/callback vars) -- purely a sizing hint, doesn't affect output.
+func toCoreEnv(staticEnv []toolv1alpha1.EnvVar, secretEnv []toolv1alpha1.SecretEnvVar, extraCap int) []corev1.EnvVar {
+	env := make([]corev1.EnvVar, 0, len(staticEnv)+len(secretEnv)+extraCap)
+	for _, e := range staticEnv {
+		env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
+	}
+	for _, e := range secretEnv {
+		env = append(env, corev1.EnvVar{
+			Name: e.Name,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: e.SecretRef.Name},
+					Key:                  e.SecretRef.Key,
+				},
+			},
+		})
+	}
+	return env
 }
 
 // sessionIDAnnotations extracts just the SessionIDAnnotation from a ToolRun/

@@ -45,6 +45,37 @@ spec:
   {{- end }}
   image: {{ .Values.claudeCodeSweAgent.image }}
   serviceAccountName: {{ .Values.claudeCodeSweAgent.serviceAccountName }}
+  {{- if .Values.claudeCodeSweAgent.remoteControl.enabled }}
+  # Seeds a full ~/.claude/.credentials.json into the shared tmp emptyDir
+  # (mounted at /tmp on both this init container and the main "run"
+  # container) before the main container starts, for Remote Control
+  # (Claude Code headless session takeover). SWE_HOME matches the main
+  # container's HOME (apps/claude-code-swe-agent/src/config.ts reads
+  # SWE_HOME, defaulting to /tmp/home).
+  initContainers:
+    - name: seed-claude-credentials
+      image: {{ .Values.claudeCodeSweAgent.image }}
+      command: ["sh", "-c"]
+      args:
+        - >-
+          mkdir -p "$SWE_HOME/.claude" && printf '%s'
+          "$CLAUDE_LOGIN_CREDENTIALS_JSON" >
+          "$SWE_HOME/.claude/.credentials.json"
+      env:
+        - name: SWE_HOME
+          value: "/tmp/home"
+      {{- if and .Values.claudeCodeSweAgent.remoteControl.credentialsSecretName .Values.claudeCodeSweAgent.remoteControl.credentialsSecretKey }}
+      secretEnv:
+        # Static fallback only -- ordinarily this comes from a per-run
+        # secret that agent-orchestrator's delegation logic resolves and
+        # injects at AgentRun launch time (a later phase), not a static
+        # value baked into this catalog entry.
+        - name: CLAUDE_LOGIN_CREDENTIALS_JSON
+          secretRef:
+            name: {{ .Values.claudeCodeSweAgent.remoteControl.credentialsSecretName }}
+            key: {{ .Values.claudeCodeSweAgent.remoteControl.credentialsSecretKey }}
+      {{- end }}
+  {{- end }}
   resources:
     requests:
       cpu: "500m"
@@ -133,7 +164,7 @@ spec:
         name: {{ .Values.claudeCodeSweAgent.secretName }}
         key: {{ .Values.claudeCodeSweAgent.githubAppInstallationIdSecretKey }}
     {{- end }}
-  {{- if or .Values.claudeCodeSweAgent.identityLink.enabled .Values.claudeCodeSweAgent.githubAppSlug .Values.claudeCodeSweAgent.model }}
+  {{- if or .Values.claudeCodeSweAgent.identityLink.enabled .Values.claudeCodeSweAgent.githubAppSlug .Values.claudeCodeSweAgent.model .Values.claudeCodeSweAgent.remoteControl.enabled }}
   env:
     {{- if .Values.claudeCodeSweAgent.identityLink.enabled }}
     - name: GITHUB_IDENTITY_DELEGATION
@@ -146,6 +177,14 @@ spec:
     {{- if .Values.claudeCodeSweAgent.model }}
     - name: CLAUDE_CODE_MODEL
       value: {{ .Values.claudeCodeSweAgent.model | quote }}
+    {{- end }}
+    {{- if .Values.claudeCodeSweAgent.remoteControl.enabled }}
+    # Without this, the main container always runs claude-runner.ts's
+    # plain one-shot `claude -p` path regardless of the init container
+    # above seeding credentials -- this is the actual switch to
+    # `runClaudeTurnRemoteControlled` (claude-runner.ts).
+    - name: CLAUDE_REMOTE_CONTROL
+      value: "true"
     {{- end }}
   {{- end }}
 {{- end }}

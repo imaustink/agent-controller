@@ -118,6 +118,50 @@ type AgentSpec struct {
 	// catalog entry.
 	// +optional
 	IdentityProviders []string `json:"identityProviders,omitempty"`
+
+	// initContainers are Job pod init containers run before the main "run"
+	// container starts (e.g. to seed a shared /tmp volume with a credential
+	// file a later phase's controller needs). Each gets the same tmp
+	// emptyDir mount the main container has, at /tmp, automatically -- no
+	// volume config needed on this struct itself.
+	// +optional
+	InitContainers []InitContainer `json:"initContainers,omitempty"`
+}
+
+// InitContainer is a narrow, opt-in Job pod init container run before the
+// main "run" container starts. Kept deliberately minimal (name/image/
+// command/args/env) rather than importing corev1.Container wholesale --
+// same narrow-mirror convention as EnvVar/SecretEnvVar/ResourceRequirements
+// above. Always gets the same "tmp" emptyDir mounted at /tmp as the main
+// container (buildRunJob wires the VolumeMount; there is nothing to
+// configure here), so an init container can write into the same path the
+// main container's HOME lives under (e.g. seeding a credentials file).
+type InitContainer struct {
+	// name of the init container.
+	// +required
+	Name string `json:"name"`
+
+	// image the init container runs.
+	// +required
+	Image string `json:"image"`
+
+	// command overrides the image's entrypoint, if set.
+	// +optional
+	Command []string `json:"command,omitempty"`
+
+	// args are passed to the entrypoint/command.
+	// +optional
+	Args []string `json:"args,omitempty"`
+
+	// env are static, non-secret environment variables for the init container.
+	// +optional
+	Env []EnvVar `json:"env,omitempty"`
+
+	// secretEnv are environment variables sourced from Secret keys (same
+	// namespace), resolved via secretKeyRef at Job-build time — same
+	// discipline as AgentSpec.SecretEnv.
+	// +optional
+	SecretEnv []SecretEnvVar `json:"secretEnv,omitempty"`
 }
 
 // AgentStatus defines the observed state of Agent.
