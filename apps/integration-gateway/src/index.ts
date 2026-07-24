@@ -1,5 +1,6 @@
 import { config } from "./config.js";
 import { ClaudeSetupTokenFlows } from "./claude-auth/pty-setup-token.js";
+import { ClaudeLoginFlows } from "./claude-auth/pty-login.js";
 import { RedisClaudeTokenStore } from "./claude-auth/store.js";
 import { GithubReplyClient } from "./github-client.js";
 import { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
@@ -229,6 +230,7 @@ async function main(): Promise<void> {
   }
   let claudeTokenStore: RedisClaudeTokenStore | undefined;
   let claudeAuthFlows: ClaudeSetupTokenFlows | undefined;
+  let claudeLoginFlows: ClaudeLoginFlows | undefined;
   if (config.claudeAuthEnabled) {
     const redisUrl = config.redisUrl!;
     claudeTokenStore = new RedisClaudeTokenStore(redisUrl, decodeEncryptionKey(config.identityLinkEncryptionKey));
@@ -238,7 +240,14 @@ async function main(): Promise<void> {
       maxDelayMs: 15_000,
     });
     claudeAuthFlows = new ClaudeSetupTokenFlows();
-    console.error("Claude Code per-user OAuth linking enabled");
+    // Same gate as the setup-token flow above -- both need the same `claude`
+    // CLI binary in this image and the same PTY mechanics, just a different
+    // subcommand/captured payload (docs/adr/0027's "claude-remote" follow-up).
+    // Without this, `mode=login` requests 501 forever and no Remote Control
+    // credential can ever be created, regardless of anything else being
+    // configured correctly downstream.
+    claudeLoginFlows = new ClaudeLoginFlows();
+    console.error("Claude Code per-user OAuth linking enabled (setup-token + full-login/Remote Control)");
   }
 
   const server = new GatewayServer({
@@ -251,6 +260,7 @@ async function main(): Promise<void> {
     ...(identityLinkLinker ? { identityLinkLinker, identityLinkToken: config.identityLinkToken } : {}),
     ...(sessionPageStore ? { sessionPageStore, publicBaseUrl: config.publicUrl } : {}),
     ...(claudeAuthFlows && claudeTokenStore ? { claudeAuthFlows, claudeAuthStore: claudeTokenStore } : {}),
+    ...(claudeLoginFlows ? { claudeLoginFlows } : {}),
   });
 
   await server.listen(config.httpPort);
