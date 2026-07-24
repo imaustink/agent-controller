@@ -312,7 +312,10 @@ describe("GatewayServer session pages", () => {
     await server.close();
   });
 
-  it("posts a starting-work comment with a session page link before the labeled-triage turn completes, then the result", async () => {
+  it("posts nothing upfront for a labeled-triage turn when no Remote Control URL ever arrives -- just the final result", async () => {
+    // Default `invoke` mock from beforeEach never calls onRemoteControlUrl.
+    // The old "Starting work... {session page link}" comment is gone for
+    // good -- silence is the correct fallback, not a placeholder link.
     await postWebhook(port, "issues", {
       action: "labeled",
       repository: { owner: { login: "acme" }, name: "widgets" },
@@ -322,14 +325,8 @@ describe("GatewayServer session pages", () => {
     });
     await flush();
 
-    expect(postIssueComment).toHaveBeenNthCalledWith(
-      1,
-      "acme",
-      "widgets",
-      7,
-      expect.stringMatching(/^Starting work on this now.*https:\/\/gateway\.example\.com\/sessions\/\S+$/),
-    );
-    expect(postIssueComment).toHaveBeenNthCalledWith(2, "acme", "widgets", 7, "Working on it.");
+    expect(postIssueComment).toHaveBeenCalledTimes(1);
+    expect(postIssueComment).toHaveBeenNthCalledWith(1, "acme", "widgets", 7, "Working on it.");
 
     const entry = await sessionPageStore.getOrCreate(sessionIdFor("acme", "widgets", 7), {
       owner: "acme",
@@ -353,14 +350,10 @@ describe("GatewayServer session pages", () => {
     expect(postIssueComment).not.toHaveBeenCalled();
   });
 
-  it("links the starting-work comment to the Remote Control URL when it arrives before the turn is running", async () => {
+  it("posts a single comment linking the Remote Control URL as soon as it arrives, before the final result", async () => {
     invoke.mockImplementation(async (..._args: unknown[]) => {
-      const onRunning = _args[4] as (() => Promise<void> | void) | undefined;
       const onRemoteControlUrl = _args[5] as ((url: string) => Promise<void> | void) | undefined;
-      // Simulate the remote-control-url progress event landing before the
-      // turn is reported as running -- e.g. both surface on the same poll.
       await onRemoteControlUrl?.("https://claude.ai/code/session_abc123");
-      await onRunning?.();
       return { status: "succeeded", result: "Working on it." };
     });
 
@@ -373,25 +366,16 @@ describe("GatewayServer session pages", () => {
     });
     await flush();
 
-    // Only two comments -- no separate "Remote Control session available"
-    // follow-up, since the URL was already known before the first comment posted.
     expect(postIssueComment).toHaveBeenCalledTimes(2);
-    expect(postIssueComment).toHaveBeenNthCalledWith(
-      1,
-      "acme",
-      "widgets",
-      7,
-      "Starting work on this now. Track progress or send follow-up prompts at https://claude.ai/code/session_abc123",
-    );
+    expect(postIssueComment).toHaveBeenNthCalledWith(1, "acme", "widgets", 7, "Remote Control session: https://claude.ai/code/session_abc123");
     expect(postIssueComment).toHaveBeenNthCalledWith(2, "acme", "widgets", 7, "Working on it.");
   });
 
-  it("posts a follow-up comment linking the Remote Control URL when it arrives after the starting-work comment already posted", async () => {
+  it("posts the Remote Control URL comment only once even if the progress event fires more than once", async () => {
     invoke.mockImplementation(async (..._args: unknown[]) => {
-      const onRunning = _args[4] as (() => Promise<void> | void) | undefined;
       const onRemoteControlUrl = _args[5] as ((url: string) => Promise<void> | void) | undefined;
-      await onRunning?.();
-      await onRemoteControlUrl?.("https://claude.ai/code/session_xyz789");
+      await onRemoteControlUrl?.("https://claude.ai/code/session_abc123");
+      await onRemoteControlUrl?.("https://claude.ai/code/session_abc123");
       return { status: "succeeded", result: "Working on it." };
     });
 
@@ -404,43 +388,7 @@ describe("GatewayServer session pages", () => {
     });
     await flush();
 
-    expect(postIssueComment).toHaveBeenCalledTimes(3);
-    expect(postIssueComment).toHaveBeenNthCalledWith(
-      1,
-      "acme",
-      "widgets",
-      7,
-      expect.stringMatching(/^Starting work on this now.*https:\/\/gateway\.example\.com\/sessions\/\S+$/),
-    );
-    expect(postIssueComment).toHaveBeenNthCalledWith(
-      2,
-      "acme",
-      "widgets",
-      7,
-      "Remote Control session available: https://claude.ai/code/session_xyz789",
-    );
-    expect(postIssueComment).toHaveBeenNthCalledWith(3, "acme", "widgets", 7, "Working on it.");
-  });
-
-  it("falls back to the session-page link exactly as before when no Remote Control URL ever arrives", async () => {
-    // Default `invoke` mock from beforeEach never calls onRemoteControlUrl.
-    await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
-      label: { name: "ai-triage" },
-    });
-    await flush();
-
     expect(postIssueComment).toHaveBeenCalledTimes(2);
-    expect(postIssueComment).toHaveBeenNthCalledWith(
-      1,
-      "acme",
-      "widgets",
-      7,
-      expect.stringMatching(/^Starting work on this now.*https:\/\/gateway\.example\.com\/sessions\/\S+$/),
-    );
   });
 
   it("serves the rendered session page for a valid token", async () => {
@@ -541,7 +489,7 @@ describe("GatewayServer unauthenticated triage: deferred ack + auto-resume", () 
     await server.close();
   });
 
-  it("posts the auth prompt FIRST (no premature 'starting work'), then waits for the link and auto-resumes the same request", async () => {
+  it("posts the auth prompt FIRST, then waits for the link and auto-resumes the same request straight to the result", async () => {
     await postWebhook(port, "issues", {
       action: "labeled",
       repository: { owner: { login: "acme" }, name: "widgets" },
@@ -551,12 +499,12 @@ describe("GatewayServer unauthenticated triage: deferred ack + auto-resume", () 
     });
     await flush();
 
-    // The very first comment is the auth prompt -- NOT a "starting work" ack.
+    // The very first comment is the auth prompt. No "starting work"
+    // placeholder comment exists anymore -- the second comment is the real
+    // result, posted once the link lands and the turn resumes.
     expect(postIssueComment.mock.calls[0]?.[3]).toMatch(/link your Claude account/i);
-    expect(postIssueComment.mock.calls[0]?.[3]).not.toMatch(/starting work/i);
-    // Then, after the link lands, "starting work" and the real result follow.
-    expect(postIssueComment.mock.calls[1]?.[3]).toMatch(/^Starting work on this now/);
-    expect(postIssueComment.mock.calls[2]?.[3]).toBe("Opened PR #42.");
+    expect(postIssueComment.mock.calls[1]?.[3]).toBe("Opened PR #42.");
+    expect(postIssueComment).toHaveBeenCalledTimes(2);
 
     // Waited on the gateway-owned claude token store for the gateway subject,
     // and re-invoked the SAME triage request once it landed.
