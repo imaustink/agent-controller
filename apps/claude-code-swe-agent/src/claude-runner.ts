@@ -275,6 +275,18 @@ const REMOTE_CONTROL_MAX_WAIT_MS = 30 * 60_000;
 // flow (integration-gateway's claude-auth phase). Unconfirmed -- adjust after
 // a real spike against a live CLI + subscription.
 const REMOTE_CONTROL_URL_RE = /https:\/\/claude\.ai\/code\/session_[A-Za-z0-9_-]+/;
+/**
+ * Confirmed empirically (real `claude --bg --remote-control` invocation,
+ * see claude-runner-remote-control.test.ts): the initial handoff prints
+ * `backgrounded · <shortId>` (the separator observed was a middle dot,
+ * U+00B7 -- tolerating a bullet/hyphen too in case that varies by
+ * terminal/version), and THIS short id -- NOT the `--remote-control <name>`
+ * value we pass -- is what `claude agents --json`'s own `id` field holds.
+ * The `name` field in that JSON is the prompt text, unrelated to the name
+ * we passed. Matching on `name` (an earlier, unverified guess) meant the
+ * poll loop below could never find its own session and looped forever.
+ */
+const BACKGROUNDED_ID_RE = /backgrounded\s*[·•-]\s*([A-Za-z0-9]+)/i;
 
 function scrapeRemoteControlUrl(text: string): string | null {
   const match = text.match(REMOTE_CONTROL_URL_RE);
@@ -378,13 +390,21 @@ function parseAgentSessionEntry(entry: unknown): ParsedAgentSession | null {
 }
 
 /**
- * Finds the entry matching `sessionName` in a `claude agents --json` payload.
- * Tolerates the top-level value being either a bare array (per `--help`'s
- * "Print active sessions ... as a JSON array") or, in case that's imprecise,
- * an object wrapping the array under a `sessions` key -- and returns `null`
- * (never throws) for anything else, including malformed JSON.
+ * Finds the entry for this run in a `claude agents --json` payload. Matches
+ * by `id` (the short id scraped from the initial handoff's "backgrounded ·
+ * <id>" line, e.g. "dd527d1c") when known -- confirmed empirically that
+ * this is the CLI's own stable identifier for the session, unlike `name`
+ * (which is the prompt text, not the `--remote-control <name>` value we
+ * pass -- matching on that, an earlier unverified guess, meant this could
+ * never find its own session at all). Falls back to matching on
+ * `sessionName` only if the id was never captured, purely as a defensive
+ * last resort. Tolerates the top-level value being either a bare array (per
+ * `--help`'s "Print active sessions ... as a JSON array") or, in case
+ * that's imprecise, an object wrapping the array under a `sessions` key --
+ * and returns `null` (never throws) for anything else, including malformed
+ * JSON.
  */
-function findSessionByName(raw: string, sessionName: string): ParsedAgentSession | null {
+function findSession(raw: string, ids: { backgroundedId: string | null; sessionName: string }): ParsedAgentSession | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -399,7 +419,10 @@ function findSessionByName(raw: string, sessionName: string): ParsedAgentSession
   if (!list) return null;
   for (const entry of list) {
     const parsedEntry = parseAgentSessionEntry(entry);
-    if (parsedEntry?.name === sessionName) return parsedEntry;
+    if (!parsedEntry) continue;
+    if (ids.backgroundedId ? parsedEntry.id === ids.backgroundedId : parsedEntry.name === ids.sessionName) {
+      return parsedEntry;
+    }
   }
   return null;
 }
@@ -469,6 +492,14 @@ export async function runClaudeTurnRemoteControlled(
   const initialUrl = scrapeRemoteControlUrl(initial.stdout) ?? scrapeRemoteControlUrl(initial.stderr);
   if (initialUrl) reportUrl(initialUrl);
 
+  // The actual, reliable key for finding this session again on a later
+  // `claude agents --json` poll -- see BACKGROUNDED_ID_RE's doc. `null` if
+  // the handoff's output didn't match (unconfirmed format change, or a
+  // startup failure below), in which case polling falls back to matching on
+  // `sessionName` against the (wrong, but better than nothing) `name` field.
+  const backgroundedId =
+    (initial.stdout.match(BACKGROUNDED_ID_RE)?.[1] ?? initial.stderr.match(BACKGROUNDED_ID_RE)?.[1]) || null;
+
   if (initial.code !== 0) {
     const combined = `${initial.stdout}\n${initial.stderr}`;
     return {
@@ -505,7 +536,7 @@ export async function runClaudeTurnRemoteControlled(
     });
 
     if (!poll.error) {
-      const found = findSessionByName(poll.stdout, sessionName);
+      const found = findSession(poll.stdout, { backgroundedId, sessionName });
       if (found) {
         if (found.url) reportUrl(found.url);
         if (found.finished || found.failed) {

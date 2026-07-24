@@ -205,6 +205,47 @@ describe("runClaudeTurnRemoteControlled", () => {
     expect(result.failureDetail).toBe("oauth token has expired");
   });
 
+  it("matches the session by the short id scraped from 'backgrounded · <id>', NOT by name -- regression for a real hang", async () => {
+    // Confirmed empirically against the real CLI: `claude agents --json`'s
+    // `name` field is the PROMPT TEXT, not the `--remote-control <name>`
+    // value this code passes -- so `name` never matches `sessionName`,
+    // ever. This is exactly what caused every real Remote Control triage
+    // run to hang until the Job timeout: the poll loop could never find its
+    // own session. The real fix matches on `id`, scraped from the initial
+    // handoff's "backgrounded · <id>" line.
+    await installFakeClaude(`
+      const args = process.argv.slice(2);
+      if (args[0] === "agents") {
+        console.log(JSON.stringify([
+          // "name" is the prompt text (as the real CLI actually returns),
+          // completely unrelated to sessionName ("swe-run-7") -- only "id"
+          // (matching the scraped short id below) should be used to find it.
+          { name: "do the thing", id: "ab12cd34", status: "completed", result: "Opened PR #11" },
+        ]));
+        process.exit(0);
+      } else {
+        console.log("Starting background service…\\nbackgrounded · ab12cd34");
+        process.exit(0);
+      }
+    `);
+
+    const result = await runClaudeTurnRemoteControlled("do the thing", {
+      cwd: process.cwd(),
+      env: env(),
+      settings: {},
+      runId: "run-7",
+      pollIntervalMs: 5,
+    });
+
+    expect(result).toEqual({
+      finalMessage: "Opened PR #11",
+      failed: false,
+      failureDetail: null,
+      authError: false,
+      sessionId: "ab12cd34",
+    });
+  });
+
   it("times out and reports failure if the session never reports completion", async () => {
     await installFakeClaude(`
       const args = process.argv.slice(2);
