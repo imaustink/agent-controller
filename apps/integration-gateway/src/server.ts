@@ -407,10 +407,15 @@ export class GatewayServer {
 
   /**
    * Waits for a pending identity link to complete, then re-runs the turn.
-   * Only providers whose token store this gateway itself owns can be waited on
-   * (today: `claude`, via `claudeAuthStore`'s pub/sub `waitForCompletion`);
-   * for anything else -- e.g. a GitHub triage using the already-linked shared
-   * identity -- this returns `undefined` and the caller leaves the link prompt
+   * Only providers whose token store this gateway itself owns can be waited
+   * on -- today, both `claude` (setup-token) and `claude-remote` (full
+   * login, docs/adr/0027's follow-up), since both live in the same
+   * `claudeAuthStore` (`ClaudeTokenStore`, keyed by `kind`). This used to
+   * hardcode `identityLink.provider === "claude"` only, so a claude-remote
+   * link prompt would post correctly but NEVER auto-resume -- the exact
+   * "why didn't it start automatically after linking" gap this fixes.
+   * Anything else -- e.g. a GitHub triage using the already-linked shared
+   * identity -- returns `undefined` and the caller leaves the link prompt
    * standing for a manual re-trigger. Returns the resumed turn's outcome, or
    * `undefined` if the link never landed within the wait window.
    */
@@ -418,9 +423,10 @@ export class GatewayServer {
     identityLink: { provider: string; subject: string },
     reinvoke: () => Promise<OrchestratorInvokeResult>,
   ): Promise<OrchestratorInvokeResult | undefined> {
-    const store = identityLink.provider === "claude" ? this.options.claudeAuthStore : undefined;
-    if (!store) return undefined;
-    const record = await store.waitForCompletion(identityLink.subject, GatewayServer.RESUME_WAIT_MS);
+    const kind = identityLink.provider === "claude" ? "setup-token" : identityLink.provider === "claude-remote" ? "login" : undefined;
+    const store = kind ? this.options.claudeAuthStore : undefined;
+    if (!store || !kind) return undefined;
+    const record = await store.waitForCompletion(identityLink.subject, GatewayServer.RESUME_WAIT_MS, kind);
     if (!record) return undefined;
     return reinvoke();
   }
