@@ -81,6 +81,11 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
      ca-certificates curl git python3 python3-pip make build-essential \
      jq unzip zip less ripgrep \
+     # util-linux provides `script`, which the Remote Control path uses to
+     # give interactive `claude --remote-control` a real pty (see
+     # claude-runner.ts). Present in the base image already, but pinned
+     # explicitly since the feature hard-depends on it.
+     util-linux \
   # GitHub CLI -- installed from the official release tarball for a hermetic build.
   # curl retries transient network resets (common on flaky CI runners) instead
   # of failing the whole build on a single dropped connection. Arch is
