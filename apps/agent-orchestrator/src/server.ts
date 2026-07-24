@@ -806,6 +806,12 @@ export class InvokeServer {
     sessionId: string | undefined,
     forwardedUserToken?: string,
   ): Promise<void> {
+    // A Remote Control session URL is deliberately NOT surfaced on the
+    // non-streaming path: RC's whole value is a LIVE session to watch/steer,
+    // and a blocking response only returns once the turn is already complete
+    // (nothing live left to join). The streaming path -- the actual Open WebUI
+    // chat surface -- streams it inline as it arrives (see
+    // handleChatCompletionsStreaming).
     const graphInput = await this.buildGraphInput(request, authToken, sessionId, undefined, undefined, forwardedUserToken);
     const state = await this.graph.invoke(graphInput);
     if (state.error) {
@@ -874,6 +880,20 @@ export class InvokeServer {
         // "please link your GitHub account" prompt -- also real content, not
         // a status step, since the status label is truncated to 120 chars
         // and would mangle the markdown link/URL.
+        // "remote-control-url" (claude-code-swe-agent's live Remote Control
+        // session link) is likewise streamed as real content -- a clickable
+        // "watch live / take over" link -- for the same reason (a truncated
+        // status label would mangle the URL). This gives a chat turn the same
+        // live Remote Control surface the GitHub triage path already posts
+        // (integration-gateway's relayAndReply), replacing the deprecated
+        // session-page link for Claude-backed sessions.
+        if (stage === "remote-control-url" && message) {
+          writeSseChunk(
+            res,
+            chatCompletionChunk(id, model, { content: `🤖 Watch live or take over this session here: ${message}\n\n` }, null),
+          );
+          return;
+        }
         if ((stage === "agent-text" || stage === "identity-link") && message) {
           writeSseChunk(res, chatCompletionChunk(id, model, { content: message }, null));
           return;
