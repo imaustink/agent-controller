@@ -299,62 +299,35 @@ export class GatewayServer {
   ): Promise<void> {
     // Only the deterministic issues.labeled trigger (the actual "triage"
     // path -- long-running investigate-and-PR work, ADR 0024) gets a
-    // session page and a "starting work" comment (issue #81); the `event`
-    // descriptor is only ever set on that path (see `handleGithubWebhook`'s
-    // issue-labeled branch), which doubles as the discriminator here.
-    // Ordinary conversational opened/comment replies are meant to feel like
-    // near-instant chat, so an extra comment there would just be noise -- and
-    // they're unaffected either way if the feature is disabled
-    // (`sessionPageStore`/`publicBaseUrl` unset).
+    // session page and an upfront comment; the `event` descriptor is only
+    // ever set on that path (see `handleGithubWebhook`'s issue-labeled
+    // branch), which doubles as the discriminator here. Ordinary
+    // conversational opened/comment replies are meant to feel like
+    // near-instant chat, so an extra comment there would just be noise.
     //
-    // The session page is created upfront (so its link is valid), but the
-    // "starting work" comment is NOT posted here -- it's deferred to
-    // `announce`, fired by `runTurn` only once the turn is genuinely running
-    // past any auth pre-flight. Otherwise an unauthenticated triage would
-    // claim work had started and THEN ask the user to link an account.
-    let announce: (() => Promise<void>) | undefined;
+    // The gateway's own session page (ADR 0025/0026) is still created and
+    // tracked here for debugging, but its URL is deliberately NEVER posted
+    // to the issue -- the only thing posted up front is a real Claude Code
+    // Remote Control link (`onRemoteControlUrl`, fired by a
+    // `remote-control-url` progress event from the delegated agent), and
+    // only once one genuinely exists. If Remote Control never activates for
+    // this run (not configured for the Agent, or the CLI never hands back a
+    // session), no upfront comment is posted at all -- silence, not a
+    // placeholder link nobody asked to see, is the fallback. This was a
+    // deliberate, explicit product decision after the old "Starting work...
+    // {session page link}" comment kept appearing instead of the intended
+    // Remote Control link.
     let onRemoteControlUrl: ((url: string) => Promise<void>) | undefined;
     if (event && this.options.sessionPageStore && this.options.publicBaseUrl) {
-      const page = await this.options.sessionPageStore.getOrCreate(sessionId, { owner, repo, issueNumber });
-      const pageUrl = `${this.options.publicBaseUrl.replace(/\/$/, "")}/sessions/${page.token}`;
-      let announced = false;
-      // Set if a Remote Control session URL (a later phase's
-      // `remote-control-url` progress event, surfaced via
-      // `orchestrator-client`'s `onRemoteControlUrl`) arrives before
-      // `announce` fires -- in that case the "starting work" comment below
-      // links to it instead of the session page. `announce` is not delayed
-      // waiting for this, though: it fires as soon as the turn is genuinely
-      // running (see `runTurn`), same as before this feature existed, so
-      // user-visible feedback is never held up on an uncertain event.
-      let remoteControlUrl: string | undefined;
-      announce = async () => {
-        if (announced) return;
-        announced = true;
-        await this.options.githubReplyClient.postIssueComment(
-          owner,
-          repo,
-          issueNumber,
-          `Starting work on this now. Track progress or send follow-up prompts at ${remoteControlUrl ?? pageUrl}`,
-        );
-      };
+      await this.options.sessionPageStore.getOrCreate(sessionId, { owner, repo, issueNumber });
+      let posted = false;
       onRemoteControlUrl = async (url) => {
-        remoteControlUrl = url;
-        // Not posted yet -- `announce` will use `remoteControlUrl` once it
-        // fires, so no separate comment is needed.
-        if (!announced) return;
-        // `announce` already posted using the session-page link -- rather
-        // than editing that comment (GithubReplyClient exposes no
-        // edit-comment call), post a small follow-up linking the Remote
-        // Control session.
-        await this.options.githubReplyClient.postIssueComment(
-          owner,
-          repo,
-          issueNumber,
-          `Remote Control session available: ${url}`,
-        );
+        if (posted) return;
+        posted = true;
+        await this.options.githubReplyClient.postIssueComment(owner, repo, issueNumber, `Remote Control session: ${url}`);
       };
     }
-    await this.runTurn(owner, repo, issueNumber, sessionId, request, event, announce, onRemoteControlUrl);
+    await this.runTurn(owner, repo, issueNumber, sessionId, request, event, undefined, onRemoteControlUrl);
   }
 
   /** How long to hold a triage turn open waiting for the user to finish linking their account before giving up (they can always re-trigger the issue later). Matches the link flow's own ~10-minute expiry. */
@@ -380,12 +353,14 @@ export class GatewayServer {
   ): Promise<void> {
     // This relay has no browser -- always force device flow explicitly rather
     // than relying on agent-orchestrator's own default ("authcode", intended
-    // for browser-based callers). `announce` (when set) is the deferred
-    // "starting work" comment, posted only once the turn is actually running;
-    // `onRemoteControlUrl` (when set) is likewise only ever passed on the
-    // triage path (alongside `announce`/`event`), see `relayAndReply`. Only
-    // pass an `event` when there is one -- keeps the call shape identical for
-    // the ordinary opened/comment paths.
+    // for browser-based callers). `announce` fires once the turn is genuinely
+    // running past any auth pre-flight -- `relayAndReply` no longer uses it
+    // (it posts nothing until a real Remote Control URL exists), but
+    // `orchestratorClient.invoke` still accepts it for any other caller that
+    // wants an "actually running now" signal. `onRemoteControlUrl` (when set)
+    // is only ever passed on the triage path (alongside `event`), see
+    // `relayAndReply`. Only pass an `event` when there is one -- keeps the
+    // call shape identical for the ordinary opened/comment paths.
     const invokeOnce = (): Promise<OrchestratorInvokeResult> =>
       event
         ? this.options.orchestratorClient.invoke(request, sessionId, "device", event, announce, onRemoteControlUrl)
