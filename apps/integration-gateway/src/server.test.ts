@@ -32,17 +32,19 @@ describe("GatewayServer", () => {
   let identityResolver: GithubIdentityResolver;
   let invoke: ReturnType<typeof vi.fn>;
   let postIssueComment: ReturnType<typeof vi.fn>;
+  let removeIssueLabel: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     identityResolver = new GithubIdentityResolver(new Map([["alice", { subject: "alice", roles: ["reporter"] }]]), "agent-controller[bot]");
     invoke = vi.fn().mockResolvedValue({ status: "succeeded", result: "What repo/branch should this target?" });
     postIssueComment = vi.fn().mockResolvedValue(undefined);
+    removeIssueLabel = vi.fn().mockResolvedValue(undefined);
 
     server = new GatewayServer({
       githubWebhookSecret: SECRET,
       identityResolver,
       orchestratorClient: { invoke } as unknown as OrchestratorClient,
-      githubReplyClient: { postIssueComment } as unknown as GithubReplyClient,
+      githubReplyClient: { postIssueComment, removeIssueLabel } as unknown as GithubReplyClient,
       githubTriggerLabel: "ai-triage",
       githubReviewLabel: "ai-review",
     });
@@ -183,7 +185,7 @@ describe("GatewayServer", () => {
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
   });
 
-  it("ignores a pull_request.labeled event when the label isn't the configured review label", async () => {
+  it("ignores a pull_request.labeled event when the label is neither the review nor the trigger label", async () => {
     const res = await postWebhook(port, "pull_request", {
       action: "labeled",
       repository: { owner: { login: "acme" }, name: "widgets" },
@@ -195,6 +197,45 @@ describe("GatewayServer", () => {
     await flush();
     expect(invoke).not.toHaveBeenCalled();
     expect(postIssueComment).not.toHaveBeenCalled();
+    // An ignored label must not be stripped off the PR -- only a label this
+    // gateway actually acted on is removed.
+    expect(removeIssueLabel).not.toHaveBeenCalled();
+  });
+
+  // The trigger label on a PR means "address the feedback on it and sync it",
+  // routed apart from the review label downstream via the descriptor's
+  // labelName (IntegrationRoute `match.labelName`).
+  it("relays a pull_request.labeled event with an event descriptor when the TRIGGER label is applied", async () => {
+    const res = await postWebhook(port, "pull_request", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      pull_request: { number: 12, title: "Add dark mode", body: "Implements the dark theme." },
+      label: { name: "ai-triage" },
+    });
+    expect(res.status).toBe(202);
+    await flush();
+
+    expect(invoke).toHaveBeenCalledWith(
+      'Pull request #12 was labeled "ai-triage": Add dark mode\n\nImplements the dark theme.',
+      sessionIdFor("acme", "widgets", 12),
+      "device",
+      {
+        source: "github",
+        event: "pull_request",
+        action: "labeled",
+        owner: "acme",
+        repo: "widgets",
+        prNumber: 12,
+        title: "Add dark mode",
+        body: "Implements the dark theme.",
+        senderLogin: "alice",
+        labelName: "ai-triage",
+      },
+      undefined,
+      undefined,
+    );
+    expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 12, "ai-triage");
   });
 
   it("relays a pull_request.labeled event with an event descriptor when the review label is applied", async () => {
@@ -268,6 +309,79 @@ describe("GatewayServer", () => {
     await flush();
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, expect.stringContaining("boom"));
   });
+
+  it("removes the trigger label once an issue triage run completes, so re-applying it re-triggers", async () => {
+    await postWebhook(port, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "t", body: "b" },
+      label: { name: "ai-triage" },
+    });
+    await flush();
+    expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-triage");
+  });
+
+  it("removes the review label once a PR review run completes", async () => {
+    await postWebhook(port, "pull_request", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      pull_request: { number: 12, title: "t", body: "b" },
+      label: { name: "ai-review" },
+    });
+    await flush();
+    expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 12, "ai-review");
+  });
+
+  // A failed run is exactly when someone wants to re-trigger, so the label
+  // has to come off on the failure path too, not just the happy one.
+  it("removes the trigger label even when the turn fails", async () => {
+    invoke.mockResolvedValue({ status: "failed", error: "boom" });
+    await postWebhook(port, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "t", body: "b" },
+      label: { name: "ai-triage" },
+    });
+    await flush();
+    expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-triage");
+  });
+
+  // The turn's own result must still reach the issue even if label cleanup
+  // fails (e.g. the token lost the labels permission) -- cleanup is
+  // best-effort, reported through onBackgroundError, never fatal.
+  it("still reports the turn's result when removing the label fails", async () => {
+    const onBackgroundError = vi.fn();
+    const failing = new GatewayServer({
+      githubWebhookSecret: SECRET,
+      identityResolver,
+      orchestratorClient: { invoke } as unknown as OrchestratorClient,
+      githubReplyClient: {
+        postIssueComment,
+        removeIssueLabel: vi.fn().mockRejectedValue(new Error("no labels permission")),
+      } as unknown as GithubReplyClient,
+      githubTriggerLabel: "ai-triage",
+      onBackgroundError,
+    });
+    await failing.listen(0);
+    const failingPort = (failing as unknown as { server: { address: () => AddressInfo } }).server.address().port;
+    try {
+      await postWebhook(failingPort, "issues", {
+        action: "labeled",
+        repository: { owner: { login: "acme" }, name: "widgets" },
+        sender: { login: "alice", type: "User" },
+        issue: { number: 7, title: "t", body: "b" },
+        label: { name: "ai-triage" },
+      });
+      await flush();
+      expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
+      expect(onBackgroundError).toHaveBeenCalledWith(expect.objectContaining({ message: "no labels permission" }));
+    } finally {
+      await failing.close();
+    }
+  });
 });
 
 describe("GatewayServer session pages", () => {
@@ -277,6 +391,7 @@ describe("GatewayServer session pages", () => {
   let invoke: ReturnType<typeof vi.fn>;
   let checkLive: ReturnType<typeof vi.fn>;
   let postIssueComment: ReturnType<typeof vi.fn>;
+  let removeIssueLabel: ReturnType<typeof vi.fn>;
   let sessionPageStore: InMemorySessionPageStore;
 
   beforeEach(async () => {
@@ -293,13 +408,14 @@ describe("GatewayServer session pages", () => {
     // fallback path; live-mode behavior has its own describe block below.
     checkLive = vi.fn().mockResolvedValue({ live: false });
     postIssueComment = vi.fn().mockResolvedValue(undefined);
+    removeIssueLabel = vi.fn().mockResolvedValue(undefined);
     sessionPageStore = new InMemorySessionPageStore();
 
     server = new GatewayServer({
       githubWebhookSecret: SECRET,
       identityResolver,
       orchestratorClient: { invoke, checkLive } as unknown as OrchestratorClient,
-      githubReplyClient: { postIssueComment } as unknown as GithubReplyClient,
+      githubReplyClient: { postIssueComment, removeIssueLabel } as unknown as GithubReplyClient,
       githubTriggerLabel: "ai-triage",
       sessionPageStore,
       publicBaseUrl: "https://gateway.example.com",
@@ -446,6 +562,7 @@ describe("GatewayServer unauthenticated triage: deferred ack + auto-resume", () 
   let port: number;
   let invoke: ReturnType<typeof vi.fn>;
   let postIssueComment: ReturnType<typeof vi.fn>;
+  let removeIssueLabel: ReturnType<typeof vi.fn>;
   let waitForCompletion: ReturnType<typeof vi.fn>;
   let sessionPageStore: InMemorySessionPageStore;
 
@@ -474,6 +591,7 @@ describe("GatewayServer unauthenticated triage: deferred ack + auto-resume", () 
       return { status: "succeeded", result: "Opened PR #42." };
     });
     postIssueComment = vi.fn().mockResolvedValue(undefined);
+    removeIssueLabel = vi.fn().mockResolvedValue(undefined);
     waitForCompletion = vi.fn().mockResolvedValue({ token: "sk-ant-oat01-linked", createdAt: "2026-01-01T00:00:00Z" });
     sessionPageStore = new InMemorySessionPageStore();
 
@@ -481,7 +599,7 @@ describe("GatewayServer unauthenticated triage: deferred ack + auto-resume", () 
       githubWebhookSecret: SECRET,
       identityResolver,
       orchestratorClient: { invoke, checkLive: vi.fn().mockResolvedValue({ live: false }) } as unknown as OrchestratorClient,
-      githubReplyClient: { postIssueComment } as unknown as GithubReplyClient,
+      githubReplyClient: { postIssueComment, removeIssueLabel } as unknown as GithubReplyClient,
       githubTriggerLabel: "ai-triage",
       sessionPageStore,
       publicBaseUrl: "https://gateway.example.com",

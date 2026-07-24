@@ -12,6 +12,13 @@ export interface IntegrationRouteCustomResource {
       event: string;
       /** Absent matches any action for this source/event pair. */
       action?: string;
+      /**
+       * Absent matches any label. Narrows a match to events carrying this
+       * exact `labelName` -- GitHub's `pull_request`/`labeled` triple carries
+       * more than one intent (review vs. triage), told apart only by which
+       * label was applied.
+       */
+      labelName?: string;
     };
     /** Exactly one of skillRef/agentRef/toolRef is set (enforced by the CRD's CEL rule). */
     skillRef?: string;
@@ -27,6 +34,7 @@ export interface IntegrationRoute {
   source: string;
   event: string;
   action?: string;
+  labelName?: string;
   skillRef?: string;
   agentRef?: string;
   toolRef?: string;
@@ -109,21 +117,33 @@ export class CrdIntegrationRouteRegistry {
   }
 
   /**
-   * Finds the route matching a given event, if any. An exact match on
-   * `action` is preferred over a route whose `action` is absent (wildcard
-   * for that source/event); ties beyond that resolve to whichever route was
-   * indexed last. Exact-match only, deliberately — this CRD is a small,
+   * Finds the route matching a given event, if any. `source`/`event` must
+   * match exactly; `action` and `labelName` each match exactly when the route
+   * names one and act as a wildcard when the route omits it. More specific
+   * routes win: a route naming BOTH action and labelName beats one naming
+   * only action, which beats a labelName-only route, which beats a fully
+   * wildcarded one. Ties within a specificity tier resolve to whichever route
+   * was indexed last. Exact-match only, deliberately — this CRD is a small,
    * declarative table (docs/integrations-gateway.md non-goal: no rules
    * engine), not a general pattern matcher.
    */
-  match(source: string, event: string, action?: string): IntegrationRoute | undefined {
-    let wildcardMatch: IntegrationRoute | undefined;
+  match(source: string, event: string, action?: string, labelName?: string): IntegrationRoute | undefined {
+    let best: IntegrationRoute | undefined;
+    let bestScore = -1;
     for (const route of this.routes.values()) {
       if (route.source !== source || route.event !== event) continue;
-      if (route.action && route.action === action) return route;
-      if (!route.action) wildcardMatch = route;
+      // A route that names an action/label only matches an event carrying
+      // that same value -- naming one and having it differ is a miss, not a
+      // fallback (otherwise the ai-review route would swallow ai-triage).
+      if (route.action && route.action !== action) continue;
+      if (route.labelName && route.labelName !== labelName) continue;
+      const score = (route.action ? 2 : 0) + (route.labelName ? 1 : 0);
+      if (score >= bestScore) {
+        best = route;
+        bestScore = score;
+      }
     }
-    return wildcardMatch;
+    return best;
   }
 }
 
@@ -137,6 +157,7 @@ function toIntegrationRoute(cr: IntegrationRouteCustomResource): IntegrationRout
     source: spec.match.source,
     event: spec.match.event,
     action: spec.match.action,
+    labelName: spec.match.labelName,
     skillRef: spec.skillRef,
     agentRef: spec.agentRef,
     toolRef: spec.toolRef,

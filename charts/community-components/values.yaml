@@ -324,3 +324,25 @@ integrationRoutes:
     # enabled in this same values file (default opencode-swe-agent; set to
     # claude-code-swe-agent to review on the Claude Code engine instead).
     agentRef: opencode-swe-agent
+    # Which label selects this route rather than githubPrLabeledTriage below
+    # (both match pull_request/labeled -- the label is the only thing telling
+    # them apart). Must equal integration-gateway's config.githubReviewLabel.
+    labelName: ai-review
+  # github-pr-labeled-triage: an IntegrationRoute CR dispatching a GitHub
+  # `pull_request`/`labeled` webhook to a SWE Agent with a "pick this PR back
+  # up" prompt -- address the review feedback on it, push the updates, and sync
+  # the branch with its base. Triggered by the SAME label as issue triage
+  # (integration-gateway's config.githubTriggerLabel): "triage this" means
+  # investigate-and-open-a-PR on an issue and address-feedback-and-update on a
+  # PR, so which work it means is decided by what got labeled. Unlike the
+  # review route above, this one pushes commits. The gateway removes the label
+  # when the run ends, so re-applying it re-triggers.
+  githubPrLabeledTriage:
+    enabled: false
+    # Which SWE Agent CR updates a labeled PR. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to run on the Claude Code engine instead).
+    agentRef: opencode-swe-agent
+    # Which label selects this route rather than githubPrLabeledReview above.
+    # Must equal integration-gateway's config.githubTriggerLabel.
+    labelName: ai-triage

@@ -13,7 +13,7 @@ export interface GithubReplyClientOptions extends GithubAuthConfig {
   fetchImpl?: typeof fetch;
 }
 
-/** Minimal GitHub REST client: posts a reply comment on an issue. */
+/** Minimal GitHub REST client: posts a reply comment on an issue, and removes a trigger label once a run finishes. */
 export class GithubReplyClient {
   private readonly fetchImpl: typeof fetch;
 
@@ -38,6 +38,36 @@ export class GithubReplyClient {
     );
     if (!res.ok) {
       throw new Error(`Failed to post issue comment: ${res.status} ${await res.text()}`);
+    }
+  }
+
+  /**
+   * Removes a single label from an issue or pull request. Called once a
+   * label-triggered run finishes so the same label can simply be re-applied
+   * to run it again (GitHub emits no `labeled` event for a label that is
+   * already present, so without this a re-trigger means remove-then-add by
+   * hand). Issues and PRs share one number space and one labels endpoint, so
+   * this covers both.
+   *
+   * A 404 is treated as success: the label already being gone (a human
+   * removed it mid-run, or two runs raced) is the desired end state, not an
+   * error worth failing the turn over.
+   */
+  async removeIssueLabel(owner: string, repo: string, issueNumber: number, label: string): Promise<void> {
+    const token = await resolveGithubToken(this.options);
+    const res = await this.fetchImpl(
+      `${this.options.githubApiUrl}/repos/${owner}/${repo}/issues/${issueNumber}/labels/${encodeURIComponent(label)}`,
+      {
+        method: "DELETE",
+        headers: {
+          authorization: `Bearer ${token}`,
+          accept: "application/vnd.github+json",
+          "x-github-api-version": "2022-11-28",
+        },
+      },
+    );
+    if (!res.ok && res.status !== 404) {
+      throw new Error(`Failed to remove label "${label}": ${res.status} ${await res.text()}`);
     }
   }
 }

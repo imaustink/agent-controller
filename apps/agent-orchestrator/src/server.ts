@@ -593,11 +593,17 @@ export class InvokeServer {
         const source = eventFields.source;
         const eventName = eventFields.event;
         const action = eventFields.action;
+        // `labelName` participates in matching too: GitHub's
+        // `pull_request`/`labeled` triple carries more than one intent (a
+        // review request vs. a triage request), told apart only by which
+        // label was applied.
+        const labelName = eventFields.labelName;
         if (typeof source === "string" && typeof eventName === "string") {
           const route = this.integrationRouteRegistry.match(
             source,
             eventName,
             typeof action === "string" ? action : undefined,
+            typeof labelName === "string" ? labelName : undefined,
           );
           if (route) {
             request = renderPromptTemplate(

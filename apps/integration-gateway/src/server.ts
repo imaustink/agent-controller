@@ -24,11 +24,18 @@ export interface GatewayServerOptions {
   githubReplyClient: GithubReplyClient;
   /**
    * The label that triggers automated triage (ADR 0024,
-   * `GATEWAY_GITHUB_TRIGGER_LABEL`) -- an `issues.labeled` webhook is only
-   * actionable when the label applied is this one; any other label is
-   * ignored. Empty string effectively disables the trigger (no label name
-   * can ever match). Deliberately a label, not an assignee: GitHub App bot
-   * users generally cannot be set as issue assignees.
+   * `GATEWAY_GITHUB_TRIGGER_LABEL`) -- an `issues.labeled` OR
+   * `pull_request.labeled` webhook is only actionable when the label applied
+   * is this one; any other label is ignored. Empty string effectively
+   * disables the trigger (no label name can ever match). Deliberately a
+   * label, not an assignee: GitHub App bot users generally cannot be set as
+   * issue assignees.
+   *
+   * The same label means "triage this" on both kinds, but the work differs
+   * and so does the route it dispatches to: on an issue, investigate and open
+   * a PR; on a PR, address the feedback already on it, push the updates, and
+   * sync it with its base branch. The two are distinguished downstream by the
+   * event descriptor's `event`/`labelName` pair, not by two separate labels.
    */
   githubTriggerLabel: string;
   /**
@@ -93,10 +100,13 @@ export function sessionIdFor(owner: string, repo: string, issueNumber: number): 
  * Consumer-facing HTTP surface for the GitHub Issues adapter: verifies each
  * webhook, maps it onto a per-issue orchestrator session, and relays the
  * eventual result back as an issue comment. See docs/integrations-gateway.md
- * -- only an explicit label application (`issues.labeled` with the
- * configured trigger label, or `pull_request.labeled` with the review label)
- * is ever actionable; an unlabeled `issues.opened`/`issue_comment.created` is
- * a strict no-op (`parseGithubEvent` maps it straight to `{ kind: "ignored" }`).
+ * -- only an explicit label application is ever actionable
+ * (`issues.labeled` with the trigger label, or `pull_request.labeled` with
+ * either the review label or the trigger label); an unlabeled
+ * `issues.opened`/`issue_comment.created` is a strict no-op
+ * (`parseGithubEvent` maps it straight to `{ kind: "ignored" }`). Every
+ * label-triggered run removes the label that triggered it when it finishes,
+ * so re-applying the label is all it takes to run again.
  */
 export class GatewayServer {
   private server: Server | undefined;
@@ -216,9 +226,18 @@ export class GatewayServer {
     if (event.kind === "ignored") return;
 
     if (event.kind === "pull-request-labeled") {
-      // Only actionable when the label applied is THE review label -- GitHub
-      // sends `pull_request.labeled` for every label, not just this one.
-      if (event.labelName !== this.options.githubReviewLabel) return;
+      // Two distinct PR triggers share this event, told apart by which label
+      // was applied -- GitHub sends `pull_request.labeled` for every label,
+      // so anything that is neither of them is ignored:
+      //   - the review label  -> review the PR, change nothing
+      //   - the trigger label -> triage the PR: address the feedback on it,
+      //     push the updates, and sync it with its base branch
+      // The label name rides along in the event descriptor, which is what
+      // lets the two IntegrationRoutes for `pull_request`/`labeled` resolve
+      // to different prompts (see `match.labelName`, ADR 0024).
+      const isReview = !!this.options.githubReviewLabel && event.labelName === this.options.githubReviewLabel;
+      const isTriage = !!this.options.githubTriggerLabel && event.labelName === this.options.githubTriggerLabel;
+      if (!isReview && !isTriage) return;
 
       // Runs as whoever applied the label (same identity/permission gate as
       // the other kinds). The gateway drops bot-authored events, so the
@@ -249,7 +268,7 @@ export class GatewayServer {
         body: event.body,
         senderLogin: event.senderLogin,
         labelName: event.labelName,
-      }).catch(this.options.onBackgroundError ?? ((error: unknown) => console.error(error)));
+      }, event.labelName).catch(this.options.onBackgroundError ?? ((error: unknown) => console.error(error)));
       return;
     }
 
@@ -284,7 +303,7 @@ export class GatewayServer {
         body: event.body,
         senderLogin: event.senderLogin,
         labelName: event.labelName,
-      }).catch(this.options.onBackgroundError ?? ((error: unknown) => console.error(error)));
+      }, event.labelName).catch(this.options.onBackgroundError ?? ((error: unknown) => console.error(error)));
       return;
     }
   }
@@ -296,13 +315,20 @@ export class GatewayServer {
     request: string,
     sessionId: string,
     event?: Record<string, string | number | undefined>,
+    /**
+     * The label whose application triggered this run, when one did. Removed
+     * once the run finishes (success or failure) so re-applying the same
+     * label re-triggers it -- GitHub emits no `labeled` event for a label
+     * that is already present, so leaving it on means a human has to
+     * remove-then-add by hand to run again.
+     */
+    triggerLabel?: string,
   ): Promise<void> {
-    // Only the deterministic issues.labeled trigger (the actual "triage"
-    // path -- long-running investigate-and-PR work, ADR 0024) gets a
-    // session page and an upfront comment; the `event` descriptor is only
-    // ever set on that path (see `handleGithubWebhook`'s issue-labeled
-    // branch), which doubles as the discriminator here. Ordinary
-    // conversational opened/comment replies are meant to feel like
+    // Only the deterministic label triggers (the long-running
+    // investigate/implement/review paths, ADR 0024) get a session page and an
+    // upfront comment; the `event` descriptor is only ever set on those paths
+    // (see `handleGithubWebhook`), which doubles as the discriminator here.
+    // Ordinary conversational opened/comment replies are meant to feel like
     // near-instant chat, so an extra comment there would just be noise.
     //
     // The gateway's own session page (ADR 0025/0026) is still created and
@@ -332,7 +358,23 @@ export class GatewayServer {
         );
       };
     }
-    await this.runTurn(owner, repo, issueNumber, sessionId, request, event, undefined, onRemoteControlUrl);
+    try {
+      await this.runTurn(owner, repo, issueNumber, sessionId, request, event, undefined, onRemoteControlUrl);
+    } finally {
+      // `finally`, not the happy path only: a failed or blocked run is
+      // exactly when someone wants to re-trigger, so the label must come off
+      // either way. Removing it emits `issues.unlabeled`/
+      // `pull_request.unlabeled`, which `parseGithubEvent` ignores -- no
+      // self-trigger loop. A failure here is reported but must not mask the
+      // turn's own outcome.
+      if (triggerLabel) {
+        try {
+          await this.options.githubReplyClient.removeIssueLabel(owner, repo, issueNumber, triggerLabel);
+        } catch (error) {
+          (this.options.onBackgroundError ?? ((e: unknown) => console.error(e)))(error);
+        }
+      }
+    }
   }
 
   /** How long to hold a triage turn open waiting for the user to finish linking their account before giving up (they can always re-trigger the issue later). Matches the link flow's own ~10-minute expiry. */
