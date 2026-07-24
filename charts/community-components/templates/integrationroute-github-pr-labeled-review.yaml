@@ -10,6 +10,13 @@ spec:
     source: github
     event: pull_request
     action: labeled
+    # This route and github-pr-labeled-triage share the exact same
+    # source/event/action triple -- the label is the ONLY thing distinguishing
+    # "review this PR" from "triage this PR", so both must pin match.labelName
+    # or the two are indistinguishable and one silently swallows the other.
+    # Must equal integration-gateway's config.githubReviewLabel (the gateway
+    # ignores a pull_request.labeled event for any other label).
+    labelName: {{ .Values.integrationRoutes.githubPrLabeledReview.labelName | default "ai-review" | quote }}
   # No Tool wrapper needed -- dispatches straight to the Agent CR (ADR 0021),
   # same pattern as integrationroute-github-issue-labeled-triage.yaml. Which
   # SWE Agent CR reviews the PR is value-driven (default opencode-swe-agent)

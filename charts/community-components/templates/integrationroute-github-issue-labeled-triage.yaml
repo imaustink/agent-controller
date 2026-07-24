@@ -36,6 +36,8 @@ spec:
 
     When you open a pull request, end its description with a short note
     inviting a maintainer to apply the "ai-review" label to the PR to request
-    an automated code review. (The automation cannot apply that label to its
-    own PR, so a human applies it.)
+    an automated code review, or the "{{`{{labelName}}`}}" label to have the
+    review feedback on it addressed and the branch brought back in sync with
+    its base. (The automation cannot apply either label to its own PR, so a
+    human applies it.)
 {{- end }}

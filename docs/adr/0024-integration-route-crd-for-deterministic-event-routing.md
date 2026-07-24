@@ -54,8 +54,21 @@ not an authorization boundary, exactly like `SkillReconciler`.
 registry+watcher pattern (`CrdSkillRegistry`, ADR 0020) other catalogs use, so
 it — not the gateway — owns reading routes: `CrdIntegrationRouteRegistry`
 (`src/routing/crd-integration-route-registry.ts`) lists/watches
-`IntegrationRoute` CRs and exposes `match(source, event, action)` (exact
-action match preferred over an action-less wildcard route).
+`IntegrationRoute` CRs and exposes `match(source, event, action, labelName)`
+(most specific wins: `action`+`labelName` > `action` > `labelName` > neither;
+a route naming an `action`/`labelName` never matches an event carrying a
+different value for it).
+
+**Amendment (`match.labelName`).** `match` gained an optional `labelName`
+because one source/event/action triple turned out to carry more than one
+intent: GitHub's `pull_request`/`labeled` means "review this PR" under the
+review label and "address the feedback on this PR and sync it" under the
+triage label, and nothing else in the descriptor tells them apart. Omitting it
+matches any label, so this is backward compatible and the original
+`source`/`event`/`action` table stays the common case. This is still a
+declarative table, not the rules engine this ADR rejects — `labelName` is one
+more exact-equality field on an adapter-defined descriptor value, with no
+globs, expressions, or ordering for an operator to reason about.
 
 **`/invoke`'s HTTP contract gains one optional field**, fully backward
 compatible: `event: { source, event, action, ...adapter-specific fields }`.
@@ -84,6 +97,21 @@ On a match, it still relays through the same conversational `/invoke` call
 (same session id, same identity resolution on the user who *applied the
 label*, same reply-posting) — just with an `event` descriptor attached
 alongside the usual fallback request text.
+
+The trigger label was later extended to `pull_request`/`labeled` too, meaning
+"pick this PR back up: address the feedback on it, push the updates, sync it
+with its base branch" — the same label, since "triage this" is the same
+request and *what* was labeled already determines the work. The gateway stays
+dumb here as well: it forwards `labelName` in the descriptor and lets the
+route table decide, which is what `match.labelName` above is for.
+
+**Trigger labels are self-clearing.** Whichever label started a run is removed
+when that run finishes, on every path including failure. GitHub emits no
+`labeled` event for a label that is already attached, so leaving it on made
+"run it again" a manual remove-then-add; removing it reduces re-triggering to
+re-applying the label. The removal emits an `unlabeled` event, which the
+gateway ignores, so there is no self-trigger loop. Cleanup is best-effort and
+never masks the turn's own reply.
 
 **Sample route**: `github`/`issues`/`labeled` → `opencode-swe-agent`, wired
 as a Helm-templated `IntegrationRoute` (`charts/community-components/templates/

@@ -370,6 +370,14 @@ GitHub Issues adapter, actionable ONLY on an explicit label application:
   before any identity resolution or orchestrator call happens. Opening an
   issue, or commenting on one, never causes the agent to run; only applying
   the trigger label does.
+- **Every label-triggered run removes its own trigger label when it finishes**
+  (success, failure, or blocked — `relayAndReply`'s `finally`). GitHub emits no
+  `labeled` event for a label that is already present, so a label left in place
+  would have to be removed and re-added by hand to run again; taking it off
+  makes "re-apply the label" the whole re-trigger gesture. The removal fires an
+  `unlabeled` event, which `parseGithubEvent` ignores — no self-trigger loop.
+  Label cleanup is best-effort: a failure there is reported via
+  `onBackgroundError` and never masks the turn's own result.
 - Session id is `github:<owner>/<repo>#<issueNumber>` — one session per
   issue, forwarded as `session_id` to `agent-orchestrator`'s existing
   `POST /invoke`.
@@ -390,6 +398,29 @@ GitHub Issues adapter, actionable ONLY on an explicit label application:
   over a fallback request string. A sample route (`github`/`issues`/
   `labeled` → `opencode-swe-agent`) ships gated behind
   `integrationRoutes.githubIssueLabeledTriage.enabled`.
+- **`pull_request.labeled` → two triggers on one event, split by label.** The
+  gateway acts on a labeled PR when the label is either:
+  - the **review label** (`GATEWAY_GITHUB_REVIEW_LABEL`, e.g. `"ai-review"`) —
+    review the diff and post the review, changing nothing; or
+  - the **trigger label** (`GATEWAY_GITHUB_TRIGGER_LABEL`, e.g. `"ai-triage"`,
+    the same label issue triage uses) — pick the PR back up: read the reviews,
+    comments and failing checks on it, address that feedback in code, sync the
+    branch with its base (resolving conflicts), push to the PR's own branch,
+    and summarize. "Triage this" means the same thing on both kinds; what got
+    labeled decides whether that is *open* a PR or *update* one.
+
+  Both send an `event` descriptor of `{ source: "github", event:
+  "pull_request", action: "labeled", owner, repo, prNumber, title, body,
+  senderLogin, labelName }`. Since the two share one source/event/action
+  triple, `IntegrationRoute.spec.match` also carries an optional **`labelName`**
+  — the only thing distinguishing them — and both shipped PR routes
+  (`githubPrLabeledReview`, `githubPrLabeledTriage`) pin it. Match specificity
+  runs action-first: `action`+`labelName` > `action` > `labelName` > neither,
+  and a route that names a `labelName` never matches an event carrying a
+  different one (so the review route can't swallow a triage trigger). A route
+  omitting `labelName` still matches any label, unchanged from before.
+  Either way the label is applied by a human — the gateway drops bot-authored
+  events, so the agent that opened the PR cannot self-trigger on its own work.
 - Identity resolution's primary path is now real, no-redeploy-needed
   verification against GitHub itself, via two resolvers
   (`CompositeGithubIdentityResolver` tries both):
