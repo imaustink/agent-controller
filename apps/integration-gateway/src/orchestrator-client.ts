@@ -22,6 +22,15 @@ export interface OrchestratorInvokeResult {
   identityLinkPending?: boolean;
   /** Provider + subject the pending link is keyed on, for a caller that can wait on its own token store and auto-resume once linked. Present only alongside `identityLinkPending`. */
   identityLink?: { provider: string; subject: string };
+  /**
+   * A Remote Control session URL (`https://claude.ai/code/session_...`) the
+   * delegated agent surfaced mid-run, if any -- see
+   * agent-orchestrator's `InvocationRecord.remoteControlUrl`. Only ever
+   * present for an agent that emits a `remote-control-url` progress event
+   * (today: a later phase of `claude-code-swe-agent`); absent for
+   * `opencode-swe-agent` and every run that never emits one.
+   */
+  remoteControlUrl?: string;
 }
 
 export interface OrchestratorClientOptions {
@@ -54,6 +63,7 @@ interface InvokePollBody {
   error?: string;
   identityLinkPending?: boolean;
   identityLink?: { provider: string; subject: string };
+  remoteControlUrl?: string;
 }
 
 /** Result of `checkLive` (ADR 0026). */
@@ -171,6 +181,14 @@ export class OrchestratorClient {
      * for a turn that ends up identity-link-pending.
      */
     onRunning?: () => void | Promise<void>,
+    /**
+     * Fired at most once, the first poll that surfaces a Remote Control
+     * session URL (agent-orchestrator's `InvocationRecord.remoteControlUrl`,
+     * itself only ever set for an agent that emits a `remote-control-url`
+     * progress event). Independent of `onRunning` -- may fire before, after,
+     * or (if no such event ever arrives) never at all.
+     */
+    onRemoteControlUrl?: (url: string) => void | Promise<void>,
   ): Promise<OrchestratorInvokeResult> {
     const acceptRes = await this.fetchImpl(`${this.baseUrl()}/invoke`, {
       method: "POST",
@@ -192,6 +210,7 @@ export class OrchestratorClient {
 
     const deadline = Date.now() + this.options.pollTimeoutMs;
     let announcedRunning = false;
+    let announcedRemoteControlUrl = false;
     while (Date.now() < deadline) {
       await this.sleep(this.options.pollIntervalMs);
       const pollRes = await this.fetchImpl(
@@ -202,6 +221,13 @@ export class OrchestratorClient {
         return { status: "failed", error: `/invoke/${accepted.id} poll failed: ${pollRes.status}` };
       }
       const polled = (await pollRes.json()) as InvokePollBody;
+      // Fire at most once, independent of terminal/pending status below --
+      // the underlying agent can surface this mid-run, on the same poll that
+      // turns out to already be terminal.
+      if (!announcedRemoteControlUrl && polled.remoteControlUrl) {
+        announcedRemoteControlUrl = true;
+        await onRemoteControlUrl?.(polled.remoteControlUrl);
+      }
       if (polled.status === "succeeded") {
         return {
           status: "succeeded",

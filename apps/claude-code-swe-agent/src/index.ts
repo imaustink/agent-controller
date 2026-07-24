@@ -1,8 +1,10 @@
+import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { runAgent, type AgentReply, type AgentSession } from "@controller-agent/agent-runtime";
 import { resolveGithubToken } from "@controller-agent/github-app-auth";
 import { buildClaudeSettings, buildPrompt } from "./claude.js";
-import { runClaudeTurn } from "./claude-runner.js";
+import { runClaudeTurn, runClaudeTurnRemoteControlled } from "./claude-runner.js";
 import {
   appendCoAuthorTrailer,
   discoverResult,
@@ -37,6 +39,23 @@ async function handler(session: AgentSession): Promise<AgentReply> {
 
   await ensureDir(toolConfig.homeDir);
   await ensureDir(toolConfig.workdir);
+
+  if (toolConfig.remoteControlEnabled) {
+    // A separate Go/Helm phase's init container is responsible for seeding
+    // this file before the Job container starts (see config.ts's
+    // `homeDir`/`remoteControlEnabled` docs) -- its absence here is logged,
+    // not thrown, both because that phase's exact seeding behavior can't be
+    // verified from this app, and because `claude --remote-control` itself is
+    // the actual authority on whether the run can proceed; failing fast here
+    // on a wrong guess would be worse than letting it fail with a real error.
+    const credentialsPath = join(toolConfig.homeDir, ".claude", ".credentials.json");
+    if (!existsSync(credentialsPath)) {
+      console.error(
+        `[claude-code-swe-agent] CLAUDE_REMOTE_CONTROL is enabled but no credentials file was found at ${credentialsPath} -- ` +
+          "the Remote Control turn will likely fail to authenticate unless the init container seeds it before this point.",
+      );
+    }
+  }
 
   await session.progress("Authenticating…", { stage: "authenticate" });
 
@@ -122,14 +141,17 @@ async function handler(session: AgentSession): Promise<AgentReply> {
 
   await session.progress("Running Claude Code…", { stage: "agent" });
   const prompt = buildPrompt(instruction, marker);
-  const outcome = await runClaudeTurn(prompt, {
+  const runOpts = {
     cwd: toolConfig.workdir,
     env: childEnv,
     settings: buildClaudeSettings(),
     model: toolConfig.model || undefined,
     signal: session.signal,
-    onProgress: (message, stage) => void session.progress(clip(message, 500), { stage }),
-  });
+    onProgress: (message: string, stage: string) => void session.progress(clip(message, 500), { stage }),
+  };
+  const outcome = toolConfig.remoteControlEnabled
+    ? await runClaudeTurnRemoteControlled(prompt, { ...runOpts, runId: session.runId })
+    : await runClaudeTurn(prompt, runOpts);
 
   if (outcome.failed) {
     // Phase 3 (per-user Claude OAuth delegation, docs/adr/0027) will teach

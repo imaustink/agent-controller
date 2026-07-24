@@ -129,6 +129,7 @@ describe("GatewayServer", () => {
       "device",
       undefined,
       undefined,
+      undefined,
     );
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
   });
@@ -177,7 +178,14 @@ describe("GatewayServer", () => {
       comment: { body: "start work" },
     });
     await flush();
-    expect(invoke).toHaveBeenCalledWith("start work", sessionIdFor("acme", "widgets", 7), "device", undefined, undefined);
+    expect(invoke).toHaveBeenCalledWith(
+      "start work",
+      sessionIdFor("acme", "widgets", 7),
+      "device",
+      undefined,
+      undefined,
+      undefined,
+    );
   });
 
   it("ignores an issues.labeled event when the label isn't the configured trigger label", async () => {
@@ -221,6 +229,7 @@ describe("GatewayServer", () => {
         senderLogin: "alice",
         labelName: "ai-triage",
       },
+      undefined,
       undefined,
     );
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
@@ -267,6 +276,7 @@ describe("GatewayServer", () => {
         senderLogin: "alice",
         labelName: "ai-review",
       },
+      undefined,
       undefined,
     );
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 12, "What repo/branch should this target?");
@@ -381,6 +391,96 @@ describe("GatewayServer session pages", () => {
     expect(entry.turns[0]).toMatchObject({ status: "succeeded", result: "Working on it." });
   });
 
+  it("links the starting-work comment to the Remote Control URL when it arrives before the turn is running", async () => {
+    invoke.mockImplementation(async (..._args: unknown[]) => {
+      const onRunning = _args[4] as (() => Promise<void> | void) | undefined;
+      const onRemoteControlUrl = _args[5] as ((url: string) => Promise<void> | void) | undefined;
+      // Simulate the remote-control-url progress event landing before the
+      // turn is reported as running -- e.g. both surface on the same poll.
+      await onRemoteControlUrl?.("https://claude.ai/code/session_abc123");
+      await onRunning?.();
+      return { status: "succeeded", result: "Working on it." };
+    });
+
+    await postWebhook(port, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
+      label: { name: "ai-triage" },
+    });
+    await flush();
+
+    // Only two comments -- no separate "Remote Control session available"
+    // follow-up, since the URL was already known before the first comment posted.
+    expect(postIssueComment).toHaveBeenCalledTimes(2);
+    expect(postIssueComment).toHaveBeenNthCalledWith(
+      1,
+      "acme",
+      "widgets",
+      7,
+      "Starting work on this now. Track progress or send follow-up prompts at https://claude.ai/code/session_abc123",
+    );
+    expect(postIssueComment).toHaveBeenNthCalledWith(2, "acme", "widgets", 7, "Working on it.");
+  });
+
+  it("posts a follow-up comment linking the Remote Control URL when it arrives after the starting-work comment already posted", async () => {
+    invoke.mockImplementation(async (..._args: unknown[]) => {
+      const onRunning = _args[4] as (() => Promise<void> | void) | undefined;
+      const onRemoteControlUrl = _args[5] as ((url: string) => Promise<void> | void) | undefined;
+      await onRunning?.();
+      await onRemoteControlUrl?.("https://claude.ai/code/session_xyz789");
+      return { status: "succeeded", result: "Working on it." };
+    });
+
+    await postWebhook(port, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
+      label: { name: "ai-triage" },
+    });
+    await flush();
+
+    expect(postIssueComment).toHaveBeenCalledTimes(3);
+    expect(postIssueComment).toHaveBeenNthCalledWith(
+      1,
+      "acme",
+      "widgets",
+      7,
+      expect.stringMatching(/^Starting work on this now.*https:\/\/gateway\.example\.com\/sessions\/\S+$/),
+    );
+    expect(postIssueComment).toHaveBeenNthCalledWith(
+      2,
+      "acme",
+      "widgets",
+      7,
+      "Remote Control session available: https://claude.ai/code/session_xyz789",
+    );
+    expect(postIssueComment).toHaveBeenNthCalledWith(3, "acme", "widgets", 7, "Working on it.");
+  });
+
+  it("falls back to the session-page link exactly as before when no Remote Control URL ever arrives", async () => {
+    // Default `invoke` mock from beforeEach never calls onRemoteControlUrl.
+    await postWebhook(port, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
+      label: { name: "ai-triage" },
+    });
+    await flush();
+
+    expect(postIssueComment).toHaveBeenCalledTimes(2);
+    expect(postIssueComment).toHaveBeenNthCalledWith(
+      1,
+      "acme",
+      "widgets",
+      7,
+      expect.stringMatching(/^Starting work on this now.*https:\/\/gateway\.example\.com\/sessions\/\S+$/),
+    );
+  });
+
   it("does not post a session page link for plain (non-labeled) conversational replies", async () => {
     await postWebhook(port, "issues", {
       action: "opened",
@@ -423,7 +523,14 @@ describe("GatewayServer session pages", () => {
     expect(res.headers.get("location")).toBe(`/sessions/${entry.token}`);
     await flush();
 
-    expect(invoke).toHaveBeenCalledWith("actually, target the develop branch", "github:acme/widgets#7", "device", undefined, undefined);
+    expect(invoke).toHaveBeenCalledWith(
+      "actually, target the develop branch",
+      "github:acme/widgets#7",
+      "device",
+      undefined,
+      undefined,
+      undefined,
+    );
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "Working on it.");
     const updated = await sessionPageStore.getByToken(entry.token);
     expect(updated?.turns).toHaveLength(1);

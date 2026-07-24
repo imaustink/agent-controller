@@ -490,6 +490,17 @@ export interface AgentGraphDeps {
    * directly by provider-generic code.
    */
   claudeAuthGateway?: IdentityLinkPort;
+  /**
+   * Client for apps/integration-gateway's claude-auth API in its `"login"`
+   * mode -- the `claude-remote`-provider counterpart of `claudeAuthGateway`,
+   * kept as its own optional dep (not folded into `claudeAuthGateway`) since
+   * the two flows resolve to differently-shaped credentials (a single OAuth
+   * token vs. a whole `credentialsJson` blob) that get injected into a
+   * launched run under different env vars (`PROVIDER_ENV_VAR` below).
+   * Resolved via `identityGatewayFor`, never referenced directly by
+   * provider-generic code.
+   */
+  claudeRemoteGateway?: IdentityLinkPort;
 }
 
 /**
@@ -497,20 +508,27 @@ export interface AgentGraphDeps {
  * to the env var name its linked token is injected as (AgentLaunchOptions'
  * secretEnv, agentrun-launcher.ts).
  */
-const PROVIDER_ENV_VAR: Record<string, string> = { github: "GITHUB_TOKEN", claude: "CLAUDE_CODE_OAUTH_TOKEN" };
+const PROVIDER_ENV_VAR: Record<string, string> = {
+  github: "GITHUB_TOKEN",
+  claude: "CLAUDE_CODE_OAUTH_TOKEN",
+  "claude-remote": "CLAUDE_LOGIN_CREDENTIALS_JSON",
+};
 
 /** Human-facing label for a provider, used in link prompts/messages. */
-const PROVIDER_LABEL: Record<string, string> = { github: "GitHub", claude: "Claude" };
+const PROVIDER_LABEL: Record<string, string> = { github: "GitHub", claude: "Claude", "claude-remote": "Claude" };
 
 /**
  * Resolves which gateway client backs a given identity provider (docs/adr/0027)
  * -- the one place that knows `"claude"` routes to `deps.claudeAuthGateway`
- * instead of the (GitHub-only-in-practice) `deps.identityLinkGateway`, so the
- * three call sites below (`checkPendingIdentityLink`, `delegateToAgent`, the
+ * and `"claude-remote"` routes to `deps.claudeRemoteGateway`, instead of the
+ * (GitHub-only-in-practice) `deps.identityLinkGateway`, so the three call
+ * sites below (`checkPendingIdentityLink`, `delegateToAgent`, the
  * agent-backed-tool path) stay provider-agnostic.
  */
 function identityGatewayFor(provider: string, deps: AgentGraphDeps): IdentityLinkPort | undefined {
-  return provider === "claude" ? deps.claudeAuthGateway : deps.identityLinkGateway;
+  if (provider === "claude") return deps.claudeAuthGateway;
+  if (provider === "claude-remote") return deps.claudeRemoteGateway;
+  return deps.identityLinkGateway;
 }
 
 /**
@@ -549,19 +567,34 @@ const CLAUDE_AUTH_EXPIRED_CODE = "claude_auth_expired";
  * `result` telling the user what happened and that simply retrying will
  * prompt them to relink. Every other failure falls back to the ordinary
  * `state.error` path, unchanged.
+ *
+ * `CLAUDE_AUTH_EXPIRED_CODE` is provider-agnostic: both the `claude`
+ * (setup-token) and `claude-remote` (login) providers' agent runs report the
+ * SAME code on a stale/expired credential, since the underlying failure mode
+ * (Claude Code CLI rejects its stored credential mid-run) is identical.
+ * `Identity` itself carries no provider (a caller isn't tied to one), so the
+ * caller passes the delegated agent's OWN first declared provider (the one
+ * actually gated/used for this run) to know which gateway's stored
+ * credential to invalidate -- defaulting to `"claude"` only for the sake of
+ * older call sites that predate this parameter.
  */
 async function handleAgentTurnFailure(
   err: unknown,
   deps: AgentGraphDeps,
   state: AgentState,
+  provider: string = "claude",
 ): Promise<Partial<AgentState>> {
-  if (err instanceof AgentTurnFailedError && err.code === CLAUDE_AUTH_EXPIRED_CODE && deps.claudeAuthGateway && state.identity) {
-    await deps.claudeAuthGateway.invalidate?.("claude", state.identity.subject).catch(() => {});
-    return {
-      result:
-        "Your linked Claude account's credential looks expired or invalid, so this request couldn't complete. " +
-        "Send your request again and I'll walk you through relinking it.",
-    };
+  if (err instanceof AgentTurnFailedError && err.code === CLAUDE_AUTH_EXPIRED_CODE && state.identity) {
+    const gateway = identityGatewayFor(provider, deps);
+    if (gateway) {
+      await gateway.invalidate?.(provider, state.identity.subject).catch(() => {});
+      const label = PROVIDER_LABEL[provider] ?? provider;
+      return {
+        result:
+          `Your linked ${label} account's credential looks expired or invalid, so this request couldn't complete. ` +
+          "Send your request again and I'll walk you through relinking it.",
+      };
+    }
   }
   return { error: agentTurnErrorMessage(err) };
 }
@@ -890,7 +923,10 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
-        return { agentRunId: state.activeAgentRunId, ...(await handleAgentTurnFailure(err, deps, state)) };
+        return {
+          agentRunId: state.activeAgentRunId,
+          ...(await handleAgentTurnFailure(err, deps, state, found.agent.identityProviders?.[0])),
+        };
       }
     })
     .addNode("checkNeedsCapability", async (state) => {
@@ -1174,7 +1210,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
-        return { agentRunId: runId, ...(await handleAgentTurnFailure(err, deps, state)) };
+        return { agentRunId: runId, ...(await handleAgentTurnFailure(err, deps, state, agent.identityProviders?.[0])) };
       }
     })
     .addNode("loadSkillTools", async (state) => {

@@ -4,6 +4,7 @@ import type { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.
 import { IdentityLinkApi } from "./identity-link/api.js";
 import { ClaudeAuthApi } from "./claude-auth/api.js";
 import type { ClaudeSetupTokenFlows } from "./claude-auth/pty-setup-token.js";
+import type { ClaudeLoginFlows } from "./claude-auth/pty-login.js";
 import type { ClaudeTokenStore } from "./claude-auth/store.js";
 import type { IdentityResolver } from "./identity.js";
 import type { OrchestratorClient, OrchestratorInvokeResult } from "./orchestrator-client.js";
@@ -61,6 +62,16 @@ export interface GatewayServerOptions {
   claudeAuthFlows?: ClaudeSetupTokenFlows;
   claudeAuthStore?: ClaudeTokenStore;
   /**
+   * Full-login (`claude auth login --claudeai`) flows for Remote Control
+   * (docs/adr/0027 follow-up) -- optional and additive alongside
+   * `claudeAuthFlows` above: a subject's `mode=login` request 501s until this
+   * is wired up, rather than falling back to `setup-token`. Reuses
+   * `claudeAuthStore`/`identityLinkToken`/`publicBaseUrl` above, same as the
+   * `setup-token` flow does, so no new config surface is required just to
+   * make this reachable once a caller sets it.
+   */
+  claudeLoginFlows?: ClaudeLoginFlows;
+  /**
    * Session-page feature (issue #81) -- both fields must be set together to
    * enable it: a "starting work" comment posted right when an
    * `issues.labeled` triage trigger fires (rather than only after the whole
@@ -101,7 +112,13 @@ export class GatewayServer {
         : undefined;
     this.claudeAuthApi =
       options.claudeAuthFlows && options.claudeAuthStore && options.identityLinkToken && options.publicBaseUrl
-        ? new ClaudeAuthApi(options.claudeAuthFlows, options.claudeAuthStore, options.identityLinkToken, options.publicBaseUrl)
+        ? new ClaudeAuthApi(
+            options.claudeAuthFlows,
+            options.claudeAuthStore,
+            options.identityLinkToken,
+            options.publicBaseUrl,
+            options.claudeLoginFlows,
+          )
         : undefined;
   }
 
@@ -326,10 +343,20 @@ export class GatewayServer {
     // past any auth pre-flight. Otherwise an unauthenticated triage would
     // claim work had started and THEN ask the user to link an account.
     let announce: (() => Promise<void>) | undefined;
+    let onRemoteControlUrl: ((url: string) => Promise<void>) | undefined;
     if (event && this.options.sessionPageStore && this.options.publicBaseUrl) {
       const page = await this.options.sessionPageStore.getOrCreate(sessionId, { owner, repo, issueNumber });
       const pageUrl = `${this.options.publicBaseUrl.replace(/\/$/, "")}/sessions/${page.token}`;
       let announced = false;
+      // Set if a Remote Control session URL (a later phase's
+      // `remote-control-url` progress event, surfaced via
+      // `orchestrator-client`'s `onRemoteControlUrl`) arrives before
+      // `announce` fires -- in that case the "starting work" comment below
+      // links to it instead of the session page. `announce` is not delayed
+      // waiting for this, though: it fires as soon as the turn is genuinely
+      // running (see `runTurn`), same as before this feature existed, so
+      // user-visible feedback is never held up on an uncertain event.
+      let remoteControlUrl: string | undefined;
       announce = async () => {
         if (announced) return;
         announced = true;
@@ -337,11 +364,27 @@ export class GatewayServer {
           owner,
           repo,
           issueNumber,
-          `Starting work on this now. Track progress or send follow-up prompts at ${pageUrl}`,
+          `Starting work on this now. Track progress or send follow-up prompts at ${remoteControlUrl ?? pageUrl}`,
+        );
+      };
+      onRemoteControlUrl = async (url) => {
+        remoteControlUrl = url;
+        // Not posted yet -- `announce` will use `remoteControlUrl` once it
+        // fires, so no separate comment is needed.
+        if (!announced) return;
+        // `announce` already posted using the session-page link -- rather
+        // than editing that comment (GithubReplyClient exposes no
+        // edit-comment call), post a small follow-up linking the Remote
+        // Control session.
+        await this.options.githubReplyClient.postIssueComment(
+          owner,
+          repo,
+          issueNumber,
+          `Remote Control session available: ${url}`,
         );
       };
     }
-    await this.runTurn(owner, repo, issueNumber, sessionId, request, event, announce);
+    await this.runTurn(owner, repo, issueNumber, sessionId, request, event, announce, onRemoteControlUrl);
   }
 
   /** How long to hold a triage turn open waiting for the user to finish linking their account before giving up (they can always re-trigger the issue later). Matches the link flow's own ~10-minute expiry. */
@@ -363,17 +406,20 @@ export class GatewayServer {
     request: string,
     event?: Record<string, string | number | undefined>,
     announce?: () => Promise<void>,
+    onRemoteControlUrl?: (url: string) => Promise<void>,
   ): Promise<void> {
     // This relay has no browser -- always force device flow explicitly rather
     // than relying on agent-orchestrator's own default ("authcode", intended
     // for browser-based callers). `announce` (when set) is the deferred
-    // "starting work" comment, posted only once the turn is actually running.
-    // Only pass an `event` when there is one -- keeps the call shape identical
-    // for the ordinary opened/comment paths.
+    // "starting work" comment, posted only once the turn is actually running;
+    // `onRemoteControlUrl` (when set) is likewise only ever passed on the
+    // triage path (alongside `announce`/`event`), see `relayAndReply`. Only
+    // pass an `event` when there is one -- keeps the call shape identical for
+    // the ordinary opened/comment paths.
     const invokeOnce = (): Promise<OrchestratorInvokeResult> =>
       event
-        ? this.options.orchestratorClient.invoke(request, sessionId, "device", event, announce)
-        : this.options.orchestratorClient.invoke(request, sessionId, "device", undefined, announce);
+        ? this.options.orchestratorClient.invoke(request, sessionId, "device", event, announce, onRemoteControlUrl)
+        : this.options.orchestratorClient.invoke(request, sessionId, "device", undefined, announce, onRemoteControlUrl);
 
     const finishTurn = async (
       tracked: { turnIndex: number } | undefined,
