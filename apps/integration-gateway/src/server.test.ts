@@ -367,7 +367,13 @@ describe("GatewayServer session pages", () => {
     await flush();
 
     expect(postIssueComment).toHaveBeenCalledTimes(2);
-    expect(postIssueComment).toHaveBeenNthCalledWith(1, "acme", "widgets", 7, "Remote Control session: https://claude.ai/code/session_abc123");
+    expect(postIssueComment).toHaveBeenNthCalledWith(
+      1,
+      "acme",
+      "widgets",
+      7,
+      "🤖 Starting work on this now. Watch live or take over the session here: https://claude.ai/code/session_abc123",
+    );
     expect(postIssueComment).toHaveBeenNthCalledWith(2, "acme", "widgets", 7, "Working on it.");
   });
 

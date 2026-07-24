@@ -274,9 +274,32 @@ const REMOTE_CONTROL_MAX_WAIT_MS = 30 * 60_000;
 
 // Guess: the URL printed to stdout on `--bg --remote-control` handoff looks
 // like the session URLs used elsewhere in this codebase's Remote Control login
-// flow (integration-gateway's claude-auth phase). Unconfirmed -- adjust after
-// a real spike against a live CLI + subscription.
-const REMOTE_CONTROL_URL_RE = /https:\/\/claude\.ai\/code\/session_[A-Za-z0-9_-]+/;
+// flow (integration-gateway's claude-auth phase).
+//
+// NOTE: `claude --bg` does NOT print this URL anywhere, and it is absent
+// from `claude agents --json` too (both confirmed empirically). So this
+// scrape almost never fires -- the URL is instead CONSTRUCTED from the
+// session id (see `buildRemoteControlUrl`), which is how the CLI itself
+// builds it. The scrape is kept only as a belt-and-braces first choice in
+// case a future CLI version does start printing it.
+const REMOTE_CONTROL_URL_RE = /https:\/\/claude\.ai\/code\/[A-Za-z0-9_-]+/;
+
+/**
+ * Builds the Remote Control session URL from a session id, mirroring the
+ * `claude` CLI's own construction (decompiled from v2.1.218:
+ * `https://claude.ai/code/${toCompatSessionId(id)}`, where
+ * `toCompatSessionId` rewrites only a `cse_`-prefixed id to `session_<rest>`
+ * and passes everything else through unchanged). This is the reliable path
+ * to the URL because the CLI never emits it in `--bg` mode -- we already
+ * capture the session id from `claude agents --json --all`, so we can derive
+ * the exact same URL a human would get from `/remote-control` interactively.
+ * Returns null for an empty id.
+ */
+function buildRemoteControlUrl(sessionId: string | null | undefined): string | null {
+  if (!sessionId) return null;
+  const compat = sessionId.startsWith("cse_") ? `session_${sessionId.slice(4)}` : sessionId;
+  return `https://claude.ai/code/${compat}`;
+}
 /**
  * Confirmed empirically (real `claude --bg --remote-control` invocation,
  * see claude-runner-remote-control.test.ts): the initial handoff prints
@@ -628,7 +651,14 @@ export async function runClaudeTurnRemoteControlled(
     if (!poll.error) {
       const found = findSession(poll.stdout, { backgroundedId, sessionName });
       if (found) {
-        if (found.url) reportUrl(found.url);
+        // The URL is essentially always constructed, not scraped: the CLI
+        // doesn't expose it in `agents --json`. Emit it the moment the
+        // session first appears in a poll (running or done) so the caller
+        // can post the "work started, watch it here" comment near the start
+        // of the run, which is the whole point of the feature. `found.url`
+        // is preferred only if a future CLI version ever populates one.
+        const url = found.url ?? buildRemoteControlUrl(found.longSessionId ?? found.id);
+        if (url) reportUrl(url);
         if (found.finished || found.failed) {
           // `agents --json` never includes a result/output/message field for
           // a finished session (confirmed empirically) -- fall back to the

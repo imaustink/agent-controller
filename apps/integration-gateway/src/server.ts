@@ -324,7 +324,12 @@ export class GatewayServer {
       onRemoteControlUrl = async (url) => {
         if (posted) return;
         posted = true;
-        await this.options.githubReplyClient.postIssueComment(owner, repo, issueNumber, `Remote Control session: ${url}`);
+        await this.options.githubReplyClient.postIssueComment(
+          owner,
+          repo,
+          issueNumber,
+          `🤖 Starting work on this now. Watch live or take over the session here: ${url}`,
+        );
       };
     }
     await this.runTurn(owner, repo, issueNumber, sessionId, request, event, undefined, onRemoteControlUrl);
