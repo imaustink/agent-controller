@@ -9,9 +9,11 @@ import { z } from "zod";
  *
  * - **up** (agent -> orchestrator): `ready`, `progress`, `warning`,
  *   `reply` (the concluding assistant message for the current turn), `failed`,
- *   `opencode_event`, `opencode_response`, `session_idle`, `session_ended`.
+ *   `opencode_event`, `opencode_response`, `session_idle`, `session_ended`,
+ *   `tool_call`.
  * - **down** (orchestrator -> agent): `prompt` (a user turn — the initial
- *   goal or any follow-up), `cancel`, `signal`, `opencode_request`.
+ *   goal or any follow-up), `cancel`, `signal`, `opencode_request`,
+ *   `tool_result`.
  *
  * The protocol is transport-agnostic (this package deliberately has no NATS
  * dependency): messages are plain JSON validated by the schemas below. The
@@ -38,6 +40,16 @@ import { z } from "zod";
  * replacement — an agent using it still emits a normal final `reply` when its
  * task concludes; `session_idle`/`session_ended` only describe whether the
  * agent is choosing to stay resident (and therefore tunnelable) afterward.
+ *
+ * **Sub-agent tool calls (issue #87, docs/adr/0028).** `tool_call`/
+ * `tool_result` is the same request/response shape as `opencode_request`/
+ * `opencode_response` (correlated by an id, here `callId`) but for a
+ * completely different purpose: letting a sub-agent's OWN internal loop call
+ * a `Tool` CR named in its launching `Agent.spec.toolRefs`, dispatched by the
+ * orchestrator exactly the way a Skill's tool call already is. The
+ * `@controller-agent/agent-runtime` SDK layers `AgentSession.callTool()` over
+ * this pair the same way it layers `askUser()` over a non-final `reply` --
+ * the agent author never sees the up/down round-trip.
  */
 
 /** Fields present on every agent protocol message, both directions. */
@@ -109,6 +121,16 @@ export const AgentUpMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("session_ended"),
     reason: z.string(),
   }),
+  // A sub-agent's own internal loop calling a Tool CR named in its launching
+  // Agent's toolRefs (docs/adr/0028). Replied to via `tool_result`,
+  // correlated by `callId` -- unlike `ask()`/`pendingAsk`, more than one may
+  // be outstanding at once.
+  AgentMessageBaseSchema.extend({
+    type: z.literal("tool_call"),
+    callId: z.string(),
+    tool: z.string(),
+    input: z.string(),
+  }),
 ]);
 
 /** orchestrator -> agent. */
@@ -140,6 +162,17 @@ export const AgentDownMessageSchema = z.discriminatedUnion("type", [
     path: z.string(),
     body: z.unknown().optional(),
   }),
+  // Reply to a `tool_call` up-message, correlated by `callId` (docs/adr/0028).
+  // Exactly one of `result`/`error` is meaningful depending on `ok`, mirroring
+  // the up-message contract's own `reply`/`failed` split but folded into one
+  // message type since it's always a direct reply to a specific call.
+  AgentMessageBaseSchema.extend({
+    type: z.literal("tool_result"),
+    callId: z.string(),
+    ok: z.boolean(),
+    result: z.unknown().optional(),
+    error: z.string().optional(),
+  }),
 ]);
 
 /** agent -> orchestrator message, parameterized by the agent's `final.result` shape. */
@@ -155,14 +188,16 @@ export type AgentUpMessage<TResult = unknown> =
   | (AgentMessageBase & { type: "opencode_event"; event?: unknown })
   | (AgentMessageBase & { type: "opencode_response"; requestId: string; status: number; body?: unknown })
   | (AgentMessageBase & { type: "session_idle"; liveUntil: string })
-  | (AgentMessageBase & { type: "session_ended"; reason: string });
+  | (AgentMessageBase & { type: "session_ended"; reason: string })
+  | (AgentMessageBase & { type: "tool_call"; callId: string; tool: string; input: string });
 
 /** orchestrator -> agent message. */
 export type AgentDownMessage =
   | (AgentMessageBase & { type: "prompt"; message: string })
   | (AgentMessageBase & { type: "cancel"; reason?: string })
   | (AgentMessageBase & { type: "signal"; name: string; data?: unknown })
-  | (AgentMessageBase & { type: "opencode_request"; requestId: string; method: string; path: string; body?: unknown });
+  | (AgentMessageBase & { type: "opencode_request"; requestId: string; method: string; path: string; body?: unknown })
+  | (AgentMessageBase & { type: "tool_result"; callId: string; ok: boolean; result?: unknown; error?: string });
 
 /** NATS subject names for one agent run's two directions. */
 export interface AgentSubjects {

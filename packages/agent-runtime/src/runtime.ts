@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AgentDownMessage, AgentUpMessage } from "@controller-agent/messaging";
 import { AgentConfigError, loadConfig, type AgentRuntimeConfig } from "./config.js";
 import { NatsChannel, type AgentChannel } from "./channel.js";
@@ -28,7 +29,23 @@ export interface AgentSession {
    * while waiting.
    */
   ask(question: string): Promise<string>;
+  /**
+   * Calls a `Tool` CR named in this Agent's own `spec.toolRefs` (docs/adr/0028)
+   * and resolves with its raw result. On the wire this publishes a `tool_call`
+   * and awaits the correlated `tool_result` — the orchestrator re-validates
+   * `name` against the launching Agent's `toolRefs` and dispatches it exactly
+   * the way a Skill's tool call already is. Throws {@link ToolCallError} if
+   * the tool call fails (not declared, not found, or the tool itself failed);
+   * rejects with the same cancellation error as {@link ask} if the run is
+   * cancelled while a call is outstanding. More than one call may be
+   * outstanding at once (unlike `ask`, which allows only one pending
+   * question).
+   */
+  callTool(name: string, input: string): Promise<unknown>;
 }
+
+/** Thrown by {@link AgentSession.callTool} when the tool call itself fails (declined, not found, or the tool errored). */
+export class ToolCallError extends Error {}
 
 /** An agent's concluding reply for the run. A bare string is shorthand for `{ message }`. */
 export interface AgentReply {
@@ -80,6 +97,7 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
 
   const abort = new AbortController();
   let pendingAsk: { resolve: (answer: string) => void; reject: (err: Error) => void } | undefined;
+  const pendingToolCalls = new Map<string, { resolve: (result: unknown) => void; reject: (err: Error) => void }>();
 
   channel.onDown((msg: AgentDownMessage) => {
     switch (msg.type) {
@@ -93,12 +111,24 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
           resolve(msg.message);
         }
         break;
+      case "tool_result": {
+        const pending = pendingToolCalls.get(msg.callId);
+        if (!pending) break; // unknown/already-settled callId — nothing to resolve
+        pendingToolCalls.delete(msg.callId);
+        if (msg.ok) pending.resolve(msg.result);
+        else pending.reject(new ToolCallError(msg.error ?? `tool call ${msg.callId} failed`));
+        break;
+      }
       case "cancel":
         if (!abort.signal.aborted) abort.abort(new CancelledError(msg.reason));
         if (pendingAsk) {
           const { reject } = pendingAsk;
           pendingAsk = undefined;
           reject(new CancelledError(msg.reason));
+        }
+        for (const [callId, pending] of pendingToolCalls) {
+          pendingToolCalls.delete(callId);
+          pending.reject(new CancelledError(msg.reason));
         }
         break;
       case "signal":
@@ -121,6 +151,16 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
         }
         pendingAsk = { resolve, reject };
         void publishUp({ type: "reply", message: question, final: false });
+      }),
+    callTool: (tool, input) =>
+      new Promise<unknown>((resolve, reject) => {
+        if (abort.signal.aborted) {
+          reject(new CancelledError());
+          return;
+        }
+        const callId = randomUUID();
+        pendingToolCalls.set(callId, { resolve, reject });
+        void publishUp({ type: "tool_call", callId, tool, input });
       }),
   };
 

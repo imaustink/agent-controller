@@ -37,6 +37,7 @@ describe("AgentUpMessageSchema", () => {
       { ...base, type: "opencode_response", requestId: "req-1", status: 200, body: { ok: true } },
       { ...base, type: "session_idle", liveUntil: "2026-07-13T00:20:00.000Z" },
       { ...base, type: "session_ended", reason: "idle timeout" },
+      { ...base, type: "tool_call", callId: "call-1", tool: "kubectl-readonly", input: "get pods -n default" },
     ]) {
       expect(AgentUpMessageSchema.safeParse(msg).success).toBe(true);
     }
@@ -58,6 +59,8 @@ describe("AgentDownMessageSchema", () => {
       { ...base, type: "signal", name: "pause" },
       { ...base, type: "opencode_request", requestId: "req-1", method: "POST", path: "/session/ses_1/prompt_async", body: { text: "continue" } },
       { ...base, type: "opencode_request", requestId: "req-2", method: "GET", path: "/session/ses_1/message" },
+      { ...base, type: "tool_result", callId: "call-1", ok: true, result: { pods: [] } },
+      { ...base, type: "tool_result", callId: "call-2", ok: false, error: "tool failed" },
     ]) {
       expect(AgentDownMessageSchema.safeParse(msg).success).toBe(true);
     }

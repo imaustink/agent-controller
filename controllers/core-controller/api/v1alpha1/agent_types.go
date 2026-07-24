@@ -98,6 +98,17 @@ type AgentSpec struct {
 	// +optional
 	SkillRefs []string `json:"skillRefs,omitempty"`
 
+	// toolRefs are the names of Tool CRs this agent's OWN internal loop may
+	// call at run time — mirrors Skill.spec.toolRefs, but scopes the
+	// sub-agent's callable set instead of the parent orchestrator's planner.
+	// Dispatched via the tool_call/tool_result protocol pair
+	// (@controller-agent/agent-runtime's AgentSession.callTool()), re-validated
+	// against this list by the orchestrator at call time — like skillRefs,
+	// this CRD-level check is a static-config sanity check, not the
+	// authorization boundary itself (docs/adr/0028).
+	// +optional
+	ToolRefs []string `json:"toolRefs,omitempty"`
+
 	// model is the LLM model id the agent loop should use (advisory; the
 	// agent image decides how to interpret it).
 	// +optional
