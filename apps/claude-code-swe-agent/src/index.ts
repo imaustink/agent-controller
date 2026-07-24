@@ -8,6 +8,7 @@ import { buildClaudeSettings, buildPrompt } from "./claude.js";
 import { runClaudeTurn, runClaudeTurnRemoteControlled } from "./claude-runner.js";
 import {
   appendCoAuthorTrailer,
+  countCommitsAheadOfOriginHead,
   discoverResult,
   ensureDir,
   findRepoDir,
@@ -224,7 +225,19 @@ async function handler(session: AgentSession): Promise<AgentReply> {
     signal: session.signal,
   });
   if (headResAfter.code === 0) headSha = headResAfter.stdout.trim();
-  const madeNewCommits = headSha !== null && headSha !== priorHeadSha;
+  // "Did this turn commit pushable work?" When we captured a prior HEAD (the
+  // repo existed before the turn -- a continuation, including review-only
+  // turns), diff against it: an unchanged HEAD means no new commits. When we
+  // did NOT (priorHeadSha === null -- the repo was cloned DURING the turn, as
+  // on a first, marker-less chat turn), a non-null HEAD is just the clone's
+  // base commit and is NOT evidence of new work; instead ask whether HEAD
+  // moved past the clone's default-branch tip. This avoids the false "no open
+  // pull request was found" warning on a turn that only read the repo (e.g.
+  // to file an issue), which left HEAD exactly at origin/HEAD.
+  const madeNewCommits =
+    priorHeadSha !== null
+      ? headSha !== null && headSha !== priorHeadSha
+      : (await countCommitsAheadOfOriginHead(repoDir!, childEnv, session.signal)) > 0;
 
   if (delegating && attribution) {
     if (!marker?.repo) {
