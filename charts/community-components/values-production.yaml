@@ -160,6 +160,13 @@ claudeCodeSweAgent:
   # (2) integration-gateway's claudeAuth.enabled=true (see
   # charts/agent-controller/values-production.yaml) so its `mode=login` PTY
   # flow is actually wired up, not just the setup-token one.
+  #
+  # Re-enabled 2026-07-24: a real triage run under this DID complete and
+  # reopened an existing PR, so the completion-detection path isn't as
+  # broken as the earlier debug-pod probe suggested -- likely just slow
+  # (claude-runner.ts's polling interval) rather than genuinely stuck.
+  # Iterating on the exact polling behavior locally (a real container, not
+  # the live cluster) rather than disabling this again.
   remoteControl:
     enabled: true
 
