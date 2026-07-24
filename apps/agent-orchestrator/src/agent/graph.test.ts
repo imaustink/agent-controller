@@ -2452,3 +2452,107 @@ describe("buildAgentGraph per-caller Claude Code OAuth linking (docs/adr/0027)",
   });
 });
 
+describe("buildAgentGraph delegation with multiple identityProviders", () => {
+  // Regression test: delegateToAgent used to only ever resolve
+  // identityProviders[0], so an Agent declaring TWO providers (e.g.
+  // claude-code-swe-agent's ["claude", "claude-remote"] for Remote Control)
+  // silently never got the second one's token injected at all -- no error,
+  // no link prompt, just a missing secretEnv entry.
+  const multiProviderAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks with Claude Code",
+    allowedRoles: ["reader"],
+    identityProviders: ["claude", "claude-remote"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  function multiProviderDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: multiProviderAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([multiProviderAgent]),
+    };
+    const delegateSelector: DelegateSelector = {
+      select: vi.fn().mockResolvedValue({ type: "agent", agent: multiProviderAgent }),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({ message: "Opened a pull request", final: true, narration: [] } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("resolves EVERY declared provider's token, not just the first, when both are already linked", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"full-login-blob"}' }),
+    };
+    const deps = multiProviderDeps({ claudeAuthGateway, claudeRemoteGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(claudeAuthGateway.getToken).toHaveBeenCalledWith("claude", "alice");
+    expect(claudeRemoteGateway.getToken).toHaveBeenCalledWith("claude-remote", "alice");
+    expect(final.error).toBeUndefined();
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      multiProviderAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({
+        secretEnv: [
+          { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-resolved" },
+          { name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: '{"claudeAiOauth":"full-login-blob"}' },
+        ],
+      }),
+    );
+  });
+
+  it("prompts to link the SECOND provider (not silently proceeding) when the first is already linked but the second is not", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-2?u=https://claude.ai/oauth/authorize&mode=login",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = multiProviderDeps({ claudeAuthGateway, claudeRemoteGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(claudeAuthGateway.getToken).toHaveBeenCalledWith("claude", "alice");
+    expect(claudeRemoteGateway.getToken).toHaveBeenCalledWith("claude-remote", "alice");
+    expect(claudeRemoteGateway.start).toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink?.provider).toBe("claude-remote");
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+});
+

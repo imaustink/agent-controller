@@ -1027,13 +1027,23 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // is gated end-to-end today (multi-provider agents aren't expected in
       // practice yet); `identityGatewayFor` is what lets this stay
       // provider-agnostic as more are added.
+      // Resolves EVERY declared identityProviders entry, not just the first --
+      // an Agent can legitimately need more than one linked identity at once
+      // (e.g. claude-code-swe-agent's ["claude", "claude-remote"]: the
+      // setup-token flow for model calls plus the separate full-login flow
+      // Remote Control needs). Previously this only ever checked index 0, so
+      // a second provider's token was silently never resolved/injected --
+      // whatever secretEnv name it mapped to reached the Job as an empty/
+      // unset value instead of erroring or prompting to link it. Each
+      // provider still gets the exact same getToken -> (missing? start/wait/
+      // pend, else accumulate) handling as before; the loop just repeats it
+      // per provider instead of doing it once.
       let identitySecretEnv: { name: string; value: string }[] | undefined;
-      if (agent.identityProviders && agent.identityProviders.length > 0) {
-        const provider = agent.identityProviders[0]!;
+      for (const provider of agent.identityProviders ?? []) {
         const gateway = identityGatewayFor(provider, deps);
         if (!gateway) {
           return {
-            error: `agent ${agent.id} requires identity providers (${agent.identityProviders.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
+            error: `agent ${agent.id} requires identity providers (${agent.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
           };
         }
         let existing = await gateway.getToken(provider, state.identity.subject);
@@ -1161,7 +1171,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         if (!envVarName) {
           return { error: `agent ${agent.id} declares unsupported identity provider "${provider}"` };
         }
-        identitySecretEnv = [{ name: envVarName, value: existing.token }];
+        identitySecretEnv = [...(identitySecretEnv ?? []), { name: envVarName, value: existing.token }];
       }
       console.log(
         "[identity-gate-debug] pre-launch",
@@ -1331,13 +1341,14 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // pendingIdentityLink for a paused tool call, only for a paused
         // agent delegation. A caller must link once via direct chat
         // delegation to the same agent before a Skill can reach it here.
+        // Loops over every declared provider, not just index 0 -- see the
+        // identical fix/comment on delegateToAgent's own identity-gate above.
         let identitySecretEnv: { name: string; value: string }[] | undefined;
-        if (tool.identityProviders && tool.identityProviders.length > 0) {
-          const provider = tool.identityProviders[0]!;
+        for (const provider of tool.identityProviders ?? []) {
           const gateway = identityGatewayFor(provider, deps);
           if (!gateway || !state.identity) {
             return {
-              error: `tool ${tool.id} requires identity providers (${tool.identityProviders.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
+              error: `tool ${tool.id} requires identity providers (${tool.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
             };
           }
           const existing = await gateway.getToken(provider, state.identity.subject);
@@ -1350,7 +1361,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           if (!envVarName) {
             return { error: `tool ${tool.id} declares unsupported identity provider "${provider}"` };
           }
-          identitySecretEnv = [{ name: envVarName, value: existing.token }];
+          identitySecretEnv = [...(identitySecretEnv ?? []), { name: envVarName, value: existing.token }];
         }
         const runId = randomUUID();
         const callbackUrl = `${deps.callbackBaseUrl}/callback/${randomUUID()}`;
