@@ -314,20 +314,34 @@ jobs:
         # IntegrationRoute.match.labelName. Every one of those was a deploy that
         # looked green and shipped a cluster the charts did not describe.
         #
-        # --server-side: Helm created these on first install and does not write
-        #   the last-applied-configuration annotation that CLIENT-side apply
-        #   diffs against (verified: the annotation is absent on a live
-        #   cluster's CRDs). A client-side apply would therefore compute its
-        #   patch against an empty baseline -- able to add and change fields, but
-        #   unable to REMOVE one dropped from the CRD, so a deleted property
-        #   would linger in the served schema indefinitely. Server-side apply
-        #   diffs against real field ownership instead. It is also what
-        #   e2e/scripts/up.sh already uses, so dev and CD converge.
-        # --force-conflicts: consequently those fields are owned by another
-        #   manager (Helm's, from the install), and server-side apply refuses to
-        #   take them over without this. Safe here because the chart's copy and
-        #   this one are generated from the same *_types.go source of truth --
-        #   there is no third version of the truth to lose.
+        # --server-side: the target cluster's CRDs have INCONSISTENT provenance,
+        #   which is precisely why a single client-side apply cannot be trusted
+        #   to reconcile them. Field managers observed on the live cluster:
+        #     - tools/skills/toolruns/localtools -> "helm" only, no
+        #       last-applied-configuration annotation. A client-side apply here
+        #       diffs against an empty baseline: able to add and change fields,
+        #       but unable to REMOVE one dropped from the CRD, so a deleted
+        #       property would linger in the served schema indefinitely.
+        #     - agentruns/agents -> "helm" AND "kubectl-client-side-apply":
+        #       Helm-installed, then hand-patched later.
+        #     - integrationroutes -> "kubectl-client-side-apply" ONLY, with no
+        #       helm manager at all. That CRD was never installed by Helm on
+        #       this cluster; it arrived entirely by hand.
+        #   Those last two rows are the four "applied manually once" comments in
+        #   values-production.yaml, still legible in the cluster's own field
+        #   ownership. Server-side apply diffs against real field ownership
+        #   rather than an annotation that only some objects carry. It is also
+        #   what e2e/scripts/up.sh already uses, so dev and CD converge.
+        # --force-conflicts: consequently those fields are owned by other
+        #   managers (helm, and on three of them kubectl-client-side-apply too),
+        #   and server-side apply refuses to take them over without this. Safe
+        #   here because every one of those managers wrote the same generated
+        #   artifact -- the chart's copy and this one both come from the same
+        #   *_types.go source of truth -- so there is no third version of the
+        #   truth to lose. Verified by applying all 7 as the deploy runner's own
+        #   ServiceAccount against the live cluster (server dry-run): all
+        #   succeed, with a non-fatal one-time annotation-migration warning on
+        #   the hand-patched ones, which resolves itself on the next apply.
         run: |
           # Preflight the one permission this step needs, before touching
           # anything. CRDs are CLUSTER-scoped; every other kubectl/helm call in
