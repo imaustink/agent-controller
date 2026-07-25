@@ -221,6 +221,7 @@ export class AuthorizationService {
     for (const provider of agent.identityProviders ?? []) {
       const gateway = this.gatewayFor(provider);
       if (!gateway) {
+        this.logVerdict("misconfigured", agent.id, { provider, reason: "no gateway configured" });
         return {
           kind: "misconfigured",
           error: `agent ${agent.id} requires identity providers (${agent.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
@@ -351,6 +352,7 @@ export class AuthorizationService {
 
       const envVarName = PROVIDER_ENV_VAR[provider];
       if (!envVarName) {
+        this.logVerdict("misconfigured", agent.id, { provider, reason: "no env var mapping" });
         return { kind: "misconfigured", error: `agent ${agent.id} declares unsupported identity provider "${provider}"` };
       }
       secretEnv = [...(secretEnv ?? []), { name: envVarName, value: existing.token }];
@@ -385,6 +387,10 @@ export class AuthorizationService {
     // One decision point for the whole provider set, reached only after every
     // provider has been assessed.
     if (pendingLinks.length > 0 || failedToStart.length > 0) {
+      this.logVerdict("link-required", agent.id, {
+        pending: pendingLinks.map((l) => `${l.provider}@${l.pending.subject}`),
+        failedToStart,
+      });
       return {
         kind: "link-required",
         message: this.composeLinkRequiredMessage(pendingLinks, failedToStart),
@@ -414,7 +420,31 @@ export class AuthorizationService {
       secretEnv = [...(secretEnv ?? []), { name: ACTOR_LOGIN_ENV, value: actorLogin }];
     }
 
+    this.logVerdict("authorized", agent.id, {
+      // NAMES only. This is the one place that holds every resolved credential
+      // for a run, so it is also the one place a careless log would dump all of
+      // them at once.
+      injecting: (secretEnv ?? []).map((e) => e.name),
+      actorLogin: actorLogin ?? null,
+    });
     return { kind: "authorized", ...(secretEnv ? { secretEnv } : {}), ...(actorLogin ? { actorLogin } : {}) };
+  }
+
+  /**
+   * One line per authorization decision, at every exit.
+   *
+   * Deliberately permanent, and deliberately at the verdict rather than
+   * scattered through the provider loop. The three `[identity-gate-debug]`
+   * console.logs this replaces were marked "remove once root-caused", and
+   * removing them immediately cost the ability to tell "the gate parked" from
+   * "the gate cleared but nothing launched" in an e2e failure -- with no logs at
+   * all, a spec that times out waiting for an AgentRun looks identical whether
+   * authorization refused, the launch threw, or the relay never arrived.
+   *
+   * Values are never logged; `injecting` is names only.
+   */
+  private logVerdict(kind: string, agentId: string, detail: Record<string, unknown>): void {
+    console.log("[authorization]", JSON.stringify({ verdict: kind, agentId, ...detail }));
   }
 
   /**
