@@ -40,6 +40,13 @@ upsert() {
 }
 
 rand() { openssl rand -hex 32; }
+# Fixed, not random: this exact value must appear on BOTH sides of the
+# orchestrator<->gateway identity-link channel (the gateway's
+# GATEWAY_IDENTITY_LINK_TOKEN and the orchestrator's
+# IDENTITY_LINK_GATEWAY_TOKEN). Generating it independently per secret would
+# leave every /identity-link call 401ing, which surfaces as "no credential
+# flow ever starts" rather than as an auth error.
+IDENTITY_LINK_TOKEN="e2e-identity-link-token"
 # IDENTITY_LINK_ENCRYPTION_KEY must decode to EXACTLY 32 bytes for AES-256-GCM
 # (decodeEncryptionKey throws at startup otherwise, which surfaces as a
 # crashlooping gateway rather than an obvious config error).
@@ -54,13 +61,15 @@ upsert recipe-publisher-secrets --from-literal=MEALIE_API_TOKEN="e2e-not-a-real-
 upsert agent-controller-openwebui-google-oauth --from-literal=client-secret="e2e-not-a-real-secret"
 upsert searxng-secrets --from-literal=secret-key="$(rand)"
 
-# The gateway's own secret, matching values-e2e.yaml's `secrets.create: true`
-# key names. GATEWAY_ORCHESTRATOR_TOKEN must equal the token in that file's
+# The gateway's own secret, referenced by values-e2e.yaml via
+# `secrets.existingSecret`. The name deliberately avoids the chart's own
+# generated name (agent-controller-integration-gateway): Helm refuses to adopt
+# an object it doesn't own, so colliding there fails the whole release. GATEWAY_ORCHESTRATOR_TOKEN must equal the token in that file's
 # agent-orchestrator staticIdentities map, or every relayed /invoke 401s.
-upsert agent-controller-integration-gateway \
+upsert e2e-integration-gateway-secrets \
   --from-literal=GITHUB_WEBHOOK_SECRET="$(rand)" \
   --from-literal=GATEWAY_ORCHESTRATOR_TOKEN="e2e-gateway-token" \
-  --from-literal=GATEWAY_IDENTITY_LINK_TOKEN="$(rand)" \
+  --from-literal=GATEWAY_IDENTITY_LINK_TOKEN="$IDENTITY_LINK_TOKEN" \
   --from-literal=IDENTITY_LINK_ENCRYPTION_KEY="$(key32)" \
   --from-literal=IDENTITY_LINK_STATE_SECRET="$(rand)" \
   --from-literal=GITHUB_APP_CLIENT_SECRET="e2e-not-a-real-secret" \
@@ -76,7 +85,11 @@ upsert claude-code-swe-secrets \
 
 echo ""
 if kubectl -n "$NS" get secret agent-orchestrator-secrets >/dev/null 2>&1; then
-  echo "  ✓ agent-orchestrator-secrets already exists (leaving it alone)"
+  # PATCH, not replace: this secret holds a real OPENAI_API_KEY that this
+  # script must never overwrite. Only the identity-link token is added.
+  kubectl -n "$NS" patch secret agent-orchestrator-secrets \
+    -p "{\"stringData\":{\"IDENTITY_LINK_GATEWAY_TOKEN\":\"$IDENTITY_LINK_TOKEN\"}}" >/dev/null
+  echo "  ✓ agent-orchestrator-secrets exists (OPENAI_API_KEY untouched; added IDENTITY_LINK_GATEWAY_TOKEN)"
 else
   cat >&2 <<EOF
 ✗ agent-orchestrator-secrets is MISSING and this script will not create it.

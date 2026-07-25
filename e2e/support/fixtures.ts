@@ -25,12 +25,12 @@ export async function webhookSecret(): Promise<string> {
     await kubectl([
       "get",
       "secret",
-      "agent-controller-integration-gateway",
+      "e2e-integration-gateway-secrets",
       "-o",
       "jsonpath={.data.GITHUB_WEBHOOK_SECRET}",
     ])
   ).trim();
-  if (!b64) throw new Error("e2e: GITHUB_WEBHOOK_SECRET not found on the integration-gateway secret");
+  if (!b64) throw new Error("e2e: GITHUB_WEBHOOK_SECRET not found on e2e-integration-gateway-secrets (run e2e/scripts/bootstrap-secrets.sh)");
   return Buffer.from(b64, "base64").toString("utf8");
 }
 

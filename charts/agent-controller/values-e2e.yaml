@@ -88,13 +88,33 @@ integration-gateway:
     publicBaseUrl: "http://agent-controller-integration-gateway.controller-agent.svc.cluster.local:8090"
 
   secrets:
-    # Chart-created, unlike prod (which brings its own). Values are injected
-    # by bootstrap-secrets.sh via --set rather than committed here, so this
-    # file stays free of anything resembling a credential even though every
-    # value is disposable.
-    create: true
+    # Bring-your-own, exactly like prod — NOT chart-created.
+    #
+    # `create: true` here fails the deploy outright: bootstrap-secrets.sh has
+    # already made this secret, Helm then refuses to adopt an object it
+    # doesn't own ("invalid ownership metadata ... missing key
+    # meta.helm.sh/release-name"), and the whole release rolls back. Letting
+    # the script own the secret and Helm merely reference it sidesteps the
+    # conflict and keeps generated values out of version control.
+    #
+    # The name is deliberately NOT `agent-controller-integration-gateway` —
+    # that is the name the chart itself would generate, so reusing it invites
+    # the very ownership collision described above the moment anyone flips
+    # `create` back on.
+    create: false
+    existingSecret: e2e-integration-gateway-secrets
 
 agent-orchestrator:
+  # The orchestrator's CLIENT side of the identity-link channel. Enabling it
+  # only on the gateway (the server side) leaves the orchestrator with no
+  # gateway configured at all -- `hasIdentityLinkGateway: false` in its
+  # identity-gate debug log -- so no Agent's identityProviders can ever
+  # resolve and no credential flow starts. The identity-keying spec asserts
+  # on exactly those flows, so without this it can only ever time out.
+  identityLink:
+    enabled: true
+    # In-cluster Service DNS for the gateway deployed by this same release.
+    gatewayUrl: "http://agent-controller-integration-gateway:8090"
   config:
     # The gateway authenticates to /invoke with this bearer token, and the
     # orchestrator must resolve it to a role the SWE agent allows.

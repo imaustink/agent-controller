@@ -1,0 +1,50 @@
+# values-e2e.yaml — community-components overlay for the e2e suite.
+#
+# Layered on top of values-minikube-demo.yaml (see charts/agent-controller/
+# values-e2e.yaml for the sibling overlay and the umbrella rationale).
+#
+# The demo profile triages with opencode-swe-agent, which declares no
+# identityProviders at all. That makes it useless for the identity-keying
+# spec: the gate's provider loop iterates an empty list and goes straight to
+# launch (`hasIdentitySecretEnv: false`), so no Claude credential flow is ever
+# started and there is nothing to assert a subject against.
+#
+# Production triages with claude-code-swe-agent carrying the Claude providers,
+# and that is precisely the path ADR 0029 changed — so the e2e environment
+# mirrors it rather than the demo shortcut.
+
+claudeCodeSweAgent:
+  enabled: true
+  # Overwritten by skaffold's setValueTemplates with the freshly-built tag.
+  # Left as the chart default here so a plain `helm template` still renders.
+  image: claude-code-swe-agent:latest
+  secretName: claude-code-swe-secrets
+  secretKey: GITHUB_TOKEN
+  # No static Anthropic credential on purpose: with "claude" among the
+  # identityProviders below, the gate refuses to launch until a credential is
+  # linked. A static fallback would mask exactly the gate behaviour under test.
+  anthropicSecretKey: ""
+  claudeCodeOAuthTokenSecretKey: ""
+  githubAppIdSecretKey: GITHUB_APP_ID
+  githubAppPrivateKeySecretKey: GITHUB_APP_PRIVATE_KEY
+  githubAppInstallationIdSecretKey: GITHUB_APP_INSTALLATION_ID
+  githubAppSlug: e2e-bot
+  model: ""
+  identityLink:
+    enabled: true
+    # SAME ORDER AS PRODUCTION, and the order is load-bearing: `github` must
+    # resolve first because its link is what supplies the canonical
+    # `github:<login>` subject the two Claude providers are keyed under
+    # (ADR 0029). Reordering silently reverts cross-flow credential sharing to
+    # per-entry-point keying — the bug this whole suite exists to pin.
+    providers:
+      - github
+      - claude
+      - claude-remote
+
+integrationRoutes:
+  githubIssueLabeledTriage:
+    enabled: true
+    # Points at the Claude engine rather than the demo default, so a labeled
+    # issue actually exercises the credential gate.
+    agentRef: claude-code-swe-agent
