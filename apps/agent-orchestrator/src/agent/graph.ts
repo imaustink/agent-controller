@@ -535,6 +535,19 @@ export interface AgentGraphDeps {
    * provider-generic code.
    */
   claudeRemoteGateway?: IdentityLinkPort;
+  /**
+   * Mints the per-run credential write-back grant a `claude-remote` launch
+   * carries (see `CREDENTIALS_WRITEBACK_ENV`). Separate from
+   * `claudeRemoteGateway` because `IdentityLinkPort` is provider-generic and
+   * this is specific to the one provider whose credential is a refreshable
+   * file: only `claude-remote` ships a whole `~/.claude/.credentials.json`
+   * that the run's CLI rewrites in place. Optional -- absent (or returning
+   * `undefined`) simply means runs don't persist refreshed credentials, the
+   * behavior before this existed.
+   */
+  claudeRemoteWriteback?: {
+    createWritebackGrant(subject: string, ttlSeconds: number): Promise<{ url: string; token: string } | undefined>;
+  };
 }
 
 /**
@@ -547,6 +560,27 @@ const PROVIDER_ENV_VAR: Record<string, string> = {
   claude: "CLAUDE_CODE_OAUTH_TOKEN",
   "claude-remote": "CLAUDE_LOGIN_CREDENTIALS_JSON",
 };
+
+/**
+ * Env vars a `claude-remote` launch carries so the run can persist the
+ * credentials its Claude Code CLI refreshes in-pod (the gateway's
+ * `POST /claude-auth/api/refresh`, read by claude-code-swe-agent's
+ * `config.ts`). Injected via the same `secretEnv` channel as the credential
+ * itself -- the grant token is a bearer credential, short-lived and scoped to
+ * one subject, but still not something to hand over as plaintext `env`.
+ */
+const CREDENTIALS_WRITEBACK_ENV = {
+  url: "CLAUDE_CREDENTIALS_WRITEBACK_URL",
+  token: "CLAUDE_CREDENTIALS_WRITEBACK_TOKEN",
+} as const;
+
+/**
+ * Extra headroom on top of the run's own timeout for a write-back grant's
+ * lifetime: the CLI can refresh at the very end of a long turn, and a grant
+ * that expires mid-run silently drops exactly the refresh this mechanism
+ * exists to capture.
+ */
+const WRITEBACK_GRANT_MARGIN_SECONDS = 15 * 60;
 
 /** Human-facing label for a provider, used in link prompts/messages. */
 const PROVIDER_LABEL: Record<string, string> = { github: "GitHub", claude: "Claude", "claude-remote": "Claude" };
@@ -592,6 +626,27 @@ function agentTurnErrorMessage(err: unknown): string {
 const CLAUDE_AUTH_EXPIRED_CODE = "claude_auth_expired";
 
 /**
+ * Failure `code` reported when the credential that expired was specifically
+ * the `claude-remote` full-login blob (`~/.claude/.credentials.json`, used for
+ * Remote Control) rather than the `claude` setup-token.
+ *
+ * Two codes rather than one because the recovery is to DELETE the stale
+ * record, and the two providers' records are stored separately: an agent that
+ * declares both (claude-code-swe-agent's `["claude", "claude-remote"]`) would
+ * otherwise have the wrong one invalidated -- the previous code invalidated
+ * `identityProviders[0]`, i.e. always `claude`, leaving the login blob that
+ * actually failed in place to fail again on the next run while forcing a
+ * pointless re-link of a setup-token that was fine.
+ */
+const CLAUDE_REMOTE_AUTH_EXPIRED_CODE = "claude_remote_auth_expired";
+
+/** Which provider's stored credential a given auth-expired failure code refers to. */
+const AUTH_EXPIRED_CODE_PROVIDER: Record<string, string> = {
+  [CLAUDE_AUTH_EXPIRED_CODE]: "claude",
+  [CLAUDE_REMOTE_AUTH_EXPIRED_CODE]: "claude-remote",
+};
+
+/**
  * Handles a delegated agent turn's failure, recognizing the one recoverable
  * case (docs/adr/0027's re-auth path) specially: an expired/invalid Claude
  * Code credential. Rather than surfacing that as a hard `state.error` (which
@@ -602,32 +657,41 @@ const CLAUDE_AUTH_EXPIRED_CODE = "claude_auth_expired";
  * prompt them to relink. Every other failure falls back to the ordinary
  * `state.error` path, unchanged.
  *
- * `CLAUDE_AUTH_EXPIRED_CODE` is provider-agnostic: both the `claude`
- * (setup-token) and `claude-remote` (login) providers' agent runs report the
- * SAME code on a stale/expired credential, since the underlying failure mode
- * (Claude Code CLI rejects its stored credential mid-run) is identical.
- * `Identity` itself carries no provider (a caller isn't tied to one), so the
- * caller passes the delegated agent's OWN first declared provider (the one
- * actually gated/used for this run) to know which gateway's stored
- * credential to invalidate -- defaulting to `"claude"` only for the sake of
- * older call sites that predate this parameter.
+ * WHICH provider's credential to invalidate comes from the failure code
+ * itself (`AUTH_EXPIRED_CODE_PROVIDER`), not from the agent's declared
+ * provider list: an agent can declare several (claude-code-swe-agent declares
+ * both `claude` and `claude-remote` and holds a live credential for each), and
+ * only the run itself knows which one the CLI actually rejected. The caller's
+ * `declaredProviders` is used solely as a sanity bound -- an agent that
+ * doesn't declare the mapped provider falls back to its first declared one, so
+ * a code from an agent whose wiring changed still invalidates something real
+ * rather than nothing.
  */
 async function handleAgentTurnFailure(
   err: unknown,
   deps: AgentGraphDeps,
   state: AgentState,
-  provider: string = "claude",
+  declaredProviders?: string[],
 ): Promise<Partial<AgentState>> {
-  if (err instanceof AgentTurnFailedError && err.code === CLAUDE_AUTH_EXPIRED_CODE && state.identity) {
+  const code = err instanceof AgentTurnFailedError ? err.code : undefined;
+  if (code && AUTH_EXPIRED_CODE_PROVIDER[code] && state.identity) {
+    const mapped = AUTH_EXPIRED_CODE_PROVIDER[code]!;
+    const provider =
+      !declaredProviders || declaredProviders.includes(mapped) ? mapped : (declaredProviders[0] ?? mapped);
     const gateway = identityGatewayFor(provider, deps);
     if (gateway) {
       await gateway.invalidate?.(provider, state.identity.subject).catch(() => {});
       const label = PROVIDER_LABEL[provider] ?? provider;
-      return {
-        result:
-          `Your linked ${label} account's credential looks expired or invalid, so this request couldn't complete. ` +
-          "Send your request again and I'll walk you through relinking it.",
-      };
+      // Two audiences, two instructions. A chat caller genuinely can just say
+      // anything again. A fire-and-forget trigger (integration-gateway's
+      // label-driven triage/review relay -- no `progressListener`) has no
+      // "send your request again": the label was removed when the run
+      // finished, so re-applying it is literally the retry, and saying so is
+      // the difference between an actionable comment and a dead end.
+      const retry = state.progressListener
+        ? "Send your request again and I'll walk you through relinking it."
+        : "Re-apply the label to try again and I'll post a link for relinking it.";
+      return { result: `⚠️ Your linked ${label} account's credential looks expired or invalid, so this request couldn't complete. ${retry}` };
     }
   }
   return { error: agentTurnErrorMessage(err) };
@@ -968,7 +1032,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       } catch (err) {
         return {
           agentRunId: state.activeAgentRunId,
-          ...(await handleAgentTurnFailure(err, deps, state, found.agent.identityProviders?.[0])),
+          ...(await handleAgentTurnFailure(err, deps, state, found.agent.identityProviders)),
         };
       }
     })
@@ -1228,6 +1292,27 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           return { error: `agent ${agent.id} declares unsupported identity provider "${provider}"` };
         }
         identitySecretEnv = [...(identitySecretEnv ?? []), { name: envVarName, value: existing.token }];
+
+        // `claude-remote` only: its credential is a whole
+        // `~/.claude/.credentials.json` that the run's own CLI refreshes in
+        // place, and Anthropic rotates the refresh token when it does -- so
+        // without a way to write the result back, the copy resolved above is
+        // dead the moment this run refreshes it and every later run fails with
+        // "Login expired · Please run /login" (the exact failure this grant
+        // fixes). Best-effort by design: no grant simply means no write-back.
+        if (provider === "claude-remote" && deps.claudeRemoteWriteback) {
+          const grant = await deps.claudeRemoteWriteback.createWritebackGrant(
+            state.identity.subject,
+            (deps.agentRunTimeoutSeconds ?? 0) + WRITEBACK_GRANT_MARGIN_SECONDS,
+          );
+          if (grant) {
+            identitySecretEnv = [
+              ...identitySecretEnv,
+              { name: CREDENTIALS_WRITEBACK_ENV.url, value: grant.url },
+              { name: CREDENTIALS_WRITEBACK_ENV.token, value: grant.token },
+            ];
+          }
+        }
       }
       console.log(
         "[identity-gate-debug] pre-launch",
@@ -1285,7 +1370,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
-        return { agentRunId: runId, ...(await handleAgentTurnFailure(err, deps, state, agent.identityProviders?.[0])) };
+        return { agentRunId: runId, ...(await handleAgentTurnFailure(err, deps, state, agent.identityProviders)) };
       }
     })
     .addNode("loadSkillTools", async (state) => {

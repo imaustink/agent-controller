@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { Redis } from "ioredis";
 import { decodeEncryptionKey } from "../identity-link/store.js";
 
@@ -53,6 +53,25 @@ export interface ClaudeTokenStore {
    * credential forever.
    */
   delete(subject: string, kind?: ClaudeAuthKind): Promise<void>;
+  /**
+   * Mints a single-purpose, expiring bearer token that authorizes ONE thing:
+   * replacing `subject`'s stored `login` record with a refreshed
+   * `credentialsJson` (`POST /claude-auth/api/refresh`). Handed to an
+   * individual AgentRun so the run's own Claude Code CLI can persist the
+   * credentials it refreshed in-pod -- see that route's doc for why that
+   * write-back is what keeps a `claude-remote` link from dying the first time
+   * the CLI rotates its refresh token.
+   *
+   * Deliberately NOT the gateway's own `bearerToken`: that one can read and
+   * mint credentials for EVERY subject, and a per-run Job pod is the last
+   * place it belongs. A grant token is opaque and random (not a signed claim),
+   * so it can be looked up, expired by Redis TTL, and revoked simply by
+   * deleting it -- no key material has to be shared with agent-orchestrator or
+   * baked into a run's environment.
+   */
+  createWritebackToken(subject: string, ttlSeconds: number): Promise<string>;
+  /** Resolves a token minted by {@link createWritebackToken} back to its subject, or `undefined` if it's unknown/expired. */
+  resolveWritebackToken(token: string): Promise<string | undefined>;
 }
 
 const ALGORITHM = "aes-256-gcm";
@@ -104,14 +123,20 @@ export class RedisClaudeTokenStore implements ClaudeTokenStore {
   private readonly key: Buffer;
   private readonly prefix: string;
   private readonly loginPrefix: string;
+  private readonly writebackPrefix: string;
 
-  constructor(url: string, encryptionKey: Buffer, opts: { keyPrefix?: string; loginKeyPrefix?: string } = {}) {
+  constructor(
+    url: string,
+    encryptionKey: Buffer,
+    opts: { keyPrefix?: string; loginKeyPrefix?: string; writebackKeyPrefix?: string } = {},
+  ) {
     if (encryptionKey.length !== 32) {
       throw new Error("Claude-auth encryption key must be exactly 32 bytes");
     }
     this.key = encryptionKey;
     this.prefix = opts.keyPrefix ?? "claudeAuth:";
     this.loginPrefix = opts.loginKeyPrefix ?? "claudeAuthLogin:";
+    this.writebackPrefix = opts.writebackKeyPrefix ?? "claudeAuthWriteback:";
     this.redis = new Redis(url, {
       enableOfflineQueue: false,
       maxRetriesPerRequest: 0,
@@ -147,6 +172,38 @@ export class RedisClaudeTokenStore implements ClaudeTokenStore {
       await this.redis.del(this.keyFor(subject, kind));
     } catch (err) {
       console.error("RedisClaudeTokenStore.delete failed (ignored):", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Only the token's SHA-256 is stored, so the value in Redis can't be
+   * replayed as a bearer token by anything that can read the keyspace -- the
+   * same reason a server stores password hashes rather than passwords. The
+   * plaintext exists only in the mint response and the run's environment.
+   */
+  private writebackKeyFor(token: string): string {
+    return `${this.writebackPrefix}${createHash("sha256").update(token).digest("hex")}`;
+  }
+
+  async createWritebackToken(subject: string, ttlSeconds: number): Promise<string> {
+    const token = randomBytes(32).toString("base64url");
+    // Fails loudly (unlike `set`/`delete`, which swallow): the caller injects
+    // the returned token into an AgentRun, and a token Redis never accepted
+    // would look valid to the run and 401 on every write-back attempt.
+    await this.redis.set(this.writebackKeyFor(token), subject, "EX", Math.max(1, Math.floor(ttlSeconds)));
+    return token;
+  }
+
+  async resolveWritebackToken(token: string): Promise<string | undefined> {
+    if (!token) return undefined;
+    try {
+      return (await this.redis.get(this.writebackKeyFor(token))) ?? undefined;
+    } catch (err) {
+      console.error(
+        "RedisClaudeTokenStore.resolveWritebackToken failed (treating as invalid):",
+        err instanceof Error ? err.message : String(err),
+      );
+      return undefined;
     }
   }
 

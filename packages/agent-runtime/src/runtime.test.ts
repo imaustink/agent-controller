@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentDownMessage, AgentUpMessage } from "@controller-agent/messaging";
 import type { AgentChannel } from "./channel.js";
-import { runAgent, ToolCallError, type AgentRuntimeConfig } from "./index.js";
+import { AgentFailure, runAgent, ToolCallError, type AgentRuntimeConfig } from "./index.js";
 
 const config: AgentRuntimeConfig = {
   natsUrl: "nats://test",
@@ -96,6 +96,34 @@ describe("runAgent", () => {
 
     expect(ch.types()).toEqual(["ready", "failed"]);
     expect(ch.up[1]).toMatchObject({ type: "failed", code: "agent_error", message: "boom" });
+  });
+
+  it("forwards an AgentFailure's own code, so the orchestrator can act on a recoverable failure", async () => {
+    const ch = new FakeChannel();
+    await runAgent(
+      async () => {
+        throw new AgentFailure("claude_remote_auth_expired", "credentials look expired");
+      },
+      { channel: ch, config },
+    );
+
+    expect(ch.up[1]).toMatchObject({
+      type: "failed",
+      code: "claude_remote_auth_expired",
+      message: "credentials look expired",
+    });
+  });
+
+  it("does not let an ordinary Node error's `code` become the wire failure code", async () => {
+    const ch = new FakeChannel();
+    await runAgent(
+      async () => {
+        throw Object.assign(new Error("open /nope failed"), { code: "ENOENT" });
+      },
+      { channel: ch, config },
+    );
+
+    expect(ch.up[1]).toMatchObject({ type: "failed", code: "agent_error" });
   });
 
   it("callTool() publishes a tool_call and resolves from the correlated tool_result", async () => {

@@ -499,6 +499,12 @@ async function main(): Promise<void> {
     ...(identityLinkGateway ? { identityLinkGateway } : {}),
     ...(claudeAuthGateway ? { claudeAuthGateway } : {}),
     ...(claudeRemoteGateway ? { claudeRemoteGateway } : {}),
+    // Same client, passed a second time under its non-IdentityLinkPort
+    // capability: minting the per-run grant that lets a launched run persist
+    // the credentials its Claude Code CLI refreshed in-pod (graph.ts's
+    // `CREDENTIALS_WRITEBACK_ENV`). Nothing new to configure -- if the
+    // gateway/bearer above is set, so is this.
+    ...(claudeRemoteGateway ? { claudeRemoteWriteback: claudeRemoteGateway } : {}),
     ...(agentDelegation
       ? {
           agentStore: agentDelegation.agentStore,

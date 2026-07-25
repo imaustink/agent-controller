@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { runAgent, type AgentReply, type AgentSession } from "@controller-agent/agent-runtime";
+import { AgentFailure, runAgent, type AgentReply, type AgentSession } from "@controller-agent/agent-runtime";
 import { resolveGithubToken } from "@controller-agent/github-app-auth";
 import { buildClaudeSettings, buildPrompt } from "./claude.js";
 import { runClaudeTurn, runClaudeTurnRemoteControlled } from "./claude-runner.js";
@@ -19,6 +19,7 @@ import {
 import { extractContinuationToken } from "./continuation.js";
 import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./marker.js";
 import { loadToolConfig } from "./config.js";
+import { persistRefreshedCredentials } from "./credentialsWriteback.js";
 import { AuthorizationError, finalizeDelegatedWrite, isDelegating, resolveDelegatedToken } from "./identityDelegation.js";
 import { clip } from "./security/redact.js";
 
@@ -197,18 +198,37 @@ async function handler(session: AgentSession): Promise<AgentReply> {
     ? await runClaudeTurnRemoteControlled(prompt, { ...runOpts, runId: session.runId })
     : await runClaudeTurn(prompt, runOpts);
 
+  // Runs on every outcome, including a failed one: the CLI may well have
+  // refreshed its credential before whatever went wrong, and that refresh
+  // invalidated the stored copy either way (see ./credentialsWriteback.ts).
+  const writeback = await persistRefreshedCredentials({
+    homeDir: toolConfig.homeDir,
+    url: toolConfig.credentialsWritebackUrl,
+    token: toolConfig.credentialsWritebackToken,
+    seeded: toolConfig.loginCredentialsJson,
+  });
+  if (writeback !== "disabled" && writeback !== "unchanged") {
+    console.error(`[claude-code-swe-agent] credential write-back: ${writeback}`);
+  }
+
   if (outcome.failed) {
-    // Phase 3 (per-user Claude OAuth delegation, docs/adr/0027) will teach
-    // agent-orchestrator to react to `outcome.authError` distinctly (trigger
-    // re-auth instead of just reporting failure) -- today's plain
-    // `runAgent()` contract has no channel for a custom failure code, so for
-    // now this only affects the message text a human reads.
     const detail = outcome.failureDetail ?? "Claude Code reported an error";
-    throw new Error(
-      outcome.authError
-        ? `Claude Code's credentials look expired or invalid: ${detail}`
-        : `The coding agent reported an error: ${clip(detail, 800)}`,
-    );
+    if (outcome.authError) {
+      // A coded failure, not a plain Error: this is the one agent failure the
+      // orchestrator can actually recover from (docs/adr/0027's re-auth path
+      // -- invalidate the stale stored credential, then prompt the user to
+      // re-link on the next trigger), and it can only do that if it can tell
+      // this apart from an ordinary task failure. The code says WHICH stored
+      // credential to drop: Remote Control authenticates from the
+      // `claude-remote` login blob, every other mode from the `claude`
+      // setup-token, and dropping the wrong one leaves the bad credential in
+      // place to fail again.
+      throw new AgentFailure(
+        toolConfig.remoteControlEnabled ? "claude_remote_auth_expired" : "claude_auth_expired",
+        `Claude Code's credentials look expired or invalid: ${clip(detail, 800)}`,
+      );
+    }
+    throw new Error(`The coding agent reported an error: ${clip(detail, 800)}`);
   }
 
   const summary = clip(outcome.finalMessage ?? "Claude Code finished without a summary.", 4000);

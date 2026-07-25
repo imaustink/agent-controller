@@ -9,6 +9,17 @@ import type { ClaudeAuthKind, ClaudeTokenStore } from "./store.js";
 /** Hard ceiling on `/claude-auth/api/wait`'s `timeoutMs`. */
 const MAX_WAIT_MS = 10 * 60 * 1000;
 
+/**
+ * Lifetime of a credential write-back grant when the caller doesn't ask for
+ * one. A grant only has to outlive the AgentRun it was minted for (the CLI
+ * refreshes at some unpredictable point during the turn), so the default
+ * matches the generous end of a long coding run rather than a chat turn.
+ */
+const DEFAULT_WRITEBACK_TTL_SECONDS = 60 * 60;
+
+/** Ceiling on a requested grant lifetime -- a grant that outlives its run is just a spare key lying around. */
+const MAX_WRITEBACK_TTL_SECONDS = 6 * 60 * 60;
+
 const PAGE_PATH = /^\/claude-auth\/([^/]+)$/;
 const SUBMIT_PATH = /^\/claude-auth\/([^/]+)\/submit$/;
 
@@ -178,6 +189,17 @@ export class ClaudeAuthApi {
     if (segments[0] !== "claude-auth" || segments[1] !== "api" || segments.length !== 3) return false;
     const action = segments[2]!;
 
+    // Dispatched BEFORE the master-bearer gate: this is the one route an
+    // individual AgentRun calls, and it authenticates with the narrow,
+    // expiring write-back grant `handleWritebackToken` minted for that run's
+    // subject -- never with `this.bearerToken` (which could read and mint
+    // credentials for every subject and therefore never enters a run's
+    // environment). `handleRefresh` itself 401s on a bad grant.
+    if (req.method === "POST" && action === "refresh") {
+      await this.handleRefresh(req, res);
+      return true;
+    }
+
     if (!checkBearer(req, this.bearerToken)) {
       res.writeHead(401).end();
       return true;
@@ -199,8 +221,89 @@ export class ClaudeAuthApi {
       await this.handleInvalidate(req, res);
       return true;
     }
+    if (req.method === "POST" && action === "writeback-token") {
+      await this.handleWritebackToken(req, res);
+      return true;
+    }
     res.writeHead(404).end();
     return true;
+  }
+
+  /**
+   * Mints a write-back grant for one subject (bearer-gated -- called by
+   * agent-orchestrator at AgentRun launch time, never by a run itself). See
+   * `ClaudeTokenStore.createWritebackToken` for why this is a separate,
+   * narrowly-scoped token rather than the gateway bearer.
+   */
+  private async handleWritebackToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await parseJsonBody(req);
+    if (!body || typeof (body as { subject?: unknown }).subject !== "string") {
+      sendJson(res, 400, { error: "Request body must be JSON with a string `subject` field" });
+      return;
+    }
+    const { subject } = body as { subject: string };
+    const rawTtl = (body as { ttlSeconds?: unknown }).ttlSeconds;
+    const ttlSeconds =
+      typeof rawTtl === "number" && rawTtl > 0 ? Math.min(rawTtl, MAX_WRITEBACK_TTL_SECONDS) : DEFAULT_WRITEBACK_TTL_SECONDS;
+    try {
+      const token = await this.store.createWritebackToken(subject, ttlSeconds);
+      sendJson(res, 200, { token, url: new URL("/claude-auth/api/refresh", this.publicBaseUrl).toString(), ttlSeconds });
+    } catch (err) {
+      sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
+   * Persists a `credentialsJson` blob that a run's own Claude Code CLI
+   * refreshed in-pod, replacing the stored `login` record for the subject the
+   * presented grant token was minted for.
+   *
+   * Why this route has to exist: the stored blob is copied into each run's
+   * ephemeral HOME (an emptyDir), the CLI refreshes its access token there,
+   * and Anthropic ROTATES the refresh token when it does -- so the copy left
+   * in Redis is dead as soon as the first run refreshes, and every later run
+   * fails with "Login expired · Please run /login" even though the human
+   * linked their account only hours earlier. Writing the refreshed blob back
+   * is what makes the link survive.
+   *
+   * The subject comes from the grant token, NEVER from the request body: a
+   * run can only ever overwrite its own subject's credential, so a leaked or
+   * misused grant can't clobber someone else's link.
+   */
+  private async handleRefresh(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const presented = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1]?.trim() ?? "";
+    const subject = presented ? await this.store.resolveWritebackToken(presented) : undefined;
+    if (!subject) {
+      res.writeHead(401).end();
+      return;
+    }
+    const body = await parseJsonBody(req);
+    const credentialsJson = (body as { credentialsJson?: unknown } | undefined)?.credentialsJson;
+    if (typeof credentialsJson !== "string" || !credentialsJson.trim()) {
+      sendJson(res, 400, { error: "Request body must be JSON with a non-empty string `credentialsJson` field" });
+      return;
+    }
+    try {
+      // Reject anything that isn't a credentials FILE. Without this a run
+      // could replace a working link with junk it happened to read, and the
+      // damage would only show up on the next run as a fresh re-link prompt.
+      JSON.parse(credentialsJson);
+    } catch {
+      sendJson(res, 400, { error: "`credentialsJson` must be the JSON contents of a ~/.claude/.credentials.json file" });
+      return;
+    }
+    await this.store.set(subject, { kind: "login", credentialsJson, createdAt: new Date().toISOString() });
+    // `ClaudeTokenStore.set` swallows its own Redis errors (by design -- a
+    // failed link write must not crash a login page), which would make a
+    // silently-dropped refresh indistinguishable from a stored one and put us
+    // right back at the stale-credential failure this route exists to fix.
+    // Read back and say so explicitly instead.
+    const stored = await this.store.get(subject, "login");
+    if (stored?.credentialsJson !== credentialsJson) {
+      sendJson(res, 502, { error: "The refreshed credentials could not be persisted" });
+      return;
+    }
+    sendJson(res, 200, { status: "ok" });
   }
 
   private async handleInvalidate(req: IncomingMessage, res: ServerResponse): Promise<void> {

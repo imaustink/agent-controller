@@ -45,7 +45,7 @@ if (process.env.FAKE_SCRIPT_OUTPUT) process.stdout.write(process.env.FAKE_SCRIPT
 if (mode !== "nofile") {
   fs.mkdirSync(dir, { recursive: true });
   const lines = [JSON.stringify({ type: "summary", bridgeSessionId: "cse_TESTBRIDGE", lastSequenceNum: 0 })];
-  if (mode !== "running") lines.push(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "DONE" }] } }));
+  if (mode !== "running") lines.push(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: process.env.FAKE_ASSISTANT_TEXT || "DONE" }] } }));
   if (mode === "complete") lines.push(JSON.stringify({ type: "system", subtype: "turn_duration", durationMs: 5 }));
   fs.writeFileSync(path.join(dir, SID + ".jsonl"), lines.join("\\n") + "\\n");
 }
@@ -144,6 +144,44 @@ describe("runClaudeTurnRemoteControlled (interactive)", () => {
 
     expect(result.failed).toBe(true);
     expect(result.authError).toBe(true);
+  });
+
+  // Regression for AgentRun fc9f0896: an "ai-review" run whose credential had
+  // expired recorded `Login expired · Please run /login` as its assistant text
+  // and wrote turn_duration 11 seconds in, so the turn looked COMPLETE. The
+  // auth error then travelled to the user as a turn summary ("The agent
+  // produced no pushable repository or pull request. Details: ...") and nothing
+  // downstream could trigger re-auth, because nothing had called it a failure.
+  it("treats a completed turn whose only output is a credential complaint as an auth failure", async () => {
+    const result = await runClaudeTurnRemoteControlled("do the thing", {
+      cwd,
+      env: env({ FAKE_ASSISTANT_TEXT: "Login expired · Please run /login" }),
+      settings: {},
+      runId: "run-auth",
+      pollIntervalMs: 20,
+      maxWaitMs: 5000,
+    });
+
+    expect(result.failed).toBe(true);
+    expect(result.authError).toBe(true);
+    expect(result.finalMessage).toBeNull();
+    expect(result.failureDetail).toBe("Login expired · Please run /login");
+  });
+
+  it("does not mistake a long summary that merely mentions credentials for an auth failure", async () => {
+    const summary = `Reviewed the diff. ${"The auth handling looks correct; note the invalid API key branch is untested. ".repeat(4)}`;
+    const result = await runClaudeTurnRemoteControlled("review the thing", {
+      cwd,
+      env: env({ FAKE_ASSISTANT_TEXT: summary }),
+      settings: {},
+      runId: "run-review",
+      pollIntervalMs: 20,
+      maxWaitMs: 5000,
+    });
+
+    expect(result.failed).toBe(false);
+    expect(result.authError).toBe(false);
+    expect(result.finalMessage).toBe(summary);
   });
 
   it("reports a startup failure when the session never registers and the child exits", async () => {

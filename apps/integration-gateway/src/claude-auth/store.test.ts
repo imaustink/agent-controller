@@ -132,6 +132,34 @@ describe("RedisClaudeTokenStore", () => {
     expect(await store.get("user-999", "login")).toBeUndefined();
     expect(await store.get("user-999")).toEqual(setupRecord);
   });
+
+  it("round-trips a credential write-back grant back to its subject", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const token = await store.createWritebackToken("user-wb", 900);
+    expect(await store.resolveWritebackToken(token)).toBe("user-wb");
+  });
+
+  it("never stores a write-back grant in a replayable form", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const token = await store.createWritebackToken("user-wb", 900);
+    // The grant is a bearer credential: anything able to read the keyspace must
+    // not come away with a usable one, so only its hash is stored.
+    expect([...mockRedisState.keys()].some((k) => k.includes(token))).toBe(false);
+    expect([...mockRedisState.values()].some((v) => v.includes(token))).toBe(false);
+  });
+
+  it("treats an unknown or empty grant as invalid", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    expect(await store.resolveWritebackToken("never-minted")).toBeUndefined();
+    expect(await store.resolveWritebackToken("")).toBeUndefined();
+  });
+
+  it("mints distinct grants per call, so revoking one can't affect another", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const a = await store.createWritebackToken("user-wb", 900);
+    const b = await store.createWritebackToken("user-wb", 900);
+    expect(a).not.toBe(b);
+  });
 });
 
 describe("RedisClaudeTokenStore.waitForCompletion", () => {

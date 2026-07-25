@@ -145,3 +145,106 @@ versions — the same caveat this repo already carries for the CLI's headless
   gaining an optional `invalidate`, are both non-breaking widenings of an
   interface `opencode-swe-agent`'s own identity-link path already depends on
   — verified via the full existing GitHub-flow test suite passing unchanged.
+
+## Amendment (2026-07-24): a link that survives its first token refresh, and a re-auth signal that actually fires
+
+A production `ai-review` run (AgentRun `fc9f0896`) died 11 seconds in with
+`Login expired · Please run /login` roughly 48 minutes after an identical run
+had succeeded on the same stored credential. Investigating it turned up three
+separate defects, two of which made this ADR's own re-auth design unreachable
+in practice. All three are fixed together, since none of them alone produces a
+working recovery.
+
+### 1. The `claude-remote` credential was never refreshable
+
+The full-login blob is stored once (`claudeAuthLogin:<subject>`) and copied
+into each run's HOME, an emptyDir. Claude Code refreshes its access token in
+that pod, and Anthropic **rotates the refresh token** when it does, so the copy
+still in Redis is dead as soon as the first run refreshes — while the refreshed
+file dies with the pod. "Silent forever" therefore lasted exactly one access
+token, and every run after that prompted the human to re-link an account they
+had already linked hours earlier.
+
+Fixed by writing the refreshed file back:
+
+- `ClaudeTokenStore.createWritebackToken`/`resolveWritebackToken` mint and
+  resolve an opaque, TTL'd grant (stored SHA-256-hashed) that authorizes
+  exactly one thing: replacing one subject's `login` record.
+- `POST /claude-auth/api/writeback-token` (bearer-gated) mints a grant;
+  agent-orchestrator calls it at launch and injects the result as
+  `CLAUDE_CREDENTIALS_WRITEBACK_URL`/`_TOKEN` via the same `secretEnv` channel
+  as the credential itself. The gateway's own bearer — which can read and mint
+  credentials for every subject — deliberately never enters a run's
+  environment.
+- `POST /claude-auth/api/refresh` (grant-gated, dispatched before the
+  master-bearer check) stores the blob. The subject comes from the grant, never
+  the request body, so a run can only overwrite its own credential; the body
+  must parse as JSON; and because `ClaudeTokenStore.set` swallows its own Redis
+  errors by design, the write is read back and 502s rather than silently
+  dropped.
+- claude-code-swe-agent posts its credentials file back after every turn
+  (success or failure — the refresh happened either way), skipping the common
+  case where the file is byte-identical to the injected blob. Best-effort
+  throughout: the turn's work is already done, so losing a refresh must never
+  fail a completed run.
+
+This does not implement an Anthropic-side refresh call in the orchestrator. The
+CLI already drives the refresh; re-implementing that undocumented exchange
+would be a second, unverifiable path to the same result. A credential that ages
+out with no run in between still expires — but that now lands on the recovery
+path below instead of looking like a finished turn.
+
+### 2. An auth failure was reported as a *successful* turn
+
+The interactive Remote Control session recorded `Login expired · Please run
+/login` as its assistant text and wrote a `turn_duration` entry, so
+`runClaudeTurnRemoteControlled` saw `turnComplete` and returned
+`failed: false`. The credential error reached the user as a turn summary — "The
+agent produced no pushable repository or pull request. Details: Login expired ·
+Please run /login" — and nothing downstream could act on it, because nothing
+upstream had called it a failure. The one-shot `-p` path had the same hole for a
+`result` event with `is_error` unset.
+
+Both paths now treat a completed turn whose entire output is a short
+credential complaint as an auth failure (`isAuthFailureDisguisedAsSuccess`,
+length-bounded so a review that merely *discusses* credentials is unaffected),
+and `"login expired"` joins `AUTH_ERROR_SUBSTRINGS`.
+
+### 3. The `claude_auth_expired` code was never emitted, and named the wrong credential
+
+This ADR states that `runAgent()` "already publishes any string `err.code`".
+It did not: `runtime.ts` hardcoded `agent_error`/`config_error`, and
+claude-code-swe-agent threw a plain `Error`. `handleAgentTurnFailure` was
+therefore dead code from the day it was written.
+
+- `packages/agent-runtime` exports `AgentFailure(code, message)`, and
+  `runAgent()` forwards its code onto the wire. Recognized by `instanceof` or
+  `name === "AgentFailure"` (realm-safe), never by a bare `.code`, so Node's
+  own `ENOENT`/`ECONNREFUSED` don't start leaking as failure codes.
+- There are now two codes, because the recovery is to DELETE the stale record
+  and the two providers' records are stored separately:
+  `claude_auth_expired` → `claude`, `claude_remote_auth_expired` →
+  `claude-remote`. `handleAgentTurnFailure` picks the provider from the code
+  rather than from `identityProviders[0]`, which for an agent declaring both
+  always invalidated the setup-token — leaving the login blob that actually
+  failed in place to fail again, while forcing a pointless re-link of a
+  credential that was fine.
+- The recovery message branches on whether the turn has a live channel. "Send
+  your request again" is meaningless for a label-triggered run, where the
+  trigger label was already removed when the run finished; that path is told to
+  re-apply the label, which is the retry that actually exists.
+
+### Consequences
+
+- A `claude-remote` link now survives token rotation for as long as runs keep
+  happening, which is the difference between "link once" and "re-link every few
+  hours".
+- Each `claude-remote` AgentRun carries a bearer grant scoped to one subject
+  and one operation, expiring at run timeout + 15 minutes. That is strictly
+  less authority than the gateway bearer, and strictly more than the run had
+  before — a run that is compromised can replace its own initiator's stored
+  Claude credential with any valid-JSON blob until the grant expires.
+- Auth-error detection stays substring matching against CLI output (the CLI
+  exposes no stable machine-readable code), now including output the CLI
+  presents as a normal turn result. A future CLI wording change lands the run
+  back in the generic-failure path, not in a wrong-but-confident one.

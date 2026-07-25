@@ -47,6 +47,28 @@ export interface AgentSession {
 /** Thrown by {@link AgentSession.callTool} when the tool call itself fails (declined, not found, or the tool errored). */
 export class ToolCallError extends Error {}
 
+/**
+ * An error whose failure `code` reaches the orchestrator on the wire, instead
+ * of being flattened into the generic `"agent_error"`.
+ *
+ * Some failures are recoverable by the orchestrator, but only if it can tell
+ * them apart from ordinary task failures -- e.g. an expired linked credential,
+ * where the fix is to invalidate the stored record and re-prompt the user to
+ * link, not to report "the agent failed". The code is the whole point: the
+ * message is for humans, the code is what the orchestrator can branch on.
+ * Throw this from an {@link AgentHandler} instead of a plain `Error` when the
+ * distinction matters.
+ */
+export class AgentFailure extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AgentFailure";
+  }
+}
+
 /** An agent's concluding reply for the run. A bare string is shorthand for `{ message }`. */
 export interface AgentReply {
   /** Assistant message shown to the user. */
@@ -172,7 +194,20 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
     await publishUp({ type: "reply", message: reply.message, final: true, result: reply.result });
   } catch (err) {
     if (!(err instanceof CancelledError) && !abort.signal.aborted) {
-      const code = err instanceof AgentConfigError ? "config_error" : "agent_error";
+      // A handler-supplied `code` wins (see AgentFailure). Matched by `name`
+      // as well as `instanceof`, so an AgentFailure that crossed a duplicated-
+      // module/realm boundary still reports its code -- but NOT by `code`
+      // alone, or every stray `ENOENT`/`ECONNREFUSED` from Node's own errors
+      // would start leaking onto the wire as a failure code.
+      const declared = err instanceof AgentFailure || (err as { name?: unknown } | null)?.name === "AgentFailure"
+        ? (err as { code?: unknown }).code
+        : undefined;
+      const code =
+        typeof declared === "string" && declared
+          ? declared
+          : err instanceof AgentConfigError
+            ? "config_error"
+            : "agent_error";
       await publishUp({ type: "failed", code, message: err instanceof Error ? err.message : String(err) });
     }
     // On cancellation the orchestrator already knows; exit quietly.

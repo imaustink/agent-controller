@@ -61,6 +61,12 @@ const AUTH_ERROR_SUBSTRINGS = [
   "authentication_error",
   "oauth token has expired",
   "oauth token is invalid",
+  // Confirmed empirically, not guessed: this is verbatim what the CLI reported
+  // when a seeded ~/.claude/.credentials.json could no longer be refreshed
+  // (AgentRun fc9f0896, an "ai-review" run that died 11s in). Redundant with
+  // "please run /login" for that exact wording, but the two halves of that
+  // message are not guaranteed to travel together.
+  "login expired",
   "please run `claude setup-token`",
   "please run /login",
   "credit balance is too low",
@@ -69,6 +75,35 @@ const AUTH_ERROR_SUBSTRINGS = [
 function looksLikeAuthError(text: string): boolean {
   const lower = text.toLowerCase();
   return AUTH_ERROR_SUBSTRINGS.some((s) => lower.includes(s));
+}
+
+/**
+ * Longest turn output still treated as "this is an auth notice, not work".
+ * A credential message is a single short line; a real turn summary (or a code
+ * review that happens to DISCUSS auth) is far longer. Without this bound,
+ * reviewing a file that contains the string "invalid api key" would be
+ * misreported as an expired credential.
+ */
+const AUTH_NOTICE_MAX_LENGTH = 200;
+
+/**
+ * True when a turn the CLI reported as FINISHED actually just handed back a
+ * credential complaint as its output.
+ *
+ * This is the failure mode that made AgentRun fc9f0896 (an "ai-review" run)
+ * look successful: the interactive session recorded `Login expired · Please
+ * run /login` as its assistant text and wrote a `turn_duration` entry 11
+ * seconds in, so `turnComplete` was true, `failed` was false, and the auth
+ * error travelled all the way to the user as a turn summary -- under
+ * "The agent produced no pushable repository or pull request. Details: ...".
+ * Nothing downstream could act on it because nothing upstream had called it a
+ * failure. So the completion signal alone is not sufficient evidence of a
+ * completed turn; the output has to not be an auth complaint.
+ */
+function isAuthFailureDisguisedAsSuccess(text: string | null): boolean {
+  const trimmed = text?.trim() ?? "";
+  if (!trimmed || trimmed.length > AUTH_NOTICE_MAX_LENGTH) return false;
+  return looksLikeAuthError(trimmed);
 }
 
 /**
@@ -240,11 +275,19 @@ export function runClaudeTurn(prompt: string, opts: ClaudeRunOptions): Promise<C
         }
       }
 
-      const failed = code !== 0 || resultIsError || !sawAnyJson;
+      // On an already-failed turn, scan everything (stderr included). On a
+      // turn the CLI called successful, only a short auth-notice-shaped
+      // `result` counts -- an auth error reported as the turn's own output is
+      // still an auth error (see `isAuthFailureDisguisedAsSuccess`), but a long
+      // summary that merely mentions credentials is not.
+      const hardFailed = code !== 0 || resultIsError || !sawAnyJson;
+      const authError = hardFailed
+        ? looksLikeAuthError(`${stderrBuf}\n${finalMessage ?? ""}`)
+        : isAuthFailureDisguisedAsSuccess(finalMessage);
+      const failed = hardFailed || authError;
       const failureDetail = failed
         ? (finalMessage ?? (stderrBuf.trim() ? clip(stderrBuf, 800) : `claude exited with code ${code ?? "null"}`))
         : null;
-      const authError = failed && looksLikeAuthError(`${stderrBuf}\n${finalMessage ?? ""}`);
 
       resolve({ finalMessage, failed, failureDetail, authError, sessionId });
     });
@@ -635,6 +678,20 @@ export async function runClaudeTurnRemoteControlled(
           // caller posts the "watch it here" comment near the start of the run.
           if (st.bridgeSessionId) reportUrl(remoteControlUrlFromBridge(st.bridgeSessionId));
           if (st.turnComplete) {
+            // A completed turn whose entire output is a credential complaint
+            // is an auth failure, not work -- the CLI records "Login expired ·
+            // Please run /login" as assistant text and then writes
+            // `turn_duration` like any finished turn, so `turnComplete` alone
+            // cannot be trusted here (see `isAuthFailureDisguisedAsSuccess`).
+            if (isAuthFailureDisguisedAsSuccess(st.finalText)) {
+              return {
+                finalMessage: null,
+                failed: true,
+                failureDetail: st.finalText,
+                authError: true,
+                sessionId: session.sessionId,
+              };
+            }
             return { finalMessage: st.finalText, failed: false, failureDetail: null, authError: false, sessionId: session.sessionId };
           }
         }
