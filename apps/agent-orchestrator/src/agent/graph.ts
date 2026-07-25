@@ -12,6 +12,7 @@ import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { SecretKeySelector } from "../k8s/toolrun-launcher.js";
 import type { LocalToolExecutor } from "../local/local-tool-executor.js";
 import type { IdentityLinkPort, IdentityLinkStartResult } from "../identity-link/gateway-client.js";
+import { resolveCredentialSubject } from "../identity-link/credential-subject.js";
 import type { IdentityResolver, Identity } from "../rbac/types.js";
 import type { SkillDescriptor, SkillSearchResult, SkillStore } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
@@ -322,6 +323,24 @@ export const AgentStateAnnotation = Annotation.Root({
         deviceCode?: string;
         expiresAt: number;
         /**
+         * The subject this link was actually STARTED against -- the
+         * canonical `github:<login>` for a Claude provider, the raw subject
+         * otherwise (see `resolveCredentialSubject`).
+         *
+         * Carried explicitly rather than recomputed downstream, and that is
+         * the entire point of the field. PR #144 re-keyed the gate but left
+         * the resume path and the terminal `/invoke` record recomputing from
+         * `identity.subject`, so the link was STORED under one subject and
+         * WAITED on under another -- it never resolved and the user was
+         * re-prompted forever (reverted in PR #145). Every consumer now reads
+         * this value instead of deriving its own, so store and wait cannot
+         * drift apart again.
+         *
+         * Optional so a session that paused before this field existed still
+         * resumes (falling back to the raw subject) rather than crashing.
+         */
+        subject?: string;
+        /**
          * The turn's original request, captured when the pause started, so
          * resuming re-delegates with the ORIGINAL goal instead of whatever
          * throwaway text (e.g. "done") the caller happened to send on the
@@ -371,6 +390,27 @@ export const AgentStateAnnotation = Annotation.Root({
    * from it alone would collapse every human into one shared subject.
    */
   forwardedUserToken: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * GitHub login of the human who triggered this turn, when the trigger came
+   * from a GitHub webhook (set by the server from `/invoke`'s `event`
+   * descriptor, which integration-gateway populates from the
+   * signature-verified webhook payload).
+   *
+   * This is the ONLY per-user identifier the triage/review path has:
+   * integration-gateway authenticates to `/invoke` with its own OIDC service
+   * token, so `identity.subject` there is one shared service subject for
+   * every trigger, identical no matter who applied the label. Without this
+   * field there is nothing to key a per-user credential on, which is why
+   * Claude credentials authorized during triage were invisible to chat and
+   * vice versa. Consumed only by `resolveCredentialSubject`.
+   *
+   * Absent for ordinary chat turns, which have no GitHub webhook behind them
+   * and resolve their login from the caller's own `github` link instead.
+   */
+  senderLogin: Annotation<string | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
@@ -678,9 +718,14 @@ async function startReplacementLink(
   state: AgentState,
   provider: string,
   agentId: string,
+  /**
+   * The subject whose credential was just invalidated -- passed in rather
+   * than re-derived so the replacement link is started against exactly the
+   * record that was cleared (see `pendingIdentityLink.subject`).
+   */
+  subject: string,
 ): Promise<Partial<AgentState> | undefined> {
   if (!state.identity) return undefined;
-  const subject = state.identity.subject;
   const flow = state.identityLinkFlow ?? "authcode";
   // try/catch around the await rather than `.catch()` on the returned value:
   // `start` is only contractually a promise, and a partial `IdentityLinkPort`
@@ -708,6 +753,7 @@ async function startReplacementLink(
       flow: started.flow,
       ...(started.flow === "device" ? { deviceCode: started.deviceCode } : {}),
       expiresAt: Date.now() + started.expiresInSeconds * 1000,
+      subject,
       // THIS request, not whatever text a later turn happens to carry -- the
       // resume re-delegates the work that was interrupted.
       request: state.request,
@@ -759,7 +805,16 @@ async function handleAgentTurnFailure(
       // swallowing it, and log it -- a failure here is otherwise invisible,
       // indistinguishable from success in both the logs and the reply.
       let invalidated = true;
-      await gateway.invalidate?.(provider, state.identity.subject).catch((invalidateErr: unknown) => {
+      // Must clear the record the gate actually READ (canonical for a Claude
+      // provider), or the "expired credential" the run just tripped over
+      // survives and every retry re-reads it.
+      const staleSubject = await resolveCredentialSubject(
+        provider,
+        state.identity.subject,
+        state.senderLogin,
+        deps.identityLinkGateway,
+      );
+      await gateway.invalidate?.(provider, staleSubject).catch((invalidateErr: unknown) => {
         invalidated = false;
         console.error(
           `[identity-gate] invalidate failed for provider ${provider}; the stale credential is still stored: ${invalidateErr instanceof Error ? invalidateErr.message : String(invalidateErr)}`,
@@ -782,7 +837,7 @@ async function handleAgentTurnFailure(
       // Returning `identityLinkPending` also arms the caller's auto-resume
       // (integration-gateway's `waitAndResume`), so finishing the link re-runs
       // THIS request instead of requiring yet another trigger.
-      const relink = agent ? await startReplacementLink(gateway, state, provider, agent.id) : undefined;
+      const relink = agent ? await startReplacementLink(gateway, state, provider, agent.id, staleSubject) : undefined;
       if (relink) return relink;
 
       // start() failed (or there's no agent context to park a pending link
@@ -1037,10 +1092,15 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // browser round-trip completes out-of-band, via integration-gateway's
       // own OAuth callback route or claude-auth's code-paste page
       // respectively), so both just check whether a token has landed yet.
+      // The subject the link was STARTED against, not a freshly derived one.
+      // Recomputing here is precisely what desynced in PR #144; the fallback
+      // covers only sessions that paused before the field existed, whose
+      // links were started against the raw subject anyway.
+      const pendingSubject = pending.subject ?? state.identity.subject;
       const status =
         pending.flow === "device"
-          ? await gateway.poll(pending.provider, state.identity.subject, pending.deviceCode!)
-          : (await gateway.getToken(pending.provider, state.identity.subject))
+          ? await gateway.poll(pending.provider, pendingSubject, pending.deviceCode!)
+          : (await gateway.getToken(pending.provider, pendingSubject))
             ? "complete"
             : Date.now() < pending.expiresAt
               ? "pending"
@@ -1253,17 +1313,30 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             error: `agent ${agent.id} requires identity providers (${agent.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
           };
         }
-        let existing = await gateway.getToken(provider, state.identity.subject);
+        // Resolved per provider, INSIDE the loop, not once up front: with
+        // `github` declared ahead of the Claude providers, a link completed
+        // by the `waitForCompletion` below is what makes the canonical
+        // subject resolvable, and a value computed before that link landed
+        // would still be the raw subject. Re-resolving per provider means
+        // the github link established moments ago is visible to `claude` and
+        // `claude-remote` on this very turn.
+        const credentialSubject = await resolveCredentialSubject(
+          provider,
+          state.identity.subject,
+          state.senderLogin,
+          deps.identityLinkGateway,
+        );
+        let existing = await gateway.getToken(provider, credentialSubject);
         console.log(
           "[identity-gate-debug] getToken",
-          JSON.stringify({ provider, subject: state.identity.subject, found: Boolean(existing) }),
+          JSON.stringify({ provider, subject: credentialSubject, rawSubject: state.identity.subject, found: Boolean(existing) }),
         );
         if (!existing) {
           // Signal "this turn needs a link" NOW, before the (possibly slow)
           // start() below -- a fire-and-forget caller uses this to avoid
           // prematurely announcing that work has started while the link is
           // still being set up. Safe to fire before we even have the link URL.
-          state.reportIdentityLinkPending?.({ provider, subject: state.identity.subject });
+          state.reportIdentityLinkPending?.({ provider, subject: credentialSubject });
           // Ordinary Open WebUI chat turns never set `identityLinkFlow`, so
           // they default to the browser-redirect authcode flow; a headless
           // direct `/invoke` caller (e.g. integration-gateway's own
@@ -1285,7 +1358,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // the label, or any follow-up message in the session) re-enters this
           // node and retries start().
           const started = await gateway
-            .start(provider, state.identity.subject, flow)
+            .start(provider, credentialSubject, flow)
             .catch((err) => {
               console.error(
                 `[identity-gate] start threw for provider ${provider}; ending turn with a retryable message instead of a hard error: ${err instanceof Error ? err.message : String(err)}`,
@@ -1329,7 +1402,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             try {
               existing = await gateway.waitForCompletion?.(
                 provider,
-                state.identity.subject,
+                credentialSubject,
                 started.expiresInSeconds * 1000,
               );
             } catch (err) {
@@ -1373,6 +1446,10 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
                 flow: started.flow,
                 ...(started.flow === "device" ? { deviceCode: started.deviceCode } : {}),
                 expiresAt: Date.now() + started.expiresInSeconds * 1000,
+                // The subject `start` was actually called with -- see this
+                // field's doc on the state annotation for why recomputing it
+                // downstream instead is the PR #144 re-auth loop.
+                subject: credentialSubject,
                 // Captured so the eventual resume (checkPendingIdentityLink)
                 // re-delegates with THIS goal, not whatever text the turn
                 // that finally notices completion happens to carry.
@@ -1396,8 +1473,12 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // "Login expired · Please run /login" (the exact failure this grant
         // fixes). Best-effort by design: no grant simply means no write-back.
         if (provider === "claude-remote" && deps.claudeRemoteWriteback) {
+          // Same canonical subject the credential was READ from above --
+          // a grant minted against the raw subject would write the refreshed
+          // credentials to a record nothing ever reads, and the shared one
+          // would keep serving the pre-refresh copy until it died.
           const grant = await deps.claudeRemoteWriteback.createWritebackGrant(
-            state.identity.subject,
+            credentialSubject,
             (deps.agentRunTimeoutSeconds ?? 0) + WRITEBACK_GRANT_MARGIN_SECONDS,
           );
           if (grant) {
@@ -1596,7 +1677,17 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               error: `tool ${tool.id} requires identity providers (${tool.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
             };
           }
-          const existing = await gateway.getToken(provider, state.identity.subject);
+          // Same canonical keying as delegateToAgent's gate -- this path only
+          // READS a credential (it never starts a link), so if it derived a
+          // different subject than the gate it would report "not linked" for
+          // an account the user had in fact just linked.
+          const credentialSubject = await resolveCredentialSubject(
+            provider,
+            state.identity.subject,
+            state.senderLogin,
+            deps.identityLinkGateway,
+          );
+          const existing = await gateway.getToken(provider, credentialSubject);
           if (!existing) {
             return {
               error: `tool ${tool.id} requires linking your ${provider} account first -- start a direct conversation with this agent to link it, then retry`,

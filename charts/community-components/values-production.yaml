@@ -111,16 +111,29 @@ opencodeSweAgent:
 # secret` invocation) -- CI builds/pushes the image, but Helm can't source
 # secret VALUES on its own, so that Secret is still a manual prerequisite.
 #
-# identityLink.providers is ["claude"] only, not ["github", "claude"]:
-# agent-orchestrator's per-caller identity gate (docs/adr/0022, extended by
-# 0027) only resolves the FIRST declared provider end-to-end today -- a
-# second entry would never actually be linked/injected. Git/gh operations
-# still work without per-user GitHub attribution: resolveGithubToken prefers
-# the GitHub App installation token (githubAppIdSecretKey/etc. below) over
-# any static PAT whenever all three App fields are configured, regardless of
-# identityLink, so commits/PRs attribute to the k5s-bot App identity instead
-# of the specific calling user -- same as opencode-swe-agent's own non-
-# identity-linked-GitHub posture, just for this agent's git side specifically.
+# identityLink.providers leads with "github", and the ORDER is load-bearing.
+#
+# The gate resolves every declared provider in order (it used to stop after
+# index 0, which is why this list was once "claude" only -- that limitation
+# is gone). "github" is first because its link is what supplies the canonical
+# credential subject: a chat caller's Claude credentials are keyed by
+# `github:<login>`, and the login is read off this very link (see
+# agent-orchestrator's resolveCredentialSubject). Resolve it after the Claude
+# providers and the first turn would key them under the raw `openwebui:<id>`
+# subject instead, which is exactly the cross-flow split we're fixing.
+#
+# Requiring "github" here means a chat user links GitHub once before this
+# agent will run. That is a deliberate trade (see the PR that introduced the
+# canonical subject): it guarantees every caller has a canonical key, so a
+# Claude authorization done during ai-triage is reused in chat and vice
+# versa, instead of each entry point prompting separately.
+#
+# Git/gh operations do NOT depend on that link: resolveGithubToken still
+# prefers the GitHub App installation token (githubAppIdSecretKey/etc. below)
+# over any per-user token whenever all three App fields are configured, so
+# commits/PRs keep attributing to the k5s-bot App identity exactly as before.
+# The per-user GITHUB_TOKEN injected by the link is the dual-token pattern
+# opencode-swe-agent already uses.
 #
 # No static anthropicSecretKey/claudeCodeOAuthTokenSecretKey needed here:
 # with "claude" in identityLink.providers, delegateToAgent (agent-
@@ -145,6 +158,9 @@ claudeCodeSweAgent:
   identityLink:
     enabled: true
     providers:
+      # MUST stay first -- supplies the `github:<login>` canonical subject the
+      # two Claude providers below are keyed under (see the block comment).
+      - github
       - claude
       # Required for Remote Control (see remoteControl below) -- without
       # this, agent-orchestrator never resolves/injects the per-run

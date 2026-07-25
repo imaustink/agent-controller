@@ -1275,3 +1275,109 @@ describe("InvokeServer live-session tunnel (ADR 0026)", () => {
     await server.close();
   });
 });
+
+describe("InvokeServer canonical credential subject plumbing", () => {
+  it("threads event.senderLogin from POST /invoke into the graph input", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "tok-1", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({
+        request: "triage this issue",
+        event: { source: "github", event: "issues", action: "labeled", senderLogin: "imaustink" },
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // No IntegrationRoute registry is configured on this server, and the
+    // login must STILL come through -- cross-flow credential sharing can't
+    // be made to depend on routing config.
+    expect(graph.invoke).toHaveBeenCalledWith(expect.objectContaining({ senderLogin: "imaustink" }));
+
+    await server.close();
+  });
+
+  it("reports the pending link's OWN subject on GET /invoke/:id, not the raw identity subject", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({
+        request: "x",
+        authToken: "tok-1",
+        skillCandidates: [],
+        identity: { subject: "service-subject", roles: ["reader"] },
+        pendingIdentityLink: {
+          agentId: "claude-code-swe",
+          provider: "claude-remote",
+          flow: "page",
+          expiresAt: Date.now() + 600_000,
+          subject: "github:imaustink",
+        },
+        identityLinkPending: true,
+        result: "please link your Claude account",
+      } as AgentState),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const postRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "triage this issue" }),
+    });
+    const { id } = (await postRes.json()) as { id: string };
+    await new Promise((r) => setTimeout(r, 10));
+
+    const done = (await (await fetch(`http://127.0.0.1:${port}/invoke/${id}`)).json()) as {
+      identityLink?: { provider: string; subject: string };
+    };
+    // integration-gateway's waitAndResume blocks on exactly this subject. If
+    // it were recomputed from identity.subject it would wait on a record the
+    // link never writes -- the PR #144 re-auth loop.
+    expect(done.identityLink).toEqual({ provider: "claude-remote", subject: "github:imaustink" });
+
+    await server.close();
+  });
+
+  it("falls back to the identity subject for a link parked before the subject field existed", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({
+        request: "x",
+        authToken: "tok-1",
+        skillCandidates: [],
+        identity: { subject: "alice", roles: ["reader"] },
+        pendingIdentityLink: {
+          agentId: "opencode-swe",
+          provider: "github",
+          flow: "authcode",
+          expiresAt: Date.now() + 600_000,
+        },
+        identityLinkPending: true,
+        result: "please link your GitHub account",
+      } as AgentState),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const postRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "open a PR" }),
+    });
+    const { id } = (await postRes.json()) as { id: string };
+    await new Promise((r) => setTimeout(r, 10));
+
+    const done = (await (await fetch(`http://127.0.0.1:${port}/invoke/${id}`)).json()) as {
+      identityLink?: { provider: string; subject: string };
+    };
+    expect(done.identityLink).toEqual({ provider: "github", subject: "alice" });
+
+    await server.close();
+  });
+});

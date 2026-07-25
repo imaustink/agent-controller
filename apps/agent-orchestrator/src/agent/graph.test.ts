@@ -1777,6 +1777,7 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       flow: "device",
       deviceCode: "raw-device-code",
       expiresAt: expect.any(Number),
+      subject: "alice",
       request: "open a PR that fixes the bug",
     });
     expect(final.result).toMatch(/github\.com\/login\/device/);
@@ -1808,6 +1809,7 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       provider: "github",
       flow: "authcode",
       expiresAt: expect.any(Number),
+      subject: "alice",
       request: "open a PR that fixes the bug",
     });
     expect(final.pendingIdentityLink?.deviceCode).toBeUndefined();
@@ -1913,6 +1915,7 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       flow: "device",
       deviceCode: "raw-device-code",
       expiresAt: expect.any(Number),
+      subject: "alice",
       request: "triage and resolve this issue",
     });
     expect(final.result).toMatch(/link your GitHub account/i);
@@ -1986,6 +1989,7 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       provider: "github",
       flow: "authcode",
       expiresAt: expect.any(Number),
+      subject: "alice",
       request: "open a PR that fixes the bug",
     });
     // Streaming turn: the link was already surfaced live via progressListener,
@@ -2168,6 +2172,7 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       flow: "device",
       deviceCode: "new-device-code",
       expiresAt: expect.any(Number),
+      subject: "alice",
       request: "let's try again",
     });
   });
@@ -2306,6 +2311,7 @@ describe("buildAgentGraph per-caller Claude Code OAuth linking (docs/adr/0027)",
       provider: "claude",
       flow: "page",
       expiresAt: expect.any(Number),
+      subject: "alice",
       request: "fix the failing test",
     });
     expect(final.result).toMatch(/claude-auth\/flow-1/);
@@ -2789,3 +2795,192 @@ describe("buildAgentGraph delegation with multiple identityProviders", () => {
   });
 });
 
+
+describe("buildAgentGraph canonical credential subject (cross-flow Claude credential sharing)", () => {
+  const claudeRemoteAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks with Claude Code",
+    allowedRoles: ["reader"],
+    identityProviders: ["claude-remote"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  /**
+   * `identityLinkGateway` here is the `github` provider's gateway -- the
+   * source of the `githubLogin` that becomes the canonical subject. Its
+   * `getToken` is what `resolveCredentialSubject` reads on the chat path.
+   */
+  function canonicalDeps(
+    overrides: Partial<AgentGraphDeps> = {},
+    githubLogin: string | null = "Imaustink",
+  ) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: claudeRemoteAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([claudeRemoteAgent]),
+    };
+    const delegateSelector: DelegateSelector = {
+      select: vi.fn().mockResolvedValue({ type: "agent", agent: claudeRemoteAgent }),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened a pull request",
+        final: true,
+        narration: [],
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(githubLogin ? { token: "gh-token", githubLogin } : undefined),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-1",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      identityLinkGateway,
+      claudeRemoteGateway,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("keys a chat caller's claude-remote credential by github:<login> from their GitHub link, not the raw openwebui subject", async () => {
+    const deps = canonicalDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // Lower-cased: the webhook payload says "Imaustink", the OAuth API says
+    // "imaustink"; both must land on ONE key or the flows split again.
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:imaustink");
+    expect(deps.claudeRemoteGateway!.getToken).not.toHaveBeenCalledWith("claude-remote", "alice");
+  });
+
+  it("keys a triage turn's claude-remote credential by the same github:<login>, taken from senderLogin", async () => {
+    const deps = canonicalDeps({}, null); // no GitHub link at all on this path
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "triage this issue",
+      authToken: "tok",
+      // The shared service subject resolves to "alice" here; senderLogin is
+      // the only per-user identifier a webhook-driven turn carries.
+      senderLogin: "imaustink",
+    });
+
+    // Same key the chat test above asserts -- that identity IS the fix.
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:imaustink");
+  });
+
+  it("prefers senderLogin over the GitHub link so a triage turn never inherits the service account's link", async () => {
+    const deps = canonicalDeps({}, "someone-else");
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "triage this issue", authToken: "tok", senderLogin: "imaustink" });
+
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:imaustink");
+  });
+
+  it("falls back to the raw subject when no GitHub login is resolvable, preserving pre-change behavior", async () => {
+    const deps = canonicalDeps({}, null);
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "alice");
+  });
+
+  it("falls back to the raw subject (rather than failing the turn) when the GitHub link lookup throws", async () => {
+    const deps = canonicalDeps();
+    (deps.identityLinkGateway!.getToken as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("gateway down"));
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "alice");
+  });
+
+  it("keeps the github provider itself on the raw subject -- it is the source of the mapping, not a consumer", async () => {
+    const githubOnlyAgent: AgentDescriptor = { ...claudeRemoteAgent, identityProviders: ["github"] };
+    const deps = canonicalDeps({
+      agentStore: {
+        upsert: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ agent: githubOnlyAgent, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([githubOnlyAgent]),
+      },
+      delegateSelector: { select: vi.fn().mockResolvedValue({ type: "agent", agent: githubOnlyAgent }) },
+    });
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "open a PR", authToken: "tok" });
+
+    expect(deps.identityLinkGateway!.getToken).toHaveBeenCalledWith("github", "alice");
+    expect(deps.identityLinkGateway!.getToken).not.toHaveBeenCalledWith("github", "github:imaustink");
+  });
+
+  it("starts the link against the canonical subject AND records it on pendingIdentityLink, so store and wait cannot drift (the PR #144 regression)", async () => {
+    const deps = canonicalDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(deps.claudeRemoteGateway!.start).toHaveBeenCalledWith("claude-remote", "github:imaustink", "authcode");
+    // The subject the caller's auto-resume will wait on must be the SAME one
+    // the link was started against. Recomputing it downstream is what made
+    // PR #144 loop forever.
+    expect(final.pendingIdentityLink?.subject).toBe("github:imaustink");
+  });
+
+  it("resumes a pending link against the stored subject, not a freshly derived one", async () => {
+    const deps = canonicalDeps();
+    (deps.claudeRemoteGateway!.getToken as ReturnType<typeof vi.fn>).mockResolvedValue({ token: "creds-json" });
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "any nudge message",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: {
+        agentId: "claude-code-swe",
+        provider: "claude-remote",
+        flow: "page",
+        expiresAt: Date.now() + 60_000,
+        // Deliberately NOT what this turn would derive on its own -- proves
+        // the resume reads the stored value.
+        subject: "github:stored-login",
+        request: "fix the failing test",
+      },
+    });
+
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:stored-login");
+  });
+
+  it("mints the claude-remote write-back grant against the canonical subject the credential was read from", async () => {
+    const createWritebackGrant = vi.fn().mockResolvedValue({ url: "http://gw/refresh", token: "grant" });
+    const deps = canonicalDeps({ claudeRemoteWriteback: { createWritebackGrant } });
+    (deps.claudeRemoteGateway!.getToken as ReturnType<typeof vi.fn>).mockResolvedValue({ token: "creds-json" });
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // A grant against the raw subject would write refreshed credentials to a
+    // record nothing reads, and the shared one would die on the next refresh.
+    expect(createWritebackGrant).toHaveBeenCalledWith("github:imaustink", expect.any(Number));
+  });
+});
