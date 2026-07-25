@@ -53,6 +53,17 @@ config:
   # charts/core-controller's installed CRDs.
   crdGroup: core.controller-agent.dev
   crdVersion: v1alpha1
+  # Agent-run timeouts. Leave empty to use the orchestrator's own defaults
+  # (8h wall clock, 10m of silence, 25s shutdown drain) -- these exist so the
+  # e2e environment can shrink the idle window to something a test can wait out.
+  #
+  # agentRunTimeoutSeconds is the Job's activeDeadlineSeconds: a backstop for a
+  # wedged pod, NOT a task budget. agentIdleTimeoutSeconds bounds SILENCE and is
+  # what actually ends a stuck run -- any up-message resets it, so a narrating
+  # run is never cut off however long it takes.
+  agentRunTimeoutSeconds: ""
+  agentIdleTimeoutSeconds: ""
+  shutdownDrainMs: ""
   # Which IdentityResolver to build: "static" (default) or "oidc". See
   # src/rbac/static-identity-resolver.ts and src/rbac/oidc-identity-resolver.ts.
   identityResolver: static

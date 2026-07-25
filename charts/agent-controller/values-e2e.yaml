@@ -160,3 +160,19 @@ agent-orchestrator:
     # identity-keying spec asserts that no Claude credential is ever keyed
     # under this subject.
     staticIdentities: '{"e2e-gateway-token":{"subject":"client-integration-gateway","roles":["reader","writer"]}}'
+    # Shrunk from the 10-minute default so resilience.e2e.ts can wait out a
+    # silent agent inside a test's budget. It bounds SILENCE, not duration, so a
+    # narrating turn is still unaffected however long it runs -- which is itself
+    # one of the things that spec asserts, by pacing a stub turn well past this
+    # window and expecting it to succeed.
+    #
+    # Not lower than this. The clock starts when the orchestrator subscribes,
+    # which is BEFORE the AgentRun's Job is scheduled -- so this window also has
+    # to cover pod scheduling and container start, during which the agent has
+    # published nothing yet. 20s was tried and is too close to that startup cost
+    # to be anything but flaky.
+    agentIdleTimeoutSeconds: 30
+    # Left at the production 8h: nothing in the suite should ever reach a
+    # wall-clock ceiling, and a short one here would mask an idle-window bug by
+    # failing runs for the wrong reason.
+    agentRunTimeoutSeconds: 28800

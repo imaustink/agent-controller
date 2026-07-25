@@ -77,6 +77,18 @@ spec:
               value: {{ .Values.config.crdGroup | quote }}
             - name: AGENT_CRD_VERSION
               value: {{ .Values.config.crdVersion | quote }}
+            {{- if .Values.config.agentRunTimeoutSeconds }}
+            - name: AGENT_RUN_TIMEOUT_SECONDS
+              value: {{ .Values.config.agentRunTimeoutSeconds | quote }}
+            {{- end }}
+            {{- if .Values.config.agentIdleTimeoutSeconds }}
+            - name: AGENT_IDLE_TIMEOUT_SECONDS
+              value: {{ .Values.config.agentIdleTimeoutSeconds | quote }}
+            {{- end }}
+            {{- if .Values.config.shutdownDrainMs }}
+            - name: AGENT_SHUTDOWN_DRAIN_MS
+              value: {{ .Values.config.shutdownDrainMs | quote }}
+            {{- end }}
             {{- if .Values.localTool.enabled }}
             - name: AGENT_LOCALTOOL_SOCKET_DIR
               value: {{ .Values.localTool.socketDir | quote }}

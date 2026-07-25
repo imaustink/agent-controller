@@ -322,6 +322,13 @@ stubAgent:
   identityLink:
     enabled: false
     providers: []
+  # Turn pacing (apps/stub-agent/src/pacing.ts). All zero = reply immediately,
+  # which is what every spec other than resilience.e2e.ts wants; that one
+  # patches these onto the CR per test.
+  pacing:
+    narrateForMs: 0
+    narrateEveryMs: 2000
+    silentForMs: 0
 
 integrationRoutes:
   # github-issue-labeled-triage: an IntegrationRoute CR (docs/adr/0024)
