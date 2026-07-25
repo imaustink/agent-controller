@@ -1,0 +1,123 @@
+# In-cluster stand-in for GitHub's REST API.
+#
+# Deployed only into the minikube e2e environment and pointed at via the
+# existing `integrationGateway.githubApiUrl` / agent `githubApiUrl` values --
+# no production code path knows this exists.
+#
+# It does two jobs:
+#   1. Serves deterministic responses for the handful of endpoints the system
+#      calls (`/user`, collaborator permission, issue comments, labels).
+#   2. RECORDS every request, exposing them on `GET /_e2e/requests`, so a test
+#      can assert "a comment containing X was posted to issue N" instead of
+#      inferring it from logs.
+#
+# Written as a ConfigMap-mounted script on the stock `node:22-alpine` image
+# rather than a built image: it has no dependencies, and keeping it out of the
+# image build means `skaffold dev` doesn't rebuild the world when a test needs
+# one more stubbed endpoint.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fake-github
+  labels: { app: fake-github, e2e: "true" }
+data:
+  server.js: |
+    const http = require("node:http");
+
+    // Every request, in order. Unbounded on purpose -- the process is
+    // recreated per e2e run and a bounded ring buffer would silently drop the
+    // very request a failing assertion is looking for.
+    const requests = [];
+
+    function json(res, status, body) {
+      const payload = JSON.stringify(body);
+      res.writeHead(status, { "content-type": "application/json" }).end(payload);
+    }
+
+    http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const url = new URL(req.url, "http://fake-github");
+
+        // Introspection endpoints are namespaced under /_e2e/ so they can
+        // never collide with a real GitHub route the system might call.
+        if (url.pathname === "/_e2e/requests") return json(res, 200, requests);
+        if (url.pathname === "/_e2e/reset") { requests.length = 0; return json(res, 200, { ok: true }); }
+
+        // Recorded BEFORE dispatch so the entry exists no matter which branch
+        // handles it; `status` is stamped on by `json()` below. Without the
+        // stamp the "never called an unstubbed endpoint" assertion silently
+        // matches nothing and passes vacuously.
+        const entry = { method: req.method, path: url.pathname, body: body || null, at: new Date().toISOString() };
+        requests.push(entry);
+        const respond = (status, payload) => { entry.status = status; return json(res, status, payload); };
+
+        // GET /user -- identity behind a user token. The dual-token /
+        // delegated-write path calls this to build a co-author trailer.
+        if (url.pathname === "/user") return respond(200, { login: "e2e-user", id: 4242 });
+
+        // Collaborator permission -- "write" so the delegated-write
+        // authorization check passes and the happy path proceeds.
+        if (/^\/repos\/[^/]+\/[^/]+\/collaborators\/[^/]+\/permission$/.test(url.pathname)) {
+          return respond(200, { permission: "write" });
+        }
+
+        // Posting an issue comment -- what the triage flow ultimately does.
+        if (/^\/repos\/[^/]+\/[^/]+\/issues\/\d+\/comments$/.test(url.pathname) && req.method === "POST") {
+          return respond(201, { id: requests.length, body: JSON.parse(body || "{}").body ?? "" });
+        }
+
+        // Removing the trigger label once a run finishes.
+        if (/^\/repos\/[^/]+\/[^/]+\/issues\/\d+\/labels\//.test(url.pathname) && req.method === "DELETE") {
+          return respond(200, []);
+        }
+
+        // Repo metadata -- `created_at` drives the "did the bot just create
+        // this repo" branch in the post-flight authorization check.
+        if (/^\/repos\/[^/]+\/[^/]+$/.test(url.pathname)) {
+          return respond(200, { name: "e2e-repo", created_at: "2020-01-01T00:00:00Z", default_branch: "main" });
+        }
+
+        // Anything unstubbed is a 501, never a 200: a silent empty success
+        // would let a test pass while the system called something we never
+        // meant to support, which is exactly the blindness e2e is for.
+        respond(501, { message: `fake-github: unstubbed ${req.method} ${url.pathname}` });
+      });
+    }).listen(8080, () => console.log("fake-github listening on 8080"));
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-github
+  labels: { app: fake-github, e2e: "true" }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: fake-github }
+  template:
+    metadata:
+      labels: { app: fake-github, e2e: "true" }
+    spec:
+      containers:
+        - name: fake-github
+          image: node:22-alpine
+          command: ["node", "/srv/server.js"]
+          ports: [{ containerPort: 8080 }]
+          volumeMounts: [{ name: script, mountPath: /srv }]
+          readinessProbe:
+            httpGet: { path: /_e2e/requests, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
+      volumes:
+        - name: script
+          configMap: { name: fake-github }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-github
+  labels: { app: fake-github, e2e: "true" }
+spec:
+  selector: { app: fake-github }
+  ports: [{ port: 80, targetPort: 8080 }]
