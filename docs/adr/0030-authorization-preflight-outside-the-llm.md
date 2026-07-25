@@ -136,11 +136,14 @@ The agent stops calling `/user` and stops re-checking collaborator permission.
 The 401 is fixed **by construction** — the call that produced it no longer
 exists — and the duplicate permission implementation is deleted.
 
-*Trade-off, deliberately accepted:* resolving attribution centrally means the
-orchestrator needs the GitHub App credentials the agent holds today. That
-widens what the orchestrator stores. It is accepted because the alternative is
-two components independently deciding authorization, which is what produced
-this ADR.
+*Amended during implementation — this trade-off turned out to be avoidable.*
+The login is read off the caller's stored `github` link record, which already
+contains it, rather than from a `/user` call. So the orchestrator needs **no**
+GitHub App credentials and makes no additional API request. The numeric id is
+the only casualty: it is not stored on the link, and fetching it would
+reintroduce the very round trip being removed, so the co-author trailer falls
+back to its `login@users.noreply.github.com` form. GitHub still attributes
+correctly; the attribution just isn't pinned across an account rename.
 
 ### 6. Identity is forwarded, not reconstructed
 
