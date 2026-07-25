@@ -26,6 +26,18 @@ import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
 import { makeSubAgentToolCallHandler, type ToolCatalog } from "./dispatch-tool.js";
+import {
+  ACTOR_LOGIN_ENV,
+  AuthorizationService,
+  CROSS_ENTRY_POINT_PROVIDERS,
+  linkPromptText,
+  PROVIDER_LABEL,
+} from "./authorization-service.js";
+
+// Re-exported: several tests and callers import ACTOR_LOGIN_ENV from this
+// module, and the constant's home is now the authorization service that owns
+// the decision to inject it.
+export { ACTOR_LOGIN_ENV };
 
 /**
  * Agent state threaded through the graph (docs/adr/0008, docs/adr/0012,
@@ -591,63 +603,15 @@ export interface AgentGraphDeps {
 }
 
 /**
- * Maps an identity-linked provider (Agent.identityProviders, e.g. "github")
- * to the env var name its linked token is injected as (AgentLaunchOptions'
- * secretEnv, agentrun-launcher.ts).
- */
-/**
- * Carries the caller's resolved GitHub login into the run (docs/adr/0030 §5).
- *
- * Not a credential -- a login is public -- but it travels the same secretEnv
- * path as the credentials so the agent reads all actor facts from one place.
- * Its presence is what tells the agent it must NOT resolve identity itself.
- */
-export const ACTOR_LOGIN_ENV = "AGENT_ACTOR_LOGIN";
-
-/**
- * Providers whose credential is keyed by PRINCIPAL rather than by the
- * entry-point subject -- i.e. the ones a human re-authorizes by hand and
- * expects to only do once (docs/adr/0030 §6).
- */
-const CROSS_ENTRY_POINT_PROVIDERS: ReadonlySet<string> = new Set(["claude", "claude-remote"]);
-
-const PROVIDER_ENV_VAR: Record<string, string> = {
-  github: "GITHUB_TOKEN",
-  claude: "CLAUDE_CODE_OAUTH_TOKEN",
-  "claude-remote": "CLAUDE_LOGIN_CREDENTIALS_JSON",
-};
-
-/**
- * Env vars a `claude-remote` launch carries so the run can persist the
- * credentials its Claude Code CLI refreshes in-pod (the gateway's
- * `POST /claude-auth/api/refresh`, read by claude-code-swe-agent's
- * `config.ts`). Injected via the same `secretEnv` channel as the credential
- * itself -- the grant token is a bearer credential, short-lived and scoped to
- * one subject, but still not something to hand over as plaintext `env`.
- */
-const CREDENTIALS_WRITEBACK_ENV = {
-  url: "CLAUDE_CREDENTIALS_WRITEBACK_URL",
-  token: "CLAUDE_CREDENTIALS_WRITEBACK_TOKEN",
-} as const;
-
-/**
- * Extra headroom on top of the run's own timeout for a write-back grant's
- * lifetime: the CLI can refresh at the very end of a long turn, and a grant
- * that expires mid-run silently drops exactly the refresh this mechanism
- * exists to capture.
- */
-const WRITEBACK_GRANT_MARGIN_SECONDS = 15 * 60;
-
-/** Human-facing label for a provider, used in link prompts/messages. */
-const PROVIDER_LABEL: Record<string, string> = { github: "GitHub", claude: "Claude", "claude-remote": "Claude" };
-
-/**
  * Resolves which gateway client backs a given identity provider (docs/adr/0027)
  * -- the one place that knows `"claude"` routes to `deps.claudeAuthGateway`
  * and `"claude-remote"` routes to `deps.claudeRemoteGateway`, instead of the
- * (GitHub-only-in-practice) `deps.identityLinkGateway`, so the three call
- * sites below (`checkPendingIdentityLink`, `delegateToAgent`, the
- * agent-backed-tool path) stay provider-agnostic.
+ * (GitHub-only-in-practice) `deps.identityLinkGateway`.
+ *
+ * Kept here as a thin adapter over the same resolution
+ * {@link AuthorizationService} performs internally, for the two link-lifecycle
+ * call sites (`startReplacementLink`, `checkPendingIdentityLink`) that operate
+ * on an ALREADY-STARTED link rather than making an authorization decision.
  */
 function identityGatewayFor(provider: string, deps: AgentGraphDeps): IdentityLinkPort | undefined {
   if (provider === "claude") return deps.claudeAuthGateway;
@@ -701,20 +665,6 @@ const AUTH_EXPIRED_CODE_PROVIDER: Record<string, string> = {
   [CLAUDE_AUTH_EXPIRED_CODE]: "claude",
   [CLAUDE_REMOTE_AUTH_EXPIRED_CODE]: "claude-remote",
 };
-
-/**
- * The clickable "link your account" instruction for a started flow. Shared by
- * the first-time link prompt in `delegateToAgent` and the re-link prompt in
- * `handleAgentTurnFailure` so the two can never drift into describing the same
- * flow differently.
- */
-function linkPromptText(started: IdentityLinkStartResult, label: string): string {
-  if (started.flow === "device") {
-    return `[link your ${label} account](${started.verificationUri}) and enter code \`${started.userCode}\``;
-  }
-  if (started.flow === "authcode") return `[link your ${label} account](${started.authorizeUrl})`;
-  return `[link your ${label} account](${started.pageUrl})`;
-}
 
 /**
  * Starts a fresh link flow immediately after a stale credential was
@@ -1028,6 +978,12 @@ async function noMatchFallback(state: AgentState, deps: AgentGraphDeps): Promise
 
 /** Builds and compiles the LangGraph.js agent graph (docs/adr/0008, superseding the earlier flat tool-RAG flow). */
 export function buildAgentGraph(deps: AgentGraphDeps) {
+  // The single owner of the authorization decision (docs/adr/0030 §1).
+  // Constructed here, from deps, rather than injected: it is not a swappable
+  // policy but the graph's own gate, and making it a dep would invite a
+  // deployment that supplied a permissive one.
+  const authorization = new AuthorizationService(deps);
+
   const graph = new StateGraph(AgentStateAnnotation)
     .addNode("resolveIdentity", async (state) => {
       // Prefer Open WebUI's per-request signed user JWT over the shared
@@ -1288,344 +1244,42 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       }
       const agent = state.selectedAgent;
 
-      // TEMPORARY diagnostic for the "launched with no GITHUB_TOKEN despite
-      // a linked identity" investigation -- remove once root-caused. Logs
-      // exactly what this call sees at the identity-gate decision point,
-      // never the token value itself.
-      console.log(
-        "[identity-gate-debug] delegateToAgent",
-        JSON.stringify({
-          agentId: agent.id,
-          identityProviders: agent.identityProviders,
-          hasIdentityLinkGateway: Boolean(deps.identityLinkGateway),
-          subject: state.identity.subject,
-          roles: state.identity.roles,
-          hasProgressListener: Boolean(state.progressListener),
-        }),
-      );
+      // ── Authorization pre-flight (docs/adr/0030) ────────────────────────
+      // The ONE authorization decision for this launch, owned by graph control
+      // flow and made before anything is created. Everything it needs is named
+      // in the request; nothing the planner produced influences it beyond the
+      // request text carried onto a parked link.
+      //
+      // The logic used to live inline here -- ~300 lines between this comment
+      // and the launch below. Extracting it changed no behaviour; it gave the
+      // decision a boundary, so "may this run start, and with whose
+      // credentials" is answered by one call with a total return type rather
+      // than by reading the node.
+      const verdict = await authorization.authorize({
+        agent: { id: agent.id, identityProviders: agent.identityProviders },
+        identity: state.identity,
+        request: state.request,
+        senderLogin: state.senderLogin,
+        progressListener: state.progressListener,
+        reportIdentityLinkPending: state.reportIdentityLinkPending,
+        identityLinkFlow: state.identityLinkFlow,
+      });
 
-      // Per-caller identity gate (replaces the old shared static credential
-      // for any Agent that declares `identityProviders`): the FIRST time this
-      // caller delegates to such an agent, they must link their own account
-      // with that provider (one-time OAuth device/authcode flow for
-      // "github", or a PTY `setup-token` flow for "claude", docs/adr/0027)
-      // before a launch is even attempted. Only the FIRST declared provider
-      // is gated end-to-end today (multi-provider agents aren't expected in
-      // practice yet); `identityGatewayFor` is what lets this stay
-      // provider-agnostic as more are added.
-      // Resolves EVERY declared identityProviders entry, not just the first --
-      // an Agent can legitimately need more than one linked identity at once
-      // (e.g. claude-code-swe-agent's ["claude", "claude-remote"]: the
-      // setup-token flow for model calls plus the separate full-login flow
-      // Remote Control needs). Previously this only ever checked index 0, so
-      // a second provider's token was silently never resolved/injected --
-      // whatever secretEnv name it mapped to reached the Job as an empty/
-      // unset value instead of erroring or prompting to link it. Each
-      // provider still gets the exact same getToken -> (missing? start/wait/
-      // pend, else accumulate) handling as before; the loop just repeats it
-      // per provider instead of doing it once.
-      let identitySecretEnv: { name: string; value: string }[] | undefined;
-      // Batch pre-flight accumulators (docs/adr/0030). NOTHING in this loop
-      // returns early for a missing/unstartable provider any more: every
-      // declared provider is assessed, and the caller is told about all of
-      // them in one message. That is what makes provider ORDER stop mattering
-      // -- previously the first gap ended the turn, so a failure in an
-      // unrelated provider could prevent a later one from ever being reached.
-      const pendingLinks: {
-        provider: string;
-        label: string;
-        linkUrlText: string;
-        surfacedLive: boolean;
-        pending: NonNullable<AgentState["pendingIdentityLink"]>;
-      }[] = [];
-      const failedToStart: string[] = [];
-      let actorLoginFromLoop: string | undefined;
-      /**
-       * The caller's GitHub login, read off their resolved `github` link.
-       *
-       * Deliberately taken from the link record rather than a `/user` call:
-       * the login is already stored there, so the orchestrator needs neither
-       * an API round trip nor the GitHub App credentials to know it. This is
-       * what lets the agent stop calling `/user` itself (docs/adr/0030 §5),
-       * which is the call that was returning 401 in production.
-       */
-      for (const provider of agent.identityProviders ?? []) {
-        const gateway = identityGatewayFor(provider, deps);
-        if (!gateway) {
-          return {
-            error: `agent ${agent.id} requires identity providers (${agent.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
-          };
-        }
-        // The principal for cross-entry-point credentials; the raw subject for
-        // anything scoped to this entry point (docs/adr/0030 §6).
-        //
-        // `github` stays on the raw subject deliberately: a GitHub link is a
-        // property of the specific account that established it, and it is the
-        // very thing principal resolution reads, so keying it by principal
-        // would be circular.
-        const credentialSubject = CROSS_ENTRY_POINT_PROVIDERS.has(provider)
-          ? (state.identity.principal ?? state.identity.subject)
-          : state.identity.subject;
-        let existing = await gateway.getToken(provider, credentialSubject);
-        console.log(
-          "[identity-gate-debug] getToken",
-          JSON.stringify({ provider, subject: credentialSubject, rawSubject: state.identity.subject, found: Boolean(existing) }),
-        );
-        if (!existing) {
-          // Signal "this turn needs a link" NOW, before the (possibly slow)
-          // start() below -- a fire-and-forget caller uses this to avoid
-          // prematurely announcing that work has started while the link is
-          // still being set up. Safe to fire before we even have the link URL.
-          state.reportIdentityLinkPending?.({ provider, subject: credentialSubject });
-          // Ordinary Open WebUI chat turns never set `identityLinkFlow`, so
-          // they default to the browser-redirect authcode flow; a headless
-          // direct `/invoke` caller (e.g. integration-gateway's own
-          // GitHub-issue relay) can force the device flow instead, since it
-          // has no browser to redirect. Ignored by the `claude` provider's
-          // gateway client (it only has one flow shape).
-          const flow = state.identityLinkFlow ?? "authcode";
-          // Starting the link flow can itself fail before there is any URL to
-          // show. For "github" this is a plain HTTP call and rarely throws;
-          // for "claude" (docs/adr/0027) start() spawns a `claude setup-token`
-          // PTY and scrapes the authorize URL within a timeout, so a
-          // missing/slow CLI, a crashed PTY, or a URL that never prints all
-          // surface here as a throw. That must NOT crash the turn into a raw
-          // "Something went wrong" -- on the fire-and-forget GitHub-issue
-          // triage path that error is what gets posted to the ticket. Unlike
-          // the waitForCompletion catch below, there is no started flow to
-          // park a pendingIdentityLink against, so end the turn with a
-          // friendly, retryable message instead. Re-triggering (re-applying
-          // the label, or any follow-up message in the session) re-enters this
-          // node and retries start().
-          const started = await gateway
-            .start(provider, credentialSubject, flow)
-            .catch((err) => {
-              console.error(
-                `[identity-gate] start threw for provider ${provider}; ending turn with a retryable message instead of a hard error: ${err instanceof Error ? err.message : String(err)}`,
-              );
-              return null;
-            });
-          if (!started) {
-            // Record and CONTINUE rather than ending the turn (docs/adr/0030).
-            // Short-circuiting here made provider order load-bearing: a
-            // github start failure ended the turn before `claude`/
-            // `claude-remote` were ever evaluated, so a GitHub OAuth outage
-            // blocked Claude authorization entirely. Collecting instead means
-            // every provider is assessed and the user is told about all of
-            // them at once.
-            failedToStart.push(PROVIDER_LABEL[provider] ?? provider);
-            continue;
-          }
-          const label = PROVIDER_LABEL[provider] ?? provider;
-          const linkUrlText = linkPromptText(started, label);
-
-          // How the link reaches the caller depends on whether this turn has a
-          // live channel (a streaming `progressListener`):
-          //
-          // - Streaming chat turn (progressListener present): surface the link
-          //   LIVE now, then block up to the flow's expiry on
-          //   `waitForCompletion` -- the gateway's Redis-backed wait by
-          //   (provider, subject), which resolves the moment EITHER flow lands
-          //   a token -- so the SAME turn resumes automatically once the user
-          //   links, no follow-up message needed. `/invoke`'s async accept/poll
-          //   contract (ADR 0006) tolerates the multi-minute run.
-          //
-          // - Fire-and-forget caller (no progressListener -- e.g.
-          //   integration-gateway's GitHub-issue triage relay): there is NO
-          //   live channel, so the link reaches the user ONLY in this turn's
-          //   final `result` (posted as an issue comment). Blocking here would
-          //   hide the link for the entire wait window -- nobody can complete a
-          //   link they can't see yet, so the wait can only ever time out. So
-          //   skip the wait: post the link IMMEDIATELY (fall straight through
-          //   to the pending-link return below) and let checkPendingIdentityLink
-          //   resume on the next trigger (a follow-up comment, or re-applying
-          //   the label) once the token lands. This makes an unauthenticated
-          //   triage prompt for auth up front -- the same immediacy the chat
-          //   flow gets from surfacing the prompt live.
-          if (state.progressListener) {
-            state.progressListener("identity-link", `To continue, please ${linkUrlText}. This is a one-time step — I'll continue automatically once you finish.`);
-            try {
-              existing = await gateway.waitForCompletion?.(
-                provider,
-                credentialSubject,
-                started.expiresInSeconds * 1000,
-              );
-            } catch (err) {
-              // The long-held wait is inherently fragile: the gateway pod can
-              // roll (a deploy mid-flow), an intermediary can drop an idle
-              // connection, or undici can abort a multi-minute request on its
-              // own headers timeout -- all surface here as a thrown "fetch
-              // failed". None of that means the LINK failed: the user can still
-              // complete it in their browser. So swallow the throw and fall
-              // through to the same pending-link state a plain timeout produces
-              // -- the user links, sends any message, and
-              // checkPendingIdentityLink resumes via getToken. Previously this
-              // threw straight out of the node and surfaced to the user as a
-              // bare "❌ fetch failed", aborting an otherwise-fine link attempt.
-              console.error(
-                `[identity-gate] waitForCompletion threw for provider ${provider}; treating as not-yet-linked and parking pending: ${err instanceof Error ? err.message : String(err)}`,
-              );
-              existing = undefined;
-            }
-          }
-
-          if (!existing) {
-            // On a streaming chat turn we ALREADY surfaced the full link prompt
-            // live via `progressListener` above; repeating the same
-            // `[link your account](url)` markdown in the terminal `result`
-            // makes the caller render the auth prompt twice (the "doubled up"
-            // message on the chat side). So once it's been surfaced live, the
-            // final result is just a short, non-duplicative nudge -- the link
-            // itself is still visible in the streamed message above. The
-            // fire-and-forget triage path (no `progressListener` -- the link
-            // reaches the user ONLY in `result`, posted as an issue comment)
-            // is unchanged: it still prints the full prompt here.
-            // Collected, not returned (docs/adr/0030's batch pre-flight).
-            // Returning here meant a caller with N unlinked providers spent N
-            // separate triggers, each one discovering the next gap. Every
-            // provider's link is started on THIS turn and presented together
-            // below, so one round trip covers all of them.
-            pendingLinks.push({
-              provider,
-              label,
-              linkUrlText,
-              surfacedLive: Boolean(state.progressListener),
-              pending: {
-                agentId: agent.id,
-                provider,
-                flow: started.flow,
-                ...(started.flow === "device" ? { deviceCode: started.deviceCode } : {}),
-                expiresAt: Date.now() + started.expiresInSeconds * 1000,
-                // The subject `start` was actually called with -- see this
-                // field's doc on the state annotation for why recomputing it
-                // downstream instead is the PR #144 re-auth loop.
-                subject: credentialSubject,
-                // Captured so the eventual resume (checkPendingIdentityLink)
-                // re-delegates with THIS goal, not whatever text the turn
-                // that finally notices completion happens to carry.
-                request: state.request,
-              },
-            });
-            continue;
-          }
-        }
-        // Capture the login off whichever way this credential arrived. On a
-        // streaming turn it lands via waitForCompletion, so the standalone
-        // lookup below would miss it -- but that lookup is still needed for
-        // Agents that do NOT declare `github` at all (docs/adr/0030).
-        if (provider === "github" && existing.githubLogin) actorLoginFromLoop = existing.githubLogin;
-
-        const envVarName = PROVIDER_ENV_VAR[provider];
-        if (!envVarName) {
-          return { error: `agent ${agent.id} declares unsupported identity provider "${provider}"` };
-        }
-        identitySecretEnv = [...(identitySecretEnv ?? []), { name: envVarName, value: existing.token }];
-
-        // `claude-remote` only: its credential is a whole
-        // `~/.claude/.credentials.json` that the run's own CLI refreshes in
-        // place, and Anthropic rotates the refresh token when it does -- so
-        // without a way to write the result back, the copy resolved above is
-        // dead the moment this run refreshes it and every later run fails with
-        // "Login expired · Please run /login" (the exact failure this grant
-        // fixes). Best-effort by design: no grant simply means no write-back.
-        if (provider === "claude-remote" && deps.claudeRemoteWriteback) {
-          // Same canonical subject the credential was READ from above --
-          // a grant minted against the raw subject would write the refreshed
-          // credentials to a record nothing ever reads, and the shared one
-          // would keep serving the pre-refresh copy until it died.
-          const grant = await deps.claudeRemoteWriteback.createWritebackGrant(
-            credentialSubject,
-            (deps.agentRunTimeoutSeconds ?? 0) + WRITEBACK_GRANT_MARGIN_SECONDS,
-          );
-          if (grant) {
-            identitySecretEnv = [
-              ...identitySecretEnv,
-              { name: CREDENTIALS_WRITEBACK_ENV.url, value: grant.url },
-              { name: CREDENTIALS_WRITEBACK_ENV.token, value: grant.token },
-            ];
-          }
-        }
+      if (verdict.kind === "misconfigured") {
+        return { error: verdict.error };
       }
-      // ── Batch pre-flight verdict (docs/adr/0030) ────────────────────────
-      // One decision point for the whole provider set, reached only after
-      // every provider has been assessed.
-      if (pendingLinks.length > 0 || failedToStart.length > 0) {
-        const parts: string[] = [];
-        if (pendingLinks.length > 0) {
-          // Anything already surfaced live via progressListener is not
-          // repeated here -- otherwise a streaming caller renders the same
-          // link twice (the "doubled up" prompt).
-          const toPrint = pendingLinks.filter((l) => !l.surfacedLive);
-          if (toPrint.length === 1) {
-            parts.push(`To continue, please ${toPrint[0]!.linkUrlText}. This is a one-time step -- send any message once you're done.`);
-          } else if (toPrint.length > 1) {
-            parts.push(
-              `To continue, I need you to link ${toPrint.length} accounts (one-time). Please ${toPrint
-                .map((l) => l.linkUrlText)
-                .join(", and ")}. Send any message once you're done.`,
-            );
-          } else {
-            parts.push(
-              pendingLinks.length === 1
-                ? `I haven't received your ${pendingLinks[0]!.label} account link yet. Send any message once you're done and I'll continue.`
-                : `I haven't received your ${pendingLinks.map((l) => l.label).join(" and ")} account links yet. Send any message once you're done and I'll continue.`,
-            );
-          }
-        }
-        if (failedToStart.length > 0) {
-          // Reported ALONGSIDE the links rather than instead of them: a
-          // provider whose start failed must not hide the ones that
-          // succeeded, which is exactly the coupling ADR 0030 removes.
-          //
-          // "also" only when something precedes it -- when every provider
-          // failed to start there is no preceding clause, and the message
-          // has to stand on its own.
-          const labels = failedToStart.join(" and ");
-          parts.push(
-            parts.length > 0
-              ? `I also couldn't start the ${labels} linking step just now -- try again in a moment and I'll retry that part.`
-              : `I couldn't start the one-time ${labels} account-linking step just now. Please try again in a moment -- re-apply the label or send any message and I'll retry.`,
-          );
-        }
-
-        // `pendingIdentityLink` still carries ONE entry: it is the resume
-        // anchor that checkPendingIdentityLink, the terminal /invoke record
-        // and integration-gateway's waitAndResume all key off, and widening
-        // that contract is a separate change. Re-entering the gate re-assesses
-        // every provider anyway, so whichever links the user completed are
-        // resolved on the next turn and only genuinely-missing ones re-prompt.
-        const anchor = pendingLinks[0];
+      if (verdict.kind === "link-required") {
+        // The turn ends here with the batched link prompt. `pendingIdentityLink`
+        // is the resume anchor checkPendingIdentityLink and
+        // integration-gateway's waitAndResume key off; it is absent when every
+        // provider merely failed to START, since there is no started flow to
+        // resume against -- re-triggering re-enters this node and retries.
         return {
-          result: parts.join(" "),
-          ...(anchor ? { pendingIdentityLink: anchor.pending, identityLinkPending: true } : {}),
+          result: verdict.message,
+          ...(verdict.pending ? { pendingIdentityLink: verdict.pending, identityLinkPending: true } : {}),
         };
       }
-
-      // ── Sealed actor context (docs/adr/0030 §5) ─────────────────────────
-      // The agent receives WHO the caller is, resolved here, so it never
-      // performs identity lookups of its own. `identityDelegation.ts` was
-      // calling GitHub's /user with the injected token and failing 401; with
-      // this present it skips that call entirely, so the failure mode is
-      // removed by construction rather than debugged.
-      //
-      // Login only, no numeric id: the id would require the /user round trip
-      // this exists to eliminate, and the co-author trailer degrades to the
-      // login-only form without it.
-      const resolvedActorLogin =
-        actorLoginFromLoop ??
-        (await resolveActorLogin(state.identity.subject, state.senderLogin, deps.identityLinkGateway));
-      if (resolvedActorLogin) {
-        identitySecretEnv = [...(identitySecretEnv ?? []), { name: ACTOR_LOGIN_ENV, value: resolvedActorLogin }];
-      }
-
-      console.log(
-        "[identity-gate-debug] pre-launch",
-        JSON.stringify({
-          agentId: agent.id,
-          hasIdentitySecretEnv: Boolean(identitySecretEnv),
-          actorLogin: resolvedActorLogin ?? null,
-        }),
-      );
+      const identitySecretEnv = verdict.secretEnv;
 
       const runId = randomUUID();
       const jobId = randomUUID();
@@ -1792,42 +1446,38 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           return { error: `tool ${tool.id} is agent-backed but agent delegation is not configured` };
         }
         // Same per-caller identity gate as delegateToAgent (ADR 0022) --
-        // required here too now that an identity-gated Agent's static
-        // secretEnv is stripped regardless of which path reaches it. v1
-        // scope cut: unlike delegateToAgent, this path never STARTS a fresh
-        // device-flow/authcode link -- there's no session slot analogous to
-        // pendingIdentityLink for a paused tool call, only for a paused
-        // agent delegation. A caller must link once via direct chat
-        // delegation to the same agent before a Skill can reach it here.
-        // Loops over every declared provider, not just index 0 -- see the
-        // identical fix/comment on delegateToAgent's own identity-gate above.
-        let identitySecretEnv: { name: string; value: string }[] | undefined;
-        for (const provider of tool.identityProviders ?? []) {
-          const gateway = identityGatewayFor(provider, deps);
-          if (!gateway || !state.identity) {
-            return {
-              error: `tool ${tool.id} requires identity providers (${tool.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
-            };
-          }
-          // Same keying as delegateToAgent's gate -- this path only READS a
-          // credential (it never starts a link), so deriving a different
-          // subject than the gate would report "not linked" for an account the
-          // user had in fact just linked.
-          const credentialSubject = CROSS_ENTRY_POINT_PROVIDERS.has(provider)
-            ? (state.identity.principal ?? state.identity.subject)
-            : state.identity.subject;
-          const existing = await gateway.getToken(provider, credentialSubject);
-          if (!existing) {
-            return {
-              error: `tool ${tool.id} requires linking your ${provider} account first -- start a direct conversation with this agent to link it, then retry`,
-            };
-          }
-          const envVarName = PROVIDER_ENV_VAR[provider];
-          if (!envVarName) {
-            return { error: `tool ${tool.id} declares unsupported identity provider "${provider}"` };
-          }
-          identitySecretEnv = [...(identitySecretEnv ?? []), { name: envVarName, value: existing.token }];
+        // required here too now that an identity-gated Agent's static secretEnv
+        // is stripped regardless of which path reaches it -- and the SAME owner
+        // (docs/adr/0030 §1), so the keying can never drift between the two
+        // paths.
+        //
+        // The read-only entry point, deliberately: v1 scope cut is that unlike
+        // delegateToAgent, this path never STARTS a fresh device-flow/authcode
+        // link -- there's no session slot analogous to pendingIdentityLink for a
+        // paused TOOL call, only for a paused agent delegation. A caller must
+        // link once via direct chat delegation to the same agent before a Skill
+        // can reach it here.
+        if (!state.identity) {
+          return { error: `tool ${tool.id} requires identity providers but no caller identity was resolved` };
         }
+        const credentials = await authorization.resolveLinkedCredentials({
+          identity: state.identity,
+          identityProviders: tool.identityProviders,
+        });
+        if (credentials.kind === "gateway-missing") {
+          return {
+            error: `tool ${tool.id} requires identity providers (${tool.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${credentials.provider}"`,
+          };
+        }
+        if (credentials.kind === "not-linked") {
+          return {
+            error: `tool ${tool.id} requires linking your ${credentials.provider} account first -- start a direct conversation with this agent to link it, then retry`,
+          };
+        }
+        if (credentials.kind === "unsupported-provider") {
+          return { error: `tool ${tool.id} declares unsupported identity provider "${credentials.provider}"` };
+        }
+        const identitySecretEnv = credentials.secretEnv;
         const runId = randomUUID();
         const callbackUrl = `${deps.callbackBaseUrl}/callback/${randomUUID()}`;
         try {

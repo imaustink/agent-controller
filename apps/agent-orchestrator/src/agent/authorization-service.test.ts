@@ -1,0 +1,428 @@
+import { describe, expect, it, vi } from "vitest";
+import type { IdentityLinkPort, IdentityLinkStartResult, IdentityLinkToken } from "../identity-link/gateway-client.js";
+import type { Identity } from "../rbac/types.js";
+import { ACTOR_LOGIN_ENV, AuthorizationService } from "./authorization-service.js";
+
+/**
+ * Unit tests for the extracted authorization pre-flight (docs/adr/0030 §1).
+ *
+ * These are deliberately about the DECISION, not the launch: graph.test.ts
+ * already covers the end-to-end "what did delegateToAgent hand the launcher"
+ * behaviour, and duplicating that here would mean two places to update for one
+ * change. What's tested here is what the extraction made directly reachable --
+ * the verdict for each shape of provider set, including the ones that were
+ * previously only observable through a launched AgentRun.
+ */
+
+const identity = (over: Partial<Identity> = {}): Identity =>
+  ({ subject: "openwebui:alice", roles: ["writer"], ...over }) as Identity;
+
+/** A gateway whose per-provider behaviour is declared up front. */
+function gateway(
+  behaviour: Record<
+    string,
+    {
+      token?: IdentityLinkToken;
+      start?: IdentityLinkStartResult | "throw";
+      waitResolvesTo?: IdentityLinkToken | "throw";
+    }
+  >,
+): IdentityLinkPort {
+  return {
+    getToken: vi.fn(async (provider: string) => behaviour[provider]?.token),
+    start: vi.fn(async (provider: string) => {
+      const s = behaviour[provider]?.start;
+      if (s === "throw") throw new Error(`start failed for ${provider}`);
+      return s ?? ({ flow: "authcode", authorizeUrl: `https://link/${provider}`, expiresInSeconds: 600 } as IdentityLinkStartResult);
+    }),
+    poll: vi.fn(async () => "pending" as const),
+    waitForCompletion: vi.fn(async (provider: string) => {
+      const w = behaviour[provider]?.waitResolvesTo;
+      if (w === "throw") throw new Error("fetch failed");
+      return w;
+    }),
+  };
+}
+
+describe("AuthorizationService.authorize", () => {
+  it("clears a launch and injects each provider's credential under its own env var", async () => {
+    const svc = new AuthorizationService({
+      claudeAuthGateway: gateway({ claude: { token: { token: "sk-ant-oat01-x" } } }),
+      claudeRemoteGateway: gateway({ "claude-remote": { token: { token: '{"creds":1}' } } }),
+    });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude", "claude-remote"] },
+      identity: identity(),
+      request: "do the thing",
+    });
+
+    expect(verdict.kind).toBe("authorized");
+    if (verdict.kind !== "authorized") return;
+    expect(verdict.secretEnv).toEqual([
+      { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-x" },
+      { name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: '{"creds":1}' },
+    ]);
+  });
+
+  it("clears a launch with no secretEnv when the agent declares no providers", async () => {
+    const svc = new AuthorizationService({});
+    const verdict = await svc.authorize({ agent: { id: "plain" }, identity: identity(), request: "hi" });
+    expect(verdict).toEqual({ kind: "authorized" });
+  });
+
+  it("keys cross-entry-point providers by principal and github by raw subject (§6)", async () => {
+    // The PR #144 regression in miniature: a claude credential linked from chat
+    // must be found by a webhook turn, so it keys on the principal; a github
+    // link is a property of the account that established it and keys on the
+    // subject -- keying it by principal would be circular, since the principal
+    // is resolved FROM it.
+    const github = gateway({ github: { token: { token: "gho_x", githubLogin: "alice" } } });
+    const claude = gateway({ claude: { token: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    await svc.authorize({
+      agent: { id: "swe", identityProviders: ["github", "claude"] },
+      identity: identity({ subject: "openwebui:alice", principal: "github:alice" }),
+      request: "r",
+    });
+
+    expect(github.getToken).toHaveBeenCalledWith("github", "openwebui:alice");
+    expect(claude.getToken).toHaveBeenCalledWith("claude", "github:alice");
+  });
+
+  it("starts EVERY missing link on one turn and reports them together (§4)", async () => {
+    // The batching property. Before ADR 0030 the first gap returned, so a
+    // caller with two unlinked providers spent two round trips discovering them
+    // one at a time.
+    const claude = gateway({ claude: {} });
+    const remote = gateway({ "claude-remote": {} });
+    const svc = new AuthorizationService({ claudeAuthGateway: claude, claudeRemoteGateway: remote });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude", "claude-remote"] },
+      identity: identity(),
+      request: "r",
+    });
+
+    expect(verdict.kind).toBe("link-required");
+    if (verdict.kind !== "link-required") return;
+    expect(claude.start).toHaveBeenCalled();
+    expect(remote.start).toHaveBeenCalled();
+    expect(verdict.message).toContain("2 accounts");
+  });
+
+  it("reports a failed start ALONGSIDE the links that succeeded, not instead of them", async () => {
+    // The exact coupling ADR 0030 removes: a GitHub OAuth outage used to end the
+    // turn before claude was ever assessed, so it blocked Claude authorization
+    // entirely.
+    const github = gateway({ github: { start: "throw" } });
+    const claude = gateway({ claude: {} });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["github", "claude"] },
+      identity: identity(),
+      request: "r",
+    });
+
+    expect(verdict.kind).toBe("link-required");
+    if (verdict.kind !== "link-required") return;
+    // The Claude link is still offered...
+    expect(verdict.message).toContain("link your Claude account");
+    // ...and the GitHub failure is reported too, as an "also".
+    expect(verdict.message).toContain("I also couldn't start the GitHub linking step");
+    // The resume anchor is the started link, not the failed one.
+    expect(verdict.pending?.provider).toBe("claude");
+  });
+
+  it("stands the failure message on its own when EVERY provider failed to start", async () => {
+    const svc = new AuthorizationService({ identityLinkGateway: gateway({ github: { start: "throw" } }) });
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["github"] },
+      identity: identity(),
+      request: "r",
+    });
+
+    expect(verdict.kind).toBe("link-required");
+    if (verdict.kind !== "link-required") return;
+    expect(verdict.message).toMatch(/^I couldn't start the one-time GitHub account-linking step/);
+    // Nothing started, so there is no anchor to resume against -- re-triggering
+    // re-enters the gate and retries start().
+    expect(verdict.pending).toBeUndefined();
+  });
+
+  it("resumes the same turn when a streaming caller completes the link during the wait", async () => {
+    const claude = gateway({ claude: { waitResolvesTo: { token: "sk-ant-oat01-late" } } });
+    const progress = vi.fn();
+    const svc = new AuthorizationService({ claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity(),
+      request: "r",
+      progressListener: progress,
+    });
+
+    // The link was surfaced live, then the wait landed the token -- so the turn
+    // proceeds instead of parking.
+    expect(progress).toHaveBeenCalledWith("identity-link", expect.stringContaining("link your Claude account"));
+    expect(verdict.kind).toBe("authorized");
+  });
+
+  it("parks pending rather than failing when the long-held wait throws", async () => {
+    // A rolled gateway pod or a dropped idle connection surfaces as "fetch
+    // failed". That does not mean the LINK failed -- the user can still finish
+    // it in the browser -- so it must degrade to pending, not to an error.
+    const claude = gateway({ claude: { waitResolvesTo: "throw" } });
+    const svc = new AuthorizationService({ claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity(),
+      request: "r",
+      progressListener: vi.fn(),
+    });
+
+    expect(verdict.kind).toBe("link-required");
+  });
+
+  it("does not repeat a link in the final message when it was already surfaced live", async () => {
+    // The "doubled up" prompt: the streamed message already carries the link.
+    const svc = new AuthorizationService({ claudeAuthGateway: gateway({ claude: {} }) });
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity(),
+      request: "r",
+      progressListener: vi.fn(),
+    });
+
+    expect(verdict.kind).toBe("link-required");
+    if (verdict.kind !== "link-required") return;
+    expect(verdict.message).not.toContain("https://link/claude");
+    expect(verdict.message).toContain("haven't received your Claude account link yet");
+  });
+
+  it("signals that a link is needed before the (possibly slow) start runs", async () => {
+    const order: string[] = [];
+    const svc = new AuthorizationService({
+      claudeAuthGateway: {
+        ...gateway({ claude: {} }),
+        start: vi.fn(async () => {
+          order.push("start");
+          return { flow: "page", pageUrl: "https://p", expiresInSeconds: 600 } as IdentityLinkStartResult;
+        }),
+      },
+    });
+
+    await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity(),
+      request: "r",
+      reportIdentityLinkPending: () => order.push("reported"),
+    });
+
+    expect(order).toEqual(["reported", "start"]);
+  });
+
+  it("captures the subject start() was called with onto the resume anchor", async () => {
+    // Recomputing the subject downstream instead of carrying it is the PR #144
+    // re-auth loop.
+    const svc = new AuthorizationService({ claudeAuthGateway: gateway({ claude: {} }) });
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ subject: "openwebui:alice", principal: "github:alice" }),
+      request: "the original goal",
+    });
+
+    expect(verdict.kind).toBe("link-required");
+    if (verdict.kind !== "link-required") return;
+    expect(verdict.pending?.subject).toBe("github:alice");
+    // And the goal, so the eventual resume re-delegates THIS request rather than
+    // whatever text the turn that notices completion happens to carry.
+    expect(verdict.pending?.request).toBe("the original goal");
+  });
+
+  it("carries a device flow's code onto the anchor so the resume can poll it", async () => {
+    const svc = new AuthorizationService({
+      identityLinkGateway: gateway({
+        github: {
+          start: {
+            flow: "device",
+            verificationUri: "https://github.com/login/device",
+            userCode: "ABCD-1234",
+            deviceCode: "dev-code",
+            expiresInSeconds: 900,
+            pollIntervalSeconds: 5,
+          },
+        },
+      }),
+    });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["github"] },
+      identity: identity(),
+      request: "r",
+      identityLinkFlow: "device",
+    });
+
+    expect(verdict.kind).toBe("link-required");
+    if (verdict.kind !== "link-required") return;
+    expect(verdict.pending?.deviceCode).toBe("dev-code");
+    expect(verdict.message).toContain("ABCD-1234");
+  });
+
+  it("rejects a declared provider with no configured gateway as misconfigured, not unlinked", async () => {
+    // No user action fixes this, so it must not render as a link prompt.
+    const svc = new AuthorizationService({});
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity(),
+      request: "r",
+    });
+
+    expect(verdict.kind).toBe("misconfigured");
+    if (verdict.kind !== "misconfigured") return;
+    expect(verdict.error).toContain("no identity-link gateway is configured");
+  });
+
+  it("rejects an unknown provider that has no env var mapping", async () => {
+    const svc = new AuthorizationService({ identityLinkGateway: gateway({ gitlab: { token: { token: "t" } } }) });
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["gitlab"] },
+      identity: identity(),
+      request: "r",
+    });
+
+    expect(verdict.kind).toBe("misconfigured");
+    if (verdict.kind !== "misconfigured") return;
+    expect(verdict.error).toContain('unsupported identity provider "gitlab"');
+  });
+});
+
+describe("AuthorizationService.authorize -- sealed actor context (§5)", () => {
+  it("takes the actor login off the resolved github link, with no extra API call", async () => {
+    const github = gateway({ github: { token: { token: "gho_x", githubLogin: "Alice" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["github"] },
+      identity: identity(),
+      request: "r",
+    });
+
+    expect(verdict.kind).toBe("authorized");
+    if (verdict.kind !== "authorized") return;
+    expect(verdict.actorLogin).toBe("Alice");
+    expect(verdict.secretEnv).toContainEqual({ name: ACTOR_LOGIN_ENV, value: "Alice" });
+  });
+
+  it("still resolves an actor login for an agent that declares no github provider", async () => {
+    // claude-code-swe-agent's real shape after ADR 0030 decoupled `github` from
+    // credential provisioning: no github provider declared, but the agent still
+    // must be told who the caller is so it never calls /user itself.
+    const svc = new AuthorizationService({
+      claudeAuthGateway: gateway({ claude: { token: { token: "sk-ant-oat01-x" } } }),
+      identityLinkGateway: gateway({ github: { token: { token: "gho_x", githubLogin: "bob" } } }),
+    });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ subject: "github:bob" }),
+      request: "r",
+    });
+
+    expect(verdict.kind).toBe("authorized");
+    if (verdict.kind !== "authorized") return;
+    expect(verdict.secretEnv).toContainEqual({ name: ACTOR_LOGIN_ENV, value: "bob" });
+  });
+});
+
+describe("AuthorizationService.authorize -- claude-remote write-back grant", () => {
+  it("mints the grant against the SAME subject the credential was read from", async () => {
+    // A grant minted against the raw subject would write refreshed credentials
+    // to a record nothing ever reads, and the read side would keep serving the
+    // pre-refresh copy until it died.
+    const createWritebackGrant = vi.fn(async () => ({ url: "https://wb", token: "wb-token" }));
+    const svc = new AuthorizationService({
+      claudeRemoteGateway: gateway({ "claude-remote": { token: { token: "{}" } } }),
+      claudeRemoteWriteback: { createWritebackGrant },
+      agentRunTimeoutSeconds: 600,
+    });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude-remote"] },
+      identity: identity({ subject: "openwebui:alice", principal: "github:alice" }),
+      request: "r",
+    });
+
+    expect(createWritebackGrant).toHaveBeenCalledWith("github:alice", 600 + 15 * 60);
+    if (verdict.kind !== "authorized") return;
+    expect(verdict.secretEnv).toContainEqual({ name: "CLAUDE_CREDENTIALS_WRITEBACK_URL", value: "https://wb" });
+    expect(verdict.secretEnv).toContainEqual({ name: "CLAUDE_CREDENTIALS_WRITEBACK_TOKEN", value: "wb-token" });
+  });
+
+  it("launches without write-back rather than failing when no grant is available", async () => {
+    const svc = new AuthorizationService({
+      claudeRemoteGateway: gateway({ "claude-remote": { token: { token: "{}" } } }),
+      claudeRemoteWriteback: { createWritebackGrant: vi.fn(async () => undefined) },
+    });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude-remote"] },
+      identity: identity(),
+      request: "r",
+    });
+
+    expect(verdict.kind).toBe("authorized");
+    if (verdict.kind !== "authorized") return;
+    expect(verdict.secretEnv?.map((e) => e.name)).toEqual(["CLAUDE_LOGIN_CREDENTIALS_JSON"]);
+  });
+});
+
+describe("AuthorizationService.resolveLinkedCredentials", () => {
+  it("resolves what is already linked without ever starting a flow", async () => {
+    const claude = gateway({ claude: { token: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ claudeAuthGateway: claude });
+
+    const res = await svc.resolveLinkedCredentials({ identity: identity(), identityProviders: ["claude"] });
+
+    expect(res).toEqual({ kind: "resolved", secretEnv: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-x" }] });
+    // The v1 scope cut, asserted rather than described: a paused TOOL call has
+    // no session slot to resume a started link against.
+    expect(claude.start).not.toHaveBeenCalled();
+  });
+
+  it("reports the unlinked provider instead of composing a message", async () => {
+    // The caller's error text names the TOOL, which the service has no business
+    // knowing.
+    const svc = new AuthorizationService({ claudeAuthGateway: gateway({ claude: {} }) });
+    const res = await svc.resolveLinkedCredentials({ identity: identity(), identityProviders: ["claude"] });
+    expect(res).toEqual({ kind: "not-linked", provider: "claude" });
+  });
+
+  it("uses the same principal-vs-subject keying as authorize()", async () => {
+    const claude = gateway({ claude: { token: { token: "t" } } });
+    const svc = new AuthorizationService({ claudeAuthGateway: claude });
+
+    await svc.resolveLinkedCredentials({
+      identity: identity({ subject: "openwebui:alice", principal: "github:alice" }),
+      identityProviders: ["claude"],
+    });
+
+    expect(claude.getToken).toHaveBeenCalledWith("claude", "github:alice");
+  });
+
+  it("distinguishes a missing gateway from an unlinked account", async () => {
+    const svc = new AuthorizationService({});
+    expect(await svc.resolveLinkedCredentials({ identity: identity(), identityProviders: ["claude"] })).toEqual({
+      kind: "gateway-missing",
+      provider: "claude",
+    });
+  });
+
+  it("resolves to nothing for a tool that declares no providers", async () => {
+    const svc = new AuthorizationService({});
+    expect(await svc.resolveLinkedCredentials({ identity: identity() })).toEqual({ kind: "resolved" });
+  });
+});

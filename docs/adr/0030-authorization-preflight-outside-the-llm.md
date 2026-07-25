@@ -57,14 +57,25 @@ field riding in a routing descriptor.
 
 ## Decision
 
-### 1. One authorization owner, deterministic, outside the LLM — PARTIALLY HELD
+### 1. One authorization owner, deterministic, outside the LLM — DONE
 
-The *property* already holds and is what matters: authorization runs as graph
-control flow in `delegateToAgent`'s pre-flight, never as a capability a planner
-selects, and §3's test pins the credential boundary. What is not yet done is
-the mechanical extraction into a named `AuthorizationService` class. That is a
-refactor, not a behaviour change, and is deliberately not bundled with the
-behavioural fixes here.
+The *property* held from the start and is what matters: authorization runs as
+graph control flow in `delegateToAgent`'s pre-flight, never as a capability a
+planner selects, and §3's test pins the credential boundary. The extraction into
+a named class is now done too (`agent/authorization-service.ts`), as a pure
+refactor — the full pre-existing orchestrator suite passes unchanged, with new
+unit tests added for the now-directly-reachable verdicts.
+
+Two things came out of doing it that the "it's only cosmetic" framing missed.
+The verdict is now a **total discriminated union**
+(`authorized` | `link-required` | `misconfigured`), so a fourth outcome breaks
+compilation at the branch rather than falling through to "launch anyway" — the
+failure direction that actually matters. And the agent-backed-tool path, which
+had its own hand-copied provider loop with the same keying rules, now calls the
+same owner via a deliberately separate read-only entry point
+(`resolveLinkedCredentials`) — it must not start a link flow, because a paused
+*tool* call has no resume slot. Two copies of credential keying was exactly the
+shape of the #144 bug; §1 is what removes the second copy.
 
 A single `AuthorizationService` in agent-orchestrator owns every authorization
 decision: which providers an Agent requires, whether they are satisfied, what
