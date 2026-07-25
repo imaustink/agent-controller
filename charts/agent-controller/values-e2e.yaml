@@ -65,10 +65,17 @@ integration-gateway:
         "E2E-User":       {"subject": "e2e-static-user",  "roles": ["reader", "writer"]}
       }
 
-    # Tight relative to prod: a hung e2e turn should fail the test in minutes,
-    # not hold the suite open for the prod default (15m).
+    # Aggressively short, and this is load-bearing for suite reliability.
+    #
+    # The gateway holds a relay open for the whole poll window. The negative
+    # controls deliberately trigger turns that never launch, so with a long
+    # window each one occupies the relay for its full duration and whichever
+    # positive spec runs afterwards queues behind that backlog -- observed as
+    # the LAST positive test timing out while identical earlier ones passed,
+    # which reads as a keying bug and is not one. A short window lets an
+    # abandoned turn release the relay promptly.
     pollIntervalMs: 2000
-    pollTimeoutMs: 420000
+    pollTimeoutMs: 90000
 
   # Per-user credential brokering — required by the identity-keying spec,
   # which asserts which subject each entry point keys a Claude credential
