@@ -64,3 +64,29 @@ export function issueLabeledPayload({
     sender: { login: senderLogin, type: "User" },
   };
 }
+
+/**
+ * Fires the same labeled-issue trigger twice, with a pause between.
+ *
+ * One trigger is not enough to reach the Claude providers, and that is a
+ * property of the system rather than of the test. A webhook turn is
+ * fire-and-forget (no live channel), so when the identity gate finds an
+ * unlinked provider it starts the link, PARKS a pendingIdentityLink, and ends
+ * the turn -- it does not block waiting. With `github` declared first
+ * (ADR 0029), the first trigger therefore always stops at github.
+ *
+ * The second trigger re-enters via checkPendingIdentityLink, which polls the
+ * now-completable device flow, stores the github link, and resumes into
+ * delegation -- which is where `claude`/`claude-remote` finally resolve and a
+ * credential subject gets keyed.
+ */
+export async function triggerTwice(
+  baseUrl: string,
+  payload: unknown,
+  secret: string,
+  pauseMs = 20_000,
+): Promise<void> {
+  await postGithubWebhook(baseUrl, "issues", payload, secret);
+  await new Promise((r) => setTimeout(r, pauseMs));
+  await postGithubWebhook(baseUrl, "issues", payload, secret);
+}

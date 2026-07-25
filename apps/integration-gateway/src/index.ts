@@ -197,6 +197,11 @@ async function main(): Promise<void> {
       clientSecret: config.githubAppClientSecret,
       stateSecret: config.identityLinkStateSecret,
       redirectUri: config.githubOauthRedirectUri,
+      // Without this the linker falls back to its own github.com default,
+      // so a GitHub Enterprise Server deployment would send its users to
+      // github.com/login/device/code -- which 404s for a GHES-registered
+      // App's client id.
+      githubBaseUrl: config.githubBaseUrl,
     });
   }
 

@@ -28,6 +28,14 @@ integration-gateway:
     # instead of scraping logs. Nothing reaches github.com from an e2e run.
     githubApiUrl: "http://fake-github.controller-agent.svc.cluster.local"
 
+    # The OAuth/web host, redirected at the same stub. Without this the
+    # identity-link device flow calls real github.com/login/device/code with
+    # the placeholder client id below and gets a 404 -- and because `github`
+    # is the FIRST declared provider, that failure ends the turn before
+    # `claude`/`claude-remote` are ever reached, so no credential subject is
+    # ever keyed and the keying spec has nothing to observe.
+    githubBaseUrl: "http://fake-github.controller-agent.svc.cluster.local"
+
     # Must match what the specs send. `fake-github` never originates events;
     # the suite signs and posts them itself with the same HMAC the gateway
     # verifies, so the signature path is exercised for real.

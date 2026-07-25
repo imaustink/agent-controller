@@ -49,6 +49,8 @@ spec:
               value: {{ .Values.config.orchestratorUrl | quote }}
             - name: GITHUB_API_URL
               value: {{ .Values.config.githubApiUrl | quote }}
+            - name: GITHUB_BASE_URL
+              value: {{ .Values.config.githubBaseUrl | quote }}
             - name: GATEWAY_GITHUB_BOT_LOGIN
               value: {{ .Values.config.githubBotLogin | quote }}
             - name: GATEWAY_GITHUB_TRIGGER_LABEL

@@ -35,6 +35,15 @@ config:
   #
   # GitHub API base URL (override for GitHub Enterprise Server).
   githubApiUrl: "https://api.github.com"
+  # GitHub WEB/OAuth base URL -- where the identity-link device-flow and
+  # authorization-code endpoints live (/login/device/code,
+  # /login/oauth/access_token). Separate from githubApiUrl because GitHub
+  # Enterprise Server splits them: the REST API sits at https://<host>/api/v3
+  # while these OAuth routes stay on https://<host>. Leaving this at the
+  # github.com default on a GHES deployment sends users to
+  # github.com/login/device/code, which 404s for a GHES-registered App's
+  # client id. Only consulted when identityLink.enabled=true.
+  githubBaseUrl: "https://github.com"
   # The App/bot's own GitHub login -- its own comments are ignored (loop
   # prevention). Required once the App/webhook is wired up.
   githubBotLogin: ""

@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { requireMinikubeContext } from "../support/guard.js";
 import { waitFor, withPortForward } from "../support/k8s.js";
 import { claudeCredentialSubjects, deleteCredentialKeys } from "../support/redis.js";
-import { issueLabeledPayload, postGithubWebhook } from "../support/webhook.js";
+import { issueLabeledPayload, triggerTwice } from "../support/webhook.js";
 import { resetFakeGithub, webhookSecret } from "../support/fixtures.js";
 
 requireMinikubeContext();
@@ -37,9 +37,8 @@ describe("credential keying converges across entry points (ADR 0029)", () => {
 
   it("keys a webhook-triggered turn's Claude credential under github:<senderLogin>, never the shared service subject", async () => {
     await withPortForward("agent-controller-integration-gateway", 8090, GATEWAY_PORT, async (baseUrl) =>
-      postGithubWebhook(
+      triggerTwice(
         baseUrl,
-        "issues",
         issueLabeledPayload({
           owner: "e2e-org",
           repo: "e2e-repo",
@@ -73,9 +72,8 @@ describe("credential keying converges across entry points (ADR 0029)", () => {
 
   it("does not collapse two different senders onto one credential subject", async () => {
     await withPortForward("agent-controller-integration-gateway", 8090, GATEWAY_PORT, async (baseUrl) =>
-      postGithubWebhook(
+      triggerTwice(
         baseUrl,
-        "issues",
         issueLabeledPayload({
           owner: "e2e-org",
           repo: "e2e-repo",
@@ -105,9 +103,8 @@ describe("credential keying converges across entry points (ADR 0029)", () => {
 
   it("lower-cases the login so webhook casing and OAuth casing share one key", async () => {
     await withPortForward("agent-controller-integration-gateway", 8090, GATEWAY_PORT, async (baseUrl) =>
-      postGithubWebhook(
+      triggerTwice(
         baseUrl,
-        "issues",
         issueLabeledPayload({
           owner: "e2e-org",
           repo: "e2e-repo",

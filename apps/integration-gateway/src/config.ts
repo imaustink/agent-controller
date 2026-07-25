@@ -11,6 +11,16 @@ export interface AppConfig {
   /** Fallback static PAT, used only if the App fields above are unset. */
   githubToken: string;
   githubApiUrl: string;
+  /**
+   * Base URL of GitHub's **web/OAuth** host -- where the device-flow and
+   * authorization-code endpoints live (`/login/device/code`,
+   * `/login/oauth/access_token`). Distinct from `githubApiUrl`: on GitHub
+   * Enterprise Server the REST API lives at `https://<host>/api/v3` while
+   * these OAuth routes stay on `https://<host>`, so one value cannot serve
+   * both. Defaults to github.com, matching `@controller-agent/github-app-auth`'s
+   * own default, so existing deployments are unaffected.
+   */
+  githubBaseUrl: string;
   /** The App/bot's own GitHub login -- events authored by it are ignored (loop prevention). */
   githubBotLogin: string;
   /**
@@ -127,6 +137,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     githubAppInstallationId: env.GITHUB_APP_INSTALLATION_ID ?? "",
     githubToken: env.GITHUB_TOKEN ?? "",
     githubApiUrl: env.GITHUB_API_URL ?? "https://api.github.com",
+    githubBaseUrl: env.GITHUB_BASE_URL ?? "https://github.com",
     githubBotLogin: env.GATEWAY_GITHUB_BOT_LOGIN ?? "",
     githubTriggerLabel: env.GATEWAY_GITHUB_TRIGGER_LABEL ?? "",
     githubReviewLabel: env.GATEWAY_GITHUB_REVIEW_LABEL ?? "",

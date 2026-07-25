@@ -53,6 +53,45 @@ data:
         requests.push(entry);
         const respond = (status, payload) => { entry.status = status; return json(res, status, payload); };
 
+        // ── OAuth / device flow (the WEB host, githubBaseUrl) ──────────
+        // Stubbed so an identity-link start succeeds hermetically. The suite
+        // never drives a browser through the approval screen; it asserts on
+        // the SUBJECT a started flow is keyed under, which is decided before
+        // any of this is reached.
+        if (url.pathname === "/login/device/code" && req.method === "POST") {
+          return respond(200, {
+            device_code: "e2e-device-code",
+            user_code: "E2E-CODE",
+            verification_uri: "http://fake-github/login/device",
+            expires_in: 900,
+            interval: 5,
+          });
+        }
+        if (url.pathname === "/login/oauth/access_token" && req.method === "POST") {
+          // Completes immediately, deliberately.
+          //
+          // An earlier version returned `authorization_pending` forever to
+          // mirror a real un-approved flow. That made the identity-keying
+          // spec structurally impossible: a webhook turn is fire-and-forget
+          // (no progressListener), so the gate PARKS on the first provider it
+          // has to link and ends the turn without reaching the later ones.
+          // With `github` declared first (ADR 0029), a github link that never
+          // completes means `claude`/`claude-remote` are never resolved and
+          // no credential subject is ever keyed -- the exact thing under test.
+          //
+          // The pending path still gets exercised: the first trigger parks
+          // before this endpoint is ever polled. It is the SECOND trigger,
+          // via checkPendingIdentityLink, that lands the token here.
+          return respond(200, {
+            access_token: "e2e-user-access-token",
+            token_type: "bearer",
+            scope: "repo",
+            expires_in: 28800,
+            refresh_token: "e2e-user-refresh-token",
+            refresh_token_expires_in: 15897600,
+          });
+        }
+
         // GET /user -- identity behind a user token. The dual-token /
         // delegated-write path calls this to build a co-author trailer.
         if (url.pathname === "/user") return respond(200, { login: "e2e-user", id: 4242 });
