@@ -3113,3 +3113,74 @@ describe("buildAgentGraph batch authorization pre-flight (docs/adr/0030)", () =>
     expect(launched.secretEnv).toContainEqual({ name: "AGENT_ACTOR_LOGIN", value: "Imaustink" });
   });
 });
+
+describe("credentials never reach the model (docs/adr/0030 §3)", () => {
+  const SECRET_TOKEN = "sk-ant-oat01-SUPER-SECRET-VALUE";
+  const SECRET_CREDS = '{"claudeAiOauth":{"accessToken":"SUPER-SECRET-CREDENTIALS-JSON"}}';
+
+  const agent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    identityProviders: ["claude", "claude-remote"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  it("passes no credential material to any model-facing dependency", async () => {
+    // Every model-facing dep records the arguments it was called with. If a
+    // credential can reach an LLM at all, it has to pass through one of these.
+    const seen: unknown[] = [];
+    const record = <T>(result: T) => vi.fn((...args: unknown[]) => { seen.push(args); return Promise.resolve(result); });
+
+    const deps = baseDeps({
+      agentStore: {
+        upsert: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ agent, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([agent]),
+      },
+      delegateSelector: { select: record({ type: "agent" as const, agent }) },
+      skillFitChecker: { fits: record(true) },
+      capabilityNeedChecker: { needsCapability: record(true) },
+      responseComposer: { compose: record({ prefix: null, suffix: null }) },
+      agentChannel: {
+        awaitReply: vi.fn().mockResolvedValue({ message: "done", final: true, narration: [] } satisfies AgentTurnResult),
+        sendPrompt: vi.fn(),
+        close: vi.fn(),
+      },
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      claudeAuthGateway: {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getToken: vi.fn().mockResolvedValue({ token: SECRET_TOKEN }),
+      } as IdentityLinkPort,
+      claudeRemoteGateway: {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getToken: vi.fn().mockResolvedValue({ token: SECRET_CREDS }),
+      } as IdentityLinkPort,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+
+    const final = await buildAgentGraph(deps).invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // Sanity: the credentials really were resolved, so a passing assertion
+    // below means "not leaked" rather than "never present".
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as {
+      secretEnv?: { name: string; value: string }[];
+    };
+    expect(launched.secretEnv?.map((e) => e.value)).toContain(SECRET_TOKEN);
+
+    // The actual guarantee.
+    const modelFacing = JSON.stringify(seen);
+    expect(modelFacing).not.toContain(SECRET_TOKEN);
+    expect(modelFacing).not.toContain(SECRET_CREDS);
+
+    // Nor may they survive on the returned graph state, which is persisted to
+    // the session store and echoed into later prompts.
+    const serializedState = JSON.stringify(final);
+    expect(serializedState).not.toContain(SECRET_TOKEN);
+    expect(serializedState).not.toContain(SECRET_CREDS);
+  });
+});

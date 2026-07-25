@@ -57,7 +57,14 @@ field riding in a routing descriptor.
 
 ## Decision
 
-### 1. One authorization owner, deterministic, outside the LLM
+### 1. One authorization owner, deterministic, outside the LLM — PARTIALLY HELD
+
+The *property* already holds and is what matters: authorization runs as graph
+control flow in `delegateToAgent`'s pre-flight, never as a capability a planner
+selects, and §3's test pins the credential boundary. What is not yet done is
+the mechanical extraction into a named `AuthorizationService` class. That is a
+refactor, not a behaviour change, and is deliberately not bundled with the
+behavioural fixes here.
 
 A single `AuthorizationService` in agent-orchestrator owns every authorization
 decision: which providers an Agent requires, whether they are satisfied, what
@@ -70,7 +77,16 @@ authorization succeeded is an LLM that can be argued into saying yes.
 
 ### 2. The LLM's only authorization-adjacent capability is asking a human to link
 
-Exactly one narrow tool is exposed to the model:
+**Not built — and on implementation review, it should not be.** The
+deterministic pre-flight already surfaces every link prompt a caller needs,
+including the batched multi-provider case (§4). Adding a model-callable tool
+would introduce an LLM-reachable authorization surface to solve a problem that
+no longer exists, which is the opposite of this ADR's intent: the smallest
+attack surface is the one that isn't there. The constraints below are retained
+as the specification any future such tool must satisfy, should a genuine need
+appear.
+
+Were it exposed, exactly one narrow tool:
 
 ```
 request_account_link(provider: "github" | "claude" | "claude-remote") -> { promptText, url }
@@ -88,7 +104,7 @@ Constraints, all enforced at the call boundary rather than by prompt:
   link prompts; this tool exists only for a model mid-conversation that needs
   to re-offer one.
 
-### 3. Credentials never enter model context
+### 3. Credentials never enter model context — IMPLEMENTED (test)
 
 A resolved credential is an opaque handle inside the graph:
 
@@ -111,7 +127,7 @@ Enforced by:
 - **Log discipline** — the existing debug lines print subjects and env var
   *names* only, never values (the e2e helpers follow the same rule).
 
-### 4. Batch pre-flight, not first-miss
+### 4. Batch pre-flight, not first-miss — IMPLEMENTED
 
 The pre-flight resolves **every** declared provider, collects **all**
 unsatisfied ones, and presents them together in a single turn. Launch happens
@@ -122,7 +138,7 @@ short-circuits, so no provider's failure can prevent a later one from being
 evaluated. A provider that fails to *start* is reported alongside the others
 rather than ending the turn.
 
-### 5. The agent receives a sealed authorization context
+### 5. The agent receives a sealed authorization context — IMPLEMENTED
 
 The launcher injects resolved facts, so the agent performs no identity work:
 
