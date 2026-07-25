@@ -329,6 +329,31 @@ jobs:
         #   this one are generated from the same *_types.go source of truth --
         #   there is no third version of the truth to lose.
         run: |
+          # Preflight the one permission this step needs, before touching
+          # anything. CRDs are CLUSTER-scoped; every other kubectl/helm call in
+          # this job is namespaced, so this is the first thing here to require
+          # cluster-scoped rights and the runner's ServiceAccount may well not
+          # have them. Without this check the failure is a raw RBAC error from
+          # whichever CRD happened to be applied first -- accurate, but it names
+          # a resource rather than the missing grant. The ServiceAccount is the
+          # ARC runner pod's own (there is no kubeconfig step in this job) and
+          # is cluster infrastructure, not something this repo can grant itself.
+          # `-A` only to keep the check quiet: without it kubectl warns that
+          # customresourcedefinitions is not namespace-scoped (the job's context
+          # carries a namespace). stderr is deliberately NOT suppressed, so a
+          # connectivity failure here is still visible rather than being
+          # misreported as a permissions problem.
+          if ! kubectl auth can-i create customresourcedefinitions.apiextensions.k8s.io -A >/dev/null; then
+            echo "::error::The deploy runner's ServiceAccount cannot write CRDs, so this step cannot apply them."
+            echo "CRDs are cluster-scoped; the rest of this job is namespaced, which is why nothing caught this earlier."
+            echo "Grant the ARC runner's ServiceAccount a ClusterRole with:"
+            echo "  apiGroups: [\"apiextensions.k8s.io\"]"
+            echo "  resources: [\"customresourcedefinitions\"]"
+            echo "  verbs: [\"get\", \"list\", \"create\", \"update\", \"patch\"]"
+            echo "Until then every CRD change must be applied by hand, which is the gap this step exists to close."
+            exit 1
+          fi
+
           kubectl apply --server-side --force-conflicts \
             -f controllers/core-controller/config/crd/bases/
 

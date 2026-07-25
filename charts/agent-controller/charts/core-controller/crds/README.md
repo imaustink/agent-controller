@@ -28,3 +28,25 @@ that reference new fields and silently prunes those fields away. The
 --server-side --force-conflicts` on every push, before either `helm upgrade`.
 That step is the mechanism that keeps cluster CRDs current; this directory only
 covers a first install and the packaged artifact.
+
+## Cluster permission that step requires
+
+CRDs are **cluster-scoped**. Every other `kubectl`/`helm` call in the `deploy`
+job is namespaced, so this is the only thing in the pipeline needing
+cluster-scoped rights — which is part of why the gap went unnoticed for so long.
+The job runs on an in-cluster ARC runner with no kubeconfig step, so it
+authenticates as that runner pod's own ServiceAccount, which is cluster
+infrastructure this repository does not manage and cannot grant itself.
+
+The step preflights the permission and fails with this same instruction rather
+than surfacing a raw RBAC denial against whichever CRD happened to be applied
+first. Grant the runner's ServiceAccount a ClusterRole containing:
+
+```yaml
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["customresourcedefinitions"]
+  verbs: ["get", "list", "create", "update", "patch"]
+```
+
+No `delete`: nothing in the pipeline removes a CRD, and deleting one cascades to
+every CR of that kind.
