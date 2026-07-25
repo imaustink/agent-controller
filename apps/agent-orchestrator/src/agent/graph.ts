@@ -11,7 +11,7 @@ import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
 import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { SecretKeySelector } from "../k8s/toolrun-launcher.js";
 import type { LocalToolExecutor } from "../local/local-tool-executor.js";
-import type { IdentityLinkPort } from "../identity-link/gateway-client.js";
+import type { IdentityLinkPort, IdentityLinkStartResult } from "../identity-link/gateway-client.js";
 import type { IdentityResolver, Identity } from "../rbac/types.js";
 import type { SkillDescriptor, SkillSearchResult, SkillStore } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
@@ -647,6 +647,76 @@ const AUTH_EXPIRED_CODE_PROVIDER: Record<string, string> = {
 };
 
 /**
+ * The clickable "link your account" instruction for a started flow. Shared by
+ * the first-time link prompt in `delegateToAgent` and the re-link prompt in
+ * `handleAgentTurnFailure` so the two can never drift into describing the same
+ * flow differently.
+ */
+function linkPromptText(started: IdentityLinkStartResult, label: string): string {
+  if (started.flow === "device") {
+    return `[link your ${label} account](${started.verificationUri}) and enter code \`${started.userCode}\``;
+  }
+  if (started.flow === "authcode") return `[link your ${label} account](${started.authorizeUrl})`;
+  return `[link your ${label} account](${started.pageUrl})`;
+}
+
+/**
+ * Starts a fresh link flow immediately after a stale credential was
+ * invalidated, returning the same `result` + `pendingIdentityLink` +
+ * `identityLinkPending` shape as `delegateToAgent`'s first-time link prompt --
+ * so every caller that already knows how to show a link prompt and resume once
+ * it completes handles a re-link identically, with no new contract.
+ *
+ * Returns `undefined` if the flow can't be started (for `claude-remote` that
+ * means the gateway's PTY `claude login` failed to produce a URL), leaving the
+ * caller to fall back to a plain retry message. Never throws: this runs on an
+ * already-failing turn, and turning a recoverable auth failure into an opaque
+ * crash would be strictly worse than the message it replaces.
+ */
+async function startReplacementLink(
+  gateway: IdentityLinkPort,
+  state: AgentState,
+  provider: string,
+  agentId: string,
+): Promise<Partial<AgentState> | undefined> {
+  if (!state.identity) return undefined;
+  const subject = state.identity.subject;
+  const flow = state.identityLinkFlow ?? "authcode";
+  // try/catch around the await rather than `.catch()` on the returned value:
+  // `start` is only contractually a promise, and a partial `IdentityLinkPort`
+  // (any test double that stubs `start` without a return value) would otherwise
+  // crash this recovery path with a TypeError on `undefined.catch`.
+  let started: IdentityLinkStartResult | null = null;
+  try {
+    started = (await gateway.start(provider, subject, flow)) ?? null;
+  } catch (err) {
+    console.error(
+      `[identity-gate] start threw while re-linking provider ${provider} after an expired credential; falling back to a retry message: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (!started) return undefined;
+
+  state.reportIdentityLinkPending?.({ provider, subject });
+  const label = PROVIDER_LABEL[provider] ?? provider;
+  return {
+    result:
+      `⚠️ Your linked ${label} account's credential expired, so this request couldn't complete. ` +
+      `To finish it, please ${linkPromptText(started, label)} — I'll pick this request back up automatically as soon as you do.`,
+    pendingIdentityLink: {
+      agentId,
+      provider,
+      flow: started.flow,
+      ...(started.flow === "device" ? { deviceCode: started.deviceCode } : {}),
+      expiresAt: Date.now() + started.expiresInSeconds * 1000,
+      // THIS request, not whatever text a later turn happens to carry -- the
+      // resume re-delegates the work that was interrupted.
+      request: state.request,
+    },
+    identityLinkPending: true,
+  };
+}
+
+/**
  * Handles a delegated agent turn's failure, recognizing the one recoverable
  * case (docs/adr/0027's re-auth path) specially: an expired/invalid Claude
  * Code credential. Rather than surfacing that as a hard `state.error` (which
@@ -671,10 +741,11 @@ async function handleAgentTurnFailure(
   err: unknown,
   deps: AgentGraphDeps,
   state: AgentState,
-  declaredProviders?: string[],
+  agent?: { id: string; identityProviders?: string[] },
 ): Promise<Partial<AgentState>> {
   const code = err instanceof AgentTurnFailedError ? err.code : undefined;
   if (code && AUTH_EXPIRED_CODE_PROVIDER[code] && state.identity) {
+    const declaredProviders = agent?.identityProviders;
     const mapped = AUTH_EXPIRED_CODE_PROVIDER[code]!;
     const provider =
       !declaredProviders || declaredProviders.includes(mapped) ? mapped : (declaredProviders[0] ?? mapped);
@@ -695,17 +766,31 @@ async function handleAgentTurnFailure(
         );
       });
       const label = PROVIDER_LABEL[provider] ?? provider;
-      // Two audiences, two instructions. A chat caller genuinely can just say
-      // anything again. A fire-and-forget trigger (integration-gateway's
-      // label-driven triage/review relay -- no `progressListener`) has no
-      // "send your request again": the label was removed when the run
-      // finished, so re-applying it is literally the retry, and saying so is
-      // the difference between an actionable comment and a dead end.
-      const retry = invalidated
-        ? state.progressListener
-          ? "Send your request again and I'll walk you through relinking it."
-          : "Re-apply the label to try again and I'll post a link for relinking it."
-        : "I also couldn't clear the stored credential, so retrying will hit the same error until it's cleared by hand.";
+      if (!invalidated) {
+        return {
+          result:
+            `⚠️ Your linked ${label} account's credential looks expired or invalid, so this request couldn't complete. ` +
+            "I also couldn't clear the stored credential, so retrying will hit the same error until it's cleared by hand.",
+        };
+      }
+
+      // Start the REPLACEMENT link right here, in this same turn, and hand back
+      // the URL. Invalidating and then telling the user to trigger the whole
+      // thing again is a dead end dressed up as a recovery: it costs them a
+      // round trip to receive a link they could have had immediately, and on a
+      // label-driven run the retry instruction is itself a second manual step.
+      // Returning `identityLinkPending` also arms the caller's auto-resume
+      // (integration-gateway's `waitAndResume`), so finishing the link re-runs
+      // THIS request instead of requiring yet another trigger.
+      const relink = agent ? await startReplacementLink(gateway, state, provider, agent.id) : undefined;
+      if (relink) return relink;
+
+      // start() failed (or there's no agent context to park a pending link
+      // against). The stale credential IS gone, so a retry genuinely will
+      // prompt for a link -- it just costs another trigger.
+      const retry = state.progressListener
+        ? "Send your request again and I'll walk you through relinking it."
+        : "Re-apply the label to try again and I'll post a link for relinking it.";
       return { result: `⚠️ Your linked ${label} account's credential looks expired or invalid, so this request couldn't complete. ${retry}` };
     }
   }
@@ -1047,7 +1132,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       } catch (err) {
         return {
           agentRunId: state.activeAgentRunId,
-          ...(await handleAgentTurnFailure(err, deps, state, found.agent.identityProviders)),
+          ...(await handleAgentTurnFailure(err, deps, state, found.agent)),
         };
       }
     })
@@ -1214,12 +1299,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             };
           }
           const label = PROVIDER_LABEL[provider] ?? provider;
-          const linkUrlText =
-            started.flow === "device"
-              ? `[link your ${label} account](${started.verificationUri}) and enter code \`${started.userCode}\``
-              : started.flow === "authcode"
-                ? `[link your ${label} account](${started.authorizeUrl})`
-                : `[link your ${label} account](${started.pageUrl})`;
+          const linkUrlText = linkPromptText(started, label);
 
           // How the link reaches the caller depends on whether this turn has a
           // live channel (a streaming `progressListener`):
@@ -1385,7 +1465,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
-        return { agentRunId: runId, ...(await handleAgentTurnFailure(err, deps, state, agent.identityProviders)) };
+        return { agentRunId: runId, ...(await handleAgentTurnFailure(err, deps, state, agent)) };
       }
     })
     .addNode("loadSkillTools", async (state) => {

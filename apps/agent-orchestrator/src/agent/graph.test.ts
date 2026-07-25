@@ -2677,6 +2677,86 @@ describe("buildAgentGraph delegation with multiple identityProviders", () => {
     expect(final.result).toMatch(/re-apply the label/i);
   });
 
+  // The whole point of the recovery: ONE label application has to produce
+  // something the human can act on. Invalidating the credential and then
+  // telling them to trigger the run again cost a round trip to receive a link
+  // that could have been in the first reply -- observed live on #146, where the
+  // only comment posted was "re-apply the label to try again".
+  it("posts the relink URL in the SAME turn and arms auto-resume, instead of telling the user to trigger again", async () => {
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-9?u=https://claude.ai/oauth/authorize&mode=login",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"stale-login-blob"}' }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi
+        .fn()
+        .mockRejectedValue(new AgentTurnFailedError("claude_remote_auth_expired", "credentials look expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = multiProviderDeps({
+      claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-fine" }) },
+      claudeRemoteGateway,
+      agentChannel,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "review pull request #146", authToken: "tok" });
+
+    // Stale credential cleared, THEN a replacement flow started for the same
+    // provider -- in that order, or the new link would be deleted too.
+    expect(claudeRemoteGateway.invalidate).toHaveBeenCalledWith("claude-remote", "alice");
+    expect(claudeRemoteGateway.start).toHaveBeenCalledWith("claude-remote", "alice", expect.any(String));
+    expect(final.error).toBeUndefined();
+    expect(final.result).toContain("https://gateway.example/claude-auth/flow-9");
+    expect(final.result).not.toMatch(/re-apply the label|send your request again/i);
+    // Arms the caller's auto-resume (integration-gateway's waitAndResume), and
+    // carries THIS request so the resume re-runs the interrupted work.
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toMatchObject({
+      agentId: "claude-code-swe",
+      provider: "claude-remote",
+      flow: "page",
+      request: "review pull request #146",
+    });
+  });
+
+  it("falls back to a retry message when the replacement link flow can't be started", async () => {
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn().mockRejectedValue(new Error("claude-auth start (login) failed: 502")),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"stale-login-blob"}' }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi
+        .fn()
+        .mockRejectedValue(new AgentTurnFailedError("claude_remote_auth_expired", "credentials look expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = multiProviderDeps({
+      claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-fine" }) },
+      claudeRemoteGateway,
+      agentChannel,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // The credential IS gone, so a retry genuinely will prompt for a link --
+    // it just costs another trigger.
+    expect(final.error).toBeUndefined();
+    expect(final.result).toMatch(/re-apply the label/i);
+    expect(final.identityLinkPending).toBeFalsy();
+  });
+
   // Telling someone to retry only helps if the stale record is actually gone;
   // otherwise the next attempt resolves the same dead credential and fails
   // identically, forever.

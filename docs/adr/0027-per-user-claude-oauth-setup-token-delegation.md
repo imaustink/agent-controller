@@ -229,10 +229,19 @@ therefore dead code from the day it was written.
   always invalidated the setup-token — leaving the login blob that actually
   failed in place to fail again, while forcing a pointless re-link of a
   credential that was fine.
-- The recovery message branches on whether the turn has a live channel. "Send
-  your request again" is meaningless for a label-triggered run, where the
-  trigger label was already removed when the run finished; that path is told to
-  re-apply the label, which is the retry that actually exists.
+- The recovery **starts the replacement link in the same turn** and returns its
+  URL, rather than invalidating the credential and asking the user to trigger
+  the whole request again. The first cut did the latter, and a live test on #146
+  showed why that isn't a recovery: the only thing posted was "re-apply the
+  label to try again" — a dead end dressed up as a fix, costing a round trip to
+  receive a link that could have been in the first reply. It returns the same
+  `pendingIdentityLink`/`identityLinkPending` shape as the first-time link
+  prompt, so integration-gateway's existing `waitAndResume` picks up the
+  interrupted request automatically once the link completes, with no new
+  contract and no second trigger. A "re-apply the label" / "send your request
+  again" message (branching on whether the turn has a live channel, since a
+  label-triggered run has no "send again") survives only as the fallback for
+  when the replacement flow itself can't be started.
 
 ### Consequences
 
