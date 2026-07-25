@@ -211,6 +211,27 @@ integrationRoutes:
   githubIssueLabeledTriage:
     enabled: true
     agentRef: claude-code-swe-agent
+  # github-issue-labeled-review: applying integration-gateway's configured
+  # review label (charts/agent-controller/values-production.yaml's
+  # integrationGateway.config.githubReviewLabel, "ai-review") to an ISSUE
+  # instead of a PR dispatches here: review the proposal/spec in the issue,
+  # changing nothing. Sibling to githubPrLabeledReview below. Distinguished
+  # from githubIssueLabeledTriage above -- same issues/labeled event -- purely
+  # by match.labelName (the label-pinned route wins the registry's specificity
+  # scoring over the wildcard triage route). The gateway removes the label when
+  # the run ends, so re-applying it re-triggers.
+  #
+  # agentRef is claude-code-swe-agent (same engine as triage/review above).
+  # Because that agent's identityLink.providers is ["claude"], the person who
+  # applied the label must have a linked Claude token for the review to launch.
+  #
+  # Requires the IntegrationRoute CRD on the cluster to carry match.labelName
+  # (the deploy job's "Apply CRDs" step guarantees the field exists -- `helm
+  # upgrade` never updates an existing release's CRDs).
+  githubIssueLabeledReview:
+    enabled: true
+    agentRef: claude-code-swe-agent
+    labelName: ai-review
   # github-pr-labeled-review: applying integration-gateway's configured review
   # label (charts/agent-controller/values-production.yaml's
   # integrationGateway.config.githubReviewLabel, "ai-review") to a PR

@@ -381,12 +381,19 @@ GitHub Issues adapter, actionable ONLY on an explicit label application:
 - Session id is `github:<owner>/<repo>#<issueNumber>` — one session per
   issue, forwarded as `session_id` to `agent-orchestrator`'s existing
   `POST /invoke`.
-- **`issues.labeled` → deterministic dispatch (ADR 0024).** When the
-  gateway's configured trigger label (`GATEWAY_GITHUB_TRIGGER_LABEL`, e.g.
-  `"ai-triage"`) is applied to a GitHub issue, the gateway calls `/invoke`
-  with an `event` descriptor (`{ source: "github", event: "issues",
-  action: "labeled", owner, repo, issueNumber, title, body, senderLogin,
-  labelName }`). A label, not an assignee: GitHub App bot users generally
+- **`issues.labeled` → two triggers on one event, split by label (ADR 0024).**
+  The gateway acts on a labeled issue when the label is either the **trigger
+  label** (`GATEWAY_GITHUB_TRIGGER_LABEL`, e.g. `"ai-triage"`) — triage the
+  issue: investigate and open a PR — or the **review label**
+  (`GATEWAY_GITHUB_REVIEW_LABEL`, e.g. `"ai-review"`, the same label PR review
+  uses) — review the proposal/spec in the issue, changing nothing. Either way
+  the gateway calls `/invoke` with an `event` descriptor (`{ source: "github",
+  event: "issues", action: "labeled", owner, repo, issueNumber, title, body,
+  senderLogin, labelName }`); the `labelName` is what lets the two
+  issues/labeled `IntegrationRoute`s (`github-issue-labeled-triage`,
+  `github-issue-labeled-review`) resolve to different prompts, and whichever
+  label triggered the run is removed once it ends so re-applying it
+  re-triggers. A label, not an assignee: GitHub App bot users generally
   cannot be set as issue assignees (only a small GitHub-owned allowlist, e.g.
   `dependabot[bot]`, gets that special-cased), so a configurable label is
   used instead. If the event matches an installed `IntegrationRoute` CR,
@@ -395,9 +402,11 @@ GitHub Issues adapter, actionable ONLY on an explicit label application:
   `checkIntegrationRoute` graph node) — deterministic, since applying a
   specific label is an unambiguous action rather than free text needing
   intent inference. No matching route falls back to ordinary RAG retrieval
-  over a fallback request string. A sample route (`github`/`issues`/
-  `labeled` → `opencode-swe-agent`) ships gated behind
-  `integrationRoutes.githubIssueLabeledTriage.enabled`.
+  over a fallback request string. Sample routes ship gated behind
+  `integrationRoutes.githubIssueLabeledTriage.enabled` (the wildcard triage
+  route) and `integrationRoutes.githubIssueLabeledReview.enabled` (pinned to
+  the review label, so it wins the registry's specificity scoring over the
+  wildcard triage route).
 - **`pull_request.labeled` → two triggers on one event, split by label.** The
   gateway acts on a labeled PR when the label is either:
   - the **review label** (`GATEWAY_GITHUB_REVIEW_LABEL`, e.g. `"ai-review"`) —
