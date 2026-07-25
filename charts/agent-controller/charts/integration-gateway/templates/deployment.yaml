@@ -154,6 +154,14 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
                   key: {{ .Values.secrets.identityLinkTokenKey }}
+            {{- if .Values.secrets.senderAssertionSecretKey }}
+            - name: GATEWAY_SENDER_ASSERTION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.senderAssertionSecretKey }}
+                  optional: true
+            {{- end }}
             - name: GITHUB_APP_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:

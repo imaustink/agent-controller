@@ -161,7 +161,7 @@ reintroduce the very round trip being removed, so the co-author trailer falls
 back to its `login@users.noreply.github.com` form. GitHub still attributes
 correctly; the attribution just isn't pinned across an account rename.
 
-### 6. Identity is forwarded, not reconstructed
+### 6. Identity is forwarded, not reconstructed — IMPLEMENTED
 
 integration-gateway sends its service token for *authentication* and a
 **signed user assertion** for *identity* — the same pattern
@@ -169,9 +169,27 @@ integration-gateway sends its service token for *authentication* and a
 and for the same stated reason: resolving identity from a shared bearer token
 collapses every user into one subject.
 
-A `GatewayForwardedUserResolver` verifies that assertion, making
-`identity.subject` genuinely per-user on the webhook path and retiring
-`senderLogin` as a side channel.
+**As built**, the assertion is a compact HMAC-SHA256 `payload.signature` pair
+(`x-gateway-user-assertion`) rather than a JWT: both ends live in this repo,
+the only claims needed are a login and an expiry, and hand-rolling it with
+`node:crypto` avoids adding a JWT library to the gateway purely to agree with
+the orchestrator's — the same no-new-dependency precedent as `githubApp.ts`.
+
+With the shared secret configured, `/invoke` accepts a sender login ONLY from
+a verified assertion and ignores the request-body field entirely. Without it,
+the body field is still trusted and BOTH processes warn at startup — chosen so
+upgrading does not silently break an existing deployment, while never leaving
+the weaker mode unannounced.
+
+Rather than rewriting `identity.subject` itself (which would move session
+keys, RBAC scoping and credential keys simultaneously), the verified login
+feeds **principal** resolution: `Identity` gains a `principal` field, resolved
+once in `resolveIdentity` and read everywhere downstream. Entry-point subjects
+remain aliases; durable per-user state keys on the principal. This keeps
+sessions and RBAC on the subject they have always used while credentials
+converge, which is the whole point — and it retires
+`resolveCredentialSubject`, whose per-provider re-derivation was the shape of
+the PR #144 bug.
 
 Entry-point identities then become **aliases of a principal** — a stable
 internal user id — with credentials keyed by principal. `github:<login>` is

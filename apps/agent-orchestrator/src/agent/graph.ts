@@ -12,7 +12,7 @@ import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { SecretKeySelector } from "../k8s/toolrun-launcher.js";
 import type { LocalToolExecutor } from "../local/local-tool-executor.js";
 import type { IdentityLinkPort, IdentityLinkStartResult } from "../identity-link/gateway-client.js";
-import { resolveActorLogin, resolveCredentialSubject } from "../identity-link/credential-subject.js";
+import { resolveActorLogin, resolvePrincipal } from "../identity-link/credential-subject.js";
 import type { IdentityResolver, Identity } from "../rbac/types.js";
 import type { SkillDescriptor, SkillSearchResult, SkillStore } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
@@ -604,6 +604,13 @@ export interface AgentGraphDeps {
  */
 export const ACTOR_LOGIN_ENV = "AGENT_ACTOR_LOGIN";
 
+/**
+ * Providers whose credential is keyed by PRINCIPAL rather than by the
+ * entry-point subject -- i.e. the ones a human re-authorizes by hand and
+ * expects to only do once (docs/adr/0030 §6).
+ */
+const CROSS_ENTRY_POINT_PROVIDERS: ReadonlySet<string> = new Set(["claude", "claude-remote"]);
+
 const PROVIDER_ENV_VAR: Record<string, string> = {
   github: "GITHUB_TOKEN",
   claude: "CLAUDE_CODE_OAUTH_TOKEN",
@@ -814,15 +821,12 @@ async function handleAgentTurnFailure(
       // swallowing it, and log it -- a failure here is otherwise invisible,
       // indistinguishable from success in both the logs and the reply.
       let invalidated = true;
-      // Must clear the record the gate actually READ (canonical for a Claude
-      // provider), or the "expired credential" the run just tripped over
-      // survives and every retry re-reads it.
-      const staleSubject = await resolveCredentialSubject(
-        provider,
-        state.identity.subject,
-        state.senderLogin,
-        deps.identityLinkGateway,
-      );
+      // Must clear the record the gate actually READ, or the "expired
+      // credential" the run just tripped over survives and every retry
+      // re-reads it.
+      const staleSubject = CROSS_ENTRY_POINT_PROVIDERS.has(provider)
+        ? (state.identity.principal ?? state.identity.subject)
+        : state.identity.subject;
       await gateway.invalidate?.(provider, staleSubject).catch((invalidateErr: unknown) => {
         invalidated = false;
         console.error(
@@ -1038,7 +1042,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (!identity) {
         return { error: "unauthorized: could not resolve caller identity" };
       }
-      return { identity };
+      // Resolve the PRINCIPAL once, here, rather than per-provider deeper in
+      // the graph (docs/adr/0030 §6). Doing it at identity time means every
+      // downstream consumer reads one already-decided value instead of each
+      // re-deriving its own -- the re-derivation that let store and wait drift
+      // apart in PR #144.
+      const principal = await resolvePrincipal(identity.subject, state.senderLogin, deps.identityLinkGateway);
+      return { identity: { ...identity, principal } };
     })
     .addNode("checkIntegrationRoute", async (state) => {
       // Deterministic dispatch for a turn whose intent is already
@@ -1346,19 +1356,16 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             error: `agent ${agent.id} requires identity providers (${agent.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
           };
         }
-        // Resolved per provider, INSIDE the loop, not once up front: with
-        // `github` declared ahead of the Claude providers, a link completed
-        // by the `waitForCompletion` below is what makes the canonical
-        // subject resolvable, and a value computed before that link landed
-        // would still be the raw subject. Re-resolving per provider means
-        // the github link established moments ago is visible to `claude` and
-        // `claude-remote` on this very turn.
-        const credentialSubject = await resolveCredentialSubject(
-          provider,
-          state.identity.subject,
-          state.senderLogin,
-          deps.identityLinkGateway,
-        );
+        // The principal for cross-entry-point credentials; the raw subject for
+        // anything scoped to this entry point (docs/adr/0030 §6).
+        //
+        // `github` stays on the raw subject deliberately: a GitHub link is a
+        // property of the specific account that established it, and it is the
+        // very thing principal resolution reads, so keying it by principal
+        // would be circular.
+        const credentialSubject = CROSS_ENTRY_POINT_PROVIDERS.has(provider)
+          ? (state.identity.principal ?? state.identity.subject)
+          : state.identity.subject;
         let existing = await gateway.getToken(provider, credentialSubject);
         console.log(
           "[identity-gate-debug] getToken",
@@ -1802,16 +1809,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               error: `tool ${tool.id} requires identity providers (${tool.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
             };
           }
-          // Same canonical keying as delegateToAgent's gate -- this path only
-          // READS a credential (it never starts a link), so if it derived a
-          // different subject than the gate it would report "not linked" for
-          // an account the user had in fact just linked.
-          const credentialSubject = await resolveCredentialSubject(
-            provider,
-            state.identity.subject,
-            state.senderLogin,
-            deps.identityLinkGateway,
-          );
+          // Same keying as delegateToAgent's gate -- this path only READS a
+          // credential (it never starts a link), so deriving a different
+          // subject than the gate would report "not linked" for an account the
+          // user had in fact just linked.
+          const credentialSubject = CROSS_ENTRY_POINT_PROVIDERS.has(provider)
+            ? (state.identity.principal ?? state.identity.subject)
+            : state.identity.subject;
           const existing = await gateway.getToken(provider, credentialSubject);
           if (!existing) {
             return {

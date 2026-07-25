@@ -232,6 +232,11 @@ secrets:
   identityLinkTokenKey: GATEWAY_IDENTITY_LINK_TOKEN
   githubAppClientSecretKey: GITHUB_APP_CLIENT_SECRET
   identityLinkStateSecretKey: IDENTITY_LINK_STATE_SECRET
+  # Signs the sender assertion sent to agent-orchestrator (docs/adr/0030 §6).
+  # MUST match agent-orchestrator's senderAssertionSecretKey value. Unset (or
+  # absent from the Secret) means the sender login is relayed unsigned and the
+  # orchestrator falls back to trusting it -- both sides log a warning.
+  senderAssertionSecretKey: GATEWAY_SENDER_ASSERTION_SECRET
   # Only read when secrets.create=true.
   githubWebhookSecret: ""
   orchestratorToken: ""

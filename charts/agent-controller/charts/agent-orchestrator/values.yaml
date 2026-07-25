@@ -163,6 +163,11 @@ secrets:
   qdrantApiKeyKey: AGENT_QDRANT_API_KEY
   # Only used when identityLink.enabled=true above.
   identityLinkGatewayTokenKey: IDENTITY_LINK_GATEWAY_TOKEN
+  # Verifies integration-gateway's signed sender assertion (docs/adr/0030 §6).
+  # MUST match that chart's senderAssertionSecretKey value. When the key is
+  # absent from the Secret the orchestrator falls back to trusting the
+  # unsigned request-body login and warns at startup.
+  senderAssertionSecretKey: AGENT_SENDER_ASSERTION_SECRET
   # Only read when secrets.create=true.
   openaiApiKey: ""
   callbackSecret: ""

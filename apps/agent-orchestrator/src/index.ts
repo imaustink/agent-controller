@@ -552,7 +552,16 @@ async function main(): Promise<void> {
     taskCompleter,
     integrationRouteRegistry,
     agentDelegation?.agentChannel,
+    config.senderAssertionSecret,
   );
+  if (!config.senderAssertionSecret) {
+    console.error(
+      "WARNING: AGENT_SENDER_ASSERTION_SECRET is not set -- a webhook turn's sender login is trusted from the request " +
+        "body without verification. It selects the caller's principal, and therefore which stored credentials the run " +
+        "receives (docs/adr/0030). Set it, and integration-gateway's matching GATEWAY_SENDER_ASSERTION_SECRET, to " +
+        "require a signed assertion instead.",
+    );
+  }
 
   if (callbackReceiver) {
     await callbackReceiver.listen(config.callbackPort);

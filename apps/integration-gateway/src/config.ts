@@ -21,6 +21,13 @@ export interface AppConfig {
    * own default, so existing deployments are unaffected.
    */
   githubBaseUrl: string;
+  /**
+   * Shared secret used to sign the sender assertion sent to agent-orchestrator
+   * (docs/adr/0030 §6). Must match the orchestrator's own
+   * AGENT_SENDER_ASSERTION_SECRET. Empty disables signing, in which case the
+   * orchestrator falls back to trusting the unsigned `event.senderLogin`.
+   */
+  senderAssertionSecret: string;
   /** The App/bot's own GitHub login -- events authored by it are ignored (loop prevention). */
   githubBotLogin: string;
   /**
@@ -138,6 +145,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     githubToken: env.GITHUB_TOKEN ?? "",
     githubApiUrl: env.GITHUB_API_URL ?? "https://api.github.com",
     githubBaseUrl: env.GITHUB_BASE_URL ?? "https://github.com",
+    senderAssertionSecret: env.GATEWAY_SENDER_ASSERTION_SECRET ?? "",
     githubBotLogin: env.GATEWAY_GITHUB_BOT_LOGIN ?? "",
     githubTriggerLabel: env.GATEWAY_GITHUB_TRIGGER_LABEL ?? "",
     githubReviewLabel: env.GATEWAY_GITHUB_REVIEW_LABEL ?? "",

@@ -177,6 +177,14 @@ spec:
                   key: {{ .Values.secrets.qdrantApiKeyKey }}
                   optional: true
             {{- end }}
+            {{- if .Values.secrets.senderAssertionSecretKey }}
+            - name: AGENT_SENDER_ASSERTION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "agent-orchestrator.fullname" .) }}
+                  key: {{ .Values.secrets.senderAssertionSecretKey }}
+                  optional: true
+            {{- end }}
             {{- if .Values.identityLink.enabled }}
             - name: IDENTITY_LINK_GATEWAY_TOKEN
               valueFrom:

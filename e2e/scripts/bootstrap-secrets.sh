@@ -47,6 +47,12 @@ rand() { openssl rand -hex 32; }
 # leave every /identity-link call 401ing, which surfaces as "no credential
 # flow ever starts" rather than as an auth error.
 IDENTITY_LINK_TOKEN="e2e-identity-link-token"
+# Also fixed, and for the same reason: the gateway SIGNS the sender assertion
+# with this and the orchestrator VERIFIES with it (docs/adr/0030 §6). Two
+# independently-generated values would make every assertion fail verification,
+# which presents as "the sender login vanished" rather than as a signature
+# error.
+SENDER_ASSERTION_SECRET="e2e-sender-assertion-secret"
 # IDENTITY_LINK_ENCRYPTION_KEY must decode to EXACTLY 32 bytes for AES-256-GCM
 # (decodeEncryptionKey throws at startup otherwise, which surfaces as a
 # crashlooping gateway rather than an obvious config error).
@@ -73,6 +79,7 @@ upsert e2e-integration-gateway-secrets \
   --from-literal=IDENTITY_LINK_ENCRYPTION_KEY="$(key32)" \
   --from-literal=IDENTITY_LINK_STATE_SECRET="$(rand)" \
   --from-literal=GITHUB_APP_CLIENT_SECRET="e2e-not-a-real-secret" \
+  --from-literal=GATEWAY_SENDER_ASSERTION_SECRET="$SENDER_ASSERTION_SECRET" \
   --from-literal=GITHUB_TOKEN="e2e-not-a-real-token"
 
 # claude-code-swe-agent's static secret. The GITHUB_APP_* values are
@@ -88,7 +95,7 @@ if kubectl -n "$NS" get secret agent-orchestrator-secrets >/dev/null 2>&1; then
   # PATCH, not replace: this secret holds a real OPENAI_API_KEY that this
   # script must never overwrite. Only the identity-link token is added.
   kubectl -n "$NS" patch secret agent-orchestrator-secrets \
-    -p "{\"stringData\":{\"IDENTITY_LINK_GATEWAY_TOKEN\":\"$IDENTITY_LINK_TOKEN\"}}" >/dev/null
+    -p "{\"stringData\":{\"IDENTITY_LINK_GATEWAY_TOKEN\":\"$IDENTITY_LINK_TOKEN\",\"AGENT_SENDER_ASSERTION_SECRET\":\"$SENDER_ASSERTION_SECRET\"}}" >/dev/null
   echo "  ✓ agent-orchestrator-secrets exists (OPENAI_API_KEY untouched; added IDENTITY_LINK_GATEWAY_TOKEN)"
 else
   cat >&2 <<EOF

@@ -14,6 +14,8 @@
  * in docs/integrations-gateway.md -- push-based delivery is a documented
  * follow-up, not built in this phase.
  */
+
+import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "./sender-assertion.js";
 export interface OrchestratorInvokeResult {
   status: "succeeded" | "failed" | "timed_out";
   result?: string;
@@ -35,6 +37,12 @@ export interface OrchestratorInvokeResult {
 
 export interface OrchestratorClientOptions {
   baseUrl: string;
+  /**
+   * Signs the sender assertion accompanying each `/invoke` (docs/adr/0030 §6).
+   * Absent -> no assertion header is sent and the orchestrator falls back to
+   * the unsigned `event.senderLogin`.
+   */
+  senderAssertionSecret?: string;
   /**
    * Either a static bearer token, or a function resolving one on demand
    * (e.g. `OidcTokenProvider.getToken`, which caches and transparently
@@ -195,6 +203,15 @@ export class OrchestratorClient {
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${await this.resolveToken()}`,
+        // Signed separately from the bearer token on purpose: the token
+        // authenticates THIS GATEWAY, and says nothing about which human
+        // triggered the event. The login selects the caller's principal, and
+        // therefore which stored credentials the run receives, so it has to
+        // be something the orchestrator can verify rather than a body field
+        // any holder of the token could set.
+        ...(this.options.senderAssertionSecret && typeof event?.senderLogin === "string"
+          ? { [SENDER_ASSERTION_HEADER]: mintSenderAssertion(this.options.senderAssertionSecret, event.senderLogin) }
+          : {}),
       },
       body: JSON.stringify({
         request,

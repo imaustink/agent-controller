@@ -126,7 +126,7 @@ describe("buildAgentGraph", () => {
     const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
 
     expect(final.error).toBeUndefined();
-    expect(final.identity).toEqual({ subject: "alice", roles: ["reader"] });
+    expect(final.identity).toEqual({ subject: "alice", roles: ["reader"], principal: "alice" });
     expect(final.selectedSkill?.id).toBe("recipe-publisher-skill");
     expect(final.selectedTool?.id).toBe("recipe-scraper");
     expect(final.result).toEqual({ title: "Pancakes" });
@@ -301,7 +301,7 @@ describe("buildAgentGraph", () => {
       forwardedUserToken: "alices-signed-jwt",
     });
 
-    expect(final.identity).toEqual({ subject: "openwebui:alice", roles: ["reader"] });
+    expect(final.identity).toEqual({ subject: "openwebui:alice", roles: ["reader"], principal: "openwebui:alice" });
     expect(forwardedUserIdentityResolver.resolve).toHaveBeenCalledWith("alices-signed-jwt");
     expect(identityResolver.resolve).not.toHaveBeenCalled();
   });
@@ -317,7 +317,7 @@ describe("buildAgentGraph", () => {
       authToken: "shared-static-token",
     });
 
-    expect(final.identity).toEqual({ subject: "openwebui", roles: ["reader"] });
+    expect(final.identity).toEqual({ subject: "openwebui", roles: ["reader"], principal: "openwebui" });
     expect(forwardedUserIdentityResolver.resolve).not.toHaveBeenCalled();
   });
 
