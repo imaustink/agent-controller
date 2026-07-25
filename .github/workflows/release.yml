@@ -276,6 +276,12 @@ jobs:
       github.repository == 'imaustink/agent-controller' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
+    # Override the workflow-level permissions (contents: read, packages: write):
+    # this job never pushes packages, but it does need `issues: write` so the
+    # rollback-on-failure step can open the ai-triage ticket.
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -395,12 +401,14 @@ jobs:
       # deploy fails on a missing namespace rather than bootstrapping it. A
       # no-op once it exists.
       - name: Helm upgrade agent-controller
+        id: upgrade_agent
         run: |
           helm upgrade --install agent-controller charts/agent-controller \
             -f charts/agent-controller/values-production.yaml \
             -n controller-agent --create-namespace --timeout 5m
 
       - name: Helm upgrade community-components
+        id: upgrade_community
         run: |
           helm upgrade --install community-components charts/community-components \
             -f charts/community-components/values-production.yaml \
@@ -411,6 +419,21 @@ jobs:
       # by core-controller and always pull `:latest` -- no restart needed.
       # Only the long-running Deployments need one to pick up a new image.
       - name: Rollout restart
+        id: rollout
         run: |
           kubectl rollout restart deploy/agent-orchestrator deploy/core-controller deploy/agent-controller-integration-gateway -n controller-agent
           kubectl rollout status deploy/agent-orchestrator deploy/core-controller deploy/agent-controller-integration-gateway -n controller-agent --timeout=5m
+
+      # If any deploy step above failed, roll the affected workloads back to
+      # their previous working revision and open an `ai-triage` ticket with the
+      # full failure diagnostics. `if: failure()` so this only runs on a bad
+      # rollout; the job still ends red (a prior step failed) so the failure is
+      # never silently swallowed -- the ticket is the durable, actionable record.
+      - name: Rollback & open ai-triage ticket on failure
+        if: failure()
+        env:
+          UPGRADE_AGENT_OUTCOME: ${{ steps.upgrade_agent.outcome }}
+          UPGRADE_COMMUNITY_OUTCOME: ${{ steps.upgrade_community.outcome }}
+          ROLLOUT_OUTCOME: ${{ steps.rollout.outcome }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/rollback-deploy.sh
