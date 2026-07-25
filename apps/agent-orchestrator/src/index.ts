@@ -513,6 +513,7 @@ async function main(): Promise<void> {
           agentChannel: agentDelegation.agentChannel,
           agentTopK: config.agentTopK,
           agentRunTimeoutSeconds: config.agentRunTimeoutSeconds,
+          agentIdleTimeoutSeconds: config.agentIdleTimeoutSeconds,
           callbackSecretRef: { name: config.callbackSecretRefName ?? "", key: config.callbackSecretRefKey },
         }
       : {}),
@@ -585,8 +586,43 @@ async function main(): Promise<void> {
     agentWatch?.stop();
     integrationRouteWatch.stop();
     if (skillReindexTimer) clearTimeout(skillReindexTimer);
-    const closers: Promise<void>[] = [invokeServer.close()];
-    if (callbackReceiver) closers.push(callbackReceiver.close());
+
+    // Phase 1 -- stop accepting new work, then let in-flight requests finish.
+    // This MUST complete before the transports below are torn down: an
+    // in-flight chat turn is parked on a NATS subscription (`awaitReply`), so
+    // draining that connection in the same step -- as this used to, via a
+    // single `Promise.all` over every closer -- destroys the channel the
+    // request is waiting on and fails a perfectly healthy agent run. That is
+    // what produced a fabricated "produced no reply within <configured
+    // bound>ms" on AgentRun 0f97aa3d (run 20:15:36Z, rollout 53s later at
+    // 20:16:29Z, run itself succeeded at 20:19:30Z).
+    //
+    // Bounded, because k8s SIGKILLs at terminationGracePeriodSeconds (30s)
+    // regardless: past the deadline we stop waiting and tear down anyway, so
+    // a turn that outlives the grace period at least fails the same way it
+    // would have, rather than blocking the other closers entirely.
+    const httpDrained = Promise.all([
+      invokeServer.close(),
+      ...(callbackReceiver ? [callbackReceiver.close()] : []),
+    ]).then(
+      () => "drained" as const,
+      (err: unknown) => {
+        console.error("error draining HTTP servers during shutdown:", err);
+        return "drained" as const;
+      },
+    );
+    const drainOutcome = await Promise.race([
+      httpDrained,
+      new Promise<"deadline">((resolve) => setTimeout(() => resolve("deadline"), config.shutdownDrainMs)),
+    ]);
+    if (drainOutcome === "deadline") {
+      console.error(
+        `in-flight requests still running after ${config.shutdownDrainMs}ms; closing transports anyway (they will report a lost channel)`,
+      );
+    }
+
+    // Phase 2 -- nothing should still be waiting on these.
+    const closers: Promise<void>[] = [];
     if (config.natsUrl) {
       // NatsJobReceiver.close() drains the connection.
       closers.push((jobResultReceiver as NatsJobReceiver).close());

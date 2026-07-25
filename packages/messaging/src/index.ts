@@ -8,6 +8,7 @@ export {
   type AgentDownMessage,
   type AgentSubjects,
 } from "./agent-protocol.js";
+export { NATS_RECONNECT_OPTIONS } from "./nats-options.js";
 export type { Sink } from "./sink.js";
 export { JobEmitter, type JobEmitterOptions } from "./emitter.js";
 export { StdoutSink } from "./stdout-sink.js";

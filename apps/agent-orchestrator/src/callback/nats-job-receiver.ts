@@ -1,5 +1,5 @@
 import { connect, JSONCodec, type NatsConnection, type Subscription } from "nats";
-import { EventSchema, type Event } from "@controller-agent/messaging";
+import { EventSchema, NATS_RECONNECT_OPTIONS, type Event } from "@controller-agent/messaging";
 import type { JobResultReceiver, ProgressHandler } from "./receiver.js";
 
 type PendingJob = {
@@ -40,7 +40,7 @@ export class NatsJobReceiver implements JobResultReceiver {
    * receiver.
    */
   static async connect(natsUrl: string, prefix = "callbacks"): Promise<NatsJobReceiver> {
-    const nc = await connect({ servers: natsUrl });
+    const nc = await connect({ servers: natsUrl, ...NATS_RECONNECT_OPTIONS });
     const receiver = new NatsJobReceiver(nc, prefix);
     receiver.sub = nc.subscribe(`${prefix}.*`);
     void receiver.consume(receiver.sub);

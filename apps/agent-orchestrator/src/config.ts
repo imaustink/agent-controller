@@ -23,13 +23,33 @@ export interface AppConfig {
   /** Max candidate agents retrieved per request, before delegate selection (mirrors skillTopK). */
   agentTopK: number;
   /**
-   * Bounds an AgentRun's activeDeadlineSeconds; longer than a tool's default
-   * since an agent may wait on a human or run a multi-step coding task.
-   * Also drives how long the orchestrator's NATS `awaitReply` waits for that
-   * same run's reply (graph.ts) — the two must stay in the same ballpark, or
-   * whichever is shorter cuts an otherwise-healthy run off early.
+   * Bounds an AgentRun's activeDeadlineSeconds — the only wall-clock ceiling
+   * on a run, and a backstop against a wedged pod holding node resources
+   * rather than a realistic task budget. A real coding task (clone, run
+   * Claude, open a PR, iterate on review feedback) can legitimately take
+   * hours, so this is deliberately generous; what actually ends a stuck run
+   * is `agentIdleTimeoutSeconds` below. No longer coupled to the
+   * orchestrator's own wait — see `agentAwaitReplyIdleTimeoutMs` in graph.ts.
    */
   agentRunTimeoutSeconds: number;
+  /**
+   * How long an agent may go completely silent — no reply, no progress, no
+   * event, no warning — before the orchestrator stops waiting on its turn.
+   * Bounds SILENCE, not total duration: any up-message resets it, so a run
+   * that narrates is never cut off however long it takes. This, not
+   * `agentRunTimeoutSeconds`, is what actually ends a stuck run; the wall-clock
+   * ceiling is only a backstop for a pod that is wedged AND still chattering.
+   * See `DEFAULT_IDLE_TIMEOUT_MS` in agents/nats-agent-channel.ts for why 10
+   * minutes is a safe floor given real agent narration cadences.
+   */
+  agentIdleTimeoutSeconds: number;
+  /**
+   * On SIGTERM, how long to let in-flight HTTP requests finish before tearing
+   * down the NATS/Redis connections they depend on. Must stay under the pod's
+   * `terminationGracePeriodSeconds` (30s today) or k8s SIGKILLs mid-drain and
+   * the wait buys nothing.
+   */
+  shutdownDrainMs: number;
   /**
    * Sliding idle TTL (seconds) for conversation-session records — how long
    * a chat's active skill is remembered between turns (docs/adr/0012).
@@ -176,7 +196,9 @@ export const config: AppConfig = {
   selectionModel: process.env.AGENT_SELECTION_MODEL ?? "gpt-4o-2024-08-06",
   skillTopK: num(process.env.AGENT_SKILL_TOP_K, 3),
   agentTopK: num(process.env.AGENT_TOP_K, 3),
-  agentRunTimeoutSeconds: num(process.env.AGENT_RUN_TIMEOUT_SECONDS, 3600),
+  agentRunTimeoutSeconds: num(process.env.AGENT_RUN_TIMEOUT_SECONDS, 28800), // 8h wall-clock backstop
+  agentIdleTimeoutSeconds: num(process.env.AGENT_IDLE_TIMEOUT_SECONDS, 600), // 10m of silence
+  shutdownDrainMs: num(process.env.AGENT_SHUTDOWN_DRAIN_MS, 25_000), // under the 30s grace period
   sessionTtlSeconds: num(process.env.AGENT_SESSION_TTL_SECONDS, 1800),
   sessionMaxEntries: num(process.env.AGENT_SESSION_MAX_ENTRIES, 1000),
   redisUrl: process.env.AGENT_REDIS_URL,

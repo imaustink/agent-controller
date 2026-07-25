@@ -402,10 +402,18 @@ export class InvokeServer {
     });
   }
 
+  /**
+   * Stops accepting new connections and resolves once in-flight requests have
+   * finished. Idle keep-alive connections are closed explicitly — without
+   * that, `server.close()` waits on sockets that are holding no request at
+   * all, and a shutdown that should take milliseconds instead runs out the
+   * pod's termination grace period.
+   */
   close(): Promise<void> {
     return new Promise((resolve, reject) => {
       if (!this.server) return resolve();
       this.server.close((err) => (err ? reject(err) : resolve()));
+      this.server.closeIdleConnections();
     });
   }
 
