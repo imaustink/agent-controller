@@ -32,13 +32,15 @@ claudeCodeSweAgent:
   model: ""
   identityLink:
     enabled: true
-    # SAME ORDER AS PRODUCTION, and the order is load-bearing: `github` must
-    # resolve first because its link is what supplies the canonical
-    # `github:<login>` subject the two Claude providers are keyed under
-    # (ADR 0029). Reordering silently reverts cross-flow credential sharing to
-    # per-entry-point keying — the bug this whole suite exists to pin.
+    # Mirrors production: only the credentials a run actually needs.
+    #
+    # `github` is absent by design (ADR 0030). The canonical subject and the
+    # actor login are now resolved by a read-only lookup independent of this
+    # list, so declaring github here would only re-provision a credential this
+    # agent never uses -- the conflation that caused the production 401. Order
+    # is no longer load-bearing either: the pre-flight assesses every provider
+    # rather than short-circuiting on the first gap.
     providers:
-      - github
       - claude
       - claude-remote
 

@@ -114,3 +114,19 @@ export async function withPortForward<T>(
     child.kill();
   }
 }
+
+/**
+ * `spec.secretEnv` entry NAMES on an AgentRun CR.
+ *
+ * The CR is agent-orchestrator's OUTPUT -- what the authorization pre-flight
+ * decided to inject. Asserting here rather than on the rendered Job keeps this
+ * scoped to the component under test: turning `spec.secretEnv` into container
+ * env is core-controller's job, with its own tests, and conflating the two
+ * makes an orchestrator spec fail for a controller reason.
+ *
+ * Names only, never values -- same discipline as {@link jobEnvNames}.
+ */
+export async function agentRunSecretEnvNames(agentRunName: string): Promise<string[]> {
+  const cr = await kubectlJson<{ spec?: { secretEnv?: { name: string }[] } }>(["get", "agentrun", agentRunName]);
+  return (cr.spec?.secretEnv ?? []).map((e) => e.name);
+}

@@ -12,7 +12,7 @@ import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { SecretKeySelector } from "../k8s/toolrun-launcher.js";
 import type { LocalToolExecutor } from "../local/local-tool-executor.js";
 import type { IdentityLinkPort, IdentityLinkStartResult } from "../identity-link/gateway-client.js";
-import { resolveCredentialSubject } from "../identity-link/credential-subject.js";
+import { resolveActorLogin, resolveCredentialSubject } from "../identity-link/credential-subject.js";
 import type { IdentityResolver, Identity } from "../rbac/types.js";
 import type { SkillDescriptor, SkillSearchResult, SkillStore } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
@@ -595,6 +595,15 @@ export interface AgentGraphDeps {
  * to the env var name its linked token is injected as (AgentLaunchOptions'
  * secretEnv, agentrun-launcher.ts).
  */
+/**
+ * Carries the caller's resolved GitHub login into the run (docs/adr/0030 §5).
+ *
+ * Not a credential -- a login is public -- but it travels the same secretEnv
+ * path as the credentials so the agent reads all actor facts from one place.
+ * Its presence is what tells the agent it must NOT resolve identity itself.
+ */
+export const ACTOR_LOGIN_ENV = "AGENT_ACTOR_LOGIN";
+
 const PROVIDER_ENV_VAR: Record<string, string> = {
   github: "GITHUB_TOKEN",
   claude: "CLAUDE_CODE_OAUTH_TOKEN",
@@ -1306,6 +1315,30 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // pend, else accumulate) handling as before; the loop just repeats it
       // per provider instead of doing it once.
       let identitySecretEnv: { name: string; value: string }[] | undefined;
+      // Batch pre-flight accumulators (docs/adr/0030). NOTHING in this loop
+      // returns early for a missing/unstartable provider any more: every
+      // declared provider is assessed, and the caller is told about all of
+      // them in one message. That is what makes provider ORDER stop mattering
+      // -- previously the first gap ended the turn, so a failure in an
+      // unrelated provider could prevent a later one from ever being reached.
+      const pendingLinks: {
+        provider: string;
+        label: string;
+        linkUrlText: string;
+        surfacedLive: boolean;
+        pending: NonNullable<AgentState["pendingIdentityLink"]>;
+      }[] = [];
+      const failedToStart: string[] = [];
+      let actorLoginFromLoop: string | undefined;
+      /**
+       * The caller's GitHub login, read off their resolved `github` link.
+       *
+       * Deliberately taken from the link record rather than a `/user` call:
+       * the login is already stored there, so the orchestrator needs neither
+       * an API round trip nor the GitHub App credentials to know it. This is
+       * what lets the agent stop calling `/user` itself (docs/adr/0030 §5),
+       * which is the call that was returning 401 in production.
+       */
       for (const provider of agent.identityProviders ?? []) {
         const gateway = identityGatewayFor(provider, deps);
         if (!gateway) {
@@ -1366,10 +1399,15 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               return null;
             });
           if (!started) {
-            const startLabel = PROVIDER_LABEL[provider] ?? provider;
-            return {
-              result: `I couldn't start the one-time ${startLabel} account-linking step just now. Please try again in a moment -- re-apply the label or send any message and I'll retry.`,
-            };
+            // Record and CONTINUE rather than ending the turn (docs/adr/0030).
+            // Short-circuiting here made provider order load-bearing: a
+            // github start failure ended the turn before `claude`/
+            // `claude-remote` were ever evaluated, so a GitHub OAuth outage
+            // blocked Claude authorization entirely. Collecting instead means
+            // every provider is assessed and the user is told about all of
+            // them at once.
+            failedToStart.push(PROVIDER_LABEL[provider] ?? provider);
+            continue;
           }
           const label = PROVIDER_LABEL[provider] ?? provider;
           const linkUrlText = linkPromptText(started, label);
@@ -1435,12 +1473,17 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             // fire-and-forget triage path (no `progressListener` -- the link
             // reaches the user ONLY in `result`, posted as an issue comment)
             // is unchanged: it still prints the full prompt here.
-            const result = state.progressListener
-              ? `I haven't received your ${label} account link yet. Send any message once you're done and I'll continue.`
-              : `To continue, please ${linkUrlText}. This is a one-time step -- send any message once you're done.`;
-            return {
-              result,
-              pendingIdentityLink: {
+            // Collected, not returned (docs/adr/0030's batch pre-flight).
+            // Returning here meant a caller with N unlinked providers spent N
+            // separate triggers, each one discovering the next gap. Every
+            // provider's link is started on THIS turn and presented together
+            // below, so one round trip covers all of them.
+            pendingLinks.push({
+              provider,
+              label,
+              linkUrlText,
+              surfacedLive: Boolean(state.progressListener),
+              pending: {
                 agentId: agent.id,
                 provider,
                 flow: started.flow,
@@ -1455,10 +1498,16 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
                 // that finally notices completion happens to carry.
                 request: state.request,
               },
-              identityLinkPending: true,
-            };
+            });
+            continue;
           }
         }
+        // Capture the login off whichever way this credential arrived. On a
+        // streaming turn it lands via waitForCompletion, so the standalone
+        // lookup below would miss it -- but that lookup is still needed for
+        // Agents that do NOT declare `github` at all (docs/adr/0030).
+        if (provider === "github" && existing.githubLogin) actorLoginFromLoop = existing.githubLogin;
+
         const envVarName = PROVIDER_ENV_VAR[provider];
         if (!envVarName) {
           return { error: `agent ${agent.id} declares unsupported identity provider "${provider}"` };
@@ -1490,9 +1539,85 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           }
         }
       }
+      // ── Batch pre-flight verdict (docs/adr/0030) ────────────────────────
+      // One decision point for the whole provider set, reached only after
+      // every provider has been assessed.
+      if (pendingLinks.length > 0 || failedToStart.length > 0) {
+        const parts: string[] = [];
+        if (pendingLinks.length > 0) {
+          // Anything already surfaced live via progressListener is not
+          // repeated here -- otherwise a streaming caller renders the same
+          // link twice (the "doubled up" prompt).
+          const toPrint = pendingLinks.filter((l) => !l.surfacedLive);
+          if (toPrint.length === 1) {
+            parts.push(`To continue, please ${toPrint[0]!.linkUrlText}. This is a one-time step -- send any message once you're done.`);
+          } else if (toPrint.length > 1) {
+            parts.push(
+              `To continue, I need you to link ${toPrint.length} accounts (one-time). Please ${toPrint
+                .map((l) => l.linkUrlText)
+                .join(", and ")}. Send any message once you're done.`,
+            );
+          } else {
+            parts.push(
+              pendingLinks.length === 1
+                ? `I haven't received your ${pendingLinks[0]!.label} account link yet. Send any message once you're done and I'll continue.`
+                : `I haven't received your ${pendingLinks.map((l) => l.label).join(" and ")} account links yet. Send any message once you're done and I'll continue.`,
+            );
+          }
+        }
+        if (failedToStart.length > 0) {
+          // Reported ALONGSIDE the links rather than instead of them: a
+          // provider whose start failed must not hide the ones that
+          // succeeded, which is exactly the coupling ADR 0030 removes.
+          //
+          // "also" only when something precedes it -- when every provider
+          // failed to start there is no preceding clause, and the message
+          // has to stand on its own.
+          const labels = failedToStart.join(" and ");
+          parts.push(
+            parts.length > 0
+              ? `I also couldn't start the ${labels} linking step just now -- try again in a moment and I'll retry that part.`
+              : `I couldn't start the one-time ${labels} account-linking step just now. Please try again in a moment -- re-apply the label or send any message and I'll retry.`,
+          );
+        }
+
+        // `pendingIdentityLink` still carries ONE entry: it is the resume
+        // anchor that checkPendingIdentityLink, the terminal /invoke record
+        // and integration-gateway's waitAndResume all key off, and widening
+        // that contract is a separate change. Re-entering the gate re-assesses
+        // every provider anyway, so whichever links the user completed are
+        // resolved on the next turn and only genuinely-missing ones re-prompt.
+        const anchor = pendingLinks[0];
+        return {
+          result: parts.join(" "),
+          ...(anchor ? { pendingIdentityLink: anchor.pending, identityLinkPending: true } : {}),
+        };
+      }
+
+      // ── Sealed actor context (docs/adr/0030 §5) ─────────────────────────
+      // The agent receives WHO the caller is, resolved here, so it never
+      // performs identity lookups of its own. `identityDelegation.ts` was
+      // calling GitHub's /user with the injected token and failing 401; with
+      // this present it skips that call entirely, so the failure mode is
+      // removed by construction rather than debugged.
+      //
+      // Login only, no numeric id: the id would require the /user round trip
+      // this exists to eliminate, and the co-author trailer degrades to the
+      // login-only form without it.
+      const resolvedActorLogin =
+        actorLoginFromLoop ??
+        (await resolveActorLogin(state.identity.subject, state.senderLogin, deps.identityLinkGateway));
+      if (resolvedActorLogin) {
+        identitySecretEnv = [...(identitySecretEnv ?? []), { name: ACTOR_LOGIN_ENV, value: resolvedActorLogin }];
+      }
+
       console.log(
         "[identity-gate-debug] pre-launch",
-        JSON.stringify({ agentId: agent.id, hasIdentitySecretEnv: Boolean(identitySecretEnv) }),
+        JSON.stringify({
+          agentId: agent.id,
+          hasIdentitySecretEnv: Boolean(identitySecretEnv),
+          actorLogin: resolvedActorLogin ?? null,
+        }),
       );
 
       const runId = randomUUID();

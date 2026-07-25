@@ -30,6 +30,36 @@ export function canonicalSubjectForLogin(login: string): string {
 }
 
 /**
+ * The caller's GitHub login, or `undefined` if none can be established.
+ *
+ * Deliberately independent of an Agent's `identityProviders` (docs/adr/0030):
+ * knowing WHO the caller is and provisioning them a GitHub *credential* are
+ * different concerns, and conflating them is what forced `claude-code-swe-agent`
+ * to declare the `github` provider purely to obtain a mapping -- which
+ * activated the delegated-write path and produced a production 401. This is a
+ * read-only lookup with no side effects: it never starts a link.
+ *
+ * Same two verified sources as {@link resolveCredentialSubject}: a
+ * signature-verified webhook's sender, or a link the caller established by
+ * proving control of the account.
+ */
+export async function resolveActorLogin(
+  rawSubject: string,
+  senderLogin: string | undefined,
+  githubGateway: Pick<IdentityLinkPort, "getToken"> | undefined,
+): Promise<string | undefined> {
+  if (senderLogin) return senderLogin;
+  if (!githubGateway) return undefined;
+  try {
+    return (await githubGateway.getToken("github", rawSubject))?.githubLogin;
+  } catch {
+    // A failed lookup must not fail the turn -- the agent simply falls back
+    // to its own resolution, exactly as before this existed.
+    return undefined;
+  }
+}
+
+/**
  * Resolves the subject a given provider's credential is stored under.
  *
  * The Claude credentials (`claude`, `claude-remote`) are the ones a human

@@ -1838,7 +1838,13 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
       githubAgent.agentRunTemplate,
       expect.any(String),
-      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }] }),
+      expect.objectContaining({ secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ] }),
     );
     expect(final.identityLinkPending).toBeFalsy();
     expect(final.pendingIdentityLink).toBeUndefined();
@@ -1956,7 +1962,13 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       githubAgent.agentRunTemplate,
       expect.any(String),
       expect.objectContaining({
-        secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }],
+        secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ],
         goal: "triage and resolve this issue",
       }),
     );
@@ -2031,7 +2043,13 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
       githubAgent.agentRunTemplate,
       expect.any(String),
-      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }] }),
+      expect.objectContaining({ secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ] }),
     );
     expect(final.pendingIdentityLink).toBeUndefined();
     expect(final.agentRunId).toBeDefined();
@@ -2204,7 +2222,13 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
       githubAgent.agentRunTemplate,
       expect.any(String),
-      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }] }),
+      expect.objectContaining({ secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ] }),
     );
     expect(final.pendingIdentityLink).toBeUndefined();
     expect(final.agentRunId).toBeDefined();
@@ -2982,5 +3006,110 @@ describe("buildAgentGraph canonical credential subject (cross-flow Claude creden
     // A grant against the raw subject would write refreshed credentials to a
     // record nothing reads, and the shared one would die on the next refresh.
     expect(createWritebackGrant).toHaveBeenCalledWith("github:imaustink", expect.any(Number));
+  });
+});
+
+describe("buildAgentGraph batch authorization pre-flight (docs/adr/0030)", () => {
+  const twoProviderAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    identityProviders: ["github", "claude"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  function preflightDeps(github: Partial<IdentityLinkPort>, claude: Partial<IdentityLinkPort>) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: twoProviderAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([twoProviderAgent]),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector: { select: vi.fn().mockResolvedValue({ type: "agent", agent: twoProviderAgent }) },
+      agentChannel: {
+        awaitReply: vi.fn().mockResolvedValue({ message: "done", final: true, narration: [] } satisfies AgentTurnResult),
+        sendPrompt: vi.fn(),
+        close: vi.fn(),
+      },
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      identityLinkGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue(undefined), ...github } as IdentityLinkPort,
+      claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue(undefined), ...claude } as IdentityLinkPort,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+  }
+
+  const startsOk = (url: string) => vi.fn().mockResolvedValue({ flow: "authcode" as const, authorizeUrl: url, expiresInSeconds: 600 });
+
+  it("starts EVERY missing provider's link on one turn and prompts for them together", async () => {
+    const deps = preflightDeps(
+      { start: startsOk("https://github.example/auth") },
+      { start: startsOk("https://claude.example/auth") },
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // Both started on THIS turn. Before ADR 0030 the gate returned after the
+    // first gap, so the second provider's link was not even attempted and the
+    // user needed a separate trigger to discover it.
+    expect(deps.identityLinkGateway!.start).toHaveBeenCalled();
+    expect(deps.claudeAuthGateway!.start).toHaveBeenCalled();
+    expect(final.result).toMatch(/2 accounts/i);
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
+  it("does not let one provider's start failure hide another's link", async () => {
+    // The exact production coupling ADR 0030 removes: `github` failing to
+    // start ended the turn before `claude` was evaluated, so a GitHub OAuth
+    // failure blocked Claude authorization entirely.
+    const deps = preflightDeps(
+      { start: vi.fn().mockRejectedValue(new Error("github oauth down")) },
+      { start: startsOk("https://claude.example/auth") },
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(deps.claudeAuthGateway!.start).toHaveBeenCalled();
+    expect(final.result).toMatch(/claude\.example\/auth/);
+    expect(final.result).toMatch(/couldn't start the GitHub/i);
+    // Still parks a resume anchor, so finishing the Claude link resumes.
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink?.provider).toBe("claude");
+  });
+
+  it("reads as a standalone message when EVERY provider failed to start", async () => {
+    const deps = preflightDeps(
+      { start: vi.fn().mockRejectedValue(new Error("down")) },
+      { start: vi.fn().mockRejectedValue(new Error("down")) },
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // No preceding clause, so it must not open with "I also".
+    expect(final.result).not.toMatch(/^I also/);
+    expect(final.result).toMatch(/couldn't start the one-time/i);
+    expect(final.identityLinkPending).toBeFalsy();
+  });
+
+  it("injects the actor login from the github link, so the agent never resolves identity itself", async () => {
+    const deps = preflightDeps(
+      { getToken: vi.fn().mockResolvedValue({ token: "gho_t", githubLogin: "Imaustink" }) },
+      { getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01" }) },
+    );
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as {
+      secretEnv?: { name: string; value: string }[];
+    };
+    // Taken verbatim off the link record -- no /user round trip, which is the
+    // call that was returning 401 in production.
+    expect(launched.secretEnv).toContainEqual({ name: "AGENT_ACTOR_LOGIN", value: "Imaustink" });
   });
 });

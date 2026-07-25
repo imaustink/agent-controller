@@ -16,6 +16,18 @@ export interface AgentToolConfig {
    */
   githubToken: string;
   /**
+   * The caller's GitHub login, resolved by agent-orchestrator's authorization
+   * pre-flight and injected as `AGENT_ACTOR_LOGIN` (docs/adr/0030 §5).
+   *
+   * When set, this agent MUST NOT resolve identity itself. The orchestrator
+   * already established who the caller is before launching this run, and the
+   * `/user` lookup that used to happen here failed with 401 in production --
+   * a call this agent had no reason to make. Empty string means the
+   * orchestrator did not supply one (no `github` provider on this Agent), in
+   * which case the legacy lookup still applies.
+   */
+  actorLogin: string;
+  /**
    * GitHub App credentials, used instead of `githubToken` when all three are
    * set: a short-lived installation access token is minted per run (see
    * @controller-agent/github-app-auth) rather than using a long-lived static
@@ -115,6 +127,7 @@ function normalizePem(value: string | undefined): string {
 export function loadToolConfig(env: NodeJS.ProcessEnv = process.env): AgentToolConfig {
   return {
     githubToken: env.GITHUB_TOKEN ?? "",
+    actorLogin: env.AGENT_ACTOR_LOGIN ?? "",
     githubAppId: env.GITHUB_APP_ID ?? "",
     githubAppPrivateKey: normalizePem(env.GITHUB_APP_PRIVATE_KEY),
     githubAppInstallationId: env.GITHUB_APP_INSTALLATION_ID ?? "",
