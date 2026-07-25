@@ -7,8 +7,17 @@ import { kubectl } from "./k8s.js";
  * under an unexpected key.
  */
 async function redisCli(args: string[]): Promise<string> {
-  const pod = (await kubectl(["get", "pods", "-l", "app=agent-orchestrator-redis", "-o", "name"])).trim().split("\n")[0];
-  if (!pod) throw new Error("e2e: no agent-orchestrator-redis pod found");
+  // `app.kubernetes.io/name`, not `app` -- the chart uses the standard
+  // recommended labels, and the obvious-looking `app=` selector silently
+  // matches nothing (kubectl exits 0 with empty output, so it reads as "no
+  // Redis" rather than "wrong selector").
+  const pod = (
+    await kubectl(["get", "pods", "-l", "app.kubernetes.io/name=agent-orchestrator-redis", "-o", "name"])
+  )
+    .trim()
+    .split("\n")
+    .filter(Boolean)[0];
+  if (!pod) throw new Error("e2e: no agent-orchestrator-redis pod found (label app.kubernetes.io/name=agent-orchestrator-redis)");
   return (await kubectl(["exec", pod.replace("pod/", ""), "--", "redis-cli", ...args])).trim();
 }
 
