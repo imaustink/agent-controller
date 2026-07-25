@@ -2676,5 +2676,36 @@ describe("buildAgentGraph delegation with multiple identityProviders", () => {
     // not a thing the human can do -- re-applying the label is.
     expect(final.result).toMatch(/re-apply the label/i);
   });
+
+  // Telling someone to retry only helps if the stale record is actually gone;
+  // otherwise the next attempt resolves the same dead credential and fails
+  // identically, forever.
+  it("does not promise that a retry will work when the stale credential could not be cleared", async () => {
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"stale-login-blob"}' }),
+      invalidate: vi.fn().mockRejectedValue(new Error("claude-auth invalidate (login) failed: 502")),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi
+        .fn()
+        .mockRejectedValue(new AgentTurnFailedError("claude_remote_auth_expired", "credentials look expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = multiProviderDeps({
+      claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-fine" }) },
+      claudeRemoteGateway,
+      agentChannel,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).toMatch(/couldn't clear the stored credential/i);
+    expect(final.result).not.toMatch(/re-apply the label/i);
+  });
 });
 

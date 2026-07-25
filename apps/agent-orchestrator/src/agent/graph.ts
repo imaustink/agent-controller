@@ -680,7 +680,20 @@ async function handleAgentTurnFailure(
       !declaredProviders || declaredProviders.includes(mapped) ? mapped : (declaredProviders[0] ?? mapped);
     const gateway = identityGatewayFor(provider, deps);
     if (gateway) {
-      await gateway.invalidate?.(provider, state.identity.subject).catch(() => {});
+      // Whether the stale record was actually DELETED decides which advice is
+      // honest. Invalidation is what makes the next attempt prompt for a fresh
+      // link; if it silently failed, "try again" sends the user into a loop
+      // that repeats this exact failure forever, because `getToken` keeps
+      // finding the same dead credential. So track the outcome instead of
+      // swallowing it, and log it -- a failure here is otherwise invisible,
+      // indistinguishable from success in both the logs and the reply.
+      let invalidated = true;
+      await gateway.invalidate?.(provider, state.identity.subject).catch((invalidateErr: unknown) => {
+        invalidated = false;
+        console.error(
+          `[identity-gate] invalidate failed for provider ${provider}; the stale credential is still stored: ${invalidateErr instanceof Error ? invalidateErr.message : String(invalidateErr)}`,
+        );
+      });
       const label = PROVIDER_LABEL[provider] ?? provider;
       // Two audiences, two instructions. A chat caller genuinely can just say
       // anything again. A fire-and-forget trigger (integration-gateway's
@@ -688,9 +701,11 @@ async function handleAgentTurnFailure(
       // "send your request again": the label was removed when the run
       // finished, so re-applying it is literally the retry, and saying so is
       // the difference between an actionable comment and a dead end.
-      const retry = state.progressListener
-        ? "Send your request again and I'll walk you through relinking it."
-        : "Re-apply the label to try again and I'll post a link for relinking it.";
+      const retry = invalidated
+        ? state.progressListener
+          ? "Send your request again and I'll walk you through relinking it."
+          : "Re-apply the label to try again and I'll post a link for relinking it."
+        : "I also couldn't clear the stored credential, so retrying will hit the same error until it's cleared by hand.";
       return { result: `⚠️ Your linked ${label} account's credential looks expired or invalid, so this request couldn't complete. ${retry}` };
     }
   }
