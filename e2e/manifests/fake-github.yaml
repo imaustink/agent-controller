@@ -141,6 +141,21 @@ spec:
   template:
     metadata:
       labels: { app: fake-github, e2e: "true" }
+      annotations:
+        # Substituted at apply time by ensureFakeGithub() with a hash of THIS
+        # FILE. The literal placeholder is never what reaches the cluster.
+        #
+        # A mounted ConfigMap's contents change under a running pod, but the
+        # process that read them at startup does not re-read them -- so editing
+        # the script above and re-applying left the OLD server running while
+        # `kubectl get deploy` reported Ready, and a fix appeared not to take
+        # effect. Threading the hash through the pod template makes the edit
+        # change the template, so the Deployment rolls on its own: no
+        # `rollout restart` racing the apply, and no restart at all when the
+        # script is unchanged (which is every call but the first).
+        #
+        # Same technique as Helm's `checksum/config` annotation convention.
+        e2e.controller-agent.dev/config-checksum: "REPLACED_AT_APPLY"
     spec:
       containers:
         - name: fake-github

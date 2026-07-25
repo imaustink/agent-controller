@@ -1,4 +1,6 @@
-import { kubectl, waitFor, withPortForward } from "./k8s.js";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { kubectl, kubectlApplyStdin, withPortForward } from "./k8s.js";
 
 const FAKE_GITHUB_PORT = 18081;
 
@@ -34,17 +36,43 @@ export async function webhookSecret(): Promise<string> {
   return Buffer.from(b64, "base64").toString("utf8");
 }
 
-/** Applies the fake-github manifest and waits for it to be ready. Idempotent. */
+/**
+ * Applies the fake-github manifest and waits for the pod SERVING THAT VERSION
+ * of the script to be ready. Idempotent, and a no-op rollout when the manifest
+ * hasn't changed.
+ *
+ * The subtlety is the mounted ConfigMap. Applying an edited script updates the
+ * ConfigMap, and the kubelet eventually updates the mounted file -- but the
+ * `node` process read it once at startup and never re-reads it, so the pod goes
+ * on serving the previous script indefinitely while every readiness signal says
+ * Ready. That is how a readiness-probe fix to this file appeared not to take
+ * effect at all.
+ *
+ * `kubectl rollout restart` after the apply is the usual reflex and races: it
+ * can start the new pod before the ConfigMap write it was meant to pick up has
+ * landed, so the restart is wasted and the stale script survives it. Instead
+ * the manifest carries a checksum annotation on the pod template, substituted
+ * here, so the script's content is PART of the pod spec: a changed script
+ * changes the template and the Deployment rolls by itself, atomically with the
+ * apply. `rollout status` then blocks on the new generation specifically --
+ * unlike a readyReplicas poll, which the outgoing pod satisfies immediately.
+ */
 export async function ensureFakeGithub(): Promise<void> {
-  await kubectl(["apply", "-f", new URL("../manifests/fake-github.yaml", import.meta.url).pathname]);
-  await waitFor(
-    "fake-github to become ready",
-    async () => {
-      const out = await kubectl(["get", "deploy", "fake-github", "-o", "jsonpath={.status.readyReplicas}"]);
-      return out.trim() === "1" ? true : undefined;
-    },
-    { timeoutMs: 120_000 },
-  );
+  const manifestPath = new URL("../manifests/fake-github.yaml", import.meta.url).pathname;
+  const template = await readFile(manifestPath, "utf8");
+  // Hashed with the placeholder still in it, so the value is a pure function of
+  // the file on disk and re-applying an unchanged file is a genuine no-op.
+  const checksum = createHash("sha256").update(template).digest("hex").slice(0, 16);
+  const manifest = template.replace("REPLACED_AT_APPLY", checksum);
+  if (manifest === template) {
+    throw new Error(`e2e: ${manifestPath} is missing the REPLACED_AT_APPLY checksum placeholder; a script edit would not roll the pod`);
+  }
+
+  await kubectlApplyStdin(manifest);
+  // Blocks until the pod matching the applied template is Available. Bounded
+  // rather than indefinite so a genuinely broken script (a syntax error, say)
+  // fails here with kubectl's own diagnosis instead of inside a spec's waitFor.
+  await kubectl(["rollout", "status", "deploy/fake-github", "--timeout=120s"]);
 }
 
 export async function fakeGithubRequests(): Promise<RecordedRequest[]> {

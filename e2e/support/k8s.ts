@@ -22,6 +22,26 @@ export async function kubectlJson<T = unknown>(args: string[]): Promise<T> {
 }
 
 /**
+ * `kubectl apply -f -` with `manifest` on stdin.
+ *
+ * Needed because the e2e manifests are templated before they are applied (see
+ * ensureFakeGithub's checksum substitution) and writing the rendered YAML to a
+ * temp file just to hand kubectl a path adds a cleanup path that can fail.
+ */
+export async function kubectlApplyStdin(manifest: string): Promise<string> {
+  requireMinikubeContext();
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      "kubectl",
+      ["-n", NAMESPACE, "apply", "-f", "-"],
+      { maxBuffer: 32 * 1024 * 1024 },
+      (err, stdout, stderr) => (err ? reject(new Error(`kubectl apply -f - failed: ${stderr || err.message}`)) : resolve(stdout)),
+    );
+    child.stdin?.end(manifest);
+  });
+}
+
+/**
  * Polls `probe` until it returns a non-null/undefined value, or the timeout
  * elapses. Returns what the probe returned so callers can assert on it.
  *
