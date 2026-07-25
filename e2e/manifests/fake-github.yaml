@@ -42,6 +42,10 @@ data:
 
         // Introspection endpoints are namespaced under /_e2e/ so they can
         // never collide with a real GitHub route the system might call.
+        // Health route for the port-forward readiness probe. Answered BEFORE
+        // recording, so the harness's own liveness check never shows up as an
+        // "unstubbed endpoint" the system supposedly called.
+        if (url.pathname === "/") return json(res, 200, { ok: true });
         if (url.pathname === "/_e2e/requests") return json(res, 200, requests);
         if (url.pathname === "/_e2e/reset") { requests.length = 0; return json(res, 200, { ok: true }); }
 
