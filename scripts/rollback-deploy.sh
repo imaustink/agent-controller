@@ -57,12 +57,15 @@ RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
 WORKDIR="$(mktemp -d)"
 BODY="${WORKDIR}/body.md"
+# Cluster diagnostics are captured here first, then spliced into ${BODY}
+# size-capped (see below) — they are the only unbounded part of the ticket.
+DIAG="${WORKDIR}/diagnostics.md"
 trap 'rm -rf "${WORKDIR}"' EXIT
 
 # --- small helpers -----------------------------------------------------------
 
 # section <title> <command...> — run a command best-effort, appending its
-# output to the ticket body inside a collapsible block. Never aborts the
+# output to the diagnostics buffer inside a collapsible block. Never aborts the
 # script, and caps output so one chatty command can't produce a giant issue.
 MAX_LINES="${MAX_SECTION_LINES:-200}"
 section() {
@@ -71,8 +74,22 @@ section() {
     printf '<details><summary>%s</summary>\n\n```\n' "${title}"
     if "$@" 2>&1 | tail -n "${MAX_LINES}"; then :; fi
     printf '```\n</details>\n\n'
-  } >> "${BODY}"
+  } >> "${DIAG}"
 }
+
+# GitHub rejects an issue body over 65,536 characters with a 422. On the kind
+# of failure this handler exists for — many CrashLooping pods, a flood of
+# events — the aggregated diagnostics can blow past that, and then the ticket
+# is never filed at all: the durable failure record is lost in exactly the case
+# it matters most. So we hold the whole body under a safe byte ceiling, giving
+# the (unbounded) diagnostics whatever budget is left after the small, bounded
+# header/rollback/footer and truncating them with a marker if they'd overflow.
+# (Byte-capping is stricter than char-capping for multibyte UTF-8, so staying
+# under this many bytes keeps us under the 65,536-*character* limit.)
+MAX_BODY_BYTES="${MAX_BODY_BYTES:-60000}"
+# Headroom reserved for the rollback-actions section + footer written after the
+# diagnostics are spliced in (a final backstop below catches any overrun).
+TAIL_RESERVE_BYTES="${TAIL_RESERVE_BYTES:-6000}"
 
 log() { printf '::group::rollback-deploy: %s\n%s\n::endgroup::\n' "$1" "${2:-}"; }
 
@@ -126,13 +143,42 @@ if command -v kubectl >/dev/null 2>&1; then
   section "pods" kubectl get pods -n "${NAMESPACE}" -o wide
   section "recent events" kubectl get events -n "${NAMESPACE}" --sort-by=.lastTimestamp
 else
-  echo "> \`kubectl\` not available — skipped cluster diagnostics." >> "${BODY}"
+  echo "> \`kubectl\` not available — skipped cluster diagnostics." >> "${DIAG}"
 fi
 
 if command -v helm >/dev/null 2>&1; then
   for rel in agent-controller community-components; do
     section "helm history — ${rel}" helm history "${rel}" -n "${NAMESPACE}" --max 10
   done
+fi
+
+# Splice the captured diagnostics into the body, truncated to fit the budget.
+# The header is already in ${BODY}; the rollback actions + footer come after and
+# are covered by TAIL_RESERVE_BYTES.
+DIAG_BYTES="$(wc -c < "${DIAG}" 2>/dev/null || echo 0)"
+HEADER_BYTES="$(wc -c < "${BODY}")"
+DIAG_BUDGET=$(( MAX_BODY_BYTES - HEADER_BYTES - TAIL_RESERVE_BYTES ))
+[ "${DIAG_BUDGET}" -lt 0 ] && DIAG_BUDGET=0
+if [ "${DIAG_BYTES}" -le "${DIAG_BUDGET}" ]; then
+  cat "${DIAG}" >> "${BODY}"
+else
+  TRUNC="${WORKDIR}/diag.trunc"
+  head -c "${DIAG_BUDGET}" "${DIAG}" > "${TRUNC}"
+  cat "${TRUNC}" >> "${BODY}"
+  # If the byte-cut landed inside a ``` fence (odd number of fence lines),
+  # close the fence and the <details> block so the marker below renders.
+  if [ $(( $(grep -c '```' "${TRUNC}") % 2 )) -ne 0 ]; then
+    printf '\n```\n</details>\n' >> "${BODY}"
+  fi
+  {
+    echo
+    echo "> ⚠️ **Diagnostics truncated** — the captured failure output was ${DIAG_BYTES}"
+    echo "> bytes, over the ~${DIAG_BUDGET}-byte diagnostics budget for this ticket"
+    echo "> (GitHub caps issue bodies at 65,536 characters). The complete rollout"
+    echo "> status, describe, pod logs, events and helm history are in the"
+    echo "> [workflow run](${RUN_URL})."
+    echo
+  } >> "${BODY}"
 fi
 
 # ==== 2. roll back to the previous working revision ==========================
@@ -209,6 +255,21 @@ if [ -z "${GH_TOKEN}" ]; then
   log "no token" "GH_TOKEN/GITHUB_TOKEN not set — cannot open ticket. Body follows:"
   cat "${BODY}"
   exit 1
+fi
+
+# Backstop: hard-cap the whole body under GitHub's limit in case the reserved
+# tail ran long (e.g. a large rollback error dump). Diagnostics were already
+# budgeted above, so this only trips in pathological cases — but when it does,
+# a slightly-clipped ticket still beats a 422 and no ticket at all.
+BODY_BYTES="$(wc -c < "${BODY}")"
+if [ "${BODY_BYTES}" -gt "${MAX_BODY_BYTES}" ]; then
+  head -c "${MAX_BODY_BYTES}" "${BODY}" > "${BODY}.capped"
+  mv "${BODY}.capped" "${BODY}"
+  {
+    echo
+    echo "> ⚠️ Body hard-truncated to fit GitHub's 65,536-character issue limit —"
+    echo "> see the [workflow run](${RUN_URL}) for the full output."
+  } >> "${BODY}"
 fi
 
 PAYLOAD="${WORKDIR}/payload.json"
