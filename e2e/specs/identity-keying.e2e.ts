@@ -101,16 +101,18 @@ describe("credential keying converges across entry points (ADR 0029/0030)", () =
       // Generous on purpose. The negative-control specs above each leave the
       // gateway's relay polling for its full window, so a later positive spec
       // queues behind that backlog -- observed launch latency exceeded a
-      // 180s budget even though the gate had already resolved and logged
-      // `pre-launch`. Too tight a budget here fails for throughput reasons
-      // and reads as a keying bug.
+      // 180s budget even though the gate had already resolved. Too tight a
+      // budget here fails for throughput reasons and reads as a keying bug.
       { timeoutMs: 420_000 },
     );
 
     // Asserted on the AgentRun CR -- agent-orchestrator's own output. Whether
     // core-controller then renders these into the Job's container env is that
-    // controller's contract (and, as of this writing, does NOT happen on
-    // minikube -- tracked separately; it is not a keying defect).
+    // controller's own contract, with its own tests; conflating the two makes
+    // an orchestrator spec fail for a controller reason. (It was previously
+    // observed NOT to happen on minikube. That turned out to be a stale
+    // controller image, not a defect -- see controllers/core-controller/
+    // .dockerignore -- and the happy-path spec asserts the rendered Job.)
     const envNames = await agentRunSecretEnvNames(run.name);
     expect(envNames).toContain("CLAUDE_CODE_OAUTH_TOKEN");
     expect(envNames).toContain("CLAUDE_LOGIN_CREDENTIALS_JSON");
@@ -159,9 +161,8 @@ describe("credential keying converges across entry points (ADR 0029/0030)", () =
       // Generous on purpose. The negative-control specs above each leave the
       // gateway's relay polling for its full window, so a later positive spec
       // queues behind that backlog -- observed launch latency exceeded a
-      // 180s budget even though the gate had already resolved and logged
-      // `pre-launch`. Too tight a budget here fails for throughput reasons
-      // and reads as a keying bug.
+      // 180s budget even though the gate had already resolved. Too tight a
+      // budget here fails for throughput reasons and reads as a keying bug.
       { timeoutMs: 420_000 },
     );
   });

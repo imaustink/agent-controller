@@ -79,6 +79,16 @@ done
 echo "  ✓ ServiceAccounts"
 
 step "Building images and deploying (skaffold profile: e2e)..."
+# If you are ever debugging behaviour that "the code clearly does not do any
+# more", suspect the image before the logic. Skaffold decides whether to rebuild
+# an artifact from a dependency list IT resolves from the Dockerfile + the
+# .dockerignore, and a .dockerignore it can't evaluate yields a list that never
+# changes -- so it silently re-tags an old image for every new commit. That
+# shipped an eight-day-old core-controller here, presenting as a rendered Job
+# missing its per-run secretEnv (see controllers/core-controller/.dockerignore).
+#
+# Check with:  skaffold diagnose -p e2e | grep -A3 'Docker artifact: <name>'
+# A dependency count far below the artifact's real source-file count is the tell.
 (cd "$REPO_ROOT" && skaffold run -p e2e)
 
 step "Waiting for the stack to be ready..."
