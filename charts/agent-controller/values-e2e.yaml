@@ -77,6 +77,25 @@ integration-gateway:
     pollIntervalMs: 2000
     pollTimeoutMs: 90000
 
+    # The OTHER hold, and the one that actually starved this suite.
+    #
+    # Shortening pollTimeoutMs above fixed the completed-turn case but missed
+    # this: a turn that PARKS on a missing account link is held open separately,
+    # by waitAndResume, for a window that was hard-coded to TEN MINUTES --
+    # unaffected by anything above it. The identity-keying negative controls
+    # park by design, so each one pinned a relay for ten minutes, long outliving
+    # the spec that caused it and starving whatever triggered next.
+    #
+    # Diagnosis, since the symptom is so misleading: the starved spec times out
+    # waiting for an AgentRun while the orchestrator logs NO authorization
+    # verdict at all. No verdict means /invoke was never reached, so the stall is
+    # upstream in the relay -- not the gate, and not keying, which is what a
+    # positive keying assertion failing here looks like.
+    #
+    # 20s: long enough to be a real wait, short enough that a deliberately
+    # parked turn releases before the next spec's 60s absence-window.
+    resumeWaitMs: 20000
+
   # Per-user credential brokering — required by the identity-keying spec,
   # which asserts which subject each entry point keys a Claude credential
   # under. Without this the /identity-link/* and /claude-auth/* APIs the

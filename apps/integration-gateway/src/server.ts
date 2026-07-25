@@ -69,6 +69,13 @@ export interface GatewayServerOptions {
   claudeAuthFlows?: ClaudeSetupTokenFlows;
   claudeAuthStore?: ClaudeTokenStore;
   /**
+   * How long a PARKED turn is held open waiting for the caller to finish
+   * linking, before giving up. Absent -> {@link
+   * GatewayServer.DEFAULT_RESUME_WAIT_MS}. Short values are appropriate wherever
+   * turns park routinely rather than exceptionally (see that constant).
+   */
+  resumeWaitMs?: number;
+  /**
    * Full-login (`claude auth login --claudeai`) flows for Remote Control
    * (docs/adr/0027 follow-up) -- optional and additive alongside
    * `claudeAuthFlows` above: a subject's `mode=login` request 501s until this
@@ -377,8 +384,22 @@ export class GatewayServer {
     }
   }
 
-  /** How long to hold a triage turn open waiting for the user to finish linking their account before giving up (they can always re-trigger the issue later). Matches the link flow's own ~10-minute expiry. */
-  private static readonly RESUME_WAIT_MS = 10 * 60 * 1000;
+  /**
+   * Default for {@link GatewayServerOptions.resumeWaitMs}: how long to hold a
+   * parked triage turn open waiting for the user to finish linking their account
+   * before giving up (they can always re-trigger the issue later). Matches the
+   * link flow's own ~10-minute expiry.
+   *
+   * Was a hard-coded constant, and being unconfigurable had a cost worth
+   * recording: every parked turn holds a relay for this whole window. The e2e
+   * suite's identity-keying negative controls park deliberately, so a 10-minute
+   * hold outlived the spec that caused it and starved the next spec's trigger --
+   * surfacing as a positive keying assertion timing out with no orchestrator
+   * activity at all, which reads exactly like a keying bug. `pollTimeoutMs` had
+   * already been shortened for e2e for the same class of reason; this hold sat
+   * next to it, ten times longer, and could not be.
+   */
+  private static readonly DEFAULT_RESUME_WAIT_MS = 10 * 60 * 1000;
 
   /**
    * Shared by `relayAndReply` (webhook-triggered turns) and
@@ -473,7 +494,11 @@ export class GatewayServer {
     const kind = identityLink.provider === "claude" ? "setup-token" : identityLink.provider === "claude-remote" ? "login" : undefined;
     const store = kind ? this.options.claudeAuthStore : undefined;
     if (!store || !kind) return undefined;
-    const record = await store.waitForCompletion(identityLink.subject, GatewayServer.RESUME_WAIT_MS, kind);
+    const record = await store.waitForCompletion(
+      identityLink.subject,
+      this.options.resumeWaitMs ?? GatewayServer.DEFAULT_RESUME_WAIT_MS,
+      kind,
+    );
     if (!record) return undefined;
     return reinvoke();
   }

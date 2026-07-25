@@ -97,6 +97,15 @@ config:
   githubIdentities: ""
   pollIntervalMs: 3000
   pollTimeoutMs: 900000
+  # How long a PARKED turn (one waiting on the caller to finish linking an
+  # account) holds its relay open before giving up. Much longer than
+  # pollTimeoutMs above because it is bounded by human reaction time, and it
+  # matches the link flow's own ~10-minute expiry.
+  #
+  # Lower it wherever turns park routinely rather than exceptionally: each
+  # parked turn occupies a relay for this whole window, so a long hold delays
+  # unrelated triggers behind it.
+  resumeWaitMs: 600000
 
 # Automatic OIDC client_credentials token fetch/refresh for this gateway's
 # own /invoke calls to agent-orchestrator -- an opt-in alternative to

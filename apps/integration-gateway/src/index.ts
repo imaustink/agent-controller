@@ -275,6 +275,7 @@ async function main(): Promise<void> {
     ...(sessionPageStore ? { sessionPageStore, publicBaseUrl: config.publicUrl } : {}),
     ...(claudeAuthFlows && claudeTokenStore ? { claudeAuthFlows, claudeAuthStore: claudeTokenStore } : {}),
     ...(claudeLoginFlows ? { claudeLoginFlows } : {}),
+    resumeWaitMs: config.resumeWaitMs,
   });
 
   await server.listen(config.httpPort);

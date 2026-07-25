@@ -73,6 +73,8 @@ spec:
               value: {{ .Values.config.pollIntervalMs | quote }}
             - name: GATEWAY_POLL_TIMEOUT_MS
               value: {{ .Values.config.pollTimeoutMs | quote }}
+            - name: GATEWAY_RESUME_WAIT_MS
+              value: {{ .Values.config.resumeWaitMs | quote }}
             {{- if .Values.sessionPage.publicBaseUrl }}
             - name: GATEWAY_PUBLIC_URL
               value: {{ .Values.sessionPage.publicBaseUrl | quote }}
