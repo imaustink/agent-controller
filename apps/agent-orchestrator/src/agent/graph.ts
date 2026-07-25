@@ -4,7 +4,7 @@ import type { Event } from "@controller-agent/messaging";
 import { extractContinuationToken, prependContinuationToken } from "../continuation.js";
 import { SELF_IMPROVEMENT_FOOTER } from "../openai/chat-completions.js";
 import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-agent-channel.js";
-import { AgentTurnFailedError, AgentTurnTimeoutError } from "../agents/nats-agent-channel.js";
+import { AgentTurnFailedError, AgentTurnTimeoutError, AgentTurnTransportError } from "../agents/nats-agent-channel.js";
 import type { AgentDescriptor, AgentSearchResult, AgentStore } from "../agents/types.js";
 import type { JobResultReceiver } from "../callback/receiver.js";
 import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
@@ -511,6 +511,12 @@ export interface AgentGraphDeps {
   /** Bounds an AgentRun's activeDeadlineSeconds — typically longer than a tool's, since an agent may wait on a human. */
   agentRunTimeoutSeconds?: number;
   /**
+   * How long an agent may go silent (no up-message at all) before the
+   * orchestrator gives up on its reply. Bounds silence, not total run time —
+   * see `agentAwaitReplyIdleTimeoutMs`.
+   */
+  agentIdleTimeoutSeconds?: number;
+  /**
    * k8s Secret name/key the AgentRun CR's (currently vestigial) callback
    * field references — reuses the same secretRef as ToolRun. Required
    * whenever `agentRunLauncher` is set.
@@ -635,6 +641,11 @@ function afterOrEnd(next: string) {
 function agentTurnErrorMessage(err: unknown): string {
   if (err instanceof AgentTurnFailedError) return `agent failed (${err.code}): ${err.message}`;
   if (err instanceof AgentTurnTimeoutError) return err.message;
+  // Don't claim the agent failed — we only lost the channel to it. Say so, so
+  // the user knows to check the run rather than assume the work was lost.
+  if (err instanceof AgentTurnTransportError) {
+    return `${err.message} — check the agent run for its result before retrying`;
+  }
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -860,17 +871,21 @@ function composeAgentTurnMessage(state: Pick<AgentState, "progressListener">, re
 }
 
 /**
- * How long the orchestrator waits on NATS for an agent's reply. Must be at
- * least as long as the k8s Job's own `activeDeadlineSeconds`
- * (`deps.agentRunTimeoutSeconds`) plus a grace period, so a run that hits its
- * own deadline gets the chance to publish a `failed` event (a clear, specific
- * error) before the orchestrator's client-side wait gives up first with a
- * generic "produced no reply" timeout. Falls back to nats-agent-channel.ts's
- * own default when no deadline is configured.
+ * How long the orchestrator tolerates SILENCE from an agent before giving up
+ * on its reply — reset by every up-message, including progress narration
+ * (`awaitReply`, nats-agent-channel.ts). It is deliberately unrelated to the
+ * Job's `activeDeadlineSeconds` (`deps.agentRunTimeoutSeconds`) now: this used
+ * to be derived from that deadline plus a grace period, on the theory that the
+ * client wait must outlast the Job so a deadline-exceeded run could publish a
+ * `failed` event first. That coupling meant a long-running-but-healthy agent
+ * was racing a total-duration bound, and the derived bound didn't work anyway
+ * (see `awaitReply`'s note on nats.js's first-message `{ timeout }`). An
+ * agent that keeps narrating is now never cut off no matter how long it runs;
+ * the Job's own deadline remains the only wall-clock ceiling, and it still
+ * gets to publish `failed` because we are still listening when it does.
  */
-const AGENT_TIMEOUT_GRACE_MS = 60_000;
-function agentAwaitReplyTimeoutMs(agentRunTimeoutSeconds: number | undefined): number | undefined {
-  return agentRunTimeoutSeconds ? agentRunTimeoutSeconds * 1000 + AGENT_TIMEOUT_GRACE_MS : undefined;
+function agentAwaitReplyIdleTimeoutMs(deps: Pick<AgentGraphDeps, "agentIdleTimeoutSeconds">): number | undefined {
+  return deps.agentIdleTimeoutSeconds ? deps.agentIdleTimeoutSeconds * 1000 : undefined;
 }
 
 function appendSelfImprovementSuggestion(message: string): string {
@@ -1137,7 +1152,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
 
       try {
         const awaitReply = deps.agentChannel.awaitReply(state.activeAgentRunId, {
-          timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
+          idleTimeoutMs: agentAwaitReplyIdleTimeoutMs(deps),
           onProgress:
             state.progressListener || state.remoteControlUrlListener
               ? (stage, message) => {
@@ -1296,7 +1311,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // Subscribe BEFORE creating the AgentRun CR so a fast-replying agent
         // can never publish before our subscription exists.
         const awaitReply = deps.agentChannel.awaitReply(runId, {
-          timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
+          idleTimeoutMs: agentAwaitReplyIdleTimeoutMs(deps),
           onProgress:
             state.progressListener || state.remoteControlUrlListener
               ? (stage, message) => {
@@ -1482,7 +1497,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         const callbackUrl = `${deps.callbackBaseUrl}/callback/${randomUUID()}`;
         try {
           const awaitReply = deps.agentChannel.awaitReply(runId, {
-            timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
+            idleTimeoutMs: agentAwaitReplyIdleTimeoutMs(deps),
             onProgress:
               state.progressListener || state.remoteControlUrlListener
                 ? (stage, message) => {

@@ -43,6 +43,21 @@ spec:
   {{- end }}
   image: {{ .Values.stubAgent.image }}
   serviceAccountName: {{ .Values.stubAgent.serviceAccountName }}
+  {{- /*
+    Turn pacing (apps/stub-agent/src/pacing.ts). Absent, the stub replies
+    immediately and behaves exactly as before. resilience.e2e.ts PATCHES these
+    on this CR between tests -- it needs a turn still in flight while it bounces
+    NATS or rolls the orchestrator, and a silent turn to trip the idle window.
+    Declared here (rather than only patched in) so the field exists to patch and
+    so the default is visible.
+  */}}
+  env:
+    - name: STUB_NARRATE_FOR_MS
+      value: {{ .Values.stubAgent.pacing.narrateForMs | quote }}
+    - name: STUB_NARRATE_EVERY_MS
+      value: {{ .Values.stubAgent.pacing.narrateEveryMs | quote }}
+    - name: STUB_SILENT_FOR_MS
+      value: {{ .Values.stubAgent.pacing.silentForMs | quote }}
   resources:
     requests:
       cpu: "50m"

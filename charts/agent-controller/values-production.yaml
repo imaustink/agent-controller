@@ -259,14 +259,16 @@ integration-gateway:
     # just a GitHub "Settings -> Collaborators" change on this repo.
     githubCollaboratorRoles: '{"admin": ["writer"], "write": ["writer"]}'
     # Must comfortably exceed agent-orchestrator's own AGENT_RUN_TIMEOUT_SECONDS
-    # (default 3600s/1h -- how long a real opencode-swe-agent run is allowed
-    # to take: clone, run Claude, open a PR). The default here (15 min) is
-    # far shorter, so a real task taking longer than 15 minutes but less than
-    # an hour would finish successfully just AFTER the gateway had already
-    # given up polling and posted a "no terminal result within 900000ms"
-    # comment -- confirmed happening in practice. 65 minutes leaves a 5-minute
-    # buffer past the 1h agent-run ceiling.
-    pollTimeoutMs: "3900000"
+    # (default 28800s/8h -- the wall-clock ceiling on a real
+    # opencode-swe-agent run: clone, run Claude, open a PR, iterate). The
+    # chart default here (15 min) is far shorter, so a real task taking longer
+    # than 15 minutes would finish successfully just AFTER the gateway had
+    # already given up polling and posted a "no terminal result within
+    # 900000ms" comment -- confirmed happening in practice. Same class of bug
+    # as the orchestrator's old "produced no reply" timeout: a bound shorter
+    # than the work it's bounding turns a success into a visible failure.
+    # 8h5m leaves a 5-minute buffer past the agent-run ceiling.
+    pollTimeoutMs: "29100000"
 
   # Automatic OIDC client_credentials token fetch/refresh (previously a
   # documented, unbuilt follow-up -- Pocket ID's client_credentials access

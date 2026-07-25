@@ -58,12 +58,39 @@ support/
   redis.ts       reads credential/session keys out of the orchestrator's Redis
   webhook.ts     HMAC-signs and posts GitHub webhook payloads
   fixtures.ts    per-test namespace-scoped setup/teardown
+  resilience.ts  paces the stub's turn, and DISRUPTS the cluster (NATS, rollouts)
 specs/
   happy-path.e2e.ts       webhook -> triage -> AgentRun -> comment posted
   identity-keying.e2e.ts  which subject each entry point keys credentials under
+  resilience.e2e.ts       what survives NATS/orchestrator moving mid-turn
 manifests/
   fake-github.yaml   in-cluster GitHub API stub (Deployment + Service + script)
 ```
+
+### `resilience.e2e.ts` disrupts the cluster on purpose
+
+It deletes the NATS pod and rolls the orchestrator **while an agent turn is in
+flight**, then asserts the turn survives and that the orchestrator reports the
+truth about it. That is the only way to cover the failure this suite was
+extended for: a run that succeeded while the chat said `produced no reply within
+3660000ms`, because a bound that was never armed, a shutdown that drained NATS
+under an in-flight request, and a catch-all that relabelled every error as a
+timeout all lined up. None of it is reachable without a real NATS server and a
+real SIGTERM.
+
+Two consequences worth knowing before editing it:
+
+- **It needs a slow turn.** The stub replies in milliseconds, which leaves no
+  window to disrupt anything, so `apps/stub-agent` takes pacing env vars
+  (`pacing.ts`) and the spec PATCHES them onto the `stub-agent` Agent CR per
+  test. `afterAll` resets them — leaving pacing on the CR makes every later
+  spec slow, and a leftover silent phase makes them fail outright.
+- **It needs a short idle window.** `values-e2e.yaml` sets
+  `agentIdleTimeoutSeconds: 20` (production defaults to 10 minutes) so a test
+  can wait out a genuinely silent agent. The window bounds *silence*, not
+  duration, so this does not cap how long a run may take — one of the specs
+  asserts exactly that by pacing a narrating turn to five times the window and
+  expecting it to succeed.
 
 `stub-agent` is NOT here: it is a real image (`apps/stub-agent`) built by the
 skaffold `e2e` profile, and its Agent CR is a chart template
