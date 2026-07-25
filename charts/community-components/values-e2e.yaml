@@ -13,7 +13,38 @@
 # and that is precisely the path ADR 0029 changed — so the e2e environment
 # mirrors it rather than the demo shortcut.
 
+# The agent the triage route actually launches here.
+#
+# claude-code-swe-agent below stays enabled and keeps its Claude
+# identityProviders -- the identity gate is the thing under test and it must see
+# a production-shaped Agent -- but a REAL Claude run cannot terminate in this
+# cluster: there is no Anthropic credential, by design (see the comment on
+# anthropicSecretKey). The run therefore never reached a terminal phase, so the
+# happy-path spec could not assert the chain at all and was skipped.
+#
+# stub-agent closes that gap without weakening the gate: it declares the SAME
+# identityProviders, so the pre-flight resolves the same credentials, injects the
+# same secretEnv names, and still refuses to launch when a credential is missing
+# (the keying spec's negative controls). Only the model turn is replaced.
+stubAgent:
+  enabled: true
+  acknowledgeNotForProduction: true
+  # Overwritten by skaffold's setValueTemplates with the freshly-built tag.
+  image: stub-agent:latest
+  identityLink:
+    enabled: true
+    # MUST match claudeCodeSweAgent.identityLink.providers below. Drifting these
+    # apart makes the gate take a different path for the agent under test than
+    # for the one production runs, which is the whole point of the stub.
+    providers:
+      - claude
+      - claude-remote
+
 claudeCodeSweAgent:
+  # Still enabled, though the triage route points at stub-agent above: this
+  # Agent CR is the production-shaped reference the stub's providers are kept in
+  # step with, and re-pointing the route back at it is a one-line change when
+  # a run with a real credential is what's wanted.
   enabled: true
   # Overwritten by skaffold's setValueTemplates with the freshly-built tag.
   # Left as the chart default here so a plain `helm template` still renders.
@@ -47,6 +78,8 @@ claudeCodeSweAgent:
 integrationRoutes:
   githubIssueLabeledTriage:
     enabled: true
-    # Points at the Claude engine rather than the demo default, so a labeled
-    # issue actually exercises the credential gate.
-    agentRef: claude-code-swe-agent
+    # stub-agent, not the demo default and not claude-code-swe-agent: it carries
+    # the same Claude identityProviders (so the credential gate is exercised
+    # exactly as production exercises it) AND terminates hermetically (so the
+    # chain past the launch -- reply, relay, issue comment -- is assertable).
+    agentRef: stub-agent

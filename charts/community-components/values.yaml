@@ -297,6 +297,32 @@ skills:
   webSearch:
     enabled: false
 
+# stub-agent: an END-TO-END TEST DOUBLE, not a component of the catalog.
+#
+# It speaks the real NATS agent protocol and returns a canned reply without
+# calling a model, so the e2e suite can assert the whole webhook -> triage ->
+# AgentRun -> reply -> issue-comment chain in a cluster that holds no Anthropic
+# credential. Enabled only by values-e2e.yaml; see apps/stub-agent.
+#
+# `enabled: true` alone is not enough -- the template also requires
+# acknowledgeNotForProduction, so that pointing a production route at an agent
+# which silently answers everything with a stub cannot happen by typo.
+stubAgent:
+  enabled: false
+  acknowledgeNotForProduction: false
+  image: stub-agent:latest
+  serviceAccountName: stub-agent
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+  # Which identityProviders the stub declares. Set these to match whichever
+  # agent it stands in for, or the identity gate takes a different path than
+  # production and the suite stops testing it (see agent-stub.yaml).
+  identityLink:
+    enabled: false
+    providers: []
+
 integrationRoutes:
   # github-issue-labeled-triage: an IntegrationRoute CR (docs/adr/0024)
   # dispatching a GitHub `issues`/`labeled` webhook event straight to

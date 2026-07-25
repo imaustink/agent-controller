@@ -30,7 +30,7 @@ Third-party services are stubbed; nothing else is.
 | --- | --- | --- |
 | GitHub REST API | `fake-github` in-cluster service | Tests must assert *what we posted* (comments, labels) without writing to a real repo, and must serve deterministic `/user` + permission responses. Pointed at via the existing `githubApiUrl` value — no production code changes. |
 | GitHub webhooks | Signed locally by `support/webhook.ts` | The signature path is real (same HMAC the gateway verifies); only the sender is us. |
-| Anthropic / Claude Code CLI | `stub-agent` image | A real agent run needs a real paid credential and makes the test slow and nondeterministic. The stub speaks the **real** NATS agent protocol, so everything between the webhook and the reply — routing, RBAC, the identity gate, AgentRun creation, secret injection, the callback — is exercised for real. |
+| Anthropic / Claude Code CLI | `stub-agent` image (`apps/stub-agent`) | A real agent run needs a real paid credential and makes the test slow and nondeterministic — and in a cluster holding no credential it never reaches a terminal phase at all, which is why the happy-path spec was once skipped. The stub speaks the **real** NATS agent protocol and declares the **same** `identityProviders` as the agent it stands in for, so everything between the webhook and the reply — routing, RBAC, the identity gate (including its refusal to launch), AgentRun creation, secret injection, the callback — is exercised for real. |
 | OpenAI (planner/selector) | Real, against the dev key | Routing decisions are part of what we're testing. Tests assert on deterministic `IntegrationRoute` dispatch rather than on RAG retrieval, so model nondeterminism doesn't make them flaky. |
 
 The line is: **stub what we don't own and can't make deterministic; run
@@ -63,5 +63,22 @@ specs/
   identity-keying.e2e.ts  which subject each entry point keys credentials under
 manifests/
   fake-github.yaml   in-cluster GitHub API stub (Deployment + Service + script)
-  stub-agent.yaml    Agent CR + image that speaks the NATS protocol and replies
 ```
+
+`stub-agent` is NOT here: it is a real image (`apps/stub-agent`) built by the
+skaffold `e2e` profile, and its Agent CR is a chart template
+(`charts/community-components/templates/agent-stub.yaml`) enabled by
+`values-e2e.yaml`. Keeping it in the chart rather than in a hand-applied
+manifest is the point — the CR the suite exercises is produced by the same
+templating production uses, so a change that breaks Agent rendering breaks the
+e2e run too.
+
+### Editing `fake-github.yaml`
+
+Its script is a mounted ConfigMap, and a running `node` process does not re-read
+a mounted file. `ensureFakeGithub()` therefore substitutes a hash of the whole
+manifest into the pod template's `e2e.controller-agent.dev/config-checksum`
+annotation, so an edited script changes the pod spec and the Deployment rolls by
+itself. Do not replace that with `kubectl rollout restart` after the apply: the
+restart can beat the ConfigMap write it was meant to pick up, which is how a
+readiness-probe fix to that file once appeared to have no effect at all.
