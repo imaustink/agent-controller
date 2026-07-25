@@ -221,6 +221,21 @@ Copilot-CLI-based `copilot-swe`/`copilot-swe-agent` (see
   immediately below are unchanged and still required either way — a
   compromised per-user token is still live for its own lifetime (~8h, or up
   to ~6 months if its refresh token is also compromised).
+- **Claude credentials are keyed by a canonical GitHub identity, not by
+  whichever entry point resolved the caller** (docs/adr/0029). The `claude`
+  and `claude-remote` records are stored under `github:<login>` rather than
+  the raw `identity.subject`, so one authorization covers both the
+  GitHub-webhook triage path (which authenticates with the gateway's shared
+  OIDC service token) and Open WebUI chat (`openwebui:<id>`). The login is
+  never caller-supplied: it comes either from a signature-verified webhook's
+  `senderLogin` or from the caller's own completed GitHub device-flow link.
+  The deliberate consequence is that these two entry points **share one
+  credential record per GitHub identity** — reaching it requires proving
+  control of that GitHub account, but it does mean the sharing boundary for a
+  Claude credential is the GitHub identity, not the chat account. The
+  `github` link itself stays keyed by the raw subject (it is the source of
+  the mapping), and triage's GitHub writes still use the App installation
+  token.
 - **No irreversible actions — defense in depth, because no single layer
   suffices.** A PAT with `Administration` write can both create and delete
   repos, so token permissions alone cannot forbid deletion. Therefore:

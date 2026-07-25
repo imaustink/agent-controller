@@ -108,7 +108,7 @@ export interface AgentGraphInput {
   /** Per-agent continuation tokens from the caller's session, keyed by agent id (docs/adr/0017). */
   agentContinuations?: Record<string, string>;
   /** A device-flow identity-link attempt this conversation is waiting on, if any (see `SessionRecord.pendingIdentityLink`). */
-  pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number };
+  pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number; subject?: string; request?: string };
   /**
    * Per-request override of which OAuth flow `delegateToAgent` starts if
    * this caller needs to link an identity (see `AgentState.identityLinkFlow`
@@ -156,6 +156,18 @@ export interface AgentGraphInput {
   forcedSkillId?: string;
   /** Id of an Agent CR to dispatch to directly — see `forcedSkillId`. */
   forcedAgentId?: string;
+  /**
+   * GitHub login of the human who triggered this turn, taken from
+   * `/invoke`'s `event.senderLogin` (integration-gateway populates it from
+   * the signature-verified webhook payload, and drops the event outright if
+   * that sender resolves to no identity).
+   *
+   * The webhook path authenticates with the gateway's own service token, so
+   * `identity.subject` is the same shared value for every trigger; this is
+   * the only per-user identifier such a turn carries. See
+   * `AgentState.senderLogin`.
+   */
+  senderLogin?: string;
 }
 
 /** The slice of the compiled LangGraph agent this server needs — kept small and mockable for tests. */
@@ -249,8 +261,10 @@ export class InvokeServer {
     // synchronous wait, because setting `progressListener` made
     // delegateToAgent think this caller had a live channel).
     remoteControlUrlListener?: (url: string) => void,
+    senderLogin?: string,
   ): Promise<AgentGraphInput> {
     const input: AgentGraphInput = { request, authToken };
+    if (senderLogin) input.senderLogin = senderLogin;
     if (progressListener) input.progressListener = progressListener;
     if (remoteControlUrlListener) input.remoteControlUrlListener = remoteControlUrlListener;
     if (identityLinkFlow) input.identityLinkFlow = identityLinkFlow;
@@ -299,7 +313,7 @@ export class InvokeServer {
       agentAwaitingReply?: boolean;
       extractedContinuation?: { toolId: string; token: string };
       extractedAgentContinuation?: { agentId: string; token: string };
-      pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number };
+      pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number; subject?: string; request?: string };
       identityLinkPending?: boolean;
     },
   ): Promise<void> {
@@ -561,6 +575,7 @@ export class InvokeServer {
     let identityLinkFlow: "device" | "authcode" | undefined;
     let forcedSkillId: string | undefined;
     let forcedAgentId: string | undefined;
+    let senderLogin: string | undefined;
     try {
       const parsed: unknown = rawBody ? JSON.parse(rawBody) : {};
       if (
@@ -588,6 +603,16 @@ export class InvokeServer {
       // entirely. No match (or no `event` at all) leaves `request` as the
       // request text and behaves exactly as before this field existed.
       const rawEvent = (parsed as { event?: unknown }).event;
+      // Read OUTSIDE the IntegrationRoute block below on purpose: the
+      // canonical credential subject must resolve for every webhook-driven
+      // turn, including ones that match no route (or run with no route
+      // registry configured at all) and fall back to ordinary RAG retrieval.
+      // Gating it on a route match would have made cross-flow credential
+      // sharing quietly depend on routing config.
+      if (rawEvent && typeof rawEvent === "object") {
+        const login = (rawEvent as Record<string, unknown>).senderLogin;
+        if (typeof login === "string" && login.trim() !== "") senderLogin = login;
+      }
       if (this.integrationRouteRegistry && rawEvent && typeof rawEvent === "object") {
         const eventFields = rawEvent as Record<string, unknown>;
         const source = eventFields.source;
@@ -657,6 +682,7 @@ export class InvokeServer {
           this.invocations.set(id, { ...current, remoteControlUrl: url });
         }
       },
+      senderLogin,
     ).then((graphInput) => {
       // Mark the in-flight job identity-link-pending the moment the graph
       // decides a link is needed (before the link URL exists), so a polling
@@ -694,7 +720,15 @@ export class InvokeServer {
             ...(state.identityLinkPending && state.pendingIdentityLink && state.identity
               ? {
                   identityLinkPending: true,
-                  identityLink: { provider: state.pendingIdentityLink.provider, subject: state.identity.subject },
+                  identityLink: {
+                    provider: state.pendingIdentityLink.provider,
+                    // The subject the graph actually started the link
+                    // against -- NOT `state.identity.subject`. This record is
+                    // what integration-gateway's `waitAndResume` blocks on,
+                    // so deriving it independently here is the exact
+                    // store-vs-wait split that made PR #144 loop forever.
+                    subject: state.pendingIdentityLink.subject ?? state.identity.subject,
+                  },
                 }
               : {}),
           });
