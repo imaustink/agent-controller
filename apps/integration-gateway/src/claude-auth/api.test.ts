@@ -24,11 +24,24 @@ function makeFakeFlows() {
   };
 }
 
-function makeFakeStore(): ClaudeTokenStore & { records: Map<string, ClaudeTokenRecord> } {
+function makeFakeStore(): ClaudeTokenStore & {
+  records: Map<string, ClaudeTokenRecord>;
+  grants: Map<string, string>;
+} {
   const records = new Map<string, ClaudeTokenRecord>();
+  const grants = new Map<string, string>();
   const keyFor = (subject: string, kind: string) => `${kind}:${subject}`;
   return {
     records,
+    grants,
+    async createWritebackToken(subject) {
+      const token = `grant-${grants.size + 1}`;
+      grants.set(token, subject);
+      return token;
+    },
+    async resolveWritebackToken(token) {
+      return grants.get(token);
+    },
     async get(subject, kind = "setup-token") {
       return records.get(keyFor(subject, kind));
     },
@@ -226,6 +239,118 @@ describe("ClaudeAuthApi", () => {
       } finally {
         await new Promise<void>((resolve) => s2.close(() => resolve()));
       }
+    });
+  });
+
+  // The credential a Remote Control run authenticates with is a whole
+  // ~/.claude/.credentials.json copied into an ephemeral pod HOME. The CLI
+  // refreshes it there -- rotating the refresh token, killing the stored copy --
+  // and the refreshed file dies with the pod. These two routes are how the run
+  // hands the refreshed file back, so a link outlives its first access token.
+  describe("credential write-back", () => {
+    async function mintGrant(subject: string): Promise<{ token: string; url: string }> {
+      const res = await fetch(`http://localhost:${port}/claude-auth/api/writeback-token`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${BEARER}`, "content-type": "application/json" },
+        body: JSON.stringify({ subject }),
+      });
+      expect(res.status).toBe(200);
+      return (await res.json()) as { token: string; url: string };
+    }
+
+    it("mints a grant (bearer-gated) whose url points at the refresh route", async () => {
+      const grant = await mintGrant("user-wb-1");
+      expect(grant.token).toBeTruthy();
+      expect(grant.url).toBe(`${PUBLIC_BASE_URL}/claude-auth/api/refresh`);
+    });
+
+    it("refuses to mint a grant without the master bearer", async () => {
+      const res = await fetch(`http://localhost:${port}/claude-auth/api/writeback-token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ subject: "user-wb-2" }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it("stores the refreshed blob against the grant's subject", async () => {
+      await store.set("user-wb-3", { kind: "login", credentialsJson: '{"claudeAiOauth":{"accessToken":"old"}}', createdAt: "2026-01-01T00:00:00Z" });
+      const grant = await mintGrant("user-wb-3");
+      const refreshed = '{"claudeAiOauth":{"accessToken":"new","refreshToken":"rotated"}}';
+
+      const res = await fetch(`http://localhost:${port}/claude-auth/api/refresh`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${grant.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ credentialsJson: refreshed }),
+      });
+
+      expect(res.status).toBe(200);
+      expect((await store.get("user-wb-3", "login"))?.credentialsJson).toBe(refreshed);
+    });
+
+    it("takes the subject from the grant, never from the request body", async () => {
+      await store.set("victim", { kind: "login", credentialsJson: '{"claudeAiOauth":"victim-blob"}', createdAt: "2026-01-01T00:00:00Z" });
+      const grant = await mintGrant("user-wb-4");
+
+      const res = await fetch(`http://localhost:${port}/claude-auth/api/refresh`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${grant.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ subject: "victim", credentialsJson: '{"claudeAiOauth":"attacker-blob"}' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect((await store.get("victim", "login"))?.credentialsJson).toBe('{"claudeAiOauth":"victim-blob"}');
+      expect((await store.get("user-wb-4", "login"))?.credentialsJson).toBe('{"claudeAiOauth":"attacker-blob"}');
+    });
+
+    it("401s an unknown or expired grant", async () => {
+      const res = await fetch(`http://localhost:${port}/claude-auth/api/refresh`, {
+        method: "POST",
+        headers: { authorization: "Bearer not-a-real-grant", "content-type": "application/json" },
+        body: JSON.stringify({ credentialsJson: "{}" }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it("rejects a body that isn't a credentials file, rather than clobbering a working link with junk", async () => {
+      const existing = '{"claudeAiOauth":{"accessToken":"keep-me"}}';
+      await store.set("user-wb-5", { kind: "login", credentialsJson: existing, createdAt: "2026-01-01T00:00:00Z" });
+      const grant = await mintGrant("user-wb-5");
+
+      const res = await fetch(`http://localhost:${port}/claude-auth/api/refresh`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${grant.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ credentialsJson: '{"claudeAiOauth": {"accessTo' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await store.get("user-wb-5", "login"))?.credentialsJson).toBe(existing);
+    });
+
+    it("reports 502 when the store silently drops the write (set swallows its own errors)", async () => {
+      const grant = await mintGrant("user-wb-6");
+      store.set = async () => {};
+
+      const res = await fetch(`http://localhost:${port}/claude-auth/api/refresh`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${grant.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ credentialsJson: '{"claudeAiOauth":{"accessToken":"new"}}' }),
+      });
+
+      expect(res.status).toBe(502);
+    });
+
+    it("leaves the setup-token record untouched when a login blob is refreshed", async () => {
+      await store.set("user-wb-7", { kind: "setup-token", token: "sk-ant-oat01-keep", createdAt: "2026-01-01T00:00:00Z" });
+      const grant = await mintGrant("user-wb-7");
+
+      await fetch(`http://localhost:${port}/claude-auth/api/refresh`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${grant.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ credentialsJson: '{"claudeAiOauth":{"accessToken":"new"}}' }),
+      });
+
+      expect(await store.get("user-wb-7")).toEqual({ kind: "setup-token", token: "sk-ant-oat01-keep", createdAt: "2026-01-01T00:00:00Z" });
     });
   });
 

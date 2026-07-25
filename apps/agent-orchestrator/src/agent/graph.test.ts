@@ -2563,5 +2563,118 @@ describe("buildAgentGraph delegation with multiple identityProviders", () => {
     expect(final.pendingIdentityLink?.provider).toBe("claude-remote");
     expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
   });
+
+  // The stored claude-remote credential is a whole ~/.claude/.credentials.json
+  // that the run's CLI refreshes (and thereby rotates) in an emptyDir HOME. The
+  // grant injected here is how that refreshed file gets persisted; without it
+  // the stored copy is stale the moment a run refreshes, and later runs fail
+  // with "Login expired · Please run /login".
+  it("injects a credential write-back grant alongside the claude-remote credential", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"full-login-blob"}' }),
+    };
+    const claudeRemoteWriteback = {
+      createWritebackGrant: vi
+        .fn()
+        .mockResolvedValue({ url: "https://gateway.example/claude-auth/api/refresh", token: "grant-xyz" }),
+    };
+    const deps = multiProviderDeps({ claudeAuthGateway, claudeRemoteGateway, claudeRemoteWriteback });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(claudeRemoteWriteback.createWritebackGrant).toHaveBeenCalledWith("alice", expect.any(Number));
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      multiProviderAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({
+        secretEnv: [
+          { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-resolved" },
+          { name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: '{"claudeAiOauth":"full-login-blob"}' },
+          { name: "CLAUDE_CREDENTIALS_WRITEBACK_URL", value: "https://gateway.example/claude-auth/api/refresh" },
+          { name: "CLAUDE_CREDENTIALS_WRITEBACK_TOKEN", value: "grant-xyz" },
+        ],
+      }),
+    );
+  });
+
+  it("launches normally when a write-back grant can't be minted -- write-back is not a precondition for running", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"full-login-blob"}' }),
+    };
+    const deps = multiProviderDeps({
+      claudeAuthGateway,
+      claudeRemoteGateway,
+      claudeRemoteWriteback: { createWritebackGrant: vi.fn().mockResolvedValue(undefined) },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      multiProviderAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({
+        secretEnv: [
+          { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-resolved" },
+          { name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: '{"claudeAiOauth":"full-login-blob"}' },
+        ],
+      }),
+    );
+  });
+
+  // Regression: the invalidated provider used to be identityProviders[0]
+  // ("claude"), no matter which credential actually failed -- so a stale
+  // Remote Control login blob survived, failed again on the next run, and took
+  // a perfectly good setup-token down with it every time.
+  it("invalidates the claude-remote credential (not the setup-token) when the run reports the login blob expired", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-fine" }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"stale-login-blob"}' }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi
+        .fn()
+        .mockRejectedValue(new AgentTurnFailedError("claude_remote_auth_expired", "credentials look expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = multiProviderDeps({ claudeAuthGateway, claudeRemoteGateway, agentChannel });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(claudeRemoteGateway.invalidate).toHaveBeenCalledWith("claude-remote", "alice");
+    expect(claudeAuthGateway.invalidate).not.toHaveBeenCalled();
+    expect(final.error).toBeUndefined();
+    expect(final.result).toMatch(/expired or invalid/i);
+    // No live channel (a label-triggered relay): "send your request again" is
+    // not a thing the human can do -- re-applying the label is.
+    expect(final.result).toMatch(/re-apply the label/i);
+  });
 });
 

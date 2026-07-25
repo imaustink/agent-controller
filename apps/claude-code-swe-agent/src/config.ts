@@ -83,6 +83,22 @@ export interface AgentToolConfig {
    * selects which invocation shape to use.
    */
   remoteControlEnabled: boolean;
+  /**
+   * The `~/.claude/.credentials.json` blob this run was launched with, as
+   * injected by agent-orchestrator (`CLAUDE_LOGIN_CREDENTIALS_JSON`, the same
+   * value the init container writes to disk). Read here ONLY to tell a
+   * refreshed credentials file apart from the untouched original -- see
+   * ./credentialsWriteback.ts.
+   */
+  loginCredentialsJson: string;
+  /**
+   * Gateway endpoint + per-run grant token for persisting a credentials file
+   * the CLI refreshed mid-run (see ./credentialsWriteback.ts). Injected only
+   * for a `claude-remote` identity-linked launch; empty strings otherwise,
+   * which simply disables write-back.
+   */
+  credentialsWritebackUrl: string;
+  credentialsWritebackToken: string;
 }
 
 /**
@@ -111,5 +127,8 @@ export function loadToolConfig(env: NodeJS.ProcessEnv = process.env): AgentToolC
     workdir: env.SWE_WORKDIR ?? `/tmp/swe-${randomUUID()}`,
     homeDir: env.SWE_HOME ?? "/tmp/home",
     remoteControlEnabled: env.CLAUDE_REMOTE_CONTROL === "true",
+    loginCredentialsJson: env.CLAUDE_LOGIN_CREDENTIALS_JSON ?? "",
+    credentialsWritebackUrl: env.CLAUDE_CREDENTIALS_WRITEBACK_URL ?? "",
+    credentialsWritebackToken: env.CLAUDE_CREDENTIALS_WRITEBACK_TOKEN ?? "",
   };
 }

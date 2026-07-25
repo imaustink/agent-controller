@@ -80,6 +80,43 @@ export class ClaudeRemoteGatewayClient implements IdentityLinkPort {
     return body.status === "complete" && body.credentialsJson ? { token: body.credentialsJson } : undefined;
   }
 
+  /**
+   * Asks the gateway for a narrow, expiring grant that lets ONE AgentRun
+   * persist the `~/.claude/.credentials.json` its Claude Code CLI refreshed
+   * in-pod (see the gateway's `POST /claude-auth/api/refresh`). Injected into
+   * the run alongside the credentials themselves; without it a refreshed --
+   * and therefore rotated -- credential dies with the pod and the stored copy
+   * goes stale, which is what made a freshly-linked account start failing with
+   * "Login expired" hours later.
+   *
+   * Returns `undefined` rather than throwing when the gateway can't mint one
+   * (older gateway without the route, Redis down): write-back is an
+   * availability improvement, not a precondition for running, so a failure
+   * here must never block the launch it was being prepared for.
+   */
+  async createWritebackGrant(subject: string, ttlSeconds: number): Promise<{ url: string; token: string } | undefined> {
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/claude-auth/api/writeback-token`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${this.options.token}` },
+        body: JSON.stringify({ subject, ttlSeconds }),
+      });
+      if (!res.ok) {
+        console.error(`claude-auth writeback-token failed (continuing without write-back): ${res.status}`);
+        return undefined;
+      }
+      const body = (await res.json()) as { token?: string; url?: string };
+      if (!body.token || !body.url) return undefined;
+      return { url: body.url, token: body.token };
+    } catch (err) {
+      console.error(
+        "claude-auth writeback-token threw (continuing without write-back):",
+        err instanceof Error ? err.message : String(err),
+      );
+      return undefined;
+    }
+  }
+
   async invalidate(_provider: string, subject: string): Promise<void> {
     const res = await this.fetchImpl(`${this.baseUrl}/claude-auth/api/invalidate`, {
       method: "POST",

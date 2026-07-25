@@ -85,6 +85,34 @@ describe("runClaudeTurn", () => {
     expect(result.authError).toBe(true);
   });
 
+  it("classifies a credential complaint returned as the turn's own successful result as an auth error", async () => {
+    // Same trap as the Remote Control path's turn_duration case: a `result`
+    // event with is_error false and exit code 0, whose entire content is the
+    // credential message. Treating that as a completed turn is what let the
+    // failure reach a user as a summary instead of triggering re-auth.
+    await installFakeClaude(`
+      console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "sess_1" }));
+      console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id: "sess_1", result: "Login expired · Please run /login" }));
+    `);
+
+    const result = await runClaudeTurn("do the thing", { cwd: process.cwd(), env: env(), settings: {} });
+    expect(result.failed).toBe(true);
+    expect(result.authError).toBe(true);
+  });
+
+  it("does not flag a long successful summary that merely mentions credentials", async () => {
+    const summary = `Reviewed the diff. ${"The invalid API key path is handled; see auth.ts. ".repeat(5)}`;
+    await installFakeClaude(`
+      console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "sess_1" }));
+      console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id: "sess_1", result: ${JSON.stringify(summary)} }));
+    `);
+
+    const result = await runClaudeTurn("review the thing", { cwd: process.cwd(), env: env(), settings: {} });
+    expect(result.failed).toBe(false);
+    expect(result.authError).toBe(false);
+    expect(result.finalMessage).toBe(summary);
+  });
+
   it("treats a non-zero exit with no JSON output at all as a failure", async () => {
     await installFakeClaude(`
       console.error("boom");
