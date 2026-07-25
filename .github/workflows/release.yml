@@ -292,7 +292,56 @@ jobs:
         # convention needs the files physically present before `helm
         # dependency update`/`helm upgrade` will pick them up. Same step
         # publish-charts runs before packaging.
+        #
+        # This only covers a FIRST install. See the next step for why.
         run: cp controllers/core-controller/config/crd/bases/*.yaml charts/agent-controller/charts/core-controller/crds/
+
+      - name: Apply CRDs
+        # Helm's crds/ directory is INSTALL-ONLY: `helm upgrade` never creates a
+        # newly-added CRD and never updates an existing one
+        # (charts/agent-controller/charts/core-controller/crds/README.md). On a
+        # cluster whose release predates a CRD, that CRD simply never arrives,
+        # and a CRD that gained a field keeps serving the old schema -- so the
+        # API server silently PRUNES the new field out of every CR written to
+        # it. A missing field is not a visible failure; it is a resource that
+        # applies cleanly and then behaves as though half its spec were never
+        # set.
+        #
+        # Until now the only thing closing that gap was a human remembering to
+        # run kubectl by hand. values-production.yaml carried FOUR separate
+        # "applied manually once" comments to that effect -- for
+        # integrationroutes, for Agent.initContainers, and for
+        # IntegrationRoute.match.labelName. Every one of those was a deploy that
+        # looked green and shipped a cluster the charts did not describe.
+        #
+        # --server-side: Helm created these on first install and does not write
+        #   the last-applied-configuration annotation that CLIENT-side apply
+        #   diffs against (verified: the annotation is absent on a live
+        #   cluster's CRDs). A client-side apply would therefore compute its
+        #   patch against an empty baseline -- able to add and change fields, but
+        #   unable to REMOVE one dropped from the CRD, so a deleted property
+        #   would linger in the served schema indefinitely. Server-side apply
+        #   diffs against real field ownership instead. It is also what
+        #   e2e/scripts/up.sh already uses, so dev and CD converge.
+        # --force-conflicts: consequently those fields are owned by another
+        #   manager (Helm's, from the install), and server-side apply refuses to
+        #   take them over without this. Safe here because the chart's copy and
+        #   this one are generated from the same *_types.go source of truth --
+        #   there is no third version of the truth to lose.
+        run: |
+          kubectl apply --server-side --force-conflicts \
+            -f controllers/core-controller/config/crd/bases/
+
+          # An established CRD is the precondition for community-components'
+          # Tool/Skill/Agent/IntegrationRoute CRs below. Without the wait, a
+          # freshly-created CRD can still be un-established when Helm applies
+          # the first CR against it, which surfaces as a "no matches for kind"
+          # failure that succeeds on a re-run -- the shape of flake that gets
+          # dismissed as infrastructure noise.
+          for crd in controllers/core-controller/config/crd/bases/*.yaml; do
+            name=$(kubectl get -f "$crd" -o jsonpath='{.metadata.name}')
+            kubectl wait --for=condition=established --timeout=60s "crd/$name"
+          done
 
       - name: Fetch agent-controller chart dependencies
         run: |
@@ -302,17 +351,21 @@ jobs:
           helm dependency update charts/agent-controller/charts/agent-orchestrator
           helm dependency update charts/agent-controller
 
+      # --create-namespace on both: `-n controller-agent` does not create the
+      # namespace, so on a cluster that has never had this stack the very first
+      # deploy fails on a missing namespace rather than bootstrapping it. A
+      # no-op once it exists.
       - name: Helm upgrade agent-controller
         run: |
           helm upgrade --install agent-controller charts/agent-controller \
             -f charts/agent-controller/values-production.yaml \
-            -n controller-agent --timeout 5m
+            -n controller-agent --create-namespace --timeout 5m
 
       - name: Helm upgrade community-components
         run: |
           helm upgrade --install community-components charts/community-components \
             -f charts/community-components/values-production.yaml \
-            -n controller-agent --timeout 5m
+            -n controller-agent --create-namespace --timeout 5m
 
       # Tool/Agent Jobs (recipe-scraper, web-search, web-fetch,
       # recipe-publisher, opencode-swe-agent) are launched fresh per-invocation

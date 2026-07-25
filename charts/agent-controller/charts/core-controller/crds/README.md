@@ -14,6 +14,17 @@ make manifests   # regenerates config/crd/bases/*.yaml AND copies them here
 make sync-crds
 ```
 
-CI (`.github/workflows/publish-charts.yml`) runs the same sync before
-packaging, so published chart artifacts always carry current CRDs even
-though this directory isn't committed.
+CI (`.github/workflows/release.yml`, the `publish-charts` job) runs the same
+sync before packaging, so published chart artifacts always carry current CRDs
+even though this directory isn't committed.
+
+**This directory does not keep a running cluster's CRDs current, and cannot.**
+Because `helm upgrade` ignores `crds/`, an existing release never receives a
+newly-added CRD and never receives a schema change to an existing one — and an
+outdated schema is worse than a missing one, since the API server accepts CRs
+that reference new fields and silently prunes those fields away. The
+`release.yml` `deploy` job therefore applies
+`controllers/core-controller/config/crd/bases/` with `kubectl apply
+--server-side --force-conflicts` on every push, before either `helm upgrade`.
+That step is the mechanism that keeps cluster CRDs current; this directory only
+covers a first install and the packaged artifact.
