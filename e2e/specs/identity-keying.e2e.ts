@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { requireMinikubeContext } from "../support/guard.js";
-import { agentRunSecretEnvNames, agentRunsSince, waitFor, withPortForward } from "../support/k8s.js";
+import { agentRunSecretEnvNames, agentRunsSince, cleanupAgentRunsSince, waitFor, withPortForward } from "../support/k8s.js";
 import { deleteCredentialKeys, seedAllClaudeCredentials } from "../support/redis.js";
 import { issueLabeledPayload, postGithubWebhook } from "../support/webhook.js";
 import { resetFakeGithub, webhookSecret } from "../support/fixtures.js";
@@ -50,6 +50,18 @@ const issueNo = (offset: number): number => RUN_ID + offset;
  */
 describe("credential keying converges across entry points (ADR 0029/0030)", () => {
   let secret: string;
+  let suiteStartedAt: Date;
+
+  beforeAll(() => {
+    suiteStartedAt = new Date();
+  });
+
+  // Nothing else reclaims AgentRun CRs or their identity Secrets -- Jobs have
+  // a TTL, these do not. Without this the suite leaves permanent residue that
+  // every later `agentRunsSince` has to list and filter.
+  afterAll(async () => {
+    await cleanupAgentRunsSince(suiteStartedAt);
+  });
 
   beforeEach(async () => {
     secret = await webhookSecret();

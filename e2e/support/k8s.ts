@@ -130,3 +130,34 @@ export async function agentRunSecretEnvNames(agentRunName: string): Promise<stri
   const cr = await kubectlJson<{ spec?: { secretEnv?: { name: string }[] } }>(["get", "agentrun", agentRunName]);
   return (cr.spec?.secretEnv ?? []).map((e) => e.name);
 }
+
+/**
+ * Deletes AgentRun CRs created at or after `since`, plus the Kubernetes
+ * Secrets each one owns.
+ *
+ * Nothing else deletes them. The controller sets a TTL on the Job it creates,
+ * so Jobs disappear -- but the AgentRun CR and its `<run>-identity` Secret
+ * persist indefinitely. A suite that triggers a handful of runs per execution
+ * therefore leaves permanent residue: 50 CRs and 26 Secrets had accumulated
+ * here before this existed.
+ *
+ * That residue is not merely untidy. Cross-run state is what made these specs
+ * flaky in the first place (a reused issue number inherits its predecessor's
+ * session), and `agentRunsSince` has to list and filter every CR ever created,
+ * which grows without bound.
+ *
+ * Deleting the CR should cascade to the Secret via its ownerReference; the
+ * explicit sweep is a backstop for any Secret whose owner was already gone.
+ */
+export async function cleanupAgentRunsSince(since: Date): Promise<number> {
+  const runs = await agentRunsSince(since);
+  for (const run of runs) {
+    // --wait=false: teardown must not block the suite on finalizers, and a
+    // failure here should never fail a test that already passed.
+    await kubectl(["delete", "agentrun", run.name, "--wait=false", "--ignore-not-found"]).catch(() => undefined);
+    await kubectl(["delete", "secret", `${run.name}-identity`, "--wait=false", "--ignore-not-found"]).catch(
+      () => undefined,
+    );
+  }
+  return runs.length;
+}
