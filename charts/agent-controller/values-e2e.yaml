@@ -1,0 +1,162 @@
+# values-e2e.yaml — minikube overlay for the e2e suite (see e2e/README.md).
+#
+# Layered ON TOP of values-minikube-demo.yaml, not instead of it:
+#   helm upgrade --install agent-controller charts/agent-controller \
+#     -f charts/agent-controller/values-minikube-demo.yaml \
+#     -f charts/agent-controller/values-e2e.yaml
+#
+# The demo values exist to make a human-usable playground; this file adds only
+# what an automated test needs on top: an integration-gateway to receive
+# webhooks (the demo profile leaves it disabled, so there is nothing for a
+# webhook test to talk to), a GitHub API redirected at the in-cluster stub, and
+# deterministic identity/routing config.
+#
+# EVERY secret value referenced here is a throwaway generated at bring-up time
+# by `e2e/scripts/bootstrap-secrets.sh`. Nothing in this file is a real
+# credential, and none of it is shared with any other environment. The one
+# genuinely real key the stack needs (OPENAI_API_KEY, for the orchestrator's
+# planner) is created out-of-band by a human — see that script.
+
+integration-gateway:
+  # The whole point of this overlay. Off in every other profile.
+  enabled: true
+
+  config:
+    # Redirects ALL GitHub REST traffic at the in-cluster stub
+    # (e2e/manifests/fake-github.yaml), which both serves deterministic
+    # responses and records what we posted so tests can assert on it directly
+    # instead of scraping logs. Nothing reaches github.com from an e2e run.
+    githubApiUrl: "http://fake-github.controller-agent.svc.cluster.local"
+
+    # The OAuth/web host, redirected at the same stub. Without this the
+    # identity-link device flow calls real github.com/login/device/code with
+    # the placeholder client id below and gets a 404 -- and because `github`
+    # is the FIRST declared provider, that failure ends the turn before
+    # `claude`/`claude-remote` are ever reached, so no credential subject is
+    # ever keyed and the keying spec has nothing to observe.
+    githubBaseUrl: "http://fake-github.controller-agent.svc.cluster.local"
+
+    # Must match what the specs send. `fake-github` never originates events;
+    # the suite signs and posts them itself with the same HMAC the gateway
+    # verifies, so the signature path is exercised for real.
+    githubTriggerLabel: "ai-triage"
+
+    # Loop prevention: the gateway drops events sent by its own bot login.
+    # Specs deliberately use sender logins OTHER than this one, since an
+    # event from the bot is dropped before any identity resolution happens
+    # and the test would hang waiting for a run that was never going to start.
+    githubBotLogin: "e2e-bot"
+
+    # DEV-GRADE static allowlist (GithubIdentityResolver). Used here instead
+    # of team-membership resolution because the prod-grade resolver calls
+    # GitHub's org/team API for a real org — unavailable and undesirable in a
+    # hermetic test. These logins are exactly the ones the specs send as
+    # `sender.login`.
+    #
+    # `subject` is intentionally NOT a `github:*` value: the canonical
+    # credential subject must be DERIVED by resolveCredentialSubject from the
+    # webhook's senderLogin (ADR 0029), not handed to it preconfigured. If
+    # these subjects were already canonical the identity-keying spec would
+    # pass without the code under test doing anything.
+    githubIdentities: |
+      {
+        "e2e-user":       {"subject": "e2e-static-user",  "roles": ["reader", "writer"]},
+        "e2e-other-user": {"subject": "e2e-static-other", "roles": ["reader", "writer"]},
+        "E2E-User":       {"subject": "e2e-static-user",  "roles": ["reader", "writer"]}
+      }
+
+    # Aggressively short, and this is load-bearing for suite reliability.
+    #
+    # The gateway holds a relay open for the whole poll window. The negative
+    # controls deliberately trigger turns that never launch, so with a long
+    # window each one occupies the relay for its full duration and whichever
+    # positive spec runs afterwards queues behind that backlog -- observed as
+    # the LAST positive test timing out while identical earlier ones passed,
+    # which reads as a keying bug and is not one. A short window lets an
+    # abandoned turn release the relay promptly.
+    pollIntervalMs: 2000
+    pollTimeoutMs: 90000
+
+    # The OTHER hold, and the one that actually starved this suite.
+    #
+    # Shortening pollTimeoutMs above fixed the completed-turn case but missed
+    # this: a turn that PARKS on a missing account link is held open separately,
+    # by waitAndResume, for a window that was hard-coded to TEN MINUTES --
+    # unaffected by anything above it. The identity-keying negative controls
+    # park by design, so each one pinned a relay for ten minutes, long outliving
+    # the spec that caused it and starving whatever triggered next.
+    #
+    # Diagnosis, since the symptom is so misleading: the starved spec times out
+    # waiting for an AgentRun while the orchestrator logs NO authorization
+    # verdict at all. No verdict means /invoke was never reached, so the stall is
+    # upstream in the relay -- not the gate, and not keying, which is what a
+    # positive keying assertion failing here looks like.
+    #
+    # 20s: long enough to be a real wait, short enough that a deliberately
+    # parked turn releases before the next spec's 60s absence-window.
+    resumeWaitMs: 20000
+
+  # Per-user credential brokering — required by the identity-keying spec,
+  # which asserts which subject each entry point keys a Claude credential
+  # under. Without this the /identity-link/* and /claude-auth/* APIs the
+  # orchestrator calls simply aren't served.
+  identityLink:
+    enabled: true
+    # GitHub App client ids are public by design (the chart documents this).
+    # This is a placeholder: no e2e spec completes a real OAuth round trip,
+    # they assert on the subject a flow is KEYED under, which is decided
+    # before any redirect happens.
+    githubAppClientId: "Iv23li-e2e-placeholder"
+
+  claudeAuth:
+    # Needed for `claude`/`claude-remote` flows to be startable at all. The
+    # PTY-driven `claude login` cannot succeed without a real Anthropic
+    # credential, and no spec expects it to — they assert on the Redis key a
+    # started flow is keyed under, which is decided before the PTY runs.
+    enabled: true
+
+  sessionPage:
+    # claudeAuth.enabled requires this to be set or the chart refuses to
+    # render. Any reachable-looking value satisfies it; nothing in the suite
+    # loads the page.
+    publicBaseUrl: "http://agent-controller-integration-gateway.controller-agent.svc.cluster.local:8090"
+
+  secrets:
+    # Bring-your-own, exactly like prod — NOT chart-created.
+    #
+    # `create: true` here fails the deploy outright: bootstrap-secrets.sh has
+    # already made this secret, Helm then refuses to adopt an object it
+    # doesn't own ("invalid ownership metadata ... missing key
+    # meta.helm.sh/release-name"), and the whole release rolls back. Letting
+    # the script own the secret and Helm merely reference it sidesteps the
+    # conflict and keeps generated values out of version control.
+    #
+    # The name is deliberately NOT `agent-controller-integration-gateway` —
+    # that is the name the chart itself would generate, so reusing it invites
+    # the very ownership collision described above the moment anyone flips
+    # `create` back on.
+    create: false
+    existingSecret: e2e-integration-gateway-secrets
+
+agent-orchestrator:
+  # The orchestrator's CLIENT side of the identity-link channel. Enabling it
+  # only on the gateway (the server side) leaves the orchestrator with no
+  # gateway configured at all -- `hasIdentityLinkGateway: false` in its
+  # identity-gate debug log -- so no Agent's identityProviders can ever
+  # resolve and no credential flow starts. The identity-keying spec asserts
+  # on exactly those flows, so without this it can only ever time out.
+  identityLink:
+    enabled: true
+    # In-cluster Service DNS for the gateway deployed by this same release.
+    gatewayUrl: "http://agent-controller-integration-gateway:8090"
+  config:
+    # The gateway authenticates to /invoke with this bearer token, and the
+    # orchestrator must resolve it to a role the SWE agent allows.
+    #
+    # This is the shared service subject at the heart of the bug the suite
+    # exists to pin: EVERY webhook-driven turn arrives as this one identity,
+    # which is why `senderLogin` had to be plumbed through separately for
+    # per-user credential keying to be possible at all (ADR 0029). The
+    # identity-keying spec asserts that no Claude credential is ever keyed
+    # under this subject.
+    staticIdentities: '{"e2e-gateway-token":{"subject":"client-integration-gateway","roles":["reader","writer"]}}'

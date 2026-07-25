@@ -66,6 +66,13 @@ export interface AppConfig {
   /** HTTP port the consumer-facing invoke API listens on (ADR 0006). */
   httpPort: number;
   /**
+   * Shared secret integration-gateway signs its sender assertions with
+   * (docs/adr/0030 §6). When set, a webhook turn's sender login is accepted
+   * ONLY from a verified assertion; when unset, the unsigned request-body
+   * field is trusted (pre-assertion behaviour, warned about at startup).
+   */
+  senderAssertionSecret: string;
+  /**
    * Directory holding one `<runtime>.sock` per LocalTool executor sidecar
    * (ADR 0014), shared with the sidecars via an emptyDir. The orchestrator
    * POSTs run requests here over unix sockets — never over the network.
@@ -176,6 +183,7 @@ export const config: AppConfig = {
   callbackPort: num(process.env.AGENT_CALLBACK_PORT, 8080),
   callbackBaseUrl: process.env.AGENT_CALLBACK_BASE_URL ?? "http://localhost:8080",
   httpPort: num(process.env.AGENT_HTTP_PORT, 8081),
+  senderAssertionSecret: process.env.AGENT_SENDER_ASSERTION_SECRET ?? "",
   callbackSecret: process.env.AGENT_CALLBACK_SECRET ?? "",
   callbackSecretRefName: process.env.AGENT_CALLBACK_SECRET_REF_NAME,
   callbackSecretRefKey: process.env.AGENT_CALLBACK_SECRET_REF_KEY ?? "AGENT_CALLBACK_SECRET",

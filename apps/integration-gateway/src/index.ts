@@ -168,7 +168,16 @@ async function main(): Promise<void> {
     token: orchestratorTokenProvider ? () => orchestratorTokenProvider.getToken() : config.orchestratorToken,
     pollIntervalMs: config.pollIntervalMs,
     pollTimeoutMs: config.pollTimeoutMs,
+    senderAssertionSecret: config.senderAssertionSecret,
   });
+  if (!config.senderAssertionSecret) {
+    console.error(
+      "WARNING: GATEWAY_SENDER_ASSERTION_SECRET is not set -- the sender login is relayed to agent-orchestrator UNSIGNED. " +
+        "That login selects the caller's principal and therefore which stored credentials a run receives, so anything " +
+        "holding this gateway's /invoke token could name an arbitrary login. Set it (and the orchestrator's matching " +
+        "AGENT_SENDER_ASSERTION_SECRET) to have the orchestrator require a verified assertion (docs/adr/0030).",
+    );
+  }
 
   const githubReplyClient = new GithubReplyClient({
     githubToken: config.githubToken,
@@ -197,6 +206,11 @@ async function main(): Promise<void> {
       clientSecret: config.githubAppClientSecret,
       stateSecret: config.identityLinkStateSecret,
       redirectUri: config.githubOauthRedirectUri,
+      // Without this the linker falls back to its own github.com default,
+      // so a GitHub Enterprise Server deployment would send its users to
+      // github.com/login/device/code -- which 404s for a GHES-registered
+      // App's client id.
+      githubBaseUrl: config.githubBaseUrl,
     });
   }
 
@@ -261,6 +275,7 @@ async function main(): Promise<void> {
     ...(sessionPageStore ? { sessionPageStore, publicBaseUrl: config.publicUrl } : {}),
     ...(claudeAuthFlows && claudeTokenStore ? { claudeAuthFlows, claudeAuthStore: claudeTokenStore } : {}),
     ...(claudeLoginFlows ? { claudeLoginFlows } : {}),
+    resumeWaitMs: config.resumeWaitMs,
   });
 
   await server.listen(config.httpPort);

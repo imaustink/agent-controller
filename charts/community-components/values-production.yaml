@@ -111,37 +111,26 @@ opencodeSweAgent:
 # secret` invocation) -- CI builds/pushes the image, but Helm can't source
 # secret VALUES on its own, so that Secret is still a manual prerequisite.
 #
-# identityLink.providers leads with "github", and the ORDER is load-bearing.
+# identityLink.providers lists only the credentials a RUN actually needs.
 #
-# The gate resolves every declared provider in order (it used to stop after
-# index 0, which is why this list was once "claude" only -- that limitation
-# is gone). "github" is first because its link is what supplies the canonical
-# credential subject: a chat caller's Claude credentials are keyed by
-# `github:<login>`, and the login is read off this very link (see
-# agent-orchestrator's resolveCredentialSubject). Resolve it after the Claude
-# providers and the first turn would key them under the raw `openwebui:<id>`
-# subject instead, which is exactly the cross-flow split we're fixing.
+# `github` is deliberately NOT here. It was added so the gate could derive the
+# canonical `github:<login>` credential subject (ADR 0029), but declaring a
+# provider does two unrelated things: it obtains an identity mapping AND it
+# provisions a credential. Only the first was wanted. The second populated
+# GITHUB_TOKEN, which switched on this agent's delegated-write path and
+# produced a production 401 from a `/user` call the agent had no reason to
+# make.
 #
-# Requiring "github" here means a chat user links GitHub once before this
-# agent will run. That is a deliberate trade (see the PR that introduced the
-# canonical subject): it guarantees every caller has a canonical key, so a
-# Claude authorization done during ai-triage is reused in chat and vice
-# versa, instead of each entry point prompting separately.
+# ADR 0030 separates those concerns: the orchestrator now resolves the caller's
+# login with a read-only lookup of their existing github link (or the webhook's
+# verified sender) regardless of what this list says, and injects it as
+# AGENT_ACTOR_LOGIN. So cross-flow credential sharing still works, and this
+# agent no longer needs a per-user GitHub credential it never used -- git
+# operations continue to run on the App installation token, as they always did.
 #
-# Git/gh operations do NOT depend on that link: resolveGithubToken still
-# prefers the GitHub App installation token (githubAppIdSecretKey/etc. below)
-# over any per-user token whenever all three App fields are configured, so
-# commits/PRs keep attributing to the k5s-bot App identity exactly as before.
-# The per-user GITHUB_TOKEN injected by the link is the dual-token pattern
-# opencode-swe-agent already uses.
-#
-# No static anthropicSecretKey/claudeCodeOAuthTokenSecretKey needed here:
-# with "claude" in identityLink.providers, delegateToAgent (agent-
-# orchestrator) refuses to launch a Job at all until the caller has a linked
-# Claude token, so a per-run CLAUDE_CODE_OAUTH_TOKEN is always present by the
-# time this agent actually runs -- a static fallback key would just be dead
-# config nobody ever reads (claude-code-swe-secrets therefore only needs the
-# three GITHUB_APP_* keys below).
+# Removing it also drops the extra trigger a user needed (the first webhook
+# turn used to spend itself posting a GitHub link prompt) and decouples Claude
+# authorization from GitHub OAuth availability.
 claudeCodeSweAgent:
   enabled: true
   image: registry.kurpuis.com:5000/claude-code-swe-agent:latest
@@ -158,9 +147,6 @@ claudeCodeSweAgent:
   identityLink:
     enabled: true
     providers:
-      # MUST stay first -- supplies the `github:<login>` canonical subject the
-      # two Claude providers below are keyed under (see the block comment).
-      - github
       - claude
       # Required for Remote Control (see remoteControl below) -- without
       # this, agent-orchestrator never resolves/injects the per-run
@@ -170,10 +156,10 @@ claudeCodeSweAgent:
   # Claude Code Remote Control (claude.ai/code session takeover) for
   # ai-triage runs, replacing the old session-page link in the triage
   # comment. Also requires: (1) the cluster's Agent CRD to actually have the
-  # initContainers field -- `helm upgrade` never updates CRDs on an existing
-  # release, so this must be applied manually once:
-  #   kubectl apply -f controllers/core-controller/config/crd/bases/core.controller-agent.dev_agents.yaml
-  # (2) integration-gateway's claudeAuth.enabled=true (see
+  # initContainers field -- once a manual `kubectl apply` of that CRD, now done
+  # by the deploy job's "Apply CRDs" step on every push
+  # (.github/workflows/release.yml), since `helm upgrade` never updates CRDs on
+  # an existing release. (2) integration-gateway's claudeAuth.enabled=true (see
   # charts/agent-controller/values-production.yaml) so its `mode=login` PTY
   # flow is actually wired up, not just the setup-token one.
   #
@@ -217,11 +203,11 @@ integrationRoutes:
   # already uses (agent-controller values' claudeAuth.enabled).
   #
   # Requires claudeCodeSweAgent.enabled=true (set above) and the
-  # IntegrationRoute CRD to exist on the cluster -- `helm upgrade` does NOT
+  # IntegrationRoute CRD to exist on the cluster. `helm upgrade` does NOT
   # install/update CRDs for an existing release
-  # (charts/agent-controller/charts/core-controller/crds/README.md), so this
-  # was applied manually once:
-  #   kubectl apply -f controllers/core-controller/config/crd/bases/core.controller-agent.dev_integrationroutes.yaml
+  # (charts/agent-controller/charts/core-controller/crds/README.md), which is
+  # why this once needed a manual `kubectl apply`; the deploy job now applies
+  # every CRD on every push (.github/workflows/release.yml, "Apply CRDs").
   githubIssueLabeledTriage:
     enabled: true
     agentRef: claude-code-swe-agent
@@ -239,10 +225,9 @@ integrationRoutes:
   # same per-user gate the ai-triage path already uses.
   #
   # Requires claudeCodeSweAgent.enabled=true (set above) and the
-  # IntegrationRoute CRD to exist on the cluster -- `helm upgrade` does NOT
-  # install/update CRDs for an existing release, so if it isn't already
-  # present it must be applied manually once:
-  #   kubectl apply -f controllers/core-controller/config/crd/bases/core.controller-agent.dev_integrationroutes.yaml
+  # IntegrationRoute CRD to exist on the cluster -- applied by the deploy job's
+  # "Apply CRDs" step, since `helm upgrade` does NOT install/update CRDs for an
+  # existing release.
   githubPrLabeledReview:
     enabled: true
     agentRef: claude-code-swe-agent
@@ -261,10 +246,10 @@ integrationRoutes:
   # to launch -- the same per-user gate the whole ai-triage path already uses.
   #
   # Requires the IntegrationRoute CRD on the cluster to carry match.labelName
-  # (added alongside this route) -- `helm upgrade` does NOT update CRDs for an
-  # existing release, so the CRD must be re-applied once before this route
-  # will validate:
-  #   kubectl apply -f controllers/core-controller/config/crd/bases/core.controller-agent.dev_integrationroutes.yaml
+  # (added alongside this route). This is exactly the case `helm upgrade` cannot
+  # handle -- it never updates an existing release's CRDs, so the route would
+  # apply cleanly while the API server pruned match.labelName out of it. The
+  # deploy job's "Apply CRDs" step is what makes the field actually exist.
   githubPrLabeledTriage:
     enabled: true
     agentRef: claude-code-swe-agent

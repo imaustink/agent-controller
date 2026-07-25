@@ -84,8 +84,17 @@ export async function setupGitAuth(opts: {
 
 export interface CoAuthor {
   login: string;
-  /** Numeric GitHub user id — used to build the standard `id+login@users.noreply.github.com` trailer email. */
-  id: number;
+  /**
+   * Numeric GitHub user id — used to build the standard
+   * `id+login@users.noreply.github.com` trailer email.
+   *
+   * Optional since docs/adr/0030: when agent-orchestrator supplies the actor
+   * login via `AGENT_ACTOR_LOGIN`, this agent no longer calls `/user`, so the
+   * id is unknown. The trailer then uses the `login@users.noreply.github.com`
+   * form, which GitHub still attributes correctly — it just doesn't pin the
+   * attribution to an account that later renames.
+   */
+  id?: number;
 }
 
 /**
@@ -113,7 +122,10 @@ export async function appendCoAuthorTrailer(
   const msgRes = await runCommand("git", ["-C", repoDir, "log", "-1", "--pretty=%B"], { env });
   if (msgRes.code !== 0) return false;
 
-  const email = `${coAuthor.id}+${coAuthor.login}@users.noreply.github.com`;
+  const email =
+    coAuthor.id === undefined
+      ? `${coAuthor.login}@users.noreply.github.com`
+      : `${coAuthor.id}+${coAuthor.login}@users.noreply.github.com`;
   const newMessage = `${msgRes.stdout.trimEnd()}\n\nCo-authored-by: ${coAuthor.login} <${email}>\n`;
 
   const amendRes = await runCommand("git", ["-C", repoDir, "commit", "--amend", "--allow-empty", "-m", newMessage], {

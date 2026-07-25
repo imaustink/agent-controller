@@ -49,6 +49,8 @@ spec:
               value: {{ .Values.config.orchestratorUrl | quote }}
             - name: GITHUB_API_URL
               value: {{ .Values.config.githubApiUrl | quote }}
+            - name: GITHUB_BASE_URL
+              value: {{ .Values.config.githubBaseUrl | quote }}
             - name: GATEWAY_GITHUB_BOT_LOGIN
               value: {{ .Values.config.githubBotLogin | quote }}
             - name: GATEWAY_GITHUB_TRIGGER_LABEL
@@ -71,6 +73,8 @@ spec:
               value: {{ .Values.config.pollIntervalMs | quote }}
             - name: GATEWAY_POLL_TIMEOUT_MS
               value: {{ .Values.config.pollTimeoutMs | quote }}
+            - name: GATEWAY_RESUME_WAIT_MS
+              value: {{ .Values.config.resumeWaitMs | quote }}
             {{- if .Values.sessionPage.publicBaseUrl }}
             - name: GATEWAY_PUBLIC_URL
               value: {{ .Values.sessionPage.publicBaseUrl | quote }}
@@ -152,6 +156,14 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
                   key: {{ .Values.secrets.identityLinkTokenKey }}
+            {{- if .Values.secrets.senderAssertionSecretKey }}
+            - name: GATEWAY_SENDER_ASSERTION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.senderAssertionSecretKey }}
+                  optional: true
+            {{- end }}
             - name: GITHUB_APP_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:

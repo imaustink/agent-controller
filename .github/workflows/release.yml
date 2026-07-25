@@ -292,7 +292,95 @@ jobs:
         # convention needs the files physically present before `helm
         # dependency update`/`helm upgrade` will pick them up. Same step
         # publish-charts runs before packaging.
+        #
+        # This only covers a FIRST install. See the next step for why.
         run: cp controllers/core-controller/config/crd/bases/*.yaml charts/agent-controller/charts/core-controller/crds/
+
+      - name: Apply CRDs
+        # Helm's crds/ directory is INSTALL-ONLY: `helm upgrade` never creates a
+        # newly-added CRD and never updates an existing one
+        # (charts/agent-controller/charts/core-controller/crds/README.md). On a
+        # cluster whose release predates a CRD, that CRD simply never arrives,
+        # and a CRD that gained a field keeps serving the old schema -- so the
+        # API server silently PRUNES the new field out of every CR written to
+        # it. A missing field is not a visible failure; it is a resource that
+        # applies cleanly and then behaves as though half its spec were never
+        # set.
+        #
+        # Until now the only thing closing that gap was a human remembering to
+        # run kubectl by hand. values-production.yaml carried FOUR separate
+        # "applied manually once" comments to that effect -- for
+        # integrationroutes, for Agent.initContainers, and for
+        # IntegrationRoute.match.labelName. Every one of those was a deploy that
+        # looked green and shipped a cluster the charts did not describe.
+        #
+        # --server-side: the target cluster's CRDs have INCONSISTENT provenance,
+        #   which is precisely why a single client-side apply cannot be trusted
+        #   to reconcile them. Field managers observed on the live cluster:
+        #     - tools/skills/toolruns/localtools -> "helm" only, no
+        #       last-applied-configuration annotation. A client-side apply here
+        #       diffs against an empty baseline: able to add and change fields,
+        #       but unable to REMOVE one dropped from the CRD, so a deleted
+        #       property would linger in the served schema indefinitely.
+        #     - agentruns/agents -> "helm" AND "kubectl-client-side-apply":
+        #       Helm-installed, then hand-patched later.
+        #     - integrationroutes -> "kubectl-client-side-apply" ONLY, with no
+        #       helm manager at all. That CRD was never installed by Helm on
+        #       this cluster; it arrived entirely by hand.
+        #   Those last two rows are the four "applied manually once" comments in
+        #   values-production.yaml, still legible in the cluster's own field
+        #   ownership. Server-side apply diffs against real field ownership
+        #   rather than an annotation that only some objects carry. It is also
+        #   what e2e/scripts/up.sh already uses, so dev and CD converge.
+        # --force-conflicts: consequently those fields are owned by other
+        #   managers (helm, and on three of them kubectl-client-side-apply too),
+        #   and server-side apply refuses to take them over without this. Safe
+        #   here because every one of those managers wrote the same generated
+        #   artifact -- the chart's copy and this one both come from the same
+        #   *_types.go source of truth -- so there is no third version of the
+        #   truth to lose. Verified by applying all 7 as the deploy runner's own
+        #   ServiceAccount against the live cluster (server dry-run): all
+        #   succeed, with a non-fatal one-time annotation-migration warning on
+        #   the hand-patched ones, which resolves itself on the next apply.
+        run: |
+          # Preflight the one permission this step needs, before touching
+          # anything. CRDs are CLUSTER-scoped; every other kubectl/helm call in
+          # this job is namespaced, so this is the first thing here to require
+          # cluster-scoped rights and the runner's ServiceAccount may well not
+          # have them. Without this check the failure is a raw RBAC error from
+          # whichever CRD happened to be applied first -- accurate, but it names
+          # a resource rather than the missing grant. The ServiceAccount is the
+          # ARC runner pod's own (there is no kubeconfig step in this job) and
+          # is cluster infrastructure, not something this repo can grant itself.
+          # `-A` only to keep the check quiet: without it kubectl warns that
+          # customresourcedefinitions is not namespace-scoped (the job's context
+          # carries a namespace). stderr is deliberately NOT suppressed, so a
+          # connectivity failure here is still visible rather than being
+          # misreported as a permissions problem.
+          if ! kubectl auth can-i create customresourcedefinitions.apiextensions.k8s.io -A >/dev/null; then
+            echo "::error::The deploy runner's ServiceAccount cannot write CRDs, so this step cannot apply them."
+            echo "CRDs are cluster-scoped; the rest of this job is namespaced, which is why nothing caught this earlier."
+            echo "Grant the ARC runner's ServiceAccount a ClusterRole with:"
+            echo "  apiGroups: [\"apiextensions.k8s.io\"]"
+            echo "  resources: [\"customresourcedefinitions\"]"
+            echo "  verbs: [\"get\", \"list\", \"create\", \"update\", \"patch\"]"
+            echo "Until then every CRD change must be applied by hand, which is the gap this step exists to close."
+            exit 1
+          fi
+
+          kubectl apply --server-side --force-conflicts \
+            -f controllers/core-controller/config/crd/bases/
+
+          # An established CRD is the precondition for community-components'
+          # Tool/Skill/Agent/IntegrationRoute CRs below. Without the wait, a
+          # freshly-created CRD can still be un-established when Helm applies
+          # the first CR against it, which surfaces as a "no matches for kind"
+          # failure that succeeds on a re-run -- the shape of flake that gets
+          # dismissed as infrastructure noise.
+          for crd in controllers/core-controller/config/crd/bases/*.yaml; do
+            name=$(kubectl get -f "$crd" -o jsonpath='{.metadata.name}')
+            kubectl wait --for=condition=established --timeout=60s "crd/$name"
+          done
 
       - name: Fetch agent-controller chart dependencies
         run: |
@@ -302,17 +390,21 @@ jobs:
           helm dependency update charts/agent-controller/charts/agent-orchestrator
           helm dependency update charts/agent-controller
 
+      # --create-namespace on both: `-n controller-agent` does not create the
+      # namespace, so on a cluster that has never had this stack the very first
+      # deploy fails on a missing namespace rather than bootstrapping it. A
+      # no-op once it exists.
       - name: Helm upgrade agent-controller
         run: |
           helm upgrade --install agent-controller charts/agent-controller \
             -f charts/agent-controller/values-production.yaml \
-            -n controller-agent --timeout 5m
+            -n controller-agent --create-namespace --timeout 5m
 
       - name: Helm upgrade community-components
         run: |
           helm upgrade --install community-components charts/community-components \
             -f charts/community-components/values-production.yaml \
-            -n controller-agent --timeout 5m
+            -n controller-agent --create-namespace --timeout 5m
 
       # Tool/Agent Jobs (recipe-scraper, web-search, web-fetch,
       # recipe-publisher, opencode-swe-agent) are launched fresh per-invocation

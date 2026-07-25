@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -42,6 +43,11 @@ type AgentRunReconciler struct {
 	// Job so the @controller-agent/agent-runtime SDK can connect on startup.
 	// Set from the controller manager's own env at startup (cmd/main.go).
 	NatsConfig AgentNatsConfig
+	// Retention is how long a terminal AgentRun (and the Secret it owns) is
+	// kept before reclamation. Zero means DefaultAgentRunRetention -- there is
+	// deliberately no "keep forever" setting, since that is the behaviour that
+	// let credential-bearing Secrets accumulate indefinitely.
+	Retention time.Duration
 }
 
 // AgentNatsConfig is the NATS connection config injected into every agent Job.
@@ -78,9 +84,37 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	// Already terminal — nothing left to reconcile for lifecycle purposes.
+	// Already terminal — reclaim it once its retention window has elapsed.
+	//
+	// Nothing else ever deleted an AgentRun. The Job it creates carries a TTL
+	// and disappears, but the CR and the per-run `<name>-identity` Secret it
+	// owns persisted forever: a live cluster was found holding runs 8 days old,
+	// each still carrying encrypted credential material in etcd long after the
+	// run that needed it had finished. That is both unbounded object growth and
+	// a credential-lifetime problem, so retention is bounded here rather than
+	// left to an operator remembering to prune.
+	//
+	// Deleting the CR cascades to the Secret through its ownerReference, so
+	// this single delete reclaims both.
 	if run.Status.Phase == toolv1alpha1.ToolRunPhaseSucceeded || run.Status.Phase == toolv1alpha1.ToolRunPhaseFailed {
-		return ctrl.Result{}, nil
+		retention := r.retention()
+		// A run whose completion time was never recorded (older CRs predate the
+		// field) falls back to its creation time -- reclaiming late is fine,
+		// never reclaiming is not.
+		finishedAt := run.Status.CompletionTime
+		if finishedAt == nil {
+			finishedAt = &run.CreationTimestamp
+		}
+		age := time.Since(finishedAt.Time)
+		if age >= retention {
+			log.Info("reclaiming terminal AgentRun", "name", run.Name, "phase", run.Status.Phase, "age", age.String())
+			if err := r.Delete(ctx, &run); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+		// Come back exactly when it becomes eligible rather than polling.
+		return ctrl.Result{RequeueAfter: retention - age}, nil
 	}
 
 	if run.Status.JobName == "" {
@@ -88,6 +122,21 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	return r.syncJobStatus(ctx, &run, log)
+}
+
+// DefaultAgentRunRetention is how long a terminal AgentRun (and the Secret it
+// owns) is kept before being reclaimed. Long enough to inspect a failure by
+// hand, short enough that credential material does not linger.
+const DefaultAgentRunRetention = 1 * time.Hour
+
+// retention returns the configured retention window, falling back to
+// DefaultAgentRunRetention when unset so an operator who never configures it
+// still gets bounded growth.
+func (r *AgentRunReconciler) retention() time.Duration {
+	if r.Retention > 0 {
+		return r.Retention
+	}
+	return DefaultAgentRunRetention
 }
 
 func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.AgentRun) (ctrl.Result, error) {

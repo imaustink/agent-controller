@@ -126,7 +126,7 @@ describe("buildAgentGraph", () => {
     const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
 
     expect(final.error).toBeUndefined();
-    expect(final.identity).toEqual({ subject: "alice", roles: ["reader"] });
+    expect(final.identity).toEqual({ subject: "alice", roles: ["reader"], principal: "alice" });
     expect(final.selectedSkill?.id).toBe("recipe-publisher-skill");
     expect(final.selectedTool?.id).toBe("recipe-scraper");
     expect(final.result).toEqual({ title: "Pancakes" });
@@ -301,7 +301,7 @@ describe("buildAgentGraph", () => {
       forwardedUserToken: "alices-signed-jwt",
     });
 
-    expect(final.identity).toEqual({ subject: "openwebui:alice", roles: ["reader"] });
+    expect(final.identity).toEqual({ subject: "openwebui:alice", roles: ["reader"], principal: "openwebui:alice" });
     expect(forwardedUserIdentityResolver.resolve).toHaveBeenCalledWith("alices-signed-jwt");
     expect(identityResolver.resolve).not.toHaveBeenCalled();
   });
@@ -317,7 +317,7 @@ describe("buildAgentGraph", () => {
       authToken: "shared-static-token",
     });
 
-    expect(final.identity).toEqual({ subject: "openwebui", roles: ["reader"] });
+    expect(final.identity).toEqual({ subject: "openwebui", roles: ["reader"], principal: "openwebui" });
     expect(forwardedUserIdentityResolver.resolve).not.toHaveBeenCalled();
   });
 
@@ -1838,7 +1838,13 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
       githubAgent.agentRunTemplate,
       expect.any(String),
-      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }] }),
+      expect.objectContaining({ secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ] }),
     );
     expect(final.identityLinkPending).toBeFalsy();
     expect(final.pendingIdentityLink).toBeUndefined();
@@ -1956,7 +1962,13 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       githubAgent.agentRunTemplate,
       expect.any(String),
       expect.objectContaining({
-        secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }],
+        secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ],
         goal: "triage and resolve this issue",
       }),
     );
@@ -2031,7 +2043,13 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
       githubAgent.agentRunTemplate,
       expect.any(String),
-      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }] }),
+      expect.objectContaining({ secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ] }),
     );
     expect(final.pendingIdentityLink).toBeUndefined();
     expect(final.agentRunId).toBeDefined();
@@ -2204,7 +2222,13 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
       githubAgent.agentRunTemplate,
       expect.any(String),
-      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }] }),
+      expect.objectContaining({ secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ] }),
     );
     expect(final.pendingIdentityLink).toBeUndefined();
     expect(final.agentRunId).toBeDefined();
@@ -2982,5 +3006,181 @@ describe("buildAgentGraph canonical credential subject (cross-flow Claude creden
     // A grant against the raw subject would write refreshed credentials to a
     // record nothing reads, and the shared one would die on the next refresh.
     expect(createWritebackGrant).toHaveBeenCalledWith("github:imaustink", expect.any(Number));
+  });
+});
+
+describe("buildAgentGraph batch authorization pre-flight (docs/adr/0030)", () => {
+  const twoProviderAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    identityProviders: ["github", "claude"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  function preflightDeps(github: Partial<IdentityLinkPort>, claude: Partial<IdentityLinkPort>) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: twoProviderAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([twoProviderAgent]),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector: { select: vi.fn().mockResolvedValue({ type: "agent", agent: twoProviderAgent }) },
+      agentChannel: {
+        awaitReply: vi.fn().mockResolvedValue({ message: "done", final: true, narration: [] } satisfies AgentTurnResult),
+        sendPrompt: vi.fn(),
+        close: vi.fn(),
+      },
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      identityLinkGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue(undefined), ...github } as IdentityLinkPort,
+      claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue(undefined), ...claude } as IdentityLinkPort,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+  }
+
+  const startsOk = (url: string) => vi.fn().mockResolvedValue({ flow: "authcode" as const, authorizeUrl: url, expiresInSeconds: 600 });
+
+  it("starts EVERY missing provider's link on one turn and prompts for them together", async () => {
+    const deps = preflightDeps(
+      { start: startsOk("https://github.example/auth") },
+      { start: startsOk("https://claude.example/auth") },
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // Both started on THIS turn. Before ADR 0030 the gate returned after the
+    // first gap, so the second provider's link was not even attempted and the
+    // user needed a separate trigger to discover it.
+    expect(deps.identityLinkGateway!.start).toHaveBeenCalled();
+    expect(deps.claudeAuthGateway!.start).toHaveBeenCalled();
+    expect(final.result).toMatch(/2 accounts/i);
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
+  it("does not let one provider's start failure hide another's link", async () => {
+    // The exact production coupling ADR 0030 removes: `github` failing to
+    // start ended the turn before `claude` was evaluated, so a GitHub OAuth
+    // failure blocked Claude authorization entirely.
+    const deps = preflightDeps(
+      { start: vi.fn().mockRejectedValue(new Error("github oauth down")) },
+      { start: startsOk("https://claude.example/auth") },
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(deps.claudeAuthGateway!.start).toHaveBeenCalled();
+    expect(final.result).toMatch(/claude\.example\/auth/);
+    expect(final.result).toMatch(/couldn't start the GitHub/i);
+    // Still parks a resume anchor, so finishing the Claude link resumes.
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink?.provider).toBe("claude");
+  });
+
+  it("reads as a standalone message when EVERY provider failed to start", async () => {
+    const deps = preflightDeps(
+      { start: vi.fn().mockRejectedValue(new Error("down")) },
+      { start: vi.fn().mockRejectedValue(new Error("down")) },
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // No preceding clause, so it must not open with "I also".
+    expect(final.result).not.toMatch(/^I also/);
+    expect(final.result).toMatch(/couldn't start the one-time/i);
+    expect(final.identityLinkPending).toBeFalsy();
+  });
+
+  it("injects the actor login from the github link, so the agent never resolves identity itself", async () => {
+    const deps = preflightDeps(
+      { getToken: vi.fn().mockResolvedValue({ token: "gho_t", githubLogin: "Imaustink" }) },
+      { getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01" }) },
+    );
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as {
+      secretEnv?: { name: string; value: string }[];
+    };
+    // Taken verbatim off the link record -- no /user round trip, which is the
+    // call that was returning 401 in production.
+    expect(launched.secretEnv).toContainEqual({ name: "AGENT_ACTOR_LOGIN", value: "Imaustink" });
+  });
+});
+
+describe("credentials never reach the model (docs/adr/0030 §3)", () => {
+  const SECRET_TOKEN = "sk-ant-oat01-SUPER-SECRET-VALUE";
+  const SECRET_CREDS = '{"claudeAiOauth":{"accessToken":"SUPER-SECRET-CREDENTIALS-JSON"}}';
+
+  const agent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    identityProviders: ["claude", "claude-remote"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  it("passes no credential material to any model-facing dependency", async () => {
+    // Every model-facing dep records the arguments it was called with. If a
+    // credential can reach an LLM at all, it has to pass through one of these.
+    const seen: unknown[] = [];
+    const record = <T>(result: T) => vi.fn((...args: unknown[]) => { seen.push(args); return Promise.resolve(result); });
+
+    const deps = baseDeps({
+      agentStore: {
+        upsert: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ agent, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([agent]),
+      },
+      delegateSelector: { select: record({ type: "agent" as const, agent }) },
+      skillFitChecker: { fits: record(true) },
+      capabilityNeedChecker: { needsCapability: record(true) },
+      responseComposer: { compose: record({ prefix: null, suffix: null }) },
+      agentChannel: {
+        awaitReply: vi.fn().mockResolvedValue({ message: "done", final: true, narration: [] } satisfies AgentTurnResult),
+        sendPrompt: vi.fn(),
+        close: vi.fn(),
+      },
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      claudeAuthGateway: {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getToken: vi.fn().mockResolvedValue({ token: SECRET_TOKEN }),
+      } as IdentityLinkPort,
+      claudeRemoteGateway: {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getToken: vi.fn().mockResolvedValue({ token: SECRET_CREDS }),
+      } as IdentityLinkPort,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+
+    const final = await buildAgentGraph(deps).invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // Sanity: the credentials really were resolved, so a passing assertion
+    // below means "not leaked" rather than "never present".
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as {
+      secretEnv?: { name: string; value: string }[];
+    };
+    expect(launched.secretEnv?.map((e) => e.value)).toContain(SECRET_TOKEN);
+
+    // The actual guarantee.
+    const modelFacing = JSON.stringify(seen);
+    expect(modelFacing).not.toContain(SECRET_TOKEN);
+    expect(modelFacing).not.toContain(SECRET_CREDS);
+
+    // Nor may they survive on the returned graph state, which is persisted to
+    // the session store and echoed into later prompts.
+    const serializedState = JSON.stringify(final);
+    expect(serializedState).not.toContain(SECRET_TOKEN);
+    expect(serializedState).not.toContain(SECRET_CREDS);
   });
 });

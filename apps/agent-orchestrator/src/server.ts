@@ -21,6 +21,7 @@ import {
   writeSseDone,
   writeSseStatus,
 } from "./openai/chat-completions.js";
+import { SENDER_ASSERTION_HEADER, verifySenderAssertion } from "./rbac/sender-assertion.js";
 import type { TaskCompleter } from "./openai/task-completer.js";
 import { withHeartbeat } from "./openai/with-heartbeat.js";
 
@@ -242,6 +243,17 @@ export class InvokeServer {
      * exist; `/invoke` and the chat-completions facade are unaffected either way.
      */
     private readonly agentChannel?: AgentOrchestratorChannel,
+    /**
+     * Shared secret integration-gateway signs its sender assertions with
+     * (docs/adr/0030 §6).
+     *
+     * When set, a webhook turn's sender login is accepted ONLY from a verified
+     * assertion and the unsigned `event.senderLogin` body field is ignored.
+     * When unset, the body field is trusted -- the pre-assertion behaviour,
+     * kept so an existing deployment is not broken by upgrading, and warned
+     * about at startup (see index.ts).
+     */
+    private readonly senderAssertionSecret?: string,
   ) {}
 
   /** Builds the graph input for one turn, folding in any session-scoped active skill or agent run (docs/adr/0012). */
@@ -604,12 +616,25 @@ export class InvokeServer {
       // request text and behaves exactly as before this field existed.
       const rawEvent = (parsed as { event?: unknown }).event;
       // Read OUTSIDE the IntegrationRoute block below on purpose: the
-      // canonical credential subject must resolve for every webhook-driven
-      // turn, including ones that match no route (or run with no route
-      // registry configured at all) and fall back to ordinary RAG retrieval.
-      // Gating it on a route match would have made cross-flow credential
-      // sharing quietly depend on routing config.
-      if (rawEvent && typeof rawEvent === "object") {
+      // principal must resolve for every webhook-driven turn, including ones
+      // that match no route (or run with no route registry configured) and
+      // fall back to ordinary RAG retrieval. Gating it on a route match would
+      // have made cross-entry-point credential sharing quietly depend on
+      // routing config.
+      //
+      // WHERE the login is trusted from depends on configuration
+      // (docs/adr/0030 §6). It selects the caller's principal, and therefore
+      // which stored credentials the run receives, so with an assertion secret
+      // configured ONLY a signed assertion is accepted and the body field is
+      // ignored entirely -- otherwise anything holding the gateway's /invoke
+      // token could name an arbitrary login and be handed that person's
+      // credentials.
+      if (this.senderAssertionSecret) {
+        senderLogin = verifySenderAssertion(
+          this.senderAssertionSecret,
+          headerValue(req.headers[SENDER_ASSERTION_HEADER]),
+        );
+      } else if (rawEvent && typeof rawEvent === "object") {
         const login = (rawEvent as Record<string, unknown>).senderLogin;
         if (typeof login === "string" && login.trim() !== "") senderLogin = login;
       }

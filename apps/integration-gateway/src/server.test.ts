@@ -631,9 +631,48 @@ describe("GatewayServer unauthenticated triage: deferred ack + auto-resume", () 
     expect(postIssueComment).toHaveBeenCalledTimes(2);
 
     // Waited on the gateway-owned claude token store for the gateway subject,
-    // and re-invoked the SAME triage request once it landed.
+    // and re-invoked the SAME triage request once it landed. The window is the
+    // DEFAULT here (no resumeWaitMs configured above) -- see the override test
+    // below for why that default is worth being able to change.
     expect(waitForCompletion).toHaveBeenCalledWith("client-integration-gateway", 10 * 60 * 1000, "setup-token");
     expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("honours a configured resumeWaitMs instead of the ten-minute default", async () => {
+    // A parked turn holds its relay for this entire window, and the window used
+    // to be a hard-coded constant. That starved the e2e suite: its negative
+    // controls park on purpose, so each one pinned a relay for ten minutes --
+    // outliving the spec that caused it and delaying the next spec's trigger by
+    // the same ten minutes, which presents as an unrelated keying assertion
+    // timing out. Deployments where parking is routine need a shorter hold.
+    await server.close();
+    server = new GatewayServer({
+      githubWebhookSecret: SECRET,
+      identityResolver: new GithubIdentityResolver(
+        new Map([["alice", { subject: "alice", roles: ["reporter"] }]]),
+        "agent-controller[bot]",
+      ),
+      orchestratorClient: { invoke, checkLive: vi.fn().mockResolvedValue({ live: false }) } as unknown as OrchestratorClient,
+      githubReplyClient: { postIssueComment, removeIssueLabel } as unknown as GithubReplyClient,
+      githubTriggerLabel: "ai-triage",
+      sessionPageStore,
+      publicBaseUrl: "https://gateway.example.com",
+      claudeAuthStore: { get: vi.fn(), set: vi.fn(), delete: vi.fn(), waitForCompletion } as unknown as ClaudeTokenStore,
+      resumeWaitMs: 20_000,
+    });
+    await server.listen(0);
+    const shortPort = (server as unknown as { server: { address: () => AddressInfo } }).server.address().port;
+
+    await postWebhook(shortPort, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
+      label: { name: "ai-triage" },
+    });
+    await flush();
+
+    expect(waitForCompletion).toHaveBeenCalledWith("client-integration-gateway", 20_000, "setup-token");
   });
 
   it("also auto-resumes for the claude-remote provider (waitForCompletion called with kind 'login', not 'setup-token')", async () => {

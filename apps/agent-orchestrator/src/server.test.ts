@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "./rbac/sender-assertion.js";
 import { InvokeServer, type AgentGraphLike } from "./server.js";
 import type { AgentState } from "./agent/graph.js";
 import type { AgentOrchestratorChannel } from "./agents/nats-agent-channel.js";
@@ -1378,6 +1379,80 @@ describe("InvokeServer canonical credential subject plumbing", () => {
     };
     expect(done.identityLink).toEqual({ provider: "github", subject: "alice" });
 
+    await server.close();
+  });
+});
+
+describe("InvokeServer signed sender assertion (docs/adr/0030 §6)", () => {
+  const SECRET = "assertion-secret";
+
+  function serverWithAssertions(graph: AgentGraphLike) {
+    // Positional order: graph, sessionStore, taskCompleter,
+    // integrationRouteRegistry, agentChannel, senderAssertionSecret.
+    return new InvokeServer(graph, undefined, undefined, undefined, undefined, SECRET);
+  }
+
+  function graphSpy(): AgentGraphLike {
+    return {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "t", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+  }
+
+  it("accepts a login only from a verified assertion, ignoring the unsigned body field", async () => {
+    const graph = graphSpy();
+    const server = serverWithAssertions(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer tok-1",
+        [SENDER_ASSERTION_HEADER]: mintSenderAssertion(SECRET, "imaustink"),
+      },
+      // A DIFFERENT login in the body: with a secret configured this must be
+      // ignored outright, not merged or preferred.
+      body: JSON.stringify({ request: "triage", event: { source: "github", senderLogin: "victim" } }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(graph.invoke).toHaveBeenCalledWith(expect.objectContaining({ senderLogin: "imaustink" }));
+    await server.close();
+  });
+
+  it("drops an unsigned senderLogin entirely when a secret is configured", async () => {
+    const graph = graphSpy();
+    const server = serverWithAssertions(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "triage", event: { source: "github", senderLogin: "victim" } }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // No principal rather than the WRONG principal: holding the gateway's
+    // token must not be enough to be handed another person's credentials.
+    const arg = (graph.invoke as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { senderLogin?: string };
+    expect(arg.senderLogin).toBeUndefined();
+    await server.close();
+  });
+
+  it("still trusts the body field when no secret is configured (upgrade compatibility)", async () => {
+    const graph = graphSpy();
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "triage", event: { source: "github", senderLogin: "imaustink" } }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(graph.invoke).toHaveBeenCalledWith(expect.objectContaining({ senderLogin: "imaustink" }));
     await server.close();
   });
 });

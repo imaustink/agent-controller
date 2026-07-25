@@ -33,7 +33,18 @@ export function isDelegating(config: AgentToolConfig): boolean {
 
 export interface DelegatedAttribution {
   githubLogin: string;
-  githubId: number;
+  /**
+   * Numeric id, used only to build the precise
+   * `id+login@users.noreply.github.com` co-author trailer.
+   *
+   * Optional since docs/adr/0030: when agent-orchestrator supplies the actor
+   * login via `AGENT_ACTOR_LOGIN`, this agent no longer calls GitHub's
+   * `/user` -- so the id is unavailable, and the trailer falls back to the
+   * login-only form. Losing the id is a deliberate trade for deleting an
+   * identity lookup that duplicated the orchestrator's own and was failing
+   * 401 in production.
+   */
+  githubId?: number;
 }
 
 /**
@@ -68,6 +79,18 @@ export async function resolveDelegatedToken(
       now,
     });
     return { token, attribution: { githubLogin, githubId } };
+  }
+
+  // Prefer the login the orchestrator already resolved (docs/adr/0030 §5).
+  // Calling /user here duplicates work the authorization pre-flight has
+  // already done, and it is the exact call that returned
+  // "401 Bad credentials" in production once this agent gained the `github`
+  // provider. `githubId` is intentionally absent on this path -- the numeric
+  // id is only used to build the richer `id+login@` co-author trailer, and
+  // fetching it would reintroduce the round trip this avoids.
+  if (config.actorLogin) {
+    const { token } = await mintInstallationToken(appCreds, config.githubApiUrl, now);
+    return { token, attribution: { githubLogin: config.actorLogin } };
   }
 
   const { login, id } = await fetchGithubUser(config.githubToken, config.githubApiUrl);

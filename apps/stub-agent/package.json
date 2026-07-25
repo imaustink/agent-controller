@@ -1,0 +1,24 @@
+{
+  "name": "stub-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "E2E-only Agent that speaks the real NATS agent protocol and returns a canned reply, so the whole webhook -> triage -> AgentRun -> reply chain can be asserted hermetically without a model credential. Never deployed outside the e2e overlay.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@controller-agent/agent-runtime": "0.1.0",
+    "@controller-agent/messaging": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.5",
+    "typescript": "^5.6.2",
+    "vitest": "^4.0.0"
+  }
+}

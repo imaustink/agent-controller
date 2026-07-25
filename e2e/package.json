@@ -1,0 +1,13 @@
+{
+  "name": "@controller-agent/e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "e2e": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.10"
+  }
+}
