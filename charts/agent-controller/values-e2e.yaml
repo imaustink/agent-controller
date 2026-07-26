@@ -107,6 +107,18 @@ integration-gateway:
     # they assert on the subject a flow is KEYED under, which is decided
     # before any redirect happens.
     githubAppClientId: "Iv23li-e2e-placeholder"
+    # Required for the authorization-code flow to START at all -- without it
+    # `startAuthCode` throws and /identity-link/github/start 500s, which is not a
+    # neutral gap: a spec whose caller needs a GitHub link then exercises the
+    # pre-flight's DEGRADE path (link could not be started) instead of the path
+    # production takes, so the prompt a real user sees is never produced and never
+    # asserted on. That is how the docs/adr/0031 re-prompt bug reproduced in
+    # production but not here.
+    #
+    # Points at fake-github so nothing dangles at a real host. No spec completes
+    # the redirect: the flow only has to start, which is where the subject is
+    # decided and where the prompt is emitted.
+    githubOauthRedirectUri: "http://fake-github.controller-agent.svc.cluster.local/identity-link/github/callback"
 
   claudeAuth:
     # Needed for `claude`/`claude-remote` flows to be startable at all. The

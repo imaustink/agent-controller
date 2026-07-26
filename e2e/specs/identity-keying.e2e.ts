@@ -1,8 +1,22 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { requireMinikubeContext } from "../support/guard.js";
-import { agentRunAgentRef, agentRunSecretEnvNames, agentRunsSince, cleanupAgentRunsSince, waitFor, withPortForward } from "../support/k8s.js";
+import {
+  agentRunAgentRef,
+  agentRunSecretEnvNames,
+  agentRunsSince,
+  cleanupAgentRunsSince,
+  waitFor,
+  withPortForward,
+} from "../support/k8s.js";
 import { chatSubject, chatTurn } from "../support/chat.js";
-import { claudeCredentialSubjects, deleteCredentialKeys, seedAllClaudeCredentials, seedGithubLink } from "../support/redis.js";
+import { identityLinkLogin, identityLinkTokenStatus } from "../support/gateway-api.js";
+import {
+  claudeCredentialSubjects,
+  deleteCredentialKeys,
+  githubLinkExpiry,
+  seedAllClaudeCredentials,
+  seedGithubLink,
+} from "../support/redis.js";
 import { issueLabeledPayload, postGithubWebhook } from "../support/webhook.js";
 import { resetFakeGithub, webhookSecret } from "../support/fixtures.js";
 
@@ -99,12 +113,21 @@ describe("credential keying converges across entry points (ADR 0029/0030)", () =
     const run = await waitFor(
       "an AgentRun to launch using the canonically-keyed credentials",
       async () => (await agentRunsSince(startedAt))[0],
-      // Generous on purpose. The negative-control specs above each leave the
-      // gateway's relay polling for its full window, so a later positive spec
-      // queues behind that backlog -- observed launch latency exceeded a
-      // 180s budget even though the gate had already resolved. Too tight a
-      // budget here fails for throughput reasons and reads as a keying bug.
-      { timeoutMs: 420_000 },
+      // Generous on purpose, and raised again (420s -> 900s) once
+      // docs/adr/0031 made github links startable here: more turns park, and a
+      // parked turn's relay is processed serially, so a positive webhook spec
+      // waits behind them. Measured, not guessed -- one run authorized this
+      // turn ~7 MINUTES after the webhook was posted, landing two seconds
+      // inside the old budget on one run and outside it on the next.
+      //
+      // Two structural fixes were tried and did NOT hold: rolling the gateway
+      // before each spec (the delay is per-turn processing, not stale state)
+      // and running the parking negative controls last (the failure simply
+      // moved to whichever positive ran first). The latency is real and lives
+      // in the stack, not in the ordering, so the budget states it plainly
+      // rather than a mitigation pretending to have removed it. What this spec
+      // asserts is WHICH SUBJECT a credential is keyed under -- never how fast.
+      { timeoutMs: 900_000 },
     );
 
     // Asserted on the AgentRun CR -- agent-orchestrator's own output. Whether
@@ -146,7 +169,6 @@ describe("credential keying converges across entry points (ADR 0029/0030)", () =
     await new Promise((r) => setTimeout(r, 60_000));
     expect(await agentRunsSince(startedAt)).toHaveLength(0);
   });
-
   it("treats webhook casing and OAuth casing as one subject", async () => {
     // GitHub echoes original casing in webhooks but normalizes it in the OAuth
     // user API. Two casings keying two records is precisely the re-prompt loop
@@ -159,49 +181,26 @@ describe("credential keying converges across entry points (ADR 0029/0030)", () =
     await waitFor(
       "a mixed-case sender to resolve the lower-cased canonical credentials",
       async () => (await agentRunsSince(startedAt))[0],
-      // Generous on purpose. The negative-control specs above each leave the
-      // gateway's relay polling for its full window, so a later positive spec
-      // queues behind that backlog -- observed launch latency exceeded a
-      // 180s budget even though the gate had already resolved. Too tight a
-      // budget here fails for throughput reasons and reads as a keying bug.
-      { timeoutMs: 420_000 },
+      // Generous on purpose, and raised again (420s -> 900s) once
+      // docs/adr/0031 made github links startable here: more turns park, and a
+      // parked turn's relay is processed serially, so a positive webhook spec
+      // waits behind them. Measured, not guessed -- one run authorized this
+      // turn ~7 MINUTES after the webhook was posted, landing two seconds
+      // inside the old budget on one run and outside it on the next.
+      //
+      // Two structural fixes were tried and did NOT hold: rolling the gateway
+      // before each spec (the delay is per-turn processing, not stale state)
+      // and running the parking negative controls last (the failure simply
+      // moved to whichever positive ran first). The latency is real and lives
+      // in the stack, not in the ordering, so the budget states it plainly
+      // rather than a mitigation pretending to have removed it. What this spec
+      // asserts is WHICH SUBJECT a credential is keyed under -- never how fast.
+      { timeoutMs: 900_000 },
     );
   });
+
 });
 
-/**
- * The CHAT side of the same convergence (docs/adr/0031).
- *
- * The suite above drives webhooks only, and that is exactly how the one-way
- * convergence shipped: the webhook path always carries a verified `senderLogin`,
- * so it always resolved a principal, while chat -- which had no way to learn a
- * login -- kept keying by its own `openwebui:<id>` subject. Neither flow was
- * broken alone, and no webhook-only suite could see it.
- *
- * ## What is seeded, and why that is still a real test
- *
- * The GitHub link is seeded rather than established through OAuth: a real
- * device/authcode round trip needs github.com and a human with a browser. The
- * orchestrator only ever reads `githubLogin` off that record to resolve the
- * principal, so a seeded link drives the identical code path -- and everything
- * downstream of it (which subject the credential is read from, whether the run
- * launches, whether the record moved) is genuine.
- *
- * ## The one thing here that is NOT deterministic
- *
- * A webhook turn reaches its agent through an `IntegrationRoute`, so the specs
- * above never depend on a model choosing correctly. Chat has no such thing --
- * `/v1/chat/completions` carries no event descriptor, and a session's
- * `activeAgentId` only CONTINUES an existing run rather than launching one --
- * so selection goes through the planner. `REQUEST` below names the target agent
- * outright to get as close to deterministic as the surface allows, and every
- * launch assertion goes through `expectCredentialAgent`, which fails naming the
- * agent that actually ran. Two of the three agents in the e2e catalog declare
- * the cross-entry-point providers and either is a valid outcome for what these
- * specs test (WHICH SUBJECT a credential came from); `opencode-swe-agent`
- * declares none, and picking it would otherwise fail as a confusing complaint
- * about missing env vars.
- */
 describe("chat and triage converge on one credential (ADR 0031)", () => {
   const CHAT_USER = "e2e-chat-user";
   const CHAT_SUBJECT = chatSubject(CHAT_USER);
@@ -287,28 +286,121 @@ describe("chat and triage converge on one credential (ADR 0031)", () => {
     await seedAllClaudeCredentials("github:someone-else");
     const startedAt = new Date();
 
-    // The turn is EXPECTED to park: with nothing at this caller's principal and
-    // nothing adoptable, the pre-flight starts a link flow and holds open for the
-    // human to finish it. That window doubles as the "give it real time to launch
-    // if it were going to" wait -- absence is the assertion, so it must not be a
-    // race, but it also needn't cost the flow's full 10-minute expiry.
-    expect(await chatTurn(CHAT_USER, REQUEST, { allowPark: true, timeoutMs: 90_000 })).toBeUndefined();
+    // The turn must not LAUNCH. How it declines is deliberately not asserted:
+    // with nothing at this caller's principal the pre-flight tries to start a
+    // Claude link, and that can either hold open waiting for the human (a park)
+    // or fail fast when the PTY flow cannot start in this environment ("❌ fetch
+    // failed"). Both are correct refusals, and an earlier version of this spec
+    // pinned the park specifically -- so it failed on a run where the flow
+    // errored quickly, reporting a security control as broken when it had held.
+    //
+    // `allowPark` therefore tolerates either shape, and the assertions below are
+    // the actual property: nobody else's credential was used, and none was moved.
+    await chatTurn(CHAT_USER, REQUEST, { allowPark: true, timeoutMs: 90_000 });
 
     expect(await agentRunsSince(startedAt)).toHaveLength(0);
     // And the other human's credential is untouched -- not moved, not deleted.
     expect(await claudeCredentialSubjects("login")).toContain("github:someone-else");
   });
 
-  it("keys a chat caller with no GitHub link by their own subject, sharing with nobody", async () => {
-    // The degraded path, asserted rather than assumed: no link means no
-    // principal, which must still WORK -- just without cross-flow sharing.
-    await seedAllClaudeCredentials(CHAT_SUBJECT);
+  it("does not re-prompt a caller whose GitHub link has EXPIRED (docs/adr/0031)", async () => {
+    // The bug this suite could not see, because it only ever seeded FRESH links.
+    //
+    // `getValidToken` returns nothing for a link whose access token expired and
+    // cannot be refreshed, and the pre-flight read that as "no GitHub identity"
+    // and offered a link -- while `waitForCompletion` resolved the same login
+    // 0.3s later from the same record, so the turn then succeeded. Asserting on
+    // the LAUNCH alone therefore passes either way; the prompt is the symptom, so
+    // the prompt is what this asserts on.
+    await seedGithubLink(CHAT_SUBJECT, SENDER, { expired: true });
+    await seedAllClaudeCredentials(CANONICAL);
     const startedAt = new Date();
 
-    await chatTurn(CHAT_USER, REQUEST);
+    const turn = await chatTurn(CHAT_USER, REQUEST);
 
-    await expectCredentialAgent(startedAt, "an AgentRun keyed by the caller's own subject");
-    // Nothing was moved anywhere: with no principal there is nothing to move to.
-    expect(await claudeCredentialSubjects("login")).toEqual([CHAT_SUBJECT]);
+    expect(turn.text).not.toMatch(/link your GitHub account/i);
+    // And it still converged: an expired token does not unprove which account
+    // this caller controls, so the principal resolves and the credentials at it
+    // carry the launch.
+    await expectCredentialAgent(startedAt, "an AgentRun launched from a stale-link caller's principal");
+  });
+
+  it("DOES prompt a caller who has no link at all, and launches nothing", async () => {
+    // Two jobs. It is the control for the spec above -- without it, "no prompt in
+    // the reply" would also pass if prompts stopped reaching the stream entirely
+    // (a renamed stage, a changed transport), and the regression would be
+    // invisible again. And it pins what "no link" MEANS.
+    //
+    // An earlier version of this suite asserted the opposite -- that such a caller
+    // is launched on their own subject, sharing with nobody. That passed only
+    // because `startAuthCode` 500'd here (no githubOauthRedirectUri configured),
+    // so the pre-flight took its "could not start the link" DEGRADE path. With the
+    // environment made faithful the real contract shows: a per-user caller who
+    // needs a principal-keyed credential and has no mapping is asked to establish
+    // one (docs/adr/0031), and the turn parks until they do. The degrade path
+    // still exists for a link that genuinely cannot be started; it simply is not
+    // what an unlinked caller hits.
+    await seedAllClaudeCredentials(CANONICAL);
+    const startedAt = new Date();
+
+    const turn = await chatTurn(CHAT_USER, REQUEST, { allowPark: true, timeoutMs: 90_000 });
+
+    expect(turn.text).toMatch(/link your GitHub account/i);
+    // Nothing launched: with no principal, the credentials at CANONICAL are not
+    // this caller's to use.
+    expect(await agentRunsSince(startedAt)).toHaveLength(0);
+  });
+
+});
+
+/**
+ * A GitHub link renews itself instead of dying (docs/adr/0031).
+ *
+ * The second half of the same incident, and the cause of the first: the gateway
+ * omitted `client_secret` from GitHub's refresh grant, which GitHub requires. So
+ * every refresh failed, the caller read that as a dead link, and every link
+ * expired ~8h after creation with a six-month-valid refresh token sitting unused.
+ *
+ * Asserted BEHAVIOURALLY rather than by inspecting the outgoing request:
+ * `fake-github` now rejects a refresh grant that carries no `client_secret`,
+ * exactly as GitHub does, so "the link came back usable" is only possible if the
+ * secret was actually sent. A stub that accepted the call either way would let
+ * this regress silently -- the entire failure was that the request looked fine
+ * to us.
+ */
+describe("an expired GitHub link refreshes rather than reading as dead (ADR 0031)", () => {
+  const SUBJECT = "openwebui:e2e-refresh-user";
+
+  beforeEach(async () => {
+    await resetFakeGithub();
+    await deleteCredentialKeys("identityLink:*");
+  });
+
+  it("renews an expired link that still holds a refresh token", async () => {
+    await seedGithubLink(SUBJECT, SENDER, { expired: true, refreshToken: true });
+    const before = await githubLinkExpiry(SUBJECT);
+    expect(before!.getTime()).toBeLessThan(Date.now());
+
+    // 200, not 404: 404 is the gateway saying "dead link, make them re-link",
+    // which is what every expired link used to get.
+    expect(await identityLinkTokenStatus(SUBJECT)).toBe(200);
+
+    const after = await githubLinkExpiry(SUBJECT);
+    expect(after!.getTime()).toBeGreaterThan(Date.now());
+    expect(after!.getTime()).toBeGreaterThan(before!.getTime());
+  });
+
+  it("reports the login for an expired link even when it cannot be refreshed", async () => {
+    // No refresh token, so the credential genuinely cannot be recovered -- and
+    // the IDENTITY still resolves. This is the separation the whole fix rests on:
+    // an access token aging out does not unprove which account someone controls.
+    await seedGithubLink(SUBJECT, SENDER, { expired: true });
+
+    expect(await identityLinkTokenStatus(SUBJECT)).toBe(404);
+    expect(await identityLinkLogin(SUBJECT)).toBe(SENDER);
+  });
+
+  it("404s the identity lookup when nothing is linked", async () => {
+    expect(await identityLinkLogin("openwebui:nobody-at-all")).toBeUndefined();
   });
 });

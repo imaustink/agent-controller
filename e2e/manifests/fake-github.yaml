@@ -72,6 +72,31 @@ data:
           });
         }
         if (url.pathname === "/login/oauth/access_token" && req.method === "POST") {
+          // The refresh grant is stubbed FAITHFULLY, which is the point of it
+          // being here: GitHub requires client_secret on this grant and errors
+          // without it. The gateway omitted it, so every refresh failed, the
+          // caller read that as a dead link, and every GitHub link expired ~8h
+          // after creation and could never renew (docs/adr/0031). A stub that
+          // accepted the call regardless would let that regression back in
+          // silently -- the whole failure was "the request looked fine to us".
+          const params = new URLSearchParams(body || "");
+          if (params.get("grant_type") === "refresh_token") {
+            if (!params.get("client_secret")) {
+              // Same shape GitHub uses: 200 with an error body, not an HTTP error.
+              return respond(200, {
+                error: "invalid_client",
+                error_description: "client_secret is required for the refresh_token grant",
+              });
+            }
+            return respond(200, {
+              access_token: "e2e-user-access-token-refreshed",
+              token_type: "bearer",
+              scope: "repo",
+              expires_in: 28800,
+              refresh_token: "e2e-user-refresh-token-rotated",
+              refresh_token_expires_in: 15897600,
+            });
+          }
           // Completes immediately, deliberately.
           //
           // An earlier version returned `authorization_pending` forever to
