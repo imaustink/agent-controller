@@ -43,6 +43,16 @@ recipePublisher:
 opencodeSweAgent:
   enabled: true
 
+# Container Tool with per-user GitHub identity delegation (ADR 0025). Enabled
+# with identityLink so the CR's identityProviders path renders and is validated;
+# the ServiceAccount template also requires enabled: true to render.
+githubTool:
+  enabled: true
+  identityLink:
+    enabled: true
+    providers:
+      - github
+
 # The Agent production runs, and previously the one the "full catalog"
 # validation never touched. Its template hard-`fail`s unless some model
 # credential is guaranteed at launch time, so identityLink must cover `claude`.
