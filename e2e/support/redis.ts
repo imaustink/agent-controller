@@ -130,18 +130,48 @@ export async function seedClaudeCredential(subject: string, kind: "setup-token" 
  * Written in `RedisIdentityLinkStore`'s own format: `identityLink:<provider>:<subject>`,
  * with the token fields AES-256-GCM field-encrypted the way that store writes them.
  */
-export async function seedGithubLink(subject: string, githubLogin: string): Promise<void> {
+export async function seedGithubLink(
+  subject: string,
+  githubLogin: string,
+  opts: { expired?: boolean; refreshToken?: boolean } = {},
+): Promise<void> {
   const encrypt = await fieldEncrypter();
   await redisSet(
     `identityLink:github:${subject}`,
     JSON.stringify({
       githubLogin,
-      // Far future: an expired link is treated as no link, which would make the
-      // spec fail for a reason that has nothing to do with what it tests.
-      expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      // `expired` is the state the whole re-prompt bug lived in (docs/adr/0031):
+      // a link the human really did establish, whose ACCESS TOKEN has since
+      // aged out. Seeding only fresh links is why a suite built to catch keying
+      // bugs could not see it. Default stays far-future so every other spec is
+      // unaffected.
+      expiresAt: new Date(Date.now() + (opts.expired ? -60_000 : 365 * 24 * 60 * 60 * 1000)).toISOString(),
       token: encrypt("gho_e2e-seeded"),
+      // Omitted by default so an expired link is DEAD deterministically, with no
+      // refresh attempt and therefore no dependence on the OAuth stub. Set it
+      // when the refresh path itself is what's under test.
+      ...(opts.refreshToken
+        ? {
+            refreshToken: encrypt("ghr_e2e-seeded"),
+            refreshExpiresAt: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString(),
+          }
+        : {}),
     }),
   );
+}
+
+/**
+ * The `expiresAt` on a subject's stored GitHub link, or `undefined` if none.
+ *
+ * Metadata only -- never the token. Exists so a spec can assert that a REFRESH
+ * actually happened (the expiry moved forward) rather than inferring it from a
+ * request the gateway may or may not have made.
+ */
+export async function githubLinkExpiry(subject: string): Promise<Date | undefined> {
+  const raw = await redisCli(["GET", `identityLink:github:${subject}`]);
+  if (!raw) return undefined;
+  const at = (JSON.parse(raw) as { expiresAt?: string }).expiresAt;
+  return at ? new Date(at) : undefined;
 }
 
 /** Seeds BOTH Claude record kinds for one subject -- what claude-code-swe-agent declares. */

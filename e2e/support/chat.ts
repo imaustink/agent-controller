@@ -67,19 +67,32 @@ export function chatSubject(userId: string): string {
  * keys session state (active agent run, pending identity link), and a shared
  * constant would let one spec's parked link resume inside another's turn.
  *
- * Resolves `undefined` when the turn PARKS -- only if `allowPark` is set. A turn
- * that needs an account link and has a live channel deliberately holds open for
- * the whole flow expiry waiting for the human to finish, so for any spec whose
- * expected outcome is "no launch", parking is the product working and there is
- * no completed reply to return. Without `allowPark` that same timeout rethrows,
- * so a positive spec that hangs still fails loudly instead of silently reading
- * as "no reply".
+ * Returns whatever the caller SAW plus whether the turn parked, rather than one
+ * or the other. Both matter, and a parked turn is not an empty one:
+ *
+ * - A turn that needs an account link and has a live channel deliberately holds
+ *   open for the whole flow expiry waiting for the human, so `parked` is the
+ *   product working, not a failure -- but only when `allowPark` says the caller
+ *   expects it. Otherwise the timeout rethrows, so a genuine hang still fails
+ *   loudly instead of reading as "no reply".
+ * - The link prompt itself is streamed as real chat CONTENT (server.ts streams
+ *   the `identity-link` stage as a content delta, not a status label), so `text`
+ *   is what makes "was the user asked to link?" assertable at all. Reading the
+ *   body only after completion threw that away for exactly the turns that carry
+ *   the prompt, so the stream is consumed incrementally instead.
  */
+export interface ChatTurnResult {
+  /** The assistant text the caller saw, assembled from the stream -- including anything streamed before a park. */
+  text: string;
+  /** True when the turn was still open when the client's deadline elapsed (see `allowPark`). */
+  parked: boolean;
+}
+
 export async function chatTurn(
   userId: string,
   request: string,
   opts: { sessionId?: string; timeoutMs?: number; allowPark?: boolean } = {},
-): Promise<string | undefined> {
+): Promise<ChatTurnResult> {
   const secret = await forwardedUserJwtSecret();
   const jwt = mintForwardedUserJwt(secret, userId);
   const sessionId = opts.sessionId ?? `e2e-chat-${userId}-${process.pid}`;
@@ -107,15 +120,26 @@ export async function chatTurn(
       if (!res.ok) {
         throw new Error(`e2e: chat completion failed: ${res.status} ${await res.text()}`);
       }
-      // The body read has to be INSIDE the try: the orchestrator flushes SSE
-      // headers immediately, so `fetch` resolves as soon as they land and a
-      // parked turn times out here, not above. Catching only around `fetch` made
-      // `allowPark` silently ineffective.
-      //
-      // A park discards whatever had streamed so far, including any link prompt.
-      // Fine for asserting "no launch"; a spec that wants to assert on the
-      // prompt text would need to read the stream incrementally instead.
-      return assembleSseContent(await res.text());
+      // Read INCREMENTALLY, keeping every chunk. Two reasons, both learned the
+      // hard way: the abort fires here rather than on `fetch` (the orchestrator
+      // flushes SSE headers immediately, so `fetch` resolves as soon as they
+      // land), and `res.text()` discards the partial body on abort -- which is
+      // precisely the body of a turn that streamed a link prompt and then waited.
+      const reader = res.body?.getReader();
+      if (!reader) return { text: "", parked: false };
+      const decoder = new TextDecoder();
+      let raw = "";
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          raw += decoder.decode(value, { stream: true });
+        }
+      } catch (err) {
+        if (opts.allowPark && isAbort(err)) return { text: assembleSseContent(raw), parked: true };
+        throw err;
+      }
+      return { text: assembleSseContent(raw), parked: false };
     } catch (err) {
       // Distinguish "the turn parked" from every other failure. Only a caller
       // that expects a park may swallow it; anything else is a real fault and
@@ -124,7 +148,7 @@ export async function chatTurn(
       // Checked by NAME rather than `instanceof Error`: `AbortSignal.timeout`
       // rejects with a DOMException, and undici may surface it wrapped, so the
       // reason can sit on `cause`.
-      if (opts.allowPark && isAbort(err)) return undefined;
+      if (opts.allowPark && isAbort(err)) return { text: "", parked: true };
       throw err;
     }
   });
