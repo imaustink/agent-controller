@@ -262,12 +262,47 @@ export class AuthorizationService {
     // claude credential before the principal is known.
     let principal = identity.principal ?? identity.subject;
     let principalLogin: string | undefined;
+    /** Set when the "do they already have a link?" lookup errored -- distinct from "they have none". */
+    let principalLookupFailed = false;
     const providerPlan: { name: string; principalOnly?: boolean }[] = (agent.identityProviders ?? []).map((name) => ({
       name,
     }));
+    // Before offering a link, ask whether this caller already HAS one whose login
+    // we can use. `resolveIdentity` asks the same question a node earlier, but it
+    // is answered again here for one reason: the pre-flight must never prompt for
+    // a link that already exists. When it did (docs/adr/0031), the prompt was
+    // surfaced live and then `waitForCompletion` resolved the very same record
+    // 0.3s later -- so the turn worked and the user was asked to link on every
+    // single turn regardless.
     if (
       providerPlan.some((p) => CROSS_ENTRY_POINT_PROVIDERS.has(p.name)) &&
       !isCanonicalPrincipal(principal) &&
+      identity.perUser === true &&
+      this.deps.identityLinkGateway?.getLinkedLogin
+    ) {
+      const existingLogin = await this.deps.identityLinkGateway
+        .getLinkedLogin(PRINCIPAL_PROVIDER, identity.subject)
+        .catch((err: unknown) => {
+          // A lookup that FAILED is not an answer. Treat it as "unknown" and skip
+          // the link step below rather than offering a link that may well already
+          // exist: a gateway blip should cost this turn its cross-entry-point
+          // sharing, not put a spurious one-time-setup prompt in front of someone
+          // who completed it months ago.
+          console.error(
+            `[authorization] could not determine whether this caller has a ${PRINCIPAL_PROVIDER} link; continuing on the raw subject without offering one: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          return null;
+        });
+      if (existingLogin) {
+        principalLogin = existingLogin;
+        principal = canonicalSubjectForLogin(existingLogin);
+      }
+      principalLookupFailed = existingLogin === null;
+    }
+    if (
+      providerPlan.some((p) => CROSS_ENTRY_POINT_PROVIDERS.has(p.name)) &&
+      !isCanonicalPrincipal(principal) &&
+      !principalLookupFailed &&
       this.deps.identityLinkGateway &&
       // PER-USER subjects only, and this guard is load-bearing security rather
       // than ergonomics. A webhook relay authenticates as the gateway's own

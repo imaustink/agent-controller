@@ -57,11 +57,21 @@ export function isCanonicalPrincipal(principal: string): boolean {
 export async function resolveActorLogin(
   rawSubject: string,
   senderLogin: string | undefined,
-  githubGateway: Pick<IdentityLinkPort, "getToken"> | undefined,
+  githubGateway: Pick<IdentityLinkPort, "getToken" | "getLinkedLogin"> | undefined,
 ): Promise<string | undefined> {
   if (senderLogin) return senderLogin;
   if (!githubGateway) return undefined;
   try {
+    // `getLinkedLogin`, NOT `getToken`: this asks WHO the caller proved control
+    // of, and an access token that expired overnight does not unprove it
+    // (docs/adr/0031). Going through `getToken` meant a stale link resolved to
+    // "no GitHub identity", which cost sharing silently here -- and, once the
+    // pre-flight started acting on the same answer, produced a spurious
+    // link prompt on every turn.
+    //
+    // Falls back to `getToken` only for a port that predates the lookup (test
+    // doubles, and any deployment whose gateway is older than this orchestrator).
+    if (githubGateway.getLinkedLogin) return await githubGateway.getLinkedLogin("github", rawSubject);
     return (await githubGateway.getToken("github", rawSubject))?.githubLogin;
   } catch {
     // A failed lookup must not fail the turn -- the agent simply falls back
@@ -98,7 +108,7 @@ export async function resolveActorLogin(
 export async function resolvePrincipal(
   rawSubject: string,
   senderLogin: string | undefined,
-  githubGateway: Pick<IdentityLinkPort, "getToken"> | undefined,
+  githubGateway: Pick<IdentityLinkPort, "getToken" | "getLinkedLogin"> | undefined,
 ): Promise<string> {
   const login = await resolveActorLogin(rawSubject, senderLogin, githubGateway);
   return login ? canonicalSubjectForLogin(login) : rawSubject;

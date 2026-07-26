@@ -136,7 +136,7 @@ describe("refreshUserToken", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await refreshUserToken("client-id", "ghr_oldrefresh", "https://github.com", now);
+    const result = await refreshUserToken("client-id", "client-secret", "ghr_oldrefresh", "https://github.com", now);
 
     expect(result).toEqual({
       token: "ghu_newtoken",
@@ -147,6 +147,11 @@ describe("refreshUserToken", () => {
     const callBody = fetchMock.mock.calls[0][1].body as URLSearchParams;
     expect(callBody.get("grant_type")).toBe("refresh_token");
     expect(callBody.get("refresh_token")).toBe("ghr_oldrefresh");
+    // GitHub REQUIRES the secret on this grant. Without it every refresh failed,
+    // the caller read that as a dead link, and each GitHub link expired ~8h
+    // after creation and re-prompted forever (docs/adr/0031).
+    expect(callBody.get("client_id")).toBe("client-id");
+    expect(callBody.get("client_secret")).toBe("client-secret");
   });
 
   it("throws on an error response", async () => {
@@ -154,7 +159,7 @@ describe("refreshUserToken", () => {
       "fetch",
       vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ error: "bad_refresh_token" }) }),
     );
-    await expect(refreshUserToken("client-id", "ghr_expired", "https://github.com", now)).rejects.toThrow(
+    await expect(refreshUserToken("client-id", "client-secret", "ghr_expired", "https://github.com", now)).rejects.toThrow(
       /bad_refresh_token/,
     );
   });
