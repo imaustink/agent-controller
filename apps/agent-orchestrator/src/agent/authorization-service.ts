@@ -1,5 +1,5 @@
 import type { IdentityLinkPort, IdentityLinkStartResult } from "../identity-link/gateway-client.js";
-import { resolveActorLogin } from "../identity-link/credential-subject.js";
+import { canonicalSubjectForLogin, isCanonicalPrincipal, resolveActorLogin } from "../identity-link/credential-subject.js";
 import type { Identity } from "../rbac/types.js";
 
 /**
@@ -41,6 +41,17 @@ export const ACTOR_LOGIN_ENV = "AGENT_ACTOR_LOGIN";
  * expects to only do once (docs/adr/0030 §6).
  */
 export const CROSS_ENTRY_POINT_PROVIDERS: ReadonlySet<string> = new Set(["claude", "claude-remote"]);
+
+/**
+ * The provider whose link ESTABLISHES a principal (docs/adr/0031).
+ *
+ * GitHub, because it is the one identity both entry points can reach: a webhook
+ * vouches for the sender, and a chat caller can prove control of the account.
+ * Nothing else about the pre-flight is GitHub-specific -- when principals become
+ * first-class (ADR 0030 §6's alias table), this is the constant that stops
+ * meaning "GitHub" and starts meaning "whatever establishes the alias".
+ */
+export const PRINCIPAL_PROVIDER = "github";
 
 /**
  * Maps an identity-linked provider (Agent.identityProviders, e.g. "github") to
@@ -124,8 +135,19 @@ export interface AuthorizationRequest {
  * "launch anyway", which is the failure direction that matters here.
  */
 export type AuthorizationOutcome =
-  /** Cleared to launch. `secretEnv` is the credentials + actor context the run receives. */
-  | { kind: "authorized"; secretEnv?: CredentialEnvEntry[]; actorLogin?: string }
+  /**
+   * Cleared to launch. `secretEnv` is the credentials + actor context the run
+   * receives.
+   *
+   * `principal` is the one the credentials were actually keyed by, which the
+   * pre-flight may have UPGRADED this turn by establishing a mapping
+   * (docs/adr/0031). The caller must persist it onto the turn's identity:
+   * anything that later re-derives the credential's key -- notably the
+   * expired-credential invalidate path -- would otherwise clear a record that
+   * was never written and leave the caller re-reading a dead credential
+   * forever.
+   */
+  | { kind: "authorized"; secretEnv?: CredentialEnvEntry[]; actorLogin?: string; principal?: string }
   /**
    * Not cleared: one or more links are outstanding, or a link flow could not be
    * started. `message` is the complete user-facing text for the turn, including
@@ -218,7 +240,55 @@ export class AuthorizationService {
      */
     let actorLoginFromLoop: string | undefined;
 
-    for (const provider of agent.identityProviders ?? []) {
+    // ── Principal pre-flight (docs/adr/0031) ───────────────────────────────
+    // A cross-entry-point credential can only be SHARED if this caller has a
+    // principal to key it by. The webhook path always does (the verified
+    // `senderLogin`); the chat path only does once a `github` link exists to
+    // read a login off -- and links were only ever created as a side effect of
+    // an Agent's `identityProviders`, which ADR 0030 §5 removed `github` from.
+    // So chat kept writing credentials under its raw `openwebui:<id>` subject
+    // while triage read `github:<login>`, and the two never converged.
+    //
+    // Fix: when a run needs a cross-entry-point credential and no principal is
+    // established, establish one FIRST, with an ordinary `github` link that is
+    // deliberately LINK-ONLY -- its token is never injected into the run. That
+    // keeps the mapping separable from credential provisioning, which is the
+    // conflation ADR 0030 §5 identified as the cause of the production 401:
+    // declaring `github` to obtain a login also handed the agent a
+    // `GITHUB_TOKEN` and activated its delegated-write path.
+    //
+    // Deliberately first in the plan so provider ORDER in the CRD stays
+    // irrelevant (ADR 0030 §4) -- a `[claude, github]` Agent must not key its
+    // claude credential before the principal is known.
+    let principal = identity.principal ?? identity.subject;
+    let principalLogin: string | undefined;
+    const providerPlan: { name: string; principalOnly?: boolean }[] = (agent.identityProviders ?? []).map((name) => ({
+      name,
+    }));
+    if (
+      providerPlan.some((p) => CROSS_ENTRY_POINT_PROVIDERS.has(p.name)) &&
+      !isCanonicalPrincipal(principal) &&
+      this.deps.identityLinkGateway &&
+      // PER-USER subjects only, and this guard is load-bearing security rather
+      // than ergonomics. A webhook relay authenticates as the gateway's own
+      // service account, so its subject is SHARED by every sender: filing a
+      // login under it would make every later senderLogin-less webhook turn
+      // inherit that one person's Claude credentials. A webhook turn with a
+      // real human behind it already carries `senderLogin` and never needs this
+      // path -- one without is exactly the case that must not take it.
+      //
+      // Asserted by the resolver that knows (`Identity.perUser`) rather than
+      // inferred here from a proxy like "has a live channel": a shared subject
+      // arriving on a streaming caller would pass that proxy, which is unsound
+      // in the one direction that leaks. Absent the assertion this degrades to
+      // the pre-principal behaviour (no sharing), never to the wrong principal.
+      identity.perUser === true
+    ) {
+      providerPlan.unshift({ name: PRINCIPAL_PROVIDER, principalOnly: true });
+    }
+
+    for (const entry of providerPlan) {
+      const provider = entry.name;
       const gateway = this.gatewayFor(provider);
       if (!gateway) {
         this.logVerdict("misconfigured", agent.id, { provider, reason: "no gateway configured" });
@@ -235,11 +305,39 @@ export class AuthorizationService {
       // property of the specific account that established it, and it is the very
       // thing principal resolution reads, so keying it by principal would be
       // circular.
-      const credentialSubject = CROSS_ENTRY_POINT_PROVIDERS.has(provider)
-        ? (identity.principal ?? identity.subject)
-        : identity.subject;
+      const credentialSubject = CROSS_ENTRY_POINT_PROVIDERS.has(provider) ? principal : identity.subject;
 
       let existing = await gateway.getToken(provider, credentialSubject);
+
+      // ── Adopt a pre-principal credential (docs/adr/0031) ─────────────────
+      // Nothing at the principal, but this caller may well have authorized
+      // already -- under their entry point's own subject, which is where these
+      // records were keyed before principals existed. Both flows now READ the
+      // principal; moving the record is what makes the credential the human
+      // already created actually BE there, instead of charging them a fresh
+      // login to reproduce something the gateway is still holding.
+      //
+      // Lazily, on the turn that needs it, rather than as a migration job: the
+      // set of (subject, principal) pairs is only knowable from a caller's own
+      // authenticated turn, and a batch job would have to invent that mapping.
+      //
+      // Gated on `perUser` for the same reason establishing a principal is: a
+      // shared subject's credential belongs to whoever authorized first, and
+      // moving it under a sender's principal would hand it to them outright.
+      // The webhook path's subject IS shared, so it never adopts -- it reads
+      // only what its own principal already has.
+      if (
+        !existing &&
+        CROSS_ENTRY_POINT_PROVIDERS.has(provider) &&
+        identity.perUser === true &&
+        credentialSubject !== identity.subject &&
+        (await gateway.rekey?.(provider, identity.subject, credentialSubject))
+      ) {
+        existing = await gateway.getToken(provider, credentialSubject);
+        console.log(
+          `[authorization] adopted this caller's pre-principal ${provider} credential onto their principal; no re-authorization needed`,
+        );
+      }
 
       if (!existing) {
         // Signal "this turn needs a link" NOW, before the (possibly slow)
@@ -271,6 +369,16 @@ export class AuthorizationService {
           return null;
         });
         if (!started) {
+          // A principal link that won't start must DEGRADE, not block: sharing
+          // is an improvement over per-entry-point keying, and refusing the
+          // turn over it would make a GitHub OAuth hiccup deny a run whose own
+          // credentials are already linked -- the coupling ADR 0030 §4 removed.
+          if (entry.principalOnly) {
+            console.error(
+              `[authorization] could not start the principal-establishing ${PRINCIPAL_PROVIDER} link; continuing keyed by the raw subject, so this run's credentials will not be shared across entry points`,
+            );
+            continue;
+          }
           failedToStart.push(PROVIDER_LABEL[provider] ?? provider);
           continue;
         }
@@ -340,8 +448,32 @@ export class AuthorizationService {
               request: req.request,
             },
           });
+          // Assess nothing further when it is the PRINCIPAL that is pending: the
+          // remaining providers would have to be keyed by a subject this turn is
+          // about to abandon, so starting their flows would file the credentials
+          // the user is about to create under the raw subject -- creating
+          // exactly the split this change exists to close. The resume turn
+          // re-enters with a canonical principal and assesses them all then.
+          if (entry.principalOnly) break;
           continue;
         }
+      }
+
+      // A link-only principal step: it contributes the mapping and nothing else.
+      // No `secretEnv` entry, so no `GITHUB_TOKEN` reaches the run and the
+      // agent's delegated-write path stays unreachable (docs/adr/0030 §5).
+      if (entry.principalOnly) {
+        if (existing.githubLogin) {
+          principalLogin = existing.githubLogin;
+          principal = canonicalSubjectForLogin(existing.githubLogin);
+        } else {
+          // A link with no login on it can't produce a mapping. Degrade to the
+          // raw subject rather than failing a turn over a missing nicety.
+          console.error(
+            `[authorization] the ${PRINCIPAL_PROVIDER} link for this caller carries no login; continuing keyed by the raw subject, without cross-entry-point sharing`,
+          );
+        }
+        continue;
       }
 
       // Capture the login off whichever way this credential arrived. On a
@@ -415,7 +547,9 @@ export class AuthorizationService {
     // exists to eliminate, and the co-author trailer degrades to the login-only
     // form without it.
     const actorLogin =
-      actorLoginFromLoop ?? (await resolveActorLogin(identity.subject, req.senderLogin, this.deps.identityLinkGateway));
+      actorLoginFromLoop ??
+      principalLogin ??
+      (await resolveActorLogin(identity.subject, req.senderLogin, this.deps.identityLinkGateway));
     if (actorLogin) {
       secretEnv = [...(secretEnv ?? []), { name: ACTOR_LOGIN_ENV, value: actorLogin }];
     }
@@ -426,8 +560,14 @@ export class AuthorizationService {
       // them at once.
       injecting: (secretEnv ?? []).map((e) => e.name),
       actorLogin: actorLogin ?? null,
+      principal,
     });
-    return { kind: "authorized", ...(secretEnv ? { secretEnv } : {}), ...(actorLogin ? { actorLogin } : {}) };
+    return {
+      kind: "authorized",
+      ...(secretEnv ? { secretEnv } : {}),
+      ...(actorLogin ? { actorLogin } : {}),
+      principal,
+    };
   }
 
   /**

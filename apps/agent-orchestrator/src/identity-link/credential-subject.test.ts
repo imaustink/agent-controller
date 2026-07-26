@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { canonicalSubjectForLogin, resolveActorLogin, resolvePrincipal } from "./credential-subject.js";
+import { canonicalSubjectForLogin, isCanonicalPrincipal, resolveActorLogin, resolvePrincipal } from "./credential-subject.js";
 
 function githubGateway(githubLogin?: string) {
   return { getToken: vi.fn().mockResolvedValue(githubLogin ? { token: "gh", githubLogin } : undefined) };
@@ -64,5 +64,17 @@ describe("resolveActorLogin", () => {
     // Knowing WHO the caller is and provisioning them a credential are
     // different concerns; conflating them is what caused the production 401.
     expect(await resolveActorLogin("openwebui:42", undefined, githubGateway("imaustink"))).toBe("imaustink");
+  });
+});
+
+describe("isCanonicalPrincipal", () => {
+  it("tells a canonical principal apart from a raw entry-point subject", async () => {
+    // What the authorization pre-flight branches on: only the second shape can
+    // be shared across entry points, so only the first needs establishing.
+    expect(isCanonicalPrincipal("github:imaustink")).toBe(true);
+    expect(isCanonicalPrincipal("openwebui:42")).toBe(false);
+    expect(isCanonicalPrincipal("client-integration-gateway")).toBe(false);
+    // The fallback resolvePrincipal returns is, by construction, not canonical.
+    expect(isCanonicalPrincipal(await resolvePrincipal("openwebui:42", undefined, undefined))).toBe(false);
   });
 });

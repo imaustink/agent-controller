@@ -1296,6 +1296,18 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       }
       const identitySecretEnv = verdict.secretEnv;
 
+      // The pre-flight may have ESTABLISHED the caller's principal on this very
+      // turn (docs/adr/0031), in which case the credentials it resolved are keyed
+      // by a principal `state.identity` does not carry yet. Adopt it for the rest
+      // of this turn: `handleAgentTurnFailure` below re-derives that same key to
+      // invalidate an expired credential, and deriving the pre-upgrade one would
+      // delete nothing while telling the user to retry -- the infinite "expired
+      // credential" loop that path exists to prevent.
+      const identity =
+        verdict.principal && verdict.principal !== state.identity.principal
+          ? { ...state.identity, principal: verdict.principal }
+          : state.identity;
+
       const runId = randomUUID();
       const jobId = randomUUID();
       const callbackUrl = `${deps.callbackBaseUrl}/callback/${jobId}`;
@@ -1336,6 +1348,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         const message = composeAgentTurnMessage(state, reply);
         return {
           agentRunId: runId,
+          identity,
           agentAwaitingReply: !reply.final,
           result: message,
           // Only a FINAL reply concludes an episode, so only then is
@@ -1347,7 +1360,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
-        return { agentRunId: runId, ...(await handleAgentTurnFailure(err, deps, state, agent)) };
+        return { agentRunId: runId, identity, ...(await handleAgentTurnFailure(err, deps, { ...state, identity }, agent)) };
       }
     })
     .addNode("loadSkillTools", async (state) => {

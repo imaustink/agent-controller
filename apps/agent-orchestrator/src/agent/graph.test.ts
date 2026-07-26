@@ -2883,6 +2883,16 @@ describe("buildAgentGraph canonical credential subject (cross-flow Claude creden
     });
   }
 
+  /**
+   * A chat caller as `OpenWebUiForwardedUserResolver` resolves one: a per-user
+   * subject, asserted as such. `perUser` is what lets the pre-flight establish a
+   * principal against it (docs/adr/0031) -- the default double here omits it,
+   * standing in for a subject that may be shared.
+   */
+  const chatCaller = (): IdentityResolver => ({
+    resolve: vi.fn().mockResolvedValue({ subject: "alice", roles: ["reader"], perUser: true }),
+  });
+
   it("keys a chat caller's claude-remote credential by github:<login> from their GitHub link, not the raw openwebui subject", async () => {
     const deps = canonicalDeps();
     const graph = buildAgentGraph(deps);
@@ -2956,6 +2966,112 @@ describe("buildAgentGraph canonical credential subject (cross-flow Claude creden
 
     expect(deps.identityLinkGateway!.getToken).toHaveBeenCalledWith("github", "alice");
     expect(deps.identityLinkGateway!.getToken).not.toHaveBeenCalledWith("github", "github:imaustink");
+  });
+
+  it("adopts a chat caller's existing credential onto their principal, so converging costs them no re-auth (docs/adr/0031)", async () => {
+    // The reported scenario, end to end: this human has been running agents from
+    // chat for weeks -- their credential sits at the raw `alice` subject, written
+    // before principals existed -- and triage was prompting them because it reads
+    // `github:imaustink`. After this, neither flow prompts.
+    const deps = canonicalDeps({ identityResolver: chatCaller() }, null);
+    (deps.identityLinkGateway!.start as ReturnType<typeof vi.fn>).mockResolvedValue({
+      flow: "authcode" as const,
+      authorizeUrl: "https://gateway.example/identity-link/github/authorize",
+      expiresInSeconds: 600,
+    });
+    deps.identityLinkGateway!.waitForCompletion = vi
+      .fn()
+      .mockResolvedValue({ token: "gh-token", githubLogin: "Imaustink" });
+    // A credential that exists ONLY under the pre-principal subject.
+    const stored = new Map<string, { token: string }>([["alice", { token: "creds-json-from-chat" }]]);
+    (deps.claudeRemoteGateway!.getToken as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_provider: string, subject: string) => stored.get(subject),
+    );
+    deps.claudeRemoteGateway!.rekey = vi.fn(async (_provider: string, from: string, to: string) => {
+      const record = stored.get(from);
+      if (!record) return false;
+      stored.set(to, record);
+      stored.delete(from);
+      return true;
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "fix the failing test",
+      authToken: "tok",
+      progressListener: vi.fn(),
+    });
+
+    expect(final.error).toBeUndefined();
+    // No Claude flow was started: the credential they already authorized was
+    // moved, not re-created.
+    expect(deps.claudeRemoteGateway!.start).not.toHaveBeenCalled();
+    expect(deps.claudeRemoteGateway!.rekey).toHaveBeenCalledWith("claude-remote", "alice", "github:imaustink");
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]![2] as {
+      secretEnv?: { name: string; value: string }[];
+    };
+    expect(launched.secretEnv).toContainEqual({ name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: "creds-json-from-chat" });
+  });
+
+  it("offers a chat caller with no GitHub mapping the principal link FIRST, before any claude-remote flow (docs/adr/0031)", async () => {
+    // The production defect, end to end: this caller could authorize Claude in
+    // chat all day and a triage turn would still prompt, because chat wrote
+    // `claude-remote@alice` and triage reads `claude-remote@github:<login>`.
+    // Establishing the mapping first is what makes the two the same record.
+    const deps = canonicalDeps({ identityResolver: chatCaller() }, null);
+    (deps.identityLinkGateway!.start as ReturnType<typeof vi.fn>).mockResolvedValue({
+      flow: "authcode" as const,
+      authorizeUrl: "https://gateway.example/identity-link/github/authorize",
+      expiresInSeconds: 600,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "fix the failing test",
+      authToken: "tok",
+      progressListener: vi.fn(),
+    });
+
+    expect(deps.identityLinkGateway!.start).toHaveBeenCalledWith("github", "alice", "authcode");
+    expect(final.pendingIdentityLink).toMatchObject({ provider: "github", subject: "alice" });
+    // Nothing was keyed to the subject this caller is one link away from
+    // abandoning -- that is what would have split the records again.
+    expect(deps.claudeRemoteGateway!.start).not.toHaveBeenCalled();
+  });
+
+  it("converges the SAME turn once the principal link lands mid-wait", async () => {
+    const deps = canonicalDeps({ identityResolver: chatCaller() }, null);
+    (deps.identityLinkGateway!.start as ReturnType<typeof vi.fn>).mockResolvedValue({
+      flow: "authcode" as const,
+      authorizeUrl: "https://gateway.example/identity-link/github/authorize",
+      expiresInSeconds: 600,
+    });
+    // The caller completes the GitHub link in their browser while the turn
+    // holds open, exactly as the claude flows already do.
+    deps.identityLinkGateway!.waitForCompletion = vi
+      .fn()
+      .mockResolvedValue({ token: "gh-token", githubLogin: "Imaustink" });
+    (deps.claudeRemoteGateway!.getToken as ReturnType<typeof vi.fn>).mockResolvedValue({ token: "creds-json" });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "fix the failing test",
+      authToken: "tok",
+      progressListener: vi.fn(),
+    });
+
+    expect(final.error).toBeUndefined();
+    // The key a triage turn reads. Same human, same record, either entry point.
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:imaustink");
+    // The mapping stayed a mapping: no GITHUB_TOKEN went to the run, so the
+    // agent's delegated-write path (the observed 401) stays unreachable.
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]![2] as {
+      secretEnv?: { name: string }[];
+    };
+    expect(launched.secretEnv?.map((e) => e.name)).not.toContain("GITHUB_TOKEN");
+    // And the upgraded principal is carried on the turn's identity, so a later
+    // expired-credential invalidate clears the record that was actually read.
+    expect(final.identity?.principal).toBe("github:imaustink");
   });
 
   it("starts the link against the canonical subject AND records it on pendingIdentityLink, so store and wait cannot drift (the PR #144 regression)", async () => {
