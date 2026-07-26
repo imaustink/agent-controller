@@ -159,6 +159,10 @@ export class IdentityLinkApi {
       await this.handlePoll(req, res, provider!);
       return true;
     }
+    if (req.method === "GET" && action === "identity") {
+      await this.handleIdentity(res, url, provider);
+      return true;
+    }
     if (req.method === "GET" && action === "token") {
       await this.handleToken(res, url, provider!);
       return true;
@@ -247,6 +251,38 @@ export class IdentityLinkApi {
       return;
     }
     sendJson(res, 200, { status: "complete", token: { token: token.token, githubLogin: token.githubLogin } });
+  }
+
+  /**
+   * WHO a subject has linked, without requiring that link's access token to
+   * still be usable -- the login only, never a credential.
+   *
+   * Distinct from `token` below because the questions are distinct
+   * (docs/adr/0031): the orchestrator resolves a caller's principal from the
+   * account they proved control of, and an access token that expired overnight
+   * does not unprove it. Answering that question with `getValidToken` made an
+   * expired link read as "no GitHub identity", so the orchestrator re-prompted
+   * for a link it already had, on every turn -- while `wait` resolved the same
+   * login moments later, because it reads the stored record raw.
+   *
+   * 404 means "nothing linked", the same shape `token` uses for it.
+   */
+  private async handleIdentity(res: ServerResponse, url: URL, provider: string): Promise<void> {
+    if (!SUPPORTED_PROVIDERS.has(provider)) {
+      sendJson(res, 400, { error: `Unsupported identity provider: ${provider}` });
+      return;
+    }
+    const subject = url.searchParams.get("subject");
+    if (!subject) {
+      sendJson(res, 400, { error: "Query parameter `subject` is required" });
+      return;
+    }
+    const githubLogin = await this.linker.getLinkedLogin(subject);
+    if (!githubLogin) {
+      res.writeHead(404).end();
+      return;
+    }
+    sendJson(res, 200, { githubLogin });
   }
 
   private async handleToken(res: ServerResponse, url: URL, provider: string): Promise<void> {

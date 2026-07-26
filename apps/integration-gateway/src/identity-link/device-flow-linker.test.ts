@@ -228,7 +228,58 @@ describe("GithubDeviceFlowLinker.completeAuthCode", () => {
   });
 });
 
+describe("GithubDeviceFlowLinker.getLinkedLogin", () => {
+  /**
+   * The identity question, kept separate from the credential one (docs/adr/0031).
+   *
+   * These two tests are the whole bug: the same stored record must answer "who is
+   * this?" even when it cannot answer "can I use this token?". Conflating them had
+   * the orchestrator re-prompting for a link it already had, on every turn.
+   */
+  it("returns the login for a link whose token has expired and cannot refresh", async () => {
+    const store = makeInMemoryStore();
+    await store.set("github", "user-1", {
+      githubLogin: "octocat",
+      token: "gho_dead",
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      refreshToken: undefined,
+      refreshExpiresAt: undefined,
+    });
+    const linker = new GithubDeviceFlowLinker({ clientId: "client-1", scope: undefined, store });
+
+    // Credential question: no.
+    expect(await linker.getValidToken("user-1")).toBeUndefined();
+    // Identity question: yes, and it always was -- the login is right there.
+    expect(await linker.getLinkedLogin("user-1")).toBe("octocat");
+  });
+
+  it("returns undefined when nothing is linked at all", async () => {
+    const linker = new GithubDeviceFlowLinker({ clientId: "client-1", scope: undefined, store: makeInMemoryStore() });
+    expect(await linker.getLinkedLogin("user-1")).toBeUndefined();
+  });
+});
+
 describe("GithubDeviceFlowLinker.getValidToken", () => {
+  it("refuses to attempt a refresh with no clientSecret, rather than failing the grant every time", async () => {
+    // GitHub requires the secret on this grant. A deployment without one cannot
+    // refresh at all, so every link died ~8h after creation with a valid refresh
+    // token sitting unused. The call is now skipped and the cause logged.
+    const store = makeInMemoryStore();
+    await store.set("github", "user-1", {
+      githubLogin: "octocat",
+      token: "gho_stale",
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+      refreshToken: "ghr_old",
+      refreshExpiresAt: undefined,
+    });
+    const refreshSpy = vi.spyOn(deviceFlow, "refreshUserToken");
+    const linker = new GithubDeviceFlowLinker({ clientId: "client-1", scope: undefined, store });
+
+    expect(await linker.getValidToken("user-1")).toBeUndefined();
+    expect(refreshSpy).not.toHaveBeenCalled();
+  });
+
+
   it("returns undefined when there is no stored link", async () => {
     const store = makeInMemoryStore();
     const linker = new GithubDeviceFlowLinker({ clientId: "client-1", scope: undefined, store });
@@ -267,11 +318,15 @@ describe("GithubDeviceFlowLinker.getValidToken", () => {
       expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
       refreshExpiresAt: undefined,
     });
-    const linker = new GithubDeviceFlowLinker({ clientId: "client-1", scope: undefined, store });
+    // `clientSecret` is required for the refresh grant -- see the no-secret test below.
+    const linker = new GithubDeviceFlowLinker({ clientId: "client-1", clientSecret: "secret-1", scope: undefined, store });
 
     const result = await linker.getValidToken("user-1");
 
     expect(result).toEqual({ token: "gho_new", githubLogin: "octocat" });
+    // The secret must reach GitHub: without it the grant fails, the link reads as
+    // dead, and the user is re-prompted every ~8h forever (docs/adr/0031).
+    expect(deviceFlow.refreshUserToken).toHaveBeenCalledWith("client-1", "secret-1", "ghr_old", undefined);
     const stored = await store.get("github", "user-1");
     expect(stored?.token).toBe("gho_new");
     expect(stored?.refreshToken).toBe("ghr_new");
