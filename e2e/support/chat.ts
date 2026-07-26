@@ -66,39 +66,72 @@ export function chatSubject(userId: string): string {
  * The `sessionId` is a real chat id, defaulted per call rather than fixed: it
  * keys session state (active agent run, pending identity link), and a shared
  * constant would let one spec's parked link resume inside another's turn.
+ *
+ * Resolves `undefined` when the turn PARKS -- only if `allowPark` is set. A turn
+ * that needs an account link and has a live channel deliberately holds open for
+ * the whole flow expiry waiting for the human to finish, so for any spec whose
+ * expected outcome is "no launch", parking is the product working and there is
+ * no completed reply to return. Without `allowPark` that same timeout rethrows,
+ * so a positive spec that hangs still fails loudly instead of silently reading
+ * as "no reply".
  */
 export async function chatTurn(
   userId: string,
   request: string,
-  opts: { sessionId?: string; timeoutMs?: number } = {},
-): Promise<string> {
+  opts: { sessionId?: string; timeoutMs?: number; allowPark?: boolean } = {},
+): Promise<string | undefined> {
   const secret = await forwardedUserJwtSecret();
   const jwt = mintForwardedUserJwt(secret, userId);
   const sessionId = opts.sessionId ?? `e2e-chat-${userId}-${process.pid}`;
 
   return withPortForward(ORCHESTRATOR_SERVICE, ORCHESTRATOR_PORT, CHAT_PORT, async (baseUrl) => {
-    const res = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        // The shared Open WebUI bearer. Identity does NOT come from this -- the
-        // JWT header below is what makes the caller per-user -- but the request
-        // still has to authenticate, and this is the value values-e2e.yaml's
-        // staticIdentities map registers.
-        authorization: "Bearer e2e-gateway-token",
-        "x-chat-id": sessionId,
-        [FORWARDED_USER_JWT_HEADER]: jwt,
-      },
-      body: JSON.stringify({ model: "agent-orchestrator", stream: true, messages: [{ role: "user", content: request }] }),
-      // A chat turn that needs a link holds its connection open for the whole
-      // flow expiry, and a delegated turn waits on a real agent run. Generous,
-      // but bounded: an unbounded fetch turns a hung turn into a hung suite.
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 420_000),
-    });
-    if (!res.ok) {
-      throw new Error(`e2e: chat completion failed: ${res.status} ${await res.text()}`);
+    try {
+      const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          // The shared Open WebUI bearer. Identity does NOT come from this -- the
+          // JWT header below is what makes the caller per-user -- but the request
+          // still has to authenticate, and this is the value values-e2e.yaml's
+          // staticIdentities map registers.
+          authorization: "Bearer e2e-gateway-token",
+          "x-chat-id": sessionId,
+          [FORWARDED_USER_JWT_HEADER]: jwt,
+        },
+        body: JSON.stringify({ model: "agent-orchestrator", stream: true, messages: [{ role: "user", content: request }] }),
+        // A chat turn that needs a link holds its connection open for the whole
+        // flow expiry, and a delegated turn waits on a real agent run. Generous,
+        // but bounded: an unbounded fetch turns a hung turn into a hung suite.
+        signal: AbortSignal.timeout(opts.timeoutMs ?? 420_000),
+      });
+      if (!res.ok) {
+        throw new Error(`e2e: chat completion failed: ${res.status} ${await res.text()}`);
+      }
+      // The body read has to be INSIDE the try: the orchestrator flushes SSE
+      // headers immediately, so `fetch` resolves as soon as they land and a
+      // parked turn times out here, not above. Catching only around `fetch` made
+      // `allowPark` silently ineffective.
+      //
+      // A park discards whatever had streamed so far, including any link prompt.
+      // Fine for asserting "no launch"; a spec that wants to assert on the
+      // prompt text would need to read the stream incrementally instead.
+      return assembleSseContent(await res.text());
+    } catch (err) {
+      // Distinguish "the turn parked" from every other failure. Only a caller
+      // that expects a park may swallow it; anything else is a real fault and
+      // must surface, including a genuine hang.
+      //
+      // Checked by NAME rather than `instanceof Error`: `AbortSignal.timeout`
+      // rejects with a DOMException, and undici may surface it wrapped, so the
+      // reason can sit on `cause`.
+      if (opts.allowPark && isAbort(err)) return undefined;
+      throw err;
     }
-    return assembleSseContent(await res.text());
   });
 }
 
+/** Whether a rejection is an abort/timeout, however undici chose to wrap it. */
+function isAbort(err: unknown): boolean {
+  const names = [(err as { name?: string } | undefined)?.name, (err as { cause?: { name?: string } } | undefined)?.cause?.name];
+  return names.some((name) => name === "TimeoutError" || name === "AbortError");
+}

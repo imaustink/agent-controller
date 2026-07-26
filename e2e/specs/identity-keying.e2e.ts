@@ -287,9 +287,13 @@ describe("chat and triage converge on one credential (ADR 0031)", () => {
     await seedAllClaudeCredentials("github:someone-else");
     const startedAt = new Date();
 
-    await chatTurn(CHAT_USER, REQUEST);
+    // The turn is EXPECTED to park: with nothing at this caller's principal and
+    // nothing adoptable, the pre-flight starts a link flow and holds open for the
+    // human to finish it. That window doubles as the "give it real time to launch
+    // if it were going to" wait -- absence is the assertion, so it must not be a
+    // race, but it also needn't cost the flow's full 10-minute expiry.
+    expect(await chatTurn(CHAT_USER, REQUEST, { allowPark: true, timeoutMs: 90_000 })).toBeUndefined();
 
-    await new Promise((r) => setTimeout(r, 60_000));
     expect(await agentRunsSince(startedAt)).toHaveLength(0);
     // And the other human's credential is untouched -- not moved, not deleted.
     expect(await claudeCredentialSubjects("login")).toContain("github:someone-else");
