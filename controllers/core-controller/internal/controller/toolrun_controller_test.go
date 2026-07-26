@@ -228,3 +228,74 @@ var _ = Describe("ToolRun Controller", func() {
 		})
 	})
 })
+
+// Same regression as the AgentRun spec of this name, in the controller it was
+// copied from: markFailed appended a hand-built condition with no
+// LastTransitionTime, the schema rejected every update, and a ToolRun whose Job
+// had vanished stayed Running forever. Production held one wedged this way
+// alongside the AgentRuns.
+var _ = Describe("ToolRun Controller reaching a terminal phase when its Job is gone", func() {
+	const runName = "orphaned-toolrun"
+	const toolName = "orphan-tool"
+	ctx := context.Background()
+	key := types.NamespacedName{Name: runName, Namespace: "default"}
+
+	BeforeEach(func() {
+		tool := &toolv1alpha1.Tool{
+			ObjectMeta: metav1.ObjectMeta{Name: toolName, Namespace: "default"},
+			Spec: toolv1alpha1.ToolSpec{
+				Description:        "orphan-run test tool",
+				Input:              "a URL",
+				Output:             "a recipe JSON envelope",
+				AllowedRoles:       []string{"reader"},
+				Image:              "example.com/recipe-scraper:latest",
+				ServiceAccountName: "default",
+			},
+		}
+		Expect(k8sClient.Create(ctx, tool)).To(Succeed())
+
+		run := &toolv1alpha1.ToolRun{
+			ObjectMeta: metav1.ObjectMeta{Name: runName, Namespace: "default"},
+			Spec: toolv1alpha1.ToolRunSpec{
+				ToolRef: toolName,
+				Args:    []string{"https://example.com/recipe"},
+				Callback: toolv1alpha1.ToolRunCallback{
+					URL: "http://agent-orchestrator-callback.default.svc.cluster.local:8080",
+					SecretRef: toolv1alpha1.SecretKeySelector{
+						Name: "agent-orchestrator-secrets",
+						Key:  "AGENT_CALLBACK_SECRET",
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, run)).To(Succeed())
+		run.Status.Phase = toolv1alpha1.ToolRunPhaseRunning
+		run.Status.JobName = "toolrun-" + runName
+		Expect(k8sClient.Status().Update(ctx, run)).To(Succeed())
+	})
+
+	AfterEach(func() {
+		run := &toolv1alpha1.ToolRun{}
+		if err := k8sClient.Get(ctx, key, run); err == nil {
+			Expect(k8sClient.Delete(ctx, run)).To(Succeed())
+		}
+		tool := &toolv1alpha1.Tool{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: toolName, Namespace: "default"}, tool); err == nil {
+			Expect(k8sClient.Delete(ctx, tool)).To(Succeed())
+		}
+	})
+
+	It("marks the run Failed and persists the condition", func() {
+		reconciler := &ToolRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		var updated toolv1alpha1.ToolRun
+		Expect(k8sClient.Get(ctx, key, &updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(toolv1alpha1.ToolRunPhaseFailed))
+		Expect(updated.Status.Conditions).To(HaveLen(1))
+		Expect(updated.Status.Conditions[0].Reason).To(Equal("JobMissing"))
+		Expect(updated.Status.Conditions[0].LastTransitionTime.IsZero()).To(BeFalse())
+	})
+})

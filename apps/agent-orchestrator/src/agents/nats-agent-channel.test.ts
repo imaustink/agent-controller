@@ -180,6 +180,89 @@ describe("NatsAgentChannel", () => {
     expect(down).toEqual([expect.objectContaining({ type: "tool_result", callId: "c1", ok: false, error: "tool exploded" })]);
     sub.unsubscribe();
   });
+
+  /**
+   * The orchestrator's half of surviving its own disappearance: the agent holds
+   * its concluding message until this ack lands, so failing to send one would
+   * leave every finished run re-offering an answer nobody ever confirmed.
+   */
+  it("acks a reply on the down subject, quoting that message's seq", async () => {
+    const { channel, nc } = makeChannel();
+    const codec = JSONCodec<unknown>();
+    const down: unknown[] = [];
+    const sub = nc.subscribe("agent.run-1.down");
+    void (async () => {
+      for await (const m of sub) down.push(codec.decode(m.data));
+    })();
+
+    const pending = channel.awaitReply("run-1");
+    await new Promise((r) => setImmediate(r));
+    const codecUp = JSONCodec<unknown>();
+    nc.publish(
+      "agent.run-1.up",
+      codecUp.encode({ agent_run_id: "run-1", seq: 7, ts: "2026-07-13T00:00:00.000Z", type: "reply", message: "done", final: true }),
+    );
+
+    await expect(pending).resolves.toMatchObject({ message: "done" });
+    expect(down).toEqual([expect.objectContaining({ type: "reply_ack", ackSeq: 7 })]);
+    sub.unsubscribe();
+  });
+
+  it("acks a failed message too, so a failure is not re-offered forever", async () => {
+    const { channel, nc } = makeChannel();
+    const codec = JSONCodec<unknown>();
+    const down: unknown[] = [];
+    const sub = nc.subscribe("agent.run-1.down");
+    void (async () => {
+      for await (const m of sub) down.push(codec.decode(m.data));
+    })();
+
+    const pending = channel.awaitReply("run-1");
+    await new Promise((r) => setImmediate(r));
+    nc.publish(
+      "agent.run-1.up",
+      JSONCodec<unknown>().encode({
+        agent_run_id: "run-1",
+        seq: 3,
+        ts: "2026-07-13T00:00:00.000Z",
+        type: "failed",
+        code: "agent_error",
+        message: "boom",
+      }),
+    );
+
+    await expect(pending).rejects.toBeInstanceOf(AgentTurnFailedError);
+    expect(down).toEqual([expect.objectContaining({ type: "reply_ack", ackSeq: 3 })]);
+    sub.unsubscribe();
+  });
+
+  it("acks a non-final reply (a question) as well", async () => {
+    const { channel, nc } = makeChannel();
+    const codec = JSONCodec<unknown>();
+    const down: unknown[] = [];
+    const sub = nc.subscribe("agent.run-1.down");
+    void (async () => {
+      for await (const m of sub) down.push(codec.decode(m.data));
+    })();
+
+    const pending = channel.awaitReply("run-1");
+    await new Promise((r) => setImmediate(r));
+    nc.publish(
+      "agent.run-1.up",
+      JSONCodec<unknown>().encode({
+        agent_run_id: "run-1",
+        seq: 2,
+        ts: "2026-07-13T00:00:00.000Z",
+        type: "reply",
+        message: "Which branch?",
+        final: false,
+      }),
+    );
+
+    await expect(pending).resolves.toMatchObject({ final: false });
+    expect(down).toEqual([expect.objectContaining({ type: "reply_ack", ackSeq: 2 })]);
+    sub.unsubscribe();
+  });
 });
 
 /**

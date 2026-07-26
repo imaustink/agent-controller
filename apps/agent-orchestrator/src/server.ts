@@ -102,6 +102,8 @@ export interface AgentGraphInput {
   activeAgentId?: string;
   /** Name of the specific AgentRun CR the conversation is continuing, if any. */
   activeAgentRunId?: string;
+  /** True when `activeAgentRunId` still owes this conversation a reply (see `SessionRecord.activeAgentRunAwaitingReply`). */
+  activeAgentRunAwaitingReply?: boolean;
   /** Identity subject the session record was created under (docs/adr/0012). */
   sessionSubject?: string;
   /** Per-tool continuation tokens from the caller's session, keyed by tool id (docs/adr/0017). */
@@ -293,6 +295,7 @@ export class InvokeServer {
     input.activeSkillId = record.activeSkillId;
     input.activeAgentId = record.activeAgentId;
     input.activeAgentRunId = record.activeAgentRunId;
+    input.activeAgentRunAwaitingReply = record.activeAgentRunAwaitingReply;
     input.sessionSubject = record.subject;
     input.toolContinuations = record.toolContinuations;
     input.agentContinuations = record.agentContinuations;
@@ -323,6 +326,7 @@ export class InvokeServer {
       selectedAgent?: { id: string };
       agentRunId?: string;
       agentAwaitingReply?: boolean;
+      agentResumePending?: boolean;
       extractedContinuation?: { toolId: string; token: string };
       extractedAgentContinuation?: { agentId: string; token: string };
       pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number; subject?: string; request?: string };
@@ -370,7 +374,21 @@ export class InvokeServer {
       return;
     }
     if (outcome.agentRunId) {
-      if (outcome.agentAwaitingReply && outcome.selectedAgent) {
+      if (outcome.agentResumePending && outcome.selectedAgent) {
+        // The turn ended without the reply because the channel to the run was
+        // lost, not because the run concluded. Keep the anchor (already written
+        // eagerly before the wait) with the awaiting-reply flag intact, so the
+        // next turn re-attaches and waits rather than publishing its text as a
+        // prompt to an agent that never asked anything.
+        await this.sessionStore.set(sessionId, {
+          ...base,
+          activeAgentId: outcome.selectedAgent.id,
+          activeAgentRunId: outcome.agentRunId,
+          activeAgentRunAwaitingReply: true,
+        });
+      } else if (outcome.agentAwaitingReply && outcome.selectedAgent) {
+        // Parked on a question: the next turn's text IS the answer, so no
+        // awaiting-reply flag -- it gets published as a prompt.
         await this.sessionStore.set(sessionId, {
           ...base,
           activeAgentId: outcome.selectedAgent.id,
@@ -735,6 +753,7 @@ export class InvokeServer {
             selectedAgent: state.selectedAgent,
             agentRunId: state.agentRunId,
             agentAwaitingReply: state.agentAwaitingReply,
+            agentResumePending: state.agentResumePending,
             extractedContinuation: state.extractedContinuation,
             extractedAgentContinuation: state.extractedAgentContinuation,
             pendingIdentityLink: state.pendingIdentityLink,
@@ -897,6 +916,7 @@ export class InvokeServer {
       selectedAgent: state.selectedAgent,
       agentRunId: state.agentRunId,
       agentAwaitingReply: state.agentAwaitingReply,
+            agentResumePending: state.agentResumePending,
       extractedContinuation: state.extractedContinuation,
       extractedAgentContinuation: state.extractedAgentContinuation,
       pendingIdentityLink: state.pendingIdentityLink,

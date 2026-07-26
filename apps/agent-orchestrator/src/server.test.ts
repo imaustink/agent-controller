@@ -5,6 +5,36 @@ import type { AgentState } from "./agent/graph.js";
 import type { AgentOrchestratorChannel } from "./agents/nats-agent-channel.js";
 import { InMemorySessionStore } from "./session/in-memory-session-store.js";
 
+/**
+ * Every request in this file goes over a fresh TCP connection.
+ *
+ * Without this the suite failed roughly one run in ten, always as
+ * `TypeError: fetch failed` / `SocketError: other side closed` on a request to a
+ * server that had just started -- with `bytesWritten: 339, bytesRead: 0`, i.e.
+ * the request was written to a socket whose peer had already gone. Nothing was
+ * wrong with the server: it is connection REUSE across tests.
+ *
+ * Node's `fetch` (undici) keeps a keep-alive pool keyed by origin
+ * (`127.0.0.1:<port>`) for several seconds. Each test here listens on port 0,
+ * gets an ephemeral port, and closes the server when it finishes -- so under
+ * load, when the OS recycles an ephemeral port quickly enough, a later test's
+ * server can land on a port whose pooled (and now dead) socket is still cached.
+ * The next request to that origin is handed the corpse.
+ *
+ * `connection: close` opts every request out of pooling, so there is never a
+ * cached socket to inherit. Verified: three requests to one origin open three
+ * sockets with this header and reuse one without it. Declared at module scope so
+ * it shadows the global for the whole file -- no call site has to remember.
+ */
+const nativeFetch = globalThis.fetch;
+const fetch: typeof globalThis.fetch = (input, init = {}) => {
+  // Via the Headers API rather than an object spread, so a caller passing
+  // Headers or an entry array keeps its headers instead of losing them.
+  const headers = new Headers(init.headers);
+  headers.set("connection", "close");
+  return nativeFetch(input, { ...init, headers });
+};
+
 function listenOn(server: InvokeServer): Promise<number> {
   return server.listen(0).then(() => {
     const address = server["server"]?.address();
@@ -306,6 +336,89 @@ describe("InvokeServer session-scoped pending identity link (GitHub OAuth Device
   function sessionStore() {
     return new InMemorySessionStore({ ttlMs: 60_000, maxEntries: 10 });
   }
+
+  /**
+   * A turn that lost its channel to a still-working run must leave the
+   * awaiting-reply anchor behind. The default for a turn that produced no reply
+   * is to CLEAR the active-run state (the run concluded), which for this case
+   * would throw away the only pointer back to a run that is still holding the
+   * answer.
+   */
+  it("keeps the awaiting-reply anchor when the turn ended with a lost channel", async () => {
+    const identity = { subject: "alice", roles: ["reader"] };
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({
+        request: "x",
+        authToken: "tok-1",
+        skillCandidates: [],
+        identity,
+        selectedAgent: { id: "claude-code-swe" },
+        agentRunId: "run-1",
+        agentAwaitingReply: false,
+        agentResumePending: true,
+        result: "Still working -- I lost my connection to agent run `run-1`.",
+      } as unknown as AgentState),
+      stream: vi.fn(),
+    };
+    const store = sessionStore();
+    const server = new InvokeServer(graph, store);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "fix the bug", session_id: "session-1" }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(await store.get("session-1")).toMatchObject({
+      subject: "alice",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+    });
+
+    await server.close();
+  });
+
+  it("clears the anchor once the agent actually replies", async () => {
+    const identity = { subject: "alice", roles: ["reader"] };
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({
+        request: "x",
+        authToken: "tok-1",
+        skillCandidates: [],
+        identity,
+        selectedAgent: { id: "claude-code-swe" },
+        agentRunId: "run-1",
+        agentAwaitingReply: false,
+        result: "opened a PR",
+      } as unknown as AgentState),
+      stream: vi.fn(),
+    };
+    const store = sessionStore();
+    await store.set("session-1", {
+      subject: "alice",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+    });
+    const server = new InvokeServer(graph, store);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "any update?", session_id: "session-1" }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const record = await store.get("session-1");
+    expect(record?.activeAgentRunId).toBeUndefined();
+    expect(record?.activeAgentRunAwaitingReply).toBeUndefined();
+
+    await server.close();
+  });
 
   it("persists pendingIdentityLink from a turn that paused on device-flow authorization, and offers it to the graph on the next turn", async () => {
     const identity = { subject: "alice", roles: ["reader"] };

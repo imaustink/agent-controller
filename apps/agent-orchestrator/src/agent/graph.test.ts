@@ -14,7 +14,13 @@ import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { AgentDescriptor, AgentStore } from "../agents/types.js";
 import type { DelegateSelector } from "./delegate-selector.js";
-import { AgentTurnFailedError, type AgentOrchestratorChannel, type AgentTurnResult } from "../agents/nats-agent-channel.js";
+import {
+  AgentTurnFailedError,
+  AgentTurnTimeoutError,
+  AgentTurnTransportError,
+  type AgentOrchestratorChannel,
+  type AgentTurnResult,
+} from "../agents/nats-agent-channel.js";
 import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
 import type { BestEffortResponder } from "./best-effort-responder.js";
@@ -3432,5 +3438,266 @@ describe("credentials never reach the model (docs/adr/0030 §3)", () => {
     const serializedState = JSON.stringify(final);
     expect(serializedState).not.toContain(SECRET_TOKEN);
     expect(serializedState).not.toContain(SECRET_CREDS);
+  });
+});
+
+/**
+ * Resumability of an agent turn whose wait is interrupted by something that has
+ * nothing to do with the agent — an orchestrator rollout, a dropped NATS
+ * connection. The run keeps working in its own Job pod and holds its concluding
+ * message for us, so the correct behaviour is to pause, keep an anchor, and
+ * re-attach on the next turn — never to report the run as failed.
+ */
+describe("buildAgentGraph agent-turn resumability", () => {
+  const swe: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  function resumeDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: swe, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: swe, score: 1 }]),
+    };
+    const delegateSelector: DelegateSelector = {
+      select: vi.fn().mockResolvedValue({ type: "agent", agent: swe }),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({ message: "done", final: true, narration: [] } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      markAgentRunAwaitingReply: vi.fn().mockResolvedValue(undefined),
+      clearAgentRunAwaitingReply: vi.fn().mockResolvedValue(undefined),
+      ...overrides,
+    });
+  }
+
+  it("anchors the run to the conversation BEFORE waiting, so a killed pod still leaves something to resume", async () => {
+    const deps = resumeDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the bug", authToken: "tok", sessionId: "session-1" });
+
+    // Written during the turn, not with its outcome: the failure mode this
+    // covers is the process not surviving to produce an outcome at all.
+    expect(deps.markAgentRunAwaitingReply).toHaveBeenCalledWith("session-1", {
+      subject: "alice",
+      agentId: "claude-code-swe",
+      agentRunId: expect.any(String),
+    });
+  });
+
+  it("reports a lost channel as a resumable pause, not a failure", async () => {
+    const deps = resumeDeps();
+    (deps.agentChannel!.awaitReply as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new AgentTurnTransportError("lost the NATS subscription for agent run run-1 before it replied"),
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the bug", authToken: "tok", sessionId: "session-1" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.agentResumePending).toBe(true);
+    expect(final.result).toMatch(/Still working/);
+    // The anchor's survival is what the next turn re-attaches on, so the
+    // selected agent has to come back with it (the server persists both).
+    expect(final.selectedAgent?.id).toBe("claude-code-swe");
+  });
+
+  it("re-attaches WITHOUT sending a prompt when the conversation is owed a reply", async () => {
+    const deps = resumeDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "any update?",
+      authToken: "tok",
+      sessionId: "session-1",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+      sessionSubject: "alice",
+    });
+
+    // The agent is working, not waiting for input: publishing "any update?" as a
+    // prompt would inject it into the run's conversation.
+    expect(deps.agentChannel!.sendPrompt).not.toHaveBeenCalled();
+    expect(deps.agentChannel!.awaitReply).toHaveBeenCalledWith("run-1", expect.anything());
+    expect(final.result).toBe("done");
+    expect(final.error).toBeUndefined();
+  });
+
+  it("still sends a prompt when the run is parked on a question (ordinary HITL)", async () => {
+    const deps = resumeDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "use the main branch",
+      authToken: "tok",
+      sessionId: "session-1",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      sessionSubject: "alice",
+    });
+
+    expect(deps.agentChannel!.sendPrompt).toHaveBeenCalledWith("run-1", "use the main branch");
+  });
+
+  it("bounds a re-attached wait far more tightly than a live one", async () => {
+    const deps = resumeDeps({ agentIdleTimeoutSeconds: 600 });
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "any update?",
+      authToken: "tok",
+      sessionId: "session-1",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+      sessionSubject: "alice",
+    });
+
+    // Silence is diagnostic on a re-attach (anything alive announces itself
+    // within seconds), so the user is not made to wait out the full window to
+    // learn the run is gone.
+    const opts = (deps.agentChannel!.awaitReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as {
+      idleTimeoutMs?: number;
+    };
+    expect(opts.idleTimeoutMs).toBe(45_000);
+  });
+
+  it("drops the anchor when a re-attached wait finds the run gone", async () => {
+    const deps = resumeDeps();
+    (deps.agentChannel!.awaitReply as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new AgentTurnTimeoutError("agent run run-1 went silent for 45000ms after 0 progress message(s)"),
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "any update?",
+      authToken: "tok",
+      sessionId: "session-1",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+      sessionSubject: "alice",
+    });
+
+    // Otherwise every later turn in this conversation would re-attach to a dead
+    // run and spend its whole window before falling through.
+    expect(deps.clearAgentRunAwaitingReply).toHaveBeenCalledWith("session-1");
+    expect(final.agentResumePending).toBeFalsy();
+    expect(final.result).toMatch(/no longer reachable/);
+  });
+});
+
+/**
+ * The label-triggered path's half of resumability. A matched IntegrationRoute
+ * dispatches deterministically, skipping retrieval — which also skipped the
+ * re-attach check, so a re-applied trigger label launched a SECOND run while the
+ * first was still holding the answer (docs/adr/0033).
+ */
+describe("buildAgentGraph route-driven turns re-attach before dispatching again", () => {
+  const routedAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  function routeDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: routedAgent }]),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({ message: "the held answer", final: true, narration: [] } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-2", namespace: "default" }),
+    };
+    return baseDeps({
+      agentStore,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      markAgentRunAwaitingReply: vi.fn().mockResolvedValue(undefined),
+      clearAgentRunAwaitingReply: vi.fn().mockResolvedValue(undefined),
+      ...overrides,
+    });
+  }
+
+  it("collects the held reply instead of launching a second run", async () => {
+    const deps = routeDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      forcedAgentId: "claude-code-swe",
+      sessionId: "github:acme/widgets#42",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+      sessionSubject: "alice",
+    });
+
+    expect(deps.agentChannel!.awaitReply).toHaveBeenCalledWith("run-1", expect.anything());
+    // The point: no second AgentRun. On a real coding agent that would be a
+    // second branch and a second PR for one request.
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(deps.agentChannel!.sendPrompt).not.toHaveBeenCalled();
+    expect(final.result).toBe("the held answer");
+  });
+
+  it("still dispatches the route's own target when the anchor is stale", async () => {
+    const deps = routeDeps({
+      // Anchor points at a run whose Agent CR is gone/revoked -> the re-attach
+      // misses, and the turn must fall back to the route's target rather than
+      // silently becoming an ordinary retrieval turn.
+      agentStore: {
+        upsert: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi
+          .fn()
+          .mockResolvedValueOnce([{ agent: routedAgent }]) // checkIntegrationRoute's own lookup
+          .mockResolvedValueOnce([]), // checkActiveAgentRun's re-verify: gone
+      } as AgentStore,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      forcedAgentId: "claude-code-swe",
+      sessionId: "github:acme/widgets#42",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+      sessionSubject: "alice",
+    });
+
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalled();
+    expect(deps.skillStore.query).not.toHaveBeenCalled();
+    expect(final.selectedAgent?.id).toBe("claude-code-swe");
   });
 });

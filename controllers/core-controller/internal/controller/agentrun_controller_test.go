@@ -253,3 +253,99 @@ var _ = Describe("AgentRun Controller", func() {
 		})
 	})
 })
+
+// Regression: a run whose Job has vanished must actually REACH a terminal
+// phase.
+//
+// markFailed hand-built its condition and appended it, omitting
+// LastTransitionTime -- which the CRD schema requires. Every status update it
+// attempted was rejected ("status.conditions[0].lastTransitionTime: Required
+// value"), so the run stayed Running, was re-reconciled every few minutes,
+// failed identically, and never became eligible for the retention sweep (which
+// only reclaims terminal runs). Production held three AgentRuns and a ToolRun
+// wedged this way for two days.
+//
+// It needs a real API server to catch: only schema validation rejects the
+// update, so this could not have been caught by a fake client.
+var _ = Describe("AgentRun Controller reaching a terminal phase when its Job is gone", func() {
+	const runName = "orphaned-run"
+	const agentName = "orphan-agent"
+	ctx := context.Background()
+	key := types.NamespacedName{Name: runName, Namespace: "default"}
+
+	BeforeEach(func() {
+		agent := &toolv1alpha1.Agent{
+			ObjectMeta: metav1.ObjectMeta{Name: agentName, Namespace: "default"},
+			Spec: toolv1alpha1.AgentSpec{
+				Description:        "orphan-run test agent",
+				Input:              "a natural-language goal",
+				Output:             "a final response payload",
+				AllowedRoles:       []string{"reader"},
+				Image:              "ghcr.io/example/agent:latest",
+				ServiceAccountName: "default",
+			},
+		}
+		Expect(k8sClient.Create(ctx, agent)).To(Succeed())
+
+		run := &toolv1alpha1.AgentRun{
+			ObjectMeta: metav1.ObjectMeta{Name: runName, Namespace: "default"},
+			Spec:       toolv1alpha1.AgentRunSpec{AgentRef: agentName, Goal: "do the thing"},
+		}
+		Expect(k8sClient.Create(ctx, run)).To(Succeed())
+		// The wedged state: mid-flight, pointing at a Job that does not exist.
+		run.Status.Phase = toolv1alpha1.ToolRunPhaseRunning
+		run.Status.JobName = "agentrun-" + runName
+		Expect(k8sClient.Status().Update(ctx, run)).To(Succeed())
+	})
+
+	AfterEach(func() {
+		run := &toolv1alpha1.AgentRun{}
+		if err := k8sClient.Get(ctx, key, run); err == nil {
+			Expect(k8sClient.Delete(ctx, run)).To(Succeed())
+		}
+		agent := &toolv1alpha1.Agent{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: agentName, Namespace: "default"}, agent); err == nil {
+			Expect(k8sClient.Delete(ctx, agent)).To(Succeed())
+		}
+	})
+
+	It("marks the run Failed and persists the condition, instead of erroring forever", func() {
+		reconciler := &AgentRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		var updated toolv1alpha1.AgentRun
+		Expect(k8sClient.Get(ctx, key, &updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(toolv1alpha1.ToolRunPhaseFailed))
+		Expect(updated.Status.Message).To(ContainSubstring("no longer exists"))
+		Expect(updated.Status.Conditions).To(HaveLen(1))
+		Expect(updated.Status.Conditions[0].Type).To(Equal("Ready"))
+		Expect(updated.Status.Conditions[0].Reason).To(Equal("JobMissing"))
+		// The field whose absence wedged this in production.
+		Expect(updated.Status.Conditions[0].LastTransitionTime.IsZero()).To(BeFalse())
+	})
+
+	It("does not accumulate duplicate conditions when marked failed more than once", func() {
+		reconciler := &AgentRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Put it back mid-flight and fail it again. `conditions` is a map-list
+		// keyed by type, so a second "Ready" entry would be rejected outright --
+		// the second way appending raw could wedge a run.
+		var again toolv1alpha1.AgentRun
+		Expect(k8sClient.Get(ctx, key, &again)).To(Succeed())
+		again.Status.Phase = toolv1alpha1.ToolRunPhaseRunning
+		Expect(k8sClient.Status().Update(ctx, &again)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		var final toolv1alpha1.AgentRun
+		Expect(k8sClient.Get(ctx, key, &final)).To(Succeed())
+		Expect(final.Status.Phase).To(Equal(toolv1alpha1.ToolRunPhaseFailed))
+		Expect(final.Status.Conditions).To(HaveLen(1))
+	})
+})

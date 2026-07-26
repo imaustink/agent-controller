@@ -33,6 +33,11 @@ export class AgentTurnTimeoutError extends Error {}
  * because these were previously conflated, producing the actively misleading
  * "produced no reply within 3660000ms" on a run that was healthy and went on
  * to succeed — the number was the *configured* bound, never the elapsed time.
+ *
+ * Callers treat this as a RESUMABLE pause rather than a failure (docs/adr/0033):
+ * the agent holds its concluding message until acked, so the next turn can
+ * re-attach and collect it. Reporting it honestly was the previous fix; not
+ * losing the answer is this one.
  */
 export class AgentTurnTransportError extends Error {}
 export class AgentTurnFailedError extends Error {
@@ -269,9 +274,17 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
             opts.onProgress?.("warning", msg.message);
             break;
           case "reply":
+            // Ack BEFORE unsubscribing/returning: the agent holds its
+            // concluding message until this lands (see the protocol's
+            // `reply_ack`), re-offering it meanwhile, and a re-offer arriving
+            // after we unsubscribe would be dropped. A non-final reply (a HITL
+            // question) is acked too -- losing a question strands the
+            // conversation exactly the way losing an answer does.
+            this.ackConcluding(agentRunId, msg.seq);
             sub.unsubscribe();
             return { message: msg.message, final: msg.final, result: msg.result, narration };
           case "failed":
+            this.ackConcluding(agentRunId, msg.seq);
             sub.unsubscribe();
             throw new AgentTurnFailedError(msg.code, msg.message);
           case "tool_call":
@@ -319,6 +332,23 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
       // may already have replaced it.
       if (this.idleClocks.get(agentRunId) === clock) this.idleClocks.delete(agentRunId);
     }
+  }
+
+  /**
+   * Confirms receipt of a concluding up-message so the agent can stop holding
+   * it (see the protocol's `reply_ack`). Fire-and-forget by design: if this ack
+   * is itself lost the agent simply re-offers, and the next receipt acks again.
+   */
+  private ackConcluding(agentRunId: string, ackSeq: number): void {
+    const { down } = agentSubjects(agentRunId, this.subjectPrefix);
+    const msg: AgentDownMessage = {
+      type: "reply_ack",
+      ackSeq,
+      agent_run_id: agentRunId,
+      seq: this.seq++,
+      ts: new Date().toISOString(),
+    };
+    this.nc.publish(down, this.codec.encode(msg));
   }
 
   async sendPrompt(agentRunId: string, message: string): Promise<void> {

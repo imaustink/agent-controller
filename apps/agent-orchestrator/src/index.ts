@@ -39,6 +39,7 @@ import { OpenAiTaskCompleter } from "./openai/task-completer.js";
 import { InMemorySessionStore } from "./session/in-memory-session-store.js";
 import { RedisSessionStore } from "./session/redis-session-store.js";
 import type { SessionStore } from "./session/types.js";
+import { clearAgentRunAwaitingReply, markAgentRunAwaitingReply } from "./session/inflight-agent-run.js";
 import { InvokeServer } from "./server.js";
 import { retryWithBackoff } from "./retry.js";
 import type { ToolDescriptor } from "./tool-descriptor.js";
@@ -472,6 +473,35 @@ async function main(): Promise<void> {
     secretReader: K8sSecretReader.fromKubeConfig(config.namespace, kubeConfig),
   });
 
+  // Conversation-session store (docs/adr/0012): remembers each chat's active
+  // skill so follow-up turns skip RAG re-selection when the fit-check
+  // passes. Redis-backed (docs/adr/0016) when AGENT_REDIS_URL is set, so
+  // sessions survive restarts and are shared across replicas; otherwise
+  // falls back to the single-replica in-memory adapter.
+  //
+  // Built before the graph because the graph writes to it mid-turn now: the
+  // agent-run resume anchor (`session/inflight-agent-run.ts`) has to be
+  // persisted before a wait begins, not with the turn's outcome.
+  let redisSessionStore: RedisSessionStore | undefined;
+  let sessionStore: SessionStore;
+  if (config.redisUrl) {
+    redisSessionStore = new RedisSessionStore(config.redisUrl, {
+      ttlSeconds: config.sessionTtlSeconds,
+    });
+    await retryWithBackoff("redis startup check", () => redisSessionStore!.connect(), {
+      attempts: 12,
+      initialDelayMs: 1_000,
+      maxDelayMs: 15_000,
+    });
+    console.error(`Using Redis session store: ${config.redisUrl}`);
+    sessionStore = redisSessionStore;
+  } else {
+    sessionStore = new InMemorySessionStore({
+      ttlMs: config.sessionTtlSeconds * 1000,
+      maxEntries: config.sessionMaxEntries,
+    });
+  }
+
   const graph = buildAgentGraph({
     identityResolver,
     forwardedUserIdentityResolver,
@@ -514,35 +544,17 @@ async function main(): Promise<void> {
           agentTopK: config.agentTopK,
           agentRunTimeoutSeconds: config.agentRunTimeoutSeconds,
           agentIdleTimeoutSeconds: config.agentIdleTimeoutSeconds,
+          // Resume anchor for an agent turn whose wait is interrupted (a
+          // rollout, a lost NATS channel): written before the wait, read by the
+          // next turn's `checkActiveAgentRun` to re-attach instead of failing a
+          // run that is still working.
+          markAgentRunAwaitingReply: (sessionId, run) => markAgentRunAwaitingReply(sessionStore, sessionId, run),
+          clearAgentRunAwaitingReply: (sessionId) => clearAgentRunAwaitingReply(sessionStore, sessionId),
           callbackSecretRef: { name: config.callbackSecretRefName ?? "", key: config.callbackSecretRefKey },
         }
       : {}),
   });
 
-  // Conversation-session store (docs/adr/0012): remembers each chat's active
-  // skill so follow-up turns skip RAG re-selection when the fit-check
-  // passes. Redis-backed (docs/adr/0016) when AGENT_REDIS_URL is set, so
-  // sessions survive restarts and are shared across replicas; otherwise
-  // falls back to the single-replica in-memory adapter.
-  let redisSessionStore: RedisSessionStore | undefined;
-  let sessionStore: SessionStore;
-  if (config.redisUrl) {
-    redisSessionStore = new RedisSessionStore(config.redisUrl, {
-      ttlSeconds: config.sessionTtlSeconds,
-    });
-    await retryWithBackoff("redis startup check", () => redisSessionStore!.connect(), {
-      attempts: 12,
-      initialDelayMs: 1_000,
-      maxDelayMs: 15_000,
-    });
-    console.error(`Using Redis session store: ${config.redisUrl}`);
-    sessionStore = redisSessionStore;
-  } else {
-    sessionStore = new InMemorySessionStore({
-      ttlMs: config.sessionTtlSeconds * 1000,
-      maxEntries: config.sessionMaxEntries,
-    });
-  }
   // Answers Open WebUI's internal housekeeping completions (title/tags/query
   // generation) directly, bypassing the agent graph -- see server.ts's
   // handleInternalUiTask and isInternalUiTaskRequest.
@@ -601,6 +613,13 @@ async function main(): Promise<void> {
     // regardless: past the deadline we stop waiting and tear down anyway, so
     // a turn that outlives the grace period at least fails the same way it
     // would have, rather than blocking the other closers entirely.
+    //
+    // A drain window is therefore never enough on its own -- an agent turn takes
+    // minutes and this gives it seconds. What keeps the ANSWER is that the run's
+    // agent holds its concluding message until acked and the conversation was
+    // anchored to the run before the wait began, so the next turn re-attaches
+    // and collects it (docs/adr/0033). This drain just lets the turns that can
+    // finish, finish.
     const httpDrained = Promise.all([
       invokeServer.close(),
       ...(callbackReceiver ? [callbackReceiver.close()] : []),

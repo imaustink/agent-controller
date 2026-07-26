@@ -373,6 +373,14 @@ stubAgent:
     narrateForMs: 0
     narrateEveryMs: 2000
     silentForMs: 0
+  # How long the stub holds an unacked concluding message before giving up
+  # (AGENT_REPLY_ACK_TIMEOUT_MS -- packages/agent-runtime's `publishHeld`).
+  # Empty = the runtime's own 10-minute default. Worth shortening in a test
+  # environment: an uncollected reply keeps the Job's pod alive for this long,
+  # so a spec that deliberately strands one (resilience.e2e.ts's rollout) would
+  # otherwise wait out the full default before the AgentRun reaches a terminal
+  # phase.
+  replyAckTimeoutMs: ""
 
 integrationRoutes:
   # github-issue-labeled-triage: an IntegrationRoute CR (docs/adr/0024)

@@ -39,6 +39,14 @@ stubAgent:
     providers:
       - claude
       - claude-remote
+  # 90s, well under the runtime's 10-minute default. resilience.e2e.ts's rollout
+  # spec deliberately strands a reply with no orchestrator to collect it; the
+  # stub holds it (that hold is what makes the turn resumable), which keeps the
+  # Job's pod alive and the AgentRun non-terminal until the hold ends. Long
+  # enough for the spec's follow-up trigger to re-attach and collect, short
+  # enough that a spec which fails to collect still reaches a terminal phase
+  # inside its own budget instead of timing out on a working hold.
+  replyAckTimeoutMs: 90000
 
 # Removed from the e2e catalog entirely, not merely bypassed by the triage route.
 #

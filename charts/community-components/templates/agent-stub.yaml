@@ -58,6 +58,10 @@ spec:
       value: {{ .Values.stubAgent.pacing.narrateEveryMs | quote }}
     - name: STUB_SILENT_FOR_MS
       value: {{ .Values.stubAgent.pacing.silentForMs | quote }}
+    {{- if .Values.stubAgent.replyAckTimeoutMs }}
+    - name: AGENT_REPLY_ACK_TIMEOUT_MS
+      value: {{ .Values.stubAgent.replyAckTimeoutMs | quote }}
+    {{- end }}
   resources:
     requests:
       cpu: "50m"

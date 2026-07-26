@@ -49,15 +49,26 @@ RUN apt-get update \
        arm64) GH_ARCH=arm64 ;; \
        *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
      esac \
-  && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_${GH_ARCH}.tar.gz" -o /tmp/gh.tar.gz \
+  # Saved under the asset's PUBLISHED name, not a convenience name: the names in
+  # the checksums file are what `sha256sum -c` opens, so downloading this to
+  # /tmp/gh.tar.gz made verification fail on a missing file every time.
+  && GH_TARBALL="gh_${GH_CLI_VERSION}_linux_${GH_ARCH}.tar.gz" \
+  && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/${GH_TARBALL}" -o "/tmp/${GH_TARBALL}" \
   && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_checksums.txt" -o /tmp/gh_checksums.txt \
-  && (cd /tmp && sha256sum -c <(grep "gh_${GH_CLI_VERSION}_linux_${GH_ARCH}.tar.gz" gh_checksums.txt)) \
-  && tar -xzf /tmp/gh.tar.gz -C /tmp \
+  # Filtered through a temp FILE rather than process substitution: `<(...)` is a
+  # bashism and Debian's /bin/sh is dash, which rejects it outright with
+  # `Syntax error: "(" unexpected` -- so this layer could never build at all.
+  && grep " ${GH_TARBALL}$" /tmp/gh_checksums.txt > /tmp/gh_checksum.txt \
+  # A checksums file that stops listing this asset must fail the build rather
+  # than silently verify nothing.
+  && test -s /tmp/gh_checksum.txt \
+  && (cd /tmp && sha256sum -c gh_checksum.txt) \
+  && tar -xzf "/tmp/${GH_TARBALL}" -C /tmp \
   && cp "/tmp/gh_${GH_CLI_VERSION}_linux_${GH_ARCH}/bin/gh" /usr/local/bin/gh \
   && chmod a+rx /usr/local/bin/gh \
   && apt-get purge -y curl \
   && apt-get autoremove -y \
-  && rm -rf /var/lib/apt/lists/* /tmp/gh.tar.gz /tmp/gh_checksums.txt "/tmp/gh_${GH_CLI_VERSION}_linux_${GH_ARCH}"
+  && rm -rf /var/lib/apt/lists/* "/tmp/${GH_TARBALL}" /tmp/gh_checksums.txt /tmp/gh_checksum.txt "/tmp/gh_${GH_CLI_VERSION}_linux_${GH_ARCH}"
 
 WORKDIR /app
 ENV NODE_ENV=production
