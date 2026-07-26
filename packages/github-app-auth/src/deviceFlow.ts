@@ -137,9 +137,20 @@ export async function pollDeviceFlow(
  * GitHub Apps with device flow enabled issue expiring user tokens
  * (~8h) alongside a refresh token (~6mo); the refresh token itself
  * rotates on every use, so the new one must replace the old one.
+ *
+ * `clientSecret` is REQUIRED by GitHub for this grant, and omitting it was a
+ * real outage rather than a nicety: the call failed for every link, the caller
+ * read that as "the link is dead, make the human re-link", and so every GitHub
+ * link expired ~8h after it was created and could never renew itself -- while
+ * its refresh token sat valid for another six months. Observed as a user being
+ * re-prompted to link on turn after turn (docs/adr/0031).
+ *
+ * Typed as required, not optional, so a deployment that has no secret to give
+ * fails at the call site instead of silently rediscovering that outage.
  */
 export async function refreshUserToken(
   clientId: string,
+  clientSecret: string,
   refreshToken: string,
   githubBaseUrl = "https://github.com",
   now: number = Date.now(),
@@ -149,6 +160,7 @@ export async function refreshUserToken(
     headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       client_id: clientId,
+      client_secret: clientSecret,
       grant_type: "refresh_token",
       refresh_token: refreshToken,
     }),
