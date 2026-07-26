@@ -82,6 +82,14 @@ upsert e2e-integration-gateway-secrets \
   --from-literal=GATEWAY_SENDER_ASSERTION_SECRET="$SENDER_ASSERTION_SECRET" \
   --from-literal=GITHUB_TOKEN="e2e-not-a-real-token"
 
+# The HS256 secret a chat turn's forwarded-user JWT is signed with. Fixed, and
+# read back out of the cluster by e2e/support/chat.ts rather than duplicated
+# there: the suite has to sign with whatever the orchestrator verifies against,
+# or identity resolution fails closed and the turn 401s in a way that reads as a
+# product bug rather than a config mismatch.
+upsert e2e-openwebui-forward-jwt \
+  --from-literal=AGENT_OPENWEBUI_USER_JWT_SECRET="e2e-openwebui-forward-jwt-secret"
+
 # claude-code-swe-agent's static secret. The GITHUB_APP_* values are
 # placeholders: no e2e run mints a real installation token.
 upsert claude-code-swe-secrets \
@@ -96,7 +104,7 @@ if kubectl -n "$NS" get secret agent-orchestrator-secrets >/dev/null 2>&1; then
   # script must never overwrite. Only the identity-link token is added.
   kubectl -n "$NS" patch secret agent-orchestrator-secrets \
     -p "{\"stringData\":{\"IDENTITY_LINK_GATEWAY_TOKEN\":\"$IDENTITY_LINK_TOKEN\",\"AGENT_SENDER_ASSERTION_SECRET\":\"$SENDER_ASSERTION_SECRET\"}}" >/dev/null
-  echo "  ✓ agent-orchestrator-secrets exists (OPENAI_API_KEY untouched; added IDENTITY_LINK_GATEWAY_TOKEN)"
+  echo "  ✓ agent-orchestrator-secrets exists (OPENAI_API_KEY untouched; added IDENTITY_LINK_GATEWAY_TOKEN + AGENT_SENDER_ASSERTION_SECRET)"
 else
   cat >&2 <<EOF
 ✗ agent-orchestrator-secrets is MISSING and this script will not create it.

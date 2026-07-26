@@ -35,12 +35,28 @@ agent-orchestrator:
   # Bring-your-own secret: OPENAI_API_KEY, AGENT_CALLBACK_SECRET (required),
   # AGENT_QDRANT_API_KEY (optional), IDENTITY_LINK_GATEWAY_TOKEN (required
   # once identityLink.enabled below is true -- see that block's comment).
+  #
+  # AGENT_SENDER_ASSERTION_SECRET is required in practice too, and its absence
+  # is a real weakness rather than a missing feature: without it the orchestrator
+  # trusts the sender login from the /invoke request BODY, unsigned. That field
+  # selects the caller's principal and therefore which stored Claude credentials
+  # a run receives (docs/adr/0030 §6, 0031), so anything holding the gateway's
+  # /invoke token could name a login and be handed that person's credentials.
+  # Both processes log a startup WARNING while it is unset. Must match
+  # integration-gateway-secrets' GATEWAY_SENDER_ASSERTION_SECRET below exactly --
+  # the gateway signs with it and the orchestrator verifies with it, so two
+  # different values present as "the sender login vanished" (every webhook turn
+  # falls back to the shared service subject and re-prompts) rather than as a
+  # signature error.
+  #
   # Create/update with:
   #   kubectl create secret generic agent-orchestrator-secrets -n controller-agent \
   #     --from-literal=OPENAI_API_KEY=sk-... \
   #     --from-literal=AGENT_CALLBACK_SECRET=<random-string> \
   #     --from-literal=IDENTITY_LINK_GATEWAY_TOKEN=<same value as
-  #       integration-gateway-secrets' GATEWAY_IDENTITY_LINK_TOKEN below>
+  #       integration-gateway-secrets' GATEWAY_IDENTITY_LINK_TOKEN below> \
+  #     --from-literal=AGENT_SENDER_ASSERTION_SECRET=<same value as
+  #       integration-gateway-secrets' GATEWAY_SENDER_ASSERTION_SECRET below>
   #   # (or `kubectl edit secret agent-orchestrator-secrets -n controller-agent`
   #   # / patch it if the Secret already exists)
   secrets:
@@ -293,6 +309,14 @@ integration-gateway:
   # token; the gateway exchanges this for a fresh access token itself as
   # needed, so this key does not go stale on its own.
   #
+  # GATEWAY_SENDER_ASSERTION_SECRET signs the gateway's claim about WHICH HUMAN
+  # triggered a webhook turn (docs/adr/0030 §6). Any random string; must match
+  # agent-orchestrator-secrets' AGENT_SENDER_ASSERTION_SECRET above exactly.
+  # While it is unset the login rides to /invoke unsigned and the orchestrator
+  # trusts it from the request body -- see that Secret's comment for why that
+  # matters. Safe to set here FIRST: the orchestrator ignores the header until
+  # its own key exists, and the gateway keeps sending the body field either way.
+  #
   # Per-user GitHub identity linking (docs/adr/0022, identityLink.enabled
   # below) needs FOUR more keys in this same Secret: GATEWAY_IDENTITY_LINK_TOKEN
   # (any random string -- must match agent-orchestrator-secrets'
@@ -316,7 +340,8 @@ integration-gateway:
   #     --from-literal=GATEWAY_IDENTITY_LINK_TOKEN="$(openssl rand -hex 32)" \
   #     --from-literal=IDENTITY_LINK_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
   #     --from-literal=IDENTITY_LINK_STATE_SECRET="$(openssl rand -base64 32)" \
-  #     --from-literal=GITHUB_APP_CLIENT_SECRET=<from the GitHub App's settings page>
+  #     --from-literal=GITHUB_APP_CLIENT_SECRET=<from the GitHub App's settings page> \
+  #     --from-literal=GATEWAY_SENDER_ASSERTION_SECRET="$(openssl rand -hex 32)"
   #   # (or `kubectl edit secret integration-gateway-secrets -n controller-agent`
   #   # if it already exists -- just add/replace the relevant keys)
   secrets:

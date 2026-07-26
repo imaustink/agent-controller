@@ -15,8 +15,8 @@ stored. Every one of those has shipped broken at least once (PRs #144/#145,
 
 ## Safety: these only ever run against minikube
 
-`support/guard.ts` aborts the whole suite unless `kubectl config
-current-context` is exactly `minikube`. This is not a convenience check — the
+`support/guard.ts` aborts any spec that touches the cluster unless `kubectl
+config current-context` is exactly `minikube`. This is not a convenience check — the
 default context on the maintainer's machine is a **live cluster**, the tests
 create and delete namespaced objects, and a suite that silently ran there
 would be destructive. The guard runs before any fixture, and there is
@@ -37,6 +37,36 @@ The line is: **stub what we don't own and can't make deterministic; run
 everything we do own for real.** A happy-path test that stubbed the
 orchestrator would not have caught any bug from this month.
 
+Two fixtures are *seeded* rather than stubbed, both for the same reason — the
+real thing needs a human and a paid third party, and the code path under test
+only ever reads back the part we seed:
+
+| Fixture | Seeded by | What stays real |
+| --- | --- | --- |
+| A linked Claude credential | `support/redis.ts`'s `seedClaudeCredential` | Everything downstream: which subject the gate reads, whether it launches, what it injects. Asserting "a credential appears" is impossible hermetically, so the assertion is inverted — seed at the subject the gate is believed to use, and require a LAUNCH. A gate looking elsewhere finds nothing and parks. |
+| A linked GitHub account | `support/redis.ts`'s `seedGithubLink` | The orchestrator reads only `githubLogin` off that record to resolve a principal (ADR 0031), so a seeded link drives the identical path a real OAuth round trip would produce. |
+
+## Both entry points, not just webhooks
+
+The suite drove only GitHub webhooks until ADR 0031, and that gap has a
+scalp: credential convergence (ADR 0029) shipped working in **one direction**.
+The webhook path always carries a verified `senderLogin` and so always resolved
+a principal; chat had no way to learn a login and silently kept keying by its
+own `openwebui:<id>` subject. Every unit test passed, the webhook specs passed,
+and the bug was reported from chat.
+
+`support/chat.ts` closes it: it mints the per-request JWT Open WebUI signs
+(`X-OpenWebUI-User-Jwt`) and posts a **streaming** `/v1/chat/completions`, which
+is what makes the caller per-user and gives the turn the live channel the real
+chat surface has. `chat-harness.e2e.ts` checks that minting against the
+orchestrator's own resolver and needs no cluster, so a harness/product drift
+fails fast instead of surfacing as "could not resolve caller identity" inside
+every chat spec.
+
+A rule worth keeping: **when a behaviour differs per entry point, cover it from
+each of them.** Every keying bug in this repo's history has been an asymmetry
+between the two.
+
 ## Running
 
 ```bash
@@ -53,15 +83,18 @@ lists) that concurrent runs would race on.
 
 ```
 support/
-  guard.ts       context safety check — imported by every spec
-  k8s.ts         kubectl wrappers, waitFor helpers
-  redis.ts       reads credential/session keys out of the orchestrator's Redis
-  webhook.ts     HMAC-signs and posts GitHub webhook payloads
-  fixtures.ts    per-test namespace-scoped setup/teardown
-  resilience.ts  paces the stub's turn, and DISRUPTS the cluster (NATS, rollouts)
+  guard.ts          context safety check — imported by every CLUSTER spec
+  k8s.ts            kubectl wrappers, waitFor helpers
+  redis.ts          reads credential/session keys out of the orchestrator's Redis
+  webhook.ts        HMAC-signs and posts GitHub webhook payloads
+  chat.ts           drives the CHAT entry point (per-user JWT + streaming /v1/chat/completions)
+  openwebui-jwt.ts  chat.ts's cluster-free half: JWT minting, SSE assembly
+  fixtures.ts       per-test namespace-scoped setup/teardown
+  resilience.ts     paces the stub's turn, and DISRUPTS the cluster (NATS, rollouts)
 specs/
   happy-path.e2e.ts       webhook -> triage -> AgentRun -> comment posted
   identity-keying.e2e.ts  which subject each entry point keys credentials under
+  chat-harness.e2e.ts     the harness's own signing, vs. the real resolver (no cluster)
   resilience.e2e.ts       what survives NATS/orchestrator moving mid-turn
 manifests/
   fake-github.yaml   in-cluster GitHub API stub (Deployment + Service + script)

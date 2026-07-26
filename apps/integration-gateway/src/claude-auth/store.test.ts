@@ -133,6 +133,69 @@ describe("RedisClaudeTokenStore", () => {
     expect(await store.get("user-999")).toEqual(setupRecord);
   });
 
+  it("moves an authorized credential to a new subject, leaving nothing behind", async () => {
+    // ADR 0031: the orchestrator re-keyed these records onto the caller's
+    // principal. Moving the existing one is what spares every current user a
+    // login for a credential the gateway is already holding.
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const record = { kind: "login" as const, credentialsJson: '{"accessToken":"supersecret"}', createdAt: "2026-07-22T00:00:00.000Z" };
+    await store.set("openwebui:42", record);
+
+    expect(await store.rekey("openwebui:42", "github:alice", "login")).toBe("moved");
+
+    expect(await store.get("github:alice", "login")).toEqual(record);
+    // Moved, not copied: the write-back that keeps a login credential alive
+    // only ever writes the new key, so a leftover copy would rot and then fail
+    // whichever flow still read it.
+    expect(await store.get("openwebui:42", "login")).toBeUndefined();
+  });
+
+  it("moves only the requested kind", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const setupRecord = { kind: "setup-token" as const, token: "sk-ant-oat01-x", createdAt: "2026-07-22T00:00:00.000Z" };
+    await store.set("openwebui:42", setupRecord);
+    await store.set("openwebui:42", { kind: "login", credentialsJson: "{}", createdAt: "2026-07-22T00:00:00.000Z" });
+
+    await store.rekey("openwebui:42", "github:alice", "login");
+
+    expect(await store.get("openwebui:42")).toEqual(setupRecord);
+    expect(await store.get("github:alice")).toBeUndefined();
+  });
+
+  it("refuses to overwrite a record already at the destination", async () => {
+    // The destination's record is by definition at least as current as the one
+    // being moved -- clobbering it would replace a live credential with an older
+    // one and cause the "Login expired" failure this is meant to prevent.
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const current = { kind: "setup-token" as const, token: "sk-ant-oat01-current", createdAt: "2026-07-25T00:00:00.000Z" };
+    const stale = { kind: "setup-token" as const, token: "sk-ant-oat01-stale", createdAt: "2026-07-01T00:00:00.000Z" };
+    await store.set("github:alice", current);
+    await store.set("openwebui:42", stale);
+
+    expect(await store.rekey("openwebui:42", "github:alice")).toBe("occupied");
+
+    expect(await store.get("github:alice")).toEqual(current);
+    // The source is left intact too: nothing was moved, so nothing is deleted.
+    expect(await store.get("openwebui:42")).toEqual(stale);
+  });
+
+  it("reports not-found rather than creating an empty record", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    expect(await store.rekey("openwebui:nobody", "github:alice")).toBe("not-found");
+    expect(await store.get("github:alice")).toBeUndefined();
+  });
+
+  it("treats a self-move as a no-op instead of deleting the record", async () => {
+    // Guards the degenerate case where a caller's principal IS its subject: the
+    // naive move (set then delete) would delete what it just wrote.
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const record = { kind: "setup-token" as const, token: "sk-ant-oat01-x", createdAt: "2026-07-22T00:00:00.000Z" };
+    await store.set("github:alice", record);
+
+    expect(await store.rekey("github:alice", "github:alice")).toBe("occupied");
+    expect(await store.get("github:alice")).toEqual(record);
+  });
+
   it("round-trips a credential write-back grant back to its subject", async () => {
     const store = new RedisClaudeTokenStore("redis://fake", KEY);
     const token = await store.createWritebackToken("user-wb", 900);

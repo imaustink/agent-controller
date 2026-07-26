@@ -13,7 +13,31 @@ import type { IdentityLinkPort } from "./gateway-client.js";
  * subject, the same namespacing discipline `openwebui:<id>` already uses.
  */
 export function canonicalSubjectForLogin(login: string): string {
-  return `github:${login.toLowerCase()}`;
+  return `${CANONICAL_PRINCIPAL_PREFIX}${login.toLowerCase()}`;
+}
+
+/**
+ * Namespace marking a principal as CANONICAL -- resolved from a verified GitHub
+ * identity -- as opposed to the raw-subject fallback {@link resolvePrincipal}
+ * returns when no login could be established.
+ */
+export const CANONICAL_PRINCIPAL_PREFIX = "github:";
+
+/**
+ * Whether a principal is the canonical, cross-entry-point one or merely a raw
+ * entry-point subject standing in for itself.
+ *
+ * The distinction is what the authorization pre-flight acts on: a caller whose
+ * principal is still their raw subject gets no credential sharing with their
+ * other entry points, so a turn that needs a cross-entry-point credential can
+ * offer to establish the mapping first (docs/adr/0031).
+ *
+ * A prefix test is sound because every entry-point subject is either namespaced
+ * by its own resolver (`openwebui:<id>`) or an IdP `sub`, and none of them can
+ * be `github:<login>` -- that namespace exists solely for principals.
+ */
+export function isCanonicalPrincipal(principal: string): boolean {
+  return principal.startsWith(CANONICAL_PRINCIPAL_PREFIX);
 }
 
 /**

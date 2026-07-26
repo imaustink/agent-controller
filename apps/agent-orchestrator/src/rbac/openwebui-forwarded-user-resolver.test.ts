@@ -15,13 +15,18 @@ describe("OpenWebUiForwardedUserResolver", () => {
     const aliceToken = await sign({ id: "alice-id", role: "user" });
     const bobToken = await sign({ id: "bob-id", role: "admin" });
 
+    // `perUser` is asserted, not incidental: it is what permits the
+    // authorization pre-flight to establish a principal against this subject
+    // (docs/adr/0031), which would be a credential leak on a shared one.
     await expect(resolver.resolve(aliceToken)).resolves.toEqual({
       subject: "openwebui:alice-id",
       roles: ["reader", "writer"],
+      perUser: true,
     });
     await expect(resolver.resolve(bobToken)).resolves.toEqual({
       subject: "openwebui:bob-id",
       roles: ["reader", "writer"],
+      perUser: true,
     });
   });
 
@@ -45,10 +50,15 @@ describe("OpenWebUiForwardedUserResolver", () => {
     const subToken = await sign({ sub: "sub-id" });
     const emailToken = await sign({ email: "alice@example.com" });
 
-    await expect(resolver.resolve(subToken)).resolves.toEqual({ subject: "openwebui:sub-id", roles: ["reader", "writer"] });
+    await expect(resolver.resolve(subToken)).resolves.toEqual({
+      subject: "openwebui:sub-id",
+      roles: ["reader", "writer"],
+      perUser: true,
+    });
     await expect(resolver.resolve(emailToken)).resolves.toEqual({
       subject: "openwebui:alice@example.com",
       roles: ["reader", "writer"],
+      perUser: true,
     });
   });
 

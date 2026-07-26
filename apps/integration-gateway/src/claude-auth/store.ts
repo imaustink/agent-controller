@@ -54,6 +54,28 @@ export interface ClaudeTokenStore {
    */
   delete(subject: string, kind?: ClaudeAuthKind): Promise<void>;
   /**
+   * Moves an existing record from one subject to another, so a credential the
+   * human already authorized keeps working under a new key instead of costing
+   * them a fresh flow (docs/adr/0031).
+   *
+   * Exists because agent-orchestrator changed WHICH subject it keys these
+   * records by -- from the entry point's own subject to the caller's principal
+   * (ADR 0029/0030 §6) -- and a re-key without a move means every existing user
+   * re-authorizes for no reason they can perceive. The alternative, leaving the
+   * old record in place as a copy, is worse than either: the write-back that
+   * keeps a `login` credential alive only ever writes the NEW key, so the copy
+   * silently rots and whichever flow still reads it fails with "Login expired".
+   *
+   * Deliberately non-destructive at the destination: an existing record there
+   * is never clobbered (`"occupied"`), because it is by definition at least as
+   * current as the one being moved.
+   *
+   * Authorization is the CALLER's responsibility, and it is not nothing: this
+   * moves a credential between identities, so the caller must have established
+   * that both subjects are the same human. See the `rekey` route's doc.
+   */
+  rekey(fromSubject: string, toSubject: string, kind?: ClaudeAuthKind): Promise<"moved" | "not-found" | "occupied">;
+  /**
    * Mints a single-purpose, expiring bearer token that authorizes ONE thing:
    * replacing `subject`'s stored `login` record with a refreshed
    * `credentialsJson` (`POST /claude-auth/api/refresh`). Handed to an
@@ -173,6 +195,31 @@ export class RedisClaudeTokenStore implements ClaudeTokenStore {
     } catch (err) {
       console.error("RedisClaudeTokenStore.delete failed (ignored):", err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async rekey(
+    fromSubject: string,
+    toSubject: string,
+    kind: ClaudeAuthKind = "setup-token",
+  ): Promise<"moved" | "not-found" | "occupied"> {
+    if (fromSubject === toSubject) return "occupied";
+    // Read through `get`/`set` rather than RENAME-ing the Redis key: the record
+    // is field-encrypted, and a decrypt/re-encrypt round trip is the same work
+    // either way -- while `set` also publishes on the destination's completion
+    // channel, so a turn already blocked in `waitForCompletion` for the new
+    // subject resolves immediately instead of waiting out its timeout.
+    const record = await this.get(fromSubject, kind);
+    if (!record) return "not-found";
+    if (await this.get(toSubject, kind)) return "occupied";
+    await this.set(toSubject, record);
+    // Read back before deleting the source. `set` swallows its own Redis errors
+    // by design, so an unverified delete here could drop the human's only
+    // credential on a transient write failure -- the one outcome strictly worse
+    // than the extra login this whole method exists to avoid.
+    const landed = await this.get(toSubject, kind);
+    if (!landed) return "not-found";
+    await this.delete(fromSubject, kind);
+    return "moved";
   }
 
   /**

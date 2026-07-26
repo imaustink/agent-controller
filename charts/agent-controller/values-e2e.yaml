@@ -160,6 +160,15 @@ agent-orchestrator:
     # identity-keying spec asserts that no Claude credential is ever keyed
     # under this subject.
     staticIdentities: '{"e2e-gateway-token":{"subject":"client-integration-gateway","roles":["reader","writer"]}}'
+    # Makes the CHAT entry point per-user, which is what the suite could not
+    # drive before (docs/adr/0031): with only the static map above, every chat
+    # caller collapses onto the shared `client-integration-gateway` subject, so
+    # the flow whose principal could not be resolved -- the entire bug ADR 0031
+    # fixes -- was unreachable from a test. With this set, a chat turn carrying
+    # `X-OpenWebUI-User-Jwt` resolves to `openwebui:<id>` and is asserted
+    # `perUser`, exactly as production's Open WebUI does.
+    openWebUiUserJwtSecretExistingSecret: e2e-openwebui-forward-jwt
+    openWebUiUserJwtSecretExistingSecretKey: AGENT_OPENWEBUI_USER_JWT_SECRET
     # Shrunk from the 10-minute default so resilience.e2e.ts can wait out a
     # silent agent inside a test's budget. It bounds SILENCE, not duration, so a
     # narrating turn is still unaffected however long it runs -- which is itself
