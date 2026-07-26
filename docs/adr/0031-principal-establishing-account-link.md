@@ -128,6 +128,41 @@ Without that, the expired-credential path would re-derive the pre-upgrade key,
 invalidate a record that was never written, and tell the user to retry — the
 infinite "expired credential" loop that path exists to prevent.
 
+### Post-deploy: the mapping must not depend on a usable token
+
+Deploying the above produced a link prompt on **every** chat turn for a caller who
+had linked months earlier — while the turn then completed successfully 0.3s later.
+Two defects, one of them pre-existing and load-bearing:
+
+1. **The pre-flight asked a credential question to decide an identity one.**
+   `getToken` routes to the gateway's `getValidToken`, which returns nothing for a
+   link whose access token expired and could not be refreshed. The pre-flight read
+   that as "this caller has no GitHub identity" and offered a link — but
+   `waitForCompletion` reads the stored record RAW, so it resolved the same login
+   immediately, the principal came out canonical, the credential was adopted, and
+   the run launched. The prompt was pure noise, unavoidable, and every turn.
+
+   An access token that expired overnight does not unprove which account someone
+   controls. So the gateway gained `GET /identity-link/:provider/identity`
+   (`getLinkedLogin`), returning the record's login and **never** a token, and
+   both `resolveActorLogin` and the principal step now use it. This is the same
+   separation the ADR is about, applied one level down: mapping and credential are
+   different questions of the same record.
+
+2. **`refreshUserToken` omitted `client_secret`**, which GitHub requires for the
+   refresh grant. So the refresh failed for every link, the caller read that as
+   "dead link, make them re-link", and **every GitHub link expired ~8h after
+   creation and could never renew** — with a six-month-valid refresh token sitting
+   unused. Pre-existing, and invisible until §1 started acting on the result. The
+   parameter is now required rather than optional, a missing secret is logged
+   rather than silently treated as a dead link, and the failing refresh path logs
+   its reason.
+
+A third, smaller correction from the same investigation: a lookup that ERRORS is
+not an answer of "no link". It now degrades to the raw subject **without**
+offering a link, so a gateway blip costs a turn its sharing rather than putting a
+one-time-setup prompt in front of someone who completed it long ago.
+
 ## Consequences
 
 Chat and triage converge on one record for the same human, which is the whole

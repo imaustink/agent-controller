@@ -27,6 +27,8 @@ function gateway(
       waitResolvesTo?: IdentityLinkToken | "throw";
       /** A record sitting under the caller's raw subject, adoptable by `rekey` (docs/adr/0031). */
       prePrincipalToken?: IdentityLinkToken;
+      /** A LINK that exists but whose access token is unusable: `getLinkedLogin` sees it, `getToken` does not. */
+      staleLinkLogin?: string;
     }
   >,
 ): IdentityLinkPort {
@@ -34,6 +36,7 @@ function gateway(
   const adopted = new Map<string, IdentityLinkToken>();
   return {
     getToken: vi.fn(async (provider: string, subject: string) => adopted.get(`${provider}@${subject}`) ?? behaviour[provider]?.token),
+    getLinkedLogin: vi.fn(async (provider: string) => behaviour[provider]?.staleLinkLogin ?? behaviour[provider]?.token?.githubLogin),
     rekey: vi.fn(async (provider: string, from: string, to: string) => {
       const record = behaviour[provider]?.prePrincipalToken;
       if (!record || from === to) return false;
@@ -535,10 +538,12 @@ describe("AuthorizationService.authorize principal pre-flight", () => {
       progressListener: vi.fn(),
     });
 
-    // No link flow, and no `github` token read for the MAPPING (the one lookup
-    // that remains is §5's actor-login read, which is not a principal step).
+    // No link flow, and no `github` TOKEN read at all: the only lookup is the
+    // identity one (§5's actor login), which asks who the caller is rather than
+    // whether their credential still works (docs/adr/0031).
     expect(github.start).not.toHaveBeenCalled();
-    expect(github.getToken).toHaveBeenCalledTimes(1);
+    expect(github.getToken).not.toHaveBeenCalled();
+    expect(github.getLinkedLogin).toHaveBeenCalledTimes(1);
   });
 
   it("degrades to the raw subject when the principal link cannot be started", async () => {
@@ -681,5 +686,77 @@ describe("AuthorizationService.authorize pre-principal adoption", () => {
     });
 
     expect(verdict.kind).toBe("link-required");
+  });
+});
+
+/**
+ * Never prompt for a link that already exists (docs/adr/0031).
+ *
+ * The production symptom this pins: a caller whose `github` link had expired
+ * overnight was asked to link on EVERY chat turn -- and the turn then completed
+ * anyway, 0.3s later, because `waitForCompletion` reads the stored record raw
+ * while `getToken` refuses a record whose token can no longer be refreshed. The
+ * pre-flight was asking a credential question ("can I use this token?") to
+ * decide an identity one ("who is this?").
+ */
+describe("AuthorizationService.authorize principal from an existing link", () => {
+  it("resolves the principal from a link whose token is no longer usable, without prompting", async () => {
+    // The exact production state: a stored link for "imaustink" that `getToken`
+    // reports as nothing (expired, refresh failed) but whose login is right there.
+    const github = gateway({ github: { staleLinkLogin: "imaustink" } });
+    const claude = gateway({ claude: { token: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ perUser: true }),
+      request: "r",
+      progressListener: vi.fn(),
+    });
+
+    expect(verdict.kind).toBe("authorized");
+    if (verdict.kind !== "authorized") return;
+    // No link flow started, and no prompt: the mapping was already established.
+    expect(github.start).not.toHaveBeenCalled();
+    expect(verdict.principal).toBe("github:imaustink");
+    expect(claude.getToken).toHaveBeenCalledWith("claude", "github:imaustink");
+    expect(verdict.actorLogin).toBe("imaustink");
+  });
+
+  it("still offers the link when nothing is linked at all", async () => {
+    // The distinction that matters: "your token expired" is not "you have no
+    // GitHub identity". Only the second warrants a prompt.
+    const github = gateway({ github: {} });
+    const claude = gateway({ claude: { token: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ perUser: true }),
+      request: "r",
+      progressListener: vi.fn(),
+    });
+
+    expect(github.start).toHaveBeenCalled();
+    expect(verdict.kind).toBe("link-required");
+  });
+
+  it("degrades rather than failing when the identity lookup throws", async () => {
+    const github = gateway({ github: { staleLinkLogin: "imaustink" } });
+    (github.getLinkedLogin as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("gateway down"));
+    const claude = gateway({ claude: { token: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ perUser: true }),
+      request: "r",
+    });
+
+    // Falls through on the raw subject: no sharing this turn, no link prompt
+    // either. A blip must not ask someone to redo a one-time step they already
+    // did -- which is the whole failure mode this ADR is cleaning up after.
+    expect(verdict.kind).toBe("authorized");
+    expect(github.start).not.toHaveBeenCalled();
   });
 });

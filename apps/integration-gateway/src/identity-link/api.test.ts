@@ -14,6 +14,7 @@ describe("GatewayServer identity-link routes", () => {
   let start: ReturnType<typeof vi.fn>;
   let poll: ReturnType<typeof vi.fn>;
   let getValidToken: ReturnType<typeof vi.fn>;
+  let getLinkedLogin: ReturnType<typeof vi.fn>;
   let startAuthCode: ReturnType<typeof vi.fn>;
   let completeAuthCode: ReturnType<typeof vi.fn>;
   let waitForCompletion: ReturnType<typeof vi.fn>;
@@ -28,6 +29,7 @@ describe("GatewayServer identity-link routes", () => {
     });
     poll = vi.fn().mockResolvedValue({ status: "complete" });
     getValidToken = vi.fn().mockResolvedValue({ token: "gho_abc", githubLogin: "octocat" });
+    getLinkedLogin = vi.fn().mockResolvedValue("octocat");
     startAuthCode = vi.fn().mockResolvedValue({
       flow: "authcode",
       authorizeUrl: "https://github.com/login/oauth/authorize?client_id=client-1&state=xyz",
@@ -45,6 +47,7 @@ describe("GatewayServer identity-link routes", () => {
         start,
         poll,
         getValidToken,
+        getLinkedLogin,
         startAuthCode,
         completeAuthCode,
         waitForCompletion,
@@ -191,6 +194,43 @@ describe("GatewayServer identity-link routes", () => {
     expect(res.status).toBe(404);
   });
 
+  it("answers the IDENTITY question without consulting the token at all", async () => {
+    // docs/adr/0031: `getValidToken` returns nothing for a link whose token
+    // expired and cannot refresh, and reading that as "no GitHub identity" is
+    // what re-prompted a caller who had linked months ago. This route reads the
+    // record's login instead -- and never returns a credential.
+    getValidToken.mockResolvedValue(undefined);
+
+    const res = await fetch(url("/identity-link/github/identity?subject=user-1"), {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ githubLogin: "octocat" });
+    expect(getLinkedLogin).toHaveBeenCalledWith("user-1");
+    expect(getValidToken).not.toHaveBeenCalled();
+  });
+
+  it("404s the identity route when nothing is linked", async () => {
+    getLinkedLogin.mockResolvedValue(undefined);
+    const res = await fetch(url("/identity-link/github/identity?subject=nobody"), {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("gates the identity route on the bearer token like every other internal route", async () => {
+    const res = await fetch(url("/identity-link/github/identity?subject=user-1"));
+    expect(res.status).toBe(401);
+  });
+
+  it("400s the identity route on a missing subject", async () => {
+    const res = await fetch(url("/identity-link/github/identity"), {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("waits for completion and returns the token once it lands", async () => {
     const res = await fetch(url("/identity-link/github/wait"), {
       method: "POST",
@@ -250,6 +290,7 @@ describe("GatewayServer identity-link authcode callback", () => {
         start: vi.fn(),
         poll: vi.fn(),
         getValidToken: vi.fn(),
+        getLinkedLogin: vi.fn(),
         startAuthCode: vi.fn(),
         completeAuthCode,
       } as unknown as GithubDeviceFlowLinker,

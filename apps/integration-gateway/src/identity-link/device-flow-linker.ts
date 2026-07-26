@@ -203,9 +203,26 @@ export class GithubDeviceFlowLinker {
     if (stillFresh) return { token: cred.token, githubLogin: cred.githubLogin };
 
     if (!cred.refreshToken) return undefined;
+    if (!this.options.clientSecret) {
+      // Loudly, not silently: without a secret this grant CANNOT succeed, so
+      // every link would die ~8h after creation and re-prompt forever -- with a
+      // six-month-valid refresh token sitting right there. That is a deployment
+      // misconfiguration, and the symptom (endless re-linking) points nowhere
+      // near the cause unless it is said out loud.
+      console.error(
+        "[identity-link] cannot refresh the github user token: no clientSecret configured (GITHUB_APP_CLIENT_SECRET). " +
+          "The link will be treated as dead and the user re-prompted on every turn.",
+      );
+      return undefined;
+    }
 
     try {
-      const refreshed = await refreshUserToken(this.options.clientId, cred.refreshToken, this.options.githubBaseUrl);
+      const refreshed = await refreshUserToken(
+        this.options.clientId,
+        this.options.clientSecret,
+        cred.refreshToken,
+        this.options.githubBaseUrl,
+      );
       await this.options.store.set(PROVIDER, subject, {
         githubLogin: cred.githubLogin,
         token: refreshed.token,
@@ -214,10 +231,37 @@ export class GithubDeviceFlowLinker {
         refreshExpiresAt: refreshed.refreshExpiresAt,
       });
       return { token: refreshed.token, githubLogin: cred.githubLogin };
-    } catch {
+    } catch (err) {
       // The link is dead (refresh token expired/revoked) -- caller must re-link.
+      // Logged rather than swallowed: this is the one path that turns a working
+      // link into a re-prompt, and it was silent while a missing client secret
+      // made it fire for every user on every turn.
+      console.error(
+        `[identity-link] github token refresh failed; treating the link as dead and re-prompting: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return undefined;
     }
+  }
+
+  /**
+   * The linked account's GitHub login, regardless of whether its access token is
+   * still usable.
+   *
+   * Separate from {@link getValidToken} on purpose, and the distinction is the
+   * point of docs/adr/0031: knowing WHICH ACCOUNT a caller proved control of is
+   * an identity question, while `getValidToken` answers a credential question.
+   * Conflating them made an expired token read as "this person has no GitHub
+   * identity", so the orchestrator re-prompted for a link it already had -- on
+   * every turn, while happily resolving the same login through
+   * `waitForCompletion` moments later, because that path reads the record raw.
+   *
+   * Deliberately returns NO token: nothing that needs the login needs the
+   * credential, and keeping them apart is what stops the next caller conflating
+   * them again.
+   */
+  async getLinkedLogin(subject: string): Promise<string | undefined> {
+    const cred = await this.options.store.get(PROVIDER, subject);
+    return cred?.githubLogin;
   }
 
   private async fetchGithubLogin(token: string): Promise<string> {
