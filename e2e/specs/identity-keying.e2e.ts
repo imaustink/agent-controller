@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { requireMinikubeContext } from "../support/guard.js";
 import { agentRunSecretEnvNames, agentRunsSince, cleanupAgentRunsSince, waitFor, withPortForward } from "../support/k8s.js";
-import { deleteCredentialKeys, seedAllClaudeCredentials } from "../support/redis.js";
+import { chatSubject, chatTurn } from "../support/chat.js";
+import { claudeCredentialSubjects, deleteCredentialKeys, seedAllClaudeCredentials, seedGithubLink } from "../support/redis.js";
 import { issueLabeledPayload, postGithubWebhook } from "../support/webhook.js";
 import { resetFakeGithub, webhookSecret } from "../support/fixtures.js";
 
@@ -165,5 +166,126 @@ describe("credential keying converges across entry points (ADR 0029/0030)", () =
       // budget here fails for throughput reasons and reads as a keying bug.
       { timeoutMs: 420_000 },
     );
+  });
+});
+
+/**
+ * The CHAT side of the same convergence (docs/adr/0031).
+ *
+ * The suite above drives webhooks only, and that is exactly how the one-way
+ * convergence shipped: the webhook path always carries a verified `senderLogin`,
+ * so it always resolved a principal, while chat -- which had no way to learn a
+ * login -- kept keying by its own `openwebui:<id>` subject. Neither flow was
+ * broken alone, and no webhook-only suite could see it.
+ *
+ * ## What is seeded, and why that is still a real test
+ *
+ * The GitHub link is seeded rather than established through OAuth: a real
+ * device/authcode round trip needs github.com and a human with a browser. The
+ * orchestrator only ever reads `githubLogin` off that record to resolve the
+ * principal, so a seeded link drives the identical code path -- and everything
+ * downstream of it (which subject the credential is read from, whether the run
+ * launches, whether the record moved) is genuine.
+ */
+describe("chat and triage converge on one credential (ADR 0031)", () => {
+  const CHAT_USER = "e2e-chat-user";
+  const CHAT_SUBJECT = chatSubject(CHAT_USER);
+  let suiteStartedAt: Date;
+
+  beforeAll(() => {
+    suiteStartedAt = new Date();
+  });
+
+  afterAll(async () => {
+    await cleanupAgentRunsSince(suiteStartedAt);
+  });
+
+  beforeEach(async () => {
+    await resetFakeGithub();
+    await deleteCredentialKeys("claudeAuth:*");
+    await deleteCredentialKeys("claudeAuthLogin:*");
+    await deleteCredentialKeys("identityLink:*");
+    await deleteCredentialKeys("sess:*");
+  });
+
+  it("resolves a chat turn's credentials from the principal, not the openwebui subject", async () => {
+    // Seeded ONLY at the canonical subject: if the chat path still keyed by its
+    // own subject it would find nothing and park, so a launch is the proof.
+    await seedGithubLink(CHAT_SUBJECT, SENDER);
+    await seedAllClaudeCredentials(CANONICAL);
+    const startedAt = new Date();
+
+    await chatTurn(CHAT_USER, "use the swe agent to fix the failing test");
+
+    const run = await waitFor(
+      "a chat-driven AgentRun to launch using the canonically-keyed credentials",
+      async () => (await agentRunsSince(startedAt))[0],
+      { timeoutMs: 420_000 },
+    );
+    const envNames = await agentRunSecretEnvNames(run.name);
+    expect(envNames).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(envNames).toContain("CLAUDE_LOGIN_CREDENTIALS_JSON");
+    // The mapping stayed a mapping: the principal step is link-only, so no
+    // GITHUB_TOKEN reaches the run and the agent's delegated-write path (the
+    // observed production 401) stays unreachable.
+    expect(envNames).not.toContain("GITHUB_TOKEN");
+  });
+
+  it("adopts a pre-principal credential instead of asking the human to authorize again", async () => {
+    // The reported complaint, as a test: this human authorized from chat before
+    // principals existed, so their credential sits under `openwebui:<id>`.
+    // Converging must MOVE it, not re-prompt for it.
+    await seedGithubLink(CHAT_SUBJECT, SENDER);
+    await seedAllClaudeCredentials(CHAT_SUBJECT);
+    const startedAt = new Date();
+
+    await chatTurn(CHAT_USER, "use the swe agent to fix the failing test");
+
+    await waitFor(
+      "the adopted credential to carry a launch with no re-authorization",
+      async () => (await agentRunsSince(startedAt))[0],
+      { timeoutMs: 420_000 },
+    );
+
+    // Moved, not copied. A leftover copy is the failure mode that matters: the
+    // claude-remote write-back only ever writes the new key, so the old one
+    // would rot and then fail whichever flow still read it.
+    for (const kind of ["setup-token", "login"] as const) {
+      const subjects = await claudeCredentialSubjects(kind);
+      expect(subjects).toContain(CANONICAL);
+      expect(subjects).not.toContain(CHAT_SUBJECT);
+    }
+  });
+
+  it("does not let a chat caller's principal serve another human's credential", async () => {
+    // The negative control for adoption. `perUser` permits moving THIS caller's
+    // record; nothing may pull in one keyed to anyone else.
+    await seedGithubLink(CHAT_SUBJECT, SENDER);
+    await seedAllClaudeCredentials("github:someone-else");
+    const startedAt = new Date();
+
+    await chatTurn(CHAT_USER, "use the swe agent to fix the failing test");
+
+    await new Promise((r) => setTimeout(r, 60_000));
+    expect(await agentRunsSince(startedAt)).toHaveLength(0);
+    // And the other human's credential is untouched -- not moved, not deleted.
+    expect(await claudeCredentialSubjects("login")).toContain("github:someone-else");
+  });
+
+  it("keys a chat caller with no GitHub link by their own subject, sharing with nobody", async () => {
+    // The degraded path, asserted rather than assumed: no link means no
+    // principal, which must still WORK -- just without cross-flow sharing.
+    await seedAllClaudeCredentials(CHAT_SUBJECT);
+    const startedAt = new Date();
+
+    await chatTurn(CHAT_USER, "use the swe agent to fix the failing test");
+
+    await waitFor(
+      "an AgentRun keyed by the caller's own subject",
+      async () => (await agentRunsSince(startedAt))[0],
+      { timeoutMs: 420_000 },
+    );
+    // Nothing was moved anywhere: with no principal there is nothing to move to.
+    expect(await claudeCredentialSubjects("login")).toEqual([CHAT_SUBJECT]);
   });
 });
