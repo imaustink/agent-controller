@@ -8,8 +8,7 @@
 const SECRET_PATTERNS: RegExp[] = [
   // GitHub's own token prefixes: ghp_ (PAT), gho_ (OAuth), ghu_ (user-to-server
   // App), ghs_ (server-to-server App installation), ghr_ (refresh token).
-  /gh[opsu]_[A-Za-z0-9]{20,}/g,
-  /ghr_[A-Za-z0-9]{20,}/g,
+  /gh[oprsu]_[A-Za-z0-9]{20,}/g,
   /Bearer\s+[A-Za-z0-9._-]{16,}/gi,
   /token\s+[A-Za-z0-9._-]{16,}/gi,
 ];

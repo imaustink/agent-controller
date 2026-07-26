@@ -29,6 +29,7 @@ import { makeSubAgentToolCallHandler, type ToolCatalog } from "./dispatch-tool.j
 import {
   ACTOR_LOGIN_ENV,
   AuthorizationService,
+  type CredentialEnvEntry,
   CROSS_ENTRY_POINT_PROVIDERS,
   linkPromptText,
   PROVIDER_LABEL,
@@ -1570,29 +1571,41 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // Same per-caller identity gate as delegateToAgent/the agent-backed
         // tool branch above (ADR 0022/0032) — e.g. the `github` Tool, which
         // needs the calling user's own linked GitHub token rather than a
-        // shared credential. v1 scope cut: same as the agent-backed branch,
-        // this path never STARTS a fresh device-flow/authcode link -- a
-        // caller must link once via direct chat delegation to an
-        // identity-requiring Agent before a container Tool can reach it here.
-        let identitySecretEnv: { name: string; value: string }[] | undefined;
+        // shared credential. Resolved through the same AuthorizationService as
+        // the agent-backed branch so gateway selection is provider-aware (e.g.
+        // `claude` -> claudeAuthGateway, not the GitHub-only identityLinkGateway)
+        // and the credential subject is keyed identically (canonical principal
+        // for cross-entry-point providers), instead of hard-coding
+        // `deps.identityLinkGateway`/`state.identity.subject` here. v1 scope
+        // cut: same as the agent-backed branch, this path never STARTS a fresh
+        // device-flow/authcode link -- a caller must link once via direct chat
+        // delegation to an identity-requiring Agent before a container Tool can
+        // reach it here.
+        let identitySecretEnv: CredentialEnvEntry[] | undefined;
         if (tool.identityProviders && tool.identityProviders.length > 0) {
-          if (!deps.identityLinkGateway || !state.identity) {
+          if (!state.identity) {
             return {
-              error: `tool ${tool.id} requires identity providers (${tool.identityProviders.join(", ")}) but no identity-link gateway is configured`,
+              error: `tool ${tool.id} requires identity providers (${tool.identityProviders.join(", ")}) but no caller identity was resolved`,
             };
           }
-          const provider = tool.identityProviders[0]!;
-          const existing = await deps.identityLinkGateway.getToken(provider, state.identity.subject);
-          if (!existing) {
+          const credentials = await authorization.resolveLinkedCredentials({
+            identity: state.identity,
+            identityProviders: tool.identityProviders,
+          });
+          if (credentials.kind === "gateway-missing") {
             return {
-              error: `tool ${tool.id} requires linking your ${provider} account first -- start a direct conversation with an agent that uses ${provider} identity linking to link it, then retry`,
+              error: `tool ${tool.id} requires identity providers (${tool.identityProviders.join(", ")}) but no identity-link gateway is configured for "${credentials.provider}"`,
             };
           }
-          const envVarName = PROVIDER_ENV_VAR[provider];
-          if (!envVarName) {
-            return { error: `tool ${tool.id} declares unsupported identity provider "${provider}"` };
+          if (credentials.kind === "not-linked") {
+            return {
+              error: `tool ${tool.id} requires linking your ${credentials.provider} account first -- start a direct conversation with an agent that uses ${credentials.provider} identity linking to link it, then retry`,
+            };
           }
-          identitySecretEnv = [{ name: envVarName, value: existing.token }];
+          if (credentials.kind === "unsupported-provider") {
+            return { error: `tool ${tool.id} declares unsupported identity provider "${credentials.provider}"` };
+          }
+          identitySecretEnv = credentials.secretEnv;
         }
 
         jobId = randomUUID();

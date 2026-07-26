@@ -1419,6 +1419,53 @@ describe("buildAgentGraph identity-gated container Tool (ADR 0032, e.g. the gith
     expect(final.error).toMatch(/no identity-link gateway is configured/);
     expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
+
+  it("resolves a non-github provider through the provider-aware gateway, not the GitHub-only one", async () => {
+    // A container Tool declaring identityProviders:["claude"] must have its
+    // token read from claudeAuthGateway (via identityGatewayFor/AuthorizationService),
+    // NOT the GitHub-only identityLinkGateway -- guarding the bypass that
+    // hard-coding deps.identityLinkGateway would have re-introduced.
+    const claudeTool: ToolDescriptor = { ...githubTool, identityProviders: ["claude"] };
+    const claudeToolSkill: SkillDescriptor = { ...githubToolSkill, toolIds: ["github"] };
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "claude-oauth-alice" }),
+    };
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "gho_should-not-be-used" }),
+    };
+    const vectorStore: VectorStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ tool: claudeTool, score: 1 }]),
+    };
+    const skillStore: SkillStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ skill: claudeToolSkill, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([claudeToolSkill]),
+    };
+    const deps = githubToolDeps({ skillStore, vectorStore, claudeAuthGateway, identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "run a claude command", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(claudeAuthGateway.getToken).toHaveBeenCalledWith("claude", "alice");
+    // The GitHub-only gateway may be consulted for principal establishment, but
+    // must never be asked to resolve the "claude" provider's credential.
+    expect(identityLinkGateway.getToken).not.toHaveBeenCalledWith("claude", expect.anything());
+    // Definitive proof of correct routing: the launched token is the one from
+    // claudeAuthGateway, not identityLinkGateway's "gho_should-not-be-used".
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
+      claudeTool.jobTemplate,
+      expect.objectContaining({ secretEnv: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", value: "claude-oauth-alice" }] }),
+    );
+  });
 });
 
 describe("buildAgentGraph Skill.agentRefs (ADR 0021, no Tool wrapper)", () => {
