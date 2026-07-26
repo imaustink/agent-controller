@@ -136,6 +136,19 @@ export async function withPortForward<T>(
 }
 
 /**
+ * The Agent a launched AgentRun is for (`spec.agentRef`).
+ *
+ * Needed by any spec whose turn reaches an agent through the PLANNER rather
+ * than an IntegrationRoute: a wrong selection otherwise fails as a bare
+ * assertion about missing env vars, or as a wait that times out, with nothing
+ * saying which agent actually ran.
+ */
+export async function agentRunAgentRef(agentRunName: string): Promise<string | undefined> {
+  const cr = await kubectlJson<{ spec?: { agentRef?: string } }>(["get", "agentrun", agentRunName]);
+  return cr.spec?.agentRef;
+}
+
+/**
  * `spec.secretEnv` entry NAMES on an AgentRun CR.
  *
  * The CR is agent-orchestrator's OUTPUT -- what the authorization pre-flight

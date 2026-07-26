@@ -80,7 +80,15 @@ export async function claudeCredentialSubjects(kind: "setup-token" | "login"): P
  * LAUNCHES. If the gate looked anywhere else it would find nothing and park.
  * That tests the behaviour rather than a log line.
  */
-export async function seedClaudeCredential(subject: string, kind: "setup-token" | "login"): Promise<void> {
+/**
+ * The field encryptor both stores share: AES-256-GCM under the deployment's own
+ * `IDENTITY_LINK_ENCRYPTION_KEY`, packed `iv:authTag:ciphertext` in base64.
+ *
+ * Read from the cluster rather than generated, because these records are read
+ * back by the gateway -- a locally-invented key produces blobs it can only fail
+ * to decrypt, which surfaces as "no credential linked" rather than as a test bug.
+ */
+async function fieldEncrypter(): Promise<(plaintext: string) => string> {
   const keyB64 = (
     await kubectl(["get", "secret", "e2e-integration-gateway-secrets", "-o", "jsonpath={.data.IDENTITY_LINK_ENCRYPTION_KEY}"])
   ).trim();
@@ -89,12 +97,16 @@ export async function seedClaudeCredential(subject: string, kind: "setup-token" 
   if (key.length !== 32) throw new Error(`e2e: encryption key decoded to ${key.length} bytes, expected 32`);
 
   const { createCipheriv, randomBytes } = await import("node:crypto");
-  const encrypt = (plaintext: string): string => {
+  return (plaintext: string): string => {
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", key, iv);
     const ct = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
     return `${iv.toString("base64")}:${cipher.getAuthTag().toString("base64")}:${ct.toString("base64")}`;
   };
+}
+
+export async function seedClaudeCredential(subject: string, kind: "setup-token" | "login"): Promise<void> {
+  const encrypt = await fieldEncrypter();
 
   const record =
     kind === "login"
@@ -103,6 +115,63 @@ export async function seedClaudeCredential(subject: string, kind: "setup-token" 
 
   const prefix = kind === "login" ? "claudeAuthLogin:" : "claudeAuth:";
   await redisSet(`${prefix}${subject}`, JSON.stringify(record));
+}
+
+/**
+ * Seeds a `github` identity link for a subject, carrying `githubLogin`.
+ *
+ * This is what gives a CHAT caller a resolvable principal (docs/adr/0031)
+ * without a real GitHub OAuth round trip -- which no hermetic test can perform.
+ * The orchestrator only ever reads `githubLogin` off this record to establish
+ * the mapping, so a seeded link exercises exactly the same code path a linked
+ * one would; the token itself is never used by the paths under test (the
+ * principal step is deliberately link-only, and it injects nothing).
+ *
+ * Written in `RedisIdentityLinkStore`'s own format: `identityLink:<provider>:<subject>`,
+ * with the token fields AES-256-GCM field-encrypted the way that store writes them.
+ */
+export async function seedGithubLink(
+  subject: string,
+  githubLogin: string,
+  opts: { expired?: boolean; refreshToken?: boolean } = {},
+): Promise<void> {
+  const encrypt = await fieldEncrypter();
+  await redisSet(
+    `identityLink:github:${subject}`,
+    JSON.stringify({
+      githubLogin,
+      // `expired` is the state the whole re-prompt bug lived in (docs/adr/0031):
+      // a link the human really did establish, whose ACCESS TOKEN has since
+      // aged out. Seeding only fresh links is why a suite built to catch keying
+      // bugs could not see it. Default stays far-future so every other spec is
+      // unaffected.
+      expiresAt: new Date(Date.now() + (opts.expired ? -60_000 : 365 * 24 * 60 * 60 * 1000)).toISOString(),
+      token: encrypt("gho_e2e-seeded"),
+      // Omitted by default so an expired link is DEAD deterministically, with no
+      // refresh attempt and therefore no dependence on the OAuth stub. Set it
+      // when the refresh path itself is what's under test.
+      ...(opts.refreshToken
+        ? {
+            refreshToken: encrypt("ghr_e2e-seeded"),
+            refreshExpiresAt: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString(),
+          }
+        : {}),
+    }),
+  );
+}
+
+/**
+ * The `expiresAt` on a subject's stored GitHub link, or `undefined` if none.
+ *
+ * Metadata only -- never the token. Exists so a spec can assert that a REFRESH
+ * actually happened (the expiry moved forward) rather than inferring it from a
+ * request the gateway may or may not have made.
+ */
+export async function githubLinkExpiry(subject: string): Promise<Date | undefined> {
+  const raw = await redisCli(["GET", `identityLink:github:${subject}`]);
+  if (!raw) return undefined;
+  const at = (JSON.parse(raw) as { expiresAt?: string }).expiresAt;
+  return at ? new Date(at) : undefined;
 }
 
 /** Seeds BOTH Claude record kinds for one subject -- what claude-code-swe-agent declares. */

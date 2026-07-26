@@ -12,6 +12,12 @@ subject) and [0022](0022-per-user-github-device-flow-identity.md) /
 and Claude delegation). Nothing here is retracted; 0029's canonical subject
 remains the interim keying until the principal model below lands.
 
+Amended by [0031](0031-principal-establishing-account-link.md): §5's removal of
+the `github` provider from `claude-code-swe-agent` fixed the 401 but left chat
+callers with no way to learn their own login, so §6's convergence held on the
+webhook path only. 0031 makes establishing a principal its own pre-flight step
+rather than a side effect of `identityProviders`.
+
 ## Context
 
 Authorization currently lives in three places, with overlap:

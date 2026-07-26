@@ -54,6 +54,15 @@ function makeFakeStore(): ClaudeTokenStore & {
     async waitForCompletion(subject, _timeoutMs, kind = "setup-token") {
       return records.get(keyFor(subject, kind));
     },
+    async rekey(from, to, kind = "setup-token") {
+      if (from === to) return "occupied";
+      const record = records.get(keyFor(from, kind));
+      if (!record) return "not-found";
+      if (records.get(keyFor(to, kind))) return "occupied";
+      records.set(keyFor(to, kind), record);
+      records.delete(keyFor(from, kind));
+      return "moved";
+    },
   };
 }
 
@@ -221,6 +230,80 @@ describe("ClaudeAuthApi", () => {
       expect(res.status).toBe(200);
       expect(await store.get("user-login-5", "login")).toBeUndefined();
       expect(await store.get("user-login-5")).toEqual({ kind: "setup-token", token: "sk-ant-oat01-keep", createdAt: "2026-01-01T00:00:00Z" });
+    });
+  });
+
+  describe("rekey", () => {
+    it("moves a credential to a new subject and reports it moved", async () => {
+      // ADR 0031's whole point: the orchestrator re-keyed these records onto the
+      // caller's principal, and this is what spares an existing user a login for
+      // a credential the gateway already holds.
+      const record = { kind: "setup-token" as const, token: "sk-ant-oat01-x", createdAt: "2026-01-01T00:00:00Z" };
+      await store.set("openwebui:42", record);
+
+      const res = await fetch(`http://localhost:${port}/claude-auth/api/rekey`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${BEARER}`, "content-type": "application/json" },
+        body: JSON.stringify({ from: "openwebui:42", to: "github:alice" }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: "moved" });
+      expect(await store.get("github:alice")).toEqual(record);
+      expect(await store.get("openwebui:42")).toBeUndefined();
+    });
+
+    it("routes mode=login to the login record", async () => {
+      const setupRecord = { kind: "setup-token" as const, token: "sk-ant-oat01-keep", createdAt: "2026-01-01T00:00:00Z" };
+      await store.set("openwebui:43", setupRecord);
+      await store.set("openwebui:43", { kind: "login", credentialsJson: "{}", createdAt: "2026-01-01T00:00:00Z" });
+
+      const res = await fetch(`http://localhost:${port}/claude-auth/api/rekey`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${BEARER}`, "content-type": "application/json" },
+        body: JSON.stringify({ from: "openwebui:43", to: "github:bob", mode: "login" }),
+      });
+
+      expect(await res.json()).toEqual({ status: "moved" });
+      expect(await store.get("github:bob", "login")).toBeDefined();
+      expect(await store.get("openwebui:43")).toEqual(setupRecord);
+      expect(await store.get("github:bob")).toBeUndefined();
+    });
+
+    it("reports the outcome rather than pretending, when there is nothing to move", async () => {
+      const res = await fetch(`http://localhost:${port}/claude-auth/api/rekey`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${BEARER}`, "content-type": "application/json" },
+        body: JSON.stringify({ from: "openwebui:nobody", to: "github:alice" }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: "not-found" });
+    });
+
+    it("400s on a missing or non-string subject rather than moving something unintended", async () => {
+      for (const body of [{ from: "openwebui:42" }, { to: "github:alice" }, { from: "", to: "github:alice" }, { from: 1, to: 2 }]) {
+        const res = await fetch(`http://localhost:${port}/claude-auth/api/rekey`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${BEARER}`, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        expect(res.status).toBe(400);
+      }
+    });
+
+    it("401s without the master bearer token -- it moves a credential between identities", async () => {
+      await store.set("openwebui:42", { kind: "setup-token", token: "sk-ant-oat01-x", createdAt: "2026-01-01T00:00:00Z" });
+
+      const res = await fetch(`http://localhost:${port}/claude-auth/api/rekey`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ from: "openwebui:42", to: "github:attacker" }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(await store.get("github:attacker")).toBeUndefined();
+      expect(await store.get("openwebui:42")).toBeDefined();
     });
   });
 

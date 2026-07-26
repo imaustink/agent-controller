@@ -77,6 +77,41 @@ export interface IdentityLinkPort {
    * `IdentityLinkGatewayClient` doesn't need to implement it.
    */
   invalidate?(provider: string, subject: string): Promise<void>;
+  /**
+   * Moves an already-authorized credential from one subject to another,
+   * returning whether anything moved (docs/adr/0031).
+   *
+   * The pre-flight keys these records by the caller's principal, but records
+   * written before principals existed sit under the entry point's own subject.
+   * Both flows now read the same key; this is what puts the existing credential
+   * AT that key, instead of asking a human to re-authorize something the
+   * gateway is already holding.
+   *
+   * Optional, and only meaningful for a principal-keyed provider: the `github`
+   * link stays on the raw subject by design (it is what produces the mapping),
+   * so `IdentityLinkGatewayClient` deliberately does not implement this.
+   *
+   * The caller MUST have established that both subjects are the same human --
+   * see the gateway route's doc. Never call it with a subject that several
+   * people can resolve to.
+   */
+  rekey?(provider: string, fromSubject: string, toSubject: string): Promise<boolean>;
+  /**
+   * The GitHub login a subject has linked, or `undefined` if nothing is linked,
+   * WITHOUT requiring that link's access token to still be usable.
+   *
+   * Principal resolution must not go through `getToken` (docs/adr/0031): that
+   * answers a credential question and returns nothing for a link whose token
+   * expired and could not be refreshed. Reading "no GitHub identity" out of that
+   * made the pre-flight re-prompt for a link the caller already had, on every
+   * single turn -- and the prompt was spurious, because `waitForCompletion` then
+   * resolved the same login instantly from the same record.
+   *
+   * Returns a login, never a token: nothing that needs to know WHO the caller is
+   * needs their credential, and keeping the two apart is what stops them being
+   * conflated again.
+   */
+  getLinkedLogin?(provider: string, subject: string): Promise<string | undefined>;
 }
 
 export interface IdentityLinkGatewayClientOptions {
@@ -108,6 +143,18 @@ export class IdentityLinkGatewayClient implements IdentityLinkPort {
       throw new Error(`identity-link start (${provider}) failed: ${res.status} ${await res.text()}`);
     }
     return (await res.json()) as IdentityLinkStartResult;
+  }
+
+  async getLinkedLogin(provider: string, subject: string): Promise<string | undefined> {
+    const res = await this.fetchImpl(
+      `${this.baseUrl}/identity-link/${provider}/identity?subject=${encodeURIComponent(subject)}`,
+      { headers: { authorization: `Bearer ${this.options.token}` } },
+    );
+    if (res.status === 404) return undefined;
+    if (!res.ok) {
+      throw new Error(`identity-link identity lookup (${provider}) failed: ${res.status} ${await res.text()}`);
+    }
+    return ((await res.json()) as { githubLogin?: string }).githubLogin;
   }
 
   async poll(provider: string, subject: string, deviceCode: string): Promise<IdentityLinkPollStatus> {

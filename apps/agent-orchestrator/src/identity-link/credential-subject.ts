@@ -13,7 +13,31 @@ import type { IdentityLinkPort } from "./gateway-client.js";
  * subject, the same namespacing discipline `openwebui:<id>` already uses.
  */
 export function canonicalSubjectForLogin(login: string): string {
-  return `github:${login.toLowerCase()}`;
+  return `${CANONICAL_PRINCIPAL_PREFIX}${login.toLowerCase()}`;
+}
+
+/**
+ * Namespace marking a principal as CANONICAL -- resolved from a verified GitHub
+ * identity -- as opposed to the raw-subject fallback {@link resolvePrincipal}
+ * returns when no login could be established.
+ */
+export const CANONICAL_PRINCIPAL_PREFIX = "github:";
+
+/**
+ * Whether a principal is the canonical, cross-entry-point one or merely a raw
+ * entry-point subject standing in for itself.
+ *
+ * The distinction is what the authorization pre-flight acts on: a caller whose
+ * principal is still their raw subject gets no credential sharing with their
+ * other entry points, so a turn that needs a cross-entry-point credential can
+ * offer to establish the mapping first (docs/adr/0031).
+ *
+ * A prefix test is sound because every entry-point subject is either namespaced
+ * by its own resolver (`openwebui:<id>`) or an IdP `sub`, and none of them can
+ * be `github:<login>` -- that namespace exists solely for principals.
+ */
+export function isCanonicalPrincipal(principal: string): boolean {
+  return principal.startsWith(CANONICAL_PRINCIPAL_PREFIX);
 }
 
 /**
@@ -33,11 +57,21 @@ export function canonicalSubjectForLogin(login: string): string {
 export async function resolveActorLogin(
   rawSubject: string,
   senderLogin: string | undefined,
-  githubGateway: Pick<IdentityLinkPort, "getToken"> | undefined,
+  githubGateway: Pick<IdentityLinkPort, "getToken" | "getLinkedLogin"> | undefined,
 ): Promise<string | undefined> {
   if (senderLogin) return senderLogin;
   if (!githubGateway) return undefined;
   try {
+    // `getLinkedLogin`, NOT `getToken`: this asks WHO the caller proved control
+    // of, and an access token that expired overnight does not unprove it
+    // (docs/adr/0031). Going through `getToken` meant a stale link resolved to
+    // "no GitHub identity", which cost sharing silently here -- and, once the
+    // pre-flight started acting on the same answer, produced a spurious
+    // link prompt on every turn.
+    //
+    // Falls back to `getToken` only for a port that predates the lookup (test
+    // doubles, and any deployment whose gateway is older than this orchestrator).
+    if (githubGateway.getLinkedLogin) return await githubGateway.getLinkedLogin("github", rawSubject);
     return (await githubGateway.getToken("github", rawSubject))?.githubLogin;
   } catch {
     // A failed lookup must not fail the turn -- the agent simply falls back
@@ -74,7 +108,7 @@ export async function resolveActorLogin(
 export async function resolvePrincipal(
   rawSubject: string,
   senderLogin: string | undefined,
-  githubGateway: Pick<IdentityLinkPort, "getToken"> | undefined,
+  githubGateway: Pick<IdentityLinkPort, "getToken" | "getLinkedLogin"> | undefined,
 ): Promise<string> {
   const login = await resolveActorLogin(rawSubject, senderLogin, githubGateway);
   return login ? canonicalSubjectForLogin(login) : rawSubject;

@@ -25,11 +25,24 @@ function gateway(
       token?: IdentityLinkToken;
       start?: IdentityLinkStartResult | "throw";
       waitResolvesTo?: IdentityLinkToken | "throw";
+      /** A record sitting under the caller's raw subject, adoptable by `rekey` (docs/adr/0031). */
+      prePrincipalToken?: IdentityLinkToken;
+      /** A LINK that exists but whose access token is unusable: `getLinkedLogin` sees it, `getToken` does not. */
+      staleLinkLogin?: string;
     }
   >,
 ): IdentityLinkPort {
+  /** Subjects a `rekey` has moved a pre-principal record onto, so `getToken` starts finding it there. */
+  const adopted = new Map<string, IdentityLinkToken>();
   return {
-    getToken: vi.fn(async (provider: string) => behaviour[provider]?.token),
+    getToken: vi.fn(async (provider: string, subject: string) => adopted.get(`${provider}@${subject}`) ?? behaviour[provider]?.token),
+    getLinkedLogin: vi.fn(async (provider: string) => behaviour[provider]?.staleLinkLogin ?? behaviour[provider]?.token?.githubLogin),
+    rekey: vi.fn(async (provider: string, from: string, to: string) => {
+      const record = behaviour[provider]?.prePrincipalToken;
+      if (!record || from === to) return false;
+      adopted.set(`${provider}@${to}`, record);
+      return true;
+    }),
     start: vi.fn(async (provider: string) => {
       const s = behaviour[provider]?.start;
       if (s === "throw") throw new Error(`start failed for ${provider}`);
@@ -68,7 +81,9 @@ describe("AuthorizationService.authorize", () => {
   it("clears a launch with no secretEnv when the agent declares no providers", async () => {
     const svc = new AuthorizationService({});
     const verdict = await svc.authorize({ agent: { id: "plain" }, identity: identity(), request: "hi" });
-    expect(verdict).toEqual({ kind: "authorized" });
+    // `principal` rides on every authorized verdict (docs/adr/0031) -- the raw
+    // subject standing in for itself here, since nothing established a mapping.
+    expect(verdict).toEqual({ kind: "authorized", principal: "openwebui:alice" });
   });
 
   it("keys cross-entry-point providers by principal and github by raw subject (§6)", async () => {
@@ -424,5 +439,324 @@ describe("AuthorizationService.resolveLinkedCredentials", () => {
   it("resolves to nothing for a tool that declares no providers", async () => {
     const svc = new AuthorizationService({});
     expect(await svc.resolveLinkedCredentials({ identity: identity() })).toEqual({ kind: "resolved" });
+  });
+});
+
+/**
+ * The principal pre-flight (docs/adr/0031).
+ *
+ * These are the tests for the defect observed in production: chat kept writing
+ * Claude credentials under `openwebui:<id>` while GitHub triage read
+ * `github:<login>`, because only the webhook path could name a login. Sharing
+ * is the property under test, so each case asserts on the SUBJECT a credential
+ * was keyed by rather than on the message the user saw.
+ */
+describe("AuthorizationService.authorize principal pre-flight", () => {
+  it("establishes a principal before keying any cross-entry-point credential", async () => {
+    // A chat caller with no GitHub mapping yet. The claude gateway must not be
+    // touched: starting its flow now would file the credential the user is
+    // about to create under the raw subject -- the split this closes.
+    const github = gateway({ github: {} });
+    const claude = gateway({ claude: {} });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ perUser: true }),
+      request: "fix the bug",
+      progressListener: vi.fn(),
+    });
+
+    expect(verdict.kind).toBe("link-required");
+    if (verdict.kind !== "link-required") return;
+    expect(github.start).toHaveBeenCalledWith("github", "openwebui:alice", "authcode");
+    expect(claude.start).not.toHaveBeenCalled();
+    // The resume anchor is the GitHub link, recorded against the subject it was
+    // actually started with (the PR #144 store-vs-wait rule).
+    expect(verdict.pending).toMatchObject({ provider: "github", subject: "openwebui:alice", agentId: "swe" });
+    // The original goal rides along, so the resume re-delegates THIS request.
+    expect(verdict.pending?.request).toBe("fix the bug");
+  });
+
+  it("keys the credential canonically in the SAME turn once the link lands, without injecting GITHUB_TOKEN", async () => {
+    // The whole point: after linking, this chat turn reads the same
+    // `claude@github:alice` record a triage turn reads -- and the link that
+    // produced the mapping stays a mapping, never a credential for the run.
+    const github = gateway({ github: { waitResolvesTo: { token: "gho_x", githubLogin: "Alice" } } });
+    const claude = gateway({ claude: { token: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ perUser: true }),
+      request: "r",
+      progressListener: vi.fn(),
+    });
+
+    expect(verdict.kind).toBe("authorized");
+    if (verdict.kind !== "authorized") return;
+    // Lower-cased: a webhook echoes "Alice", the OAuth API normalizes it, and
+    // two casings would key two records.
+    expect(claude.getToken).toHaveBeenCalledWith("claude", "github:alice");
+    expect(verdict.principal).toBe("github:alice");
+    expect(verdict.secretEnv?.map((e) => e.name)).toEqual(["CLAUDE_CODE_OAUTH_TOKEN", ACTOR_LOGIN_ENV]);
+    expect(verdict.actorLogin).toBe("Alice");
+  });
+
+  it("never starts a principal link for a caller with no live channel", async () => {
+    // Security, not ergonomics: a webhook relay authenticates as its own
+    // service account, so its subject is shared by every sender. A link filed
+    // under it would hand that one person's credentials to every later
+    // senderLogin-less turn. Such a turn degrades to the raw subject instead.
+    const github = gateway({ github: {} });
+    const claude = gateway({ claude: { token: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ subject: "client-integration-gateway" }),
+      request: "r",
+    });
+
+    expect(verdict.kind).toBe("authorized");
+    expect(github.start).not.toHaveBeenCalled();
+    expect(claude.getToken).toHaveBeenCalledWith("claude", "client-integration-gateway");
+  });
+
+  it("does nothing when the caller already has a canonical principal", async () => {
+    // The webhook path with a verified senderLogin, and every chat turn after
+    // the first: resolveIdentity already resolved it, so there is nothing to
+    // establish and no extra round trip to pay for.
+    const github = gateway({ github: {} });
+    const claude = gateway({ claude: { token: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ principal: "github:alice", perUser: true }),
+      request: "r",
+      progressListener: vi.fn(),
+    });
+
+    // No link flow, and no `github` TOKEN read at all: the only lookup is the
+    // identity one (§5's actor login), which asks who the caller is rather than
+    // whether their credential still works (docs/adr/0031).
+    expect(github.start).not.toHaveBeenCalled();
+    expect(github.getToken).not.toHaveBeenCalled();
+    expect(github.getLinkedLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it("degrades to the raw subject when the principal link cannot be started", async () => {
+    // Sharing is an improvement, not a precondition. A GitHub OAuth hiccup must
+    // not deny a run whose own credentials are already linked.
+    const github = gateway({ github: { start: "throw" } });
+    const claude = gateway({ claude: { token: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ perUser: true }),
+      request: "r",
+      progressListener: vi.fn(),
+    });
+
+    expect(verdict.kind).toBe("authorized");
+    if (verdict.kind !== "authorized") return;
+    expect(verdict.principal).toBe("openwebui:alice");
+    expect(claude.getToken).toHaveBeenCalledWith("claude", "openwebui:alice");
+    // Not reported to the user, and NOT in `failedToStart`: nothing the caller
+    // did is wrong and nothing they can do fixes it.
+    expect(verdict.kind).toBe("authorized");
+  });
+
+  it("keeps CRD provider ORDER irrelevant, including when github is declared too", async () => {
+    // `[claude, github]` used to key the claude credential before any login was
+    // known. The principal step runs first regardless, and the declared github
+    // provider still gets its token injected -- mapping and credential are
+    // separate concerns, not alternatives.
+    const github = gateway({ github: { token: { token: "gho_x", githubLogin: "alice" } } });
+    const claude = gateway({ claude: { token: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude", "github"] },
+      identity: identity({ perUser: true }),
+      request: "r",
+      progressListener: vi.fn(),
+    });
+
+    expect(verdict.kind).toBe("authorized");
+    if (verdict.kind !== "authorized") return;
+    expect(claude.getToken).toHaveBeenCalledWith("claude", "github:alice");
+    expect(verdict.secretEnv?.map((e) => e.name)).toEqual([
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "GITHUB_TOKEN",
+      ACTOR_LOGIN_ENV,
+    ]);
+  });
+});
+
+/**
+ * Adopting a pre-principal credential (docs/adr/0031).
+ *
+ * Both flows now read the same key, but records written before principals
+ * existed sit under the entry point's own subject. Charging a human a fresh
+ * login to reproduce a credential the gateway is still holding is not a fix, so
+ * the pre-flight moves it.
+ */
+describe("AuthorizationService.authorize pre-principal adoption", () => {
+  it("adopts the caller's existing credential onto their principal instead of prompting", async () => {
+    const claude = gateway({ claude: { prePrincipalToken: { token: "sk-ant-oat01-authorized-in-chat" } } });
+    const svc = new AuthorizationService({ claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ principal: "github:alice", perUser: true }),
+      request: "r",
+    });
+
+    expect(verdict.kind).toBe("authorized");
+    if (verdict.kind !== "authorized") return;
+    expect(claude.rekey).toHaveBeenCalledWith("claude", "openwebui:alice", "github:alice");
+    expect(verdict.secretEnv).toEqual([{ name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-authorized-in-chat" }]);
+  });
+
+  it("never adopts from a subject that is not per-user", async () => {
+    // The webhook relay's subject is its own service account, shared by every
+    // sender: moving a credential off it would hand whoever authorized first to
+    // whoever triggered next. This turn must park instead.
+    const claude = gateway({ claude: { prePrincipalToken: { token: "sk-ant-oat01-someone-elses" } } });
+    const svc = new AuthorizationService({ claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ subject: "client-integration-gateway", principal: "github:sender" }),
+      request: "r",
+      senderLogin: "sender",
+    });
+
+    expect(claude.rekey).not.toHaveBeenCalled();
+    expect(verdict.kind).toBe("link-required");
+  });
+
+  it("does not attempt a move when the principal IS the subject", async () => {
+    // Nothing to converge, and a self-move is the degenerate case that would
+    // delete the record it just wrote if the store took it literally.
+    const claude = gateway({ claude: { prePrincipalToken: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ claudeAuthGateway: claude });
+
+    await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ perUser: true }),
+      request: "r",
+    });
+
+    expect(claude.rekey).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the ordinary link prompt when there is nothing to adopt", async () => {
+    const claude = gateway({ claude: {} });
+    const svc = new AuthorizationService({ claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ principal: "github:alice", perUser: true }),
+      request: "r",
+    });
+
+    expect(claude.rekey).toHaveBeenCalled();
+    expect(verdict.kind).toBe("link-required");
+    if (verdict.kind !== "link-required") return;
+    // Started against the principal, as always -- adoption changes nothing
+    // about which subject a NEW credential is filed under.
+    expect(verdict.pending?.subject).toBe("github:alice");
+  });
+
+  it("prompts rather than failing the turn when a gateway has no rekey at all", async () => {
+    // `IdentityLinkPort.rekey` is optional (the github client doesn't implement
+    // it), so absence must read as "nothing to adopt", not as a crash.
+    const claude = gateway({ claude: {} });
+    delete (claude as { rekey?: unknown }).rekey;
+    const svc = new AuthorizationService({ claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ principal: "github:alice", perUser: true }),
+      request: "r",
+    });
+
+    expect(verdict.kind).toBe("link-required");
+  });
+});
+
+/**
+ * Never prompt for a link that already exists (docs/adr/0031).
+ *
+ * The production symptom this pins: a caller whose `github` link had expired
+ * overnight was asked to link on EVERY chat turn -- and the turn then completed
+ * anyway, 0.3s later, because `waitForCompletion` reads the stored record raw
+ * while `getToken` refuses a record whose token can no longer be refreshed. The
+ * pre-flight was asking a credential question ("can I use this token?") to
+ * decide an identity one ("who is this?").
+ */
+describe("AuthorizationService.authorize principal from an existing link", () => {
+  it("resolves the principal from a link whose token is no longer usable, without prompting", async () => {
+    // The exact production state: a stored link for "imaustink" that `getToken`
+    // reports as nothing (expired, refresh failed) but whose login is right there.
+    const github = gateway({ github: { staleLinkLogin: "imaustink" } });
+    const claude = gateway({ claude: { token: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ perUser: true }),
+      request: "r",
+      progressListener: vi.fn(),
+    });
+
+    expect(verdict.kind).toBe("authorized");
+    if (verdict.kind !== "authorized") return;
+    // No link flow started, and no prompt: the mapping was already established.
+    expect(github.start).not.toHaveBeenCalled();
+    expect(verdict.principal).toBe("github:imaustink");
+    expect(claude.getToken).toHaveBeenCalledWith("claude", "github:imaustink");
+    expect(verdict.actorLogin).toBe("imaustink");
+  });
+
+  it("still offers the link when nothing is linked at all", async () => {
+    // The distinction that matters: "your token expired" is not "you have no
+    // GitHub identity". Only the second warrants a prompt.
+    const github = gateway({ github: {} });
+    const claude = gateway({ claude: { token: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ perUser: true }),
+      request: "r",
+      progressListener: vi.fn(),
+    });
+
+    expect(github.start).toHaveBeenCalled();
+    expect(verdict.kind).toBe("link-required");
+  });
+
+  it("degrades rather than failing when the identity lookup throws", async () => {
+    const github = gateway({ github: { staleLinkLogin: "imaustink" } });
+    (github.getLinkedLogin as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("gateway down"));
+    const claude = gateway({ claude: { token: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ perUser: true }),
+      request: "r",
+    });
+
+    // Falls through on the raw subject: no sharing this turn, no link prompt
+    // either. A blip must not ask someone to redo a one-time step they already
+    // did -- which is the whole failure mode this ADR is cleaning up after.
+    expect(verdict.kind).toBe("authorized");
+    expect(github.start).not.toHaveBeenCalled();
   });
 });

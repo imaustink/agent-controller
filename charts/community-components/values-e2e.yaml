@@ -40,6 +40,23 @@ stubAgent:
       - claude
       - claude-remote
 
+# Removed from the e2e catalog entirely, not merely bypassed by the triage route.
+#
+# The comment at the top of this file explains why it is useless for the
+# identity-keying spec: it declares no identityProviders, so the pre-flight
+# iterates an empty list and launches with nothing to assert a subject against.
+# Re-pointing the route at stub-agent was enough while every spec arrived through
+# an IntegrationRoute -- but a CHAT turn has no route, so its agent is chosen by
+# the planner, and observed runs picked THIS agent over the named stub (its
+# description is the closest match for any "fix the failing repo" request).
+# A turn that lands here produces no credential flow at all, which is not a
+# weaker version of the test -- it is a different, silently-passing one.
+#
+# An agent that cannot exercise the behaviour under test does not belong in the
+# catalog the tests select from.
+opencodeSweAgent:
+  enabled: false
+
 claudeCodeSweAgent:
   # Still enabled, though the triage route points at stub-agent above: this
   # Agent CR is the production-shaped reference the stub's providers are kept in

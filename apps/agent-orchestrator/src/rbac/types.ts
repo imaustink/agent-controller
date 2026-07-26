@@ -30,6 +30,23 @@ export interface Identity {
    * test) still type-checks; consumers fall back to `subject`.
    */
   principal?: string;
+  /**
+   * `true` only when this `subject` provably identifies ONE human.
+   *
+   * Set by the resolvers that know it structurally -- today
+   * `OpenWebUiForwardedUserResolver`, which exists precisely to give each Open
+   * WebUI user their own subject. Absent everywhere else, including the OIDC
+   * resolver, which cannot tell a human's token from integration-gateway's own
+   * service-account token: both are validly-signed JWTs with a `sub`.
+   *
+   * The authorization pre-flight gates principal ESTABLISHMENT on it
+   * (docs/adr/0031): filing a GitHub login under a subject that several people
+   * resolve to would hand that person's Claude credentials to everyone else who
+   * arrives that way. Fail-closed by omission -- a resolver that says nothing
+   * gets no linking, which costs cross-entry-point sharing rather than leaking
+   * a credential.
+   */
+  perUser?: true;
 }
 
 /**
