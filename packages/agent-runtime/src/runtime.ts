@@ -85,6 +85,10 @@ export interface RunAgentOptions {
   channel?: AgentChannel;
   /** Inject config (tests); default reads the environment. */
   config?: AgentRuntimeConfig;
+  /** Override {@link REPLY_ACK_RETRY_MS} (tests). */
+  replyAckRetryMs?: number;
+  /** Override {@link REPLY_ACK_TIMEOUT_MS} (tests). */
+  replyAckTimeoutMs?: number;
 }
 
 class CancelledError extends Error {
@@ -95,6 +99,25 @@ class CancelledError extends Error {
 
 /** Distributive Omit so each union variant keeps its own fields (a plain Omit over a union keeps only common keys). */
 type WithoutEnvelope<T> = T extends unknown ? Omit<T, "agent_run_id" | "seq" | "ts"> : never;
+
+/**
+ * How often to re-offer an unacked concluding message, and how long to keep
+ * offering it before giving up and exiting.
+ *
+ * This is the agent's half of `reply_ack` (see the protocol's doc comment):
+ * core NATS drops anything published while the orchestrator has no live
+ * subscription, and the concluding message is the only one whose loss turns a
+ * successful run into a failed-looking turn. The Job pod outlives an
+ * orchestrator rollout, so simply holding the answer and re-offering it lets a
+ * replacement orchestrator reattach and collect it.
+ *
+ * 10 minutes because the gap being covered is an orchestrator pod replacement
+ * (seconds) plus however long it takes something to re-drive the turn -- for a
+ * chat conversation, the user's next message. Past that the answer is stale
+ * enough that holding a pod open for it is the worse trade.
+ */
+const REPLY_ACK_RETRY_MS = 10_000;
+const REPLY_ACK_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Boots a sub-agent: connects the channel, announces `ready`, runs `handler`
@@ -118,7 +141,109 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
     } as AgentUpMessage);
 
   const abort = new AbortController();
-  let pendingAsk: { resolve: (answer: string) => void; reject: (err: Error) => void } | undefined;
+  let pendingAsk:
+    | { resolve: (answer: string) => void; reject: (err: Error) => void; seq: number }
+    | undefined;
+
+  /**
+   * Concluding messages currently being held for an ack, keyed by `seq`. A map
+   * rather than a single slot because two can legitimately overlap: a question
+   * (`ask()`, a non-final `reply`) is still being held when its answer arrives
+   * and the agent goes on to publish its final reply. With one slot the older
+   * hold would never be woken and would keep re-offering a question the
+   * conversation had already moved past.
+   */
+  const holds = new Map<number, { acked: boolean; done: boolean; wake?: () => void }>();
+
+  /** Stops holding `seq` without an ack — the message became moot on its own terms. */
+  const releaseHold = (seq: number): void => {
+    const hold = holds.get(seq);
+    if (!hold) return;
+    hold.done = true;
+    hold.wake?.();
+  };
+
+  /**
+   * Publishes a message whose loss would break the turn (`reply` of either
+   * finality, `failed`) and holds it until the orchestrator acks that exact
+   * `seq`, re-offering it every {@link REPLY_ACK_RETRY_MS} until then. Every
+   * re-offer reuses the ORIGINAL envelope, `seq` included, so the orchestrator
+   * sees a duplicate as one rather than as a second reply.
+   *
+   * Resolves either way — an unacked message is logged and abandoned rather
+   * than holding the Job's pod open indefinitely. Cancellation and
+   * {@link releaseHold} both end the wait early.
+   */
+  const publishHeld = async (
+    msg: WithoutEnvelope<AgentUpMessage>,
+    // Callers that must know the seq BEFORE the hold resolves (ask(), which
+    // has to record it on `pendingAsk` so the answer can release the hold)
+    // allocate it themselves and pass it in.
+    allocatedSeq: number = seq++,
+  ): Promise<number> => {
+    const envelope = {
+      ...msg,
+      agent_run_id: config.runId,
+      seq: allocatedSeq,
+      ts: new Date().toISOString(),
+    } as AgentUpMessage;
+    const retryMs = opts.replyAckRetryMs ?? config.replyAckRetryMs ?? REPLY_ACK_RETRY_MS;
+    const timeoutMs = opts.replyAckTimeoutMs ?? config.replyAckTimeoutMs ?? REPLY_ACK_TIMEOUT_MS;
+    // Holding disabled (AGENT_REPLY_ACK_TIMEOUT_MS=0): publish once and move on,
+    // exactly as this did before `reply_ack` existed.
+    if (timeoutMs === 0) {
+      await channel.publishUp(envelope);
+      return envelope.seq;
+    }
+    const deadline = Date.now() + timeoutMs;
+    const hold = { acked: false, done: false } as { acked: boolean; done: boolean; wake?: () => void };
+    // Registered BEFORE the first publish so an ack can never arrive with
+    // nowhere to land (a fast orchestrator can ack before we would otherwise
+    // have parked).
+    holds.set(envelope.seq, hold);
+
+    // A publish failure is precisely the case this loop exists for -- the
+    // connection is down, so nothing could have received it. Log and let the
+    // next attempt try again rather than abandoning the message.
+    const offer = async (): Promise<void> => {
+      try {
+        await channel.publishUp(envelope);
+      } catch (err) {
+        console.error(
+          `[agent-runtime] failed to publish ${envelope.type} (seq ${envelope.seq}), will retry: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    };
+
+    try {
+      await offer();
+      while (!hold.acked && !hold.done && !abort.signal.aborted && Date.now() < deadline) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            hold.wake = undefined;
+            resolve();
+          }, retryMs);
+          hold.wake = () => {
+            clearTimeout(timer);
+            hold.wake = undefined;
+            resolve();
+          };
+        });
+        if (hold.acked || hold.done || abort.signal.aborted || Date.now() >= deadline) break;
+        await offer();
+      }
+      if (!hold.acked && !hold.done && !abort.signal.aborted) {
+        console.error(
+          `[agent-runtime] ${envelope.type} (seq ${envelope.seq}) was never acknowledged within ${timeoutMs}ms; ` +
+            "giving up on it -- the turn that launched this run may report it as unfinished even though the work is done",
+        );
+      }
+      return envelope.seq;
+    } finally {
+      holds.delete(envelope.seq);
+    }
+  };
+
   const pendingToolCalls = new Map<string, { resolve: (result: unknown) => void; reject: (err: Error) => void }>();
 
   channel.onDown((msg: AgentDownMessage) => {
@@ -128,8 +253,12 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
         // ask(). Anything else (agent isn't waiting) is dropped — a fresh user
         // turn is a new AgentRun, not this one.
         if (pendingAsk) {
-          const { resolve } = pendingAsk;
+          const { resolve, seq: askSeq } = pendingAsk;
           pendingAsk = undefined;
+          // The answer proves the question was received even if its ack never
+          // was, and re-offering an already-answered question would surface a
+          // stale message to the next turn.
+          releaseHold(askSeq);
           resolve(msg.message);
         }
         break;
@@ -152,7 +281,20 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
           pendingToolCalls.delete(callId);
           pending.reject(new CancelledError(msg.reason));
         }
+        // Nobody is waiting for these any more; wake the holds now rather than
+        // letting each sit out its retry interval before noticing the abort.
+        for (const seqHeld of [...holds.keys()]) releaseHold(seqHeld);
         break;
+      case "reply_ack": {
+        // An ack for a seq we are not holding is normal and ignorable: a
+        // re-offer that crossed with the ack for the original produces a second
+        // ack after the hold is gone.
+        const hold = holds.get(msg.ackSeq);
+        if (!hold) break;
+        hold.acked = true;
+        hold.wake?.();
+        break;
+      }
       case "signal":
         // Extension point; no built-in signals yet.
         break;
@@ -171,8 +313,13 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
           reject(new CancelledError());
           return;
         }
-        pendingAsk = { resolve, reject };
-        void publishUp({ type: "reply", message: question, final: false });
+        // Held like a final reply: a dropped question strands the conversation
+        // just as badly as a dropped answer -- the user sees a failed turn while
+        // this agent sits waiting for an answer to something nobody ever saw.
+        // The seq is allocated up front so the answer can release the hold.
+        const askSeq = seq++;
+        pendingAsk = { resolve, reject, seq: askSeq };
+        void publishHeld({ type: "reply", message: question, final: false }, askSeq);
       }),
     callTool: (tool, input) =>
       new Promise<unknown>((resolve, reject) => {
@@ -191,7 +338,7 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
   try {
     const res = await handler(session);
     const reply: AgentReply = typeof res === "string" ? { message: res } : res;
-    await publishUp({ type: "reply", message: reply.message, final: true, result: reply.result });
+    await publishHeld({ type: "reply", message: reply.message, final: true, result: reply.result });
   } catch (err) {
     if (!(err instanceof CancelledError) && !abort.signal.aborted) {
       // A handler-supplied `code` wins (see AgentFailure). Matched by `name`
@@ -208,7 +355,7 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
           : err instanceof AgentConfigError
             ? "config_error"
             : "agent_error";
-      await publishUp({ type: "failed", code, message: err instanceof Error ? err.message : String(err) });
+      await publishHeld({ type: "failed", code, message: err instanceof Error ? err.message : String(err) });
     }
     // On cancellation the orchestrator already knows; exit quietly.
   } finally {

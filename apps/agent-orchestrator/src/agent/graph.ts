@@ -103,6 +103,28 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => undefined,
   }),
   /**
+   * True when `activeAgentRunId` still owes this conversation a reply, rather
+   * than being parked on a question (see
+   * `SessionRecord.activeAgentRunAwaitingReply`). Decides whether
+   * `checkActiveAgentRun` publishes this turn's text as a `prompt` or simply
+   * re-attaches and waits.
+   */
+  activeAgentRunAwaitingReply: Annotation<boolean | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * Set when a turn ended without the agent's reply through no fault of the
+   * agent's — the wait lost its channel while the run was still working. Tells
+   * the server to LEAVE the awaiting-reply anchor in place (the default for a
+   * turn that produced no reply is to clear it) so the next turn re-attaches
+   * instead of starting over.
+   */
+  agentResumePending: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
+  }),
+  /**
    * Per-tool continuation tokens from the caller's session, keyed by tool id
    * (docs/adr/0017). Set by the server from the session store, consumed by
    * `runTool` to prefix the tool's args on a repeat call for the same tool.
@@ -518,6 +540,19 @@ export interface AgentGraphDeps {
    */
   agentIdleTimeoutSeconds?: number;
   /**
+   * Records, before the wait begins, that this conversation is owed a reply by
+   * a specific AgentRun — the resume anchor a later turn re-attaches to
+   * (`session/inflight-agent-run.ts`). Optional: without a session store there
+   * is nowhere to persist it and nothing to resume from, so agent turns behave
+   * exactly as they did before resumability existed.
+   */
+  markAgentRunAwaitingReply?: (
+    sessionId: string,
+    run: { subject: string; agentId: string; agentRunId: string },
+  ) => Promise<void>;
+  /** Drops the resume anchor once there is nothing left to wait for (same module). */
+  clearAgentRunAwaitingReply?: (sessionId: string) => Promise<void>;
+  /**
    * k8s Secret name/key the AgentRun CR's (currently vestigial) callback
    * field references — reuses the same secretRef as ToolRun. Required
    * whenever `agentRunLauncher` is set.
@@ -876,6 +911,33 @@ async function handleAgentTurnFailure(
 }
 
 /**
+ * Outcome for a turn whose wait lost its channel while the agent was still
+ * working: a RESUMABLE pause, not a failure.
+ *
+ * This is the honest reading of an `AgentTurnTransportError`. Nothing about the
+ * run went wrong — the orchestrator was rolled, killed, or lost NATS — and the
+ * agent holds its concluding message for exactly this case (the protocol's
+ * `reply_ack`), re-offering it until someone collects it. So the turn reports a
+ * pause and leaves the resume anchor in place, and the next turn re-attaches
+ * and returns the real answer.
+ *
+ * Reported as `result` rather than `error` deliberately: an error reads as "your
+ * request failed, try again", which would be the third variation on telling a
+ * user their successful run failed.
+ */
+function resumableAgentTurnOutcome(state: Pick<AgentState, "progressListener">, agentRunId: string): Partial<AgentState> {
+  const nudge = state.progressListener
+    ? "Send any message and I'll pick up its reply where this left off."
+    : "Re-apply the label and I'll pick up its reply where this left off.";
+  return {
+    agentResumePending: true,
+    result:
+      `⏳ Still working — I lost my connection to agent run \`${agentRunId}\`, not the run itself. ` +
+      `It's still going (or already finished) and is holding its answer for me. ${nudge}`,
+  };
+}
+
+/**
  * When a live progress listener is attached (the SSE streaming path), the
  * delegated agent's narrative was already streamed to the user as it was
  * generated (server.ts's "agent-text" content-delta handling). The agent's
@@ -936,6 +998,23 @@ function composeAgentTurnMessage(state: Pick<AgentState, "progressListener">, re
 function agentAwaitReplyIdleTimeoutMs(deps: Pick<AgentGraphDeps, "agentIdleTimeoutSeconds">): number | undefined {
   return deps.agentIdleTimeoutSeconds ? deps.agentIdleTimeoutSeconds * 1000 : undefined;
 }
+
+/**
+ * Silence window for a RE-ATTACHED wait — one resuming a run a previous turn
+ * was cut off from, rather than one it launched.
+ *
+ * Much tighter than the ordinary window, because at this point silence is
+ * genuinely diagnostic rather than merely possible. A run still working
+ * heartbeats every 20s (`claude-runner.ts`), and a run that finished during the
+ * gap re-offers its held concluding message every 10s (`agent-runtime`'s
+ * `publishHeld`), so anything alive announces itself almost immediately. Hearing
+ * nothing means the pod is gone.
+ *
+ * Using the full window here would make the unrecoverable case cost the user a
+ * 10-minute wait to be told "it's gone" — the same "bound outlasts the thing it
+ * bounds" mistake that made a rollout look like a timeout, just inverted.
+ */
+const REATTACH_IDLE_TIMEOUT_MS = 45_000;
 
 function appendSelfImprovementSuggestion(message: string): string {
   return `${message}${SELF_IMPROVEMENT_FOOTER}`;
@@ -1201,7 +1280,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
 
       try {
         const awaitReply = deps.agentChannel.awaitReply(state.activeAgentRunId, {
-          idleTimeoutMs: agentAwaitReplyIdleTimeoutMs(deps),
+          idleTimeoutMs: state.activeAgentRunAwaitingReply
+            ? REATTACH_IDLE_TIMEOUT_MS
+            : agentAwaitReplyIdleTimeoutMs(deps),
           onProgress:
             state.progressListener || state.remoteControlUrlListener
               ? (stage, message) => {
@@ -1213,7 +1294,15 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             sessionId: state.sessionId,
           }),
         });
-        await deps.agentChannel.sendPrompt(state.activeAgentRunId, state.request);
+        // RE-ATTACH vs CONTINUE. Parked on a question -> this turn's text is the
+        // answer, publish it. Owed a reply (a previous turn's wait lost its
+        // channel) -> the agent is not waiting for input and this text is not an
+        // instruction, so say nothing and just collect the reply it is holding
+        // for us. Prompting here would inject "any update?" into a working
+        // agent's conversation.
+        if (!state.activeAgentRunAwaitingReply) {
+          await deps.agentChannel.sendPrompt(state.activeAgentRunId, state.request);
+        }
         const reply = await awaitReply;
         const message = composeAgentTurnMessage(state, reply);
         return {
@@ -1229,6 +1318,31 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
+        if (err instanceof AgentTurnTransportError) {
+          return {
+            agentRunId: state.activeAgentRunId,
+            selectedAgent: found.agent,
+            ...resumableAgentTurnOutcome(state, state.activeAgentRunId),
+          };
+        }
+        // Silence on a RE-ATTACH means something different from silence on a
+        // live turn, and is bounded far more tightly (see
+        // `agentAwaitReplyIdleTimeoutMs`): a run still working would have
+        // narrated, and one still holding an answer would have re-offered it
+        // within seconds. So this is the unrecoverable case -- the agent exited
+        // during the gap and its concluding message went with it. Drop the
+        // anchor so later turns don't each re-attach to a dead run, and say what
+        // is actually knowable.
+        if (err instanceof AgentTurnTimeoutError && state.activeAgentRunAwaitingReply) {
+          if (state.sessionId) await deps.clearAgentRunAwaitingReply?.(state.sessionId);
+          return {
+            agentRunId: state.activeAgentRunId,
+            selectedAgent: found.agent,
+            result:
+              `⚠️ Agent run \`${state.activeAgentRunId}\` is no longer reachable, so I couldn't recover the reply it was ` +
+              "working on. The run itself may well have completed — check it directly before re-running the request.",
+          };
+        }
         return {
           agentRunId: state.activeAgentRunId,
           ...(await handleAgentTurnFailure(err, deps, state, found.agent)),
@@ -1393,6 +1507,26 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
           ...(state.sessionId ? { sessionId: state.sessionId } : {}),
         });
+        // The run now exists and we are about to wait on it. Anchor it to the
+        // conversation HERE, not with the rest of the turn's outcome: from this
+        // line until the reply arrives is exactly the window in which the
+        // orchestrator can be rolled out from under the wait, and an outcome
+        // persisted after the graph returns is precisely what a killed pod never
+        // gets to write. Best-effort -- a session store hiccup should cost
+        // resumability, not the turn.
+        if (state.sessionId && deps.markAgentRunAwaitingReply) {
+          await deps
+            .markAgentRunAwaitingReply(state.sessionId, {
+              subject: identity.subject,
+              agentId: agent.id,
+              agentRunId: runId,
+            })
+            .catch((err: unknown) => {
+              console.error(
+                `[agent] failed to record agent run ${runId} as awaiting reply; a rollout mid-turn will not be resumable: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            });
+        }
         const reply = await awaitReply;
         const message = composeAgentTurnMessage(state, reply);
         return {
@@ -1409,6 +1543,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
+        if (err instanceof AgentTurnTransportError) {
+          return { agentRunId: runId, identity, selectedAgent: agent, ...resumableAgentTurnOutcome(state, runId) };
+        }
         return { agentRunId: runId, identity, ...(await handleAgentTurnFailure(err, deps, { ...state, identity }, agent)) };
       }
     })
@@ -1729,11 +1866,21 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     .addConditionalEdges("checkIntegrationRoute", (state) =>
       state.error
         ? END
-        : state.selectedAgent
-          ? "delegateToAgent"
-          : state.selectedSkill
-            ? "loadSkillTools"
-            : "checkPendingIdentityLink",
+        : // A conversation still owed a reply by a run re-attaches FIRST, even on
+          // a route-driven turn. The route's whole purpose is to skip retrieval
+          // and dispatch deterministically, but dispatching again while an
+          // earlier run of this same conversation is holding an answer would do
+          // the work twice -- a second branch and a second PR on a real coding
+          // agent. This is the path a re-applied trigger label takes
+          // (docs/adr/0033), and `checkActiveAgentRun` falls back to the route's
+          // own target below if the anchor turns out to be stale.
+          state.activeAgentRunAwaitingReply && state.activeAgentRunId
+          ? "checkActiveAgentRun"
+          : state.selectedAgent
+            ? "delegateToAgent"
+            : state.selectedSkill
+              ? "loadSkillTools"
+              : "checkPendingIdentityLink",
     )
     // A pending device-flow link either just completed (an agent was
     // re-selected -> resume straight into delegateToAgent), is still being
@@ -1749,11 +1896,21 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     .addConditionalEdges("checkActiveSkill", (state) =>
       state.error ? END : state.selectedSkill ? "loadSkillTools" : "checkActiveAgentRun",
     )
-    // A continuing agent run either produced a terminal turn result
-    // (question or final reply, agentRunId set) or errored -> END either
-    // way; a miss (agentRunId still unset, e.g. no active run or agent
-    // delegation not configured) falls through to full retrieval.
-    .addConditionalEdges("checkActiveAgentRun", (state) => (state.error || state.agentRunId ? END : "checkNeedsCapability"))
+    // A continuing agent run either produced a terminal turn result (question,
+    // final reply, or resumable pause -- all set `agentRunId`) or errored -> END
+    // either way. On a miss, an already-selected target is honored before
+    // falling through to retrieval: this node is now also reachable from
+    // `checkIntegrationRoute`, whose route already chose one, and dropping that
+    // choice would turn a stale anchor into a silently different turn.
+    .addConditionalEdges("checkActiveAgentRun", (state) =>
+      state.error || state.agentRunId
+        ? END
+        : state.selectedAgent
+          ? "delegateToAgent"
+          : state.selectedSkill
+            ? "loadSkillTools"
+            : "checkNeedsCapability",
+    )
     // A "no" (docs/adr/0019) skips catalog retrieval entirely and answers
     // directly; a "yes" (or classifier error) proceeds exactly as before.
     .addConditionalEdges("checkNeedsCapability", (state) =>

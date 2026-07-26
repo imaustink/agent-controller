@@ -12,8 +12,8 @@ import { z } from "zod";
  *   `opencode_event`, `opencode_response`, `session_idle`, `session_ended`,
  *   `tool_call`.
  * - **down** (orchestrator -> agent): `prompt` (a user turn — the initial
- *   goal or any follow-up), `cancel`, `signal`, `opencode_request`,
- *   `tool_result`.
+ *   goal or any follow-up), `cancel`, `signal`, `reply_ack`,
+ *   `opencode_request`, `tool_result`.
  *
  * The protocol is transport-agnostic (this package deliberately has no NATS
  * dependency): messages are plain JSON validated by the schemas below. The
@@ -162,6 +162,22 @@ export const AgentDownMessageSchema = z.discriminatedUnion("type", [
     path: z.string(),
     body: z.unknown().optional(),
   }),
+  // Confirms a specific `reply`/`failed` up-message was actually RECEIVED,
+  // identified by that message's `seq`. Core NATS is fire-and-forget with no
+  // durability: a message published while the orchestrator has no live
+  // subscription (it was rolled, its pod died, the connection dropped) is
+  // gone forever. Since only the concluding message carries the turn's whole
+  // outcome, losing it turns a run that succeeded into a turn that visibly
+  // failed. So the agent holds its concluding message until this ack arrives,
+  // re-publishing periodically -- the Job's pod outlives any orchestrator
+  // rollout, so it can simply keep offering the answer until a replacement
+  // orchestrator reattaches and takes it. Narration (`progress`/`warning`) is
+  // deliberately NOT acked: it is best-effort commentary, worthless once the
+  // turn it narrated is over.
+  AgentMessageBaseSchema.extend({
+    type: z.literal("reply_ack"),
+    ackSeq: z.number().int().nonnegative(),
+  }),
   // Reply to a `tool_call` up-message, correlated by `callId` (docs/adr/0028).
   // Exactly one of `result`/`error` is meaningful depending on `ok`, mirroring
   // the up-message contract's own `reply`/`failed` split but folded into one
@@ -196,6 +212,7 @@ export type AgentDownMessage =
   | (AgentMessageBase & { type: "prompt"; message: string })
   | (AgentMessageBase & { type: "cancel"; reason?: string })
   | (AgentMessageBase & { type: "signal"; name: string; data?: unknown })
+  | (AgentMessageBase & { type: "reply_ack"; ackSeq: number })
   | (AgentMessageBase & { type: "opencode_request"; requestId: string; method: string; path: string; body?: unknown })
   | (AgentMessageBase & { type: "tool_result"; callId: string; ok: boolean; result?: unknown; error?: string });
 

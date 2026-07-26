@@ -307,6 +307,89 @@ describe("InvokeServer session-scoped pending identity link (GitHub OAuth Device
     return new InMemorySessionStore({ ttlMs: 60_000, maxEntries: 10 });
   }
 
+  /**
+   * A turn that lost its channel to a still-working run must leave the
+   * awaiting-reply anchor behind. The default for a turn that produced no reply
+   * is to CLEAR the active-run state (the run concluded), which for this case
+   * would throw away the only pointer back to a run that is still holding the
+   * answer.
+   */
+  it("keeps the awaiting-reply anchor when the turn ended with a lost channel", async () => {
+    const identity = { subject: "alice", roles: ["reader"] };
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({
+        request: "x",
+        authToken: "tok-1",
+        skillCandidates: [],
+        identity,
+        selectedAgent: { id: "claude-code-swe" },
+        agentRunId: "run-1",
+        agentAwaitingReply: false,
+        agentResumePending: true,
+        result: "Still working -- I lost my connection to agent run `run-1`.",
+      } as unknown as AgentState),
+      stream: vi.fn(),
+    };
+    const store = sessionStore();
+    const server = new InvokeServer(graph, store);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "fix the bug", session_id: "session-1" }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(await store.get("session-1")).toMatchObject({
+      subject: "alice",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+    });
+
+    await server.close();
+  });
+
+  it("clears the anchor once the agent actually replies", async () => {
+    const identity = { subject: "alice", roles: ["reader"] };
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({
+        request: "x",
+        authToken: "tok-1",
+        skillCandidates: [],
+        identity,
+        selectedAgent: { id: "claude-code-swe" },
+        agentRunId: "run-1",
+        agentAwaitingReply: false,
+        result: "opened a PR",
+      } as unknown as AgentState),
+      stream: vi.fn(),
+    };
+    const store = sessionStore();
+    await store.set("session-1", {
+      subject: "alice",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+    });
+    const server = new InvokeServer(graph, store);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "any update?", session_id: "session-1" }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const record = await store.get("session-1");
+    expect(record?.activeAgentRunId).toBeUndefined();
+    expect(record?.activeAgentRunAwaitingReply).toBeUndefined();
+
+    await server.close();
+  });
+
   it("persists pendingIdentityLink from a turn that paused on device-flow authorization, and offers it to the graph on the next turn", async () => {
     const identity = { subject: "alice", roles: ["reader"] };
     const pendingIdentityLink = {

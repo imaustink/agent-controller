@@ -11,6 +11,20 @@ export interface AgentRuntimeConfig {
   subjectPrefix: string;
   /** The initial goal for this run (AGENT_GOAL, or argv[2] as a fallback). */
   goal: string;
+  /**
+   * How long to keep re-offering a concluding message that has not been acked
+   * (AGENT_REPLY_ACK_TIMEOUT_MS), and how often (AGENT_REPLY_ACK_RETRY_MS) —
+   * see `runtime.ts`'s `publishHeld`.
+   *
+   * Operationally relevant because holding is what keeps the answer collectable
+   * across an orchestrator rollout, and it does so by keeping the Job's pod
+   * alive that much longer when nobody collects. `0` disables holding entirely,
+   * restoring the pre-`reply_ack` publish-and-exit behaviour — the escape hatch
+   * if an orchestrator that never acks is ever deployed against a newer agent
+   * image.
+   */
+  replyAckTimeoutMs?: number;
+  replyAckRetryMs?: number;
 }
 
 export class AgentConfigError extends Error {}
@@ -39,5 +53,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, argv: string[] 
     runId: runId!,
     subjectPrefix: env.AGENT_NATS_SUBJECT_PREFIX ?? "agent",
     goal: goal!,
+    ...numeric("replyAckTimeoutMs", env.AGENT_REPLY_ACK_TIMEOUT_MS),
+    ...numeric("replyAckRetryMs", env.AGENT_REPLY_ACK_RETRY_MS),
   };
+}
+
+/**
+ * Parses an optional numeric env override, omitting the key entirely when unset
+ * so the runtime's own default applies. A non-numeric value is a
+ * misconfiguration worth failing on rather than silently ignoring: a typo'd
+ * timeout that reads as "use the default" is the kind of thing that is only
+ * discovered during the incident it was meant to prevent.
+ */
+function numeric(key: string, raw: string | undefined): Record<string, number> {
+  if (raw === undefined || raw === "") return {};
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new AgentConfigError(`invalid ${key} (${raw}): expected a non-negative number of milliseconds`);
+  }
+  return { [key]: value };
 }

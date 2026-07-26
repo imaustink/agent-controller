@@ -10,14 +10,28 @@ const config: AgentRuntimeConfig = {
   goal: "do the thing",
 };
 
-/** In-memory channel: records up-messages, lets the test push down-messages. */
+/**
+ * In-memory channel: records up-messages, lets the test push down-messages.
+ *
+ * Acks `reply`/`failed` by default, because a live orchestrator does (see the
+ * protocol's `reply_ack`) and the runtime holds those messages until it hears
+ * one. Tests that exercise the holding itself construct this with
+ * `{ autoAck: false }` to stand in for an orchestrator that has gone away.
+ */
 class FakeChannel implements AgentChannel {
   readonly up: AgentUpMessage[] = [];
   private handler: ((msg: AgentDownMessage) => void) | undefined;
   closed = false;
 
+  constructor(private readonly opts: { autoAck?: boolean } = {}) {}
+
   publishUp(msg: AgentUpMessage): Promise<void> {
     this.up.push(msg);
+    if ((this.opts.autoAck ?? true) && (msg.type === "reply" || msg.type === "failed")) {
+      // Asynchronously, like a real round trip -- an ack delivered
+      // synchronously inside publishUp would hide ordering bugs.
+      queueMicrotask(() => this.send({ type: "reply_ack", ackSeq: msg.seq }));
+    }
     return Promise.resolve();
   }
   onDown(handler: (msg: AgentDownMessage) => void): void {
@@ -240,6 +254,137 @@ describe("runAgent", () => {
     expect(aborted).toBe(true);
     // ready + the non-final ask reply only; no final reply, no failed.
     expect(ch.types()).toEqual(["ready", "reply"]);
+    expect(ch.closed).toBe(true);
+  });
+
+  /**
+   * The agent's half of surviving an orchestrator that vanishes mid-turn. Core
+   * NATS drops a message published with no live subscriber, so the concluding
+   * message is held and re-offered until acked -- that hold is what a
+   * replacement orchestrator re-attaches to and collects.
+   */
+  describe("holding a concluding message until it is acked", () => {
+    it("re-offers the same reply, seq unchanged, until an ack arrives", async () => {
+      const ch = new FakeChannel({ autoAck: false });
+      const done = runAgent(async () => "the answer", {
+        channel: ch,
+        config,
+        replyAckRetryMs: 5,
+        replyAckTimeoutMs: 5_000,
+      });
+
+      // Enough retry intervals to be sure it is re-offering rather than having
+      // published once and moved on.
+      await new Promise((r) => setTimeout(r, 40));
+      const offers = ch.up.filter((m) => m.type === "reply");
+      expect(offers.length).toBeGreaterThan(1);
+      // A re-offer must be the SAME message, not a second reply: the seq is how
+      // the orchestrator recognizes a duplicate.
+      expect(new Set(offers.map((m) => m.seq)).size).toBe(1);
+      expect(offers.every((m) => (m as Extract<AgentUpMessage, { type: "reply" }>).message === "the answer")).toBe(true);
+
+      ch.send({ type: "reply_ack", ackSeq: offers[0]!.seq });
+      await done;
+
+      const after = ch.up.filter((m) => m.type === "reply").length;
+      await new Promise((r) => setTimeout(r, 20));
+      // Acked, so it stopped: no further offers after the run resolved.
+      expect(ch.up.filter((m) => m.type === "reply").length).toBe(after);
+      expect(ch.closed).toBe(true);
+    });
+
+    it("gives up after the ack timeout instead of holding the pod open forever", async () => {
+      const ch = new FakeChannel({ autoAck: false });
+      await runAgent(async () => "the answer", {
+        channel: ch,
+        config,
+        replyAckRetryMs: 5,
+        replyAckTimeoutMs: 20,
+      });
+
+      // Resolved without an ack -- the whole point is that an uncollected answer
+      // costs a logged warning, not a Job that never finishes.
+      expect(ch.up.filter((m) => m.type === "reply").length).toBeGreaterThan(0);
+      expect(ch.closed).toBe(true);
+    });
+
+    it("holds a failed message too", async () => {
+      const ch = new FakeChannel({ autoAck: false });
+      const done = runAgent(
+        async () => {
+          throw new AgentFailure("claude_auth_expired", "credential expired");
+        },
+        { channel: ch, config, replyAckRetryMs: 5, replyAckTimeoutMs: 5_000 },
+      );
+
+      await new Promise((r) => setTimeout(r, 30));
+      const offers = ch.up.filter((m) => m.type === "failed");
+      expect(offers.length).toBeGreaterThan(1);
+      expect(new Set(offers.map((m) => m.seq)).size).toBe(1);
+
+      ch.send({ type: "reply_ack", ackSeq: offers[0]!.seq });
+      await done;
+      expect(ch.closed).toBe(true);
+    });
+
+    it("stops holding a question once its answer arrives, even unacked", async () => {
+      const ch = new FakeChannel({ autoAck: false });
+      const done = runAgent(
+        async (s) => {
+          const answer = await s.ask("Which branch?");
+          return `on ${answer}`;
+        },
+        { channel: ch, config, replyAckRetryMs: 5, replyAckTimeoutMs: 5_000 },
+      );
+
+      await new Promise((r) => setTimeout(r, 20));
+      // The answer proves the question landed; re-offering it after that would
+      // surface a stale question to the next turn.
+      ch.send({ type: "prompt", message: "main" });
+      await new Promise((r) => setTimeout(r, 30));
+      const questionOffers = ch.up.filter(
+        (m) => m.type === "reply" && !(m as Extract<AgentUpMessage, { type: "reply" }>).final,
+      ).length;
+      await new Promise((r) => setTimeout(r, 20));
+      expect(
+        ch.up.filter((m) => m.type === "reply" && !(m as Extract<AgentUpMessage, { type: "reply" }>).final).length,
+      ).toBe(questionOffers);
+
+      // And the final reply is a separate hold with its own seq.
+      const final = ch.up.find((m) => m.type === "reply" && (m as Extract<AgentUpMessage, { type: "reply" }>).final);
+      expect(final).toBeDefined();
+      ch.send({ type: "reply_ack", ackSeq: final!.seq });
+      await done;
+    });
+  });
+});
+
+/**
+ * The hold keeps a finished agent's pod alive until its answer is collected,
+ * which makes it an operational knob, not just an internal detail: an
+ * orchestrator that never acks (an older image deployed against a newer agent)
+ * would otherwise keep every Job Running for the full timeout.
+ */
+describe("reply-ack configuration", () => {
+  it("takes the hold window from config when the caller passes none", async () => {
+    const ch = new FakeChannel({ autoAck: false });
+    await runAgent(async () => "the answer", {
+      channel: ch,
+      config: { ...config, replyAckRetryMs: 5, replyAckTimeoutMs: 20 },
+    });
+
+    expect(ch.up.filter((m) => m.type === "reply").length).toBeGreaterThan(1);
+    expect(ch.closed).toBe(true);
+  });
+
+  it("publishes once and exits when holding is disabled (timeout 0)", async () => {
+    const ch = new FakeChannel({ autoAck: false });
+    await runAgent(async () => "the answer", {
+      channel: ch,
+      config: { ...config, replyAckTimeoutMs: 0 },
+    });
+
+    expect(ch.up.filter((m) => m.type === "reply").length).toBe(1);
     expect(ch.closed).toBe(true);
   });
 });

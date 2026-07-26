@@ -122,9 +122,17 @@ describe("resilience: infrastructure moving under an in-flight agent turn", () =
     await cleanupAgentRunsSince(suiteStartedAt);
   });
 
-  /** Fires a triage webhook and returns the issue number it used. */
-  async function trigger(): Promise<{ issueNumber: number; startedAt: Date }> {
-    const issueNumber = Date.now() % 100000;
+  /**
+   * Fires a triage webhook and returns the issue number it used.
+   *
+   * `onIssue` re-triggers against an issue already used. That matters for
+   * resumability: integration-gateway derives its `session_id` from the issue
+   * (`github:owner/repo#N`), so a second trigger on the SAME issue is the same
+   * conversation to the orchestrator, and therefore the thing that re-attaches
+   * to a run a previous turn was cut off from.
+   */
+  async function trigger(onIssue?: number): Promise<{ issueNumber: number; startedAt: Date }> {
+    const issueNumber = onIssue ?? Date.now() % 100000;
     const startedAt = new Date();
     const status = await withPortForward(
       "agent-controller-integration-gateway",
@@ -296,13 +304,67 @@ describe("resilience: infrastructure moving under an in-flight agent turn", () =
     // Nor may transport loss be relabelled as the agent going quiet.
     expect(comment?.body).not.toMatch(/went silent for/);
 
-    // Deliberately NOT asserted: that the comment carries STUB_REPLY_MARKER.
-    // The invocation record the gateway polls lives in an in-process Map
-    // (server.ts), so a rollout can lose it however cleanly NATS was handled,
-    // and the gateway then relays a failure. That gap is real, called out in
-    // the PR, and closed by durable orchestration -- not by this change.
-    // Asserting the marker would be asserting a fix that does not exist. It is
-    // logged above so a future reader can see which way it actually went.
+    // Deliberately NOT asserted here: that THIS comment carries
+    // STUB_REPLY_MARKER. The invocation record the gateway polls lives in an
+    // in-process Map (server.ts), so the interrupted turn itself still cannot
+    // produce the reply however cleanly NATS was handled. What recovers it is
+    // the NEXT turn re-attaching -- see the resumability spec below, which
+    // asserts exactly that.
     expect(comment).toBeDefined();
+  });
+
+  /**
+   * The other half: a rollout costs the interrupted turn, but not the ANSWER.
+   *
+   * The agent holds its concluding message until someone acks it (the protocol's
+   * `reply_ack`), and the orchestrator wrote a resume anchor onto the
+   * conversation before it started waiting, so a second trigger on the same
+   * issue re-attaches to the SAME run and collects the reply it was holding.
+   *
+   * This is the assertion the spec above deliberately withholds. It only means
+   * anything end-to-end: the hold lives in the agent's pod, the anchor in Redis,
+   * the re-attach in the orchestrator, and the session identity in the gateway's
+   * issue-derived `session_id`.
+   */
+  it("recovers the reply on a follow-up turn after a rollout, without launching a second run", async () => {
+    await paceStubAgent({ narrateForMs: 20_000, narrateEveryMs: 2000 });
+
+    const { issueNumber, startedAt } = await trigger();
+    const created = await runCreated(startedAt);
+    console.log(`  [resilience] rolling the orchestrator while ${created.name} is in flight`);
+    await rollOrchestrator();
+
+    // Second trigger on the SAME issue -> same session_id -> the orchestrator
+    // finds the anchor and re-attaches instead of starting over.
+    await trigger(issueNumber);
+
+    const comment = await waitFor(
+      `the recovered reply on issue #${issueNumber}`,
+      async () => {
+        const posted = (await fakeGithubRequests()).filter(
+          (r) =>
+            r.method === "POST" &&
+            r.path === `/repos/${OWNER}/${REPO}/issues/${issueNumber}/comments` &&
+            typeof r.body === "string" &&
+            r.body.includes(STUB_REPLY_MARKER),
+        );
+        return posted.length > 0 ? posted[posted.length - 1] : undefined;
+      },
+      { timeoutMs: GATEWAY_POLL_BUDGET_MS },
+    );
+    expect(comment).toBeDefined();
+
+    // The point of re-attaching rather than re-delegating: the original run
+    // produced the answer, so a second AgentRun would mean the work was done
+    // twice (and on a real coding agent, a second branch and a second PR).
+    const runs = await agentRunsSince(startedAt);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.name).toBe(created.name);
+
+    // Collecting the reply acks it, which releases the agent's hold and lets the
+    // Job finish -- so the run reaching terminal is itself evidence the ack
+    // arrived rather than the hold having simply timed out.
+    const run = await runTerminal(startedAt);
+    expect(run.phase).toBe("Succeeded");
   });
 });
