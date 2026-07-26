@@ -51,7 +51,7 @@ RUN apt-get update \
      esac \
   && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_${GH_ARCH}.tar.gz" -o /tmp/gh.tar.gz \
   && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_checksums.txt" -o /tmp/gh_checksums.txt \
-  && (cd /tmp && sha256sum -c <(grep "gh_${GH_CLI_VERSION}_linux_${GH_ARCH}.tar.gz" gh_checksums.txt)) \
+  && (cd /tmp && grep "gh_${GH_CLI_VERSION}_linux_${GH_ARCH}.tar.gz" gh_checksums.txt | sha256sum -c -) \
   && tar -xzf /tmp/gh.tar.gz -C /tmp \
   && cp "/tmp/gh_${GH_CLI_VERSION}_linux_${GH_ARCH}/bin/gh" /usr/local/bin/gh \
   && chmod a+rx /usr/local/bin/gh \
