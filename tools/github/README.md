@@ -22,7 +22,7 @@ checks the calling user's own linked GitHub identity via
 `apps/integration-gateway`'s identity-link API (the same OAuth Device Flow
 broker `opencode-swe-agent` uses, ADR 0022) and injects the resulting token
 as a per-invocation `GITHUB_TOKEN` through `ToolRunSpec.secretEnv` (ADR
-0025) -- never embedding it in the `ToolRun` CR itself, and never sharing
+0032) -- never embedding it in the `ToolRun` CR itself, and never sharing
 one credential across every caller. A caller who hasn't linked their GitHub
 account yet gets a clear error asking them to link it via a direct
 conversation with an identity-linking-capable agent first (v1 scope cut:

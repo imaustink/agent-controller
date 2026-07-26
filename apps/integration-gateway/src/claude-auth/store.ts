@@ -1,47 +1,110 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { Redis } from "ioredis";
 import { decodeEncryptionKey } from "../identity-link/store.js";
 
 export { decodeEncryptionKey };
 
-/** A linked Claude Code OAuth credential for one subject (the chat user who ran through `claude setup-token`). */
+/** Which Claude Code credential flow produced a record -- see `ClaudeTokenRecord`'s doc. */
+export type ClaudeAuthKind = "setup-token" | "login";
+
+/**
+ * A linked Claude Code credential for one subject. Exactly one of `token`
+ * (the `claude setup-token` OAuth token) / `credentialsJson` (the full
+ * `claude auth login --claudeai` credentials-file contents, needed for
+ * Remote Control -- see `pty-login.ts`) is populated, discriminated by
+ * `kind`. Both flows are kept in ONE record type (rather than two, or a
+ * union) because a subject can hold both independently at once -- they're
+ * stored under distinct Redis keys/channels (see `RedisClaudeTokenStore`'s
+ * `keyFor`/`channelFor`) -- and every caller already has to branch on `kind`
+ * to know which field to read, so a union would just move that branch to the
+ * type system for no benefit.
+ */
 export interface ClaudeTokenRecord {
-  token: string;
+  kind: ClaudeAuthKind;
+  token?: string;
+  credentialsJson?: string;
   createdAt: string;
 }
 
 /**
- * Durable, subject-keyed store for per-user Claude Code OAuth tokens
+ * Durable, subject-keyed store for per-user Claude Code credentials
  * (docs/adr/0027) -- a sibling to `identity-link/store.ts`'s
  * `IdentityLinkStore`, kept separate rather than generalized into one
  * interface: unlike a GitHub credential (one provider, `expiresAt`/
- * `refreshToken` fields), this only ever has one shape and one "provider" --
- * the PTY `setup-token` flow that produces it is different enough from
+ * `refreshToken` fields), this only ever has these two shapes and one
+ * "provider" -- the PTY flows that produce them are different enough from
  * GitHub's HTTP device flow that sharing an abstraction here would cost more
  * than it saves.
+ *
+ * `kind` defaults to `"setup-token"` on every method below so existing
+ * callers written before the `login` flow existed are unaffected.
  */
 export interface ClaudeTokenStore {
-  get(subject: string): Promise<ClaudeTokenRecord | undefined>;
+  get(subject: string, kind?: ClaudeAuthKind): Promise<ClaudeTokenRecord | undefined>;
   set(subject: string, record: ClaudeTokenRecord): Promise<void>;
-  /** Resolves as soon as a token lands for `subject` (via pub/sub), or `undefined` once `timeoutMs` elapses. */
-  waitForCompletion(subject: string, timeoutMs: number): Promise<ClaudeTokenRecord | undefined>;
+  /** Resolves as soon as a record lands for `subject`/`kind` (via pub/sub), or `undefined` once `timeoutMs` elapses. */
+  waitForCompletion(subject: string, timeoutMs: number, kind?: ClaudeAuthKind): Promise<ClaudeTokenRecord | undefined>;
   /**
-   * Removes a subject's stored token -- called when agent-orchestrator sees
-   * claude-code-swe-agent report an expired/invalid credential mid-run
-   * (docs/adr/0027's re-auth path), so the NEXT delegation attempt's
-   * `get`/pre-flight check finds nothing linked and starts a fresh
-   * `setup-token` flow automatically, rather than repeating the same bad
-   * token forever.
+   * Removes a subject's stored record for `kind` -- called when
+   * agent-orchestrator sees claude-code-swe-agent report an expired/invalid
+   * credential mid-run (docs/adr/0027's re-auth path), so the NEXT
+   * delegation attempt's `get`/pre-flight check finds nothing linked and
+   * starts a fresh flow automatically, rather than repeating the same bad
+   * credential forever.
    */
-  delete(subject: string): Promise<void>;
+  delete(subject: string, kind?: ClaudeAuthKind): Promise<void>;
+  /**
+   * Moves an existing record from one subject to another, so a credential the
+   * human already authorized keeps working under a new key instead of costing
+   * them a fresh flow (docs/adr/0031).
+   *
+   * Exists because agent-orchestrator changed WHICH subject it keys these
+   * records by -- from the entry point's own subject to the caller's principal
+   * (ADR 0029/0030 §6) -- and a re-key without a move means every existing user
+   * re-authorizes for no reason they can perceive. The alternative, leaving the
+   * old record in place as a copy, is worse than either: the write-back that
+   * keeps a `login` credential alive only ever writes the NEW key, so the copy
+   * silently rots and whichever flow still reads it fails with "Login expired".
+   *
+   * Deliberately non-destructive at the destination: an existing record there
+   * is never clobbered (`"occupied"`), because it is by definition at least as
+   * current as the one being moved.
+   *
+   * Authorization is the CALLER's responsibility, and it is not nothing: this
+   * moves a credential between identities, so the caller must have established
+   * that both subjects are the same human. See the `rekey` route's doc.
+   */
+  rekey(fromSubject: string, toSubject: string, kind?: ClaudeAuthKind): Promise<"moved" | "not-found" | "occupied">;
+  /**
+   * Mints a single-purpose, expiring bearer token that authorizes ONE thing:
+   * replacing `subject`'s stored `login` record with a refreshed
+   * `credentialsJson` (`POST /claude-auth/api/refresh`). Handed to an
+   * individual AgentRun so the run's own Claude Code CLI can persist the
+   * credentials it refreshed in-pod -- see that route's doc for why that
+   * write-back is what keeps a `claude-remote` link from dying the first time
+   * the CLI rotates its refresh token.
+   *
+   * Deliberately NOT the gateway's own `bearerToken`: that one can read and
+   * mint credentials for EVERY subject, and a per-run Job pod is the last
+   * place it belongs. A grant token is opaque and random (not a signed claim),
+   * so it can be looked up, expired by Redis TTL, and revoked simply by
+   * deleting it -- no key material has to be shared with agent-orchestrator or
+   * baked into a run's environment.
+   */
+  createWritebackToken(subject: string, ttlSeconds: number): Promise<string>;
+  /** Resolves a token minted by {@link createWritebackToken} back to its subject, or `undefined` if it's unknown/expired. */
+  resolveWritebackToken(token: string): Promise<string | undefined>;
 }
 
 const ALGORITHM = "aes-256-gcm";
 const GCM_IV_BYTES = 12;
 
 interface StoredRecord {
+  kind: ClaudeAuthKind;
   createdAt: string;
-  token: string;
+  /** Encrypted -- packed `iv:authTag:ciphertext`, see `encryptField`/`decryptField`. Whichever of `token`/`credentialsJson` `kind` implies is present. */
+  token?: string;
+  credentialsJson?: string;
 }
 
 function encryptField(key: Buffer, plaintext: string): string {
@@ -68,22 +131,34 @@ function decryptField(key: Buffer, packed: string): string {
  * Redis-backed {@link ClaudeTokenStore}, structurally identical to
  * `identity-link/store.ts`'s `RedisIdentityLinkStore` (AES-256-GCM field
  * encryption, no TTL -- a link persists until re-linked, same pub/sub
- * `waitForCompletion`) but for the single `token` field this credential has.
- * Reuses the same `IDENTITY_LINK_ENCRYPTION_KEY` -- no new encryption-key
- * secret to provision, kept in its own Redis key namespace
- * (`claudeAuth:...`) so the two stores never collide.
+ * `waitForCompletion`) but for the `token`/`credentialsJson` fields this
+ * credential has. Reuses the same `IDENTITY_LINK_ENCRYPTION_KEY` -- no new
+ * encryption-key secret to provision.
+ *
+ * `setup-token` and `login` records live under DISTINCT Redis key/channel
+ * prefixes (`claudeAuth:...` vs `claudeAuthLogin:...`, see `keyFor`) so one
+ * subject can hold a live record of each kind independently, with neither
+ * `set`/`delete` ever clobbering the other.
  */
 export class RedisClaudeTokenStore implements ClaudeTokenStore {
   private readonly redis: Redis;
   private readonly key: Buffer;
   private readonly prefix: string;
+  private readonly loginPrefix: string;
+  private readonly writebackPrefix: string;
 
-  constructor(url: string, encryptionKey: Buffer, opts: { keyPrefix?: string } = {}) {
+  constructor(
+    url: string,
+    encryptionKey: Buffer,
+    opts: { keyPrefix?: string; loginKeyPrefix?: string; writebackKeyPrefix?: string } = {},
+  ) {
     if (encryptionKey.length !== 32) {
       throw new Error("Claude-auth encryption key must be exactly 32 bytes");
     }
     this.key = encryptionKey;
     this.prefix = opts.keyPrefix ?? "claudeAuth:";
+    this.loginPrefix = opts.loginKeyPrefix ?? "claudeAuthLogin:";
+    this.writebackPrefix = opts.writebackKeyPrefix ?? "claudeAuthWriteback:";
     this.redis = new Redis(url, {
       enableOfflineQueue: false,
       maxRetriesPerRequest: 0,
@@ -102,28 +177,92 @@ export class RedisClaudeTokenStore implements ClaudeTokenStore {
     await this.redis.ping();
   }
 
-  private keyFor(subject: string): string {
-    return `${this.prefix}${subject}`;
+  private prefixFor(kind: ClaudeAuthKind): string {
+    return kind === "login" ? this.loginPrefix : this.prefix;
   }
 
-  private channelFor(subject: string): string {
-    return `${this.prefix}complete:${subject}`;
+  private keyFor(subject: string, kind: ClaudeAuthKind): string {
+    return `${this.prefixFor(kind)}${subject}`;
   }
 
-  async delete(subject: string): Promise<void> {
+  private channelFor(subject: string, kind: ClaudeAuthKind): string {
+    return `${this.prefixFor(kind)}complete:${subject}`;
+  }
+
+  async delete(subject: string, kind: ClaudeAuthKind = "setup-token"): Promise<void> {
     try {
-      await this.redis.del(this.keyFor(subject));
+      await this.redis.del(this.keyFor(subject, kind));
     } catch (err) {
       console.error("RedisClaudeTokenStore.delete failed (ignored):", err instanceof Error ? err.message : String(err));
     }
   }
 
-  async get(subject: string): Promise<ClaudeTokenRecord | undefined> {
+  async rekey(
+    fromSubject: string,
+    toSubject: string,
+    kind: ClaudeAuthKind = "setup-token",
+  ): Promise<"moved" | "not-found" | "occupied"> {
+    if (fromSubject === toSubject) return "occupied";
+    // Read through `get`/`set` rather than RENAME-ing the Redis key: the record
+    // is field-encrypted, and a decrypt/re-encrypt round trip is the same work
+    // either way -- while `set` also publishes on the destination's completion
+    // channel, so a turn already blocked in `waitForCompletion` for the new
+    // subject resolves immediately instead of waiting out its timeout.
+    const record = await this.get(fromSubject, kind);
+    if (!record) return "not-found";
+    if (await this.get(toSubject, kind)) return "occupied";
+    await this.set(toSubject, record);
+    // Read back before deleting the source. `set` swallows its own Redis errors
+    // by design, so an unverified delete here could drop the human's only
+    // credential on a transient write failure -- the one outcome strictly worse
+    // than the extra login this whole method exists to avoid.
+    const landed = await this.get(toSubject, kind);
+    if (!landed) return "not-found";
+    await this.delete(fromSubject, kind);
+    return "moved";
+  }
+
+  /**
+   * Only the token's SHA-256 is stored, so the value in Redis can't be
+   * replayed as a bearer token by anything that can read the keyspace -- the
+   * same reason a server stores password hashes rather than passwords. The
+   * plaintext exists only in the mint response and the run's environment.
+   */
+  private writebackKeyFor(token: string): string {
+    return `${this.writebackPrefix}${createHash("sha256").update(token).digest("hex")}`;
+  }
+
+  async createWritebackToken(subject: string, ttlSeconds: number): Promise<string> {
+    const token = randomBytes(32).toString("base64url");
+    // Fails loudly (unlike `set`/`delete`, which swallow): the caller injects
+    // the returned token into an AgentRun, and a token Redis never accepted
+    // would look valid to the run and 401 on every write-back attempt.
+    await this.redis.set(this.writebackKeyFor(token), subject, "EX", Math.max(1, Math.floor(ttlSeconds)));
+    return token;
+  }
+
+  async resolveWritebackToken(token: string): Promise<string | undefined> {
+    if (!token) return undefined;
     try {
-      const raw = await this.redis.get(this.keyFor(subject));
+      return (await this.redis.get(this.writebackKeyFor(token))) ?? undefined;
+    } catch (err) {
+      console.error(
+        "RedisClaudeTokenStore.resolveWritebackToken failed (treating as invalid):",
+        err instanceof Error ? err.message : String(err),
+      );
+      return undefined;
+    }
+  }
+
+  async get(subject: string, kind: ClaudeAuthKind = "setup-token"): Promise<ClaudeTokenRecord | undefined> {
+    try {
+      const raw = await this.redis.get(this.keyFor(subject, kind));
       if (!raw) return undefined;
       const stored = JSON.parse(raw) as StoredRecord;
-      return { createdAt: stored.createdAt, token: decryptField(this.key, stored.token) };
+      const record: ClaudeTokenRecord = { kind: stored.kind, createdAt: stored.createdAt };
+      if (stored.token !== undefined) record.token = decryptField(this.key, stored.token);
+      if (stored.credentialsJson !== undefined) record.credentialsJson = decryptField(this.key, stored.credentialsJson);
+      return record;
     } catch (err) {
       console.error("RedisClaudeTokenStore.get failed (treating as miss):", err instanceof Error ? err.message : String(err));
       return undefined;
@@ -132,30 +271,32 @@ export class RedisClaudeTokenStore implements ClaudeTokenStore {
 
   async set(subject: string, record: ClaudeTokenRecord): Promise<void> {
     try {
-      const stored: StoredRecord = { createdAt: record.createdAt, token: encryptField(this.key, record.token) };
-      await this.redis.set(this.keyFor(subject), JSON.stringify(stored));
-      await this.redis.publish(this.channelFor(subject), "1");
+      const stored: StoredRecord = { kind: record.kind, createdAt: record.createdAt };
+      if (record.token !== undefined) stored.token = encryptField(this.key, record.token);
+      if (record.credentialsJson !== undefined) stored.credentialsJson = encryptField(this.key, record.credentialsJson);
+      await this.redis.set(this.keyFor(subject, record.kind), JSON.stringify(stored));
+      await this.redis.publish(this.channelFor(subject, record.kind), "1");
     } catch (err) {
       console.error("RedisClaudeTokenStore.set failed (ignored):", err instanceof Error ? err.message : String(err));
     }
   }
 
-  async waitForCompletion(subject: string, timeoutMs: number): Promise<ClaudeTokenRecord | undefined> {
-    const existing = await this.get(subject);
+  async waitForCompletion(subject: string, timeoutMs: number, kind: ClaudeAuthKind = "setup-token"): Promise<ClaudeTokenRecord | undefined> {
+    const existing = await this.get(subject, kind);
     if (existing) return existing;
 
     const subscriber = this.redis.duplicate();
     try {
       await subscriber.connect();
-      await subscriber.subscribe(this.channelFor(subject));
-      const afterSubscribe = await this.get(subject);
+      await subscriber.subscribe(this.channelFor(subject, kind));
+      const afterSubscribe = await this.get(subject, kind);
       if (afterSubscribe) return afterSubscribe;
 
       return await new Promise<ClaudeTokenRecord | undefined>((resolve) => {
         const timer = setTimeout(() => resolve(undefined), timeoutMs);
         subscriber.on("message", () => {
           clearTimeout(timer);
-          this.get(subject).then(resolve).catch(() => resolve(undefined));
+          this.get(subject, kind).then(resolve).catch(() => resolve(undefined));
         });
       });
     } catch (err) {

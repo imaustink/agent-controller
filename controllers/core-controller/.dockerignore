@@ -1,11 +1,47 @@
 # More info: https://docs.docker.com/engine/reference/builder/#dockerignore-file
-# Ignore everything by default and re-include only needed files
-**
+#
+# A DENY-LIST, deliberately -- NOT the kubebuilder scaffold's `**` +
+# `!**/*.go` allow-list idiom it replaces, which silently shipped an
+# eight-day-old controller to the e2e cluster.
+#
+# `**` excludes the context root itself, so `COPY . .` in the Dockerfile copies
+# a path this file excludes (Docker warns: "CopyIgnoredFile"). BuildKit
+# resolves the negations anyway and the image builds correctly, but Skaffold's
+# own dependency resolver -- which it uses to decide whether an artifact needs
+# rebuilding at all -- does not: it resolved THREE files for this artifact
+# where the sibling Node artifacts resolve dozens. Every .go file was invisible
+# to it, so its artifact cache never invalidated and it re-tagged one July 17
+# image for every commit that followed.
+#
+# The visible consequence was a rendered AgentRun Job carrying the Agent
+# template's static secretEnv but not the per-run secretEnv the orchestrator
+# had injected -- because the running binary predated per-run secretEnv support
+# (327b403) entirely. It read as a controller defect; it was a stale image.
+#
+# Verify after editing this file:
+#   skaffold diagnose -p e2e | grep -A3 'Docker artifact: core-controller'
+# The dependency count must reflect the real source tree. A count in the single
+# digits means the build has gone stale again.
 
-# Re-include Go source files (but not *_test.go)
-!**/*.go
+# Test sources and the envtest suite: not inputs to the manager binary.
 **/*_test.go
+/test
 
-# Re-include Go module files
-!go.mod
-!go.sum
+# Build/dev tooling and generated output, none of it an input to `go build`.
+/bin
+/dist
+/hack
+/config
+/.devcontainer
+/.github
+/.golangci.yml
+/.custom-gcl.yml
+/Makefile
+/PROJECT
+/Dockerfile
+*.md
+
+# Local artifacts that must never enter an image.
+*.kubeconfig
+*.test
+*.out

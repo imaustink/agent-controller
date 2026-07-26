@@ -45,13 +45,16 @@ type AgentReconciler struct {
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agents/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agents/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=skills,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=tools,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch
 
 // Reconcile validates an Agent's launch prerequisites and sets a Ready
 // condition: the referenced ServiceAccount must exist in the same namespace
-// (mirrors ToolReconciler) and every spec.skillRefs entry must resolve to an
-// existing Skill CR (mirrors SkillReconciler's toolRefs check). Like both,
-// this is a static-config sanity check — the agent loop itself re-validates
+// (mirrors ToolReconciler), every spec.skillRefs entry must resolve to an
+// existing Skill CR, and every spec.toolRefs entry must resolve to an
+// existing Tool CR (mirrors SkillReconciler's toolRefs/agentRefs checks,
+// docs/adr/0028). Like all three, this is a static-config sanity check — the
+// agent loop itself (and the orchestrator's tool_call handler) re-validates
 // what it may call at run time.
 func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -68,7 +71,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		Type:               agentConditionReady,
 		Status:             metav1.ConditionTrue,
 		Reason:             "Ready",
-		Message:            "serviceAccount found and all skillRefs resolved",
+		Message:            "serviceAccount found and all skillRefs/toolRefs resolved",
 		ObservedGeneration: agent.Generation,
 	}
 
@@ -101,6 +104,26 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			condition.Reason = "SkillRefsMissing"
 			condition.Message = fmt.Sprintf("skillRefs not found: %v", missing)
 			log.Info("agent references missing skills", "agent", agent.Name, "missing", missing)
+		}
+	}
+
+	if condition.Status == metav1.ConditionTrue {
+		var missing []string
+		for _, ref := range agent.Spec.ToolRefs {
+			var t toolv1alpha1.Tool
+			key := types.NamespacedName{Namespace: agent.Namespace, Name: ref}
+			if err := r.Get(ctx, key, &t); err != nil {
+				if !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, err
+				}
+				missing = append(missing, ref)
+			}
+		}
+		if len(missing) > 0 {
+			condition.Status = metav1.ConditionFalse
+			condition.Reason = "ToolRefsMissing"
+			condition.Message = fmt.Sprintf("toolRefs not found: %v", missing)
+			log.Info("agent references missing tools", "agent", agent.Name, "missing", missing)
 		}
 	}
 

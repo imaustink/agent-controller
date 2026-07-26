@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "./rbac/sender-assertion.js";
 import { InvokeServer, type AgentGraphLike } from "./server.js";
 import type { AgentState } from "./agent/graph.js";
 import type { AgentOrchestratorChannel } from "./agents/nats-agent-channel.js";
@@ -49,7 +50,12 @@ describe("InvokeServer", () => {
     expect(postRes.status).toBe(202);
     const { id, status } = (await postRes.json()) as { id: string; status: string };
     expect(status).toBe("pending");
-    expect(graph.invoke).toHaveBeenCalledWith({ request: "scrape https://example.com/recipe", authToken: "tok-1" });
+    expect(graph.invoke).toHaveBeenCalledWith({
+      request: "scrape https://example.com/recipe",
+      authToken: "tok-1",
+      remoteControlUrlListener: expect.any(Function),
+      reportIdentityLinkPending: expect.any(Function),
+    });
 
     const pendingRes = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
     expect(pendingRes.status).toBe(200);
@@ -63,6 +69,70 @@ describe("InvokeServer", () => {
       status: "succeeded",
       result: { title: "Pancakes" },
     });
+
+    await server.close();
+  });
+
+  it("surfaces remoteControlUrl on GET /invoke/:id once a 'remote-control-url' progress event lands, and carries it through to the terminal response", async () => {
+    let resolveGraph!: (state: AgentState) => void;
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockImplementation((input: { remoteControlUrlListener?: (url: string) => void }) => {
+        // Simulate the delegate node forwarding a remote-control-url event --
+        // this fire-and-forget /invoke path never sets `progressListener`
+        // (see server.ts's doc on why), only `remoteControlUrlListener`.
+        input.remoteControlUrlListener?.("https://claude.ai/code/session_abc123");
+        return new Promise<AgentState>((resolve) => (resolveGraph = resolve));
+      }),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const postRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "triage this", event: { source: "github" } }),
+    });
+    const { id } = (await postRes.json()) as { id: string };
+
+    const pendingRes = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
+    expect((await pendingRes.json()) as { remoteControlUrl?: string }).toMatchObject({
+      status: "pending",
+      remoteControlUrl: "https://claude.ai/code/session_abc123",
+    });
+
+    resolveGraph({ request: "x", authToken: "tok-1", skillCandidates: [], result: "opened PR #7" } as AgentState);
+    await new Promise((r) => setTimeout(r, 10));
+
+    const doneRes = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
+    expect((await doneRes.json()) as { status: string; remoteControlUrl?: string }).toMatchObject({
+      status: "succeeded",
+      remoteControlUrl: "https://claude.ai/code/session_abc123",
+    });
+
+    await server.close();
+  });
+
+  it("omits remoteControlUrl entirely when no 'remote-control-url' progress event ever arrives", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "tok-1", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const postRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "open a PR" }),
+    });
+    const { id } = (await postRes.json()) as { id: string };
+    await new Promise((r) => setTimeout(r, 10));
+
+    const doneRes = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
+    const body = (await doneRes.json()) as Record<string, unknown>;
+    expect(body.status).toBe("succeeded");
+    expect(Object.keys(body)).not.toContain("remoteControlUrl");
 
     await server.close();
   });
@@ -81,7 +151,12 @@ describe("InvokeServer", () => {
       body: JSON.stringify({ request: "do a thing" }),
     });
     const { id } = (await postRes.json()) as { id: string };
-    expect(graph.invoke).toHaveBeenCalledWith({ request: "do a thing", authToken: "" });
+    expect(graph.invoke).toHaveBeenCalledWith({
+      request: "do a thing",
+      authToken: "",
+      remoteControlUrlListener: expect.any(Function),
+      reportIdentityLinkPending: expect.any(Function),
+    });
 
     await new Promise((r) => setTimeout(r, 10));
     const res = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
@@ -275,6 +350,8 @@ describe("InvokeServer session-scoped pending identity link (GitHub OAuth Device
     expect(graph.invoke).toHaveBeenNthCalledWith(2, {
       request: "any message",
       authToken: "tok-1",
+      remoteControlUrlListener: expect.any(Function),
+      reportIdentityLinkPending: expect.any(Function),
       sessionId: "session-1",
       activeSkillId: undefined,
       activeAgentId: undefined,
@@ -904,6 +981,55 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     await server.close();
   });
 
+  it("streams a Remote Control session URL as inline chat content, never a truncated status label", async () => {
+    const rcUrl = "https://claude.ai/code/session_abc123";
+    const graph: AgentGraphLike = {
+      invoke: vi.fn(),
+      // The delegate node forwards the agent's `remote-control-url` progress
+      // event through `progressListener` (agent/graph.ts). The chat facade
+      // must render it as real, clickable content -- routing it through a
+      // status label (truncated to 120 chars) would mangle the URL.
+      stream: vi.fn().mockImplementation((input: { progressListener?: (stage: string, message: string | undefined) => void }) => {
+        input.progressListener?.("remote-control-url", rcUrl);
+        return toStream([{ planAction: { identity, result: "Opened PR #42." } }]);
+      }),
+    };
+    const server = new InvokeServer(graph, sessionStore());
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer tok-1",
+        "x-openwebui-chat-id": "chat-rc",
+      },
+      body: JSON.stringify({ stream: true, messages: [{ role: "user", content: "fix the bug" }] }),
+    });
+
+    const chunks = (await readSse(res)) as {
+      event?: { type?: string; data?: { description?: string } };
+      choices?: { delta: { content?: string } }[];
+    }[];
+    const allContent = chunks
+      .filter((c) => c.choices)
+      .map((c) => c.choices![0]?.delta.content ?? "")
+      .join("");
+    const statusDescriptions = chunks
+      .filter((c) => c.event?.type === "status")
+      .map((c) => c.event?.data?.description ?? "");
+
+    // The full URL is delivered as content with a "watch live" affordance...
+    expect(allContent).toContain(rcUrl);
+    expect(allContent).toContain("Watch live or take over");
+    // ...the actual turn result still follows...
+    expect(allContent).toContain("Opened PR #42.");
+    // ...and the URL never leaks into a (truncated) status label.
+    expect(statusDescriptions.every((d) => !d.includes("claude.ai/code"))).toBe(true);
+
+    await server.close();
+  });
+
   it("accepts an optional session_id on POST /invoke for non-chat callers", async () => {
     const graph: AgentGraphLike = {
       invoke: vi.fn().mockResolvedValue({
@@ -932,6 +1058,8 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     expect(graph.invoke).toHaveBeenNthCalledWith(2, {
       request: "extract https://example.com",
       authToken: "tok-1",
+      remoteControlUrlListener: expect.any(Function),
+      reportIdentityLinkPending: expect.any(Function),
       sessionId: "cli-7",
       activeSkillId: "recipe-skill",
       sessionSubject: "open-webui",
@@ -958,7 +1086,9 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     expect(graph.invoke).toHaveBeenCalledWith({
       request: "open a PR",
       authToken: "tok-1",
+      remoteControlUrlListener: expect.any(Function),
       identityLinkFlow: "device",
+      reportIdentityLinkPending: expect.any(Function),
     });
 
     await server.close();
@@ -979,7 +1109,12 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     });
     expect(omittedRes.status).toBe(202);
     await new Promise((r) => setTimeout(r, 10));
-    expect(graph.invoke).toHaveBeenLastCalledWith({ request: "open a PR", authToken: "tok-1" });
+    expect(graph.invoke).toHaveBeenLastCalledWith({
+      request: "open a PR",
+      authToken: "tok-1",
+      remoteControlUrlListener: expect.any(Function),
+      reportIdentityLinkPending: expect.any(Function),
+    });
 
     const invalidRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
       method: "POST",
@@ -988,7 +1123,12 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     });
     expect(invalidRes.status).toBe(202);
     await new Promise((r) => setTimeout(r, 10));
-    expect(graph.invoke).toHaveBeenLastCalledWith({ request: "open a PR", authToken: "tok-1" });
+    expect(graph.invoke).toHaveBeenLastCalledWith({
+      request: "open a PR",
+      authToken: "tok-1",
+      remoteControlUrlListener: expect.any(Function),
+      reportIdentityLinkPending: expect.any(Function),
+    });
 
     await server.close();
   });
@@ -1133,6 +1273,186 @@ describe("InvokeServer live-session tunnel (ADR 0026)", () => {
     expect(body).toContain('data: {"type":"message.part.updated","part":{"text":"hi"}}');
     expect(body).toContain("event: session_ended");
 
+    await server.close();
+  });
+});
+
+describe("InvokeServer canonical credential subject plumbing", () => {
+  it("threads event.senderLogin from POST /invoke into the graph input", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "tok-1", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({
+        request: "triage this issue",
+        event: { source: "github", event: "issues", action: "labeled", senderLogin: "imaustink" },
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // No IntegrationRoute registry is configured on this server, and the
+    // login must STILL come through -- cross-flow credential sharing can't
+    // be made to depend on routing config.
+    expect(graph.invoke).toHaveBeenCalledWith(expect.objectContaining({ senderLogin: "imaustink" }));
+
+    await server.close();
+  });
+
+  it("reports the pending link's OWN subject on GET /invoke/:id, not the raw identity subject", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({
+        request: "x",
+        authToken: "tok-1",
+        skillCandidates: [],
+        identity: { subject: "service-subject", roles: ["reader"] },
+        pendingIdentityLink: {
+          agentId: "claude-code-swe",
+          provider: "claude-remote",
+          flow: "page",
+          expiresAt: Date.now() + 600_000,
+          subject: "github:imaustink",
+        },
+        identityLinkPending: true,
+        result: "please link your Claude account",
+      } as AgentState),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const postRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "triage this issue" }),
+    });
+    const { id } = (await postRes.json()) as { id: string };
+    await new Promise((r) => setTimeout(r, 10));
+
+    const done = (await (await fetch(`http://127.0.0.1:${port}/invoke/${id}`)).json()) as {
+      identityLink?: { provider: string; subject: string };
+    };
+    // integration-gateway's waitAndResume blocks on exactly this subject. If
+    // it were recomputed from identity.subject it would wait on a record the
+    // link never writes -- the PR #144 re-auth loop.
+    expect(done.identityLink).toEqual({ provider: "claude-remote", subject: "github:imaustink" });
+
+    await server.close();
+  });
+
+  it("falls back to the identity subject for a link parked before the subject field existed", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({
+        request: "x",
+        authToken: "tok-1",
+        skillCandidates: [],
+        identity: { subject: "alice", roles: ["reader"] },
+        pendingIdentityLink: {
+          agentId: "opencode-swe",
+          provider: "github",
+          flow: "authcode",
+          expiresAt: Date.now() + 600_000,
+        },
+        identityLinkPending: true,
+        result: "please link your GitHub account",
+      } as AgentState),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const postRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "open a PR" }),
+    });
+    const { id } = (await postRes.json()) as { id: string };
+    await new Promise((r) => setTimeout(r, 10));
+
+    const done = (await (await fetch(`http://127.0.0.1:${port}/invoke/${id}`)).json()) as {
+      identityLink?: { provider: string; subject: string };
+    };
+    expect(done.identityLink).toEqual({ provider: "github", subject: "alice" });
+
+    await server.close();
+  });
+});
+
+describe("InvokeServer signed sender assertion (docs/adr/0030 §6)", () => {
+  const SECRET = "assertion-secret";
+
+  function serverWithAssertions(graph: AgentGraphLike) {
+    // Positional order: graph, sessionStore, taskCompleter,
+    // integrationRouteRegistry, agentChannel, senderAssertionSecret.
+    return new InvokeServer(graph, undefined, undefined, undefined, undefined, SECRET);
+  }
+
+  function graphSpy(): AgentGraphLike {
+    return {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "t", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+  }
+
+  it("accepts a login only from a verified assertion, ignoring the unsigned body field", async () => {
+    const graph = graphSpy();
+    const server = serverWithAssertions(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer tok-1",
+        [SENDER_ASSERTION_HEADER]: mintSenderAssertion(SECRET, "imaustink"),
+      },
+      // A DIFFERENT login in the body: with a secret configured this must be
+      // ignored outright, not merged or preferred.
+      body: JSON.stringify({ request: "triage", event: { source: "github", senderLogin: "victim" } }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(graph.invoke).toHaveBeenCalledWith(expect.objectContaining({ senderLogin: "imaustink" }));
+    await server.close();
+  });
+
+  it("drops an unsigned senderLogin entirely when a secret is configured", async () => {
+    const graph = graphSpy();
+    const server = serverWithAssertions(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "triage", event: { source: "github", senderLogin: "victim" } }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // No principal rather than the WRONG principal: holding the gateway's
+    // token must not be enough to be handed another person's credentials.
+    const arg = (graph.invoke as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { senderLogin?: string };
+    expect(arg.senderLogin).toBeUndefined();
+    await server.close();
+  });
+
+  it("still trusts the body field when no secret is configured (upgrade compatibility)", async () => {
+    const graph = graphSpy();
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "triage", event: { source: "github", senderLogin: "imaustink" } }),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(graph.invoke).toHaveBeenCalledWith(expect.objectContaining({ senderLogin: "imaustink" }));
     await server.close();
   });
 });

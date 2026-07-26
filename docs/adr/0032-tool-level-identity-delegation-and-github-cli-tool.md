@@ -1,4 +1,4 @@
-# 0028. Extend per-user GitHub identity delegation to container Tools, and add a `github` CLI Tool
+# 0032. Extend per-user GitHub identity delegation to container Tools, and add a `github` CLI Tool
 
 Date: 2026-07-23
 

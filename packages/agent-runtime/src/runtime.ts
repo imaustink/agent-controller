@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AgentDownMessage, AgentUpMessage } from "@controller-agent/messaging";
 import { AgentConfigError, loadConfig, type AgentRuntimeConfig } from "./config.js";
 import { NatsChannel, type AgentChannel } from "./channel.js";
@@ -28,6 +29,44 @@ export interface AgentSession {
    * while waiting.
    */
   ask(question: string): Promise<string>;
+  /**
+   * Calls a `Tool` CR named in this Agent's own `spec.toolRefs` (docs/adr/0028)
+   * and resolves with its raw result. On the wire this publishes a `tool_call`
+   * and awaits the correlated `tool_result` — the orchestrator re-validates
+   * `name` against the launching Agent's `toolRefs` and dispatches it exactly
+   * the way a Skill's tool call already is. Throws {@link ToolCallError} if
+   * the tool call fails (not declared, not found, or the tool itself failed);
+   * rejects with the same cancellation error as {@link ask} if the run is
+   * cancelled while a call is outstanding. More than one call may be
+   * outstanding at once (unlike `ask`, which allows only one pending
+   * question).
+   */
+  callTool(name: string, input: string): Promise<unknown>;
+}
+
+/** Thrown by {@link AgentSession.callTool} when the tool call itself fails (declined, not found, or the tool errored). */
+export class ToolCallError extends Error {}
+
+/**
+ * An error whose failure `code` reaches the orchestrator on the wire, instead
+ * of being flattened into the generic `"agent_error"`.
+ *
+ * Some failures are recoverable by the orchestrator, but only if it can tell
+ * them apart from ordinary task failures -- e.g. an expired linked credential,
+ * where the fix is to invalidate the stored record and re-prompt the user to
+ * link, not to report "the agent failed". The code is the whole point: the
+ * message is for humans, the code is what the orchestrator can branch on.
+ * Throw this from an {@link AgentHandler} instead of a plain `Error` when the
+ * distinction matters.
+ */
+export class AgentFailure extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AgentFailure";
+  }
 }
 
 /** An agent's concluding reply for the run. A bare string is shorthand for `{ message }`. */
@@ -80,6 +119,7 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
 
   const abort = new AbortController();
   let pendingAsk: { resolve: (answer: string) => void; reject: (err: Error) => void } | undefined;
+  const pendingToolCalls = new Map<string, { resolve: (result: unknown) => void; reject: (err: Error) => void }>();
 
   channel.onDown((msg: AgentDownMessage) => {
     switch (msg.type) {
@@ -93,12 +133,24 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
           resolve(msg.message);
         }
         break;
+      case "tool_result": {
+        const pending = pendingToolCalls.get(msg.callId);
+        if (!pending) break; // unknown/already-settled callId — nothing to resolve
+        pendingToolCalls.delete(msg.callId);
+        if (msg.ok) pending.resolve(msg.result);
+        else pending.reject(new ToolCallError(msg.error ?? `tool call ${msg.callId} failed`));
+        break;
+      }
       case "cancel":
         if (!abort.signal.aborted) abort.abort(new CancelledError(msg.reason));
         if (pendingAsk) {
           const { reject } = pendingAsk;
           pendingAsk = undefined;
           reject(new CancelledError(msg.reason));
+        }
+        for (const [callId, pending] of pendingToolCalls) {
+          pendingToolCalls.delete(callId);
+          pending.reject(new CancelledError(msg.reason));
         }
         break;
       case "signal":
@@ -122,6 +174,16 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
         pendingAsk = { resolve, reject };
         void publishUp({ type: "reply", message: question, final: false });
       }),
+    callTool: (tool, input) =>
+      new Promise<unknown>((resolve, reject) => {
+        if (abort.signal.aborted) {
+          reject(new CancelledError());
+          return;
+        }
+        const callId = randomUUID();
+        pendingToolCalls.set(callId, { resolve, reject });
+        void publishUp({ type: "tool_call", callId, tool, input });
+      }),
   };
 
   await publishUp({ type: "ready" });
@@ -132,7 +194,20 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
     await publishUp({ type: "reply", message: reply.message, final: true, result: reply.result });
   } catch (err) {
     if (!(err instanceof CancelledError) && !abort.signal.aborted) {
-      const code = err instanceof AgentConfigError ? "config_error" : "agent_error";
+      // A handler-supplied `code` wins (see AgentFailure). Matched by `name`
+      // as well as `instanceof`, so an AgentFailure that crossed a duplicated-
+      // module/realm boundary still reports its code -- but NOT by `code`
+      // alone, or every stray `ENOENT`/`ECONNREFUSED` from Node's own errors
+      // would start leaking onto the wire as a failure code.
+      const declared = err instanceof AgentFailure || (err as { name?: unknown } | null)?.name === "AgentFailure"
+        ? (err as { code?: unknown }).code
+        : undefined;
+      const code =
+        typeof declared === "string" && declared
+          ? declared
+          : err instanceof AgentConfigError
+            ? "config_error"
+            : "agent_error";
       await publishUp({ type: "failed", code, message: err instanceof Error ? err.message : String(err) });
     }
     // On cancellation the orchestrator already knows; exit quietly.

@@ -14,14 +14,35 @@
  * in docs/integrations-gateway.md -- push-based delivery is a documented
  * follow-up, not built in this phase.
  */
+
+import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "./sender-assertion.js";
 export interface OrchestratorInvokeResult {
   status: "succeeded" | "failed" | "timed_out";
   result?: string;
   error?: string;
+  /** True when this turn's `result` is an "link your account" prompt rather than finished work -- the caller needs the linked identity before any agent runs (see agent-orchestrator's `InvocationRecord.identityLinkPending`). */
+  identityLinkPending?: boolean;
+  /** Provider + subject the pending link is keyed on, for a caller that can wait on its own token store and auto-resume once linked. Present only alongside `identityLinkPending`. */
+  identityLink?: { provider: string; subject: string };
+  /**
+   * A Remote Control session URL (`https://claude.ai/code/session_...`) the
+   * delegated agent surfaced mid-run, if any -- see
+   * agent-orchestrator's `InvocationRecord.remoteControlUrl`. Only ever
+   * present for an agent that emits a `remote-control-url` progress event
+   * (today: a later phase of `claude-code-swe-agent`); absent for
+   * `opencode-swe-agent` and every run that never emits one.
+   */
+  remoteControlUrl?: string;
 }
 
 export interface OrchestratorClientOptions {
   baseUrl: string;
+  /**
+   * Signs the sender assertion accompanying each `/invoke` (docs/adr/0030 §6).
+   * Absent -> no assertion header is sent and the orchestrator falls back to
+   * the unsigned `event.senderLogin`.
+   */
+  senderAssertionSecret?: string;
   /**
    * Either a static bearer token, or a function resolving one on demand
    * (e.g. `OidcTokenProvider.getToken`, which caches and transparently
@@ -48,6 +69,9 @@ interface InvokePollBody {
   status: "pending" | "succeeded" | "failed";
   result?: unknown;
   error?: string;
+  identityLinkPending?: boolean;
+  identityLink?: { provider: string; subject: string };
+  remoteControlUrl?: string;
 }
 
 /** Result of `checkLive` (ADR 0026). */
@@ -156,12 +180,38 @@ export class OrchestratorClient {
     sessionId: string,
     identityLinkFlow?: "device" | "authcode",
     event?: Record<string, string | number | undefined>,
+    /**
+     * Fired at most once, the first poll that shows the turn genuinely
+     * running (status `pending` and NOT identity-link-pending) -- i.e. past
+     * the auth pre-flight, an agent actually launching. A caller uses this to
+     * post a "starting work" acknowledgement only when work has really begun,
+     * withholding it while an identity link is still being set up. Never fired
+     * for a turn that ends up identity-link-pending.
+     */
+    onRunning?: () => void | Promise<void>,
+    /**
+     * Fired at most once, the first poll that surfaces a Remote Control
+     * session URL (agent-orchestrator's `InvocationRecord.remoteControlUrl`,
+     * itself only ever set for an agent that emits a `remote-control-url`
+     * progress event). Independent of `onRunning` -- may fire before, after,
+     * or (if no such event ever arrives) never at all.
+     */
+    onRemoteControlUrl?: (url: string) => void | Promise<void>,
   ): Promise<OrchestratorInvokeResult> {
     const acceptRes = await this.fetchImpl(`${this.baseUrl()}/invoke`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${await this.resolveToken()}`,
+        // Signed separately from the bearer token on purpose: the token
+        // authenticates THIS GATEWAY, and says nothing about which human
+        // triggered the event. The login selects the caller's principal, and
+        // therefore which stored credentials the run receives, so it has to
+        // be something the orchestrator can verify rather than a body field
+        // any holder of the token could set.
+        ...(this.options.senderAssertionSecret && typeof event?.senderLogin === "string"
+          ? { [SENDER_ASSERTION_HEADER]: mintSenderAssertion(this.options.senderAssertionSecret, event.senderLogin) }
+          : {}),
       },
       body: JSON.stringify({
         request,
@@ -176,6 +226,8 @@ export class OrchestratorClient {
     const accepted = (await acceptRes.json()) as InvokeAcceptedBody;
 
     const deadline = Date.now() + this.options.pollTimeoutMs;
+    let announcedRunning = false;
+    let announcedRemoteControlUrl = false;
     while (Date.now() < deadline) {
       await this.sleep(this.options.pollIntervalMs);
       const pollRes = await this.fetchImpl(
@@ -186,13 +238,33 @@ export class OrchestratorClient {
         return { status: "failed", error: `/invoke/${accepted.id} poll failed: ${pollRes.status}` };
       }
       const polled = (await pollRes.json()) as InvokePollBody;
+      // Fire at most once, independent of terminal/pending status below --
+      // the underlying agent can surface this mid-run, on the same poll that
+      // turns out to already be terminal.
+      if (!announcedRemoteControlUrl && polled.remoteControlUrl) {
+        announcedRemoteControlUrl = true;
+        await onRemoteControlUrl?.(polled.remoteControlUrl);
+      }
       if (polled.status === "succeeded") {
-        return { status: "succeeded", result: typeof polled.result === "string" ? polled.result : JSON.stringify(polled.result) };
+        return {
+          status: "succeeded",
+          result: typeof polled.result === "string" ? polled.result : JSON.stringify(polled.result),
+          identityLinkPending: polled.identityLinkPending,
+          identityLink: polled.identityLink,
+        };
       }
       if (polled.status === "failed") {
         return { status: "failed", error: polled.error ?? "orchestrator turn failed" };
       }
-      // status === "pending" -- keep polling.
+      // status === "pending". Announce "running" the first time we see the
+      // turn is past its auth pre-flight (not identity-link-pending) -- an
+      // agent is genuinely launching, so it's honest to say work has started.
+      // While identityLinkPending is still set, hold the announcement back.
+      if (!announcedRunning && !polled.identityLinkPending) {
+        announcedRunning = true;
+        await onRunning?.();
+      }
+      // keep polling.
     }
     return { status: "timed_out", error: `no terminal result within ${this.options.pollTimeoutMs}ms` };
   }

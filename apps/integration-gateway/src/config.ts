@@ -11,16 +11,48 @@ export interface AppConfig {
   /** Fallback static PAT, used only if the App fields above are unset. */
   githubToken: string;
   githubApiUrl: string;
+  /**
+   * Base URL of GitHub's **web/OAuth** host -- where the device-flow and
+   * authorization-code endpoints live (`/login/device/code`,
+   * `/login/oauth/access_token`). Distinct from `githubApiUrl`: on GitHub
+   * Enterprise Server the REST API lives at `https://<host>/api/v3` while
+   * these OAuth routes stay on `https://<host>`, so one value cannot serve
+   * both. Defaults to github.com, matching `@controller-agent/github-app-auth`'s
+   * own default, so existing deployments are unaffected.
+   */
+  githubBaseUrl: string;
+  /**
+   * Shared secret used to sign the sender assertion sent to agent-orchestrator
+   * (docs/adr/0030 §6). Must match the orchestrator's own
+   * AGENT_SENDER_ASSERTION_SECRET. Empty disables signing, in which case the
+   * orchestrator falls back to trusting the unsigned `event.senderLogin`.
+   */
+  senderAssertionSecret: string;
   /** The App/bot's own GitHub login -- events authored by it are ignored (loop prevention). */
   githubBotLogin: string;
   /**
-   * The label that triggers automated triage (ADR 0024) when applied to a
-   * GitHub issue. Not an assignee: GitHub App bot users generally cannot be
+   * The label that triggers automated triage (ADR 0024), on either a GitHub
+   * issue (`issues.labeled` -- investigate and open a PR) or a pull request
+   * (`pull_request.labeled` -- address the feedback on it, push updates, sync
+   * with its base branch). One label for both: "triage this" is the same
+   * request either way, and which work it means is fully determined by what
+   * was labeled. Not an assignee: GitHub App bot users generally cannot be
    * set as issue assignees (only a small GitHub-owned allowlist, e.g.
    * `dependabot[bot]`, gets that special-cased), so `issues.labeled` is used
    * instead of `issues.assigned`.
    */
   githubTriggerLabel: string;
+  /**
+   * The label that triggers an automated PR review when applied to a pull
+   * request (a `pull_request.labeled` event). Sibling to
+   * `githubTriggerLabel`: a distinct label, so requesting a read-only review
+   * of a PR stays separate from asking triage to change it. Same identity
+   * gate applies -- the review runs
+   * as whoever applied the label, so the gateway's bot loop-guard means the
+   * label must be applied by a human, not the agent that opened the PR. Empty
+   * string disables the trigger (no label name can ever match).
+   */
+  githubReviewLabel: string;
   /** Base URL of agent-orchestrator's consumer-facing invoke API (ADR 0006). */
   orchestratorUrl: string;
   /**
@@ -48,6 +80,21 @@ export interface AppConfig {
   pollIntervalMs: number;
   /** Maximum total time (ms) to poll before giving up on a turn. */
   pollTimeoutMs: number;
+  /**
+   * Maximum time (ms) to hold a PARKED turn open waiting for the user to finish
+   * linking their account, before giving up and letting them re-trigger.
+   *
+   * Separate from `pollTimeoutMs`, and much longer by default, because it is
+   * bounded by human reaction time rather than by machine latency -- it matches
+   * the link flow's own ~10-minute expiry.
+   *
+   * Configurable because it was not, and a hard-coded 10 minutes is an
+   * occupancy decision an operator should own: each parked turn holds a relay
+   * for the whole window. In the e2e environment that is acute -- the
+   * identity-keying negative controls park on purpose, so a 10-minute hold
+   * outlives the spec that caused it and starves whatever triggers next.
+   */
+  resumeWaitMs: number;
   /** Public GitHub App client id used to start OAuth Device Flow links (not a secret). */
   githubAppClientId: string;
   /** Base64 (or hex) 32-byte AES-256-GCM key used to encrypt linked GitHub tokens at rest. */
@@ -112,8 +159,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     githubAppInstallationId: env.GITHUB_APP_INSTALLATION_ID ?? "",
     githubToken: env.GITHUB_TOKEN ?? "",
     githubApiUrl: env.GITHUB_API_URL ?? "https://api.github.com",
+    githubBaseUrl: env.GITHUB_BASE_URL ?? "https://github.com",
+    senderAssertionSecret: env.GATEWAY_SENDER_ASSERTION_SECRET ?? "",
     githubBotLogin: env.GATEWAY_GITHUB_BOT_LOGIN ?? "",
     githubTriggerLabel: env.GATEWAY_GITHUB_TRIGGER_LABEL ?? "",
+    githubReviewLabel: env.GATEWAY_GITHUB_REVIEW_LABEL ?? "",
     orchestratorUrl: env.GATEWAY_ORCHESTRATOR_URL ?? "http://agent-orchestrator:8081",
     orchestratorToken: env.GATEWAY_ORCHESTRATOR_TOKEN ?? "",
     orchestratorOidcTokenEndpoint: env.GATEWAY_ORCHESTRATOR_OIDC_TOKEN_ENDPOINT,
@@ -125,6 +175,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     githubCollaboratorRoles: env.GATEWAY_GITHUB_COLLABORATOR_ROLES,
     pollIntervalMs: num(env.GATEWAY_POLL_INTERVAL_MS, 3_000),
     pollTimeoutMs: num(env.GATEWAY_POLL_TIMEOUT_MS, 15 * 60 * 1000),
+    resumeWaitMs: num(env.GATEWAY_RESUME_WAIT_MS, 10 * 60 * 1000),
     githubAppClientId: env.GITHUB_APP_CLIENT_ID ?? "",
     identityLinkEncryptionKey: env.IDENTITY_LINK_ENCRYPTION_KEY ?? "",
     identityLinkToken: env.GATEWAY_IDENTITY_LINK_TOKEN ?? "",

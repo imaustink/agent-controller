@@ -1,9 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { REPLY_MARKER, type GithubReplyClient } from "./github-client.js";
+import type { GithubReplyClient } from "./github-client.js";
 import type { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
 import { IdentityLinkApi } from "./identity-link/api.js";
 import { ClaudeAuthApi } from "./claude-auth/api.js";
 import type { ClaudeSetupTokenFlows } from "./claude-auth/pty-setup-token.js";
+import type { ClaudeLoginFlows } from "./claude-auth/pty-login.js";
 import type { ClaudeTokenStore } from "./claude-auth/store.js";
 import type { IdentityResolver } from "./identity.js";
 import type { OrchestratorClient, OrchestratorInvokeResult } from "./orchestrator-client.js";
@@ -23,13 +24,30 @@ export interface GatewayServerOptions {
   githubReplyClient: GithubReplyClient;
   /**
    * The label that triggers automated triage (ADR 0024,
-   * `GATEWAY_GITHUB_TRIGGER_LABEL`) -- an `issues.labeled` webhook is only
-   * actionable when the label applied is this one; any other label is
-   * ignored. Empty string effectively disables the trigger (no label name
-   * can ever match). Deliberately a label, not an assignee: GitHub App bot
-   * users generally cannot be set as issue assignees.
+   * `GATEWAY_GITHUB_TRIGGER_LABEL`) -- an `issues.labeled` OR
+   * `pull_request.labeled` webhook is only actionable when the label applied
+   * is this one; any other label is ignored. Empty string effectively
+   * disables the trigger (no label name can ever match). Deliberately a
+   * label, not an assignee: GitHub App bot users generally cannot be set as
+   * issue assignees.
+   *
+   * The same label means "triage this" on both kinds, but the work differs
+   * and so does the route it dispatches to: on an issue, investigate and open
+   * a PR; on a PR, address the feedback already on it, push the updates, and
+   * sync it with its base branch. The two are distinguished downstream by the
+   * event descriptor's `event`/`labelName` pair, not by two separate labels.
    */
   githubTriggerLabel: string;
+  /**
+   * The label that triggers an automated PR review when applied to a pull
+   * request (`pull_request.labeled`, `GATEWAY_GITHUB_REVIEW_LABEL`) --
+   * sibling to `githubTriggerLabel` but for PRs, so review and triage stay
+   * independent. Optional/empty disables it (no label name can ever match).
+   * The review runs as whoever applied the label, so the bot loop-guard in
+   * `identityResolver` means a human must apply it -- the agent that opened
+   * the PR (a bot) cannot self-trigger a review of its own PR.
+   */
+  githubReviewLabel?: string;
   /** Called with any error from the background invoke-and-reply step; defaults to console.error. */
   onBackgroundError?: (error: unknown) => void;
   /**
@@ -51,21 +69,36 @@ export interface GatewayServerOptions {
   claudeAuthFlows?: ClaudeSetupTokenFlows;
   claudeAuthStore?: ClaudeTokenStore;
   /**
+   * How long a PARKED turn is held open waiting for the caller to finish
+   * linking, before giving up. Absent -> {@link
+   * GatewayServer.DEFAULT_RESUME_WAIT_MS}. Short values are appropriate wherever
+   * turns park routinely rather than exceptionally (see that constant).
+   */
+  resumeWaitMs?: number;
+  /**
+   * Full-login (`claude auth login --claudeai`) flows for Remote Control
+   * (docs/adr/0027 follow-up) -- optional and additive alongside
+   * `claudeAuthFlows` above: a subject's `mode=login` request 501s until this
+   * is wired up, rather than falling back to `setup-token`. Reuses
+   * `claudeAuthStore`/`identityLinkToken`/`publicBaseUrl` above, same as the
+   * `setup-token` flow does, so no new config surface is required just to
+   * make this reachable once a caller sets it.
+   */
+  claudeLoginFlows?: ClaudeLoginFlows;
+  /**
    * Session-page feature (issue #81) -- both fields must be set together to
    * enable it: a "starting work" comment posted right when an
    * `issues.labeled` triage trigger fires (rather than only after the whole
    * turn completes), linking to a minimal `GET /sessions/:token` page that
    * shows that session's turn history and lets a caller `POST` it follow-up
    * prompts. Omitted entirely (leaving both undefined) preserves this
-   * gateway's exact pre-#81 behavior -- no page routes are reachable, and
-   * plain conversational (non-labeled) relays are completely unaffected
-   * either way.
+   * gateway's exact pre-#81 behavior -- no page routes are reachable.
    */
   sessionPageStore?: SessionPageStore;
   publicBaseUrl?: string;
 }
 
-/** `owner/repo#issueNumber` scoped session id -- see docs/integrations-gateway.md's conversational path. */
+/** `owner/repo#issueNumber` scoped session id -- see docs/integrations-gateway.md. */
 export function sessionIdFor(owner: string, repo: string, issueNumber: number): string {
   return `github:${owner}/${repo}#${issueNumber}`;
 }
@@ -74,10 +107,13 @@ export function sessionIdFor(owner: string, repo: string, issueNumber: number): 
  * Consumer-facing HTTP surface for the GitHub Issues adapter: verifies each
  * webhook, maps it onto a per-issue orchestrator session, and relays the
  * eventual result back as an issue comment. See docs/integrations-gateway.md
- * -- this implements only the conversational path (no `target`/FAAS
- * shortcut): every event goes through agent-orchestrator's existing RAG
- * skill retrieval, which already owns deciding whether to ask a clarifying
- * question or delegate to the SWE agent.
+ * -- only an explicit label application is ever actionable
+ * (`issues.labeled` with the trigger label, or `pull_request.labeled` with
+ * either the review label or the trigger label); an unlabeled
+ * `issues.opened`/`issue_comment.created` is a strict no-op
+ * (`parseGithubEvent` maps it straight to `{ kind: "ignored" }`). Every
+ * label-triggered run removes the label that triggered it when it finishes,
+ * so re-applying the label is all it takes to run again.
  */
 export class GatewayServer {
   private server: Server | undefined;
@@ -91,7 +127,13 @@ export class GatewayServer {
         : undefined;
     this.claudeAuthApi =
       options.claudeAuthFlows && options.claudeAuthStore && options.identityLinkToken && options.publicBaseUrl
-        ? new ClaudeAuthApi(options.claudeAuthFlows, options.claudeAuthStore, options.identityLinkToken, options.publicBaseUrl)
+        ? new ClaudeAuthApi(
+            options.claudeAuthFlows,
+            options.claudeAuthStore,
+            options.identityLinkToken,
+            options.publicBaseUrl,
+            options.claudeLoginFlows,
+          )
         : undefined;
   }
 
@@ -190,6 +232,53 @@ export class GatewayServer {
 
     if (event.kind === "ignored") return;
 
+    if (event.kind === "pull-request-labeled") {
+      // Two distinct PR triggers share this event, told apart by which label
+      // was applied -- GitHub sends `pull_request.labeled` for every label,
+      // so anything that is neither of them is ignored:
+      //   - the review label  -> review the PR, change nothing
+      //   - the trigger label -> triage the PR: address the feedback on it,
+      //     push the updates, and sync it with its base branch
+      // The label name rides along in the event descriptor, which is what
+      // lets the two IntegrationRoutes for `pull_request`/`labeled` resolve
+      // to different prompts (see `match.labelName`, ADR 0024).
+      const isReview = !!this.options.githubReviewLabel && event.labelName === this.options.githubReviewLabel;
+      const isTriage = !!this.options.githubTriggerLabel && event.labelName === this.options.githubTriggerLabel;
+      if (!isReview && !isTriage) return;
+
+      // Runs as whoever applied the label (same identity/permission gate as
+      // the other kinds). The gateway drops bot-authored events, so the
+      // agent that opened the PR can't self-trigger a review -- a human
+      // applies the label to request one.
+      const identity = await this.options.identityResolver.resolve(event.senderLogin, event.senderIsBot, {
+        owner: event.owner,
+        repo: event.repo,
+      });
+      if (!identity) return;
+
+      // A PR and an issue never share a number in the same repo, so this
+      // session id can't collide with a triaged issue's session id.
+      const sessionId = sessionIdFor(event.owner, event.repo, event.prNumber);
+      // Fallback request text -- only used if no IntegrationRoute CR matches
+      // the `event` descriptor below (agent-orchestrator then falls back to
+      // ordinary RAG skill retrieval over this text).
+      const request = `Pull request #${event.prNumber} was labeled "${event.labelName}": ${event.title}\n\n${event.body}`.trim();
+
+      this.relayAndReply(event.owner, event.repo, event.prNumber, request, sessionId, {
+        source: "github",
+        event: "pull_request",
+        action: "labeled",
+        owner: event.owner,
+        repo: event.repo,
+        prNumber: event.prNumber,
+        title: event.title,
+        body: event.body,
+        senderLogin: event.senderLogin,
+        labelName: event.labelName,
+      }, event.labelName).catch(this.options.onBackgroundError ?? ((error: unknown) => console.error(error)));
+      return;
+    }
+
     if (event.kind === "issue-labeled") {
       // Only actionable when the label applied is THE trigger label --
       // GitHub sends `issues.labeled` for every label, not just this one.
@@ -221,37 +310,9 @@ export class GatewayServer {
         body: event.body,
         senderLogin: event.senderLogin,
         labelName: event.labelName,
-      }).catch(this.options.onBackgroundError ?? ((error: unknown) => console.error(error)));
+      }, event.labelName).catch(this.options.onBackgroundError ?? ((error: unknown) => console.error(error)));
       return;
     }
-
-    // An issue created WITH the trigger label already attached fires a
-    // SEPARATE `issues.labeled` webhook delivery a moment after `opened`
-    // (one per label present at creation) -- skip relaying `opened` here so
-    // that guaranteed-to-follow `labeled` event is the only one that
-    // dispatches. Without this, both events independently delegate the same
-    // session to the same agent, racing each other into two AgentRuns.
-    if (event.kind === "issue-opened" && this.options.githubTriggerLabel && event.labelNames.includes(this.options.githubTriggerLabel)) {
-      return;
-    }
-
-    // Belt-and-suspenders loop guard: skip our own bot/replies even if a
-    // login isn't flagged as `type: "Bot"` (e.g. a PAT-backed account).
-    const text = event.kind === "issue-opened" ? event.body : event.commentBody;
-    if (text.includes(REPLY_MARKER)) return;
-
-    const identity = await this.options.identityResolver.resolve(event.senderLogin, event.senderIsBot, {
-      owner: event.owner,
-      repo: event.repo,
-    });
-    if (!identity) return;
-
-    const sessionId = sessionIdFor(event.owner, event.repo, event.issueNumber);
-    const request = event.kind === "issue-opened" ? `${event.title}\n\n${event.body}`.trim() : event.commentBody;
-
-    this.relayAndReply(event.owner, event.repo, event.issueNumber, request, sessionId).catch(
-      this.options.onBackgroundError ?? ((error: unknown) => console.error(error)),
-    );
   }
 
   private async relayAndReply(
@@ -261,28 +322,84 @@ export class GatewayServer {
     request: string,
     sessionId: string,
     event?: Record<string, string | number | undefined>,
+    /**
+     * The label whose application triggered this run, when one did. Removed
+     * once the run finishes (success or failure) so re-applying the same
+     * label re-triggers it -- GitHub emits no `labeled` event for a label
+     * that is already present, so leaving it on means a human has to
+     * remove-then-add by hand to run again.
+     */
+    triggerLabel?: string,
   ): Promise<void> {
-    // Only the deterministic issues.labeled trigger (the actual "triage"
-    // path -- long-running investigate-and-PR work, ADR 0024) gets a
-    // session page and an upfront "starting work" comment (issue #81); the
-    // `event` descriptor is only ever set on that path (see
-    // `handleGithubWebhook`'s issue-labeled branch), which doubles as the
-    // discriminator here. Ordinary conversational opened/comment replies are
-    // meant to feel like near-instant chat, so an extra comment there would
-    // just be noise -- and they're unaffected either way if the feature is
-    // disabled (`sessionPageStore`/`publicBaseUrl` unset).
+    // Only the deterministic label triggers (the long-running
+    // investigate/implement/review paths, ADR 0024) get a session page and an
+    // upfront comment; the `event` descriptor is only ever set on those paths
+    // (see `handleGithubWebhook`), which doubles as the discriminator here.
+    // Ordinary conversational opened/comment replies are meant to feel like
+    // near-instant chat, so an extra comment there would just be noise.
+    //
+    // The gateway's own session page (ADR 0025/0026) is still created and
+    // tracked here for debugging, but its URL is deliberately NEVER posted
+    // to the issue -- the only thing posted up front is a real Claude Code
+    // Remote Control link (`onRemoteControlUrl`, fired by a
+    // `remote-control-url` progress event from the delegated agent), and
+    // only once one genuinely exists. If Remote Control never activates for
+    // this run (not configured for the Agent, or the CLI never hands back a
+    // session), no upfront comment is posted at all -- silence, not a
+    // placeholder link nobody asked to see, is the fallback. This was a
+    // deliberate, explicit product decision after the old "Starting work...
+    // {session page link}" comment kept appearing instead of the intended
+    // Remote Control link.
+    let onRemoteControlUrl: ((url: string) => Promise<void>) | undefined;
     if (event && this.options.sessionPageStore && this.options.publicBaseUrl) {
-      const page = await this.options.sessionPageStore.getOrCreate(sessionId, { owner, repo, issueNumber });
-      const pageUrl = `${this.options.publicBaseUrl.replace(/\/$/, "")}/sessions/${page.token}`;
-      await this.options.githubReplyClient.postIssueComment(
-        owner,
-        repo,
-        issueNumber,
-        `Starting work on this now. Track progress or send follow-up prompts at ${pageUrl}`,
-      );
+      await this.options.sessionPageStore.getOrCreate(sessionId, { owner, repo, issueNumber });
+      let posted = false;
+      onRemoteControlUrl = async (url) => {
+        if (posted) return;
+        posted = true;
+        await this.options.githubReplyClient.postIssueComment(
+          owner,
+          repo,
+          issueNumber,
+          `🤖 Starting work on this now. Watch live or take over the session here: ${url}`,
+        );
+      };
     }
-    await this.runTurn(owner, repo, issueNumber, sessionId, request, event);
+    try {
+      await this.runTurn(owner, repo, issueNumber, sessionId, request, event, undefined, onRemoteControlUrl);
+    } finally {
+      // `finally`, not the happy path only: a failed or blocked run is
+      // exactly when someone wants to re-trigger, so the label must come off
+      // either way. Removing it emits `issues.unlabeled`/
+      // `pull_request.unlabeled`, which `parseGithubEvent` ignores -- no
+      // self-trigger loop. A failure here is reported but must not mask the
+      // turn's own outcome.
+      if (triggerLabel) {
+        try {
+          await this.options.githubReplyClient.removeIssueLabel(owner, repo, issueNumber, triggerLabel);
+        } catch (error) {
+          (this.options.onBackgroundError ?? ((e: unknown) => console.error(e)))(error);
+        }
+      }
+    }
   }
+
+  /**
+   * Default for {@link GatewayServerOptions.resumeWaitMs}: how long to hold a
+   * parked triage turn open waiting for the user to finish linking their account
+   * before giving up (they can always re-trigger the issue later). Matches the
+   * link flow's own ~10-minute expiry.
+   *
+   * Was a hard-coded constant, and being unconfigurable had a cost worth
+   * recording: every parked turn holds a relay for this whole window. The e2e
+   * suite's identity-keying negative controls park deliberately, so a 10-minute
+   * hold outlived the spec that caused it and starved the next spec's trigger --
+   * surfacing as a positive keying assertion timing out with no orchestrator
+   * activity at all, which reads exactly like a keying bug. `pollTimeoutMs` had
+   * already been shortened for e2e for the same class of reason; this hold sat
+   * next to it, ten times longer, and could not be.
+   */
+  private static readonly DEFAULT_RESUME_WAIT_MS = 10 * 60 * 1000;
 
   /**
    * Shared by `relayAndReply` (webhook-triggered turns) and
@@ -299,33 +416,91 @@ export class GatewayServer {
     sessionId: string,
     request: string,
     event?: Record<string, string | number | undefined>,
+    announce?: () => Promise<void>,
+    onRemoteControlUrl?: (url: string) => Promise<void>,
   ): Promise<void> {
-    const tracked = await this.options.sessionPageStore?.addTurn(sessionId, request);
+    // This relay has no browser -- always force device flow explicitly rather
+    // than relying on agent-orchestrator's own default ("authcode", intended
+    // for browser-based callers). `announce` fires once the turn is genuinely
+    // running past any auth pre-flight -- `relayAndReply` no longer uses it
+    // (it posts nothing until a real Remote Control URL exists), but
+    // `orchestratorClient.invoke` still accepts it for any other caller that
+    // wants an "actually running now" signal. `onRemoteControlUrl` (when set)
+    // is only ever passed on the triage path (alongside `event`), see
+    // `relayAndReply`. Only pass an `event` when there is one -- keeps the
+    // call shape identical for the ordinary opened/comment paths.
+    const invokeOnce = (): Promise<OrchestratorInvokeResult> =>
+      event
+        ? this.options.orchestratorClient.invoke(request, sessionId, "device", event, announce, onRemoteControlUrl)
+        : this.options.orchestratorClient.invoke(request, sessionId, "device", undefined, announce, onRemoteControlUrl);
 
-    // This relay has no browser -- always force device flow explicitly
-    // rather than relying on agent-orchestrator's own default (which is
-    // "authcode", intended for browser-based callers). Only pass a 4th
-    // argument when there's an event descriptor -- keeps the call shape
-    // identical to before this feature existed for the ordinary
-    // opened/comment paths.
-    const outcome: OrchestratorInvokeResult = event
-      ? await this.options.orchestratorClient.invoke(request, sessionId, "device", event)
-      : await this.options.orchestratorClient.invoke(request, sessionId, "device");
-    const reply =
-      outcome.status === "succeeded"
-        ? (outcome.result ?? "")
-        : `Something went wrong processing this: ${outcome.error ?? "unknown error"}`;
-
-    if (tracked) {
-      await this.options.sessionPageStore!.completeTurn(
-        sessionId,
-        tracked.turnIndex,
+    const finishTurn = async (
+      tracked: { turnIndex: number } | undefined,
+      outcome: OrchestratorInvokeResult,
+    ): Promise<void> => {
+      const reply =
         outcome.status === "succeeded"
-          ? { status: "succeeded", result: reply }
-          : { status: "failed", error: outcome.error ?? "unknown error" },
-      );
+          ? (outcome.result ?? "")
+          : `Something went wrong processing this: ${outcome.error ?? "unknown error"}`;
+      if (tracked) {
+        await this.options.sessionPageStore!.completeTurn(
+          sessionId,
+          tracked.turnIndex,
+          outcome.status === "succeeded"
+            ? { status: "succeeded", result: reply }
+            : { status: "failed", error: outcome.error ?? "unknown error" },
+        );
+      }
+      await this.options.githubReplyClient.postIssueComment(owner, repo, issueNumber, reply);
+    };
+
+    const tracked = await this.options.sessionPageStore?.addTurn(sessionId, request);
+    const outcome = await invokeOnce();
+
+    // Unauthenticated turn: `result` is a "link your account" prompt, not
+    // finished work. Post the prompt, then -- for a provider whose token store
+    // this gateway owns -- wait for the link to complete and resume the SAME
+    // request automatically, so the user doesn't have to re-trigger the issue
+    // by hand after linking. If the link isn't completed in time, the prompt
+    // stands and a later re-trigger picks up where this left off.
+    if (outcome.status === "succeeded" && outcome.identityLinkPending && outcome.identityLink) {
+      await finishTurn(tracked, outcome);
+      const resumed = await this.waitAndResume(outcome.identityLink, invokeOnce);
+      if (resumed) await finishTurn(await this.options.sessionPageStore?.addTurn(sessionId, request), resumed);
+      return;
     }
-    await this.options.githubReplyClient.postIssueComment(owner, repo, issueNumber, reply);
+
+    await finishTurn(tracked, outcome);
+  }
+
+  /**
+   * Waits for a pending identity link to complete, then re-runs the turn.
+   * Only providers whose token store this gateway itself owns can be waited
+   * on -- today, both `claude` (setup-token) and `claude-remote` (full
+   * login, docs/adr/0027's follow-up), since both live in the same
+   * `claudeAuthStore` (`ClaudeTokenStore`, keyed by `kind`). This used to
+   * hardcode `identityLink.provider === "claude"` only, so a claude-remote
+   * link prompt would post correctly but NEVER auto-resume -- the exact
+   * "why didn't it start automatically after linking" gap this fixes.
+   * Anything else -- e.g. a GitHub triage using the already-linked shared
+   * identity -- returns `undefined` and the caller leaves the link prompt
+   * standing for a manual re-trigger. Returns the resumed turn's outcome, or
+   * `undefined` if the link never landed within the wait window.
+   */
+  private async waitAndResume(
+    identityLink: { provider: string; subject: string },
+    reinvoke: () => Promise<OrchestratorInvokeResult>,
+  ): Promise<OrchestratorInvokeResult | undefined> {
+    const kind = identityLink.provider === "claude" ? "setup-token" : identityLink.provider === "claude-remote" ? "login" : undefined;
+    const store = kind ? this.options.claudeAuthStore : undefined;
+    if (!store || !kind) return undefined;
+    const record = await store.waitForCompletion(
+      identityLink.subject,
+      this.options.resumeWaitMs ?? GatewayServer.DEFAULT_RESUME_WAIT_MS,
+      kind,
+    );
+    if (!record) return undefined;
+    return reinvoke();
   }
 
   private async handleSessionPage(res: ServerResponse, token: string): Promise<void> {

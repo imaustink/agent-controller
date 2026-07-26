@@ -85,6 +85,34 @@ describe("runClaudeTurn", () => {
     expect(result.authError).toBe(true);
   });
 
+  it("classifies a credential complaint returned as the turn's own successful result as an auth error", async () => {
+    // Same trap as the Remote Control path's turn_duration case: a `result`
+    // event with is_error false and exit code 0, whose entire content is the
+    // credential message. Treating that as a completed turn is what let the
+    // failure reach a user as a summary instead of triggering re-auth.
+    await installFakeClaude(`
+      console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "sess_1" }));
+      console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id: "sess_1", result: "Login expired · Please run /login" }));
+    `);
+
+    const result = await runClaudeTurn("do the thing", { cwd: process.cwd(), env: env(), settings: {} });
+    expect(result.failed).toBe(true);
+    expect(result.authError).toBe(true);
+  });
+
+  it("does not flag a long successful summary that merely mentions credentials", async () => {
+    const summary = `Reviewed the diff. ${"The invalid API key path is handled; see auth.ts. ".repeat(5)}`;
+    await installFakeClaude(`
+      console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "sess_1" }));
+      console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id: "sess_1", result: ${JSON.stringify(summary)} }));
+    `);
+
+    const result = await runClaudeTurn("review the thing", { cwd: process.cwd(), env: env(), settings: {} });
+    expect(result.failed).toBe(false);
+    expect(result.authError).toBe(false);
+    expect(result.finalMessage).toBe(summary);
+  });
+
   it("treats a non-zero exit with no JSON output at all as a failure", async () => {
     await installFakeClaude(`
       console.error("boom");
@@ -94,5 +122,39 @@ describe("runClaudeTurn", () => {
     const result = await runClaudeTurn("do the thing", { cwd: process.cwd(), env: env(), settings: {} });
     expect(result.failed).toBe(true);
     expect(result.failureDetail).toContain("boom");
+  });
+
+  it("emits 'still running' heartbeats while a tool stays silent, and stops on completion", async () => {
+    // Fake CLI that starts a Bash tool, then goes silent for ~300ms (a long
+    // command) before finishing -- mirrors the real "runs the full test
+    // suite, no output for minutes" case that read as a freeze. With a short
+    // heartbeat interval, the silent stretch should produce at least one
+    // "still running Bash…" progress line.
+    await installFakeClaude(`
+      console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "s1" }));
+      console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: {} }] } }));
+      setTimeout(() => {
+        console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id: "s1", result: "done" }));
+        process.exit(0);
+      }, 300);
+    `);
+
+    const progress: Array<{ message: string; stage: string }> = [];
+    const result = await runClaudeTurn("do the thing", {
+      cwd: process.cwd(),
+      env: env(),
+      settings: {},
+      heartbeatIntervalMs: 40,
+      onProgress: (message, stage) => progress.push({ message, stage }),
+    });
+
+    expect(result.failed).toBe(false);
+    const heartbeats = progress.filter((p) => /still running Bash/.test(p.message));
+    expect(heartbeats.length).toBeGreaterThanOrEqual(1);
+    // The heartbeat interval is cleared on completion: waiting well past
+    // another interval produces no further heartbeats.
+    const countAtResolve = progress.length;
+    await new Promise((r) => setTimeout(r, 150));
+    expect(progress.length).toBe(countAtResolve);
   });
 });

@@ -110,9 +110,21 @@ step "Applying CRDs..."
 # every time so CRD schema changes are always current. These CRDs are what
 # the (separately-released) community-components chart's Tool/Skill/Agent CRs
 # depend on.
-for crd in "$REPO_ROOT"/charts/agent-controller/charts/core-controller/crds/*.yaml; do
-  kubectl apply -f "$crd" --server-side >/dev/null
+# Source of truth is the controller's generated bases. This previously globbed
+# charts/agent-controller/charts/core-controller/crds/, which no longer exists
+# -- and because an unmatched glob expands to nothing, the loop silently
+# applied ZERO CRDs instead of failing. A cluster missing a newly-added CRD
+# then crashlooped agent-orchestrator with a bare `404 page not found`.
+shopt -s nullglob
+crds=("$REPO_ROOT"/controllers/core-controller/config/crd/bases/*.yaml)
+shopt -u nullglob
+if [[ ${#crds[@]} -eq 0 ]]; then
+  die "No CRDs found under controllers/core-controller/config/crd/bases -- refusing to deploy without them."
+fi
+for crd in "${crds[@]}"; do
+  kubectl apply -f "$crd" --server-side --force-conflicts >/dev/null
 done
+echo "  Applied ${#crds[@]} CRDs."
 
 # ── 7. Hand off to Skaffold ───────────────────────────────────────────────────
 case "$MODE" in

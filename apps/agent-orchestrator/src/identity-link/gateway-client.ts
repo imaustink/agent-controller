@@ -77,6 +77,25 @@ export interface IdentityLinkPort {
    * `IdentityLinkGatewayClient` doesn't need to implement it.
    */
   invalidate?(provider: string, subject: string): Promise<void>;
+  /**
+   * Moves an already-authorized credential from one subject to another,
+   * returning whether anything moved (docs/adr/0031).
+   *
+   * The pre-flight keys these records by the caller's principal, but records
+   * written before principals existed sit under the entry point's own subject.
+   * Both flows now read the same key; this is what puts the existing credential
+   * AT that key, instead of asking a human to re-authorize something the
+   * gateway is already holding.
+   *
+   * Optional, and only meaningful for a principal-keyed provider: the `github`
+   * link stays on the raw subject by design (it is what produces the mapping),
+   * so `IdentityLinkGatewayClient` deliberately does not implement this.
+   *
+   * The caller MUST have established that both subjects are the same human --
+   * see the gateway route's doc. Never call it with a subject that several
+   * people can resolve to.
+   */
+  rekey?(provider: string, fromSubject: string, toSubject: string): Promise<boolean>;
 }
 
 export interface IdentityLinkGatewayClientOptions {

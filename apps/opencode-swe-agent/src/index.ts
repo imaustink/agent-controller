@@ -104,6 +104,14 @@ async function runTurn(ctx: TurnContext, instruction: string, marker: SweMarker 
     };
   }
 
+  let headSha: string | null = null;
+  const headResAfter = await runCommand("git", ["-C", repoDir!, "rev-parse", "HEAD"], {
+    env: ctx.childEnv,
+    signal: ctx.signal,
+  });
+  if (headResAfter.code === 0) headSha = headResAfter.stdout.trim();
+  const madeNewCommits = headSha !== null && headSha !== priorHeadSha;
+
   if (ctx.delegating && ctx.attribution) {
     if (!marker?.repo) {
       const outcome = await finalizeDelegatedWrite({
@@ -152,9 +160,16 @@ async function runTurn(ctx: TurnContext, instruction: string, marker: SweMarker 
     session: marker?.session ?? ctx.sessionId,
   };
 
-  const prLine = discovered.prUrl
-    ? `\n\n---\n✅ ${marker?.pr ? "Updated" : "Opened"} pull request: [${discovered.repo}#${discovered.pr}](${discovered.prUrl})`
-    : `\n\n---\n⚠️ Work is on \`${discovered.repo}\` branch \`${discovered.branch}\`, but no open pull request was found.`;
+  // Only mention push/PR status when this turn actually produced new commits
+  // -- a review-only turn (e.g. the "ai-review" label route, which is
+  // explicitly told not to push) legitimately checks out a branch without
+  // committing anything, and slapping a "no open pull request was found"
+  // warning on that is a false positive, not a signal anything went wrong.
+  const prLine = !madeNewCommits
+    ? ""
+    : discovered.prUrl
+      ? `\n\n---\n✅ ${marker?.pr ? "Updated" : "Opened"} pull request: [${discovered.repo}#${discovered.pr}](${discovered.prUrl})`
+      : `\n\n---\n⚠️ Work is on \`${discovered.repo}\` branch \`${discovered.branch}\`, but no open pull request was found.`;
 
   return {
     reply: `${clip(summary, 1500)}${prLine}`,

@@ -63,11 +63,28 @@ describe("RedisClaudeTokenStore", () => {
     mockRedisChannels.clear();
   });
 
-  it("round-trips a token through encrypt/decrypt", async () => {
+  it("round-trips a setup-token record through encrypt/decrypt", async () => {
     const store = new RedisClaudeTokenStore("redis://fake", KEY);
-    const record = { token: "sk-ant-oat01-supersecret", createdAt: "2026-07-22T00:00:00.000Z" };
+    const record = { kind: "setup-token" as const, token: "sk-ant-oat01-supersecret", createdAt: "2026-07-22T00:00:00.000Z" };
     await store.set("user-123", record);
     expect(await store.get("user-123")).toEqual(record);
+  });
+
+  it("round-trips a login record through encrypt/decrypt", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const record = { kind: "login" as const, credentialsJson: '{"accessToken":"supersecret"}', createdAt: "2026-07-22T00:00:00.000Z" };
+    await store.set("user-login-1", record);
+    expect(await store.get("user-login-1", "login")).toEqual(record);
+  });
+
+  it("keeps a setup-token record and a login record for the same subject independent", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const setupRecord = { kind: "setup-token" as const, token: "sk-ant-oat01-supersecret", createdAt: "2026-07-22T00:00:00.000Z" };
+    const loginRecord = { kind: "login" as const, credentialsJson: '{"accessToken":"other"}', createdAt: "2026-07-22T00:00:00.000Z" };
+    await store.set("user-both", setupRecord);
+    await store.set("user-both", loginRecord);
+    expect(await store.get("user-both")).toEqual(setupRecord);
+    expect(await store.get("user-both", "login")).toEqual(loginRecord);
   });
 
   it("returns undefined for an unknown subject", async () => {
@@ -75,11 +92,24 @@ describe("RedisClaudeTokenStore", () => {
     expect(await store.get("nobody")).toBeUndefined();
   });
 
+  it("returns undefined for an unknown subject's login kind", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    expect(await store.get("nobody", "login")).toBeUndefined();
+  });
+
   it("never stores the plaintext token substring", async () => {
     const store = new RedisClaudeTokenStore("redis://fake", KEY);
-    await store.set("user-456", { token: "sk-ant-oat01-supersecret", createdAt: "2026-07-22T00:00:00.000Z" });
+    await store.set("user-456", { kind: "setup-token", token: "sk-ant-oat01-supersecret", createdAt: "2026-07-22T00:00:00.000Z" });
     const raw = mockRedisState.get("claudeAuth:user-456") ?? "";
     expect(raw).not.toContain("sk-ant-oat01-supersecret");
+  });
+
+  it("never stores the plaintext credentialsJson substring, under the login key prefix", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    await store.set("user-login-2", { kind: "login", credentialsJson: '{"accessToken":"supersecret"}', createdAt: "2026-07-22T00:00:00.000Z" });
+    const raw = mockRedisState.get("claudeAuthLogin:user-login-2") ?? "";
+    expect(raw).not.toContain("supersecret");
+    expect(mockRedisState.has("claudeAuth:user-login-2")).toBe(false);
   });
 
   it("throws at construction on a malformed encryption key", () => {
@@ -88,14 +118,116 @@ describe("RedisClaudeTokenStore", () => {
 
   it("removes a subject's stored token on delete", async () => {
     const store = new RedisClaudeTokenStore("redis://fake", KEY);
-    await store.set("user-789", { token: "sk-ant-oat01-supersecret", createdAt: "2026-07-22T00:00:00.000Z" });
+    await store.set("user-789", { kind: "setup-token", token: "sk-ant-oat01-supersecret", createdAt: "2026-07-22T00:00:00.000Z" });
     await store.delete("user-789");
     expect(await store.get("user-789")).toBeUndefined();
+  });
+
+  it("removes a subject's stored login record on delete without touching its setup-token record", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const setupRecord = { kind: "setup-token" as const, token: "sk-ant-oat01-supersecret", createdAt: "2026-07-22T00:00:00.000Z" };
+    await store.set("user-999", setupRecord);
+    await store.set("user-999", { kind: "login", credentialsJson: '{"accessToken":"x"}', createdAt: "2026-07-22T00:00:00.000Z" });
+    await store.delete("user-999", "login");
+    expect(await store.get("user-999", "login")).toBeUndefined();
+    expect(await store.get("user-999")).toEqual(setupRecord);
+  });
+
+  it("moves an authorized credential to a new subject, leaving nothing behind", async () => {
+    // ADR 0031: the orchestrator re-keyed these records onto the caller's
+    // principal. Moving the existing one is what spares every current user a
+    // login for a credential the gateway is already holding.
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const record = { kind: "login" as const, credentialsJson: '{"accessToken":"supersecret"}', createdAt: "2026-07-22T00:00:00.000Z" };
+    await store.set("openwebui:42", record);
+
+    expect(await store.rekey("openwebui:42", "github:alice", "login")).toBe("moved");
+
+    expect(await store.get("github:alice", "login")).toEqual(record);
+    // Moved, not copied: the write-back that keeps a login credential alive
+    // only ever writes the new key, so a leftover copy would rot and then fail
+    // whichever flow still read it.
+    expect(await store.get("openwebui:42", "login")).toBeUndefined();
+  });
+
+  it("moves only the requested kind", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const setupRecord = { kind: "setup-token" as const, token: "sk-ant-oat01-x", createdAt: "2026-07-22T00:00:00.000Z" };
+    await store.set("openwebui:42", setupRecord);
+    await store.set("openwebui:42", { kind: "login", credentialsJson: "{}", createdAt: "2026-07-22T00:00:00.000Z" });
+
+    await store.rekey("openwebui:42", "github:alice", "login");
+
+    expect(await store.get("openwebui:42")).toEqual(setupRecord);
+    expect(await store.get("github:alice")).toBeUndefined();
+  });
+
+  it("refuses to overwrite a record already at the destination", async () => {
+    // The destination's record is by definition at least as current as the one
+    // being moved -- clobbering it would replace a live credential with an older
+    // one and cause the "Login expired" failure this is meant to prevent.
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const current = { kind: "setup-token" as const, token: "sk-ant-oat01-current", createdAt: "2026-07-25T00:00:00.000Z" };
+    const stale = { kind: "setup-token" as const, token: "sk-ant-oat01-stale", createdAt: "2026-07-01T00:00:00.000Z" };
+    await store.set("github:alice", current);
+    await store.set("openwebui:42", stale);
+
+    expect(await store.rekey("openwebui:42", "github:alice")).toBe("occupied");
+
+    expect(await store.get("github:alice")).toEqual(current);
+    // The source is left intact too: nothing was moved, so nothing is deleted.
+    expect(await store.get("openwebui:42")).toEqual(stale);
+  });
+
+  it("reports not-found rather than creating an empty record", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    expect(await store.rekey("openwebui:nobody", "github:alice")).toBe("not-found");
+    expect(await store.get("github:alice")).toBeUndefined();
+  });
+
+  it("treats a self-move as a no-op instead of deleting the record", async () => {
+    // Guards the degenerate case where a caller's principal IS its subject: the
+    // naive move (set then delete) would delete what it just wrote.
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const record = { kind: "setup-token" as const, token: "sk-ant-oat01-x", createdAt: "2026-07-22T00:00:00.000Z" };
+    await store.set("github:alice", record);
+
+    expect(await store.rekey("github:alice", "github:alice")).toBe("occupied");
+    expect(await store.get("github:alice")).toEqual(record);
+  });
+
+  it("round-trips a credential write-back grant back to its subject", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const token = await store.createWritebackToken("user-wb", 900);
+    expect(await store.resolveWritebackToken(token)).toBe("user-wb");
+  });
+
+  it("never stores a write-back grant in a replayable form", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const token = await store.createWritebackToken("user-wb", 900);
+    // The grant is a bearer credential: anything able to read the keyspace must
+    // not come away with a usable one, so only its hash is stored.
+    expect([...mockRedisState.keys()].some((k) => k.includes(token))).toBe(false);
+    expect([...mockRedisState.values()].some((v) => v.includes(token))).toBe(false);
+  });
+
+  it("treats an unknown or empty grant as invalid", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    expect(await store.resolveWritebackToken("never-minted")).toBeUndefined();
+    expect(await store.resolveWritebackToken("")).toBeUndefined();
+  });
+
+  it("mints distinct grants per call, so revoking one can't affect another", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const a = await store.createWritebackToken("user-wb", 900);
+    const b = await store.createWritebackToken("user-wb", 900);
+    expect(a).not.toBe(b);
   });
 });
 
 describe("RedisClaudeTokenStore.waitForCompletion", () => {
-  const RECORD = { token: "sk-ant-oat01-supersecret", createdAt: "2026-07-22T00:00:00.000Z" };
+  const RECORD = { kind: "setup-token" as const, token: "sk-ant-oat01-supersecret", createdAt: "2026-07-22T00:00:00.000Z" };
+  const LOGIN_RECORD = { kind: "login" as const, credentialsJson: '{"accessToken":"supersecret"}', createdAt: "2026-07-22T00:00:00.000Z" };
 
   beforeEach(() => {
     mockRedisState.clear();
@@ -118,5 +250,25 @@ describe("RedisClaudeTokenStore.waitForCompletion", () => {
   it("resolves undefined once timeoutMs elapses with no completion", async () => {
     const store = new RedisClaudeTokenStore("redis://fake", KEY);
     await expect(store.waitForCompletion("nobody", 5)).resolves.toBeUndefined();
+  });
+
+  it("resolves immediately for a login record when kind='login' is passed", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    await store.set("user-login-wait", LOGIN_RECORD);
+    await expect(store.waitForCompletion("user-login-wait", 1000, "login")).resolves.toEqual(LOGIN_RECORD);
+  });
+
+  it("resolves once a concurrent login set() publishes completion on the login channel", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const waiting = store.waitForCompletion("user-login-wait-2", 5000, "login");
+    await store.set("user-login-wait-2", LOGIN_RECORD);
+    await expect(waiting).resolves.toEqual(LOGIN_RECORD);
+  });
+
+  it("does not resolve a login waiter from a concurrent setup-token set() for the same subject", async () => {
+    const store = new RedisClaudeTokenStore("redis://fake", KEY);
+    const waiting = store.waitForCompletion("user-mixed", 50, "login");
+    await store.set("user-mixed", RECORD);
+    await expect(waiting).resolves.toBeUndefined();
   });
 });

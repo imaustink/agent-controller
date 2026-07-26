@@ -23,6 +23,7 @@ import { NatsAgentChannel } from "./agents/nats-agent-channel.js";
 import { AgentRunLauncher } from "./k8s/agentrun-launcher.js";
 import { IdentityLinkGatewayClient } from "./identity-link/gateway-client.js";
 import { ClaudeAuthGatewayClient } from "./identity-link/claude-auth-gateway-client.js";
+import { ClaudeRemoteGatewayClient } from "./identity-link/claude-remote-gateway-client.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { QdrantToolStore } from "./vector-store/qdrant-store.js";
 import { OpenAiActionPlanner } from "./agent/action-planner.js";
@@ -449,6 +450,19 @@ async function main(): Promise<void> {
         })
       : undefined;
 
+  // Per-caller Claude Code `login` credential (the remote-control invocation
+  // counterpart to `claudeAuthGateway` above) -- same gateway host/bearer
+  // token, same `GATEWAY_CLAUDE_AUTH_ENABLED` posture (it's the same
+  // integration-gateway feature, just a different `mode`), gated by whether
+  // an Agent declares `identityProviders: ["claude-remote"]`.
+  const claudeRemoteGateway =
+    config.identityLinkGatewayUrl && config.identityLinkGatewayToken
+      ? new ClaudeRemoteGatewayClient({
+          baseUrl: config.identityLinkGatewayUrl,
+          token: config.identityLinkGatewayToken,
+        })
+      : undefined;
+
   // Executes LocalTools by RPC to the per-language sidecars over the shared
   // unix-socket dir (ADR 0014). Secret-backed env is resolved here (the
   // orchestrator holds the k8s identity; the sidecars deliberately do not).
@@ -473,6 +487,10 @@ async function main(): Promise<void> {
     callbackBaseUrl: config.callbackBaseUrl,
     callbackSecret: config.callbackSecret,
     natsUrl: config.natsUrl,
+    // Direct (non-RAG) tool lookup for a running sub-agent's own tool_call
+    // requests (docs/adr/0028) -- reuses the same live-updated toolsById map
+    // built above for skill re-derivation, rather than a second catalog.
+    toolCatalog: { getById: (id: string) => toolsById.get(id) },
     skillTopK: config.skillTopK,
     fallbackToolTopK: config.fallbackToolTopK,
     toolFitChecker,
@@ -480,6 +498,13 @@ async function main(): Promise<void> {
     capabilityNeedChecker,
     ...(identityLinkGateway ? { identityLinkGateway } : {}),
     ...(claudeAuthGateway ? { claudeAuthGateway } : {}),
+    ...(claudeRemoteGateway ? { claudeRemoteGateway } : {}),
+    // Same client, passed a second time under its non-IdentityLinkPort
+    // capability: minting the per-run grant that lets a launched run persist
+    // the credentials its Claude Code CLI refreshed in-pod (graph.ts's
+    // `CREDENTIALS_WRITEBACK_ENV`). Nothing new to configure -- if the
+    // gateway/bearer above is set, so is this.
+    ...(claudeRemoteGateway ? { claudeRemoteWriteback: claudeRemoteGateway } : {}),
     ...(agentDelegation
       ? {
           agentStore: agentDelegation.agentStore,
@@ -488,6 +513,7 @@ async function main(): Promise<void> {
           agentChannel: agentDelegation.agentChannel,
           agentTopK: config.agentTopK,
           agentRunTimeoutSeconds: config.agentRunTimeoutSeconds,
+          agentIdleTimeoutSeconds: config.agentIdleTimeoutSeconds,
           callbackSecretRef: { name: config.callbackSecretRefName ?? "", key: config.callbackSecretRefKey },
         }
       : {}),
@@ -527,7 +553,16 @@ async function main(): Promise<void> {
     taskCompleter,
     integrationRouteRegistry,
     agentDelegation?.agentChannel,
+    config.senderAssertionSecret,
   );
+  if (!config.senderAssertionSecret) {
+    console.error(
+      "WARNING: AGENT_SENDER_ASSERTION_SECRET is not set -- a webhook turn's sender login is trusted from the request " +
+        "body without verification. It selects the caller's principal, and therefore which stored credentials the run " +
+        "receives (docs/adr/0030). Set it, and integration-gateway's matching GATEWAY_SENDER_ASSERTION_SECRET, to " +
+        "require a signed assertion instead.",
+    );
+  }
 
   if (callbackReceiver) {
     await callbackReceiver.listen(config.callbackPort);
@@ -551,8 +586,43 @@ async function main(): Promise<void> {
     agentWatch?.stop();
     integrationRouteWatch.stop();
     if (skillReindexTimer) clearTimeout(skillReindexTimer);
-    const closers: Promise<void>[] = [invokeServer.close()];
-    if (callbackReceiver) closers.push(callbackReceiver.close());
+
+    // Phase 1 -- stop accepting new work, then let in-flight requests finish.
+    // This MUST complete before the transports below are torn down: an
+    // in-flight chat turn is parked on a NATS subscription (`awaitReply`), so
+    // draining that connection in the same step -- as this used to, via a
+    // single `Promise.all` over every closer -- destroys the channel the
+    // request is waiting on and fails a perfectly healthy agent run. That is
+    // what produced a fabricated "produced no reply within <configured
+    // bound>ms" on AgentRun 0f97aa3d (run 20:15:36Z, rollout 53s later at
+    // 20:16:29Z, run itself succeeded at 20:19:30Z).
+    //
+    // Bounded, because k8s SIGKILLs at terminationGracePeriodSeconds (30s)
+    // regardless: past the deadline we stop waiting and tear down anyway, so
+    // a turn that outlives the grace period at least fails the same way it
+    // would have, rather than blocking the other closers entirely.
+    const httpDrained = Promise.all([
+      invokeServer.close(),
+      ...(callbackReceiver ? [callbackReceiver.close()] : []),
+    ]).then(
+      () => "drained" as const,
+      (err: unknown) => {
+        console.error("error draining HTTP servers during shutdown:", err);
+        return "drained" as const;
+      },
+    );
+    const drainOutcome = await Promise.race([
+      httpDrained,
+      new Promise<"deadline">((resolve) => setTimeout(() => resolve("deadline"), config.shutdownDrainMs)),
+    ]);
+    if (drainOutcome === "deadline") {
+      console.error(
+        `in-flight requests still running after ${config.shutdownDrainMs}ms; closing transports anyway (they will report a lost channel)`,
+      );
+    }
+
+    // Phase 2 -- nothing should still be waiting on these.
+    const closers: Promise<void>[] = [];
     if (config.natsUrl) {
       // NatsJobReceiver.close() drains the connection.
       closers.push((jobResultReceiver as NatsJobReceiver).close());

@@ -1,0 +1,72 @@
+{{- if .Values.integrationRoutes.githubPrLabeledTriage.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: IntegrationRoute
+metadata:
+  name: github-pr-labeled-triage
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  match:
+    source: github
+    event: pull_request
+    action: labeled
+    # This route and github-pr-labeled-review share the exact same
+    # source/event/action triple -- the label is the ONLY thing distinguishing
+    # "triage this PR" from "review this PR", so both must pin match.labelName
+    # or the two are indistinguishable and one silently swallows the other.
+    # Must equal integration-gateway's config.githubTriggerLabel (the gateway
+    # ignores a pull_request.labeled event for any other label).
+    labelName: {{ .Values.integrationRoutes.githubPrLabeledTriage.labelName | default "ai-triage" | quote }}
+  # No Tool wrapper needed -- dispatches straight to the Agent CR (ADR 0021),
+  # same pattern as integrationroute-github-issue-labeled-triage.yaml. Which
+  # SWE Agent CR handles the PR is value-driven (default opencode-swe-agent)
+  # so an environment can point it at claude-code-swe-agent instead without
+  # editing this template -- whichever it names must have enabled=true in the
+  # same values file, or this route dispatches to a non-existent Agent.
+  #
+  # The triage label on a PR means "pick this PR back up": address the review
+  # feedback on it, push the updates, and get it in sync with its base branch.
+  # Unlike the review route this one DOES push -- it's the same
+  # implement-and-push mandate as issue triage, just continuing an existing PR
+  # instead of opening one.
+  agentRef: {{ .Values.integrationRoutes.githubPrLabeledTriage.agentRef | default "opencode-swe-agent" }}
+  promptTemplate: |
+    Pull request {{`{{owner}}`}}/{{`{{repo}}`}}#{{`{{prNumber}}`}} was labeled "{{`{{labelName}}`}}": "{{`{{title}}`}}"
+
+    {{`{{body}}`}}
+
+    Pick this pull request back up and get it ready to merge. Work only in
+    {{`{{owner}}`}}/{{`{{repo}}`}} and only on this PR's existing branch -- do
+    not open a second pull request, do not create a repository, and do not
+    substitute any other repository or branch.
+
+    1. Check out the PR's branch (`gh pr checkout {{`{{prNumber}}`}}`).
+    2. Read ALL the feedback on it: the PR description, every review
+       (`gh pr view {{`{{prNumber}}`}} --comments`, `gh api` for review
+       comments), and any failing checks (`gh pr checks {{`{{prNumber}}`}}`).
+    3. Address that feedback in code. Fix the failing checks too. Where you
+       disagree with a comment, reply to it explaining why instead of silently
+       ignoring it.
+    4. Sync the branch with its base branch, resolving any conflicts
+       (`gh pr view {{`{{prNumber}}`}} --json baseRefName`, then rebase or
+       merge the base in -- match whatever this repository's history already
+       does). Push the result to the same branch so the PR itself updates.
+    5. Update the PR description if what it says no longer matches what the
+       branch does, and post one comment summarizing what you changed in
+       response to which feedback, plus anything you deliberately did not do.
+
+    Resolve every review comment you addressed. If something is genuinely
+    blocking you -- a comment you cannot act on without a decision, a conflict
+    you cannot resolve safely, missing permission -- stop and post a comment
+    saying exactly what you need, rather than guessing or working around it
+    somewhere else.
+
+    You get exactly one turn to do this -- you cannot pause partway through
+    and wait for a CI check, build, or test run to finish, and nothing will
+    re-invoke you automatically when one does. Push your work and post your
+    summary now. If a check is still running when you finish, say so in one
+    line -- do not let it block or delay pushing and summarizing, and do not
+    say you'll "finalize" or "resume" later. (The triage label is removed once
+    this run ends, so a maintainer can simply re-apply it to have you pick the
+    PR up again.)
+{{- end }}

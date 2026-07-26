@@ -250,10 +250,30 @@ claudeCodeSweAgent:
     providers:
       - github
       # - claude
+  # Remote Control (Claude Code's headless session takeover) needs a full
+  # ~/.claude/.credentials.json seeded into the pod before the main container
+  # starts. Enabling this adds an init container, sharing the main
+  # container's tmp emptyDir mount, that writes CLAUDE_LOGIN_CREDENTIALS_JSON
+  # to $SWE_HOME/.claude/.credentials.json, and sets CLAUDE_REMOTE_CONTROL=true
+  # on the main container so it actually runs claude-runner.ts's
+  # `--bg --remote-control` path instead of the plain one-shot `-p` turn.
+  # `identityLink.providers` above MUST also include "claude-remote" --
+  # without it, agent-orchestrator never resolves/injects the per-run
+  # CLAUDE_LOGIN_CREDENTIALS_JSON secret this init container reads, so
+  # remoteControl.enabled alone is not sufficient.
+  remoteControl:
+    enabled: false
+    # Static fallback secretRef for CLAUDE_LOGIN_CREDENTIALS_JSON, only used
+    # when both are set. In the common case this is left empty: the real
+    # per-user credential secret is resolved and injected at AgentRun launch
+    # time by agent-orchestrator's delegation logic (a later phase), not
+    # baked into this catalog entry.
+    credentialsSecretName: ""
+    credentialsSecretKey: ""
 
 # github: runs a single allowlisted gh CLI command (issue/pr/repo/release/
 # search/workflow/run), preferably authenticated as the calling user's own
-# linked GitHub identity rather than a shared bot credential (ADR 0022/0028).
+# linked GitHub identity rather than a shared bot credential (ADR 0022/0032).
 #
 # Two mutually-exclusive ways to give it a GitHub credential:
 #   1. GITHUB_TOKEN PAT (default) -- prerequisite (out-of-band -- Helm can't
@@ -267,7 +287,7 @@ claudeCodeSweAgent:
 #      identityLink option. Requires agent-orchestrator's own
 #      identityLink.enabled=true and a configured integration-gateway (see
 #      those charts' values.yaml), AND core-controller/agent-orchestrator
-#      built with ToolRun-level secretEnv support (ADR 0028).
+#      built with ToolRun-level secretEnv support (ADR 0032).
 githubTool:
   enabled: false
   image: github:latest
@@ -284,7 +304,7 @@ githubTool:
   secretName: github-tool-secrets
   secretKey: GITHUB_TOKEN
   # Per-user GitHub identity linking (docs/adr/0022, extended to container
-  # Tools by ADR 0028): when enabled, no static GITHUB_TOKEN secretEnv is set
+  # Tools by ADR 0032): when enabled, no static GITHUB_TOKEN secretEnv is set
   # on the Tool CR at all -- agent-orchestrator resolves the calling user's
   # own linked token per-invocation and injects it via ToolRunSpec.secretEnv
   # instead. Requires agent-orchestrator's own identityLink.enabled=true and
@@ -303,11 +323,16 @@ skills:
     enabled: true
   # self-improvement: drafts a new Skill/Tool CR from a successful fallback
   # turn (graph.ts's selectDelegate fallback) and opens a PR against
-  # imaustink/agent-controller by delegating straight to the opencode-swe-agent
-  # Agent CR (ADR 0021 -- no Tool wrapper needed). Requires
-  # opencodeSweAgent.enabled=true for its derived audience to be non-empty.
+  # imaustink/agent-controller by delegating straight to a SWE Agent CR
+  # (ADR 0021 -- no Tool wrapper needed).
   selfImprovement:
     enabled: false
+    # Which SWE Agent CR this skill delegates to. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to run it on the Claude Code engine instead). The
+    # named agent's enabled=true is what makes this skill's derived audience
+    # (ADR 0011) non-empty.
+    agentRef: opencode-swe-agent
   # web-search: answers a request using an in-cluster SearXNG search, and can
   # follow up with web-fetch to read a promising result's full page (see
   # webSearch and webFetch Tools above). Enable both webSearch.enabled=true
@@ -316,6 +341,39 @@ skills:
   webSearch:
     enabled: false
 
+# stub-agent: an END-TO-END TEST DOUBLE, not a component of the catalog.
+#
+# It speaks the real NATS agent protocol and returns a canned reply without
+# calling a model, so the e2e suite can assert the whole webhook -> triage ->
+# AgentRun -> reply -> issue-comment chain in a cluster that holds no Anthropic
+# credential. Enabled only by values-e2e.yaml; see apps/stub-agent.
+#
+# `enabled: true` alone is not enough -- the template also requires
+# acknowledgeNotForProduction, so that pointing a production route at an agent
+# which silently answers everything with a stub cannot happen by typo.
+stubAgent:
+  enabled: false
+  acknowledgeNotForProduction: false
+  image: stub-agent:latest
+  serviceAccountName: stub-agent
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+  # Which identityProviders the stub declares. Set these to match whichever
+  # agent it stands in for, or the identity gate takes a different path than
+  # production and the suite stops testing it (see agent-stub.yaml).
+  identityLink:
+    enabled: false
+    providers: []
+  # Turn pacing (apps/stub-agent/src/pacing.ts). All zero = reply immediately,
+  # which is what every spec other than resilience.e2e.ts wants; that one
+  # patches these onto the CR per test.
+  pacing:
+    narrateForMs: 0
+    narrateEveryMs: 2000
+    silentForMs: 0
+
 integrationRoutes:
   # github-issue-labeled-triage: an IntegrationRoute CR (docs/adr/0024)
   # dispatching a GitHub `issues`/`labeled` webhook event straight to
@@ -323,7 +381,45 @@ integrationRoutes:
   # skill retrieval -- integration-gateway relays the event once its
   # configured trigger label (integration-gateway's config.githubTriggerLabel)
   # is applied to the issue. A label, not an assignee: GitHub App bot users
-  # generally cannot be set as issue assignees. Requires
-  # opencodeSweAgent.enabled=true.
+  # generally cannot be set as issue assignees.
   githubIssueLabeledTriage:
     enabled: false
+    # Which SWE Agent CR handles a labeled issue. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to triage on the Claude Code engine instead).
+    agentRef: opencode-swe-agent
+  # github-pr-labeled-review: an IntegrationRoute CR dispatching a GitHub
+  # `pull_request`/`labeled` webhook straight to a SWE Agent with a review
+  # prompt, bypassing RAG skill retrieval -- integration-gateway relays the
+  # event once its configured review label
+  # (integration-gateway's config.githubReviewLabel) is applied to a PR. A
+  # human applies that label: the gateway drops bot-authored events, so the
+  # agent that opened the PR cannot self-trigger a review of its own PR.
+  githubPrLabeledReview:
+    enabled: false
+    # Which SWE Agent CR reviews a labeled PR. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to review on the Claude Code engine instead).
+    agentRef: opencode-swe-agent
+    # Which label selects this route rather than githubPrLabeledTriage below
+    # (both match pull_request/labeled -- the label is the only thing telling
+    # them apart). Must equal integration-gateway's config.githubReviewLabel.
+    labelName: ai-review
+  # github-pr-labeled-triage: an IntegrationRoute CR dispatching a GitHub
+  # `pull_request`/`labeled` webhook to a SWE Agent with a "pick this PR back
+  # up" prompt -- address the review feedback on it, push the updates, and sync
+  # the branch with its base. Triggered by the SAME label as issue triage
+  # (integration-gateway's config.githubTriggerLabel): "triage this" means
+  # investigate-and-open-a-PR on an issue and address-feedback-and-update on a
+  # PR, so which work it means is decided by what got labeled. Unlike the
+  # review route above, this one pushes commits. The gateway removes the label
+  # when the run ends, so re-applying it re-triggers.
+  githubPrLabeledTriage:
+    enabled: false
+    # Which SWE Agent CR updates a labeled PR. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to run on the Claude Code engine instead).
+    agentRef: opencode-swe-agent
+    # Which label selects this route rather than githubPrLabeledReview above.
+    # Must equal integration-gateway's config.githubTriggerLabel.
+    labelName: ai-triage

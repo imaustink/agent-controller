@@ -72,7 +72,7 @@ export interface AgentToolConfig {
    * How long (ms) to stay resident, tunnelable, after the coding task's
    * final reply before exiting (ADR 0026) -- reset by any live-viewer
    * activity. Must comfortably fit, together with actual task time, under
-   * agent-orchestrator's own `AGENT_RUN_TIMEOUT_SECONDS` (default 3600s),
+   * agent-orchestrator's own `AGENT_RUN_TIMEOUT_SECONDS` (default 28800s),
    * which hard-caps this Job's total lifetime regardless.
    */
   liveIdleTimeoutMs: number;

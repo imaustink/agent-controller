@@ -16,6 +16,18 @@ export interface AgentToolConfig {
    */
   githubToken: string;
   /**
+   * The caller's GitHub login, resolved by agent-orchestrator's authorization
+   * pre-flight and injected as `AGENT_ACTOR_LOGIN` (docs/adr/0030 §5).
+   *
+   * When set, this agent MUST NOT resolve identity itself. The orchestrator
+   * already established who the caller is before launching this run, and the
+   * `/user` lookup that used to happen here failed with 401 in production --
+   * a call this agent had no reason to make. Empty string means the
+   * orchestrator did not supply one (no `github` provider on this Agent), in
+   * which case the legacy lookup still applies.
+   */
+  actorLogin: string;
+  /**
    * GitHub App credentials, used instead of `githubToken` when all three are
    * set: a short-lived installation access token is minted per run (see
    * @controller-agent/github-app-auth) rather than using a long-lived static
@@ -74,6 +86,31 @@ export interface AgentToolConfig {
    * dir. Also under /tmp for the same reason as workdir.
    */
   homeDir: string;
+  /**
+   * When true, run turns via `claude --bg --remote-control` (see
+   * claude-runner.ts's `runClaudeTurnRemoteControlled`) instead of the default
+   * one-shot `claude -p`. Requires a separate Go/Helm phase's init container
+   * to have already seeded `$SWE_HOME/.claude/.credentials.json` before this
+   * process starts -- this flag alone does not provision credentials, it only
+   * selects which invocation shape to use.
+   */
+  remoteControlEnabled: boolean;
+  /**
+   * The `~/.claude/.credentials.json` blob this run was launched with, as
+   * injected by agent-orchestrator (`CLAUDE_LOGIN_CREDENTIALS_JSON`, the same
+   * value the init container writes to disk). Read here ONLY to tell a
+   * refreshed credentials file apart from the untouched original -- see
+   * ./credentialsWriteback.ts.
+   */
+  loginCredentialsJson: string;
+  /**
+   * Gateway endpoint + per-run grant token for persisting a credentials file
+   * the CLI refreshed mid-run (see ./credentialsWriteback.ts). Injected only
+   * for a `claude-remote` identity-linked launch; empty strings otherwise,
+   * which simply disables write-back.
+   */
+  credentialsWritebackUrl: string;
+  credentialsWritebackToken: string;
 }
 
 /**
@@ -90,6 +127,7 @@ function normalizePem(value: string | undefined): string {
 export function loadToolConfig(env: NodeJS.ProcessEnv = process.env): AgentToolConfig {
   return {
     githubToken: env.GITHUB_TOKEN ?? "",
+    actorLogin: env.AGENT_ACTOR_LOGIN ?? "",
     githubAppId: env.GITHUB_APP_ID ?? "",
     githubAppPrivateKey: normalizePem(env.GITHUB_APP_PRIVATE_KEY),
     githubAppInstallationId: env.GITHUB_APP_INSTALLATION_ID ?? "",
@@ -101,5 +139,9 @@ export function loadToolConfig(env: NodeJS.ProcessEnv = process.env): AgentToolC
     githubApiUrl: env.GITHUB_API_URL ?? "https://api.github.com",
     workdir: env.SWE_WORKDIR ?? `/tmp/swe-${randomUUID()}`,
     homeDir: env.SWE_HOME ?? "/tmp/home",
+    remoteControlEnabled: env.CLAUDE_REMOTE_CONTROL === "true",
+    loginCredentialsJson: env.CLAUDE_LOGIN_CREDENTIALS_JSON ?? "",
+    credentialsWritebackUrl: env.CLAUDE_CREDENTIALS_WRITEBACK_URL ?? "",
+    credentialsWritebackToken: env.CLAUDE_CREDENTIALS_WRITEBACK_TOKEN ?? "",
   };
 }

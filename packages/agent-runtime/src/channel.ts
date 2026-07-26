@@ -1,6 +1,7 @@
 import { connect, JSONCodec, type NatsConnection, type Subscription } from "nats";
 import {
   AgentDownMessageSchema,
+  NATS_RECONNECT_OPTIONS,
   agentSubjects,
   type AgentDownMessage,
   type AgentUpMessage,
@@ -36,7 +37,7 @@ export class NatsChannel implements AgentChannel {
 
   static async connect(config: AgentRuntimeConfig): Promise<NatsChannel> {
     const { up, down } = agentSubjects(config.runId, config.subjectPrefix);
-    const nc = await connect({ servers: config.natsUrl });
+    const nc = await connect({ servers: config.natsUrl, ...NATS_RECONNECT_OPTIONS });
     const sub = nc.subscribe(down);
     return new NatsChannel(nc, up, sub);
   }

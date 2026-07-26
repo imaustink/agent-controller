@@ -4,14 +4,15 @@ import type { Event } from "@controller-agent/messaging";
 import { extractContinuationToken, prependContinuationToken } from "../continuation.js";
 import { SELF_IMPROVEMENT_FOOTER } from "../openai/chat-completions.js";
 import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-agent-channel.js";
-import { AgentTurnFailedError, AgentTurnTimeoutError } from "../agents/nats-agent-channel.js";
+import { AgentTurnFailedError, AgentTurnTimeoutError, AgentTurnTransportError } from "../agents/nats-agent-channel.js";
 import type { AgentDescriptor, AgentSearchResult, AgentStore } from "../agents/types.js";
 import type { JobResultReceiver } from "../callback/receiver.js";
 import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
 import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { SecretKeySelector } from "../k8s/toolrun-launcher.js";
 import type { LocalToolExecutor } from "../local/local-tool-executor.js";
-import type { IdentityLinkPort } from "../identity-link/gateway-client.js";
+import type { IdentityLinkPort, IdentityLinkStartResult } from "../identity-link/gateway-client.js";
+import { resolveActorLogin, resolvePrincipal } from "../identity-link/credential-subject.js";
 import type { IdentityResolver, Identity } from "../rbac/types.js";
 import type { SkillDescriptor, SkillSearchResult, SkillStore } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
@@ -24,6 +25,19 @@ import type { ResponseComposer } from "./response-composer.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
+import { makeSubAgentToolCallHandler, type ToolCatalog } from "./dispatch-tool.js";
+import {
+  ACTOR_LOGIN_ENV,
+  AuthorizationService,
+  CROSS_ENTRY_POINT_PROVIDERS,
+  linkPromptText,
+  PROVIDER_LABEL,
+} from "./authorization-service.js";
+
+// Re-exported: several tests and callers import ACTOR_LOGIN_ENV from this
+// module, and the constant's home is now the authorization service that owns
+// the decision to inject it.
+export { ACTOR_LOGIN_ENV };
 
 /**
  * Agent state threaded through the graph (docs/adr/0008, docs/adr/0012,
@@ -239,6 +253,42 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => undefined,
   }),
   /**
+   * A second, narrower progress hook -- deliberately SEPARATE from
+   * `progressListener` above. `progressListener`'s presence is also what the
+   * identity-link gate (below) uses to decide "does this caller have a live
+   * channel to show a link on right now, so it's worth synchronously
+   * `waitForCompletion`-ing" vs. "fire-and-forget: post the link and return
+   * immediately, let a later re-trigger resume." A fire-and-forget caller
+   * (integration-gateway's GitHub-issue triage relay) still wants to capture
+   * a `remote-control-url` progress event when one arrives, but attaching
+   * THAT capture via `progressListener` would wrongly make delegateToAgent
+   * treat it as a live channel and block the whole turn on
+   * `waitForCompletion` for up to the link flow's full expiry -- exactly the
+   * regression this field exists to avoid (a real incident: triage silently
+   * hung for minutes with nothing posted to the issue, traced to this
+   * conflation). Every delegate node forwards `remote-control-url` events to
+   * this listener regardless of whether `progressListener` is also set.
+   */
+  remoteControlUrlListener: Annotation<((url: string) => void) | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * Fired the instant `delegateToAgent` decides this caller must link an
+   * identity (getToken miss) -- BEFORE the potentially slow `start()` (the
+   * claude provider spawns a `setup-token` PTY that can take seconds). Lets a
+   * fire-and-forget caller (integration-gateway's triage relay) mark its
+   * in-flight `/invoke` job as identity-link-pending immediately, so that
+   * caller can withhold a premature "starting work" acknowledgement while the
+   * link is still being set up (issue: "check auth before saying work has
+   * started"). Absent on paths that don't need it (streaming chat, tests) --
+   * dropped silently, same as `progressListener`.
+   */
+  reportIdentityLinkPending: Annotation<((info: { provider: string; subject: string }) => void) | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
    * True when `selectDelegate` found no matching Skill/Agent candidate at
    * all and `noMatchFallback` handled the turn instead — either a relevance-
    * gated direct tool call (selectFallbackTool) or a bare best-effort LLM
@@ -284,6 +334,24 @@ export const AgentStateAnnotation = Annotation.Root({
         flow: "device" | "authcode" | "page";
         deviceCode?: string;
         expiresAt: number;
+        /**
+         * The subject this link was actually STARTED against -- the
+         * canonical `github:<login>` for a Claude provider, the raw subject
+         * otherwise (see `resolveCredentialSubject`).
+         *
+         * Carried explicitly rather than recomputed downstream, and that is
+         * the entire point of the field. PR #144 re-keyed the gate but left
+         * the resume path and the terminal `/invoke` record recomputing from
+         * `identity.subject`, so the link was STORED under one subject and
+         * WAITED on under another -- it never resolved and the user was
+         * re-prompted forever (reverted in PR #145). Every consumer now reads
+         * this value instead of deriving its own, so store and wait cannot
+         * drift apart again.
+         *
+         * Optional so a session that paused before this field existed still
+         * resumes (falling back to the raw subject) rather than crashing.
+         */
+        subject?: string;
         /**
          * The turn's original request, captured when the pause started, so
          * resuming re-delegates with the ORIGINAL goal instead of whatever
@@ -334,6 +402,27 @@ export const AgentStateAnnotation = Annotation.Root({
    * from it alone would collapse every human into one shared subject.
    */
   forwardedUserToken: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * GitHub login of the human who triggered this turn, when the trigger came
+   * from a GitHub webhook (set by the server from `/invoke`'s `event`
+   * descriptor, which integration-gateway populates from the
+   * signature-verified webhook payload).
+   *
+   * This is the ONLY per-user identifier the triage/review path has:
+   * integration-gateway authenticates to `/invoke` with its own OIDC service
+   * token, so `identity.subject` there is one shared service subject for
+   * every trigger, identical no matter who applied the label. Without this
+   * field there is nothing to key a per-user credential on, which is why
+   * Claude credentials authorized during triage were invisible to chat and
+   * vice versa. Consumed only by `resolveCredentialSubject`.
+   *
+   * Absent for ordinary chat turns, which have no GitHub webhook behind them
+   * and resolve their login from the caller's own `github` link instead.
+   */
+  senderLogin: Annotation<string | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
@@ -422,6 +511,12 @@ export interface AgentGraphDeps {
   /** Bounds an AgentRun's activeDeadlineSeconds — typically longer than a tool's, since an agent may wait on a human. */
   agentRunTimeoutSeconds?: number;
   /**
+   * How long an agent may go silent (no up-message at all) before the
+   * orchestrator gives up on its reply. Bounds silence, not total run time —
+   * see `agentAwaitReplyIdleTimeoutMs`.
+   */
+  agentIdleTimeoutSeconds?: number;
+  /**
    * k8s Secret name/key the AgentRun CR's (currently vestigial) callback
    * field references — reuses the same secretRef as ToolRun. Required
    * whenever `agentRunLauncher` is set.
@@ -475,27 +570,59 @@ export interface AgentGraphDeps {
    * directly by provider-generic code.
    */
   claudeAuthGateway?: IdentityLinkPort;
+  /**
+   * Direct (non-RAG) lookup of the full tool catalog by id (docs/adr/0028),
+   * used ONLY to resolve a running sub-agent's own `tool_call` requests
+   * against its launching Agent's `toolRefs` allowlist -- deliberately NOT
+   * the RBAC-filtered `vectorStore`: an Agent's `toolRefs` is a static,
+   * operator-declared allowlist for THAT AGENT (re-validated by the Go
+   * controller independent of the walk-in caller's roles), not a per-caller
+   * retrieval filter. Backed by the same `toolsById` map ADR 0020 already
+   * builds in `index.ts`. Optional: absent -> a sub-agent's tool_call
+   * requests fail closed with a clear error instead of silently hanging.
+   */
+  toolCatalog?: ToolCatalog;
+  /**
+   * Client for apps/integration-gateway's claude-auth API in its `"login"`
+   * mode -- the `claude-remote`-provider counterpart of `claudeAuthGateway`,
+   * kept as its own optional dep (not folded into `claudeAuthGateway`) since
+   * the two flows resolve to differently-shaped credentials (a single OAuth
+   * token vs. a whole `credentialsJson` blob) that get injected into a
+   * launched run under different env vars (`PROVIDER_ENV_VAR` below).
+   * Resolved via `identityGatewayFor`, never referenced directly by
+   * provider-generic code.
+   */
+  claudeRemoteGateway?: IdentityLinkPort;
+  /**
+   * Mints the per-run credential write-back grant a `claude-remote` launch
+   * carries (see `CREDENTIALS_WRITEBACK_ENV`). Separate from
+   * `claudeRemoteGateway` because `IdentityLinkPort` is provider-generic and
+   * this is specific to the one provider whose credential is a refreshable
+   * file: only `claude-remote` ships a whole `~/.claude/.credentials.json`
+   * that the run's CLI rewrites in place. Optional -- absent (or returning
+   * `undefined`) simply means runs don't persist refreshed credentials, the
+   * behavior before this existed.
+   */
+  claudeRemoteWriteback?: {
+    createWritebackGrant(subject: string, ttlSeconds: number): Promise<{ url: string; token: string } | undefined>;
+  };
 }
-
-/**
- * Maps an identity-linked provider (Agent.identityProviders, e.g. "github")
- * to the env var name its linked token is injected as (AgentLaunchOptions'
- * secretEnv, agentrun-launcher.ts).
- */
-const PROVIDER_ENV_VAR: Record<string, string> = { github: "GITHUB_TOKEN", claude: "CLAUDE_CODE_OAUTH_TOKEN" };
-
-/** Human-facing label for a provider, used in link prompts/messages. */
-const PROVIDER_LABEL: Record<string, string> = { github: "GitHub", claude: "Claude" };
 
 /**
  * Resolves which gateway client backs a given identity provider (docs/adr/0027)
  * -- the one place that knows `"claude"` routes to `deps.claudeAuthGateway`
- * instead of the (GitHub-only-in-practice) `deps.identityLinkGateway`, so the
- * three call sites below (`checkPendingIdentityLink`, `delegateToAgent`, the
- * agent-backed-tool path) stay provider-agnostic.
+ * and `"claude-remote"` routes to `deps.claudeRemoteGateway`, instead of the
+ * (GitHub-only-in-practice) `deps.identityLinkGateway`.
+ *
+ * Kept here as a thin adapter over the same resolution
+ * {@link AuthorizationService} performs internally, for the two link-lifecycle
+ * call sites (`startReplacementLink`, `checkPendingIdentityLink`) that operate
+ * on an ALREADY-STARTED link rather than making an authorization decision.
  */
 function identityGatewayFor(provider: string, deps: AgentGraphDeps): IdentityLinkPort | undefined {
-  return provider === "claude" ? deps.claudeAuthGateway : deps.identityLinkGateway;
+  if (provider === "claude") return deps.claudeAuthGateway;
+  if (provider === "claude-remote") return deps.claudeRemoteGateway;
+  return deps.identityLinkGateway;
 }
 
 /**
@@ -514,6 +641,11 @@ function afterOrEnd(next: string) {
 function agentTurnErrorMessage(err: unknown): string {
   if (err instanceof AgentTurnFailedError) return `agent failed (${err.code}): ${err.message}`;
   if (err instanceof AgentTurnTimeoutError) return err.message;
+  // Don't claim the agent failed — we only lost the channel to it. Say so, so
+  // the user knows to check the run rather than assume the work was lost.
+  if (err instanceof AgentTurnTransportError) {
+    return `${err.message} — check the agent run for its result before retrying`;
+  }
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -525,6 +657,89 @@ function agentTurnErrorMessage(err: unknown): string {
 const CLAUDE_AUTH_EXPIRED_CODE = "claude_auth_expired";
 
 /**
+ * Failure `code` reported when the credential that expired was specifically
+ * the `claude-remote` full-login blob (`~/.claude/.credentials.json`, used for
+ * Remote Control) rather than the `claude` setup-token.
+ *
+ * Two codes rather than one because the recovery is to DELETE the stale
+ * record, and the two providers' records are stored separately: an agent that
+ * declares both (claude-code-swe-agent's `["claude", "claude-remote"]`) would
+ * otherwise have the wrong one invalidated -- the previous code invalidated
+ * `identityProviders[0]`, i.e. always `claude`, leaving the login blob that
+ * actually failed in place to fail again on the next run while forcing a
+ * pointless re-link of a setup-token that was fine.
+ */
+const CLAUDE_REMOTE_AUTH_EXPIRED_CODE = "claude_remote_auth_expired";
+
+/** Which provider's stored credential a given auth-expired failure code refers to. */
+const AUTH_EXPIRED_CODE_PROVIDER: Record<string, string> = {
+  [CLAUDE_AUTH_EXPIRED_CODE]: "claude",
+  [CLAUDE_REMOTE_AUTH_EXPIRED_CODE]: "claude-remote",
+};
+
+/**
+ * Starts a fresh link flow immediately after a stale credential was
+ * invalidated, returning the same `result` + `pendingIdentityLink` +
+ * `identityLinkPending` shape as `delegateToAgent`'s first-time link prompt --
+ * so every caller that already knows how to show a link prompt and resume once
+ * it completes handles a re-link identically, with no new contract.
+ *
+ * Returns `undefined` if the flow can't be started (for `claude-remote` that
+ * means the gateway's PTY `claude login` failed to produce a URL), leaving the
+ * caller to fall back to a plain retry message. Never throws: this runs on an
+ * already-failing turn, and turning a recoverable auth failure into an opaque
+ * crash would be strictly worse than the message it replaces.
+ */
+async function startReplacementLink(
+  gateway: IdentityLinkPort,
+  state: AgentState,
+  provider: string,
+  agentId: string,
+  /**
+   * The subject whose credential was just invalidated -- passed in rather
+   * than re-derived so the replacement link is started against exactly the
+   * record that was cleared (see `pendingIdentityLink.subject`).
+   */
+  subject: string,
+): Promise<Partial<AgentState> | undefined> {
+  if (!state.identity) return undefined;
+  const flow = state.identityLinkFlow ?? "authcode";
+  // try/catch around the await rather than `.catch()` on the returned value:
+  // `start` is only contractually a promise, and a partial `IdentityLinkPort`
+  // (any test double that stubs `start` without a return value) would otherwise
+  // crash this recovery path with a TypeError on `undefined.catch`.
+  let started: IdentityLinkStartResult | null = null;
+  try {
+    started = (await gateway.start(provider, subject, flow)) ?? null;
+  } catch (err) {
+    console.error(
+      `[identity-gate] start threw while re-linking provider ${provider} after an expired credential; falling back to a retry message: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (!started) return undefined;
+
+  state.reportIdentityLinkPending?.({ provider, subject });
+  const label = PROVIDER_LABEL[provider] ?? provider;
+  return {
+    result:
+      `⚠️ Your linked ${label} account's credential expired, so this request couldn't complete. ` +
+      `To finish it, please ${linkPromptText(started, label)} — I'll pick this request back up automatically as soon as you do.`,
+    pendingIdentityLink: {
+      agentId,
+      provider,
+      flow: started.flow,
+      ...(started.flow === "device" ? { deviceCode: started.deviceCode } : {}),
+      expiresAt: Date.now() + started.expiresInSeconds * 1000,
+      subject,
+      // THIS request, not whatever text a later turn happens to carry -- the
+      // resume re-delegates the work that was interrupted.
+      request: state.request,
+    },
+    identityLinkPending: true,
+  };
+}
+
+/**
  * Handles a delegated agent turn's failure, recognizing the one recoverable
  * case (docs/adr/0027's re-auth path) specially: an expired/invalid Claude
  * Code credential. Rather than surfacing that as a hard `state.error` (which
@@ -534,19 +749,79 @@ const CLAUDE_AUTH_EXPIRED_CODE = "claude_auth_expired";
  * `result` telling the user what happened and that simply retrying will
  * prompt them to relink. Every other failure falls back to the ordinary
  * `state.error` path, unchanged.
+ *
+ * WHICH provider's credential to invalidate comes from the failure code
+ * itself (`AUTH_EXPIRED_CODE_PROVIDER`), not from the agent's declared
+ * provider list: an agent can declare several (claude-code-swe-agent declares
+ * both `claude` and `claude-remote` and holds a live credential for each), and
+ * only the run itself knows which one the CLI actually rejected. The caller's
+ * `declaredProviders` is used solely as a sanity bound -- an agent that
+ * doesn't declare the mapped provider falls back to its first declared one, so
+ * a code from an agent whose wiring changed still invalidates something real
+ * rather than nothing.
  */
 async function handleAgentTurnFailure(
   err: unknown,
   deps: AgentGraphDeps,
   state: AgentState,
+  agent?: { id: string; identityProviders?: string[] },
 ): Promise<Partial<AgentState>> {
-  if (err instanceof AgentTurnFailedError && err.code === CLAUDE_AUTH_EXPIRED_CODE && deps.claudeAuthGateway && state.identity) {
-    await deps.claudeAuthGateway.invalidate?.("claude", state.identity.subject).catch(() => {});
-    return {
-      result:
-        "Your linked Claude account's credential looks expired or invalid, so this request couldn't complete. " +
-        "Send your request again and I'll walk you through relinking it.",
-    };
+  const code = err instanceof AgentTurnFailedError ? err.code : undefined;
+  if (code && AUTH_EXPIRED_CODE_PROVIDER[code] && state.identity) {
+    const declaredProviders = agent?.identityProviders;
+    const mapped = AUTH_EXPIRED_CODE_PROVIDER[code]!;
+    const provider =
+      !declaredProviders || declaredProviders.includes(mapped) ? mapped : (declaredProviders[0] ?? mapped);
+    const gateway = identityGatewayFor(provider, deps);
+    if (gateway) {
+      // Whether the stale record was actually DELETED decides which advice is
+      // honest. Invalidation is what makes the next attempt prompt for a fresh
+      // link; if it silently failed, "try again" sends the user into a loop
+      // that repeats this exact failure forever, because `getToken` keeps
+      // finding the same dead credential. So track the outcome instead of
+      // swallowing it, and log it -- a failure here is otherwise invisible,
+      // indistinguishable from success in both the logs and the reply.
+      let invalidated = true;
+      // Must clear the record the gate actually READ, or the "expired
+      // credential" the run just tripped over survives and every retry
+      // re-reads it.
+      const staleSubject = CROSS_ENTRY_POINT_PROVIDERS.has(provider)
+        ? (state.identity.principal ?? state.identity.subject)
+        : state.identity.subject;
+      await gateway.invalidate?.(provider, staleSubject).catch((invalidateErr: unknown) => {
+        invalidated = false;
+        console.error(
+          `[identity-gate] invalidate failed for provider ${provider}; the stale credential is still stored: ${invalidateErr instanceof Error ? invalidateErr.message : String(invalidateErr)}`,
+        );
+      });
+      const label = PROVIDER_LABEL[provider] ?? provider;
+      if (!invalidated) {
+        return {
+          result:
+            `⚠️ Your linked ${label} account's credential looks expired or invalid, so this request couldn't complete. ` +
+            "I also couldn't clear the stored credential, so retrying will hit the same error until it's cleared by hand.",
+        };
+      }
+
+      // Start the REPLACEMENT link right here, in this same turn, and hand back
+      // the URL. Invalidating and then telling the user to trigger the whole
+      // thing again is a dead end dressed up as a recovery: it costs them a
+      // round trip to receive a link they could have had immediately, and on a
+      // label-driven run the retry instruction is itself a second manual step.
+      // Returning `identityLinkPending` also arms the caller's auto-resume
+      // (integration-gateway's `waitAndResume`), so finishing the link re-runs
+      // THIS request instead of requiring yet another trigger.
+      const relink = agent ? await startReplacementLink(gateway, state, provider, agent.id, staleSubject) : undefined;
+      if (relink) return relink;
+
+      // start() failed (or there's no agent context to park a pending link
+      // against). The stale credential IS gone, so a retry genuinely will
+      // prompt for a link -- it just costs another trigger.
+      const retry = state.progressListener
+        ? "Send your request again and I'll walk you through relinking it."
+        : "Re-apply the label to try again and I'll post a link for relinking it.";
+      return { result: `⚠️ Your linked ${label} account's credential looks expired or invalid, so this request couldn't complete. ${retry}` };
+    }
   }
   return { error: agentTurnErrorMessage(err) };
 }
@@ -573,29 +848,44 @@ function dropStreamedNarrative(message: string): string {
 }
 
 /**
- * Composes the visible message for a finished (or paused) agent turn.
- * Non-streaming callers (no progress listener) never saw any of this live,
- * so they get the collected narration prepended as a fallback transcript.
- * Streaming callers already watched the narrative go by as content deltas,
- * so duplicating it here would repeat the whole summary in the chat.
+ * Composes the visible message for a finished (or paused) agent turn -- the
+ * agent's final reply only, NOT the progress narration.
+ *
+ * `reply.narration` is the collected progress trail ("Authenticating…",
+ * "running Bash", tool-by-tool status, ...). It's useful live, but it does not
+ * belong in a durable, one-shot delivery like a GitHub issue comment: an
+ * earlier version prepended the whole trail on the non-streaming path, which
+ * turned every triage reply into a giant transcript ending in the actual
+ * summary. Both paths now yield just the final answer:
+ *   - Streaming caller (progress listener): the narrative already went by as
+ *     live content deltas, so drop it from the final message
+ *     (`dropStreamedNarrative`) to avoid repeating it.
+ *   - Non-streaming caller (e.g. integration-gateway's triage relay): never
+ *     saw the trail, but shouldn't -- the durable comment is the summary;
+ *     live progress belongs on the session page instead. Post `reply.message`
+ *     as-is.
  */
 function composeAgentTurnMessage(state: Pick<AgentState, "progressListener">, reply: AgentTurnResult): string {
   if (state.progressListener) return dropStreamedNarrative(reply.message);
-  return reply.narration.length > 0 ? `${reply.narration.join("\n")}\n\n${reply.message}` : reply.message;
+  return reply.message;
 }
 
 /**
- * How long the orchestrator waits on NATS for an agent's reply. Must be at
- * least as long as the k8s Job's own `activeDeadlineSeconds`
- * (`deps.agentRunTimeoutSeconds`) plus a grace period, so a run that hits its
- * own deadline gets the chance to publish a `failed` event (a clear, specific
- * error) before the orchestrator's client-side wait gives up first with a
- * generic "produced no reply" timeout. Falls back to nats-agent-channel.ts's
- * own default when no deadline is configured.
+ * How long the orchestrator tolerates SILENCE from an agent before giving up
+ * on its reply — reset by every up-message, including progress narration
+ * (`awaitReply`, nats-agent-channel.ts). It is deliberately unrelated to the
+ * Job's `activeDeadlineSeconds` (`deps.agentRunTimeoutSeconds`) now: this used
+ * to be derived from that deadline plus a grace period, on the theory that the
+ * client wait must outlast the Job so a deadline-exceeded run could publish a
+ * `failed` event first. That coupling meant a long-running-but-healthy agent
+ * was racing a total-duration bound, and the derived bound didn't work anyway
+ * (see `awaitReply`'s note on nats.js's first-message `{ timeout }`). An
+ * agent that keeps narrating is now never cut off no matter how long it runs;
+ * the Job's own deadline remains the only wall-clock ceiling, and it still
+ * gets to publish `failed` because we are still listening when it does.
  */
-const AGENT_TIMEOUT_GRACE_MS = 60_000;
-function agentAwaitReplyTimeoutMs(agentRunTimeoutSeconds: number | undefined): number | undefined {
-  return agentRunTimeoutSeconds ? agentRunTimeoutSeconds * 1000 + AGENT_TIMEOUT_GRACE_MS : undefined;
+function agentAwaitReplyIdleTimeoutMs(deps: Pick<AgentGraphDeps, "agentIdleTimeoutSeconds">): number | undefined {
+  return deps.agentIdleTimeoutSeconds ? deps.agentIdleTimeoutSeconds * 1000 : undefined;
 }
 
 function appendSelfImprovementSuggestion(message: string): string {
@@ -703,6 +993,12 @@ async function noMatchFallback(state: AgentState, deps: AgentGraphDeps): Promise
 
 /** Builds and compiles the LangGraph.js agent graph (docs/adr/0008, superseding the earlier flat tool-RAG flow). */
 export function buildAgentGraph(deps: AgentGraphDeps) {
+  // The single owner of the authorization decision (docs/adr/0030 §1).
+  // Constructed here, from deps, rather than injected: it is not a swappable
+  // policy but the graph's own gate, and making it a dep would invite a
+  // deployment that supplied a permissive one.
+  const authorization = new AuthorizationService(deps);
+
   const graph = new StateGraph(AgentStateAnnotation)
     .addNode("resolveIdentity", async (state) => {
       // Prefer Open WebUI's per-request signed user JWT over the shared
@@ -717,7 +1013,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (!identity) {
         return { error: "unauthorized: could not resolve caller identity" };
       }
-      return { identity };
+      // Resolve the PRINCIPAL once, here, rather than per-provider deeper in
+      // the graph (docs/adr/0030 §6). Doing it at identity time means every
+      // downstream consumer reads one already-decided value instead of each
+      // re-deriving its own -- the re-derivation that let store and wait drift
+      // apart in PR #144.
+      const principal = await resolvePrincipal(identity.subject, state.senderLogin, deps.identityLinkGateway);
+      return { identity: { ...identity, principal } };
     })
     .addNode("checkIntegrationRoute", async (state) => {
       // Deterministic dispatch for a turn whose intent is already
@@ -780,10 +1082,15 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // browser round-trip completes out-of-band, via integration-gateway's
       // own OAuth callback route or claude-auth's code-paste page
       // respectively), so both just check whether a token has landed yet.
+      // The subject the link was STARTED against, not a freshly derived one.
+      // Recomputing here is precisely what desynced in PR #144; the fallback
+      // covers only sessions that paused before the field existed, whose
+      // links were started against the raw subject anyway.
+      const pendingSubject = pending.subject ?? state.identity.subject;
       const status =
         pending.flow === "device"
-          ? await gateway.poll(pending.provider, state.identity.subject, pending.deviceCode!)
-          : (await gateway.getToken(pending.provider, state.identity.subject))
+          ? await gateway.poll(pending.provider, pendingSubject, pending.deviceCode!)
+          : (await gateway.getToken(pending.provider, pendingSubject))
             ? "complete"
             : Date.now() < pending.expiresAt
               ? "pending"
@@ -845,8 +1152,17 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
 
       try {
         const awaitReply = deps.agentChannel.awaitReply(state.activeAgentRunId, {
-          timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
-          onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+          idleTimeoutMs: agentAwaitReplyIdleTimeoutMs(deps),
+          onProgress:
+            state.progressListener || state.remoteControlUrlListener
+              ? (stage, message) => {
+                  state.progressListener?.(stage ?? "agent", message);
+                  if (stage === "remote-control-url" && message) state.remoteControlUrlListener?.(message);
+                }
+              : undefined,
+          onToolCall: makeSubAgentToolCallHandler(state.activeAgentRunId, found.agent, deps.agentChannel, deps.toolCatalog, deps, {
+            sessionId: state.sessionId,
+          }),
         });
         await deps.agentChannel.sendPrompt(state.activeAgentRunId, state.request);
         const reply = await awaitReply;
@@ -864,7 +1180,10 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
-        return { agentRunId: state.activeAgentRunId, ...(await handleAgentTurnFailure(err, deps, state)) };
+        return {
+          agentRunId: state.activeAgentRunId,
+          ...(await handleAgentTurnFailure(err, deps, state, found.agent)),
+        };
       }
     })
     .addNode("checkNeedsCapability", async (state) => {
@@ -940,128 +1259,54 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       }
       const agent = state.selectedAgent;
 
-      // TEMPORARY diagnostic for the "launched with no GITHUB_TOKEN despite
-      // a linked identity" investigation -- remove once root-caused. Logs
-      // exactly what this call sees at the identity-gate decision point,
-      // never the token value itself.
-      console.log(
-        "[identity-gate-debug] delegateToAgent",
-        JSON.stringify({
-          agentId: agent.id,
-          identityProviders: agent.identityProviders,
-          hasIdentityLinkGateway: Boolean(deps.identityLinkGateway),
-          subject: state.identity.subject,
-          roles: state.identity.roles,
-          hasProgressListener: Boolean(state.progressListener),
-        }),
-      );
+      // ── Authorization pre-flight (docs/adr/0030) ────────────────────────
+      // The ONE authorization decision for this launch, owned by graph control
+      // flow and made before anything is created. Everything it needs is named
+      // in the request; nothing the planner produced influences it beyond the
+      // request text carried onto a parked link.
+      //
+      // The logic used to live inline here -- ~300 lines between this comment
+      // and the launch below. Extracting it changed no behaviour; it gave the
+      // decision a boundary, so "may this run start, and with whose
+      // credentials" is answered by one call with a total return type rather
+      // than by reading the node.
+      const verdict = await authorization.authorize({
+        agent: { id: agent.id, identityProviders: agent.identityProviders },
+        identity: state.identity,
+        request: state.request,
+        senderLogin: state.senderLogin,
+        progressListener: state.progressListener,
+        reportIdentityLinkPending: state.reportIdentityLinkPending,
+        identityLinkFlow: state.identityLinkFlow,
+      });
 
-      // Per-caller identity gate (replaces the old shared static credential
-      // for any Agent that declares `identityProviders`): the FIRST time this
-      // caller delegates to such an agent, they must link their own account
-      // with that provider (one-time OAuth device/authcode flow for
-      // "github", or a PTY `setup-token` flow for "claude", docs/adr/0027)
-      // before a launch is even attempted. Only the FIRST declared provider
-      // is gated end-to-end today (multi-provider agents aren't expected in
-      // practice yet); `identityGatewayFor` is what lets this stay
-      // provider-agnostic as more are added.
-      let identitySecretEnv: { name: string; value: string }[] | undefined;
-      if (agent.identityProviders && agent.identityProviders.length > 0) {
-        const provider = agent.identityProviders[0]!;
-        const gateway = identityGatewayFor(provider, deps);
-        if (!gateway) {
-          return {
-            error: `agent ${agent.id} requires identity providers (${agent.identityProviders.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
-          };
-        }
-        let existing = await gateway.getToken(provider, state.identity.subject);
-        console.log(
-          "[identity-gate-debug] getToken",
-          JSON.stringify({ provider, subject: state.identity.subject, found: Boolean(existing) }),
-        );
-        if (!existing) {
-          // Ordinary Open WebUI chat turns never set `identityLinkFlow`, so
-          // they default to the browser-redirect authcode flow; a headless
-          // direct `/invoke` caller (e.g. integration-gateway's own
-          // GitHub-issue relay) can force the device flow instead, since it
-          // has no browser to redirect. Ignored by the `claude` provider's
-          // gateway client (it only has one flow shape).
-          const flow = state.identityLinkFlow ?? "authcode";
-          const started = await gateway.start(provider, state.identity.subject, flow);
-          const label = PROVIDER_LABEL[provider] ?? provider;
-          const linkUrlText =
-            started.flow === "device"
-              ? `[link your ${label} account](${started.verificationUri}) and enter code \`${started.userCode}\``
-              : started.flow === "authcode"
-                ? `[link your ${label} account](${started.authorizeUrl})`
-                : `[link your ${label} account](${started.pageUrl})`;
-
-          // Block for up to this flow's own expiry waiting for the caller to
-          // complete authorization -- `waitForCompletion` blocks on the
-          // gateway's own Redis-backed wait (not local polling) purely by
-          // (provider, subject), so it resolves the moment EITHER flow lands
-          // a token, regardless of which one was started. This is what lets
-          // ANY caller resume automatically without a follow-up message, not
-          // just SSE-streaming ones: `/invoke`'s own async accept/poll
-          // contract (ADR 0006) already tolerates a graph run taking several
-          // minutes, so a fire-and-forget caller (e.g. integration-gateway's
-          // GitHub relay, always device flow) benefits from this exactly the
-          // same way a streaming chat turn does. `progressListener`, when
-          // present, only adds narration while waiting; it does not gate
-          // whether we wait at all.
-          state.progressListener?.("identity-link", `To continue, please ${linkUrlText}. This is a one-time step — I'll continue automatically once you finish.`);
-          try {
-            existing = await gateway.waitForCompletion?.(
-              provider,
-              state.identity.subject,
-              started.expiresInSeconds * 1000,
-            );
-          } catch (err) {
-            // The long-held wait is inherently fragile: the gateway pod can
-            // roll (a deploy mid-flow), an intermediary can drop an idle
-            // connection, or undici can abort a multi-minute request on its
-            // own headers timeout -- all surface here as a thrown "fetch
-            // failed". None of that means the LINK failed: the user can still
-            // complete it in their browser. So swallow the throw and fall
-            // through to the same pending-link state a plain timeout produces
-            // -- the user links, sends any message, and
-            // checkPendingIdentityLink resumes via getToken. Previously this
-            // threw straight out of the node and surfaced to the user as a
-            // bare "❌ fetch failed", aborting an otherwise-fine link attempt.
-            console.error(
-              `[identity-gate] waitForCompletion threw for provider ${provider}; treating as not-yet-linked and parking pending: ${err instanceof Error ? err.message : String(err)}`,
-            );
-            existing = undefined;
-          }
-
-          if (!existing) {
-            return {
-              result: `To continue, please ${linkUrlText}. This is a one-time step -- send any message once you're done.`,
-              pendingIdentityLink: {
-                agentId: agent.id,
-                provider,
-                flow: started.flow,
-                ...(started.flow === "device" ? { deviceCode: started.deviceCode } : {}),
-                expiresAt: Date.now() + started.expiresInSeconds * 1000,
-                // Captured so the eventual resume (checkPendingIdentityLink)
-                // re-delegates with THIS goal, not whatever text the turn
-                // that finally notices completion happens to carry.
-                request: state.request,
-              },
-              identityLinkPending: true,
-            };
-          }
-        }
-        const envVarName = PROVIDER_ENV_VAR[provider];
-        if (!envVarName) {
-          return { error: `agent ${agent.id} declares unsupported identity provider "${provider}"` };
-        }
-        identitySecretEnv = [{ name: envVarName, value: existing.token }];
+      if (verdict.kind === "misconfigured") {
+        return { error: verdict.error };
       }
-      console.log(
-        "[identity-gate-debug] pre-launch",
-        JSON.stringify({ agentId: agent.id, hasIdentitySecretEnv: Boolean(identitySecretEnv) }),
-      );
+      if (verdict.kind === "link-required") {
+        // The turn ends here with the batched link prompt. `pendingIdentityLink`
+        // is the resume anchor checkPendingIdentityLink and
+        // integration-gateway's waitAndResume key off; it is absent when every
+        // provider merely failed to START, since there is no started flow to
+        // resume against -- re-triggering re-enters this node and retries.
+        return {
+          result: verdict.message,
+          ...(verdict.pending ? { pendingIdentityLink: verdict.pending, identityLinkPending: true } : {}),
+        };
+      }
+      const identitySecretEnv = verdict.secretEnv;
+
+      // The pre-flight may have ESTABLISHED the caller's principal on this very
+      // turn (docs/adr/0031), in which case the credentials it resolved are keyed
+      // by a principal `state.identity` does not carry yet. Adopt it for the rest
+      // of this turn: `handleAgentTurnFailure` below re-derives that same key to
+      // invalidate an expired credential, and deriving the pre-upgrade one would
+      // delete nothing while telling the user to retry -- the infinite "expired
+      // credential" loop that path exists to prevent.
+      const identity =
+        verdict.principal && verdict.principal !== state.identity.principal
+          ? { ...state.identity, principal: verdict.principal }
+          : state.identity;
 
       const runId = randomUUID();
       const jobId = randomUUID();
@@ -1078,8 +1323,17 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // Subscribe BEFORE creating the AgentRun CR so a fast-replying agent
         // can never publish before our subscription exists.
         const awaitReply = deps.agentChannel.awaitReply(runId, {
-          timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
-          onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+          idleTimeoutMs: agentAwaitReplyIdleTimeoutMs(deps),
+          onProgress:
+            state.progressListener || state.remoteControlUrlListener
+              ? (stage, message) => {
+                  state.progressListener?.(stage ?? "agent", message);
+                  if (stage === "remote-control-url" && message) state.remoteControlUrlListener?.(message);
+                }
+              : undefined,
+          onToolCall: makeSubAgentToolCallHandler(runId, agent, deps.agentChannel, deps.toolCatalog, deps, {
+            sessionId: state.sessionId,
+          }),
         });
         await deps.agentRunLauncher.launch(agent.agentRunTemplate, runId, {
           goal,
@@ -1094,6 +1348,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         const message = composeAgentTurnMessage(state, reply);
         return {
           agentRunId: runId,
+          identity,
           agentAwaitingReply: !reply.final,
           result: message,
           // Only a FINAL reply concludes an episode, so only then is
@@ -1105,7 +1360,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
-        return { agentRunId: runId, ...(await handleAgentTurnFailure(err, deps, state)) };
+        return { agentRunId: runId, identity, ...(await handleAgentTurnFailure(err, deps, { ...state, identity }, agent)) };
       }
     })
     .addNode("loadSkillTools", async (state) => {
@@ -1219,40 +1474,50 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           return { error: `tool ${tool.id} is agent-backed but agent delegation is not configured` };
         }
         // Same per-caller identity gate as delegateToAgent (ADR 0022) --
-        // required here too now that an identity-gated Agent's static
-        // secretEnv is stripped regardless of which path reaches it. v1
-        // scope cut: unlike delegateToAgent, this path never STARTS a fresh
-        // device-flow/authcode link -- there's no session slot analogous to
-        // pendingIdentityLink for a paused tool call, only for a paused
-        // agent delegation. A caller must link once via direct chat
-        // delegation to the same agent before a Skill can reach it here.
-        let identitySecretEnv: { name: string; value: string }[] | undefined;
-        if (tool.identityProviders && tool.identityProviders.length > 0) {
-          const provider = tool.identityProviders[0]!;
-          const gateway = identityGatewayFor(provider, deps);
-          if (!gateway || !state.identity) {
-            return {
-              error: `tool ${tool.id} requires identity providers (${tool.identityProviders.join(", ")}) but no identity-link gateway is configured for "${provider}"`,
-            };
-          }
-          const existing = await gateway.getToken(provider, state.identity.subject);
-          if (!existing) {
-            return {
-              error: `tool ${tool.id} requires linking your ${provider} account first -- start a direct conversation with this agent to link it, then retry`,
-            };
-          }
-          const envVarName = PROVIDER_ENV_VAR[provider];
-          if (!envVarName) {
-            return { error: `tool ${tool.id} declares unsupported identity provider "${provider}"` };
-          }
-          identitySecretEnv = [{ name: envVarName, value: existing.token }];
+        // required here too now that an identity-gated Agent's static secretEnv
+        // is stripped regardless of which path reaches it -- and the SAME owner
+        // (docs/adr/0030 §1), so the keying can never drift between the two
+        // paths.
+        //
+        // The read-only entry point, deliberately: v1 scope cut is that unlike
+        // delegateToAgent, this path never STARTS a fresh device-flow/authcode
+        // link -- there's no session slot analogous to pendingIdentityLink for a
+        // paused TOOL call, only for a paused agent delegation. A caller must
+        // link once via direct chat delegation to the same agent before a Skill
+        // can reach it here.
+        if (!state.identity) {
+          return { error: `tool ${tool.id} requires identity providers but no caller identity was resolved` };
         }
+        const credentials = await authorization.resolveLinkedCredentials({
+          identity: state.identity,
+          identityProviders: tool.identityProviders,
+        });
+        if (credentials.kind === "gateway-missing") {
+          return {
+            error: `tool ${tool.id} requires identity providers (${tool.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${credentials.provider}"`,
+          };
+        }
+        if (credentials.kind === "not-linked") {
+          return {
+            error: `tool ${tool.id} requires linking your ${credentials.provider} account first -- start a direct conversation with this agent to link it, then retry`,
+          };
+        }
+        if (credentials.kind === "unsupported-provider") {
+          return { error: `tool ${tool.id} declares unsupported identity provider "${credentials.provider}"` };
+        }
+        const identitySecretEnv = credentials.secretEnv;
         const runId = randomUUID();
         const callbackUrl = `${deps.callbackBaseUrl}/callback/${randomUUID()}`;
         try {
           const awaitReply = deps.agentChannel.awaitReply(runId, {
-            timeoutMs: agentAwaitReplyTimeoutMs(deps.agentRunTimeoutSeconds),
-            onProgress: state.progressListener ? (stage, message) => state.progressListener!(stage ?? "agent", message) : undefined,
+            idleTimeoutMs: agentAwaitReplyIdleTimeoutMs(deps),
+            onProgress:
+              state.progressListener || state.remoteControlUrlListener
+                ? (stage, message) => {
+                    state.progressListener?.(stage ?? "agent", message);
+                    if (stage === "remote-control-url" && message) state.remoteControlUrlListener?.(message);
+                  }
+                : undefined,
           });
           await deps.agentRunLauncher.launch(tool.agentRunTemplate, runId, {
             goal: input,
@@ -1303,7 +1568,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // itself never creates a Job.
 
         // Same per-caller identity gate as delegateToAgent/the agent-backed
-        // tool branch above (ADR 0022/0028) — e.g. the `github` Tool, which
+        // tool branch above (ADR 0022/0032) — e.g. the `github` Tool, which
         // needs the calling user's own linked GitHub token rather than a
         // shared credential. v1 scope cut: same as the agent-backed branch,
         // this path never STARTS a fresh device-flow/authcode link -- a

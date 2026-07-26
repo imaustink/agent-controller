@@ -1,5 +1,6 @@
 import { config } from "./config.js";
 import { ClaudeSetupTokenFlows } from "./claude-auth/pty-setup-token.js";
+import { ClaudeLoginFlows } from "./claude-auth/pty-login.js";
 import { RedisClaudeTokenStore } from "./claude-auth/store.js";
 import { GithubReplyClient } from "./github-client.js";
 import { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
@@ -167,7 +168,16 @@ async function main(): Promise<void> {
     token: orchestratorTokenProvider ? () => orchestratorTokenProvider.getToken() : config.orchestratorToken,
     pollIntervalMs: config.pollIntervalMs,
     pollTimeoutMs: config.pollTimeoutMs,
+    senderAssertionSecret: config.senderAssertionSecret,
   });
+  if (!config.senderAssertionSecret) {
+    console.error(
+      "WARNING: GATEWAY_SENDER_ASSERTION_SECRET is not set -- the sender login is relayed to agent-orchestrator UNSIGNED. " +
+        "That login selects the caller's principal and therefore which stored credentials a run receives, so anything " +
+        "holding this gateway's /invoke token could name an arbitrary login. Set it (and the orchestrator's matching " +
+        "AGENT_SENDER_ASSERTION_SECRET) to have the orchestrator require a verified assertion (docs/adr/0030).",
+    );
+  }
 
   const githubReplyClient = new GithubReplyClient({
     githubToken: config.githubToken,
@@ -196,6 +206,11 @@ async function main(): Promise<void> {
       clientSecret: config.githubAppClientSecret,
       stateSecret: config.identityLinkStateSecret,
       redirectUri: config.githubOauthRedirectUri,
+      // Without this the linker falls back to its own github.com default,
+      // so a GitHub Enterprise Server deployment would send its users to
+      // github.com/login/device/code -- which 404s for a GHES-registered
+      // App's client id.
+      githubBaseUrl: config.githubBaseUrl,
     });
   }
 
@@ -229,6 +244,7 @@ async function main(): Promise<void> {
   }
   let claudeTokenStore: RedisClaudeTokenStore | undefined;
   let claudeAuthFlows: ClaudeSetupTokenFlows | undefined;
+  let claudeLoginFlows: ClaudeLoginFlows | undefined;
   if (config.claudeAuthEnabled) {
     const redisUrl = config.redisUrl!;
     claudeTokenStore = new RedisClaudeTokenStore(redisUrl, decodeEncryptionKey(config.identityLinkEncryptionKey));
@@ -238,7 +254,14 @@ async function main(): Promise<void> {
       maxDelayMs: 15_000,
     });
     claudeAuthFlows = new ClaudeSetupTokenFlows();
-    console.error("Claude Code per-user OAuth linking enabled");
+    // Same gate as the setup-token flow above -- both need the same `claude`
+    // CLI binary in this image and the same PTY mechanics, just a different
+    // subcommand/captured payload (docs/adr/0027's "claude-remote" follow-up).
+    // Without this, `mode=login` requests 501 forever and no Remote Control
+    // credential can ever be created, regardless of anything else being
+    // configured correctly downstream.
+    claudeLoginFlows = new ClaudeLoginFlows();
+    console.error("Claude Code per-user OAuth linking enabled (setup-token + full-login/Remote Control)");
   }
 
   const server = new GatewayServer({
@@ -247,9 +270,12 @@ async function main(): Promise<void> {
     orchestratorClient,
     githubReplyClient,
     githubTriggerLabel: config.githubTriggerLabel,
+    githubReviewLabel: config.githubReviewLabel,
     ...(identityLinkLinker ? { identityLinkLinker, identityLinkToken: config.identityLinkToken } : {}),
     ...(sessionPageStore ? { sessionPageStore, publicBaseUrl: config.publicUrl } : {}),
     ...(claudeAuthFlows && claudeTokenStore ? { claudeAuthFlows, claudeAuthStore: claudeTokenStore } : {}),
+    ...(claudeLoginFlows ? { claudeLoginFlows } : {}),
+    resumeWaitMs: config.resumeWaitMs,
   });
 
   await server.listen(config.httpPort);

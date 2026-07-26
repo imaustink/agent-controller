@@ -37,22 +37,40 @@ jobs:
 
       # charts/community-components is the only place these Tool/Skill/Agent
       # CRs are defined now (no more standalone tools/*/tool.yaml or
-      # apps/**/config/samples/*.yaml twins to drift out of sync) -- render
-      # it with every optional component enabled so this validates the full
-      # catalog, then dry-run apply against a real API server.
+      # apps/**/config/samples/*.yaml twins to drift out of sync) -- render it
+      # with every component enabled so this validates the full catalog, then
+      # dry-run apply against a real API server.
+      #
+      # The enable list is a values file rather than a wall of --set flags
+      # because as flags it went stale without complaint: it enabled two values
+      # that no longer exist while never enabling six templates that do,
+      # including the Agent production actually runs.
       - name: Render community-components with every component enabled
         run: |
           helm template community-components charts/community-components \
-            --set recipeScraper.enabled=true \
-            --set kubectlReadonly.enabled=true \
-            --set recipePublisher.enabled=true \
-            --set recipePublisher.mealieBaseUrl=http://mealie.example.invalid \
-            --set skills.recipeRefining.enabled=true \
-            --set skills.softwareEngineering.enabled=true \
-            --set skills.selfImprovement.enabled=true \
-            --set opencodeSweAgent.enabled=true \
-            --set opencodeSweAgentTool.enabled=true \
+            -f charts/community-components/values-ci-all.yaml \
             > /tmp/community-components-rendered.yaml
+
+      - name: Assert every template was actually rendered
+        # The guard that keeps values-ci-all.yaml honest. "Validated the full
+        # catalog" is a claim about coverage, and a disabled component produces
+        # no output to notice the absence of -- so an unvalidated template looks
+        # exactly like a passing one. Comparing the templates on disk against
+        # the `# Source:` markers in the render turns that silence into a
+        # failure.
+        run: |
+          missing=()
+          for f in charts/community-components/templates/*.yaml; do
+            base=$(basename "$f")
+            grep -q "# Source: community-components/templates/$base" /tmp/community-components-rendered.yaml || missing+=("$base")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::These templates rendered nothing, so they were NOT validated:"
+            printf '  %s\n' "${missing[@]}"
+            echo "Enable them in charts/community-components/values-ci-all.yaml."
+            exit 1
+          fi
+          echo "All $(ls charts/community-components/templates/*.yaml | wc -l | tr -d ' ') templates rendered."
 
       - name: Validate rendered CRs against the API server
         run: kubectl apply --dry-run=server -f /tmp/community-components-rendered.yaml

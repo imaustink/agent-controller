@@ -45,7 +45,7 @@ graph TD
     subgraph CRDs["Custom Resources (core.controller-agent.dev/v1alpha1)"]
         ToolCR[Tool CR\nimage · SA · secretEnv · allowedRoles]
         SkillCR[Skill CR\nmarkdown · toolRefs]
-        AgentCR[Agent CR\nimage · SA · skillRefs]
+        AgentCR[Agent CR\nimage · SA · skillRefs · toolRefs]
         ToolRunCR[ToolRun CR\ntoolRef · args · callback]
         AgentRunCR[AgentRun CR\nagentRef · goal · callback]
     end
@@ -196,13 +196,19 @@ cluster, in your own terminal (never paste real secrets into chat or files):
 ```bash
 # Generate a random callback HMAC secret
 CALLBACK_SECRET=$(openssl rand -hex 32)
+# ...and the secret the gateway signs a webhook's sender login with, which the
+# orchestrator verifies (docs/adr/0030 §6). ONE value, set on both sides: it
+# decides which human a webhook turn acts as, and hence whose stored Claude
+# credentials the run gets. Left unset, that login is trusted unsigned.
+SENDER_ASSERTION_SECRET=$(openssl rand -hex 32)
 
 kubectl create namespace controller-agent
 
 # OpenAI key + callback HMAC secret (used by the orchestrator)
 kubectl -n controller-agent create secret generic agent-orchestrator-secrets \
   --from-literal=OPENAI_API_KEY=<your-openai-api-key> \
-  --from-literal=AGENT_CALLBACK_SECRET="$CALLBACK_SECRET"
+  --from-literal=AGENT_CALLBACK_SECRET="$CALLBACK_SECRET" \
+  --from-literal=AGENT_SENDER_ASSERTION_SECRET="$SENDER_ASSERTION_SECRET"
 
 # Mealie long-lived API token (create at /user/profile/api-tokens in your Mealie instance)
 kubectl -n controller-agent create secret generic recipe-publisher-secrets \

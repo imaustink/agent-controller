@@ -148,3 +148,100 @@ deploy:
           recipePublisher.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_publisher}}"
           opencodeSweAgent.image: "{{.IMAGE_FULLY_QUALIFIED_opencode_swe_agent}}"
           webSearch.image: "{{.IMAGE_FULLY_QUALIFIED_web_search}}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# e2e profile: `skaffold run -p e2e`
+#
+# The default profile deliberately does NOT build integration-gateway (the
+# minikube demo profile leaves it disabled, so there's nothing to run) — but
+# the e2e suite's whole entry point is a GitHub webhook hitting that gateway.
+# This profile adds the missing image and layers charts/*/values-e2e.yaml on
+# top of the demo values.
+#
+# Kept as a profile rather than added to the default build so an ordinary
+# `skaffold dev` doesn't pay to rebuild two extra images nobody's using.
+profiles:
+  - name: e2e
+    build:
+      artifacts:
+        - image: agent-orchestrator
+          docker:
+            dockerfile: apps/agent-orchestrator/Dockerfile
+        - image: core-controller
+          context: controllers/core-controller
+          docker:
+            dockerfile: Dockerfile
+        - image: integration-gateway
+          docker:
+            dockerfile: apps/integration-gateway/Dockerfile
+        - image: opencode-swe-agent
+          docker:
+            dockerfile: apps/opencode-swe-agent/Dockerfile
+        # Needed by the community-components release below: its Tool/Agent CRs
+        # pin image tags, and a release deployed without freshly-built tags
+        # leaves AgentRun pods stuck in ImagePullBackOff on a stale tag that
+        # no longer exists in minikube's daemon.
+        - image: recipe-scraper
+          docker:
+            dockerfile: tools/recipe-scraper/Dockerfile
+        - image: recipe-publisher
+          docker:
+            dockerfile: tools/recipe-publisher/Dockerfile
+        - image: web-search
+          docker:
+            dockerfile: tools/web-search/Dockerfile
+        # The e2e triage route targets this agent (see
+        # charts/community-components/values-e2e.yaml): it declares the same
+        # Claude identityProviders as claude-code-swe-agent, so the credential
+        # gate behaves identically, but replies over NATS without a model call
+        # so a run can actually reach a terminal phase in a cluster holding no
+        # Anthropic credential.
+        - image: stub-agent
+          docker:
+            dockerfile: apps/stub-agent/Dockerfile
+        # Still built: its Agent CR stays enabled as the production-shaped
+        # reference the stub's providers are kept in step with, and its CR pins
+        # an image tag -- a release deployed without a freshly-built one leaves
+        # the tag dangling in minikube's daemon.
+        - image: claude-code-swe-agent
+          docker:
+            dockerfile: apps/claude-code-swe-agent/Dockerfile
+    deploy:
+      helm:
+        releases:
+          - name: agent-controller
+            chartPath: charts/agent-controller
+            namespace: controller-agent
+            createNamespace: true
+            wait: true
+            valuesFiles:
+              - charts/agent-controller/values-minikube-demo.yaml
+              - charts/agent-controller/values-e2e.yaml
+            skipBuildDependencies: false
+            setValueTemplates:
+              agent-orchestrator.image.repository: "{{.IMAGE_REPO_agent_orchestrator}}"
+              agent-orchestrator.image.tag: "{{.IMAGE_TAG_agent_orchestrator}}"
+              core-controller.image.repository: "{{.IMAGE_REPO_core_controller}}"
+              core-controller.image.tag: "{{.IMAGE_TAG_core_controller}}"
+              integration-gateway.image.repository: "{{.IMAGE_REPO_integration_gateway}}"
+              integration-gateway.image.tag: "{{.IMAGE_TAG_integration_gateway}}"
+          # A profile replaces deploy.helm.releases wholesale -- omitting this
+          # silently drops the chart that owns every Tool/Skill/Agent CR, so
+          # the cluster keeps whatever CRs an older install left behind,
+          # pointing at image tags that no longer exist.
+          - name: community-components
+            chartPath: charts/community-components
+            namespace: controller-agent
+            createNamespace: true
+            wait: true
+            valuesFiles:
+              - charts/community-components/values-minikube-demo.yaml
+              - charts/community-components/values-e2e.yaml
+            skipBuildDependencies: false
+            setValueTemplates:
+              stubAgent.image: "{{.IMAGE_FULLY_QUALIFIED_stub_agent}}"
+              claudeCodeSweAgent.image: "{{.IMAGE_FULLY_QUALIFIED_claude_code_swe_agent}}"
+              recipeScraper.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_scraper}}"
+              recipePublisher.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_publisher}}"
+              opencodeSweAgent.image: "{{.IMAGE_FULLY_QUALIFIED_opencode_swe_agent}}"
+              webSearch.image: "{{.IMAGE_FULLY_QUALIFIED_web_search}}"

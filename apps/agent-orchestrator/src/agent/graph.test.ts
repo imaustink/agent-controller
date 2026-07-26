@@ -126,7 +126,7 @@ describe("buildAgentGraph", () => {
     const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
 
     expect(final.error).toBeUndefined();
-    expect(final.identity).toEqual({ subject: "alice", roles: ["reader"] });
+    expect(final.identity).toEqual({ subject: "alice", roles: ["reader"], principal: "alice" });
     expect(final.selectedSkill?.id).toBe("recipe-publisher-skill");
     expect(final.selectedTool?.id).toBe("recipe-scraper");
     expect(final.result).toEqual({ title: "Pancakes" });
@@ -301,7 +301,7 @@ describe("buildAgentGraph", () => {
       forwardedUserToken: "alices-signed-jwt",
     });
 
-    expect(final.identity).toEqual({ subject: "openwebui:alice", roles: ["reader"] });
+    expect(final.identity).toEqual({ subject: "openwebui:alice", roles: ["reader"], principal: "openwebui:alice" });
     expect(forwardedUserIdentityResolver.resolve).toHaveBeenCalledWith("alices-signed-jwt");
     expect(identityResolver.resolve).not.toHaveBeenCalled();
   });
@@ -317,7 +317,7 @@ describe("buildAgentGraph", () => {
       authToken: "shared-static-token",
     });
 
-    expect(final.identity).toEqual({ subject: "openwebui", roles: ["reader"] });
+    expect(final.identity).toEqual({ subject: "openwebui", roles: ["reader"], principal: "openwebui" });
     expect(forwardedUserIdentityResolver.resolve).not.toHaveBeenCalled();
   });
 
@@ -1095,6 +1095,54 @@ describe("buildAgentGraph checkIntegrationRoute (IntegrationRoute-forced dispatc
     expect(agentRunLauncher.launch).toHaveBeenCalled();
   });
 
+  it("returns only the agent's final message (NOT the progress narration) for a non-streaming caller, e.g. a GitHub triage comment", async () => {
+    // Regression: the triage relay is fire-and-forget (no progressListener),
+    // and it used to get the entire narration trail prepended -- turning the
+    // issue comment into a giant "Authenticating… / running Bash / …"
+    // transcript ending in the actual summary. The durable comment must be
+    // just the final answer.
+    const codingAgent: AgentDescriptor = {
+      id: "claude-code-swe-agent",
+      name: "claude-code-swe-agent",
+      description: "Does software engineering tasks",
+      allowedRoles: ["reader"],
+      agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe-agent" },
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened a pull request: https://github.com/acme/widgets/pull/42\n\n## Summary\nAdded dark mode.",
+        final: true,
+        narration: ["Authenticating…", "Running Claude Code…", "running Bash", "running Read"],
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = baseDeps({
+      agentStore: {
+        upsert: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([{ agent: codingAgent }]),
+      },
+      agentChannel,
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+    const graph = buildAgentGraph(deps);
+
+    // No progressListener -- exactly the fire-and-forget triage relay shape.
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      forcedAgentId: "claude-code-swe-agent",
+    });
+
+    expect(final.result).toBe(
+      "Opened a pull request: https://github.com/acme/widgets/pull/42\n\n## Summary\nAdded dark mode.",
+    );
+    expect(final.result).not.toMatch(/Authenticating|running Bash|running Read/);
+  });
+
   it("falls through to ordinary retrieval when forcedSkillId doesn't resolve to any Skill", async () => {
     const skillStore: SkillStore = {
       upsert: vi.fn(),
@@ -1286,7 +1334,7 @@ describe("buildAgentGraph agent-backed Tool (runTool via AgentRun)", () => {
   });
 });
 
-describe("buildAgentGraph identity-gated container Tool (ADR 0028, e.g. the github Tool)", () => {
+describe("buildAgentGraph identity-gated container Tool (ADR 0032, e.g. the github Tool)", () => {
   const githubTool: ToolDescriptor = {
     id: "github",
     name: "github",
@@ -1816,6 +1864,7 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       flow: "device",
       deviceCode: "raw-device-code",
       expiresAt: expect.any(Number),
+      subject: "alice",
       request: "open a PR that fixes the bug",
     });
     expect(final.result).toMatch(/github\.com\/login\/device/);
@@ -1847,6 +1896,7 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       provider: "github",
       flow: "authcode",
       expiresAt: expect.any(Number),
+      subject: "alice",
       request: "open a PR that fixes the bug",
     });
     expect(final.pendingIdentityLink?.deviceCode).toBeUndefined();
@@ -1875,7 +1925,13 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
       githubAgent.agentRunTemplate,
       expect.any(String),
-      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }] }),
+      expect.objectContaining({ secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ] }),
     );
     expect(final.identityLinkPending).toBeFalsy();
     expect(final.pendingIdentityLink).toBeUndefined();
@@ -1911,7 +1967,55 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
   });
 
-  it("resumes automatically via waitForCompletion for a device-flow, non-streaming caller (e.g. integration-gateway's fire-and-forget relay) with no progressListener", async () => {
+  it("posts the link immediately and parks a pending link (does NOT block on waitForCompletion) for a fire-and-forget caller with no progressListener, e.g. integration-gateway's GitHub-issue relay", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "device" as const,
+        verificationUri: "https://github.com/login/device",
+        userCode: "ABCD-1234",
+        deviceCode: "raw-device-code",
+        expiresInSeconds: 900,
+        pollIntervalSeconds: 5,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      // Would resolve a token if awaited -- the point of this test is that on a
+      // no-progressListener caller it is NEVER awaited.
+      waitForCompletion: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    // No progressListener -- integration-gateway's relay shape (fire-and-forget
+    // /invoke, polled for a result). There is no live channel to show the link
+    // on, so it reaches the user only in the final result comment. Blocking on
+    // waitForCompletion would hide the link for the whole wait window (nobody
+    // can complete a link they can't see), so the link must be posted
+    // immediately and the pending link parked for checkPendingIdentityLink to
+    // resume on the next trigger.
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      identityLinkFlow: "device",
+    });
+
+    expect(identityLinkGateway.waitForCompletion).not.toHaveBeenCalled();
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual({
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "device",
+      deviceCode: "raw-device-code",
+      expiresAt: expect.any(Number),
+      subject: "alice",
+      request: "triage and resolve this issue",
+    });
+    expect(final.result).toMatch(/link your GitHub account/i);
+    expect(final.result).toMatch(/enter code `ABCD-1234`/);
+  });
+
+  it("resumes automatically via waitForCompletion within the same turn for a streaming caller (progressListener present)", async () => {
     const identityLinkGateway: IdentityLinkPort = {
       start: vi.fn().mockResolvedValue({
         flow: "device" as const,
@@ -1927,24 +2031,31 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     };
     const deps = identityLinkDeps({ identityLinkGateway });
     const graph = buildAgentGraph(deps);
+    const progressListener = vi.fn();
 
-    // No progressListener -- this is exactly integration-gateway's relay
-    // shape (fire-and-forget /invoke, polled for a result), not a streaming
-    // chat turn. waitForCompletion is not gated on progressListener, so this
-    // should still resume within the SAME turn instead of ending on a
-    // pendingIdentityLink message.
+    // A streaming chat turn HAS a live channel: the link is surfaced live via
+    // progressListener, so it is safe (and desirable) to block up to expiry and
+    // resume the SAME turn once the user links -- no follow-up message needed.
     const final = await graph.invoke({
       request: "triage and resolve this issue",
       authToken: "tok",
       identityLinkFlow: "device",
+      progressListener,
     });
 
+    expect(progressListener).toHaveBeenCalledWith("identity-link", expect.stringMatching(/link your GitHub account/i));
     expect(identityLinkGateway.waitForCompletion).toHaveBeenCalledWith("github", "alice", 900_000);
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
       githubAgent.agentRunTemplate,
       expect.any(String),
       expect.objectContaining({
-        secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }],
+        secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ],
         goal: "triage and resolve this issue",
       }),
     );
@@ -1977,9 +2088,19 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       provider: "github",
       flow: "authcode",
       expiresAt: expect.any(Number),
+      subject: "alice",
       request: "open a PR that fixes the bug",
     });
-    expect(final.result).toMatch(/send any message once you're done/);
+    // Streaming turn: the link was already surfaced live via progressListener,
+    // so the terminal result is a short nudge that does NOT repeat the
+    // `[link your account](url)` markdown -- otherwise the caller renders the
+    // auth prompt twice (the "doubled up" chat message).
+    expect(progressListener).toHaveBeenCalledWith(
+      "identity-link",
+      expect.stringContaining("I'll continue automatically once you finish"),
+    );
+    expect(final.result).toMatch(/Send any message once you're done and I'll continue/);
+    expect(final.result).not.toContain("](");
   });
 
   it("resumes delegation and launches with secretEnv once a pending link's poll reports complete", async () => {
@@ -2009,7 +2130,13 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
       githubAgent.agentRunTemplate,
       expect.any(String),
-      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }] }),
+      expect.objectContaining({ secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ] }),
     );
     expect(final.pendingIdentityLink).toBeUndefined();
     expect(final.agentRunId).toBeDefined();
@@ -2150,6 +2277,7 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       flow: "device",
       deviceCode: "new-device-code",
       expiresAt: expect.any(Number),
+      subject: "alice",
       request: "let's try again",
     });
   });
@@ -2181,7 +2309,13 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
       githubAgent.agentRunTemplate,
       expect.any(String),
-      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_resolved-token" }] }),
+      expect.objectContaining({ secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ] }),
     );
     expect(final.pendingIdentityLink).toBeUndefined();
     expect(final.agentRunId).toBeDefined();
@@ -2288,13 +2422,80 @@ describe("buildAgentGraph per-caller Claude Code OAuth linking (docs/adr/0027)",
       provider: "claude",
       flow: "page",
       expiresAt: expect.any(Number),
+      subject: "alice",
       request: "fix the failing test",
     });
     expect(final.result).toMatch(/claude-auth\/flow-1/);
     expect(final.result).toMatch(/link your Claude account/i);
   });
 
-  it("launches with CLAUDE_CODE_OAUTH_TOKEN once waitForCompletion resolves a linked token", async () => {
+  it("fires reportIdentityLinkPending (with provider + subject) as soon as the token is missing, before start()", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-1?u=...",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway });
+    const graph = buildAgentGraph(deps);
+    const reportIdentityLinkPending = vi.fn();
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok", reportIdentityLinkPending });
+
+    expect(reportIdentityLinkPending).toHaveBeenCalledWith({ provider: "claude", subject: "alice" });
+    // Signalled before start() resolves the URL -- i.e. its invocation order
+    // precedes start()'s.
+    expect(reportIdentityLinkPending.mock.invocationCallOrder[0]).toBeLessThan(
+      (claudeAuthGateway.start as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("does NOT fire reportIdentityLinkPending when the caller already has a linked token", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-existing" }),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway });
+    const graph = buildAgentGraph(deps);
+    const reportIdentityLinkPending = vi.fn();
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok", reportIdentityLinkPending });
+
+    expect(reportIdentityLinkPending).not.toHaveBeenCalled();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalled();
+  });
+
+  it("ends the turn with a friendly retryable message (not a crashed turn) when start() itself throws -- e.g. the Claude setup-token PTY never prints a URL", async () => {
+    // Regression guard for the triage path: start() for the "claude" provider
+    // spawns a `claude setup-token` PTY and scrapes the authorize URL within a
+    // timeout, so it can throw before any link exists. On the fire-and-forget
+    // GitHub-issue relay a thrown node would be posted to the ticket as a raw
+    // "Something went wrong: ...setup-token did not print...". Instead the turn
+    // must end cleanly with a retryable message and NOT launch the agent.
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn().mockRejectedValue(new Error("claude setup-token did not print an authorize URL in time")),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok", identityLinkFlow: "device" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).not.toMatch(/something went wrong/i);
+    expect(final.result).not.toMatch(/setup-token/i);
+    expect(final.result).toMatch(/couldn't start the one-time Claude account-linking/i);
+    expect(final.identityLinkPending).toBeFalsy();
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
+  it("launches with CLAUDE_CODE_OAUTH_TOKEN once waitForCompletion resolves a linked token (streaming caller)", async () => {
     const claudeAuthGateway: IdentityLinkPort = {
       start: vi.fn().mockResolvedValue({
         flow: "page" as const,
@@ -2307,8 +2508,11 @@ describe("buildAgentGraph per-caller Claude Code OAuth linking (docs/adr/0027)",
     };
     const deps = claudeAuthDeps({ claudeAuthGateway });
     const graph = buildAgentGraph(deps);
+    // Same-turn resume only happens on a caller with a live channel; the
+    // page-flow link is surfaced live via progressListener before the wait.
+    const progressListener = vi.fn();
 
-    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok", progressListener });
 
     expect(claudeAuthGateway.waitForCompletion).toHaveBeenCalledWith("claude", "alice", 600_000);
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
@@ -2374,3 +2578,812 @@ describe("buildAgentGraph per-caller Claude Code OAuth linking (docs/adr/0027)",
   });
 });
 
+describe("buildAgentGraph delegation with multiple identityProviders", () => {
+  // Regression test: delegateToAgent used to only ever resolve
+  // identityProviders[0], so an Agent declaring TWO providers (e.g.
+  // claude-code-swe-agent's ["claude", "claude-remote"] for Remote Control)
+  // silently never got the second one's token injected at all -- no error,
+  // no link prompt, just a missing secretEnv entry.
+  const multiProviderAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks with Claude Code",
+    allowedRoles: ["reader"],
+    identityProviders: ["claude", "claude-remote"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  function multiProviderDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: multiProviderAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([multiProviderAgent]),
+    };
+    const delegateSelector: DelegateSelector = {
+      select: vi.fn().mockResolvedValue({ type: "agent", agent: multiProviderAgent }),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({ message: "Opened a pull request", final: true, narration: [] } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("resolves EVERY declared provider's token, not just the first, when both are already linked", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"full-login-blob"}' }),
+    };
+    const deps = multiProviderDeps({ claudeAuthGateway, claudeRemoteGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(claudeAuthGateway.getToken).toHaveBeenCalledWith("claude", "alice");
+    expect(claudeRemoteGateway.getToken).toHaveBeenCalledWith("claude-remote", "alice");
+    expect(final.error).toBeUndefined();
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      multiProviderAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({
+        secretEnv: [
+          { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-resolved" },
+          { name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: '{"claudeAiOauth":"full-login-blob"}' },
+        ],
+      }),
+    );
+  });
+
+  it("prompts to link the SECOND provider (not silently proceeding) when the first is already linked but the second is not", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-2?u=https://claude.ai/oauth/authorize&mode=login",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = multiProviderDeps({ claudeAuthGateway, claudeRemoteGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(claudeAuthGateway.getToken).toHaveBeenCalledWith("claude", "alice");
+    expect(claudeRemoteGateway.getToken).toHaveBeenCalledWith("claude-remote", "alice");
+    expect(claudeRemoteGateway.start).toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink?.provider).toBe("claude-remote");
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
+  // The stored claude-remote credential is a whole ~/.claude/.credentials.json
+  // that the run's CLI refreshes (and thereby rotates) in an emptyDir HOME. The
+  // grant injected here is how that refreshed file gets persisted; without it
+  // the stored copy is stale the moment a run refreshes, and later runs fail
+  // with "Login expired · Please run /login".
+  it("injects a credential write-back grant alongside the claude-remote credential", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"full-login-blob"}' }),
+    };
+    const claudeRemoteWriteback = {
+      createWritebackGrant: vi
+        .fn()
+        .mockResolvedValue({ url: "https://gateway.example/claude-auth/api/refresh", token: "grant-xyz" }),
+    };
+    const deps = multiProviderDeps({ claudeAuthGateway, claudeRemoteGateway, claudeRemoteWriteback });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(claudeRemoteWriteback.createWritebackGrant).toHaveBeenCalledWith("alice", expect.any(Number));
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      multiProviderAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({
+        secretEnv: [
+          { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-resolved" },
+          { name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: '{"claudeAiOauth":"full-login-blob"}' },
+          { name: "CLAUDE_CREDENTIALS_WRITEBACK_URL", value: "https://gateway.example/claude-auth/api/refresh" },
+          { name: "CLAUDE_CREDENTIALS_WRITEBACK_TOKEN", value: "grant-xyz" },
+        ],
+      }),
+    );
+  });
+
+  it("launches normally when a write-back grant can't be minted -- write-back is not a precondition for running", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"full-login-blob"}' }),
+    };
+    const deps = multiProviderDeps({
+      claudeAuthGateway,
+      claudeRemoteGateway,
+      claudeRemoteWriteback: { createWritebackGrant: vi.fn().mockResolvedValue(undefined) },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      multiProviderAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({
+        secretEnv: [
+          { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-resolved" },
+          { name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: '{"claudeAiOauth":"full-login-blob"}' },
+        ],
+      }),
+    );
+  });
+
+  // Regression: the invalidated provider used to be identityProviders[0]
+  // ("claude"), no matter which credential actually failed -- so a stale
+  // Remote Control login blob survived, failed again on the next run, and took
+  // a perfectly good setup-token down with it every time.
+  it("invalidates the claude-remote credential (not the setup-token) when the run reports the login blob expired", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-fine" }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"stale-login-blob"}' }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi
+        .fn()
+        .mockRejectedValue(new AgentTurnFailedError("claude_remote_auth_expired", "credentials look expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = multiProviderDeps({ claudeAuthGateway, claudeRemoteGateway, agentChannel });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(claudeRemoteGateway.invalidate).toHaveBeenCalledWith("claude-remote", "alice");
+    expect(claudeAuthGateway.invalidate).not.toHaveBeenCalled();
+    expect(final.error).toBeUndefined();
+    expect(final.result).toMatch(/expired or invalid/i);
+    // No live channel (a label-triggered relay): "send your request again" is
+    // not a thing the human can do -- re-applying the label is.
+    expect(final.result).toMatch(/re-apply the label/i);
+  });
+
+  // The whole point of the recovery: ONE label application has to produce
+  // something the human can act on. Invalidating the credential and then
+  // telling them to trigger the run again cost a round trip to receive a link
+  // that could have been in the first reply -- observed live on #146, where the
+  // only comment posted was "re-apply the label to try again".
+  it("posts the relink URL in the SAME turn and arms auto-resume, instead of telling the user to trigger again", async () => {
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-9?u=https://claude.ai/oauth/authorize&mode=login",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"stale-login-blob"}' }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi
+        .fn()
+        .mockRejectedValue(new AgentTurnFailedError("claude_remote_auth_expired", "credentials look expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = multiProviderDeps({
+      claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-fine" }) },
+      claudeRemoteGateway,
+      agentChannel,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "review pull request #146", authToken: "tok" });
+
+    // Stale credential cleared, THEN a replacement flow started for the same
+    // provider -- in that order, or the new link would be deleted too.
+    expect(claudeRemoteGateway.invalidate).toHaveBeenCalledWith("claude-remote", "alice");
+    expect(claudeRemoteGateway.start).toHaveBeenCalledWith("claude-remote", "alice", expect.any(String));
+    expect(final.error).toBeUndefined();
+    expect(final.result).toContain("https://gateway.example/claude-auth/flow-9");
+    expect(final.result).not.toMatch(/re-apply the label|send your request again/i);
+    // Arms the caller's auto-resume (integration-gateway's waitAndResume), and
+    // carries THIS request so the resume re-runs the interrupted work.
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toMatchObject({
+      agentId: "claude-code-swe",
+      provider: "claude-remote",
+      flow: "page",
+      request: "review pull request #146",
+    });
+  });
+
+  it("falls back to a retry message when the replacement link flow can't be started", async () => {
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn().mockRejectedValue(new Error("claude-auth start (login) failed: 502")),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"stale-login-blob"}' }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi
+        .fn()
+        .mockRejectedValue(new AgentTurnFailedError("claude_remote_auth_expired", "credentials look expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = multiProviderDeps({
+      claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-fine" }) },
+      claudeRemoteGateway,
+      agentChannel,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // The credential IS gone, so a retry genuinely will prompt for a link --
+    // it just costs another trigger.
+    expect(final.error).toBeUndefined();
+    expect(final.result).toMatch(/re-apply the label/i);
+    expect(final.identityLinkPending).toBeFalsy();
+  });
+
+  // Telling someone to retry only helps if the stale record is actually gone;
+  // otherwise the next attempt resolves the same dead credential and fails
+  // identically, forever.
+  it("does not promise that a retry will work when the stale credential could not be cleared", async () => {
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"stale-login-blob"}' }),
+      invalidate: vi.fn().mockRejectedValue(new Error("claude-auth invalidate (login) failed: 502")),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi
+        .fn()
+        .mockRejectedValue(new AgentTurnFailedError("claude_remote_auth_expired", "credentials look expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = multiProviderDeps({
+      claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-fine" }) },
+      claudeRemoteGateway,
+      agentChannel,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).toMatch(/couldn't clear the stored credential/i);
+    expect(final.result).not.toMatch(/re-apply the label/i);
+  });
+});
+
+
+describe("buildAgentGraph canonical credential subject (cross-flow Claude credential sharing)", () => {
+  const claudeRemoteAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks with Claude Code",
+    allowedRoles: ["reader"],
+    identityProviders: ["claude-remote"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  /**
+   * `identityLinkGateway` here is the `github` provider's gateway -- the
+   * source of the `githubLogin` that becomes the canonical subject. Its
+   * `getToken` is what `resolveCredentialSubject` reads on the chat path.
+   */
+  function canonicalDeps(
+    overrides: Partial<AgentGraphDeps> = {},
+    githubLogin: string | null = "Imaustink",
+  ) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: claudeRemoteAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([claudeRemoteAgent]),
+    };
+    const delegateSelector: DelegateSelector = {
+      select: vi.fn().mockResolvedValue({ type: "agent", agent: claudeRemoteAgent }),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened a pull request",
+        final: true,
+        narration: [],
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(githubLogin ? { token: "gh-token", githubLogin } : undefined),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-1",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      identityLinkGateway,
+      claudeRemoteGateway,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  /**
+   * A chat caller as `OpenWebUiForwardedUserResolver` resolves one: a per-user
+   * subject, asserted as such. `perUser` is what lets the pre-flight establish a
+   * principal against it (docs/adr/0031) -- the default double here omits it,
+   * standing in for a subject that may be shared.
+   */
+  const chatCaller = (): IdentityResolver => ({
+    resolve: vi.fn().mockResolvedValue({ subject: "alice", roles: ["reader"], perUser: true }),
+  });
+
+  it("keys a chat caller's claude-remote credential by github:<login> from their GitHub link, not the raw openwebui subject", async () => {
+    const deps = canonicalDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // Lower-cased: the webhook payload says "Imaustink", the OAuth API says
+    // "imaustink"; both must land on ONE key or the flows split again.
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:imaustink");
+    expect(deps.claudeRemoteGateway!.getToken).not.toHaveBeenCalledWith("claude-remote", "alice");
+  });
+
+  it("keys a triage turn's claude-remote credential by the same github:<login>, taken from senderLogin", async () => {
+    const deps = canonicalDeps({}, null); // no GitHub link at all on this path
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "triage this issue",
+      authToken: "tok",
+      // The shared service subject resolves to "alice" here; senderLogin is
+      // the only per-user identifier a webhook-driven turn carries.
+      senderLogin: "imaustink",
+    });
+
+    // Same key the chat test above asserts -- that identity IS the fix.
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:imaustink");
+  });
+
+  it("prefers senderLogin over the GitHub link so a triage turn never inherits the service account's link", async () => {
+    const deps = canonicalDeps({}, "someone-else");
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "triage this issue", authToken: "tok", senderLogin: "imaustink" });
+
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:imaustink");
+  });
+
+  it("falls back to the raw subject when no GitHub login is resolvable, preserving pre-change behavior", async () => {
+    const deps = canonicalDeps({}, null);
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "alice");
+  });
+
+  it("falls back to the raw subject (rather than failing the turn) when the GitHub link lookup throws", async () => {
+    const deps = canonicalDeps();
+    (deps.identityLinkGateway!.getToken as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("gateway down"));
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "alice");
+  });
+
+  it("keeps the github provider itself on the raw subject -- it is the source of the mapping, not a consumer", async () => {
+    const githubOnlyAgent: AgentDescriptor = { ...claudeRemoteAgent, identityProviders: ["github"] };
+    const deps = canonicalDeps({
+      agentStore: {
+        upsert: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ agent: githubOnlyAgent, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([githubOnlyAgent]),
+      },
+      delegateSelector: { select: vi.fn().mockResolvedValue({ type: "agent", agent: githubOnlyAgent }) },
+    });
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "open a PR", authToken: "tok" });
+
+    expect(deps.identityLinkGateway!.getToken).toHaveBeenCalledWith("github", "alice");
+    expect(deps.identityLinkGateway!.getToken).not.toHaveBeenCalledWith("github", "github:imaustink");
+  });
+
+  it("adopts a chat caller's existing credential onto their principal, so converging costs them no re-auth (docs/adr/0031)", async () => {
+    // The reported scenario, end to end: this human has been running agents from
+    // chat for weeks -- their credential sits at the raw `alice` subject, written
+    // before principals existed -- and triage was prompting them because it reads
+    // `github:imaustink`. After this, neither flow prompts.
+    const deps = canonicalDeps({ identityResolver: chatCaller() }, null);
+    (deps.identityLinkGateway!.start as ReturnType<typeof vi.fn>).mockResolvedValue({
+      flow: "authcode" as const,
+      authorizeUrl: "https://gateway.example/identity-link/github/authorize",
+      expiresInSeconds: 600,
+    });
+    deps.identityLinkGateway!.waitForCompletion = vi
+      .fn()
+      .mockResolvedValue({ token: "gh-token", githubLogin: "Imaustink" });
+    // A credential that exists ONLY under the pre-principal subject.
+    const stored = new Map<string, { token: string }>([["alice", { token: "creds-json-from-chat" }]]);
+    (deps.claudeRemoteGateway!.getToken as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_provider: string, subject: string) => stored.get(subject),
+    );
+    deps.claudeRemoteGateway!.rekey = vi.fn(async (_provider: string, from: string, to: string) => {
+      const record = stored.get(from);
+      if (!record) return false;
+      stored.set(to, record);
+      stored.delete(from);
+      return true;
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "fix the failing test",
+      authToken: "tok",
+      progressListener: vi.fn(),
+    });
+
+    expect(final.error).toBeUndefined();
+    // No Claude flow was started: the credential they already authorized was
+    // moved, not re-created.
+    expect(deps.claudeRemoteGateway!.start).not.toHaveBeenCalled();
+    expect(deps.claudeRemoteGateway!.rekey).toHaveBeenCalledWith("claude-remote", "alice", "github:imaustink");
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]![2] as {
+      secretEnv?: { name: string; value: string }[];
+    };
+    expect(launched.secretEnv).toContainEqual({ name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: "creds-json-from-chat" });
+  });
+
+  it("offers a chat caller with no GitHub mapping the principal link FIRST, before any claude-remote flow (docs/adr/0031)", async () => {
+    // The production defect, end to end: this caller could authorize Claude in
+    // chat all day and a triage turn would still prompt, because chat wrote
+    // `claude-remote@alice` and triage reads `claude-remote@github:<login>`.
+    // Establishing the mapping first is what makes the two the same record.
+    const deps = canonicalDeps({ identityResolver: chatCaller() }, null);
+    (deps.identityLinkGateway!.start as ReturnType<typeof vi.fn>).mockResolvedValue({
+      flow: "authcode" as const,
+      authorizeUrl: "https://gateway.example/identity-link/github/authorize",
+      expiresInSeconds: 600,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "fix the failing test",
+      authToken: "tok",
+      progressListener: vi.fn(),
+    });
+
+    expect(deps.identityLinkGateway!.start).toHaveBeenCalledWith("github", "alice", "authcode");
+    expect(final.pendingIdentityLink).toMatchObject({ provider: "github", subject: "alice" });
+    // Nothing was keyed to the subject this caller is one link away from
+    // abandoning -- that is what would have split the records again.
+    expect(deps.claudeRemoteGateway!.start).not.toHaveBeenCalled();
+  });
+
+  it("converges the SAME turn once the principal link lands mid-wait", async () => {
+    const deps = canonicalDeps({ identityResolver: chatCaller() }, null);
+    (deps.identityLinkGateway!.start as ReturnType<typeof vi.fn>).mockResolvedValue({
+      flow: "authcode" as const,
+      authorizeUrl: "https://gateway.example/identity-link/github/authorize",
+      expiresInSeconds: 600,
+    });
+    // The caller completes the GitHub link in their browser while the turn
+    // holds open, exactly as the claude flows already do.
+    deps.identityLinkGateway!.waitForCompletion = vi
+      .fn()
+      .mockResolvedValue({ token: "gh-token", githubLogin: "Imaustink" });
+    (deps.claudeRemoteGateway!.getToken as ReturnType<typeof vi.fn>).mockResolvedValue({ token: "creds-json" });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "fix the failing test",
+      authToken: "tok",
+      progressListener: vi.fn(),
+    });
+
+    expect(final.error).toBeUndefined();
+    // The key a triage turn reads. Same human, same record, either entry point.
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:imaustink");
+    // The mapping stayed a mapping: no GITHUB_TOKEN went to the run, so the
+    // agent's delegated-write path (the observed 401) stays unreachable.
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]![2] as {
+      secretEnv?: { name: string }[];
+    };
+    expect(launched.secretEnv?.map((e) => e.name)).not.toContain("GITHUB_TOKEN");
+    // And the upgraded principal is carried on the turn's identity, so a later
+    // expired-credential invalidate clears the record that was actually read.
+    expect(final.identity?.principal).toBe("github:imaustink");
+  });
+
+  it("starts the link against the canonical subject AND records it on pendingIdentityLink, so store and wait cannot drift (the PR #144 regression)", async () => {
+    const deps = canonicalDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(deps.claudeRemoteGateway!.start).toHaveBeenCalledWith("claude-remote", "github:imaustink", "authcode");
+    // The subject the caller's auto-resume will wait on must be the SAME one
+    // the link was started against. Recomputing it downstream is what made
+    // PR #144 loop forever.
+    expect(final.pendingIdentityLink?.subject).toBe("github:imaustink");
+  });
+
+  it("resumes a pending link against the stored subject, not a freshly derived one", async () => {
+    const deps = canonicalDeps();
+    (deps.claudeRemoteGateway!.getToken as ReturnType<typeof vi.fn>).mockResolvedValue({ token: "creds-json" });
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "any nudge message",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: {
+        agentId: "claude-code-swe",
+        provider: "claude-remote",
+        flow: "page",
+        expiresAt: Date.now() + 60_000,
+        // Deliberately NOT what this turn would derive on its own -- proves
+        // the resume reads the stored value.
+        subject: "github:stored-login",
+        request: "fix the failing test",
+      },
+    });
+
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:stored-login");
+  });
+
+  it("mints the claude-remote write-back grant against the canonical subject the credential was read from", async () => {
+    const createWritebackGrant = vi.fn().mockResolvedValue({ url: "http://gw/refresh", token: "grant" });
+    const deps = canonicalDeps({ claudeRemoteWriteback: { createWritebackGrant } });
+    (deps.claudeRemoteGateway!.getToken as ReturnType<typeof vi.fn>).mockResolvedValue({ token: "creds-json" });
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // A grant against the raw subject would write refreshed credentials to a
+    // record nothing reads, and the shared one would die on the next refresh.
+    expect(createWritebackGrant).toHaveBeenCalledWith("github:imaustink", expect.any(Number));
+  });
+});
+
+describe("buildAgentGraph batch authorization pre-flight (docs/adr/0030)", () => {
+  const twoProviderAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    identityProviders: ["github", "claude"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  function preflightDeps(github: Partial<IdentityLinkPort>, claude: Partial<IdentityLinkPort>) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: twoProviderAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([twoProviderAgent]),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector: { select: vi.fn().mockResolvedValue({ type: "agent", agent: twoProviderAgent }) },
+      agentChannel: {
+        awaitReply: vi.fn().mockResolvedValue({ message: "done", final: true, narration: [] } satisfies AgentTurnResult),
+        sendPrompt: vi.fn(),
+        close: vi.fn(),
+      },
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      identityLinkGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue(undefined), ...github } as IdentityLinkPort,
+      claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue(undefined), ...claude } as IdentityLinkPort,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+  }
+
+  const startsOk = (url: string) => vi.fn().mockResolvedValue({ flow: "authcode" as const, authorizeUrl: url, expiresInSeconds: 600 });
+
+  it("starts EVERY missing provider's link on one turn and prompts for them together", async () => {
+    const deps = preflightDeps(
+      { start: startsOk("https://github.example/auth") },
+      { start: startsOk("https://claude.example/auth") },
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // Both started on THIS turn. Before ADR 0030 the gate returned after the
+    // first gap, so the second provider's link was not even attempted and the
+    // user needed a separate trigger to discover it.
+    expect(deps.identityLinkGateway!.start).toHaveBeenCalled();
+    expect(deps.claudeAuthGateway!.start).toHaveBeenCalled();
+    expect(final.result).toMatch(/2 accounts/i);
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
+  it("does not let one provider's start failure hide another's link", async () => {
+    // The exact production coupling ADR 0030 removes: `github` failing to
+    // start ended the turn before `claude` was evaluated, so a GitHub OAuth
+    // failure blocked Claude authorization entirely.
+    const deps = preflightDeps(
+      { start: vi.fn().mockRejectedValue(new Error("github oauth down")) },
+      { start: startsOk("https://claude.example/auth") },
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(deps.claudeAuthGateway!.start).toHaveBeenCalled();
+    expect(final.result).toMatch(/claude\.example\/auth/);
+    expect(final.result).toMatch(/couldn't start the GitHub/i);
+    // Still parks a resume anchor, so finishing the Claude link resumes.
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink?.provider).toBe("claude");
+  });
+
+  it("reads as a standalone message when EVERY provider failed to start", async () => {
+    const deps = preflightDeps(
+      { start: vi.fn().mockRejectedValue(new Error("down")) },
+      { start: vi.fn().mockRejectedValue(new Error("down")) },
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // No preceding clause, so it must not open with "I also".
+    expect(final.result).not.toMatch(/^I also/);
+    expect(final.result).toMatch(/couldn't start the one-time/i);
+    expect(final.identityLinkPending).toBeFalsy();
+  });
+
+  it("injects the actor login from the github link, so the agent never resolves identity itself", async () => {
+    const deps = preflightDeps(
+      { getToken: vi.fn().mockResolvedValue({ token: "gho_t", githubLogin: "Imaustink" }) },
+      { getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01" }) },
+    );
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as {
+      secretEnv?: { name: string; value: string }[];
+    };
+    // Taken verbatim off the link record -- no /user round trip, which is the
+    // call that was returning 401 in production.
+    expect(launched.secretEnv).toContainEqual({ name: "AGENT_ACTOR_LOGIN", value: "Imaustink" });
+  });
+});
+
+describe("credentials never reach the model (docs/adr/0030 §3)", () => {
+  const SECRET_TOKEN = "sk-ant-oat01-SUPER-SECRET-VALUE";
+  const SECRET_CREDS = '{"claudeAiOauth":{"accessToken":"SUPER-SECRET-CREDENTIALS-JSON"}}';
+
+  const agent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    identityProviders: ["claude", "claude-remote"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  it("passes no credential material to any model-facing dependency", async () => {
+    // Every model-facing dep records the arguments it was called with. If a
+    // credential can reach an LLM at all, it has to pass through one of these.
+    const seen: unknown[] = [];
+    const record = <T>(result: T) => vi.fn((...args: unknown[]) => { seen.push(args); return Promise.resolve(result); });
+
+    const deps = baseDeps({
+      agentStore: {
+        upsert: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ agent, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([agent]),
+      },
+      delegateSelector: { select: record({ type: "agent" as const, agent }) },
+      skillFitChecker: { fits: record(true) },
+      capabilityNeedChecker: { needsCapability: record(true) },
+      responseComposer: { compose: record({ prefix: null, suffix: null }) },
+      agentChannel: {
+        awaitReply: vi.fn().mockResolvedValue({ message: "done", final: true, narration: [] } satisfies AgentTurnResult),
+        sendPrompt: vi.fn(),
+        close: vi.fn(),
+      },
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      claudeAuthGateway: {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getToken: vi.fn().mockResolvedValue({ token: SECRET_TOKEN }),
+      } as IdentityLinkPort,
+      claudeRemoteGateway: {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getToken: vi.fn().mockResolvedValue({ token: SECRET_CREDS }),
+      } as IdentityLinkPort,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+
+    const final = await buildAgentGraph(deps).invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // Sanity: the credentials really were resolved, so a passing assertion
+    // below means "not leaked" rather than "never present".
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as {
+      secretEnv?: { name: string; value: string }[];
+    };
+    expect(launched.secretEnv?.map((e) => e.value)).toContain(SECRET_TOKEN);
+
+    // The actual guarantee.
+    const modelFacing = JSON.stringify(seen);
+    expect(modelFacing).not.toContain(SECRET_TOKEN);
+    expect(modelFacing).not.toContain(SECRET_CREDS);
+
+    // Nor may they survive on the returned graph state, which is persisted to
+    // the session store and echoed into later prompts.
+    const serializedState = JSON.stringify(final);
+    expect(serializedState).not.toContain(SECRET_TOKEN);
+    expect(serializedState).not.toContain(SECRET_CREDS);
+  });
+});

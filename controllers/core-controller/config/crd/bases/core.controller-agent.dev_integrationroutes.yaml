@@ -58,6 +58,17 @@ spec:
                     description: event is the adapter-specific event name (e.g. "issues").
                     minLength: 1
                     type: string
+                  labelName:
+                    description: |-
+                      labelName further narrows a match to events carrying this exact label
+                      (the event descriptor's `labelName` field, e.g. "ai-triage" vs
+                      "ai-review"). Omitted matches any label. Needed because a single
+                      source/event/action triple — GitHub's `pull_request`/`labeled` — carries
+                      more than one distinct intent, distinguished only by which label was
+                      applied; without this, two such routes would be indistinguishable.
+                      A route naming a labelName wins over an otherwise-equal route that
+                      omits it.
+                    type: string
                   source:
                     description: source is the adapter that produced the event (e.g.
                       "github").

@@ -1,10 +1,14 @@
+import { existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { runAgent, type AgentReply, type AgentSession } from "@controller-agent/agent-runtime";
+import { join } from "node:path";
+import { AgentFailure, runAgent, type AgentReply, type AgentSession } from "@controller-agent/agent-runtime";
 import { resolveGithubToken } from "@controller-agent/github-app-auth";
 import { buildClaudeSettings, buildPrompt } from "./claude.js";
-import { runClaudeTurn } from "./claude-runner.js";
+import { runClaudeTurn, runClaudeTurnRemoteControlled } from "./claude-runner.js";
 import {
   appendCoAuthorTrailer,
+  countCommitsAheadOfOriginHead,
   discoverResult,
   ensureDir,
   findRepoDir,
@@ -15,6 +19,7 @@ import {
 import { extractContinuationToken } from "./continuation.js";
 import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./marker.js";
 import { loadToolConfig } from "./config.js";
+import { persistRefreshedCredentials } from "./credentialsWriteback.js";
 import { AuthorizationError, finalizeDelegatedWrite, isDelegating, resolveDelegatedToken } from "./identityDelegation.js";
 import { clip } from "./security/redact.js";
 
@@ -29,7 +34,10 @@ const toolConfig = loadToolConfig();
  * re-framing the task with the saved PR context (see marker.ts/claude.ts).
  */
 async function handler(session: AgentSession): Promise<AgentReply> {
-  if (!toolConfig.anthropicApiKey && !toolConfig.claudeCodeOAuthToken) {
+  // Remote Control authenticates from the seeded ~/.claude/.credentials.json
+  // full login instead of an env credential (see the childEnv block below),
+  // so neither of these is required in that mode.
+  if (!toolConfig.remoteControlEnabled && !toolConfig.anthropicApiKey && !toolConfig.claudeCodeOAuthToken) {
     throw new Error(
       "Either ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN is required — inject via secretEnv/secretKeyRef on the Agent CR",
     );
@@ -37,6 +45,46 @@ async function handler(session: AgentSession): Promise<AgentReply> {
 
   await ensureDir(toolConfig.homeDir);
   await ensureDir(toolConfig.workdir);
+
+  if (toolConfig.remoteControlEnabled) {
+    // A separate Go/Helm phase's init container is responsible for seeding
+    // the credentials file before the Job container starts (see config.ts's
+    // `homeDir`/`remoteControlEnabled` docs) -- its absence here is logged,
+    // not thrown, both because that phase's exact seeding behavior can't be
+    // verified from this app, and because `claude --remote-control` itself is
+    // the actual authority on whether the run can proceed; failing fast here
+    // on a wrong guess would be worse than letting it fail with a real error.
+    const credentialsPath = join(toolConfig.homeDir, ".claude", ".credentials.json");
+    if (!existsSync(credentialsPath)) {
+      console.error(
+        `[claude-code-swe-agent] CLAUDE_REMOTE_CONTROL is enabled but no credentials file was found at ${credentialsPath} -- ` +
+          "the Remote Control turn will likely fail to authenticate unless the init container seeds it before this point.",
+      );
+    }
+
+    // `claude --bg` combined with bypassPermissions refuses to start
+    // ("requires accepting the disclaimer first") unless
+    // ~/.claude/settings.json has `skipDangerousModePermissionPrompt: true`
+    // ON DISK -- confirmed empirically (diffing a real interactive
+    // acceptance in a throwaway pod on this same image) that the CLI's `-p`/
+    // `--bg` `--settings` flag does NOT satisfy this specific check; only
+    // the literal on-disk file does. Written directly here (not via the
+    // credentials-seeding init container) since this is a fixed,
+    // account-independent value -- no per-user credential involved.
+    const settingsPath = join(toolConfig.homeDir, ".claude", "settings.json");
+    await ensureDir(join(toolConfig.homeDir, ".claude"));
+    let existingSettings: Record<string, unknown> = {};
+    try {
+      existingSettings = JSON.parse(await readFile(settingsPath, "utf8"));
+    } catch {
+      // No existing settings.json (the common case) or it's not valid JSON
+      // -- either way, start fresh rather than fail the turn over this.
+    }
+    await writeFile(
+      settingsPath,
+      JSON.stringify({ ...existingSettings, skipDangerousModePermissionPrompt: true }, null, 2),
+    );
+  }
 
   await session.progress("Authenticating…", { stage: "authenticate" });
 
@@ -52,7 +100,7 @@ async function handler(session: AgentSession): Promise<AgentReply> {
 
   const delegating = isDelegating(toolConfig);
   let token: string;
-  let attribution: { githubLogin: string; githubId: number } | null = null;
+  let attribution: { githubLogin: string; githubId?: number } | null = null;
   if (delegating) {
     try {
       const resolved = await resolveDelegatedToken(toolConfig, marker?.repo ?? null, turnStartedAt);
@@ -75,11 +123,27 @@ async function handler(session: AgentSession): Promise<AgentReply> {
     GITHUB_TOKEN: token,
     GIT_TERMINAL_PROMPT: "0",
   };
-  // Claude Code CLI prefers CLAUDE_CODE_OAUTH_TOKEN over ANTHROPIC_API_KEY
-  // when both are set; drop the API key entirely when a delegated/static
-  // OAuth token is present so there's no ambiguity about which credential is
-  // actually in effect.
-  if (toolConfig.claudeCodeOAuthToken) {
+  // Model-credential selection.
+  //
+  // Remote Control is the exception and MUST come first: it refuses to
+  // establish a session when the CLI is authenticated via
+  // CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY ("these tokens can only make
+  // model requests"), and an env credential takes precedence over the
+  // on-disk ~/.claude/.credentials.json. So when remote control is enabled we
+  // deliberately inject NEITHER -- forcing the CLI to use the full-login
+  // credentials.json the init container seeded (its `user:inference` scope
+  // covers model calls too). Confirmed empirically: with CLAUDE_CODE_OAUTH_TOKEN
+  // present the bridge silently never registers (task still runs, but no URL);
+  // with it absent the bridge registers and the claude.ai/code URL appears.
+  //
+  // Otherwise (one-shot `-p` path): the CLI prefers CLAUDE_CODE_OAUTH_TOKEN
+  // over ANTHROPIC_API_KEY when both are set; drop the API key when an OAuth
+  // token is present so there's no ambiguity about which credential is in
+  // effect.
+  if (toolConfig.remoteControlEnabled) {
+    delete childEnv.CLAUDE_CODE_OAUTH_TOKEN;
+    delete childEnv.ANTHROPIC_API_KEY;
+  } else if (toolConfig.claudeCodeOAuthToken) {
     childEnv.CLAUDE_CODE_OAUTH_TOKEN = toolConfig.claudeCodeOAuthToken;
     delete childEnv.ANTHROPIC_API_KEY;
   } else {
@@ -122,27 +186,49 @@ async function handler(session: AgentSession): Promise<AgentReply> {
 
   await session.progress("Running Claude Code…", { stage: "agent" });
   const prompt = buildPrompt(instruction, marker);
-  const outcome = await runClaudeTurn(prompt, {
+  const runOpts = {
     cwd: toolConfig.workdir,
     env: childEnv,
     settings: buildClaudeSettings(),
     model: toolConfig.model || undefined,
     signal: session.signal,
-    onProgress: (message, stage) => void session.progress(clip(message, 500), { stage }),
+    onProgress: (message: string, stage: string) => void session.progress(clip(message, 500), { stage }),
+  };
+  const outcome = toolConfig.remoteControlEnabled
+    ? await runClaudeTurnRemoteControlled(prompt, { ...runOpts, runId: session.runId })
+    : await runClaudeTurn(prompt, runOpts);
+
+  // Runs on every outcome, including a failed one: the CLI may well have
+  // refreshed its credential before whatever went wrong, and that refresh
+  // invalidated the stored copy either way (see ./credentialsWriteback.ts).
+  const writeback = await persistRefreshedCredentials({
+    homeDir: toolConfig.homeDir,
+    url: toolConfig.credentialsWritebackUrl,
+    token: toolConfig.credentialsWritebackToken,
+    seeded: toolConfig.loginCredentialsJson,
   });
+  if (writeback !== "disabled" && writeback !== "unchanged") {
+    console.error(`[claude-code-swe-agent] credential write-back: ${writeback}`);
+  }
 
   if (outcome.failed) {
-    // Phase 3 (per-user Claude OAuth delegation, docs/adr/0027) will teach
-    // agent-orchestrator to react to `outcome.authError` distinctly (trigger
-    // re-auth instead of just reporting failure) -- today's plain
-    // `runAgent()` contract has no channel for a custom failure code, so for
-    // now this only affects the message text a human reads.
     const detail = outcome.failureDetail ?? "Claude Code reported an error";
-    throw new Error(
-      outcome.authError
-        ? `Claude Code's credentials look expired or invalid: ${detail}`
-        : `The coding agent reported an error: ${clip(detail, 800)}`,
-    );
+    if (outcome.authError) {
+      // A coded failure, not a plain Error: this is the one agent failure the
+      // orchestrator can actually recover from (docs/adr/0027's re-auth path
+      // -- invalidate the stale stored credential, then prompt the user to
+      // re-link on the next trigger), and it can only do that if it can tell
+      // this apart from an ordinary task failure. The code says WHICH stored
+      // credential to drop: Remote Control authenticates from the
+      // `claude-remote` login blob, every other mode from the `claude`
+      // setup-token, and dropping the wrong one leaves the bad credential in
+      // place to fail again.
+      throw new AgentFailure(
+        toolConfig.remoteControlEnabled ? "claude_remote_auth_expired" : "claude_auth_expired",
+        `Claude Code's credentials look expired or invalid: ${clip(detail, 800)}`,
+      );
+    }
+    throw new Error(`The coding agent reported an error: ${clip(detail, 800)}`);
   }
 
   const summary = clip(outcome.finalMessage ?? "Claude Code finished without a summary.", 4000);
@@ -152,6 +238,26 @@ async function handler(session: AgentSession): Promise<AgentReply> {
   if (!discovered?.repo || !discovered.branch) {
     return { message: `The agent produced no pushable repository or pull request. Details: ${clip(summary, 1200)}` };
   }
+
+  let headSha: string | null = null;
+  const headResAfter = await runCommand("git", ["-C", repoDir!, "rev-parse", "HEAD"], {
+    env: childEnv,
+    signal: session.signal,
+  });
+  if (headResAfter.code === 0) headSha = headResAfter.stdout.trim();
+  // "Did this turn commit pushable work?" When we captured a prior HEAD (the
+  // repo existed before the turn -- a continuation, including review-only
+  // turns), diff against it: an unchanged HEAD means no new commits. When we
+  // did NOT (priorHeadSha === null -- the repo was cloned DURING the turn, as
+  // on a first, marker-less chat turn), a non-null HEAD is just the clone's
+  // base commit and is NOT evidence of new work; instead ask whether HEAD
+  // moved past the clone's default-branch tip. This avoids the false "no open
+  // pull request was found" warning on a turn that only read the repo (e.g.
+  // to file an issue), which left HEAD exactly at origin/HEAD.
+  const madeNewCommits =
+    priorHeadSha !== null
+      ? headSha !== null && headSha !== priorHeadSha
+      : (await countCommitsAheadOfOriginHead(repoDir!, childEnv, session.signal)) > 0;
 
   if (delegating && attribution) {
     if (!marker?.repo) {
@@ -199,9 +305,16 @@ async function handler(session: AgentSession): Promise<AgentReply> {
     session: marker?.session ?? randomUUID(),
   };
 
-  const prLine = discovered.prUrl
-    ? `\n\n---\n✅ ${marker?.pr ? "Updated" : "Opened"} pull request: [${discovered.repo}#${discovered.pr}](${discovered.prUrl})`
-    : `\n\n---\n⚠️ Work is on \`${discovered.repo}\` branch \`${discovered.branch}\`, but no open pull request was found.`;
+  // Only mention push/PR status when this turn actually produced new commits
+  // -- a review-only turn (e.g. the "ai-review" label route, which is
+  // explicitly told not to push) legitimately checks out a branch without
+  // committing anything, and slapping a "no open pull request was found"
+  // warning on that is a false positive, not a signal anything went wrong.
+  const prLine = !madeNewCommits
+    ? ""
+    : discovered.prUrl
+      ? `\n\n---\n✅ ${marker?.pr ? "Updated" : "Opened"} pull request: [${discovered.repo}#${discovered.pr}](${discovered.prUrl})`
+      : `\n\n---\n⚠️ Work is on \`${discovered.repo}\` branch \`${discovered.branch}\`, but no open pull request was found.`;
 
   return { message: `${clip(summary, 1500)}${prLine}`, result: encodeSweContinuation(nextMarker) };
 }

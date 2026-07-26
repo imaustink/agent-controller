@@ -35,12 +35,28 @@ agent-orchestrator:
   # Bring-your-own secret: OPENAI_API_KEY, AGENT_CALLBACK_SECRET (required),
   # AGENT_QDRANT_API_KEY (optional), IDENTITY_LINK_GATEWAY_TOKEN (required
   # once identityLink.enabled below is true -- see that block's comment).
+  #
+  # AGENT_SENDER_ASSERTION_SECRET is required in practice too, and its absence
+  # is a real weakness rather than a missing feature: without it the orchestrator
+  # trusts the sender login from the /invoke request BODY, unsigned. That field
+  # selects the caller's principal and therefore which stored Claude credentials
+  # a run receives (docs/adr/0030 §6, 0031), so anything holding the gateway's
+  # /invoke token could name a login and be handed that person's credentials.
+  # Both processes log a startup WARNING while it is unset. Must match
+  # integration-gateway-secrets' GATEWAY_SENDER_ASSERTION_SECRET below exactly --
+  # the gateway signs with it and the orchestrator verifies with it, so two
+  # different values present as "the sender login vanished" (every webhook turn
+  # falls back to the shared service subject and re-prompts) rather than as a
+  # signature error.
+  #
   # Create/update with:
   #   kubectl create secret generic agent-orchestrator-secrets -n controller-agent \
   #     --from-literal=OPENAI_API_KEY=sk-... \
   #     --from-literal=AGENT_CALLBACK_SECRET=<random-string> \
   #     --from-literal=IDENTITY_LINK_GATEWAY_TOKEN=<same value as
-  #       integration-gateway-secrets' GATEWAY_IDENTITY_LINK_TOKEN below>
+  #       integration-gateway-secrets' GATEWAY_IDENTITY_LINK_TOKEN below> \
+  #     --from-literal=AGENT_SENDER_ASSERTION_SECRET=<same value as
+  #       integration-gateway-secrets' GATEWAY_SENDER_ASSERTION_SECRET below>
   #   # (or `kubectl edit secret agent-orchestrator-secrets -n controller-agent`
   #   # / patch it if the Secret already exists)
   secrets:
@@ -180,6 +196,14 @@ core-controller:
     tag: latest
     pullPolicy: Always
 
+  # Every tool/agent image here (recipe-scraper, claude-code-swe-agent, etc.)
+  # is also pushed to registry.kurpuis.com under a mutable ":latest" tag, same
+  # as core-controller's own image above -- so the Jobs core-controller
+  # launches need "Always" too, or a node that already pulled a tag once will
+  # keep running that stale digest through every later push+redeploy.
+  runJob:
+    imagePullPolicy: Always
+
   # Must match the actual in-cluster NATS Service (the release-name-prefixed
   # "agent-controller-nats", not the chart's placeholder default
   # "nats://nats:4222", which doesn't resolve to anything in this namespace).
@@ -209,10 +233,24 @@ integration-gateway:
   config:
     # Loop prevention — the gateway ignores comments authored by this login.
     githubBotLogin: "agent-controller[bot]"
-    # Triggers automated triage (ADR 0024) when applied to a GitHub issue.
-    # A label, not an assignee — agent-controller[bot] can't be set as an
-    # issue assignee (GitHub App bot users generally can't be).
+    # Triggers automated triage (ADR 0024) when applied to a GitHub issue
+    # (investigate and open a PR -> community-components'
+    # github-issue-labeled-triage route) or to a pull request (address the
+    # feedback on it, push the updates, sync it with its base branch ->
+    # github-pr-labeled-triage). One label, two routes, told apart by
+    # event + match.labelName. Removed from the issue/PR once the run ends, so
+    # re-applying it re-triggers. A label, not an assignee —
+    # agent-controller[bot] can't be set as an issue assignee (GitHub App bot
+    # users generally can't be).
     githubTriggerLabel: "ai-triage"
+    # Triggers an automated PR review when applied to a pull request — a
+    # read-only review, distinct from the trigger label above, which changes
+    # the PR. A human applies this label (the gateway drops bot-authored
+    # events, so the agent that opened the PR can't self-trigger). Matches the
+    # community-components github-pr-labeled-review IntegrationRoute
+    # (event: pull_request, action: labeled, labelName: ai-review) ->
+    # claude-code-swe-agent. Also removed once the review finishes.
+    githubReviewLabel: "ai-review"
     # DEV/TEST-GRADE static allowlist mapping GitHub logins to identities --
     # kept only as CompositeGithubIdentityResolver's last-resort fallback now
     # that githubCollaboratorRoles below is the primary, prod-grade path (no
@@ -237,14 +275,16 @@ integration-gateway:
     # just a GitHub "Settings -> Collaborators" change on this repo.
     githubCollaboratorRoles: '{"admin": ["writer"], "write": ["writer"]}'
     # Must comfortably exceed agent-orchestrator's own AGENT_RUN_TIMEOUT_SECONDS
-    # (default 3600s/1h -- how long a real opencode-swe-agent run is allowed
-    # to take: clone, run Claude, open a PR). The default here (15 min) is
-    # far shorter, so a real task taking longer than 15 minutes but less than
-    # an hour would finish successfully just AFTER the gateway had already
-    # given up polling and posted a "no terminal result within 900000ms"
-    # comment -- confirmed happening in practice. 65 minutes leaves a 5-minute
-    # buffer past the 1h agent-run ceiling.
-    pollTimeoutMs: "3900000"
+    # (default 28800s/8h -- the wall-clock ceiling on a real
+    # opencode-swe-agent run: clone, run Claude, open a PR, iterate). The
+    # chart default here (15 min) is far shorter, so a real task taking longer
+    # than 15 minutes would finish successfully just AFTER the gateway had
+    # already given up polling and posted a "no terminal result within
+    # 900000ms" comment -- confirmed happening in practice. Same class of bug
+    # as the orchestrator's old "produced no reply" timeout: a bound shorter
+    # than the work it's bounding turns a success into a visible failure.
+    # 8h5m leaves a 5-minute buffer past the agent-run ceiling.
+    pollTimeoutMs: "29100000"
 
   # Automatic OIDC client_credentials token fetch/refresh (previously a
   # documented, unbuilt follow-up -- Pocket ID's client_credentials access
@@ -269,6 +309,14 @@ integration-gateway:
   # token; the gateway exchanges this for a fresh access token itself as
   # needed, so this key does not go stale on its own.
   #
+  # GATEWAY_SENDER_ASSERTION_SECRET signs the gateway's claim about WHICH HUMAN
+  # triggered a webhook turn (docs/adr/0030 §6). Any random string; must match
+  # agent-orchestrator-secrets' AGENT_SENDER_ASSERTION_SECRET above exactly.
+  # While it is unset the login rides to /invoke unsigned and the orchestrator
+  # trusts it from the request body -- see that Secret's comment for why that
+  # matters. Safe to set here FIRST: the orchestrator ignores the header until
+  # its own key exists, and the gateway keeps sending the body field either way.
+  #
   # Per-user GitHub identity linking (docs/adr/0022, identityLink.enabled
   # below) needs FOUR more keys in this same Secret: GATEWAY_IDENTITY_LINK_TOKEN
   # (any random string -- must match agent-orchestrator-secrets'
@@ -292,7 +340,8 @@ integration-gateway:
   #     --from-literal=GATEWAY_IDENTITY_LINK_TOKEN="$(openssl rand -hex 32)" \
   #     --from-literal=IDENTITY_LINK_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
   #     --from-literal=IDENTITY_LINK_STATE_SECRET="$(openssl rand -base64 32)" \
-  #     --from-literal=GITHUB_APP_CLIENT_SECRET=<from the GitHub App's settings page>
+  #     --from-literal=GITHUB_APP_CLIENT_SECRET=<from the GitHub App's settings page> \
+  #     --from-literal=GATEWAY_SENDER_ASSERTION_SECRET="$(openssl rand -hex 32)"
   #   # (or `kubectl edit secret integration-gateway-secrets -n controller-agent`
   #   # if it already exists -- just add/replace the relevant keys)
   secrets:

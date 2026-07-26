@@ -83,4 +83,31 @@ export class ClaudeAuthGatewayClient implements IdentityLinkPort {
       throw new Error(`claude-auth invalidate failed: ${res.status} ${await res.text()}`);
     }
   }
+
+  /**
+   * Best-effort by design: a rekey that fails leaves the credential where it
+   * was, which costs the caller a re-link at worst. Throwing instead would turn
+   * a missed OPTIMIZATION into a failed turn.
+   */
+  async rekey(_provider: string, fromSubject: string, toSubject: string): Promise<boolean> {
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/claude-auth/api/rekey`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${this.options.token}` },
+        body: JSON.stringify({ from: fromSubject, to: toSubject }),
+      });
+      if (!res.ok) {
+        console.error(`claude-auth rekey failed (leaving the credential where it is): ${res.status}`);
+        return false;
+      }
+      const body = (await res.json()) as { status?: string };
+      return body.status === "moved";
+    } catch (err) {
+      console.error(
+        "claude-auth rekey threw (leaving the credential where it is):",
+        err instanceof Error ? err.message : String(err),
+      );
+      return false;
+    }
+  }
 }

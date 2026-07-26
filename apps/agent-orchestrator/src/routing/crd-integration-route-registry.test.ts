@@ -36,6 +36,7 @@ describe("CrdIntegrationRouteRegistry", () => {
         source: "github",
         event: "issues",
         action: "labeled",
+        labelName: undefined,
         skillRef: undefined,
         agentRef: "opencode-swe-agent",
         toolRef: undefined,
@@ -95,6 +96,90 @@ describe("CrdIntegrationRouteRegistry", () => {
 
       expect(registry.match("github", "issues", "labeled")?.id).toBe("github-issue-labeled-triage");
       expect(registry.match("github", "issues", "closed")?.id).toBe("github-issues-catchall");
+    });
+
+    // The real motivating case: PR review and PR triage are the same
+    // source/event/action triple, told apart only by which label was applied.
+    describe("labelName", () => {
+      const prReview: IntegrationRouteCustomResource = {
+        metadata: { name: "github-pr-labeled-review" },
+        spec: {
+          match: { source: "github", event: "pull_request", action: "labeled", labelName: "ai-review" },
+          agentRef: "reviewer",
+          promptTemplate: "review",
+        },
+      };
+      const prTriage: IntegrationRouteCustomResource = {
+        metadata: { name: "github-pr-labeled-triage" },
+        spec: {
+          match: { source: "github", event: "pull_request", action: "labeled", labelName: "ai-triage" },
+          agentRef: "triager",
+          promptTemplate: "triage",
+        },
+      };
+
+      async function registryWith(items: IntegrationRouteCustomResource[]): Promise<CrdIntegrationRouteRegistry> {
+        const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn().mockResolvedValue({ items }) };
+        const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+        await registry.listAll();
+        return registry;
+      }
+
+      it("routes the same event/action to different routes by label", async () => {
+        const registry = await registryWith([prReview, prTriage]);
+
+        expect(registry.match("github", "pull_request", "labeled", "ai-review")?.id).toBe("github-pr-labeled-review");
+        expect(registry.match("github", "pull_request", "labeled", "ai-triage")?.id).toBe("github-pr-labeled-triage");
+      });
+
+      it("does not fall back to a label-pinned route when the label differs", async () => {
+        const registry = await registryWith([prReview, prTriage]);
+
+        expect(registry.match("github", "pull_request", "labeled", "bug")).toBeUndefined();
+        expect(registry.match("github", "pull_request", "labeled")).toBeUndefined();
+      });
+
+      it("prefers a label-pinned route over an otherwise-equal label-less one", async () => {
+        const anyLabel: IntegrationRouteCustomResource = {
+          metadata: { name: "github-pr-labeled-catchall" },
+          spec: {
+            match: { source: "github", event: "pull_request", action: "labeled" },
+            agentRef: "catchall",
+            promptTemplate: "catchall",
+          },
+        };
+        const registry = await registryWith([anyLabel, prTriage]);
+
+        expect(registry.match("github", "pull_request", "labeled", "ai-triage")?.id).toBe("github-pr-labeled-triage");
+        expect(registry.match("github", "pull_request", "labeled", "bug")?.id).toBe("github-pr-labeled-catchall");
+      });
+
+      // Specificity is action-first: an exact action beats a label match on an
+      // action-less route, so a label can't drag a wildcard route ahead of the
+      // route written for that exact action.
+      it("ranks an exact action match above a label-only match", async () => {
+        const labelOnlyWildcardAction: IntegrationRouteCustomResource = {
+          metadata: { name: "github-pr-any-action-triage-label" },
+          spec: {
+            match: { source: "github", event: "pull_request", labelName: "ai-triage" },
+            agentRef: "wildcard",
+            promptTemplate: "wildcard",
+          },
+        };
+        const actionOnly: IntegrationRouteCustomResource = {
+          metadata: { name: "github-pr-labeled-any-label" },
+          spec: {
+            match: { source: "github", event: "pull_request", action: "labeled" },
+            agentRef: "action",
+            promptTemplate: "action",
+          },
+        };
+        const registry = await registryWith([labelOnlyWildcardAction, actionOnly]);
+
+        expect(registry.match("github", "pull_request", "labeled", "ai-triage")?.id).toBe(
+          "github-pr-labeled-any-label",
+        );
+      });
     });
   });
 
