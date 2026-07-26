@@ -221,6 +221,10 @@ export class ClaudeAuthApi {
       await this.handleInvalidate(req, res);
       return true;
     }
+    if (req.method === "POST" && action === "rekey") {
+      await this.handleRekey(req, res);
+      return true;
+    }
     if (req.method === "POST" && action === "writeback-token") {
       await this.handleWritebackToken(req, res);
       return true;
@@ -304,6 +308,48 @@ export class ClaudeAuthApi {
       return;
     }
     sendJson(res, 200, { status: "ok" });
+  }
+
+  /**
+   * Moves one subject's stored credential to another subject (bearer-gated --
+   * called by agent-orchestrator's authorization pre-flight, never by a run).
+   *
+   * Why the gateway exposes this at all: agent-orchestrator changed which
+   * subject it keys these records by, from the entry point's own subject to the
+   * caller's principal (docs/adr/0029, 0031). Both flows now READ the same key;
+   * this is what makes the credential a human already authorized actually BE at
+   * that key, instead of every existing user paying a fresh login to reproduce
+   * a credential the gateway is already holding.
+   *
+   * ## Who is allowed to ask
+   *
+   * The orchestrator, and only because it is the component that established
+   * both subjects belong to the same human -- `from` is the authenticated
+   * caller's own subject for the turn, and `to` is the principal derived from a
+   * GitHub account that same caller proved control of. This route cannot
+   * re-derive that, so it does not pretend to: it is gated on the master bearer
+   * token, exactly like `token` (which already hands out any subject's
+   * credential) and `invalidate` (which already destroys any subject's). It
+   * grants no authority over the keyspace that those two do not.
+   *
+   * What it will NOT do is overwrite a record at the destination, so a stale
+   * source can never displace a current credential.
+   */
+  private async handleRekey(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await parseJsonBody(req);
+    const from = (body as { from?: unknown } | undefined)?.from;
+    const to = (body as { to?: unknown } | undefined)?.to;
+    if (typeof from !== "string" || !from.trim() || typeof to !== "string" || !to.trim()) {
+      sendJson(res, 400, { error: "Request body must be JSON with non-empty string `from` and `to` fields" });
+      return;
+    }
+    const mode = normalizeMode((body as { mode?: unknown }).mode);
+    try {
+      const status = await this.store.rekey(from, to, kindForMode(mode));
+      sendJson(res, 200, { status });
+    } catch (err) {
+      sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   private async handleInvalidate(req: IncomingMessage, res: ServerResponse): Promise<void> {
