@@ -104,33 +104,6 @@ export async function jobEnvNames(agentRunName: string): Promise<string[]> {
   return (job.spec.template.spec.containers[0]?.env ?? []).map((e) => e.name);
 }
 
-/**
- * Rolls a Deployment and waits for it to come back.
- *
- * Used to clear the integration-gateway's IN-PROCESS state between specs, and
- * that need is a real property of the system rather than test hygiene: a turn
- * that parks on an account link leaves the gateway holding a wait for that link
- * until it completes or expires (up to ten minutes). A suite whose negative
- * controls deliberately park -- most of them do, that is what makes them
- * negative -- therefore hands the next spec a gateway with waits still
- * outstanding, and a spec that needs a prompt LAUNCH queues behind them.
- *
- * That was already documented as "observed launch latency exceeded a 180s
- * budget", and it got worse once `githubOauthRedirectUri` made github links
- * startable here (docs/adr/0031): more parked links, more outstanding waits. It
- * was observed as a 420s timeout on a spec that passes in 2.5s against a freshly
- * rolled gateway.
- *
- * Restarting is blunt but honest -- it makes the starting state explicit rather
- * than depending on what the previous spec happened to leave behind. The suite
- * already restarts infrastructure on purpose (see resilience.e2e.ts).
- */
-export async function restartDeployment(name: string): Promise<void> {
-  requireMinikubeContext();
-  await kubectl(["rollout", "restart", `deployment/${name}`]);
-  await kubectl(["rollout", "status", `deployment/${name}`, "--timeout=180s"]);
-}
-
 /** Port-forwards a Service for the duration of `body`, then tears it down. */
 export async function withPortForward<T>(
   service: string,

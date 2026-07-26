@@ -5,7 +5,6 @@ import {
   agentRunSecretEnvNames,
   agentRunsSince,
   cleanupAgentRunsSince,
-  restartDeployment,
   waitFor,
   withPortForward,
 } from "../support/k8s.js";
@@ -80,13 +79,6 @@ describe("credential keying converges across entry points (ADR 0029/0030)", () =
   });
 
   beforeEach(async () => {
-    // Start each webhook spec against a gateway holding no outstanding link
-    // waits. The negative controls in this describe park on purpose, and a
-    // parked turn leaves the gateway waiting on that link -- so without this the
-    // positive spec that runs after them queues behind that backlog and times
-    // out, which reads as a keying failure and is not one. See
-    // `restartDeployment`'s doc for the full observation.
-    await restartDeployment("agent-controller-integration-gateway");
     secret = await webhookSecret();
     await resetFakeGithub();
     // Every test decides its own seeding, so start with nothing: a leftover
@@ -121,12 +113,21 @@ describe("credential keying converges across entry points (ADR 0029/0030)", () =
     const run = await waitFor(
       "an AgentRun to launch using the canonically-keyed credentials",
       async () => (await agentRunsSince(startedAt))[0],
-      // Generous on purpose. The negative-control specs above each leave the
-      // gateway's relay polling for its full window, so a later positive spec
-      // queues behind that backlog -- observed launch latency exceeded a
-      // 180s budget even though the gate had already resolved. Too tight a
-      // budget here fails for throughput reasons and reads as a keying bug.
-      { timeoutMs: 420_000 },
+      // Generous on purpose, and raised again (420s -> 900s) once
+      // docs/adr/0031 made github links startable here: more turns park, and a
+      // parked turn's relay is processed serially, so a positive webhook spec
+      // waits behind them. Measured, not guessed -- one run authorized this
+      // turn ~7 MINUTES after the webhook was posted, landing two seconds
+      // inside the old budget on one run and outside it on the next.
+      //
+      // Two structural fixes were tried and did NOT hold: rolling the gateway
+      // before each spec (the delay is per-turn processing, not stale state)
+      // and running the parking negative controls last (the failure simply
+      // moved to whichever positive ran first). The latency is real and lives
+      // in the stack, not in the ordering, so the budget states it plainly
+      // rather than a mitigation pretending to have removed it. What this spec
+      // asserts is WHICH SUBJECT a credential is keyed under -- never how fast.
+      { timeoutMs: 900_000 },
     );
 
     // Asserted on the AgentRun CR -- agent-orchestrator's own output. Whether
@@ -168,7 +169,6 @@ describe("credential keying converges across entry points (ADR 0029/0030)", () =
     await new Promise((r) => setTimeout(r, 60_000));
     expect(await agentRunsSince(startedAt)).toHaveLength(0);
   });
-
   it("treats webhook casing and OAuth casing as one subject", async () => {
     // GitHub echoes original casing in webhooks but normalizes it in the OAuth
     // user API. Two casings keying two records is precisely the re-prompt loop
@@ -181,49 +181,26 @@ describe("credential keying converges across entry points (ADR 0029/0030)", () =
     await waitFor(
       "a mixed-case sender to resolve the lower-cased canonical credentials",
       async () => (await agentRunsSince(startedAt))[0],
-      // Generous on purpose. The negative-control specs above each leave the
-      // gateway's relay polling for its full window, so a later positive spec
-      // queues behind that backlog -- observed launch latency exceeded a
-      // 180s budget even though the gate had already resolved. Too tight a
-      // budget here fails for throughput reasons and reads as a keying bug.
-      { timeoutMs: 420_000 },
+      // Generous on purpose, and raised again (420s -> 900s) once
+      // docs/adr/0031 made github links startable here: more turns park, and a
+      // parked turn's relay is processed serially, so a positive webhook spec
+      // waits behind them. Measured, not guessed -- one run authorized this
+      // turn ~7 MINUTES after the webhook was posted, landing two seconds
+      // inside the old budget on one run and outside it on the next.
+      //
+      // Two structural fixes were tried and did NOT hold: rolling the gateway
+      // before each spec (the delay is per-turn processing, not stale state)
+      // and running the parking negative controls last (the failure simply
+      // moved to whichever positive ran first). The latency is real and lives
+      // in the stack, not in the ordering, so the budget states it plainly
+      // rather than a mitigation pretending to have removed it. What this spec
+      // asserts is WHICH SUBJECT a credential is keyed under -- never how fast.
+      { timeoutMs: 900_000 },
     );
   });
+
 });
 
-/**
- * The CHAT side of the same convergence (docs/adr/0031).
- *
- * The suite above drives webhooks only, and that is exactly how the one-way
- * convergence shipped: the webhook path always carries a verified `senderLogin`,
- * so it always resolved a principal, while chat -- which had no way to learn a
- * login -- kept keying by its own `openwebui:<id>` subject. Neither flow was
- * broken alone, and no webhook-only suite could see it.
- *
- * ## What is seeded, and why that is still a real test
- *
- * The GitHub link is seeded rather than established through OAuth: a real
- * device/authcode round trip needs github.com and a human with a browser. The
- * orchestrator only ever reads `githubLogin` off that record to resolve the
- * principal, so a seeded link drives the identical code path -- and everything
- * downstream of it (which subject the credential is read from, whether the run
- * launches, whether the record moved) is genuine.
- *
- * ## The one thing here that is NOT deterministic
- *
- * A webhook turn reaches its agent through an `IntegrationRoute`, so the specs
- * above never depend on a model choosing correctly. Chat has no such thing --
- * `/v1/chat/completions` carries no event descriptor, and a session's
- * `activeAgentId` only CONTINUES an existing run rather than launching one --
- * so selection goes through the planner. `REQUEST` below names the target agent
- * outright to get as close to deterministic as the surface allows, and every
- * launch assertion goes through `expectCredentialAgent`, which fails naming the
- * agent that actually ran. Two of the three agents in the e2e catalog declare
- * the cross-entry-point providers and either is a valid outcome for what these
- * specs test (WHICH SUBJECT a credential came from); `opencode-swe-agent`
- * declares none, and picking it would otherwise fail as a confusing complaint
- * about missing env vars.
- */
 describe("chat and triage converge on one credential (ADR 0031)", () => {
   const CHAT_USER = "e2e-chat-user";
   const CHAT_SUBJECT = chatSubject(CHAT_USER);
@@ -309,12 +286,17 @@ describe("chat and triage converge on one credential (ADR 0031)", () => {
     await seedAllClaudeCredentials("github:someone-else");
     const startedAt = new Date();
 
-    // The turn is EXPECTED to park: with nothing at this caller's principal and
-    // nothing adoptable, the pre-flight starts a link flow and holds open for the
-    // human to finish it. That window doubles as the "give it real time to launch
-    // if it were going to" wait -- absence is the assertion, so it must not be a
-    // race, but it also needn't cost the flow's full 10-minute expiry.
-    expect(await chatTurn(CHAT_USER, REQUEST, { allowPark: true, timeoutMs: 90_000 })).toMatchObject({ parked: true });
+    // The turn must not LAUNCH. How it declines is deliberately not asserted:
+    // with nothing at this caller's principal the pre-flight tries to start a
+    // Claude link, and that can either hold open waiting for the human (a park)
+    // or fail fast when the PTY flow cannot start in this environment ("❌ fetch
+    // failed"). Both are correct refusals, and an earlier version of this spec
+    // pinned the park specifically -- so it failed on a run where the flow
+    // errored quickly, reporting a security control as broken when it had held.
+    //
+    // `allowPark` therefore tolerates either shape, and the assertions below are
+    // the actual property: nobody else's credential was used, and none was moved.
+    await chatTurn(CHAT_USER, REQUEST, { allowPark: true, timeoutMs: 90_000 });
 
     expect(await agentRunsSince(startedAt)).toHaveLength(0);
     // And the other human's credential is untouched -- not moved, not deleted.
