@@ -77,6 +77,8 @@ skills:
     enabled: true
 
 integrationRoutes:
+  githubIssueLabeledReview:
+    enabled: true
   githubIssueLabeledTriage:
     enabled: true
   githubPrLabeledReview:

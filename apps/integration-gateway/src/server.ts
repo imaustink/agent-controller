@@ -39,13 +39,17 @@ export interface GatewayServerOptions {
    */
   githubTriggerLabel: string;
   /**
-   * The label that triggers an automated PR review when applied to a pull
-   * request (`pull_request.labeled`, `GATEWAY_GITHUB_REVIEW_LABEL`) --
-   * sibling to `githubTriggerLabel` but for PRs, so review and triage stay
-   * independent. Optional/empty disables it (no label name can ever match).
-   * The review runs as whoever applied the label, so the bot loop-guard in
-   * `identityResolver` means a human must apply it -- the agent that opened
-   * the PR (a bot) cannot self-trigger a review of its own PR.
+   * The label that triggers an automated review when applied to a pull
+   * request OR an issue (`pull_request.labeled`/`issues.labeled`,
+   * `GATEWAY_GITHUB_REVIEW_LABEL`) -- sibling to `githubTriggerLabel`, so
+   * review and triage stay independent. Optional/empty disables it (no label
+   * name can ever match). The review runs as whoever applied the label, so
+   * the bot loop-guard in `identityResolver` means a human must apply it --
+   * the agent that opened the PR (a bot) cannot self-trigger a review of its
+   * own PR. The two kinds dispatch to different prompts via the event
+   * descriptor's `event`/`labelName` pair (a PR has a diff to review; an
+   * issue's review means the proposal/spec in it). Like every label trigger,
+   * it is removed once the run ends so re-applying it re-triggers.
    */
   githubReviewLabel?: string;
   /** Called with any error from the background invoke-and-reply step; defaults to console.error. */
@@ -280,9 +284,22 @@ export class GatewayServer {
     }
 
     if (event.kind === "issue-labeled") {
-      // Only actionable when the label applied is THE trigger label --
-      // GitHub sends `issues.labeled` for every label, not just this one.
-      if (event.labelName !== this.options.githubTriggerLabel) return;
+      // Two distinct issue triggers share this event, told apart by which
+      // label was applied -- GitHub sends `issues.labeled` for every label,
+      // so anything that is neither of them is ignored:
+      //   - the trigger label -> triage the issue: investigate and open a PR
+      //   - the review label  -> review the issue (e.g. the proposal/spec in
+      //     it), change nothing
+      // This mirrors the `pull_request.labeled` branch above. The label name
+      // rides along in the event descriptor, which lets the two issues/labeled
+      // IntegrationRoutes resolve to different prompts (see `match.labelName`,
+      // ADR 0024). Whichever label triggered the run is removed once it ends
+      // (see `relayAndReply`'s `triggerLabel`), so re-applying the same label
+      // re-triggers -- GitHub emits no `labeled` event for an already-present
+      // label.
+      const isTriage = event.labelName === this.options.githubTriggerLabel;
+      const isReview = !!this.options.githubReviewLabel && event.labelName === this.options.githubReviewLabel;
+      if (!isTriage && !isReview) return;
 
       // The sender here is whoever applied the label, not the bot -- same
       // identity/permission check as the other event kinds, gating on who

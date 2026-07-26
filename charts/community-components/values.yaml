@@ -344,6 +344,25 @@ integrationRoutes:
     # enabled in this same values file (default opencode-swe-agent; set to
     # claude-code-swe-agent to triage on the Claude Code engine instead).
     agentRef: opencode-swe-agent
+  # github-issue-labeled-review: an IntegrationRoute CR dispatching a GitHub
+  # `issues`/`labeled` webhook straight to a SWE Agent with a review prompt,
+  # bypassing RAG skill retrieval -- integration-gateway relays the event once
+  # its configured review label (integration-gateway's config.githubReviewLabel,
+  # e.g. "ai-review") is applied to an issue. Sibling to githubPrLabeledReview
+  # but for issues. A human applies that label: the gateway drops bot-authored
+  # events, so the agent that filed an issue cannot self-trigger a review of it.
+  # The gateway removes the label when the run ends, so re-applying it
+  # re-triggers.
+  githubIssueLabeledReview:
+    enabled: false
+    # Which SWE Agent CR reviews a labeled issue. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to review on the Claude Code engine instead).
+    agentRef: opencode-swe-agent
+    # Which label selects this route rather than githubIssueLabeledTriage above
+    # (both match issues/labeled -- the label is the only thing telling them
+    # apart). Must equal integration-gateway's config.githubReviewLabel.
+    labelName: ai-review
   # github-pr-labeled-review: an IntegrationRoute CR dispatching a GitHub
   # `pull_request`/`labeled` webhook straight to a SWE Agent with a review
   # prompt, bypassing RAG skill retrieval -- integration-gateway relays the

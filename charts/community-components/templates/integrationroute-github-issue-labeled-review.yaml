@@ -1,0 +1,59 @@
+{{- if .Values.integrationRoutes.githubIssueLabeledReview.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: IntegrationRoute
+metadata:
+  name: github-issue-labeled-review
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  match:
+    source: github
+    event: issues
+    action: labeled
+    # This route and github-issue-labeled-triage share the exact same
+    # source/event/action triple -- the label is the ONLY thing distinguishing
+    # "review this issue" from "triage this issue". This route pins
+    # match.labelName so it wins for the review label; triage deliberately
+    # leaves labelName unset (a wildcard) and still catches every other
+    # issues.labeled event, because the registry's specificity scoring ranks a
+    # route naming BOTH action and labelName above one naming only action (see
+    # crd-integration-route-registry.ts `match`).
+    # Must equal integration-gateway's config.githubReviewLabel (the gateway
+    # ignores an issues.labeled event for any other label).
+    labelName: {{ .Values.integrationRoutes.githubIssueLabeledReview.labelName | default "ai-review" | quote }}
+  # No Tool wrapper needed -- dispatches straight to the Agent CR (ADR 0021),
+  # same pattern as integrationroute-github-pr-labeled-review.yaml. Which SWE
+  # Agent CR reviews the issue is value-driven (default opencode-swe-agent) so
+  # an environment can point it at claude-code-swe-agent instead without
+  # editing this template -- whichever it names must have enabled=true in the
+  # same values file, or this route dispatches to a non-existent Agent.
+  #
+  # Triggered when integration-gateway relays an issues.labeled event whose
+  # label matches its configured review label (integration-gateway's
+  # config.githubReviewLabel, e.g. "ai-review"). A human applies that label:
+  # the gateway drops bot-authored events, so the agent that filed an issue
+  # cannot self-trigger a review of it. The gateway removes the label when the
+  # run ends, so re-applying it re-triggers the review.
+  agentRef: {{ .Values.integrationRoutes.githubIssueLabeledReview.agentRef | default "opencode-swe-agent" }}
+  promptTemplate: |
+    GitHub issue {{`{{owner}}`}}/{{`{{repo}}`}}#{{`{{issueNumber}}`}} was labeled "{{`{{labelName}}`}}": "{{`{{title}}`}}"
+
+    {{`{{body}}`}}
+
+    Review this issue. Read the issue and any pull request or code it
+    references, then give a concrete, actionable review of the proposal:
+    assess whether it is clear and complete, whether the approach is sound,
+    what risks or edge cases it misses, and what a maintainer should decide
+    before work starts. Post your review as a comment on the issue, being
+    specific and citing file:line where the discussion is about existing code.
+    Do not implement the change, open a pull request, or push any commits --
+    only review.
+
+    You get exactly one turn to do this -- you cannot pause partway through
+    and wait for a CI check, build, or test run to finish, and nothing will
+    re-invoke you automatically when one does. Post a complete review now
+    based on the issue and code alone. If something you would want is still
+    running, mention its current status as one line in the review -- do not
+    let it block or delay posting the rest of your assessment, and do not say
+    you'll "finalize" or "resume" later.
+{{- end }}

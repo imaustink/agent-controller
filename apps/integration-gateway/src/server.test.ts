@@ -185,6 +185,40 @@ describe("GatewayServer", () => {
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
   });
 
+  // The review label on an ISSUE (not just a PR) triggers a run, routed apart
+  // from triage downstream via the descriptor's labelName.
+  it("relays an issues.labeled event with an event descriptor when the REVIEW label is applied", async () => {
+    const res = await postWebhook(port, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 9, title: "Proposal: dark mode", body: "Spec for a dark theme option." },
+      label: { name: "ai-review" },
+    });
+    expect(res.status).toBe(202);
+    await flush();
+
+    expect(invoke).toHaveBeenCalledWith(
+      'Issue #9 was labeled "ai-review": Proposal: dark mode\n\nSpec for a dark theme option.',
+      sessionIdFor("acme", "widgets", 9),
+      "device",
+      {
+        source: "github",
+        event: "issues",
+        action: "labeled",
+        owner: "acme",
+        repo: "widgets",
+        issueNumber: 9,
+        title: "Proposal: dark mode",
+        body: "Spec for a dark theme option.",
+        senderLogin: "alice",
+        labelName: "ai-review",
+      },
+      undefined,
+      undefined,
+    );
+  });
+
   it("ignores a pull_request.labeled event when the label is neither the review nor the trigger label", async () => {
     const res = await postWebhook(port, "pull_request", {
       action: "labeled",
@@ -332,6 +366,18 @@ describe("GatewayServer", () => {
     });
     await flush();
     expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 12, "ai-review");
+  });
+
+  it("removes the review label once an issue review run completes, so re-applying it re-triggers", async () => {
+    await postWebhook(port, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 9, title: "t", body: "b" },
+      label: { name: "ai-review" },
+    });
+    await flush();
+    expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 9, "ai-review");
   });
 
   // A failed run is exactly when someone wants to re-trigger, so the label

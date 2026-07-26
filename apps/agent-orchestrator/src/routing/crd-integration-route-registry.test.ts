@@ -180,6 +180,26 @@ describe("CrdIntegrationRouteRegistry", () => {
           "github-pr-labeled-any-label",
         );
       });
+
+      // The issue-review case: the label-pinned github-issue-labeled-review
+      // route must win over the wildcard (label-less) github-issue-labeled-triage
+      // route for the review label, while triage still catches the trigger label
+      // and every other issues.labeled event.
+      it("routes a review-labeled issue to the review route while triage stays the wildcard", async () => {
+        const issueReview: IntegrationRouteCustomResource = {
+          metadata: { name: "github-issue-labeled-review" },
+          spec: {
+            match: { source: "github", event: "issues", action: "labeled", labelName: "ai-review" },
+            agentRef: "reviewer",
+            promptTemplate: "review",
+          },
+        };
+        const registry = await registryWith([issueReview, labeledRoute]);
+
+        expect(registry.match("github", "issues", "labeled", "ai-review")?.id).toBe("github-issue-labeled-review");
+        expect(registry.match("github", "issues", "labeled", "ai-triage")?.id).toBe("github-issue-labeled-triage");
+        expect(registry.match("github", "issues", "labeled", "bug")?.id).toBe("github-issue-labeled-triage");
+      });
     });
   });
 
