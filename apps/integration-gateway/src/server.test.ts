@@ -8,6 +8,21 @@ import type { OrchestratorClient } from "./orchestrator-client.js";
 import { GatewayServer, sessionIdFor } from "./server.js";
 import { InMemorySessionPageStore } from "./session-page-store.js";
 
+/**
+ * Every request in this file goes over a fresh TCP connection — see the long
+ * explanation on the identical shim in agent-orchestrator's `server.test.ts`.
+ * Short version: these tests listen on ephemeral ports and close their servers,
+ * and Node's `fetch` caches keep-alive sockets per origin, so a recycled port
+ * can hand a later test a dead socket ("other side closed", zero bytes read).
+ * `connection: close` keeps anything from being pooled in the first place.
+ */
+const nativeFetch = globalThis.fetch;
+const fetch: typeof globalThis.fetch = (input, init = {}) => {
+  const headers = new Headers(init.headers);
+  headers.set("connection", "close");
+  return nativeFetch(input, { ...init, headers });
+};
+
 const SECRET = "test-secret";
 
 function sign(body: string): string {

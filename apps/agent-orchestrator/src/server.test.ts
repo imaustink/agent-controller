@@ -5,6 +5,36 @@ import type { AgentState } from "./agent/graph.js";
 import type { AgentOrchestratorChannel } from "./agents/nats-agent-channel.js";
 import { InMemorySessionStore } from "./session/in-memory-session-store.js";
 
+/**
+ * Every request in this file goes over a fresh TCP connection.
+ *
+ * Without this the suite failed roughly one run in ten, always as
+ * `TypeError: fetch failed` / `SocketError: other side closed` on a request to a
+ * server that had just started -- with `bytesWritten: 339, bytesRead: 0`, i.e.
+ * the request was written to a socket whose peer had already gone. Nothing was
+ * wrong with the server: it is connection REUSE across tests.
+ *
+ * Node's `fetch` (undici) keeps a keep-alive pool keyed by origin
+ * (`127.0.0.1:<port>`) for several seconds. Each test here listens on port 0,
+ * gets an ephemeral port, and closes the server when it finishes -- so under
+ * load, when the OS recycles an ephemeral port quickly enough, a later test's
+ * server can land on a port whose pooled (and now dead) socket is still cached.
+ * The next request to that origin is handed the corpse.
+ *
+ * `connection: close` opts every request out of pooling, so there is never a
+ * cached socket to inherit. Verified: three requests to one origin open three
+ * sockets with this header and reuse one without it. Declared at module scope so
+ * it shadows the global for the whole file -- no call site has to remember.
+ */
+const nativeFetch = globalThis.fetch;
+const fetch: typeof globalThis.fetch = (input, init = {}) => {
+  // Via the Headers API rather than an object spread, so a caller passing
+  // Headers or an entry array keeps its headers instead of losing them.
+  const headers = new Headers(init.headers);
+  headers.set("connection", "close");
+  return nativeFetch(input, { ...init, headers });
+};
+
 function listenOn(server: InvokeServer): Promise<number> {
   return server.listen(0).then(() => {
     const address = server["server"]?.address();
