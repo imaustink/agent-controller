@@ -29,6 +29,7 @@ import { makeSubAgentToolCallHandler, type ToolCatalog } from "./dispatch-tool.j
 import {
   ACTOR_LOGIN_ENV,
   AuthorizationService,
+  type CredentialEnvEntry,
   CROSS_ENTRY_POINT_PROVIDERS,
   linkPromptText,
   PROVIDER_LABEL,
@@ -623,6 +624,54 @@ function identityGatewayFor(provider: string, deps: AgentGraphDeps): IdentityLin
   if (provider === "claude") return deps.claudeAuthGateway;
   if (provider === "claude-remote") return deps.claudeRemoteGateway;
   return deps.identityLinkGateway;
+}
+
+/**
+ * The per-caller identity gate shared by `runTool`'s two tool-launch branches
+ * (agent-backed and container). Resolves the caller's linked credentials for
+ * `tool.identityProviders` through the SAME {@link AuthorizationService} the
+ * peer-level `delegateToAgent` path uses (ADR 0022/0030/0032), so gateway
+ * selection is provider-aware (e.g. `claude` -> claudeAuthGateway, not the
+ * GitHub-only `identityLinkGateway`) and the credential subject is keyed
+ * identically (canonical principal for cross-entry-point providers).
+ *
+ * Returns `{ secretEnv }` (possibly `undefined`, when the tool declares no
+ * providers) on success, or `{ error }` on any gate failure — the four
+ * `resolveLinkedCredentials` failure kinds mapped to a message that names the
+ * TOOL (which the service deliberately doesn't know). Like the paths it
+ * replaces, this never STARTS a fresh device-flow/authcode link: there is no
+ * session slot analogous to `pendingIdentityLink` for a paused TOOL call, only
+ * for a paused agent delegation (a documented v1 scope cut). A caller must have
+ * linked once via direct chat delegation first; `linkHint(provider)` completes
+ * the not-linked message with who to talk to to do so.
+ */
+async function resolveToolIdentitySecretEnv(
+  authorization: AuthorizationService,
+  tool: { id: string; identityProviders?: string[] },
+  identity: Identity | undefined,
+  linkHint: (provider: string) => string,
+): Promise<{ secretEnv?: CredentialEnvEntry[] } | { error: string }> {
+  if (!identity) {
+    return { error: `tool ${tool.id} requires identity providers but no caller identity was resolved` };
+  }
+  const credentials = await authorization.resolveLinkedCredentials({
+    identity,
+    identityProviders: tool.identityProviders,
+  });
+  switch (credentials.kind) {
+    case "gateway-missing":
+      return {
+        error: `tool ${tool.id} requires identity providers (${tool.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${credentials.provider}"`,
+      };
+    case "not-linked":
+      return {
+        error: `tool ${tool.id} requires linking your ${credentials.provider} account first -- start a direct conversation with ${linkHint(credentials.provider)} to link it, then retry`,
+      };
+    case "unsupported-provider":
+      return { error: `tool ${tool.id} declares unsupported identity provider "${credentials.provider}"` };
+    case "resolved":
+      return { secretEnv: credentials.secretEnv };
+  }
 }
 
 /**
@@ -1477,35 +1526,15 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // required here too now that an identity-gated Agent's static secretEnv
         // is stripped regardless of which path reaches it -- and the SAME owner
         // (docs/adr/0030 §1), so the keying can never drift between the two
-        // paths.
-        //
-        // The read-only entry point, deliberately: v1 scope cut is that unlike
-        // delegateToAgent, this path never STARTS a fresh device-flow/authcode
-        // link -- there's no session slot analogous to pendingIdentityLink for a
-        // paused TOOL call, only for a paused agent delegation. A caller must
-        // link once via direct chat delegation to the same agent before a Skill
-        // can reach it here.
-        if (!state.identity) {
-          return { error: `tool ${tool.id} requires identity providers but no caller identity was resolved` };
+        // paths. Shared with the container-tool branch below via
+        // `resolveToolIdentitySecretEnv`, which documents the read-only,
+        // never-starts-a-fresh-link v1 scope cut. The not-linked hint points at
+        // THIS backing agent, which the caller reaches by direct chat.
+        const gate = await resolveToolIdentitySecretEnv(authorization, tool, state.identity, () => "this agent");
+        if ("error" in gate) {
+          return { error: gate.error };
         }
-        const credentials = await authorization.resolveLinkedCredentials({
-          identity: state.identity,
-          identityProviders: tool.identityProviders,
-        });
-        if (credentials.kind === "gateway-missing") {
-          return {
-            error: `tool ${tool.id} requires identity providers (${tool.identityProviders!.join(", ")}) but no identity-link gateway is configured for "${credentials.provider}"`,
-          };
-        }
-        if (credentials.kind === "not-linked") {
-          return {
-            error: `tool ${tool.id} requires linking your ${credentials.provider} account first -- start a direct conversation with this agent to link it, then retry`,
-          };
-        }
-        if (credentials.kind === "unsupported-provider") {
-          return { error: `tool ${tool.id} declares unsupported identity provider "${credentials.provider}"` };
-        }
-        const identitySecretEnv = credentials.secretEnv;
+        const identitySecretEnv = gate.secretEnv;
         const runId = randomUUID();
         const callbackUrl = `${deps.callbackBaseUrl}/callback/${randomUUID()}`;
         try {
@@ -1566,6 +1595,31 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // Container tool (ADR 0010): create a ToolRun CR — the Go
         // core-controller reconciles it into a hardened Job. The orchestrator
         // itself never creates a Job.
+
+        // Same per-caller identity gate as delegateToAgent/the agent-backed
+        // tool branch above (ADR 0022/0032) — e.g. the `github` Tool, which
+        // needs the calling user's own linked GitHub token rather than a
+        // shared credential. Shares `resolveToolIdentitySecretEnv` with the
+        // agent-backed branch: provider-aware gateway selection and identical
+        // subject keying, never hard-coded to `deps.identityLinkGateway`. A
+        // container Tool has no backing agent to chat, so the not-linked hint
+        // names any agent that links the same provider. Unlike the agent-backed
+        // branch, a container Tool with no declared providers needs no identity
+        // at all, so the gate is skipped entirely rather than run for nothing.
+        let identitySecretEnv: CredentialEnvEntry[] | undefined;
+        if (tool.identityProviders && tool.identityProviders.length > 0) {
+          const gate = await resolveToolIdentitySecretEnv(
+            authorization,
+            tool,
+            state.identity,
+            (provider) => `an agent that uses ${provider} identity linking`,
+          );
+          if ("error" in gate) {
+            return { error: gate.error };
+          }
+          identitySecretEnv = gate.secretEnv;
+        }
+
         jobId = randomUUID();
         const awaitResult = deps.jobResultReceiver.awaitJob(jobId);
 
@@ -1584,6 +1638,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               natsUrl: deps.natsUrl,
               natsSubject: `callbacks.${jobId}`,
               ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+              ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
             });
           } else {
             // HTTP callback mode (backward-compatible default).
@@ -1593,6 +1648,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               callbackUrl,
               callbackSecret: deps.callbackSecret!,
               ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+              ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
             });
           }
 

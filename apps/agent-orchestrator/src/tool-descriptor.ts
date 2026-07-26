@@ -104,11 +104,13 @@ export interface ToolDescriptor {
   agentRunTemplate?: AgentRunTemplate;
   /**
    * External identity providers the CALLING user must have linked (ADR
-   * 0022) before this agent-backed tool can be launched — carried over
-   * from `AgentDescriptor.identityProviders` when a Skill's `agentRefs`
-   * resolves an Agent into a ToolDescriptor (`loadSkillTools`). Absent for
-   * container/LocalTools and for agent-backed tools with no identity
-   * requirement.
+   * 0022/0027) before this tool can be launched. For an agent-backed tool,
+   * carried over from `AgentDescriptor.identityProviders` when a Skill's
+   * `agentRefs` resolves an Agent into a ToolDescriptor (`loadSkillTools`).
+   * For a container Tool, populated directly from `Tool.spec.identityProviders`
+   * (`CrdToolRegistry`) -- e.g. the `github` Tool, which needs the calling
+   * user's own linked GitHub token rather than a shared credential. Absent
+   * for LocalTools and for tools with no identity requirement.
    */
   identityProviders?: string[];
   /** Optional coarse risk/cost tier, for future quota/authorization use. */
