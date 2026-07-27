@@ -1,0 +1,136 @@
+name: CI
+
+# Build, test, and static checks for every pull request into main.
+#
+# Split into one job per toolchain so a failure points straight at the thing
+# that broke (Node build vs. a Go module vs. the controller) instead of one
+# opaque red X, and so the jobs run in parallel. All jobs run on
+# GitHub-hosted `ubuntu-latest` runners -- never the self-hosted
+# `arc-runner-set-agent-controller` used by release.yml -- because a PR (fork
+# PRs included) is untrusted content that must not reach the internal
+# cluster/registry. See release.yml and validate-crds.yml for the same split.
+
+on:
+  pull_request:
+    branches: [main]
+    # Skip pure-docs PRs: `paths-ignore` only skips a run when EVERY changed
+    # file matches, so a PR that touches both Markdown and code still runs.
+    paths-ignore:
+      - "**/*.md"
+
+permissions:
+  contents: read
+
+# One in-flight run per PR branch; a new push cancels the previous run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: Node (build, typecheck, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Newest Node the images build on (apps/*/Dockerfile use node:22);
+          # engines require >=20, so this stays within every workspace's range.
+          node-version: "22"
+          cache: npm
+
+      # `npm ci` (not `npm install`) so the lockfile is the source of truth and
+      # a drifted package-lock.json fails the build instead of being silently
+      # rewritten. Installs devDependencies (tsc/vitest/@types/*) -- the build
+      # and tests need them -- so NODE_ENV must not be `production` here.
+      - run: npm ci
+
+      # Workspace fan-out scripts (see root package.json): each runs the
+      # matching script in every workspace that defines it.
+      - name: Build
+        run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+  go:
+    name: Go ${{ matrix.module }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The two standalone Go modules with no external dependencies (no
+        # go.sum). The controller is a heavier kubebuilder project handled in
+        # its own job below.
+        module:
+          - sidecars/localtool-executor
+          - tools-local/http-get-go
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # `go-version-file` is resolved from the repo root, not
+          # working-directory, so it needs the full path.
+          go-version-file: ${{ matrix.module }}/go.mod
+          # These modules have no dependencies to cache, and setup-go's default
+          # cache errors when it can't find a go.sum -- so turn it off.
+          cache: false
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-clean; run 'gofmt -w .':"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  core-controller:
+    name: Go core-controller (lint, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: controllers/core-controller
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: controllers/core-controller/go.mod
+          cache-dependency-path: controllers/core-controller/go.sum
+
+      # Reuse the project's own Makefile targets so CI runs exactly what a
+      # developer runs locally, rather than a second, drifting definition of
+      # "the checks". Each target self-installs its pinned tool into ./bin
+      # (golangci-lint, controller-gen, setup-envtest) on first use.
+      #
+      # `make lint`  -> golangci-lint (static analysis + gofmt/goimports formatters).
+      # `make test`  -> manifests + generate + go fmt + go vet, then the
+      #                 envtest-backed `go test` suite (downloads the kube API
+      #                 server test binaries via setup-envtest).
+      # `make build` -> compiles the manager binary.
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: make test
+
+      - name: Build
+        run: make build
