@@ -85,8 +85,42 @@ const CREDENTIALS_WRITEBACK_ENV = {
  */
 const WRITEBACK_GRANT_MARGIN_SECONDS = 15 * 60;
 
-/** Human-facing label for a provider, used in link prompts/messages. */
-export const PROVIDER_LABEL: Record<string, string> = { github: "GitHub", claude: "Claude", "claude-remote": "Claude" };
+/**
+ * Human-facing label for a provider, used in link prompts/messages.
+ *
+ * `claude` and `claude-remote` MUST NOT read the same. They are two different
+ * credentials -- a `claude setup-token` for running Claude Code, and a full
+ * `claude auth login` credentials file for Remote Control (docs/adr/0027) -- and
+ * an Agent declaring both asks the user for both. While both said "Claude", the
+ * two prompts were indistinguishable:
+ *
+ *   12:42 "please link your Claude account ... I also couldn't start the
+ *          Claude linking step just now"
+ *   12:45 "please link your Claude account"
+ *
+ * Same words, different credential, so completing the first and being asked
+ * again reads as the system losing the authorization it was just given rather
+ * than as a second, distinct step. It also made the batched two-link message
+ * ("link X, and link Y") say the same thing twice.
+ */
+export const PROVIDER_LABEL: Record<string, string> = {
+  github: "GitHub",
+  claude: "Claude",
+  "claude-remote": "Claude Remote Control",
+};
+
+/**
+ * How many times a provider's link flow may be started before the turn gives up
+ * on it. See {@link AuthorizationService.startWithRetry} for why more than one.
+ */
+const START_ATTEMPTS = 2;
+
+/**
+ * Pause between start attempts. Short on purpose: a failed `claude` start has
+ * usually already spent its own 30s authorize-URL timeout, and a human is
+ * waiting on this turn.
+ */
+const START_RETRY_DELAY_MS = 1_000;
 
 /** A `secretEnv` entry destined for the launched run. Values are credentials; never log one. */
 export interface CredentialEnvEntry {
@@ -416,12 +450,7 @@ export class AuthorizationService {
         // That must NOT crash the turn into a raw "Something went wrong" -- on
         // the fire-and-forget GitHub-issue triage path that error is what gets
         // posted to the ticket.
-        const started = await gateway.start(provider, credentialSubject, flow).catch((err: unknown) => {
-          console.error(
-            `[authorization] start threw for provider ${provider}; reporting it alongside the other providers instead of failing the turn: ${err instanceof Error ? err.message : String(err)}`,
-          );
-          return null;
-        });
+        const started = await this.startWithRetry(gateway, provider, credentialSubject, flow);
         if (!started) {
           // A principal link that won't start must DEGRADE, not block: sharing
           // is an improvement over per-entry-point keying, and refusing the
@@ -628,6 +657,64 @@ export class AuthorizationService {
       ...(ownedSecretNames.length > 0 ? { ownedSecretNames } : {}),
       principal,
     };
+  }
+
+  /**
+   * Starts one provider's link flow, retrying a failure before giving up on it
+   * for this turn. Returns `null` only once every attempt has failed.
+   *
+   * ## Why a retry belongs here specifically
+   *
+   * ADR 0030 §4's property is that EVERY missing link is started on ONE turn and
+   * reported together, so a human authorizes once and is done. A start that
+   * fails silently converts that into two rounds: the user completes the link
+   * they were shown, the next turn assesses the same provider set again, the
+   * previously-failed flow starts fine, and they are asked to authorize a second
+   * time -- for a different credential that is labelled almost identically. That
+   * reads as an auth loop, and it is the exact production symptom this exists to
+   * prevent:
+   *
+   *   12:42 "please link your Claude account ... I also couldn't start the
+   *          Claude linking step just now"
+   *   12:45 "please link your Claude account"        <- second prompt, other provider
+   *
+   * The underlying cause there was resource exhaustion in the gateway (see the
+   * `resources` comment in charts/.../integration-gateway/values.yaml), and that
+   * is fixed at the source. This is the second line of defence: the PTY flows are
+   * inherently fragile -- they spawn a CLI and scrape its output within a timeout
+   * -- so "a start failed once" must not be the same thing as "the user
+   * authorizes twice".
+   *
+   * Deliberately few attempts and no backoff growth: a failed `claude` start has
+   * usually just burned its own 30s timeout, and this runs inside a turn a human
+   * (or a webhook relay's poll budget) is waiting on. One retry converts the
+   * common transient failure into a single-turn success; more would trade the
+   * turn itself for a case the next trigger recovers anyway.
+   */
+  private async startWithRetry(
+    gateway: IdentityLinkPort,
+    provider: string,
+    credentialSubject: string,
+    flow: "device" | "authcode",
+  ): Promise<IdentityLinkStartResult | null> {
+    for (let attempt = 1; attempt <= START_ATTEMPTS; attempt++) {
+      try {
+        return await gateway.start(provider, credentialSubject, flow);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        if (attempt < START_ATTEMPTS) {
+          console.error(
+            `[authorization] start failed for provider ${provider} (attempt ${attempt}/${START_ATTEMPTS}); retrying so this turn can still offer every outstanding link at once: ${reason}`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, START_RETRY_DELAY_MS));
+          continue;
+        }
+        console.error(
+          `[authorization] start failed for provider ${provider} after ${START_ATTEMPTS} attempts; reporting it alongside the other providers instead of failing the turn: ${reason}`,
+        );
+      }
+    }
+    return null;
   }
 
   /**

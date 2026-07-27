@@ -23,7 +23,8 @@ function gateway(
     string,
     {
       token?: IdentityLinkToken;
-      start?: IdentityLinkStartResult | "throw";
+      /** `"throw-once"` fails the first attempt only -- the transient PTY failure `startWithRetry` exists for. */
+      start?: IdentityLinkStartResult | "throw" | "throw-once";
       waitResolvesTo?: IdentityLinkToken | "throw";
       /** A record sitting under the caller's raw subject, adoptable by `rekey` (docs/adr/0031). */
       prePrincipalToken?: IdentityLinkToken;
@@ -34,6 +35,8 @@ function gateway(
 ): IdentityLinkPort {
   /** Subjects a `rekey` has moved a pre-principal record onto, so `getToken` starts finding it there. */
   const adopted = new Map<string, IdentityLinkToken>();
+  /** Per-provider `start` call count, so `"throw-once"` can fail only the first. */
+  const startAttempts = new Map<string, number>();
   return {
     getToken: vi.fn(async (provider: string, subject: string) => adopted.get(`${provider}@${subject}`) ?? behaviour[provider]?.token),
     getLinkedLogin: vi.fn(async (provider: string) => behaviour[provider]?.staleLinkLogin ?? behaviour[provider]?.token?.githubLogin),
@@ -46,6 +49,12 @@ function gateway(
     start: vi.fn(async (provider: string) => {
       const s = behaviour[provider]?.start;
       if (s === "throw") throw new Error(`start failed for ${provider}`);
+      if (s === "throw-once") {
+        const seen = (startAttempts.get(provider) ?? 0) + 1;
+        startAttempts.set(provider, seen);
+        if (seen === 1) throw new Error(`start failed for ${provider} (transient)`);
+        return { flow: "authcode", authorizeUrl: `https://link/${provider}`, expiresInSeconds: 600 } as IdentityLinkStartResult;
+      }
       return s ?? ({ flow: "authcode", authorizeUrl: `https://link/${provider}`, expiresInSeconds: 600 } as IdentityLinkStartResult);
     }),
     poll: vi.fn(async () => "pending" as const),
@@ -758,5 +767,106 @@ describe("AuthorizationService.authorize principal from an existing link", () =>
     // did -- which is the whole failure mode this ADR is cleaning up after.
     expect(verdict.kind).toBe("authorized");
     expect(github.start).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The "I authorized, and it asked me to authorize again" regression.
+ *
+ * What happened in production: `claude-code-swe-agent` declares BOTH `claude`
+ * and `claude-remote`. The gateway pod had been pushed to its memory ceiling
+ * (@kubernetes/client-node's ~88 MiB, added when credentials moved into Secrets,
+ * against a 256 MiB limit), so the second `claude` PTY spawned into a cgroup
+ * with no headroom and printed nothing within its 30s authorize-URL timeout.
+ *
+ *   12:42 "please link your Claude account ... I also couldn't start the
+ *          Claude linking step just now"
+ *   12:45 "please link your Claude account"        <- other provider, same words
+ *
+ * ADR 0030 §4 says every missing link is started on ONE turn and reported
+ * together. A failed start silently broke that: the user completed the one link
+ * they were offered and the next turn offered them the other, which reads as the
+ * system having lost the authorization it was just given.
+ *
+ * Three defences, one per test below. The resource limit is fixed at the source
+ * (charts/.../integration-gateway/values.yaml) and cannot be asserted here.
+ */
+describe("AuthorizationService.authorize -- one turn offers every outstanding link", () => {
+  const bothClaudeProviders = { id: "claude-code-swe-agent", identityProviders: ["claude", "claude-remote"] };
+
+  it("retries a transient start failure so the link is still offered on THIS turn", async () => {
+    const svc = new AuthorizationService({
+      claudeAuthGateway: gateway({ claude: {} }),
+      claudeRemoteGateway: gateway({ "claude-remote": { start: "throw-once" } }),
+    });
+
+    const outcome = await svc.authorize({
+      agent: bothClaudeProviders,
+      identity: identity(),
+      request: "triage this",
+    });
+
+    expect(outcome.kind).toBe("link-required");
+    if (outcome.kind !== "link-required") throw new Error("unreachable");
+    // Both offered NOW. Before the retry, claude-remote landed in `failedToStart`
+    // and its prompt arrived a turn later as a second authorization request.
+    expect(outcome.message).toContain("link your Claude account");
+    expect(outcome.message).toContain("link your Claude Remote Control account");
+    expect(outcome.message).not.toContain("couldn't start");
+  });
+
+  it("names the two credentials distinctly, so a second prompt is not mistaken for a repeat", async () => {
+    const svc = new AuthorizationService({
+      claudeAuthGateway: gateway({ claude: {} }),
+      claudeRemoteGateway: gateway({ "claude-remote": {} }),
+    });
+
+    const outcome = await svc.authorize({
+      agent: bothClaudeProviders,
+      identity: identity(),
+      request: "triage this",
+    });
+
+    if (outcome.kind !== "link-required") throw new Error(`expected link-required, got ${outcome.kind}`);
+    // While both read "Claude", this message asked the user to "link your Claude
+    // account, and link your Claude account" -- the same words twice.
+    expect(outcome.message).toContain("2 accounts");
+    expect(outcome.message).toContain("Claude Remote Control");
+    expect(outcome.message.match(/link your Claude account/g) ?? []).toHaveLength(1);
+  });
+
+  it("still reports a genuinely unstartable provider alongside the others", async () => {
+    // The retry must not turn a real, persistent failure into a hang or a
+    // swallowed provider: it is reported, the turn survives, and the other
+    // provider's link is still offered (ADR 0030 §4's decoupling).
+    const svc = new AuthorizationService({
+      claudeAuthGateway: gateway({ claude: {} }),
+      claudeRemoteGateway: gateway({ "claude-remote": { start: "throw" } }),
+    });
+
+    const outcome = await svc.authorize({
+      agent: bothClaudeProviders,
+      identity: identity(),
+      request: "triage this",
+    });
+
+    if (outcome.kind !== "link-required") throw new Error(`expected link-required, got ${outcome.kind}`);
+    expect(outcome.message).toContain("link your Claude account");
+    expect(outcome.message).toContain("Claude Remote Control");
+    expect(outcome.message).toContain("couldn't start");
+  });
+
+  it("makes exactly one extra attempt, not an unbounded loop inside the turn", async () => {
+    // A human (or the relay's poll budget) is waiting on this turn, and a failed
+    // `claude` start has already spent its own 30s timeout.
+    const claudeRemote = gateway({ "claude-remote": { start: "throw" } });
+    const svc = new AuthorizationService({
+      claudeAuthGateway: gateway({ claude: { token: { token: "sk-ant-oat01-x" } as IdentityLinkToken } }),
+      claudeRemoteGateway: claudeRemote,
+    });
+
+    await svc.authorize({ agent: bothClaudeProviders, identity: identity(), request: "triage this" });
+
+    expect(claudeRemote.start).toHaveBeenCalledTimes(2);
   });
 });

@@ -295,13 +295,50 @@ ingress:
   pathType: Prefix
   tls: []
 
+# Sized for the WORST case this pod actually has, which is not the HTTP relay:
+# it is the relay plus up to two concurrent `claude` CLI subprocesses.
+#
+# MEASURED in this image (a throwaway pod with a 2Gi limit, so nothing was
+# clipped by the limit under test):
+#
+#   one `claude` process        ~152 MiB RSS
+#   two `claude` processes      482 MiB cgroup (299 MiB anon + 179 MiB cache)
+#   the gateway's own node proc ~112 MiB RSS
+#   gateway + two `claude`      ~411 MiB anon, ~590 MiB with page cache
+#
+# Against the previous 256Mi limit, that does not fit -- and it did not fit for
+# ONE subprocess either. `claude auth login` alone drove a fresh container to
+# 280 MiB. So this limit was under-provisioned from the moment claudeAuth was
+# enabled, not merely after docs/adr/0034 added `@kubernetes/client-node`; what
+# that change did was consume the remaining slack that had been letting a single
+# flow squeak through, which is when it started failing.
+#
+# Why two `claude` processes overlap: an Agent declaring both `claude` and
+# `claude-remote` has both link flows started on ONE turn (ADR 0030 §4), and the
+# first flow's PTY stays alive for up to FLOW_IDLE_TIMEOUT_MS (10 min) waiting
+# for the user to paste their code. Each is a Node process of its own.
+#
+# How it presented, which is why the limit is worth this much comment: nothing
+# was OOM-killed (`oom_kill 0`) and the container never restarted. The second
+# `claude` PTY simply spawned into a cgroup with no headroom and printed nothing
+# within its 30s authorize-URL timeout -- a large Node CLI's startup is mostly
+# reading its own JS, and there was no cache left to hold it. Its link flow was
+# reported as failed-to-start, the user authorized only the link they were
+# offered, and the NEXT turn offered them the other. The visible symptom was
+# being asked to authorize twice; nothing in the logs said "memory".
+#
+# 1Gi/1 matches agent-orchestrator. It is ~1.7x the measured worst case, which is
+# headroom for page cache rather than padding: squeezed to the measured figure
+# the cache thrashing is exactly what starves the subprocess. The request is
+# raised off 128Mi too -- the scheduler was placing this as a much smaller pod
+# than it is.
 resources:
   limits:
-    cpu: 500m
-    memory: 256Mi
+    cpu: 1
+    memory: 1Gi
   requests:
-    cpu: 100m
-    memory: 128Mi
+    cpu: 250m
+    memory: 384Mi
 
 # Matches the hardened run contract in docs/security.md.
 podSecurityContext:

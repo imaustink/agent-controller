@@ -163,6 +163,38 @@ cutover is free.
   encryption is what keeps read access from being credential access.
 - Every credential in the cluster at the time of the incident is unrecoverable.
   One re-link per user was required regardless of this change.
+- **Adding `@kubernetes/client-node` to the gateway pushed a container that was
+  already under-provisioned over the edge.** This ADR treated the dependency as
+  free because it was already in the monorepo, and did not look at the limit of
+  the container newly loading it (256 MiB).
+
+  A user was then asked to authorize twice. Measured afterwards, in this image:
+  one `claude` CLI process is ~152 MiB RSS, the gateway's own process ~112 MiB,
+  and two `claude` processes plus the gateway ~411 MiB anon / ~590 MiB with page
+  cache. An Agent declaring both `claude` and `claude-remote` starts both link
+  flows on one turn (ADR 0030 §4) and the first flow's PTY stays alive for ten
+  minutes awaiting the user's code — so two of those coexist by design. **256 MiB
+  never fit that, and did not fit even one subprocess**; `claude auth login`
+  alone drove a fresh container to 280 MiB. What this change did was consume the
+  slack that had been letting a single flow squeak through.
+
+  It presented as neither a crash nor a log line: `oom_kill 0`, no restart. The
+  second PTY spawned into a cgroup with no cache headroom, printed nothing inside
+  its 30s authorize-URL timeout (a large Node CLI's startup is mostly reading its
+  own JS), and its flow was reported as failed-to-start — so the user authorized
+  the one link offered and the next turn offered the other.
+
+  Fixed by sizing the gateway for what it actually runs (1Gi/1, matching
+  agent-orchestrator) plus an in-turn retry so a transient start failure cannot
+  cost a second authorization round. Two lessons, and the second is the one that
+  actually cost the incident: "the dependency is already used elsewhere in the
+  repo" says nothing about whether the container adding it has room; and a
+  service that spawns subprocesses must be sized for the subprocesses, which this
+  one never was.
+
+  Worth revisiting: this store needs five REST verbs and one watch on a single
+  resource type. Implemented against `fetch` with the ServiceAccount token it
+  would cost approximately nothing, and the 88 MiB buys very little here.
 - **Session pages have the same defect and are not fixed here.** Their store's
   own comment claims it "survives a gateway pod restart", and it does — but not
   the Redis pod's. Those links are posted into GitHub comments and may be opened
