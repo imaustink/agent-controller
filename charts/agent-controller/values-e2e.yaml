@@ -123,8 +123,16 @@ integration-gateway:
   claudeAuth:
     # Needed for `claude`/`claude-remote` flows to be startable at all. The
     # PTY-driven `claude login` cannot succeed without a real Anthropic
-    # credential, and no spec expects it to — they assert on the Redis key a
+    # credential, and no spec expects it to — they assert on the subject a
     # started flow is keyed under, which is decided before the PTY runs.
+    #
+    # It does mean the flows spawn REAL `claude` processes here, two of them at
+    # once for an Agent declaring both providers. That is deliberate and load
+    # bearing: it is the condition that broke production when the gateway's
+    # memory limit left no headroom for the second one, and it is what lets
+    # identity-keying.e2e.ts's "asks for both at once" spec catch a regression.
+    # This deployment takes the chart's DEFAULT resources on purpose — pinning
+    # smaller ones here would make the suite unable to see it.
     enabled: true
 
   sessionPage:

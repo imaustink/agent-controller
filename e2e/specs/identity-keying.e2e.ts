@@ -21,7 +21,7 @@ import {
 import { deleteRedisKeys } from "../support/redis.js";
 import { bounceRedis } from "../support/resilience.js";
 import { issueLabeledPayload, postGithubWebhook } from "../support/webhook.js";
-import { resetFakeGithub, webhookSecret } from "../support/fixtures.js";
+import { fakeGithubRequests, resetFakeGithub, webhookSecret } from "../support/fixtures.js";
 
 requireMinikubeContext();
 
@@ -494,5 +494,105 @@ describe("linked credentials survive a Redis restart (ADR 0034)", () => {
     const envNames = await agentRunSecretEnvNames(run.name);
     expect(envNames).toContain("CLAUDE_CODE_OAUTH_TOKEN");
     expect(envNames).toContain("CLAUDE_LOGIN_CREDENTIALS_JSON");
+  });
+});
+
+/**
+ * A turn that needs more than one credential asks for all of them ONCE.
+ *
+ * The regression, in the user's words: "I was prompted to auth in the triage
+ * flow, I authed and then was asked to auth again." What they actually received
+ * was two comments, three minutes apart, for two DIFFERENT credentials that were
+ * both called "Claude":
+ *
+ *   12:42 "please link your Claude account ... I also couldn't start the
+ *          Claude linking step just now"
+ *   12:45 "please link your Claude account"
+ *
+ * The cause was resource exhaustion, not keying. `@kubernetes/client-node` (~88
+ * MiB RSS, added when credentials moved into Secrets) took the gateway to 255.1
+ * MiB of a 256 MiB limit -- `memory.events` recorded 20 forced reclaims, and
+ * nothing was OOM-killed, so there was no crash to notice. The second `claude`
+ * PTY then spawned into a cgroup with no headroom and printed nothing within its
+ * 30s authorize-URL timeout, so ADR 0030 §4's "start every missing link on ONE
+ * turn" quietly became two turns.
+ *
+ * ## Why this spec can catch it where a unit test cannot
+ *
+ * Because it needs a real container with a real memory limit. The e2e deployment
+ * takes the chart's DEFAULT resources -- the same ones production was running --
+ * and `claudeAuth.enabled` means the flows spawn real `claude` processes. So two
+ * PTYs really do have to coexist here, and if the limit is ever squeezed back to
+ * where one of them cannot start, this fails. The unit tests
+ * (authorization-service.test.ts) cover the retry and the wording; only this
+ * covers whether the environment can actually do it.
+ *
+ * Asserts on the POSTED COMMENT rather than a log line: what went wrong was what
+ * the human was asked to do, and the comment is that.
+ */
+describe("a turn needing two credentials asks for both at once (ADR 0030 §4)", () => {
+  const OWNER = "e2e-org";
+  const REPO = "e2e-repo";
+  let secret: string;
+  let suiteStartedAt: Date;
+
+  beforeAll(async () => {
+    suiteStartedAt = new Date();
+    secret = await webhookSecret();
+  });
+
+  afterAll(async () => {
+    await cleanupAgentRunsSince(suiteStartedAt);
+  });
+
+  beforeEach(async () => {
+    await resetFakeGithub();
+    // Nothing seeded: BOTH Claude link flows must be started for real, which is
+    // the condition that needs two `claude` PTYs alive at once.
+    await deleteCredentials();
+    await deleteRedisKeys("sess:*");
+  });
+
+  it("offers both Claude link steps in a single comment, naming them distinctly", async () => {
+    const issueNumber = issueNo(50);
+
+    await withPortForward("agent-controller-integration-gateway", 8090, GATEWAY_PORT, async (baseUrl) => {
+      const res = await postGithubWebhook(
+        baseUrl,
+        "issues",
+        issueLabeledPayload({ owner: OWNER, repo: REPO, issueNumber, label: "ai-triage", senderLogin: SENDER }),
+        secret,
+      );
+      expect(res.status).toBeGreaterThanOrEqual(200);
+      expect(res.status).toBeLessThan(300);
+    });
+
+    const comment = await waitFor(
+      "the link-required comment to be posted to the issue",
+      async () => {
+        const posted = (await fakeGithubRequests()).filter(
+          (r) =>
+            r.method === "POST" &&
+            r.path === `/repos/${OWNER}/${REPO}/issues/${issueNumber}/comments` &&
+            typeof r.body === "string" &&
+            r.body.includes("link your"),
+        );
+        return posted.length > 0 ? posted[posted.length - 1] : undefined;
+      },
+      // Both PTY flows have to spawn and print a URL, each bounded by its own 30s
+      // timeout, behind whatever else is queued -- see the sibling suite's note on
+      // why webhook budgets here are large and measured rather than guessed.
+      { timeoutMs: 420_000 },
+    );
+
+    const body = String(comment!.body);
+
+    // The assertion that would have failed in production: one comment covering
+    // BOTH credentials, rather than one credential now and one a turn later.
+    expect(body).toContain("2 accounts");
+    expect(body).toContain("Claude Remote Control");
+    // ...and no "I couldn't start" clause, which is what deferred a provider to a
+    // later turn and produced the second prompt.
+    expect(body).not.toContain("couldn't start");
   });
 });
