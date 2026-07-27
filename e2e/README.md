@@ -43,8 +43,8 @@ only ever reads back the part we seed:
 
 | Fixture | Seeded by | What stays real |
 | --- | --- | --- |
-| A linked Claude credential | `support/redis.ts`'s `seedClaudeCredential` | Everything downstream: which subject the gate reads, whether it launches, what it injects. Asserting "a credential appears" is impossible hermetically, so the assertion is inverted — seed at the subject the gate is believed to use, and require a LAUNCH. A gate looking elsewhere finds nothing and parks. |
-| A linked GitHub account | `support/redis.ts`'s `seedGithubLink` | The orchestrator reads only `githubLogin` off that record to resolve a principal (ADR 0031), so a seeded link drives the identical path a real OAuth round trip would produce. |
+| A linked Claude credential | `support/credential-store.ts`'s `seedClaudeCredential` | Everything downstream: which subject the gate reads, whether it launches, what it injects. Asserting "a credential appears" is impossible hermetically, so the assertion is inverted — seed at the subject the gate is believed to use, and require a LAUNCH. A gate looking elsewhere finds nothing and parks. |
+| A linked GitHub account | `support/credential-store.ts`'s `seedGithubLink` | The orchestrator reads only `githubLogin` off that record to resolve a principal (ADR 0031), so a seeded link drives the identical path a real OAuth round trip would produce. |
 
 ## Both entry points, not just webhooks
 

@@ -101,7 +101,27 @@ export interface AppConfig {
   identityLinkEncryptionKey: string;
   /** Bearer token agent-orchestrator authenticates to this gateway's /identity-link/* API as (opposite direction from orchestratorToken). */
   identityLinkToken: string;
-  /** Redis connection string backing the durable identity-link store; same env var agent-orchestrator uses for its own session store. */
+  /**
+   * Namespace the credential Secrets (identity links, Claude credentials,
+   * write-back grants) are stored in -- docs/adr/0034.
+   *
+   * Populated from the downward API (`POD_NAMESPACE`) so it is simply this
+   * gateway's own namespace, which is the only one its RBAC Role grants access
+   * to. `GATEWAY_CREDENTIAL_NAMESPACE` overrides it for a deployment that keeps
+   * credentials elsewhere (and grants the Role there instead).
+   */
+  credentialNamespace: string;
+  /**
+   * Redis connection string for the session-page store; same env var
+   * agent-orchestrator uses for its own session store.
+   *
+   * No longer backs credentials. It used to back all of them, and that is
+   * exactly what went wrong: the instance runs with persistence disabled on an
+   * emptyDir, so a restart deleted every identity link and Claude credential in
+   * the cluster and users who had linked months earlier were asked to link
+   * again. Those live in Kubernetes Secrets now (docs/adr/0034); what remains
+   * here is cache-shaped state that can afford to be lost.
+   */
   redisUrl: string | undefined;
   /** OAuth scope requested when starting a device-flow link. */
   deviceFlowScope: string;
@@ -121,9 +141,15 @@ export interface AppConfig {
   publicUrl: string;
   /**
    * Redis URL backing the session-page store, so a posted page link (and its
-   * turn history) survives a gateway pod restart. Falls back to `redisUrl`
-   * (the identity-link Redis instance) when unset, and to an in-memory store
-   * -- fine for single-replica/dev, but lost on restart -- when neither is set.
+   * turn history) outlives a gateway pod restart. Falls back to `redisUrl` when
+   * unset, and to an in-memory store -- fine for single-replica/dev, but lost on
+   * restart -- when neither is set.
+   *
+   * Note that "survives a restart" holds only for the GATEWAY's restart: the
+   * Redis this points at in practice has persistence disabled on an emptyDir, so
+   * its own restart drops these pages too. Tolerable for a link that degrades to
+   * a 404 (unlike a credential, which is why those moved to Secrets in
+   * docs/adr/0034) but worth fixing separately.
    */
   sessionPageRedisUrl: string | undefined;
   /**
@@ -132,9 +158,9 @@ export interface AppConfig {
    * on automatically once their required fields are set) because it also
    * requires the `claude` CLI binary to actually be present in this
    * container image, a real build-time dependency, not just config. Reuses
-   * identity-link's Redis/encryption-key/bearer-token config and the
-   * session-page `publicUrl` -- fails startup if enabled without all of
-   * those also being configured (see index.ts).
+   * identity-link's encryption-key/bearer-token config and the session-page
+   * `publicUrl` -- fails startup if enabled without all of those also being
+   * configured (see index.ts).
    */
   claudeAuthEnabled: boolean;
 }
@@ -179,6 +205,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     githubAppClientId: env.GITHUB_APP_CLIENT_ID ?? "",
     identityLinkEncryptionKey: env.IDENTITY_LINK_ENCRYPTION_KEY ?? "",
     identityLinkToken: env.GATEWAY_IDENTITY_LINK_TOKEN ?? "",
+    credentialNamespace: env.GATEWAY_CREDENTIAL_NAMESPACE ?? env.POD_NAMESPACE ?? "default",
     redisUrl: env.AGENT_REDIS_URL,
     deviceFlowScope: env.GITHUB_DEVICE_FLOW_SCOPE ?? "repo",
     githubAppClientSecret: env.GITHUB_APP_CLIENT_SECRET ?? "",

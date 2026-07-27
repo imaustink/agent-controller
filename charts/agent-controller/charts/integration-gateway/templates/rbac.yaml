@@ -1,0 +1,55 @@
+{{- if and .Values.rbac.create .Values.identityLink.enabled }}
+{{/*
+Namespace-scoped Role (never a ClusterRole, ADR 0005) granting exactly what the
+credential stores need (docs/adr/0034): CRUD on Secrets in this release's own
+namespace, and nothing else.
+
+Why this Role exists at all: linked credentials -- GitHub identity links, Claude
+Code credentials, and the per-run write-back grants -- used to live in Redis. That
+Redis runs with `--save "" --appendonly no` on an emptyDir, so when its pod
+restarted it took every credential in the cluster with it and users who had
+linked months earlier were asked to link again. Durability of a credential is the
+platform's job, so they are Secrets now, and this is the access that requires.
+
+Rendered only when `identityLink.enabled` -- the same condition that constructs
+the stores. A deployment that only relays issue comments still needs no
+Kubernetes access whatsoever, and does not get any.
+
+`secrets: *` in one namespace is a real grant and worth being explicit about: it
+is not narrowed to specific names because the object names are content-derived
+(`sha256(subject)`, see secret-record-store.ts) and cannot be enumerated in
+advance. It is bounded instead by namespace, and mitigated by the credentials
+themselves being AES-256-GCM encrypted under a key this Role grants no access to
+-- reading the namespace yields ciphertext, not tokens.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "integration-gateway.fullname" . }}-credentials
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "integration-gateway.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    # `watch` is what lets a pending link resume the moment the user finishes in
+    # their browser instead of on the next poll; `list` is required alongside it
+    # by the API server for a watch request.
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "integration-gateway.fullname" . }}-credentials
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "integration-gateway.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "integration-gateway.fullname" . }}-credentials
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "integration-gateway.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

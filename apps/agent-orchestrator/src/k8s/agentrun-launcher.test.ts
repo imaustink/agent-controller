@@ -145,6 +145,85 @@ describe("AgentRunLauncher", () => {
     expect(JSON.stringify(patchRequest.body)).toContain("run-5");
   });
 
+  // docs/adr/0034: the write-back grant is a Secret the GATEWAY created before
+  // this launch, and Kubernetes has no TTL on a Secret -- so the run adopts it
+  // and the controller's retention sweep reclaims it along with the run. Without
+  // this, every claude-remote launch leaves a grant object behind forever.
+  it("makes the AgentRun the owner of Secrets created for this launch elsewhere", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({ metadata: { uid: "agentrun-uid-777" } });
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const createNamespacedSecret = vi.fn().mockResolvedValue({ metadata: { name: "run-6-identity" } });
+    const patchNamespacedSecret = vi.fn().mockResolvedValue({});
+    const launcher = new AgentRunLauncher("core.controller-agent.dev", "v1alpha1", api, {
+      createNamespacedSecret,
+      patchNamespacedSecret,
+    });
+
+    await launcher.launch(template, "run-6", {
+      goal: "open a PR",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+      secretEnv: [{ name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: "{}" }],
+      ownedSecretNames: ["claude-writeback-grant-abc123"],
+    });
+
+    const patched = patchNamespacedSecret.mock.calls.map(
+      (call) => (call[0] as { name: string }).name,
+    );
+    expect(patched).toEqual(["run-6-identity", "claude-writeback-grant-abc123"]);
+    for (const [request] of patchNamespacedSecret.mock.calls as [{ body: unknown }][]) {
+      expect(JSON.stringify(request.body)).toContain("agentrun-uid-777");
+    }
+  });
+
+  it("adopts a Secret created elsewhere even when this launch has no secretEnv of its own", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({ metadata: { uid: "agentrun-uid-888" } });
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const createNamespacedSecret = vi.fn();
+    const patchNamespacedSecret = vi.fn().mockResolvedValue({});
+    const launcher = new AgentRunLauncher("core.controller-agent.dev", "v1alpha1", api, {
+      createNamespacedSecret,
+      patchNamespacedSecret,
+    });
+
+    await launcher.launch(template, "run-7", {
+      goal: "open a PR",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+      ownedSecretNames: ["claude-writeback-grant-def456"],
+    });
+
+    expect(createNamespacedSecret).not.toHaveBeenCalled();
+    expect(patchNamespacedSecret).toHaveBeenCalledTimes(1);
+    expect((patchNamespacedSecret.mock.calls[0]![0] as { name: string }).name).toBe(
+      "claude-writeback-grant-def456",
+    );
+  });
+
+  // Ownership is a cleanup optimization: an un-owned grant is a stray object that
+  // still expires on its own terms, whereas a failed launch is an outage. Trading
+  // the former for the latter would be strictly worse.
+  it("still launches when a Secret cannot be adopted", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({ metadata: { uid: "agentrun-uid-999" } });
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const createNamespacedSecret = vi.fn().mockResolvedValue({ metadata: { name: "run-8-identity" } });
+    const patchNamespacedSecret = vi.fn().mockRejectedValue(new Error("forbidden"));
+    const launcher = new AgentRunLauncher("core.controller-agent.dev", "v1alpha1", api, {
+      createNamespacedSecret,
+      patchNamespacedSecret,
+    });
+
+    const launched = await launcher.launch(template, "run-8", {
+      goal: "open a PR",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+      secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_x" }],
+      ownedSecretNames: ["claude-writeback-grant-ghi789"],
+    });
+
+    expect(launched.name).toBe("run-8");
+  });
+
   it("sets the session-id annotation on the AgentRun CR when options.sessionId is given", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };

@@ -1,10 +1,13 @@
+import * as k8s from "@kubernetes/client-node";
 import { config } from "./config.js";
 import { ClaudeSetupTokenFlows } from "./claude-auth/pty-setup-token.js";
 import { ClaudeLoginFlows } from "./claude-auth/pty-login.js";
-import { RedisClaudeTokenStore } from "./claude-auth/store.js";
+import { K8sSecretClaudeTokenStore } from "./claude-auth/k8s-secret-store.js";
+import { decodeEncryptionKey } from "./credential-store/field-encryption.js";
+import type { SecretApiLike, WatchLike } from "./credential-store/secret-record-store.js";
 import { GithubReplyClient } from "./github-client.js";
 import { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
-import { decodeEncryptionKey, RedisIdentityLinkStore } from "./identity-link/store.js";
+import { K8sSecretIdentityLinkStore } from "./identity-link/k8s-secret-store.js";
 import {
   CompositeGithubIdentityResolver,
   GithubCollaboratorPermissionResolver,
@@ -21,28 +24,11 @@ import { InMemorySessionPageStore, RedisSessionPageStore } from "./session-page-
 
 const EXIT_STARTUP_FAILURE = 1;
 
-/** Same shape as agent-orchestrator's own startup retry (src/retry.ts) -- kept local since this is a standalone package. */
-async function retryWithBackoff<T>(
-  label: string,
-  fn: () => Promise<T>,
-  options: { attempts: number; initialDelayMs: number; maxDelayMs: number },
-): Promise<T> {
-  let delayMs = options.initialDelayMs;
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= options.attempts; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastError = err;
-      if (attempt === options.attempts) break;
-      const reason = err instanceof Error ? err.message : String(err);
-      console.error(`${label} failed (attempt ${attempt}/${options.attempts}): ${reason} -- retrying in ${delayMs}ms`);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      delayMs = Math.min(delayMs * 2, options.maxDelayMs);
-    }
-  }
-  throw lastError;
-}
+// A local `retryWithBackoff` lived here to hold startup until the credential
+// stores' Redis connections came up. Both stores are Secret-backed now
+// (docs/adr/0034) and hold no connection to establish -- each call is a request
+// against the API server, retried by the client and degraded per-call by the
+// store -- so there is nothing left to wait for at boot.
 
 async function main(): Promise<void> {
   if (!config.githubWebhookSecret) {
@@ -84,11 +70,15 @@ async function main(): Promise<void> {
   // configuration (some but not all set), since that's almost certainly a
   // typo'd Secret/values file rather than an intentional choice -- same
   // discipline as opencode-swe-agent's GitHub App fields (ADR 0018).
+  //
+  // `AGENT_REDIS_URL` is deliberately NOT among these any more: linked
+  // credentials live in Kubernetes Secrets as of docs/adr/0034, so requiring a
+  // Redis URL to enable identity-link would demand a dependency the feature no
+  // longer has. Redis remains required only by the session-page store below.
   const identityLinkFields = {
     GATEWAY_IDENTITY_LINK_TOKEN: config.identityLinkToken,
     GITHUB_APP_CLIENT_ID: config.githubAppClientId,
     IDENTITY_LINK_ENCRYPTION_KEY: config.identityLinkEncryptionKey,
-    AGENT_REDIS_URL: config.redisUrl,
   };
   const identityLinkFieldEntries = Object.entries(identityLinkFields);
   const identityLinkFieldsSet = identityLinkFieldEntries.filter(([, value]) => Boolean(value));
@@ -187,17 +177,36 @@ async function main(): Promise<void> {
     githubApiUrl: config.githubApiUrl,
   });
 
-  let identityLinkStore: RedisIdentityLinkStore | undefined;
+  /**
+   * The in-cluster Kubernetes client backing every credential store
+   * (docs/adr/0034). Built once, lazily, so a deployment with neither
+   * identity-link nor claude-auth enabled never needs a ServiceAccount token or
+   * the RBAC Role -- and so `loadFromCluster` throwing outside a cluster
+   * surfaces as a startup failure of the feature that asked for it, naming what
+   * is missing, rather than an import-time crash.
+   */
+  let credentialApis: { api: SecretApiLike; watch: WatchLike } | undefined;
+  const credentialStoreApis = (): { api: SecretApiLike; watch: WatchLike } => {
+    if (credentialApis) return credentialApis;
+    const kubeConfig = new k8s.KubeConfig();
+    kubeConfig.loadFromDefault();
+    credentialApis = {
+      api: kubeConfig.makeApiClient(k8s.CoreV1Api) as unknown as SecretApiLike,
+      watch: new k8s.Watch(kubeConfig) as unknown as WatchLike,
+    };
+    return credentialApis;
+  };
+
+  let identityLinkStore: K8sSecretIdentityLinkStore | undefined;
   let identityLinkLinker: GithubDeviceFlowLinker | undefined;
   if (identityLinkEnabled) {
-    const redisUrl = config.redisUrl!;
-    identityLinkStore = new RedisIdentityLinkStore(redisUrl, decodeEncryptionKey(config.identityLinkEncryptionKey));
-    await retryWithBackoff("redis startup check (identity-link store)", () => identityLinkStore!.connect(), {
-      attempts: 12,
-      initialDelayMs: 1_000,
-      maxDelayMs: 15_000,
+    identityLinkStore = new K8sSecretIdentityLinkStore(decodeEncryptionKey(config.identityLinkEncryptionKey), {
+      namespace: config.credentialNamespace,
+      ...credentialStoreApis(),
     });
-    console.error(`Using Redis identity-link store: ${redisUrl}`);
+    console.error(
+      `Using Kubernetes Secret identity-link store in namespace ${config.credentialNamespace} (durable across restarts, docs/adr/0034)`,
+    );
 
     identityLinkLinker = new GithubDeviceFlowLinker({
       clientId: config.githubAppClientId,
@@ -238,20 +247,17 @@ async function main(): Promise<void> {
   // has nowhere to send the user, not a graceful degradation.
   if (config.claudeAuthEnabled && !(identityLinkEnabled && sessionPageEnabled)) {
     console.error(
-      "GATEWAY_CLAUDE_AUTH_ENABLED=true requires identity-link (GATEWAY_IDENTITY_LINK_TOKEN/GITHUB_APP_CLIENT_ID/IDENTITY_LINK_ENCRYPTION_KEY/AGENT_REDIS_URL) and GATEWAY_PUBLIC_URL to also be configured",
+      "GATEWAY_CLAUDE_AUTH_ENABLED=true requires identity-link (GATEWAY_IDENTITY_LINK_TOKEN/GITHUB_APP_CLIENT_ID/IDENTITY_LINK_ENCRYPTION_KEY) and GATEWAY_PUBLIC_URL to also be configured",
     );
     process.exit(EXIT_STARTUP_FAILURE);
   }
-  let claudeTokenStore: RedisClaudeTokenStore | undefined;
+  let claudeTokenStore: K8sSecretClaudeTokenStore | undefined;
   let claudeAuthFlows: ClaudeSetupTokenFlows | undefined;
   let claudeLoginFlows: ClaudeLoginFlows | undefined;
   if (config.claudeAuthEnabled) {
-    const redisUrl = config.redisUrl!;
-    claudeTokenStore = new RedisClaudeTokenStore(redisUrl, decodeEncryptionKey(config.identityLinkEncryptionKey));
-    await retryWithBackoff("redis startup check (claude-auth store)", () => claudeTokenStore!.connect(), {
-      attempts: 12,
-      initialDelayMs: 1_000,
-      maxDelayMs: 15_000,
+    claudeTokenStore = new K8sSecretClaudeTokenStore(decodeEncryptionKey(config.identityLinkEncryptionKey), {
+      namespace: config.credentialNamespace,
+      ...credentialStoreApis(),
     });
     claudeAuthFlows = new ClaudeSetupTokenFlows();
     // Same gate as the setup-token flow above -- both need the same `claude`
@@ -287,8 +293,10 @@ async function main(): Promise<void> {
     shuttingDown = true;
     console.error(`Received ${signal}; shutting down integration-gateway...`);
     await server.close();
-    await identityLinkStore?.close();
-    await claudeTokenStore?.close();
+    // The credential stores hold no long-lived connection to close: each call is
+    // a request against the API server, and the only durable thing they own is
+    // the Secret itself (docs/adr/0034). The Redis handles that used to need
+    // draining here went with them.
     if (sessionPageStore instanceof RedisSessionPageStore) await sessionPageStore.close();
     process.exit(0);
   };

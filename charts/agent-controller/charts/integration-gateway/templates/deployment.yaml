@@ -43,6 +43,14 @@ spec:
               containerPort: {{ .Values.port }}
               protocol: TCP
           env:
+            # The namespace the credential Secrets live in (docs/adr/0034) --
+            # this pod's own, which is the only one the Role below grants access
+            # to. Via the downward API rather than a templated value so it stays
+            # correct if the release is moved.
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: GATEWAY_HTTP_PORT
               value: {{ .Values.port | quote }}
             - name: GATEWAY_ORCHESTRATOR_URL

@@ -250,8 +250,19 @@ export class ClaudeAuthApi {
     const ttlSeconds =
       typeof rawTtl === "number" && rawTtl > 0 ? Math.min(rawTtl, MAX_WRITEBACK_TTL_SECONDS) : DEFAULT_WRITEBACK_TTL_SECONDS;
     try {
-      const token = await this.store.createWritebackToken(subject, ttlSeconds);
-      sendJson(res, 200, { token, url: new URL("/claude-auth/api/refresh", this.publicBaseUrl).toString(), ttlSeconds });
+      const { token, secretName } = await this.store.createWritebackToken(subject, ttlSeconds);
+      sendJson(res, 200, {
+        token,
+        url: new URL("/claude-auth/api/refresh", this.publicBaseUrl).toString(),
+        ttlSeconds,
+        // The object backing this grant, so the orchestrator can make the
+        // AgentRun it is minting for the grant's OWNER -- Kubernetes then
+        // reclaims it with the run (docs/adr/0034). Informational: a caller that
+        // ignores it still gets a working grant, just one that lingers as an
+        // object until it is swept, having already stopped authorizing anything
+        // at `expiresAt`.
+        secretName,
+      });
     } catch (err) {
       sendJson(res, 502, { error: err instanceof Error ? err.message : String(err) });
     }

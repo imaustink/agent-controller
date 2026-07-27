@@ -10,7 +10,7 @@ import {
 } from "../support/k8s.js";
 import { issueLabeledPayload, postGithubWebhook } from "../support/webhook.js";
 import { fakeGithubRequests, resetFakeGithub, webhookSecret } from "../support/fixtures.js";
-import { seedAllClaudeCredentials } from "../support/redis.js";
+import { seedAllClaudeCredentials } from "../support/credential-store.js";
 
 // Module scope, before any fixture: a suite pointed at the wrong cluster must
 // fail on import, not after it has started creating objects.
