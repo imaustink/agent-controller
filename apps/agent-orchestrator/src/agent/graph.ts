@@ -640,7 +640,10 @@ export interface AgentGraphDeps {
    * behavior before this existed.
    */
   claudeRemoteWriteback?: {
-    createWritebackGrant(subject: string, ttlSeconds: number): Promise<{ url: string; token: string } | undefined>;
+    createWritebackGrant(
+      subject: string,
+      ttlSeconds: number,
+    ): Promise<{ url: string; token: string; secretName?: string } | undefined>;
   };
 }
 
@@ -1458,6 +1461,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         };
       }
       const identitySecretEnv = verdict.secretEnv;
+      // Secrets the pre-flight created for this launch that the AgentRun should
+      // own, so Kubernetes collects them with the run (docs/adr/0034).
+      const ownedSecretNames = verdict.ownedSecretNames;
 
       // The pre-flight may have ESTABLISHED the caller's principal on this very
       // turn (docs/adr/0031), in which case the credentials it resolved are keyed
@@ -1505,6 +1511,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           timeoutSeconds: deps.agentRunTimeoutSeconds,
           ...(deps.natsUrl ? { natsUrl: deps.natsUrl, natsSubject: `callbacks.${runId}` } : {}),
           ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
+          ...(ownedSecretNames ? { ownedSecretNames } : {}),
           ...(state.sessionId ? { sessionId: state.sessionId } : {}),
         });
         // The run now exists and we are about to wait on it. Anchor it to the

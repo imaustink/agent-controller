@@ -3,7 +3,7 @@ import { requireMinikubeContext } from "../support/guard.js";
 import { agentRunsSince, cleanupAgentRunsSince, waitFor, withPortForward } from "../support/k8s.js";
 import { issueLabeledPayload, postGithubWebhook } from "../support/webhook.js";
 import { fakeGithubRequests, resetFakeGithub, webhookSecret } from "../support/fixtures.js";
-import { seedAllClaudeCredentials } from "../support/redis.js";
+import { seedAllClaudeCredentials } from "../support/credential-store.js";
 import { bounceNats, paceStubAgent, resetStubPacing, rollOrchestrator } from "../support/resilience.js";
 
 requireMinikubeContext();

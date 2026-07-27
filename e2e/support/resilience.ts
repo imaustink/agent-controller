@@ -105,6 +105,56 @@ export async function bounceNats(): Promise<{ oldPod: string; newPodReadyMs: num
   return { oldPod, newPodReadyMs: Date.now() - startedAt };
 }
 
+const REDIS_SELECTOR = "app.kubernetes.io/name=agent-orchestrator-redis";
+
+/**
+ * Deletes the Redis pod and waits for its replacement to be Ready.
+ *
+ * This is the outage that motivated docs/adr/0034, and it is not hypothetical:
+ * this pod really did terminate in production and take every stored credential
+ * with it, because it runs with `--save "" --appendonly no` on an emptyDir. A
+ * user who had linked months earlier was asked to authorize again, and the
+ * authorization pre-flight looked entirely correct while it happened -- it
+ * resolved the right principal and found nothing there.
+ *
+ * Deliberately NOT paired with a persistence fix: Redis stays ephemeral, because
+ * the point is that credentials no longer live in it. A spec using this asserts
+ * exactly that.
+ */
+export async function bounceRedis(): Promise<{ oldPod: string; newPodReadyMs: number }> {
+  const list = await kubectlJson<{ items: { metadata: { name: string } }[] }>(["get", "pods", "-l", REDIS_SELECTOR]);
+  if (list.items.length !== 1) {
+    throw new Error(
+      `e2e: expected exactly one Redis pod matching ${REDIS_SELECTOR}, found ${list.items.length}` +
+        ` (${list.items.map((i) => i.metadata.name).join(", ") || "none"}) -- is the stack up?`,
+    );
+  }
+  const oldPod = list.items[0]!.metadata.name;
+  const startedAt = Date.now();
+  await kubectl(["delete", "pod", oldPod, "--wait=false"]);
+
+  await waitFor(
+    "the Redis pod to be replaced and Ready",
+    async () => {
+      const current = await kubectlJson<{
+        items: {
+          metadata: { name: string; deletionTimestamp?: string };
+          status?: { conditions?: { type: string; status: string }[] };
+        }[];
+      }>(["get", "pods", "-l", REDIS_SELECTOR]);
+      const ready = current.items.find(
+        (p) =>
+          !p.metadata.deletionTimestamp &&
+          p.metadata.name !== oldPod &&
+          p.status?.conditions?.some((c) => c.type === "Ready" && c.status === "True"),
+      );
+      return ready ? ready.metadata.name : undefined;
+    },
+    { timeoutMs: 180_000 },
+  );
+  return { oldPod, newPodReadyMs: Date.now() - startedAt };
+}
+
 /** Rolls the orchestrator Deployment and waits for the rollout to complete. */
 export async function rollOrchestrator(): Promise<void> {
   await kubectl(["rollout", "restart", "deploy/agent-orchestrator"]);

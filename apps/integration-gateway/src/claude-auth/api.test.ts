@@ -37,7 +37,7 @@ function makeFakeStore(): ClaudeTokenStore & {
     async createWritebackToken(subject) {
       const token = `grant-${grants.size + 1}`;
       grants.set(token, subject);
-      return token;
+      return { token, secretName: `claude-writeback-grant-${grants.size}` };
     },
     async resolveWritebackToken(token) {
       return grants.get(token);

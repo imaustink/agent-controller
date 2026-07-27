@@ -147,7 +147,21 @@ export type AuthorizationOutcome =
    * was never written and leave the caller re-reading a dead credential
    * forever.
    */
-  | { kind: "authorized"; secretEnv?: CredentialEnvEntry[]; actorLogin?: string; principal?: string }
+  | {
+      kind: "authorized";
+      secretEnv?: CredentialEnvEntry[];
+      actorLogin?: string;
+      principal?: string;
+      /**
+       * Secrets created for THIS launch that the AgentRun should own, so
+       * Kubernetes reclaims them with the run (docs/adr/0034). Today that is the
+       * `claude-remote` write-back grant: it has a lifetime, Kubernetes has no
+       * TTL on a Secret, and the launcher already attaches an `ownerReference`
+       * to the per-run identity Secret -- so the cleanup mechanism exists and
+       * this is how a grant joins it.
+       */
+      ownedSecretNames?: string[];
+    }
   /**
    * Not cleared: one or more links are outstanding, or a link flow could not be
    * started. `message` is the complete user-facing text for the turn, including
@@ -170,7 +184,10 @@ export interface AuthorizationServiceDeps {
   claudeRemoteGateway?: IdentityLinkPort;
   /** Mints the per-run credential write-back grant a `claude-remote` launch carries. */
   claudeRemoteWriteback?: {
-    createWritebackGrant(subject: string, ttlSeconds: number): Promise<{ url: string; token: string } | undefined>;
+    createWritebackGrant(
+      subject: string,
+      ttlSeconds: number,
+    ): Promise<{ url: string; token: string; secretName?: string } | undefined>;
   };
   /** The launched run's timeout, used to size a write-back grant's lifetime. */
   agentRunTimeoutSeconds?: number;
@@ -219,6 +236,8 @@ export class AuthorizationService {
   async authorize(req: AuthorizationRequest): Promise<AuthorizationOutcome> {
     const { agent, identity } = req;
     let secretEnv: CredentialEnvEntry[] | undefined;
+    /** See {@link AuthorizationOutcome}'s `ownedSecretNames`. */
+    const ownedSecretNames: string[] = [];
 
     // Batch pre-flight accumulators (docs/adr/0030 §4).
     const pendingLinks: {
@@ -546,6 +565,11 @@ export class AuthorizationService {
             { name: CREDENTIALS_WRITEBACK_ENV.url, value: grant.url },
             { name: CREDENTIALS_WRITEBACK_ENV.token, value: grant.token },
           ];
+          // Hand the grant's own object to the run, so it is collected with it
+          // rather than accumulating one Secret per launch forever
+          // (docs/adr/0034). Absent from an older gateway, which is why this is
+          // conditional and not an assertion.
+          if (grant.secretName) ownedSecretNames.push(grant.secretName);
         }
       }
     }
@@ -601,6 +625,7 @@ export class AuthorizationService {
       kind: "authorized",
       ...(secretEnv ? { secretEnv } : {}),
       ...(actorLogin ? { actorLogin } : {}),
+      ...(ownedSecretNames.length > 0 ? { ownedSecretNames } : {}),
       principal,
     };
   }

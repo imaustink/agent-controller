@@ -12,14 +12,28 @@ nameOverride: ""
 fullnameOverride: ""
 
 serviceAccount:
-  # This app never talks to the k8s API (it only calls agent-orchestrator's
-  # HTTP API and the GitHub REST API) -- the ServiceAccount exists only
-  # because every Pod needs one; automount is disabled since there's nothing
-  # for this app to use the token for.
+  # With identityLink disabled this app never talks to the k8s API (it only calls
+  # agent-orchestrator's HTTP API and the GitHub REST API), so the
+  # ServiceAccount exists only because every Pod needs one and the token is not
+  # mounted.
+  #
+  # With identityLink ENABLED it stores linked credentials as Secrets
+  # (docs/adr/0034), so it needs both the token and the Role in rbac.yaml. The
+  # template mounts the token automatically in that case -- this flag only forces
+  # it on when it would otherwise be off.
   create: true
   annotations: {}
   name: ""
   automount: false
+
+rbac:
+  # Creates the namespace-scoped Role/RoleBinding granting access to the
+  # credential Secrets (docs/adr/0034). Only rendered when identityLink is also
+  # enabled, since that is what stores them. Disable only if you manage the
+  # binding out-of-band -- without it, every link attempt fails with a 403 that
+  # the store reports as "not linked", which looks to a user like an endless
+  # re-authorization prompt.
+  create: true
 
 port: 8090
 
@@ -149,8 +163,15 @@ identityLink:
   # Optional device-flow OAuth scope. Leave empty to use the app's own
   # default ("repo").
   githubDeviceFlowScope: ""
-  # Redis URL for the identity-link token store. Reuses the SAME Redis
-  # instance agent-orchestrator's conversation-session store uses
+  # Redis URL passed to this app as AGENT_REDIS_URL.
+  #
+  # No longer the credential store: linked credentials are Kubernetes Secrets as
+  # of docs/adr/0034, because this instance runs with persistence disabled on an
+  # emptyDir and its restart deleted every link in the cluster. What still uses it
+  # is the session-page store (see `sessionPage.redisUrl` below), which is
+  # cache-shaped and can afford that.
+  #
+  # Reuses the SAME Redis instance agent-orchestrator's conversation-session store uses
   # (docs/adr/0016) -- integration-gateway is a sibling subchart under the
   # same parent (charts/agent-controller), deployed into the same
   # release/namespace, so agent-orchestrator's Redis Service

@@ -90,11 +90,20 @@ export class ClaudeRemoteGatewayClient implements IdentityLinkPort {
    * "Login expired" hours later.
    *
    * Returns `undefined` rather than throwing when the gateway can't mint one
-   * (older gateway without the route, Redis down): write-back is an
-   * availability improvement, not a precondition for running, so a failure
+   * (older gateway without the route, credential store unreachable): write-back
+   * is an availability improvement, not a precondition for running, so a failure
    * here must never block the launch it was being prepared for.
+   *
+   * `secretName` is the object backing the grant, which the launcher makes the
+   * AgentRun own so Kubernetes reclaims it with the run (docs/adr/0034).
+   * Optional: a gateway older than that ADR does not send it, in which case the
+   * grant still works and simply lingers as an object until swept, having
+   * already stopped authorizing anything at its expiry.
    */
-  async createWritebackGrant(subject: string, ttlSeconds: number): Promise<{ url: string; token: string } | undefined> {
+  async createWritebackGrant(
+    subject: string,
+    ttlSeconds: number,
+  ): Promise<{ url: string; token: string; secretName?: string } | undefined> {
     try {
       const res = await this.fetchImpl(`${this.baseUrl}/claude-auth/api/writeback-token`, {
         method: "POST",
@@ -105,9 +114,9 @@ export class ClaudeRemoteGatewayClient implements IdentityLinkPort {
         console.error(`claude-auth writeback-token failed (continuing without write-back): ${res.status}`);
         return undefined;
       }
-      const body = (await res.json()) as { token?: string; url?: string };
+      const body = (await res.json()) as { token?: string; url?: string; secretName?: string };
       if (!body.token || !body.url) return undefined;
-      return { url: body.url, token: body.token };
+      return { url: body.url, token: body.token, ...(body.secretName ? { secretName: body.secretName } : {}) };
     } catch (err) {
       console.error(
         "claude-auth writeback-token threw (continuing without write-back):",

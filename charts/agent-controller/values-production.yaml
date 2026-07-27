@@ -177,13 +177,20 @@ agent-orchestrator:
   nats:
     enabled: true
 
-  # Required by integration-gateway.identityLink above (enabled below): its
-  # RedisIdentityLinkStore points at "agent-orchestrator-redis" by default
+  # Conversation sessions (docs/adr/0016) and integration-gateway's session
+  # pages. Points at "agent-orchestrator-redis"
   # (charts/integration-gateway/values.yaml), which only exists when this
-  # chart's own templates/redis.yaml is rendered. Was left at its default
-  # (false) when identityLink.enabled was flipped on for both subcharts,
-  # so that Service was never deployed and integration-gateway crash-loops
-  # on ENOTFOUND agent-orchestrator-redis.
+  # chart's own templates/redis.yaml is rendered -- leaving this at its default
+  # (false) with identityLink on made integration-gateway crash-loop on
+  # ENOTFOUND agent-orchestrator-redis.
+  #
+  # Deliberately EPHEMERAL (--save "" --appendonly no, on an emptyDir): a restart
+  # costs in-flight conversations and posted session-page links, and nothing
+  # else. Credentials used to be in here too, which is what made that restart an
+  # incident -- it deleted every identity link and Claude credential in the
+  # cluster and asked already-authorized users to link again. Those are
+  # Kubernetes Secrets as of docs/adr/0034, which is why this can stay a cache.
+  # Do not move durable state back into it without giving it persistence first.
   redis:
     enabled: true
 
@@ -370,15 +377,19 @@ integration-gateway:
   # the session page itself does), and as a side effect also turns on the
   # "starting work" comment + live turn-history page for the ai-triage
   # trigger generally. redisUrl is left unset -- it falls back to
-  # identityLink's own Redis instance (see that field's comment in
+  # identityLink.redisUrl (see that field's comment in
   # charts/agent-controller/charts/integration-gateway/values.yaml).
+  #
+  # That Redis is ephemeral, so a posted page link dies with its pod. Tolerable
+  # (the link 404s) and unlike a credential, which is why only the credentials
+  # moved to Secrets in docs/adr/0034. Worth fixing separately.
   sessionPage:
     publicBaseUrl: "https://gateway.kurpuis.com"
 
   # Per-user Claude Code OAuth linking (docs/adr/0027) -- the `claude`
   # provider's counterpart to identityLink above, for claude-code-swe-agent
   # (charts/community-components/values-production.yaml). Reuses
-  # identityLink's Redis/encryption-key/bearer-token config and requires
+  # identityLink's encryption-key/bearer-token config and requires
   # sessionPage.publicBaseUrl above; requires this integration-gateway image
   # to actually have the `claude` CLI + node-pty compiled in (both stages of
   # apps/integration-gateway/Dockerfile changed for this).

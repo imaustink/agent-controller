@@ -42,6 +42,24 @@ export interface AgentLaunchOptions {
    */
   secretEnv?: { name: string; value: string }[];
   /**
+   * Names of PRE-EXISTING Secrets, created elsewhere for this launch, that the
+   * AgentRun should become the owner of -- so Kubernetes garbage-collects them
+   * with the run exactly as it does the identity Secret above.
+   *
+   * Today this is the `claude-remote` write-back grant, minted by the gateway
+   * during the authorization pre-flight (docs/adr/0034). It is the one
+   * credential record with a lifetime, and Kubernetes has no TTL on a Secret --
+   * but this launcher already had to solve "attach an owner to a Secret created
+   * before the CR existed" for its own, so a grant joins that mechanism rather
+   * than needing a sweeper of its own. The controller's retention pass then
+   * reclaims the run and everything it owns
+   * (controllers/core-controller/internal/controller/agentrun_controller.go).
+   *
+   * Best-effort by construction: a failure to attach an owner leaves a grant that
+   * still expires on its own terms, so it must never fail the launch.
+   */
+  ownedSecretNames?: string[];
+  /**
    * Caller's Open WebUI session id (docs/adr/0012), if any -- set as
    * {@link SESSION_ID_ANNOTATION} on the launched AgentRun CR, mirroring
    * ToolRunLauncher. Absent -> no annotation is set.
@@ -184,44 +202,67 @@ export class AgentRunLauncher implements AgentRunLauncherPort {
       body,
     });
 
-    if (secretName) {
-      const uid = created?.metadata?.uid;
-      // A real cluster always returns the created object's uid; skip the
-      // ownerReference patch rather than fail the whole launch if it's ever
-      // missing (e.g. a bare-bones test double) -- the Secret is still
-      // created and correctly referenced, just without GC-on-delete.
-      if (uid) {
-        await this.secretApi!.patchNamespacedSecret({
-          name: secretName,
-          namespace: template.namespace,
-          // @kubernetes/client-node's patchNamespacedSecret (as actually
-          // installed) defaults its Content-Type to
-          // "application/json-patch+json" (RFC 6902 JSON Patch) rather than a
-          // merge patch -- see ObjectSerializer.getPreferredMediaType, which
-          // always prefers the first JSON-like media type in its own fixed
-          // candidate list. A JSON Patch "add" op is used here accordingly
-          // (not the merge-style object a newer/older client version might
-          // expect).
-          body: [
-            {
-              op: "add",
-              path: "/metadata/ownerReferences",
-              value: [
-                {
-                  apiVersion: `${this.group}/${this.version}`,
-                  kind: "AgentRun",
-                  name,
-                  uid,
-                  controller: true,
-                  blockOwnerDeletion: true,
-                },
-              ],
-            },
-          ],
-        });
+    // A real cluster always returns the created object's uid; skip the
+    // ownerReference patch rather than fail the whole launch if it's ever
+    // missing (e.g. a bare-bones test double) -- the Secrets are still created
+    // and correctly referenced, just without GC-on-delete.
+    const uid = created?.metadata?.uid;
+    if (uid) {
+      // The identity Secret this launcher created, plus anything created for
+      // this launch elsewhere that should share its fate (the write-back grant,
+      // docs/adr/0034).
+      const toOwn = [...(secretName ? [secretName] : []), ...(options.ownedSecretNames ?? [])];
+      for (const target of toOwn) {
+        await this.adoptSecret(target, template.namespace, name, uid);
       }
     }
 
     return { name, namespace: template.namespace };
+  }
+
+  /**
+   * Makes the just-created AgentRun the owner of an existing Secret, so
+   * Kubernetes deletes it when the run is reclaimed.
+   *
+   * Never throws: ownership is a cleanup optimization, and an un-owned Secret is
+   * a stray object rather than a broken run -- failing the launch over it would
+   * trade a leak for an outage. The grant this also covers stops authorizing at
+   * its own `expiresAt` regardless of whether it was ever collected.
+   */
+  private async adoptSecret(secretName: string, namespace: string, runName: string, uid: string): Promise<void> {
+    try {
+      await this.secretApi?.patchNamespacedSecret({
+        name: secretName,
+        namespace,
+        // @kubernetes/client-node's patchNamespacedSecret (as actually
+        // installed) defaults its Content-Type to
+        // "application/json-patch+json" (RFC 6902 JSON Patch) rather than a
+        // merge patch -- see ObjectSerializer.getPreferredMediaType, which
+        // always prefers the first JSON-like media type in its own fixed
+        // candidate list. A JSON Patch "add" op is used here accordingly
+        // (not the merge-style object a newer/older client version might
+        // expect).
+        body: [
+          {
+            op: "add",
+            path: "/metadata/ownerReferences",
+            value: [
+              {
+                apiVersion: `${this.group}/${this.version}`,
+                kind: "AgentRun",
+                name: runName,
+                uid,
+                controller: true,
+                blockOwnerDeletion: true,
+              },
+            ],
+          },
+        ],
+      });
+    } catch (err) {
+      console.error(
+        `could not make AgentRun ${runName} the owner of Secret ${secretName}; it will not be garbage-collected with the run: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 }

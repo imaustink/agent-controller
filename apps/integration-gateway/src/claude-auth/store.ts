@@ -1,6 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { Redis } from "ioredis";
-import { decodeEncryptionKey } from "../identity-link/store.js";
+import { decodeEncryptionKey } from "../credential-store/field-encryption.js";
 
 export { decodeEncryptionKey };
 
@@ -14,8 +12,8 @@ export type ClaudeAuthKind = "setup-token" | "login";
  * Remote Control -- see `pty-login.ts`) is populated, discriminated by
  * `kind`. Both flows are kept in ONE record type (rather than two, or a
  * union) because a subject can hold both independently at once -- they're
- * stored under distinct Redis keys/channels (see `RedisClaudeTokenStore`'s
- * `keyFor`/`channelFor`) -- and every caller already has to branch on `kind`
+ * stored under distinct object-name prefixes (see
+ * `K8sSecretClaudeTokenStore`'s `storeFor`) -- and every caller already has to branch on `kind`
  * to know which field to read, so a union would just move that branch to the
  * type system for no benefit.
  */
@@ -42,7 +40,7 @@ export interface ClaudeTokenRecord {
 export interface ClaudeTokenStore {
   get(subject: string, kind?: ClaudeAuthKind): Promise<ClaudeTokenRecord | undefined>;
   set(subject: string, record: ClaudeTokenRecord): Promise<void>;
-  /** Resolves as soon as a record lands for `subject`/`kind` (via pub/sub), or `undefined` once `timeoutMs` elapses. */
+  /** Resolves as soon as a record lands for `subject`/`kind`, or `undefined` once `timeoutMs` elapses. */
   waitForCompletion(subject: string, timeoutMs: number, kind?: ClaudeAuthKind): Promise<ClaudeTokenRecord | undefined>;
   /**
    * Removes a subject's stored record for `kind` -- called when
@@ -87,230 +85,19 @@ export interface ClaudeTokenStore {
    * Deliberately NOT the gateway's own `bearerToken`: that one can read and
    * mint credentials for EVERY subject, and a per-run Job pod is the last
    * place it belongs. A grant token is opaque and random (not a signed claim),
-   * so it can be looked up, expired by Redis TTL, and revoked simply by
-   * deleting it -- no key material has to be shared with agent-orchestrator or
-   * baked into a run's environment.
+   * so it can be looked up, expired, and revoked simply by deleting it -- no key
+   * material has to be shared with agent-orchestrator or baked into a run's
+   * environment.
+   *
+   * Returns the backing object's name alongside the token so the caller can
+   * hand ownership of the grant to the AgentRun it is minted for: grants are the
+   * one record here with a lifetime, Kubernetes has no TTL on Secrets, and
+   * agent-orchestrator's launcher already attaches an `ownerReference` to the
+   * per-run identity Secret so the controller's existing retention sweep
+   * reclaims it (docs/adr/0034). `expiresAt` is still enforced on read -- the
+   * reference is what collects the object, not what bounds the grant.
    */
-  createWritebackToken(subject: string, ttlSeconds: number): Promise<string>;
+  createWritebackToken(subject: string, ttlSeconds: number): Promise<{ token: string; secretName: string }>;
   /** Resolves a token minted by {@link createWritebackToken} back to its subject, or `undefined` if it's unknown/expired. */
   resolveWritebackToken(token: string): Promise<string | undefined>;
-}
-
-const ALGORITHM = "aes-256-gcm";
-const GCM_IV_BYTES = 12;
-
-interface StoredRecord {
-  kind: ClaudeAuthKind;
-  createdAt: string;
-  /** Encrypted -- packed `iv:authTag:ciphertext`, see `encryptField`/`decryptField`. Whichever of `token`/`credentialsJson` `kind` implies is present. */
-  token?: string;
-  credentialsJson?: string;
-}
-
-function encryptField(key: Buffer, plaintext: string): string {
-  const iv = randomBytes(GCM_IV_BYTES);
-  const cipher = createCipheriv(ALGORITHM, key, iv);
-  const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-  return `${iv.toString("base64")}:${authTag.toString("base64")}:${ciphertext.toString("base64")}`;
-}
-
-function decryptField(key: Buffer, packed: string): string {
-  const parts = packed.split(":");
-  if (parts.length !== 3) throw new Error("Malformed encrypted claude-auth field");
-  const [ivB64, authTagB64, ciphertextB64] = parts;
-  const iv = Buffer.from(ivB64 as string, "base64");
-  const authTag = Buffer.from(authTagB64 as string, "base64");
-  const ciphertext = Buffer.from(ciphertextB64 as string, "base64");
-  const decipher = createDecipheriv(ALGORITHM, key, iv);
-  decipher.setAuthTag(authTag);
-  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
-}
-
-/**
- * Redis-backed {@link ClaudeTokenStore}, structurally identical to
- * `identity-link/store.ts`'s `RedisIdentityLinkStore` (AES-256-GCM field
- * encryption, no TTL -- a link persists until re-linked, same pub/sub
- * `waitForCompletion`) but for the `token`/`credentialsJson` fields this
- * credential has. Reuses the same `IDENTITY_LINK_ENCRYPTION_KEY` -- no new
- * encryption-key secret to provision.
- *
- * `setup-token` and `login` records live under DISTINCT Redis key/channel
- * prefixes (`claudeAuth:...` vs `claudeAuthLogin:...`, see `keyFor`) so one
- * subject can hold a live record of each kind independently, with neither
- * `set`/`delete` ever clobbering the other.
- */
-export class RedisClaudeTokenStore implements ClaudeTokenStore {
-  private readonly redis: Redis;
-  private readonly key: Buffer;
-  private readonly prefix: string;
-  private readonly loginPrefix: string;
-  private readonly writebackPrefix: string;
-
-  constructor(
-    url: string,
-    encryptionKey: Buffer,
-    opts: { keyPrefix?: string; loginKeyPrefix?: string; writebackKeyPrefix?: string } = {},
-  ) {
-    if (encryptionKey.length !== 32) {
-      throw new Error("Claude-auth encryption key must be exactly 32 bytes");
-    }
-    this.key = encryptionKey;
-    this.prefix = opts.keyPrefix ?? "claudeAuth:";
-    this.loginPrefix = opts.loginKeyPrefix ?? "claudeAuthLogin:";
-    this.writebackPrefix = opts.writebackKeyPrefix ?? "claudeAuthWriteback:";
-    this.redis = new Redis(url, {
-      enableOfflineQueue: false,
-      maxRetriesPerRequest: 0,
-      lazyConnect: true,
-    });
-    this.redis.on("error", (err: Error) => {
-      console.error("RedisClaudeTokenStore connection error:", err.message);
-    });
-  }
-
-  async connect(): Promise<void> {
-    await this.redis.connect();
-  }
-
-  async ping(): Promise<void> {
-    await this.redis.ping();
-  }
-
-  private prefixFor(kind: ClaudeAuthKind): string {
-    return kind === "login" ? this.loginPrefix : this.prefix;
-  }
-
-  private keyFor(subject: string, kind: ClaudeAuthKind): string {
-    return `${this.prefixFor(kind)}${subject}`;
-  }
-
-  private channelFor(subject: string, kind: ClaudeAuthKind): string {
-    return `${this.prefixFor(kind)}complete:${subject}`;
-  }
-
-  async delete(subject: string, kind: ClaudeAuthKind = "setup-token"): Promise<void> {
-    try {
-      await this.redis.del(this.keyFor(subject, kind));
-    } catch (err) {
-      console.error("RedisClaudeTokenStore.delete failed (ignored):", err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async rekey(
-    fromSubject: string,
-    toSubject: string,
-    kind: ClaudeAuthKind = "setup-token",
-  ): Promise<"moved" | "not-found" | "occupied"> {
-    if (fromSubject === toSubject) return "occupied";
-    // Read through `get`/`set` rather than RENAME-ing the Redis key: the record
-    // is field-encrypted, and a decrypt/re-encrypt round trip is the same work
-    // either way -- while `set` also publishes on the destination's completion
-    // channel, so a turn already blocked in `waitForCompletion` for the new
-    // subject resolves immediately instead of waiting out its timeout.
-    const record = await this.get(fromSubject, kind);
-    if (!record) return "not-found";
-    if (await this.get(toSubject, kind)) return "occupied";
-    await this.set(toSubject, record);
-    // Read back before deleting the source. `set` swallows its own Redis errors
-    // by design, so an unverified delete here could drop the human's only
-    // credential on a transient write failure -- the one outcome strictly worse
-    // than the extra login this whole method exists to avoid.
-    const landed = await this.get(toSubject, kind);
-    if (!landed) return "not-found";
-    await this.delete(fromSubject, kind);
-    return "moved";
-  }
-
-  /**
-   * Only the token's SHA-256 is stored, so the value in Redis can't be
-   * replayed as a bearer token by anything that can read the keyspace -- the
-   * same reason a server stores password hashes rather than passwords. The
-   * plaintext exists only in the mint response and the run's environment.
-   */
-  private writebackKeyFor(token: string): string {
-    return `${this.writebackPrefix}${createHash("sha256").update(token).digest("hex")}`;
-  }
-
-  async createWritebackToken(subject: string, ttlSeconds: number): Promise<string> {
-    const token = randomBytes(32).toString("base64url");
-    // Fails loudly (unlike `set`/`delete`, which swallow): the caller injects
-    // the returned token into an AgentRun, and a token Redis never accepted
-    // would look valid to the run and 401 on every write-back attempt.
-    await this.redis.set(this.writebackKeyFor(token), subject, "EX", Math.max(1, Math.floor(ttlSeconds)));
-    return token;
-  }
-
-  async resolveWritebackToken(token: string): Promise<string | undefined> {
-    if (!token) return undefined;
-    try {
-      return (await this.redis.get(this.writebackKeyFor(token))) ?? undefined;
-    } catch (err) {
-      console.error(
-        "RedisClaudeTokenStore.resolveWritebackToken failed (treating as invalid):",
-        err instanceof Error ? err.message : String(err),
-      );
-      return undefined;
-    }
-  }
-
-  async get(subject: string, kind: ClaudeAuthKind = "setup-token"): Promise<ClaudeTokenRecord | undefined> {
-    try {
-      const raw = await this.redis.get(this.keyFor(subject, kind));
-      if (!raw) return undefined;
-      const stored = JSON.parse(raw) as StoredRecord;
-      const record: ClaudeTokenRecord = { kind: stored.kind, createdAt: stored.createdAt };
-      if (stored.token !== undefined) record.token = decryptField(this.key, stored.token);
-      if (stored.credentialsJson !== undefined) record.credentialsJson = decryptField(this.key, stored.credentialsJson);
-      return record;
-    } catch (err) {
-      console.error("RedisClaudeTokenStore.get failed (treating as miss):", err instanceof Error ? err.message : String(err));
-      return undefined;
-    }
-  }
-
-  async set(subject: string, record: ClaudeTokenRecord): Promise<void> {
-    try {
-      const stored: StoredRecord = { kind: record.kind, createdAt: record.createdAt };
-      if (record.token !== undefined) stored.token = encryptField(this.key, record.token);
-      if (record.credentialsJson !== undefined) stored.credentialsJson = encryptField(this.key, record.credentialsJson);
-      await this.redis.set(this.keyFor(subject, record.kind), JSON.stringify(stored));
-      await this.redis.publish(this.channelFor(subject, record.kind), "1");
-    } catch (err) {
-      console.error("RedisClaudeTokenStore.set failed (ignored):", err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async waitForCompletion(subject: string, timeoutMs: number, kind: ClaudeAuthKind = "setup-token"): Promise<ClaudeTokenRecord | undefined> {
-    const existing = await this.get(subject, kind);
-    if (existing) return existing;
-
-    const subscriber = this.redis.duplicate();
-    try {
-      await subscriber.connect();
-      await subscriber.subscribe(this.channelFor(subject, kind));
-      const afterSubscribe = await this.get(subject, kind);
-      if (afterSubscribe) return afterSubscribe;
-
-      return await new Promise<ClaudeTokenRecord | undefined>((resolve) => {
-        const timer = setTimeout(() => resolve(undefined), timeoutMs);
-        subscriber.on("message", () => {
-          clearTimeout(timer);
-          this.get(subject, kind).then(resolve).catch(() => resolve(undefined));
-        });
-      });
-    } catch (err) {
-      console.error(
-        "RedisClaudeTokenStore.waitForCompletion failed (treating as timeout):",
-        err instanceof Error ? err.message : String(err),
-      );
-      return undefined;
-    } finally {
-      await subscriber.quit().catch(() => {});
-    }
-  }
-
-  async close(): Promise<void> {
-    await this.redis.quit();
-  }
 }
