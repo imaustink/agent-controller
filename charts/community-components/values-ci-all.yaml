@@ -65,6 +65,10 @@ claudeCodeSweAgent:
       - claude-remote
   remoteControl:
     enabled: true
+    # Set here purely so validate-crds renders these two template branches;
+    # the values are the production defaults spelled out (see values.yaml).
+    idleTimeoutMs: "1200000"
+    maxWaitMs: ""
 
 # E2E-only test double. Validated here anyway: it is a real chart template that
 # renders a real Agent CR, and the acknowledgement flag below is exactly the

@@ -96,6 +96,22 @@ export interface AgentToolConfig {
    */
   remoteControlEnabled: boolean;
   /**
+   * How long a Remote Control session may produce NO transcript activity
+   * before its turn is given up on (`0`/unset uses claude-runner.ts's
+   * default). An operational setting rather than an internal detail for the
+   * same reason `AGENT_REPLY_ACK_TIMEOUT_MS` is (ADR 0033): getting it wrong
+   * either strands a wedged pod or kills healthy work, and neither should
+   * need a rebuild to correct.
+   */
+  remoteControlIdleTimeoutMs: number;
+  /**
+   * Optional ABSOLUTE cap on a Remote Control turn. Unset means no cap: the
+   * idle bound above ends a stuck turn and the Job's `activeDeadlineSeconds`
+   * is the wall-clock ceiling. Setting this reintroduces the behaviour behind
+   * issue #149, so it exists only as an escape hatch.
+   */
+  remoteControlMaxWaitMs: number;
+  /**
    * The `~/.claude/.credentials.json` blob this run was launched with, as
    * injected by agent-orchestrator (`CLAUDE_LOGIN_CREDENTIALS_JSON`, the same
    * value the init container writes to disk). Read here ONLY to tell a
@@ -124,6 +140,16 @@ function normalizePem(value: string | undefined): string {
   return value.includes("\\n") ? value.replace(/\\n/g, "\n") : value;
 }
 
+/**
+ * Parses an optional positive-integer env var, yielding `0` ("not set") for
+ * anything absent, non-numeric, or non-positive -- so a typo falls back to the
+ * documented default rather than silently disabling a bound.
+ */
+function positiveInt(value: string | undefined): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
 export function loadToolConfig(env: NodeJS.ProcessEnv = process.env): AgentToolConfig {
   return {
     githubToken: env.GITHUB_TOKEN ?? "",
@@ -140,6 +166,8 @@ export function loadToolConfig(env: NodeJS.ProcessEnv = process.env): AgentToolC
     workdir: env.SWE_WORKDIR ?? `/tmp/swe-${randomUUID()}`,
     homeDir: env.SWE_HOME ?? "/tmp/home",
     remoteControlEnabled: env.CLAUDE_REMOTE_CONTROL === "true",
+    remoteControlIdleTimeoutMs: positiveInt(env.CLAUDE_REMOTE_CONTROL_IDLE_TIMEOUT_MS),
+    remoteControlMaxWaitMs: positiveInt(env.CLAUDE_REMOTE_CONTROL_MAX_WAIT_MS),
     loginCredentialsJson: env.CLAUDE_LOGIN_CREDENTIALS_JSON ?? "",
     credentialsWritebackUrl: env.CLAUDE_CREDENTIALS_WRITEBACK_URL ?? "",
     credentialsWritebackToken: env.CLAUDE_CREDENTIALS_WRITEBACK_TOKEN ?? "",

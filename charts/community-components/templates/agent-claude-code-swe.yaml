@@ -185,6 +185,14 @@ spec:
     # `runClaudeTurnRemoteControlled` (claude-runner.ts).
     - name: CLAUDE_REMOTE_CONTROL
       value: "true"
+    {{- if .Values.claudeCodeSweAgent.remoteControl.idleTimeoutMs }}
+    - name: CLAUDE_REMOTE_CONTROL_IDLE_TIMEOUT_MS
+      value: {{ .Values.claudeCodeSweAgent.remoteControl.idleTimeoutMs | quote }}
+    {{- end }}
+    {{- if .Values.claudeCodeSweAgent.remoteControl.maxWaitMs }}
+    - name: CLAUDE_REMOTE_CONTROL_MAX_WAIT_MS
+      value: {{ .Values.claudeCodeSweAgent.remoteControl.maxWaitMs | quote }}
+    {{- end }}
     {{- end }}
   {{- end }}
 {{- end }}
