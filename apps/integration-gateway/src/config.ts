@@ -95,6 +95,16 @@ export interface AppConfig {
    * outlives the spec that caused it and starves whatever triggers next.
    */
   resumeWaitMs: number;
+  /**
+   * Off switch for refreshing a stored Remote Control (`login`) credential
+   * before serving it (claude-auth/credential-refresher.ts). On by default;
+   * `false` restores the behaviour where only a run's own in-pod CLI ever
+   * refreshed, which made a link's survival depend on every pod reporting its
+   * refresh back.
+   */
+  claudeCredentialRefreshEnabled: boolean;
+  /** How close to expiry a stored credential must be before it is refreshed on read. */
+  claudeCredentialRefreshMarginMs: number;
   /** Public GitHub App client id used to start OAuth Device Flow links (not a secret). */
   githubAppClientId: string;
   /** Base64 (or hex) 32-byte AES-256-GCM key used to encrypt linked GitHub tokens at rest. */
@@ -202,6 +212,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     pollIntervalMs: num(env.GATEWAY_POLL_INTERVAL_MS, 3_000),
     pollTimeoutMs: num(env.GATEWAY_POLL_TIMEOUT_MS, 15 * 60 * 1000),
     resumeWaitMs: num(env.GATEWAY_RESUME_WAIT_MS, 10 * 60 * 1000),
+    claudeCredentialRefreshEnabled: env.GATEWAY_CLAUDE_CREDENTIAL_REFRESH !== "false",
+    claudeCredentialRefreshMarginMs: num(env.GATEWAY_CLAUDE_CREDENTIAL_REFRESH_MARGIN_MS, 30 * 60 * 1000),
     githubAppClientId: env.GITHUB_APP_CLIENT_ID ?? "",
     identityLinkEncryptionKey: env.IDENTITY_LINK_ENCRYPTION_KEY ?? "",
     identityLinkToken: env.GATEWAY_IDENTITY_LINK_TOKEN ?? "",

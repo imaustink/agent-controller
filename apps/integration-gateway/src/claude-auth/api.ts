@@ -103,7 +103,31 @@ export class ClaudeAuthApi {
      * this is left undefined, never a silent fallback to `setup-token`.
      */
     private readonly loginFlows?: ClaudeLoginFlows,
+    /**
+     * Refreshes a stored `login` credential that is at or near expiry before
+     * it is handed out (see credential-refresher.ts). Optional and additive:
+     * left undefined, every read below serves the stored blob verbatim, which
+     * is the behaviour that predates it.
+     */
+    private readonly refresher?: { ensureFresh(subject: string): Promise<string | undefined> },
   ) {}
+
+  /**
+   * The `login` blob to serve for `subject` -- refreshed first when a refresher
+   * is configured. Only ever called on the `login` path: a `setup-token` is a
+   * long-lived API token with no refresh grant, so there is nothing to renew.
+   *
+   * Falls back to the stored value if the refresher yields nothing, so a
+   * refresher fault can never turn an existing link into a 404.
+   */
+  private async freshLoginBlob(subject: string, stored: string | undefined): Promise<string | undefined> {
+    if (!this.refresher) return stored;
+    try {
+      return (await this.refresher.ensureFresh(subject)) ?? stored;
+    } catch {
+      return stored;
+    }
+  }
 
   /** Picks the flows engine for `mode`, or `undefined` if that mode isn't wired up (e.g. `login` before `loginFlows` is configured). */
   private flowsFor(mode: ClaudeAuthMode): ClaudeAuthFlows | undefined {
@@ -412,7 +436,13 @@ export class ClaudeAuthApi {
       sendJson(res, 200, { status: "timeout" });
       return;
     }
-    sendJson(res, 200, mode === "login" ? { status: "complete", credentialsJson: record.credentialsJson } : { status: "complete", token: record.token });
+    sendJson(
+      res,
+      200,
+      mode === "login"
+        ? { status: "complete", credentialsJson: await this.freshLoginBlob(subject, record.credentialsJson) }
+        : { status: "complete", token: record.token },
+    );
   }
 
   private async handleToken(res: ServerResponse, url: URL): Promise<void> {
@@ -427,6 +457,12 @@ export class ClaudeAuthApi {
       res.writeHead(404).end();
       return;
     }
-    sendJson(res, 200, mode === "login" ? { credentialsJson: record.credentialsJson } : { token: record.token });
+    sendJson(
+      res,
+      200,
+      mode === "login"
+        ? { credentialsJson: await this.freshLoginBlob(subject, record.credentialsJson) }
+        : { token: record.token },
+    );
   }
 }

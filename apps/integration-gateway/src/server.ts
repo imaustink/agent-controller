@@ -8,6 +8,7 @@ import type { ClaudeLoginFlows } from "./claude-auth/pty-login.js";
 import type { ClaudeTokenStore } from "./claude-auth/store.js";
 import type { IdentityResolver } from "./identity.js";
 import type { OrchestratorClient, OrchestratorInvokeResult } from "./orchestrator-client.js";
+import { ClaudeCredentialRefresher } from "./claude-auth/credential-refresher.js";
 import { renderSessionPage } from "./session-page.js";
 import type { SessionPageStore } from "./session-page-store.js";
 import { parseGithubEvent, verifyGithubSignature, WebhookAuthError } from "./webhooks/github.js";
@@ -90,6 +91,15 @@ export interface GatewayServerOptions {
    */
   claudeLoginFlows?: ClaudeLoginFlows;
   /**
+   * Off switch for refreshing stored `login` credentials before serving them
+   * (credential-refresher.ts). Defaults to on. Turning it off restores the
+   * behaviour where only a run's own CLI ever refreshes -- which is what made
+   * a link depend on every pod reporting back.
+   */
+  claudeCredentialRefreshEnabled?: boolean;
+  /** How close to expiry a stored credential must be before it is refreshed on read. */
+  claudeCredentialRefreshMarginMs?: number;
+  /**
    * Session-page feature (issue #81) -- both fields must be set together to
    * enable it: a "starting work" comment posted right when an
    * `issues.labeled` triage trigger fires (rather than only after the whole
@@ -137,6 +147,16 @@ export class GatewayServer {
             options.identityLinkToken,
             options.publicBaseUrl,
             options.claudeLoginFlows,
+            // Refresh a near-expiry `login` credential before handing it to a
+            // run, in ONE serialized place. Previously the only thing that ever
+            // refreshed was a run's own in-pod CLI, which made the stored copy
+            // dependent on that pod reporting back, and left an unexercised
+            // link to age out on its own.
+            new ClaudeCredentialRefresher({
+              store: options.claudeAuthStore,
+              enabled: options.claudeCredentialRefreshEnabled ?? true,
+              ...(options.claudeCredentialRefreshMarginMs ? { marginMs: options.claudeCredentialRefreshMarginMs } : {}),
+            }),
           )
         : undefined;
   }
