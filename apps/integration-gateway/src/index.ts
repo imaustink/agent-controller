@@ -284,6 +284,8 @@ async function main(): Promise<void> {
     resumeWaitMs: config.resumeWaitMs,
     claudeCredentialRefreshEnabled: config.claudeCredentialRefreshEnabled,
     claudeCredentialRefreshMarginMs: config.claudeCredentialRefreshMarginMs,
+    claudeCredentialSweepIntervalMs: config.claudeCredentialSweepIntervalMs,
+    claudeCredentialSweepMarginMs: config.claudeCredentialSweepMarginMs,
   });
 
   await server.listen(config.httpPort);

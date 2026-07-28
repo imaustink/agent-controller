@@ -29,9 +29,9 @@ export class FakeSecretApi implements SecretApiLike {
   /** Every call, in order -- lets a test assert create-then-replace rather than two creates. */
   readonly calls: string[] = [];
   /** Set to make the next call of a given kind fail, for the non-404 paths. */
-  failWith: { verb: "read" | "create" | "replace" | "delete"; error: unknown } | undefined;
+  failWith: { verb: "read" | "create" | "replace" | "delete" | "list"; error: unknown } | undefined;
 
-  private maybeFail(verb: "read" | "create" | "replace" | "delete"): void {
+  private maybeFail(verb: "read" | "create" | "replace" | "delete" | "list"): void {
     if (this.failWith?.verb === verb) {
       const { error } = this.failWith;
       this.failWith = undefined;
@@ -46,6 +46,27 @@ export class FakeSecretApi implements SecretApiLike {
       data[field] = Buffer.from(value, "utf8").toString("base64");
     }
     return { metadata: secret.metadata, data };
+  }
+
+  /**
+   * Filters on the label selector the way the API server does, so a store that
+   * forgot its selector would visibly scan the whole namespace here rather than
+   * quietly passing.
+   */
+  async listNamespacedSecret(request: { namespace: string; labelSelector?: string }): Promise<{ items: StoredSecret[] }> {
+    this.calls.push(`list:${request.labelSelector ?? ""}`);
+    this.maybeFail("list");
+    const required = (request.labelSelector ?? "")
+      .split(",")
+      .filter(Boolean)
+      .map((pair) => pair.split("=") as [string, string]);
+    const items: StoredSecret[] = [];
+    for (const [key, secret] of this.secrets) {
+      if (!key.startsWith(`${request.namespace}/`)) continue;
+      const labels = secret.metadata.labels ?? {};
+      if (required.every(([k, v]) => labels[k] === v)) items.push(secret);
+    }
+    return { items };
   }
 
   async readNamespacedSecret(request: { name: string; namespace: string }): Promise<StoredSecret> {

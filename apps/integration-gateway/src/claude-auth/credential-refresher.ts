@@ -323,3 +323,121 @@ export class ClaudeCredentialRefresher {
     return outcome.credentialsJson;
   }
 }
+
+/** How often the background sweep runs. */
+export const DEFAULT_SWEEP_INTERVAL_MS = 60 * 60_000;
+
+/**
+ * How close to expiry a credential must be for the SWEEP to renew it.
+ *
+ * Wider than the on-read margin on purpose. The sweep's job is that a link is
+ * never found dead, so it should act well before anything needs the credential;
+ * the read path's job is only that the blob it is about to hand out is usable.
+ */
+export const DEFAULT_SWEEP_MARGIN_MS = 4 * 60 * 60_000;
+
+export interface CredentialSweeperDeps {
+  store: Pick<ClaudeTokenStore, "get" | "listSubjects">;
+  /** Refreshes one subject -- the same serialized path the read path uses. */
+  refresher: Pick<ClaudeCredentialRefresher, "ensureFresh">;
+  intervalMs?: number;
+  marginMs?: number;
+  log?: (message: string) => void;
+  now?: () => number;
+}
+
+/**
+ * Renews stored Remote Control credentials on a timer, independently of whether
+ * anything is using them.
+ *
+ * Refresh-on-read cannot cover this: it only fires when something reads, so a
+ * link nobody exercises is a link nothing renews. And a refresh token is not
+ * valid forever -- the CLI ships `refresh_token_expired` and
+ * `refresh_token_expires_in` as strings, so an idle link is on a timer whether
+ * or not we act. Left alone, a user who links today and triggers nothing for
+ * long enough is asked to link again for no reason they can see.
+ *
+ * Runs in the gateway because that is the only long-lived, single-instance
+ * component that holds the store. Reuses `ClaudeCredentialRefresher.ensureFresh`
+ * rather than refreshing directly, so the sweep and a concurrent launch share
+ * one in-flight refresh per subject instead of rotating each other's token out.
+ */
+export class ClaudeCredentialSweeper {
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private running = false;
+  private readonly log: (message: string) => void;
+
+  constructor(private readonly deps: CredentialSweeperDeps) {
+    this.log = deps.log ?? ((m) => console.log(m));
+  }
+
+  start(): void {
+    if (this.timer) return;
+    if (!this.deps.store.listSubjects) {
+      // Standing down is stated, not silent: a sweeper that quietly did nothing
+      // would look exactly like a working one right up until someone's link
+      // expired.
+      this.log("[claude-refresh] sweep disabled: this credential store cannot enumerate subjects");
+      return;
+    }
+    const intervalMs = this.deps.intervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
+    this.timer = setInterval(() => void this.sweep(), intervalMs);
+    this.timer.unref?.();
+    // Sweep once at startup too, so a gateway that restarts often still renews
+    // (and so a deployment does not wait a full interval to find out the sweep
+    // is broken).
+    void this.sweep();
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+  }
+
+  /**
+   * One pass. Refreshes every `login` credential inside the sweep margin,
+   * sequentially -- there is no hurry here, and a burst of parallel token
+   * requests on a schedule is a worse neighbour than a slow loop.
+   */
+  async sweep(): Promise<{ examined: number; refreshed: number; failed: number }> {
+    if (this.running) return { examined: 0, refreshed: 0, failed: 0 };
+    this.running = true;
+    const marginMs = this.deps.marginMs ?? DEFAULT_SWEEP_MARGIN_MS;
+    const now = this.deps.now ?? Date.now;
+    let examined = 0;
+    let refreshed = 0;
+    let failed = 0;
+    try {
+      let subjects: string[];
+      try {
+        subjects = (await this.deps.store.listSubjects?.("login")) ?? [];
+      } catch (err) {
+        // Deliberately loud: a list that failed is not an empty store, and
+        // treating it as one is how a sweep does nothing forever.
+        this.log(
+          `[claude-refresh] sweep could not list stored credentials: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return { examined: 0, refreshed: 0, failed: 1 };
+      }
+
+      for (const subject of subjects) {
+        examined += 1;
+        const record = await this.deps.store.get(subject, "login");
+        const blob = record?.credentialsJson;
+        if (!blob || !needsRefresh(blob, marginMs, now())) continue;
+        const before = credentialExpiresAt(blob);
+        const after = credentialExpiresAt((await this.deps.refresher.ensureFresh(subject)) ?? blob);
+        // `ensureFresh` never throws and reports its own failures; compare
+        // expiries to know whether this pass actually renewed anything.
+        if (after && after !== before) refreshed += 1;
+        else failed += 1;
+      }
+      if (refreshed > 0 || failed > 0) {
+        this.log(`[claude-refresh] sweep: ${examined} examined, ${refreshed} refreshed, ${failed} still due`);
+      }
+      return { examined, refreshed, failed };
+    } finally {
+      this.running = false;
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  ClaudeCredentialSweeper,
   ClaudeCredentialRefresher,
   CLAUDE_OAUTH_CLIENT_ID,
   CLAUDE_TOKEN_URL,
@@ -242,5 +243,134 @@ describe("ClaudeCredentialRefresher.ensureFresh", () => {
 
     const empty = new ClaudeCredentialRefresher({ store: fakeStore(), fetchImpl: vi.fn() as unknown as typeof fetch, log: () => {} });
     expect(await empty.ensureFresh("github:nobody")).toBeUndefined();
+  });
+});
+
+/**
+ * The sweep is what keeps an UNUSED link alive. Refresh-on-read cannot: it only
+ * fires when something reads, and a refresh token is not valid forever (the CLI
+ * ships `refresh_token_expired`), so a user who links today and triggers nothing
+ * for long enough would be asked to link again for no visible reason.
+ */
+describe("ClaudeCredentialSweeper", () => {
+  function sweepStore(entries: Record<string, string>) {
+    const records = new Map(
+      Object.entries(entries).map(([s, b]) => [s, { kind: "login" as const, credentialsJson: b, createdAt: "t0" }]),
+    );
+    return {
+      records,
+      get: vi.fn(async (subject: string) => records.get(subject)),
+      listSubjects: vi.fn(async () => [...records.keys()]),
+    };
+  }
+
+  it("renews a credential nothing is reading, and leaves healthy ones alone", async () => {
+    const store = sweepStore({
+      "github:stale": blob({ expiresAt: Date.now() + HOUR }),
+      "github:healthy": blob({ expiresAt: Date.now() + 40 * HOUR }),
+    });
+    const ensureFresh = vi.fn(async () => blob({ expiresAt: Date.now() + 40 * HOUR }));
+    const sweeper = new ClaudeCredentialSweeper({
+      store,
+      refresher: { ensureFresh },
+      marginMs: 4 * HOUR,
+      log: () => {},
+    });
+
+    const result = await sweeper.sweep();
+
+    expect(ensureFresh).toHaveBeenCalledTimes(1);
+    expect(ensureFresh).toHaveBeenCalledWith("github:stale");
+    expect(result).toMatchObject({ examined: 2, refreshed: 1 });
+  });
+
+  // The sweep refreshes through the SAME serialized entry point a launch uses,
+  // so a sweep landing next to a launch costs one refresh, not two that rotate
+  // each other's token out.
+  it("renews through the refresher, never by refreshing directly", async () => {
+    const store = sweepStore({ "github:stale": blob({ expiresAt: Date.now() + HOUR }) });
+    const fetchImpl = vi.fn();
+    const refresher = new ClaudeCredentialRefresher({
+      store: { get: store.get, set: vi.fn() },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      log: () => {},
+    });
+    const spy = vi.spyOn(refresher, "ensureFresh");
+    await new ClaudeCredentialSweeper({ store, refresher, marginMs: 4 * HOUR, log: () => {} }).sweep();
+    expect(spy).toHaveBeenCalledWith("github:stale");
+  });
+
+  // A list that failed is not an empty store. Reading it as one is how a sweep
+  // does nothing forever while looking perfectly healthy.
+  it("reports a failed listing loudly instead of treating it as 'no links'", async () => {
+    const logs: string[] = [];
+    const sweeper = new ClaudeCredentialSweeper({
+      store: {
+        get: vi.fn(),
+        listSubjects: vi.fn(async () => {
+          throw new Error("API server unreachable");
+        }),
+      },
+      refresher: { ensureFresh: vi.fn() },
+      log: (m) => logs.push(m),
+    });
+
+    const result = await sweeper.sweep();
+
+    expect(result).toMatchObject({ examined: 0, refreshed: 0, failed: 1 });
+    expect(logs.join("\n")).toMatch(/could not list stored credentials/);
+    expect(logs.join("\n")).toMatch(/API server unreachable/);
+  });
+
+  it("stands down audibly when the store cannot enumerate at all", () => {
+    const logs: string[] = [];
+    const sweeper = new ClaudeCredentialSweeper({
+      store: { get: vi.fn() }, // no listSubjects
+      refresher: { ensureFresh: vi.fn() },
+      log: (m) => logs.push(m),
+    });
+
+    sweeper.start();
+
+    expect(logs.join("\n")).toMatch(/sweep disabled/);
+    sweeper.stop();
+  });
+
+  it("sweeps once at startup rather than waiting out a full interval", async () => {
+    const store = sweepStore({ "github:stale": blob({ expiresAt: Date.now() + HOUR }) });
+    const ensureFresh = vi.fn(async () => blob({ expiresAt: Date.now() + 40 * HOUR }));
+    const sweeper = new ClaudeCredentialSweeper({
+      store,
+      refresher: { ensureFresh },
+      intervalMs: 60_000,
+      marginMs: 4 * HOUR,
+      log: () => {},
+    });
+
+    sweeper.start();
+    await new Promise((r) => setTimeout(r, 10));
+    sweeper.stop();
+
+    expect(ensureFresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not overlap passes", async () => {
+    const store = sweepStore({ "github:stale": blob({ expiresAt: Date.now() + HOUR }) });
+    let release: (() => void) | undefined;
+    const ensureFresh = vi.fn(
+      () => new Promise<string>((r) => (release = () => r(blob({ expiresAt: Date.now() + 40 * HOUR })))),
+    );
+    const sweeper = new ClaudeCredentialSweeper({ store, refresher: { ensureFresh }, marginMs: 4 * HOUR, log: () => {} });
+
+    const first = sweeper.sweep();
+    // Wait until the first pass is genuinely mid-refresh before overlapping it.
+    while (!release) await new Promise((r) => setTimeout(r, 1));
+
+    const second = await sweeper.sweep(); // while the first is still in flight
+    expect(second).toMatchObject({ examined: 0 });
+
+    release();
+    await first;
+    expect(ensureFresh).toHaveBeenCalledTimes(1);
   });
 });
