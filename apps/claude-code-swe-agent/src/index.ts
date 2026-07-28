@@ -195,7 +195,14 @@ async function handler(session: AgentSession): Promise<AgentReply> {
     onProgress: (message: string, stage: string) => void session.progress(clip(message, 500), { stage }),
   };
   const outcome = toolConfig.remoteControlEnabled
-    ? await runClaudeTurnRemoteControlled(prompt, { ...runOpts, runId: session.runId })
+    ? await runClaudeTurnRemoteControlled(prompt, {
+        ...runOpts,
+        runId: session.runId,
+        ...(toolConfig.remoteControlIdleTimeoutMs ? { idleTimeoutMs: toolConfig.remoteControlIdleTimeoutMs } : {}),
+        ...(toolConfig.remoteControlIdleStatusGraceMs ? { idleStatusGraceMs: toolConfig.remoteControlIdleStatusGraceMs } : {}),
+        ...(toolConfig.remoteControlWaitingTimeoutMs ? { waitingTimeoutMs: toolConfig.remoteControlWaitingTimeoutMs } : {}),
+        ...(toolConfig.remoteControlMaxWaitMs ? { maxWaitMs: toolConfig.remoteControlMaxWaitMs } : {}),
+      })
     : await runClaudeTurn(prompt, runOpts);
 
   // Runs on every outcome, including a failed one: the CLI may well have

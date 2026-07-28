@@ -270,6 +270,31 @@ claudeCodeSweAgent:
     # baked into this catalog entry.
     credentialsSecretName: ""
     credentialsSecretKey: ""
+    # FALLBACK bound, used only while `claude agents --json` reports no status
+    # for the session: how long it may produce NO transcript activity (no
+    # assistant message, no tool call, no tool result) before its turn is
+    # declared stuck. Bounds SILENCE, not total duration. Empty uses
+    # claude-runner.ts's default (20 minutes).
+    idleTimeoutMs: ""
+    # How long a session REPORTING "idle" may stay that way before its turn is
+    # declared stuck. Much shorter than idleTimeoutMs above, because it is much
+    # better evidence: the session is not being quiet, it is saying it is not
+    # working. (A session that is working reports "busy" and is never cut off,
+    # however long a single tool call keeps its transcript static.) Empty uses
+    # claude-runner.ts's default (90 seconds).
+    idleStatusGraceMs: ""
+    # How long a session REPORTING "waiting" -- blocked on a prompt or dialog
+    # only a human can clear -- may stay blocked. Nothing in a headless Job
+    # will ever answer it, so this is purely the window someone has to take
+    # over the session at its claude.ai URL (which the run's own first comment
+    # links). Empty uses claude-runner.ts's default (5 minutes).
+    waitingTimeoutMs: ""
+    # Escape hatch only: an ABSOLUTE cap on a turn's total duration. Empty
+    # (the default) means no cap -- the idle bound above ends a stuck turn and
+    # the AgentRun Job's activeDeadlineSeconds is the wall-clock ceiling.
+    # Setting this reintroduces the behaviour behind issue #149, where a
+    # healthy half-hour coding turn was killed and reported as a timeout.
+    maxWaitMs: ""
 
 # github: runs a single allowlisted gh CLI command (issue/pr/repo/release/
 # search/workflow/run), preferably authenticated as the calling user's own

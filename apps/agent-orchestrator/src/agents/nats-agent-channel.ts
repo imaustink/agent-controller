@@ -149,8 +149,14 @@ export interface AgentOrchestratorChannel {
  *   - during ordinary work the up subject carries every `opencode_event`
  *     (`opencode-swe-agent`'s `subscribeEvents`), i.e. near-continuous;
  *   - the remote-control wait — the one place a turn blocks on a human —
- *     heartbeats "still running…" every 20s (`claude-runner.ts`) and caps
- *     itself at 30 min anyway.
+ *     narrates each transcript entry as it appears and, while the session is
+ *     quiet, heartbeats every 20s (`claude-runner.ts`).
+ *
+ * That runner owns the decision about whether a remote-control turn is stuck,
+ * because it is the only component that can see the session's actual activity;
+ * this bound never fires for one. It deliberately does NOT cap total duration
+ * (it used to cap at 30 min — see issue #149, where that killed a healthy
+ * turn), so do not restore a wall-clock cap here either.
  *
  * Note that an agent asking a question does NOT sit inside `awaitReply`:
  * `ask()` publishes `reply{final:false}` (`agent-runtime`'s `runtime.ts`),
