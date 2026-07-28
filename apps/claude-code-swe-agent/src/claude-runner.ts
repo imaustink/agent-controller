@@ -41,11 +41,16 @@ export interface RemoteControlRunOptions extends ClaudeRunOptions {
   /** Cadence for polling `claude agents --json`. Defaults to {@link REMOTE_CONTROL_POLL_INTERVAL_MS}; injectable for tests. */
   pollIntervalMs?: number;
   /**
-   * How long the session may go with NO new transcript activity before the
-   * turn is given up on. Bounds SILENCE, not total duration. Defaults to
+   * Fallback bound, used only while the session reports no `status`: how long
+   * it may go with NO new transcript activity before the turn is given up on.
+   * Bounds SILENCE, not total duration. Defaults to
    * {@link REMOTE_CONTROL_IDLE_TIMEOUT_MS}; injectable for tests.
    */
   idleTimeoutMs?: number;
+  /** Bound on a session reporting `status: "idle"`. Defaults to {@link REMOTE_CONTROL_IDLE_STATUS_GRACE_MS}. */
+  idleStatusGraceMs?: number;
+  /** Bound on a session reporting `status: "waiting"`. Defaults to {@link REMOTE_CONTROL_WAITING_TIMEOUT_MS}. */
+  waitingTimeoutMs?: number;
   /**
    * How long to wait for the interactive session to register with the CLI at
    * all before giving up on startup. Defaults to
@@ -344,8 +349,11 @@ export function runClaudeTurn(prompt: string, opts: ClaudeRunOptions): Promise<C
 const REMOTE_CONTROL_POLL_INTERVAL_MS = 3_000;
 
 /**
- * How long the interactive session may produce NO new transcript activity
- * before the turn is declared stuck.
+ * FALLBACK bound, used only while the session reports no `status` (see
+ * {@link SessionStatus}): how long it may produce NO new transcript activity
+ * before the turn is declared stuck. When a status IS reported it is strictly
+ * better evidence and this does not apply -- `busy` means the session is
+ * working and duration is not our business, however static its transcript.
  *
  * This replaces a 30-minute ABSOLUTE cap, which is the defect behind issue
  * #149: a run that was working correctly the whole time was killed at exactly
@@ -366,8 +374,38 @@ const REMOTE_CONTROL_POLL_INTERVAL_MS = 3_000;
  * -- observed taking many minutes in a Job container). 20 minutes is several
  * times that, and it also leaves room for a human who has taken over the
  * session via its claude.ai URL to think between messages.
+ *
+ * That reasoning is a guess with a rationale, which is exactly why it is now
+ * only the fallback: it cannot tell a wedged session from a slow tool call,
+ * because from outside the process those are identical. The status signal can.
  */
 const REMOTE_CONTROL_IDLE_TIMEOUT_MS = 20 * 60_000;
+
+/**
+ * How long a session that reports `status: "idle"` may stay idle, with a
+ * static transcript, before the turn is declared stuck.
+ *
+ * Far shorter than {@link REMOTE_CONTROL_IDLE_TIMEOUT_MS} because it is a far
+ * better-informed judgement: the session is not saying "quiet", it is saying
+ * "not working". The only reason to tolerate any idle at all is that a session
+ * is briefly idle between registering and picking up its prompt, and could in
+ * principle blip idle between steps. Any `busy` sample resets this, so a blip
+ * costs nothing.
+ */
+const REMOTE_CONTROL_IDLE_STATUS_GRACE_MS = 90_000;
+
+/**
+ * How long a session that reports `status: "waiting"` may stay blocked before
+ * the turn gives up.
+ *
+ * Nothing in a headless Job will ever answer the prompt it is blocked on, so
+ * this could be zero. It is not, because the product explicitly advertises the
+ * opposite: the run's first comment is "Watch live or take over the session
+ * here", and a human who does take over needs a window to answer. Bounded
+ * anyway -- an unattended run at 3am must not hold a pod until the Job
+ * deadline waiting for someone who is asleep.
+ */
+const REMOTE_CONTROL_WAITING_TIMEOUT_MS = 5 * 60_000;
 
 /**
  * How long to wait for the interactive session to appear in `claude agents
@@ -491,6 +529,27 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * What `agents --json` reports a session to be doing. CONFIRMED against a real
+ * CLI (v2.1.220), both live and by reading the bundle -- the listing builds
+ * each entry with `...d.status && {status: EMm(d.status)}` and
+ * `...d.status === "waiting" && d.waitingFor && {waitingFor: d.waitingFor}`,
+ * where `EMm` is total:
+ *
+ *   EMm(e) = e === "idle" ? "idle" : e === "waiting" ? "waiting" : "busy"
+ *
+ * so the field is exactly these three values or absent (an unrecognized
+ * internal status becomes `"busy"`, which is the safe direction for us).
+ * The status itself is computed as:
+ *
+ *   waiting -> a prompt/dialog is up (see {@link InteractiveSession.waitingFor})
+ *   busy    -> `isLoading || delegatedActive`, i.e. genuinely working
+ *   idle    -> neither
+ */
+type SessionStatus = "idle" | "waiting" | "busy";
+
+const SESSION_STATUSES: readonly string[] = ["idle", "waiting", "busy"];
+
 interface InteractiveSession {
   /** The long UUID-shaped session id -- names the transcript file `<sessionId>.jsonl`. */
   sessionId: string;
@@ -498,6 +557,19 @@ interface InteractiveSession {
   shortId: string | null;
   /** True when `agents --json` reports this session in a terminal-failed lifecycle state. */
   failed: boolean;
+  /**
+   * The session's own account of what it is doing, or `null` when the listing
+   * omits it (it is emitted conditionally, so a session that has not reported
+   * one yet simply has no field). `null` means "no opinion" and must never be
+   * read as "not working" -- the caller falls back to the transcript.
+   */
+  status: SessionStatus | null;
+  /**
+   * Why the session is blocked, when `status === "waiting"`. Free text from the
+   * CLI: `"input needed"`, `"dialog open"`, `"sandbox request"`, `"worker
+   * request"`, or the specific dialog's own label.
+   */
+  waitingFor: string | null;
 }
 
 /**
@@ -545,10 +617,21 @@ function findInteractiveSession(
     const sessionId = typeof rec.sessionId === "string" ? rec.sessionId : "";
     if (!sessionId || exclude.has(sessionId)) continue;
     const state = String(rec.state ?? "").toLowerCase();
-    const status = String(rec.status ?? "").toLowerCase();
+    const rawStatus = String(rec.status ?? "").toLowerCase();
+    // Kept as a defensive path even though the v2.1.220 listing cannot produce
+    // it (`EMm` maps every internal status into idle/waiting/busy, and no
+    // `state` key is emitted for an interactive entry) -- the shape is not
+    // contractual across CLI versions, and mistaking a failed session for a
+    // running one is the more expensive error.
     const TERMINAL_FAILED = ["failed", "error", "errored"];
-    const failed = TERMINAL_FAILED.includes(state) || TERMINAL_FAILED.includes(status);
-    return { sessionId, shortId: typeof rec.id === "string" ? rec.id : null, failed };
+    const failed = TERMINAL_FAILED.includes(state) || TERMINAL_FAILED.includes(rawStatus);
+    return {
+      sessionId,
+      shortId: typeof rec.id === "string" ? rec.id : null,
+      failed,
+      status: SESSION_STATUSES.includes(rawStatus) ? (rawStatus as SessionStatus) : null,
+      waitingFor: typeof rec.waitingFor === "string" && rec.waitingFor ? rec.waitingFor : null,
+    };
   }
   return null;
 }
@@ -692,9 +775,11 @@ function claudeProjectDirName(cwd: string): string {
  *      The interactive session stays resident after its turn, so it's killed
  *      on the way out.
  *
- * The wait is bounded by SILENCE, not by total duration -- see
- * {@link REMOTE_CONTROL_IDLE_TIMEOUT_MS} and issue #149, where a healthy
- * long-running turn was killed by a 30-minute absolute cap.
+ * The wait is never bounded by total duration -- see issue #149, where a
+ * healthy long-running turn was killed by a 30-minute absolute cap. What ends
+ * it is the session's own reported {@link SessionStatus} (`busy` runs as long
+ * as it likes; `idle` and `waiting` each have their own short bound), falling
+ * back to transcript silence only while no status is reported.
  */
 export async function runClaudeTurnRemoteControlled(
   prompt: string,
@@ -767,27 +852,46 @@ export async function runClaudeTurnRemoteControlled(
     }
   };
 
+  /**
+   * When we last told the caller ANYTHING. Distinct from the stall clock
+   * below, and load-bearing: the orchestrator ends a turn after
+   * `agentIdleTimeoutSeconds` without an up-message (10 min), so this
+   * guarantees we speak often enough to stay inside that whatever the session
+   * is doing. Collapsing the two clocks would silence us for exactly the case
+   * that most needs narrating -- a long `busy` tool call, which resets the
+   * stall clock on every poll while emitting no transcript entries at all.
+   */
+  let lastEmitAt = Date.now();
+  const emit = (message: string, stage: "agent-text" | "agent" | "remote-control-url"): void => {
+    lastEmitAt = Date.now();
+    logProgress(stage, message);
+    opts.onProgress?.(message, stage);
+  };
+
   let urlReported = false;
   const reportUrl = (url: string): void => {
     if (urlReported) return;
     urlReported = true;
-    logProgress("remote-control-url", url);
-    opts.onProgress?.(url, "remote-control-url");
+    emit(url, "remote-control-url");
   };
 
   const pollIntervalMs = opts.pollIntervalMs ?? REMOTE_CONTROL_POLL_INTERVAL_MS;
   const idleTimeoutMs = opts.idleTimeoutMs ?? REMOTE_CONTROL_IDLE_TIMEOUT_MS;
+  const idleStatusGraceMs = opts.idleStatusGraceMs ?? REMOTE_CONTROL_IDLE_STATUS_GRACE_MS;
+  const waitingTimeoutMs = opts.waitingTimeoutMs ?? REMOTE_CONTROL_WAITING_TIMEOUT_MS;
   const startupTimeoutMs = opts.startupTimeoutMs ?? REMOTE_CONTROL_STARTUP_TIMEOUT_MS;
   const heartbeatMs = opts.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
   // No absolute cap by default -- see `maxWaitMs`'s doc comment and issue #149.
   const absoluteDeadline = opts.maxWaitMs === undefined ? Infinity : Date.now() + opts.maxWaitMs;
   const startedAt = Date.now();
-  let lastHeartbeatAt = Date.now();
 
-  // Liveness state. `lastProgressAt` is the clock the idle bound measures, and
-  // it is reset by any growth in the transcript -- never by the mere passage of
-  // polls, and never by pty output.
+  // Liveness state. `lastProgressAt` is the STALL clock: reset by growth in the
+  // transcript and by a `busy` status -- never by the mere passage of polls,
+  // and never by pty output (a TUI redraws continuously whether or not
+  // anything is happening, so counting it would stop the bound ever firing).
   let lastProgressAt = Date.now();
+  /** Last growth in the transcript specifically -- for wording, not for deciding. */
+  let lastTranscriptAt = Date.now();
   let sessionFoundAt: number | null = null;
   /** Our session's id once discovered -- carried into a give-up result so a stuck run is traceable to a transcript. */
   let discoveredSessionId: string | null = null;
@@ -795,6 +899,12 @@ export async function runClaudeTurnRemoteControlled(
   let narratedEvents = 0;
   let sawTurnActivity = false;
   let lastActivity: string | null = null;
+  /** The session's last reported status, so a give-up message can say which signal ended the wait. */
+  let lastStatus: SessionStatus | null = null;
+  /** When the session first reported `waiting` without having moved since. */
+  let waitingSinceAt: number | null = null;
+  /** The reason accompanying the most recent `waiting` status, for the give-up message. */
+  let lastWaitingFor: string | null = null;
 
   /**
    * Distinguishes the two shapes of "we gave up waiting", because the previous
@@ -806,10 +916,13 @@ export async function runClaudeTurnRemoteControlled(
   const idleFailure = (silentForMs: number): ClaudeRunResult => {
     const silentSecs = Math.round(silentForMs / 1000);
     const ranForSecs = Math.round((Date.now() - startedAt) / 1000);
+    // `idle` is the session's own word for it; no status at all means we are
+    // inferring from silence and should say so rather than overclaim.
+    const basis = lastStatus === "idle" ? `reported itself idle for ${silentSecs}s` : `produced no transcript activity for ${silentSecs}s (status not reported)`;
     const detail = sawTurnActivity
-      ? `The remote-control session stopped producing output: no transcript activity for ${silentSecs}s (turn ran ${ranForSecs}s, ${entryCount} transcript entries` +
+      ? `The remote-control session stopped working: ${basis} (turn ran ${ranForSecs}s, ${entryCount} transcript entries` +
         `${lastActivity ? `, last activity: ${clip(lastActivity, 200)}` : ""}).`
-      : `The remote-control session registered but never started its turn: no transcript activity for ${silentSecs}s. ` +
+      : `The remote-control session registered but never started its turn: ${basis}. ` +
         `The prompt may not have been submitted to the session.`;
     return { finalMessage: null, failed: true, failureDetail: detail, authError: false, sessionId: discoveredSessionId };
   };
@@ -830,6 +943,19 @@ export async function runClaudeTurnRemoteControlled(
 
       if (session) {
         discoveredSessionId = session.sessionId;
+        lastStatus = session.status;
+        // `busy` is the session itself saying it is working, which is stronger
+        // evidence than anything the transcript can offer: a single long tool
+        // call writes `tool_use` when it STARTS and `tool_result` when it
+        // FINISHES and nothing in between, so a 40-minute test suite is 40
+        // minutes of silence from a session that is plainly alive. Counting it
+        // as progress is what lets real work run as long as it needs.
+        if (session.status === "busy") lastProgressAt = Date.now();
+        // `waiting` means a prompt or dialog is up. Its clock is separate: it
+        // is not silence to be waited out, it is a state only a human can
+        // leave, so it must not be reset by transcript growth.
+        waitingSinceAt = session.status === "waiting" ? (waitingSinceAt ?? Date.now()) : null;
+        if (session.status === "waiting") lastWaitingFor = session.waitingFor ?? lastWaitingFor;
         if (sessionFoundAt === null) {
           sessionFoundAt = Date.now();
           // Registration is itself progress; restart the idle clock from here
@@ -844,6 +970,7 @@ export async function runClaudeTurnRemoteControlled(
           if (st.entryCount > entryCount) {
             entryCount = st.entryCount;
             lastProgressAt = Date.now();
+            lastTranscriptAt = lastProgressAt;
           }
           // Forward only the events that appeared since the last poll, so the
           // caller sees the real tool-call trail (as the one-shot `-p` path
@@ -851,8 +978,7 @@ export async function runClaudeTurnRemoteControlled(
           for (const ev of st.events.slice(narratedEvents)) {
             sawTurnActivity = true;
             lastActivity = ev.message;
-            logProgress(ev.kind, ev.message);
-            opts.onProgress?.(ev.message, ev.kind);
+            emit(ev.message, ev.kind);
           }
           narratedEvents = st.events.length;
           // Emit the URL the moment it's known (well before completion) so the
@@ -915,7 +1041,32 @@ export async function runClaudeTurnRemoteControlled(
       }
 
       const silentForMs = Date.now() - lastProgressAt;
-      if (sessionFoundAt !== null && silentForMs >= idleTimeoutMs) return idleFailure(silentForMs);
+      if (sessionFoundAt !== null) {
+        if (waitingSinceAt !== null && Date.now() - waitingSinceAt >= waitingTimeoutMs) {
+          const blockedSecs = Math.round((Date.now() - waitingSinceAt) / 1000);
+          return {
+            finalMessage: null,
+            failed: true,
+            failureDetail:
+              `The remote-control session is blocked waiting for input (${lastWaitingFor ?? "reason not reported"}) ` +
+              `and nothing answered it for ${blockedSecs}s. Take over the session at its claude.ai URL to answer, or re-trigger with more detail in the request.`,
+            authError: false,
+            sessionId: discoveredSessionId,
+          };
+        }
+        // Which bound applies is the session's own status, not a guess:
+        //   busy    -> none; it is working, and duration is not our business
+        //   waiting -> none here; handled above, on its own clock
+        //   idle    -> a short grace, because "not working" is a real answer
+        //   absent  -> the transcript-silence fallback, our only signal
+        const bound =
+          lastStatus === "busy" || lastStatus === "waiting"
+            ? Infinity
+            : lastStatus === "idle"
+              ? idleStatusGraceMs
+              : idleTimeoutMs;
+        if (silentForMs >= bound) return idleFailure(silentForMs);
+      }
 
       if (Date.now() >= absoluteDeadline) {
         return {
@@ -927,20 +1078,21 @@ export async function runClaudeTurnRemoteControlled(
         };
       }
 
-      // Heartbeat only during genuine silence -- real activity narrates itself
-      // above, and a heartbeat that fires regardless would say "still running"
-      // about a session that had already stopped doing anything.
-      if (silentForMs >= heartbeatMs && Date.now() - lastHeartbeatAt >= heartbeatMs) {
-        lastHeartbeatAt = Date.now();
-        const secs = Math.round(silentForMs / 1000);
+      // Fires only when nothing else has been said for a full interval -- real
+      // activity narrates itself above and pushes this out. What it reports is
+      // the session's actual state, not a blanket "still running": the old
+      // ticker said that about sessions that had already stopped.
+      if (Date.now() - lastEmitAt >= heartbeatMs) {
+        const secs = Math.round((Date.now() - lastTranscriptAt) / 1000);
         const heartbeatMessage =
           sessionFoundAt === null
             ? `still starting the remote-control session… (${secs}s)`
-            : lastActivity
-              ? `still running the remote-control session — quiet for ${secs}s since: ${clip(lastActivity, 120)}`
-              : `still running the remote-control session — no activity yet (${secs}s)`;
-        logProgress("agent", heartbeatMessage);
-        opts.onProgress?.(heartbeatMessage, "agent");
+            : lastStatus === "waiting"
+              ? `remote-control session is waiting for input (${lastWaitingFor ?? "reason not reported"})`
+              : lastActivity
+                ? `still running the remote-control session [${lastStatus ?? "status unknown"}] — quiet for ${secs}s since: ${clip(lastActivity, 120)}`
+                : `still running the remote-control session [${lastStatus ?? "status unknown"}] — no activity yet (${secs}s)`;
+        emit(heartbeatMessage, "agent");
       }
 
       await sleep(pollIntervalMs, opts.signal);

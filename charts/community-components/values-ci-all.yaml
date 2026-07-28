@@ -68,6 +68,8 @@ claudeCodeSweAgent:
     # Set here purely so validate-crds renders these two template branches;
     # the values are the production defaults spelled out (see values.yaml).
     idleTimeoutMs: "1200000"
+    idleStatusGraceMs: "90000"
+    waitingTimeoutMs: "300000"
     maxWaitMs: ""
 
 # E2E-only test double. Validated here anyway: it is a real chart template that

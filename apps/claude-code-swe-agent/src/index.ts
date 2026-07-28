@@ -199,6 +199,8 @@ async function handler(session: AgentSession): Promise<AgentReply> {
         ...runOpts,
         runId: session.runId,
         ...(toolConfig.remoteControlIdleTimeoutMs ? { idleTimeoutMs: toolConfig.remoteControlIdleTimeoutMs } : {}),
+        ...(toolConfig.remoteControlIdleStatusGraceMs ? { idleStatusGraceMs: toolConfig.remoteControlIdleStatusGraceMs } : {}),
+        ...(toolConfig.remoteControlWaitingTimeoutMs ? { waitingTimeoutMs: toolConfig.remoteControlWaitingTimeoutMs } : {}),
         ...(toolConfig.remoteControlMaxWaitMs ? { maxWaitMs: toolConfig.remoteControlMaxWaitMs } : {}),
       })
     : await runClaudeTurn(prompt, runOpts);

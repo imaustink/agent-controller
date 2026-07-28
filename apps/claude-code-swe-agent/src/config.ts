@@ -105,6 +105,20 @@ export interface AgentToolConfig {
    */
   remoteControlIdleTimeoutMs: number;
   /**
+   * How long a Remote Control session reporting `status: "idle"` may stay that
+   * way before its turn is given up on (`0`/unset uses the default). Much
+   * shorter than the silence bound above, because the session is not being
+   * quiet -- it is reporting that it is not working.
+   */
+  remoteControlIdleStatusGraceMs: number;
+  /**
+   * How long a Remote Control session reporting `status: "waiting"` may stay
+   * blocked on a prompt before its turn is given up on (`0`/unset uses the
+   * default). Sized by human reaction time -- it is the window someone has to
+   * take over the session at its claude.ai URL and answer.
+   */
+  remoteControlWaitingTimeoutMs: number;
+  /**
    * Optional ABSOLUTE cap on a Remote Control turn. Unset means no cap: the
    * idle bound above ends a stuck turn and the Job's `activeDeadlineSeconds`
    * is the wall-clock ceiling. Setting this reintroduces the behaviour behind
@@ -167,6 +181,8 @@ export function loadToolConfig(env: NodeJS.ProcessEnv = process.env): AgentToolC
     homeDir: env.SWE_HOME ?? "/tmp/home",
     remoteControlEnabled: env.CLAUDE_REMOTE_CONTROL === "true",
     remoteControlIdleTimeoutMs: positiveInt(env.CLAUDE_REMOTE_CONTROL_IDLE_TIMEOUT_MS),
+    remoteControlIdleStatusGraceMs: positiveInt(env.CLAUDE_REMOTE_CONTROL_IDLE_STATUS_GRACE_MS),
+    remoteControlWaitingTimeoutMs: positiveInt(env.CLAUDE_REMOTE_CONTROL_WAITING_TIMEOUT_MS),
     remoteControlMaxWaitMs: positiveInt(env.CLAUDE_REMOTE_CONTROL_MAX_WAIT_MS),
     loginCredentialsJson: env.CLAUDE_LOGIN_CREDENTIALS_JSON ?? "",
     credentialsWritebackUrl: env.CLAUDE_CREDENTIALS_WRITEBACK_URL ?? "",

@@ -102,7 +102,11 @@ if (args[0] === "agents") {
   }
   const started = fs.existsSync(path.join(process.env.HOME, "session-started"));
   if (started && process.env.FAKE_NO_SESSION !== "1") {
-    const s = { kind: "interactive", cwd: process.env.FAKE_SESSION_CWD, sessionId: process.env.FAKE_SID, id: "short1", status: "idle" };
+    const s = { kind: "interactive", cwd: process.env.FAKE_SESSION_CWD, sessionId: process.env.FAKE_SID, id: "short1" };
+    // Mirrors the real listing: status is emitted conditionally (so it can be
+    // absent), and waitingFor only ever accompanies status "waiting".
+    if (process.env.FAKE_NO_STATUS !== "1") s.status = process.env.FAKE_SESSION_STATUS || "idle";
+    if (s.status === "waiting" && process.env.FAKE_WAITING_FOR) s.waitingFor = process.env.FAKE_WAITING_FOR;
     if (process.env.FAKE_SESSION_STATE) s.state = process.env.FAKE_SESSION_STATE;
     list.push(s);
   }
@@ -177,7 +181,12 @@ describe("runClaudeTurnRemoteControlled (interactive)", () => {
       settings: {},
       runId: "run-long",
       pollIntervalMs: 15,
-      idleTimeoutMs: 250, // far shorter than the ~600ms the turn takes
+      // BOTH silence bounds far shorter than the ~600ms the turn takes, and
+      // the fake reports "idle" throughout -- so the only thing keeping this
+      // turn alive is its transcript growing. Leaving the status bound at its
+      // 90s default would let this pass without testing anything.
+      idleTimeoutMs: 250,
+      idleStatusGraceMs: 250,
       onProgress: (message, stage) => progress.push({ message, stage }),
     });
 
@@ -196,7 +205,7 @@ describe("runClaudeTurnRemoteControlled (interactive)", () => {
       settings: {},
       runId: "run-2",
       pollIntervalMs: 20,
-      idleTimeoutMs: 300,
+      idleStatusGraceMs: 300,
       onProgress: (message, stage) => progress.push({ message, stage }),
     });
 
@@ -216,15 +225,16 @@ describe("runClaudeTurnRemoteControlled (interactive)", () => {
       settings: {},
       runId: "run-silent",
       pollIntervalMs: 20,
-      idleTimeoutMs: 300,
+      idleStatusGraceMs: 300,
       heartbeatIntervalMs: 100,
       onProgress: (message, stage) => progress.push({ message, stage }),
     });
 
     expect(result.failed).toBe(true);
     expect(result.authError).toBe(false);
-    expect(result.failureDetail).toMatch(/stopped producing output/);
-    expect(result.failureDetail).toMatch(/no transcript activity for \d+s/);
+    expect(result.failureDetail).toMatch(/stopped working/);
+    // The session's own word for it, not our inference from silence.
+    expect(result.failureDetail).toMatch(/reported itself idle for \d+s/);
     expect(result.failureDetail).toMatch(/last activity: picked up the issue/);
     // The heartbeat reports the actual silence rather than asserting "still
     // running" about a session that had already stopped.
@@ -238,12 +248,85 @@ describe("runClaudeTurnRemoteControlled (interactive)", () => {
       settings: {},
       runId: "run-stalled",
       pollIntervalMs: 20,
-      idleTimeoutMs: 300,
+      idleStatusGraceMs: 300,
     });
 
     expect(result.failed).toBe(true);
     expect(result.failureDetail).toMatch(/never started its turn/);
     expect(result.failureDetail).toMatch(/prompt may not have been submitted/);
+  });
+
+  // The status signal, which is strictly better evidence than silence: a
+  // single long tool call writes `tool_use` when it STARTS and `tool_result`
+  // when it FINISHES and nothing in between, so a long test suite is a
+  // completely static transcript belonging to a session that is plainly alive.
+  // Confirmed against a real CLI (v2.1.220): this session reported "busy" for
+  // every 3s sample across a 36s Bash call.
+  it("never gives up on a session reporting busy, however long its transcript stays static", async () => {
+    const progress: Array<{ message: string; stage: string }> = [];
+    const result = await runClaudeTurnRemoteControlled("do the thing", {
+      cwd,
+      // Bridge line only: after registering, the transcript never grows again.
+      env: env({ FAKE_SCRIPT_MODE: "stalled", FAKE_SESSION_STATUS: "busy" }),
+      settings: {},
+      runId: "run-busy",
+      pollIntervalMs: 15,
+      // Both silence-based bounds are set absurdly short. Neither may fire.
+      idleTimeoutMs: 50,
+      idleStatusGraceMs: 50,
+      heartbeatIntervalMs: 80,
+      maxWaitMs: 600, // the only thing allowed to end this test
+      onProgress: (message, stage) => progress.push({ message, stage }),
+    });
+
+    expect(result.failureDetail).toMatch(/Timed out after 600ms/);
+    expect(result.failureDetail).not.toMatch(/stopped working|never started/);
+
+    // And it kept narrating throughout. This is load-bearing, not cosmetic:
+    // `busy` resets the stall clock on every poll, so if the heartbeat shared
+    // that clock it would go silent for exactly the case that most needs
+    // narrating -- and the orchestrator ends a turn after 10 minutes without
+    // an up-message, killing the long turn from the other side.
+    const beats = progress.filter((p) => /still running/.test(p.message));
+    expect(beats.length).toBeGreaterThanOrEqual(2);
+    expect(beats[0].message).toMatch(/\[busy\]/);
+  });
+
+  it("gives up quickly on a session blocked waiting for input, naming what it is blocked on", async () => {
+    const result = await runClaudeTurnRemoteControlled("do the thing", {
+      cwd,
+      env: env({ FAKE_SCRIPT_MODE: "running", FAKE_SESSION_STATUS: "waiting", FAKE_WAITING_FOR: "input needed" }),
+      settings: {},
+      runId: "run-waiting",
+      pollIntervalMs: 20,
+      waitingTimeoutMs: 200,
+      idleTimeoutMs: 60_000,
+      idleStatusGraceMs: 60_000,
+    });
+
+    expect(result.failed).toBe(true);
+    expect(result.failureDetail).toMatch(/blocked waiting for input \(input needed\)/);
+    expect(result.failureDetail).toMatch(/Take over the session/);
+  });
+
+  // `status` is emitted conditionally by the real listing, so it can simply be
+  // absent -- an older CLI, or a session that has not reported one yet. Then
+  // transcript silence is the only signal there is, and the message must not
+  // claim the session said anything about itself.
+  it("falls back to transcript silence when the listing reports no status", async () => {
+    const result = await runClaudeTurnRemoteControlled("do the thing", {
+      cwd,
+      env: env({ FAKE_SCRIPT_MODE: "running", FAKE_NO_STATUS: "1" }),
+      settings: {},
+      runId: "run-nostatus",
+      pollIntervalMs: 20,
+      idleTimeoutMs: 300,
+      idleStatusGraceMs: 60_000, // must not be what ends this wait
+    });
+
+    expect(result.failed).toBe(true);
+    expect(result.failureDetail).toMatch(/status not reported/);
+    expect(result.failureDetail).not.toMatch(/reported itself idle/);
   });
 
   it("gives up on a session that never registers, without waiting for the idle window", async () => {

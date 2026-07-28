@@ -189,6 +189,14 @@ spec:
     - name: CLAUDE_REMOTE_CONTROL_IDLE_TIMEOUT_MS
       value: {{ .Values.claudeCodeSweAgent.remoteControl.idleTimeoutMs | quote }}
     {{- end }}
+    {{- if .Values.claudeCodeSweAgent.remoteControl.idleStatusGraceMs }}
+    - name: CLAUDE_REMOTE_CONTROL_IDLE_STATUS_GRACE_MS
+      value: {{ .Values.claudeCodeSweAgent.remoteControl.idleStatusGraceMs | quote }}
+    {{- end }}
+    {{- if .Values.claudeCodeSweAgent.remoteControl.waitingTimeoutMs }}
+    - name: CLAUDE_REMOTE_CONTROL_WAITING_TIMEOUT_MS
+      value: {{ .Values.claudeCodeSweAgent.remoteControl.waitingTimeoutMs | quote }}
+    {{- end }}
     {{- if .Values.claudeCodeSweAgent.remoteControl.maxWaitMs }}
     - name: CLAUDE_REMOTE_CONTROL_MAX_WAIT_MS
       value: {{ .Values.claudeCodeSweAgent.remoteControl.maxWaitMs | quote }}
