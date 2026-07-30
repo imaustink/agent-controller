@@ -1,0 +1,15 @@
+{
+  "chart": "temporal-worker",
+  "title": "Temporal Worker",
+  "description": "Only the fields worth changing per-deployment. Everything else stays at the chart default.",
+  "schema": "temporal-worker.schema.json",
+  "include": [
+    "image.tag",
+    "replicaCount",
+    "temporal.namespace",
+    "temporal.taskQueue",
+    "resources.limits.cpu",
+    "resources.limits.memory",
+    "podAnnotations"
+  ]
+}

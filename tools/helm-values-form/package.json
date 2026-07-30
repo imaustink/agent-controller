@@ -1,0 +1,26 @@
+{
+  "name": "helm-values-form",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Open WebUI tool that renders a Helm chart's values.schema.json as a form embed and emits a minimal values.yaml.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && vitest run && npm run test:py && npm run helm-check",
+    "test:py": "python3 -m unittest discover -s tests -t tests -p 'test_*.py'",
+    "sync-shell": "node scripts/sync-shell.mjs",
+    "helm-check": "node scripts/helm-check.mjs",
+    "helm-check:update": "node scripts/helm-check.mjs --update"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "happy-dom": "^15.11.6",
+    "typescript": "^5.6.2",
+    "vitest": "^4.0.0",
+    "yaml": "^2.6.1"
+  }
+}

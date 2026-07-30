@@ -1,0 +1,159 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Temporal Worker",
+  "description": "A Temporal worker deployment.",
+  "type": "object",
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "title": "Replicas",
+      "description": "Number of worker pods. Temporal workers scale horizontally; there is no leader.",
+      "default": 1,
+      "minimum": 1,
+      "maximum": 50
+    },
+    "image": {
+      "type": "object",
+      "title": "Image",
+      "properties": {
+        "repository": {
+          "type": "string",
+          "title": "Repository",
+          "default": "ghcr.io/example/temporal-worker"
+        },
+        "tag": {
+          "type": "string",
+          "title": "Tag",
+          "description": "Image tag to deploy. Overriding this is the usual reason to touch this form.",
+          "default": "0.1.0",
+          "minLength": 1
+        },
+        "pullPolicy": {
+          "type": "string",
+          "title": "Pull policy",
+          "enum": ["IfNotPresent", "Always", "Never"],
+          "default": "IfNotPresent"
+        }
+      },
+      "required": ["repository", "tag"]
+    },
+    "temporal": {
+      "type": "object",
+      "title": "Temporal",
+      "description": "How the worker reaches the Temporal frontend.",
+      "properties": {
+        "hostPort": {
+          "type": "string",
+          "title": "Frontend host:port",
+          "default": "temporal-frontend.temporal.svc.cluster.local:7233"
+        },
+        "namespace": {
+          "type": "string",
+          "title": "Namespace",
+          "description": "Temporal namespace, not the Kubernetes one.",
+          "default": "default",
+          "minLength": 1
+        },
+        "taskQueue": {
+          "type": "string",
+          "title": "Task queue",
+          "default": "worker-tq",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "maxConcurrentActivities": {
+          "type": "integer",
+          "title": "Max concurrent activities",
+          "default": 100,
+          "minimum": 1
+        },
+        "tls": { "$ref": "#/definitions/tls" }
+      },
+      "required": ["hostPort", "namespace", "taskQueue"]
+    },
+    "resources": {
+      "type": "object",
+      "title": "Resources",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "title": "Limits",
+          "properties": {
+            "cpu": { "type": "string", "title": "CPU", "default": "500m" },
+            "memory": { "type": "string", "title": "Memory", "default": "512Mi" }
+          }
+        },
+        "requests": {
+          "type": "object",
+          "title": "Requests",
+          "properties": {
+            "cpu": { "type": "string", "title": "CPU", "default": "100m" },
+            "memory": { "type": "string", "title": "Memory", "default": "128Mi" }
+          }
+        }
+      }
+    },
+    "podAnnotations": {
+      "type": "object",
+      "title": "Pod annotations",
+      "description": "Arbitrary annotations applied to the worker pods.",
+      "additionalProperties": { "type": "string" },
+      "default": {}
+    },
+    "nodeSelector": {
+      "type": "object",
+      "title": "Node selector",
+      "additionalProperties": { "type": "string" },
+      "default": {}
+    },
+    "extraArgs": {
+      "type": "array",
+      "title": "Extra arguments",
+      "description": "Appended to the worker's command line.",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "extraEnv": {
+      "type": "array",
+      "title": "Extra environment variables",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "title": "Name", "minLength": 1 },
+          "value": { "type": "string", "title": "Value", "default": "" }
+        },
+        "required": ["name"]
+      },
+      "default": []
+    },
+    "serviceAccount": {
+      "type": "object",
+      "title": "Service account",
+      "properties": {
+        "create": { "type": "boolean", "title": "Create", "default": true },
+        "name": {
+          "type": ["string", "null"],
+          "title": "Name",
+          "description": "Leave null to derive the name from the release.",
+          "default": null
+        }
+      }
+    }
+  },
+  "required": ["image", "temporal"],
+  "definitions": {
+    "tls": {
+      "type": "object",
+      "title": "TLS",
+      "properties": {
+        "enabled": { "type": "boolean", "title": "Enabled", "default": false },
+        "secretName": {
+          "type": ["string", "null"],
+          "title": "Secret name",
+          "description": "Secret holding tls.crt and tls.key. Required when TLS is enabled.",
+          "default": null
+        }
+      }
+    }
+  }
+}
