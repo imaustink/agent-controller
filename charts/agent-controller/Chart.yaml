@@ -9,7 +9,7 @@ description: >-
   one release. Install the community-components chart afterward to populate
   the catalog with Tool/Skill/Agent CRs.
 type: application
-version: 0.2.2
+version: 0.3.0
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:

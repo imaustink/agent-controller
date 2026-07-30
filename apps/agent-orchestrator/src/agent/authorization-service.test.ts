@@ -386,6 +386,36 @@ describe("AuthorizationService.authorize -- claude-remote write-back grant", () 
     expect(verdict.secretEnv).toContainEqual({ name: "CLAUDE_CREDENTIALS_WRITEBACK_TOKEN", value: "wb-token" });
   });
 
+  // The agent's pod and its logs are long gone before anyone asks why a run
+  // reported an expired credential, so this line is the only durable record of
+  // whether the credential was already dead at launch (a rotation that went
+  // unpersisted) or died during the turn.
+  it("logs the injected claude-remote credential's expiry -- and no token material", async () => {
+    const expiresAt = Date.UTC(2026, 6, 28, 12, 0, 0);
+    const blob = JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-SECRET", refreshToken: "rt-SECRET", expiresAt } });
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+    try {
+      const svc = new AuthorizationService({
+        claudeRemoteGateway: gateway({ "claude-remote": { token: { token: blob } } }),
+        agentRunTimeoutSeconds: 600,
+      });
+      await svc.authorize({
+        agent: { id: "swe", identityProviders: ["claude-remote"] },
+        identity: identity({ subject: "openwebui:alice", principal: "github:alice" }),
+        request: "r",
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const authorized = logged.find((l) => l.includes('"verdict":"authorized"')) ?? "";
+    expect(authorized).toContain('"claudeLoginExpiresAt":"2026-07-28T12:00:00.000Z"');
+    expect(authorized).not.toContain("SECRET");
+  });
+
   it("launches without write-back rather than failing when no grant is available", async () => {
     const svc = new AuthorizationService({
       claudeRemoteGateway: gateway({ "claude-remote": { token: { token: "{}" } } }),

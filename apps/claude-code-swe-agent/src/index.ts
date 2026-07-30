@@ -19,7 +19,7 @@ import {
 import { extractContinuationToken } from "./continuation.js";
 import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./marker.js";
 import { loadToolConfig } from "./config.js";
-import { persistRefreshedCredentials } from "./credentialsWriteback.js";
+import { createCredentialsWritebackWatcher, credentialExpiry } from "./credentialsWriteback.js";
 import { AuthorizationError, finalizeDelegatedWrite, isDelegating, resolveDelegatedToken } from "./identityDelegation.js";
 import { clip } from "./security/redact.js";
 
@@ -60,6 +60,15 @@ async function handler(session: AgentSession): Promise<AgentReply> {
         `[claude-code-swe-agent] CLAUDE_REMOTE_CONTROL is enabled but no credentials file was found at ${credentialsPath} -- ` +
           "the Remote Control turn will likely fail to authenticate unless the init container seeds it before this point.",
       );
+    }
+    // State the expiry of the credential this run was handed, so "was it
+    // already dead when we injected it?" is answerable from the log instead of
+    // being reconstructed from when a comment appeared. Expiry only -- never
+    // any token material.
+    if (toolConfig.loginCredentialsJson) {
+      const expiry = credentialExpiry(toolConfig.loginCredentialsJson);
+      const relative = expiry ? `${Math.round((Date.parse(expiry) - Date.now()) / 60_000)} min from now` : "unknown";
+      console.error(`[claude-code-swe-agent] seeded Remote Control credential expires ${expiry ?? "unknown"} (${relative})`);
     }
 
     // `claude --bg` combined with bypassPermissions refuses to start
@@ -194,19 +203,35 @@ async function handler(session: AgentSession): Promise<AgentReply> {
     signal: session.signal,
     onProgress: (message: string, stage: string) => void session.progress(clip(message, 500), { stage }),
   };
-  const outcome = toolConfig.remoteControlEnabled
-    ? await runClaudeTurnRemoteControlled(prompt, { ...runOpts, runId: session.runId })
-    : await runClaudeTurn(prompt, runOpts);
-
-  // Runs on every outcome, including a failed one: the CLI may well have
-  // refreshed its credential before whatever went wrong, and that refresh
-  // invalidated the stored copy either way (see ./credentialsWriteback.ts).
-  const writeback = await persistRefreshedCredentials({
+  // Persist any credential refresh DURING the turn, not only after it. The
+  // refresh rotates the stored refresh token, so a refresh this pod fails to
+  // report kills the link outright -- see ./credentialsWriteback.ts. Started
+  // before the turn so a pod killed mid-turn has already reported whatever the
+  // CLI refreshed seconds into it.
+  const writebackWatcher = createCredentialsWritebackWatcher({
     homeDir: toolConfig.homeDir,
     url: toolConfig.credentialsWritebackUrl,
     token: toolConfig.credentialsWritebackToken,
     seeded: toolConfig.loginCredentialsJson,
   });
+  writebackWatcher.start();
+
+  const outcome = toolConfig.remoteControlEnabled
+    ? await runClaudeTurnRemoteControlled(prompt, {
+        ...runOpts,
+        runId: session.runId,
+        ...(toolConfig.remoteControlIdleTimeoutMs ? { idleTimeoutMs: toolConfig.remoteControlIdleTimeoutMs } : {}),
+        ...(toolConfig.remoteControlIdleStatusGraceMs ? { idleStatusGraceMs: toolConfig.remoteControlIdleStatusGraceMs } : {}),
+        ...(toolConfig.remoteControlWaitingTimeoutMs ? { waitingTimeoutMs: toolConfig.remoteControlWaitingTimeoutMs } : {}),
+        ...(toolConfig.remoteControlMaxWaitMs ? { maxWaitMs: toolConfig.remoteControlMaxWaitMs } : {}),
+      })
+    : await runClaudeTurn(prompt, runOpts);
+
+  // Runs on every outcome, including a failed one: the CLI may well have
+  // refreshed its credential before whatever went wrong, and that refresh
+  // invalidated the stored copy either way (see ./credentialsWriteback.ts).
+  // Retried internally, so a gateway mid-rollout does not cost the link.
+  const writeback = await writebackWatcher.stop();
   if (writeback !== "disabled" && writeback !== "unchanged") {
     console.error(`[claude-code-swe-agent] credential write-back: ${writeback}`);
   }

@@ -282,6 +282,10 @@ async function main(): Promise<void> {
     ...(claudeAuthFlows && claudeTokenStore ? { claudeAuthFlows, claudeAuthStore: claudeTokenStore } : {}),
     ...(claudeLoginFlows ? { claudeLoginFlows } : {}),
     resumeWaitMs: config.resumeWaitMs,
+    claudeCredentialRefreshEnabled: config.claudeCredentialRefreshEnabled,
+    claudeCredentialRefreshMarginMs: config.claudeCredentialRefreshMarginMs,
+    claudeCredentialSweepIntervalMs: config.claudeCredentialSweepIntervalMs,
+    claudeCredentialSweepMarginMs: config.claudeCredentialSweepMarginMs,
   });
 
   await server.listen(config.httpPort);

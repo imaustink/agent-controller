@@ -52,6 +52,15 @@ interface SecretLike {
  */
 export interface SecretApiLike {
   readNamespacedSecret(request: { name: string; namespace: string }): Promise<SecretLike>;
+  /**
+   * Only ever used by {@link SecretRecordStore.listRecords} -- a maintenance
+   * sweep, never a lookup. Optional so every existing test double and any
+   * caller that never sweeps keeps compiling unchanged.
+   */
+  listNamespacedSecret?(request: {
+    namespace: string;
+    labelSelector?: string;
+  }): Promise<{ items?: SecretLike[] }>;
   createNamespacedSecret(request: { namespace: string; body: unknown }): Promise<SecretLike>;
   replaceNamespacedSecret(request: { name: string; namespace: string; body: unknown }): Promise<SecretLike>;
   deleteNamespacedSecret(request: { name: string; namespace: string }): Promise<unknown>;
@@ -186,6 +195,50 @@ export class SecretRecordStore {
   /** The Secret name for a record key. See this module's doc on naming. */
   nameFor(key: string): string {
     return `${this.namePrefix}-${createHash("sha256").update(key).digest("hex").slice(0, 16)}`;
+  }
+
+  /**
+   * Every record of this type, as `{ key, fields }`.
+   *
+   * This is the one label-selector scan in this file, and it is a deliberate
+   * exception to the naming section's "no listing, no label-selector scan, no
+   * O(keyspace) anything" -- which is a rule about the READ path, where an
+   * exact `get` by computed name is both possible and required. A maintenance
+   * sweep has no key to compute a name from; enumerating is the whole task.
+   * `commonLabels` exists for exactly this ("so an operator -- and a cleanup
+   * sweep -- can find them all"), and the selector keeps the scan scoped to
+   * this record type rather than the namespace.
+   *
+   * Callers must treat this as maintenance-only: never on a request path, and
+   * never as a way to answer "does this subject have a record" (that is `get`).
+   *
+   * Records whose plaintext key was not stored are skipped rather than guessed
+   * at -- the object name is a one-way hash, so a record without
+   * {@link RECORD_KEY_FIELD} cannot be attributed to a subject, and acting on
+   * an unattributable credential is worse than leaving it alone.
+   */
+  async listRecords(): Promise<Array<{ key: string; fields: Record<string, string> }>> {
+    if (!this.api.listNamespacedSecret) return [];
+    const selector = Object.entries(this.commonLabels)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(",");
+    const page = await this.api.listNamespacedSecret({
+      namespace: this.namespace,
+      ...(selector ? { labelSelector: selector } : {}),
+    });
+    const out: Array<{ key: string; fields: Record<string, string> }> = [];
+    for (const secret of page.items ?? []) {
+      let key = "";
+      const fields: Record<string, string> = {};
+      for (const [field, value] of Object.entries(secret.data ?? {})) {
+        const decoded = Buffer.from(value, "base64").toString("utf8");
+        if (field === RECORD_KEY_FIELD) key = decoded;
+        else fields[field] = decoded;
+      }
+      if (!key || Object.keys(fields).length === 0) continue;
+      out.push({ key, fields });
+    }
+    return out;
   }
 
   /**

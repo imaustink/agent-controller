@@ -218,3 +218,69 @@ describe("API error classification", () => {
     expect(isConflictError(new FakeApiError(404, "not found"))).toBe(false);
   });
 });
+
+/**
+ * The one label-selector scan in this store, and a deliberate exception to its
+ * own "no listing" rule -- see `listRecords`' doc. A maintenance sweep has no
+ * key to compute a Secret name from, so enumerating IS the task.
+ */
+describe("SecretRecordStore.listRecords", () => {
+  it("returns every record of this type with its plaintext key, scoped by label selector", async () => {
+    const api = new FakeSecretApi();
+    const store = makeStore(api);
+    await store.put("github:alice", { token: "a" });
+    await store.put("openwebui:1234", { token: "b" });
+
+    // A record of a DIFFERENT type in the same namespace must not be returned.
+    const other = new SecretRecordStore({
+      namespace: NS,
+      namePrefix: "claude-auth-login",
+      keyLabel: "controller-agent.io/subject",
+      commonLabels: { "controller-agent.io/credential": "claude-auth" },
+      api,
+    });
+    await other.put("github:bob", { credentialsJson: "{}" });
+
+    const records = await store.listRecords();
+
+    expect(records.map((r) => r.key).sort()).toEqual(["github:alice", "openwebui:1234"]);
+    // The bookkeeping field is stripped, exactly as `get` strips it.
+    expect(records[0]?.fields[RECORD_KEY_FIELD]).toBeUndefined();
+    expect(records.find((r) => r.key === "github:alice")?.fields.token).toBe("a");
+    expect(api.calls).toContain("list:controller-agent.io/credential=identity-link");
+  });
+
+  // The object name is a one-way hash, so a record without its plaintext key
+  // cannot be attributed to a subject -- and acting on an unattributable
+  // credential is worse than leaving it alone.
+  it("skips a record whose plaintext key was never stored, rather than guessing", async () => {
+    const api = new FakeSecretApi();
+    api.secrets.set(`${NS}/identity-link-github-deadbeefdeadbeef`, {
+      metadata: { name: "identity-link-github-deadbeefdeadbeef", labels: { "controller-agent.io/credential": "identity-link" } },
+      data: { token: Buffer.from("orphan", "utf8").toString("base64") },
+    });
+
+    expect(await makeStore(api).listRecords()).toEqual([]);
+  });
+
+  // A failed list is not an empty store; the sweeper's own handling depends on
+  // this surfacing rather than resolving empty.
+  it("propagates a listing failure instead of reporting an empty store", async () => {
+    const api = new FakeSecretApi();
+    const store = makeStore(api);
+    await store.put("github:alice", { token: "a" });
+    api.failWith = { verb: "list", error: new FakeApiError(403, "forbidden") };
+
+    await expect(store.listRecords()).rejects.toThrow(/forbidden/);
+  });
+
+  it("reports no records when the API has no list verb at all (an older double or client)", async () => {
+    const api = new FakeSecretApi();
+    const store = makeStore(api);
+    await store.put("github:alice", { token: "a" });
+    // Simulate a SecretApiLike without the optional verb.
+    (api as { listNamespacedSecret?: unknown }).listNamespacedSecret = undefined;
+
+    expect(await store.listRecords()).toEqual([]);
+  });
+});
