@@ -13,7 +13,22 @@
  * them from here.)
  */
 
-import type { Json, JSONSchema, JsonSchemaType } from "./types.js";
+import type { Json, JSONSchema, JsonSchemaType, SubSchema } from "./types.js";
+
+/**
+ * Normalizes a draft-07 subschema.
+ *
+ * `false` means "nothing is valid here", which for a property means the field is
+ * forbidden -- an `if`/`then` branch turning off `port` for a cron workload
+ * writes exactly that. It returns null so callers skip the field rather than
+ * rendering a control for something the schema rejects. `true` is the empty
+ * schema: no constraints.
+ */
+export function asSchema(v: SubSchema | undefined): JSONSchema | null {
+  if (v === undefined || v === false) return null;
+  if (v === true) return {};
+  return typeof v === "object" && !Array.isArray(v) ? v : null;
+}
 
 // --- schema helpers --------------------------------------------------------
 
@@ -150,13 +165,15 @@ export function resolvePath(root: JSONSchema, path: string): JSONSchema | null {
     if (!node) return null;
     const props = node.properties;
     const next = props ? props[seg] : undefined;
-    if (!next) {
-      // A segment under a free-form map is the map's own key space, not a
-      // schema property -- allowlisting `podAnnotations.foo` is meaningless,
-      // so this stays an error.
+    const normalized = asSchema(next);
+    if (!normalized) {
+      // Either the segment is not a property at all -- a path into a free-form
+      // map's key space, like `podAnnotations.foo` -- or it is a property the
+      // schema forbids (`false`). Allowlisting either is meaningless, so both
+      // stay errors.
       return null;
     }
-    node = resolveRef(next, root);
+    node = resolveRef(normalized, root);
   }
   return node;
 }
@@ -221,7 +238,8 @@ function pruneObject(
   // Schema order first...
   for (const key of Object.keys(props)) {
     if (!Object.prototype.hasOwnProperty.call(values, key)) continue;
-    const child = resolveRef(props[key]!, root);
+    const normalized = asSchema(props[key]);
+    const child = normalized ? resolveRef(normalized, root) : null;
     const kept = pruneNode(values[key]!, child, root);
     if (kept !== DROP) out[key] = kept;
   }
@@ -260,7 +278,15 @@ function pruneNode(value: Json, schema: JSONSchema | null, root: JSONSchema): Js
     return pruned ?? DROP;
   }
 
-  // Emptiness with no default to differ from means "left blank", not an
+  // An explicit null where the schema permits null is a choice, not an absence.
+  // The renderer only ever produces null from a deliberate "set to null" toggle
+  // -- a field left alone reads as "" or as nothing at all -- and a schema that
+  // lists "null" among a field's valid types is saying null means something
+  // here. `autoscaling: null` on a workload is the case that matters: it is how
+  // you turn autoscaling off, and dropping it silently leaves it on.
+  if (value === null && resolved !== null && isNullable(resolved)) return value;
+
+  // Other emptiness with no default to differ from means "left blank", not an
   // override. With a default it is the opposite: clearing a field the chart
   // populates is exactly the kind of thing that must survive.
   if (def === undefined && isEmptyish(value)) return DROP;

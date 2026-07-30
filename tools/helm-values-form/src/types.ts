@@ -21,6 +21,15 @@ export type JsonSchemaType =
   | "boolean"
   | "null";
 
+/**
+ * draft-07 allows a boolean anywhere a subschema is allowed: `true` accepts
+ * everything, `false` accepts nothing. `properties: { port: false }` is the
+ * standard way an `if`/`then` branch says "this field is forbidden for this
+ * variant", so the boolean form is load-bearing here, not a curiosity. Use
+ * `asSchema` (prune.ts) to normalize one.
+ */
+export type SubSchema = JSONSchema | boolean;
+
 export interface JSONSchema {
   $ref?: string;
   $defs?: Record<string, JSONSchema>;
@@ -38,18 +47,26 @@ export interface JSONSchema {
   default?: Json;
 
   // object
-  properties?: Record<string, JSONSchema>;
+  properties?: Record<string, SubSchema>;
   required?: string[];
   /**
    * `true` or a schema means "arbitrary user-chosen keys" -- how charts model
    * podAnnotations, nodeSelector, extraEnv. `false`/absent means closed.
    */
-  additionalProperties?: boolean | JSONSchema;
+  additionalProperties?: SubSchema;
+  /**
+   * Constrains the *keys* of a free-form map -- `pattern`, `maxLength`,
+   * `minLength`. Applied to the key inputs of every map editor.
+   */
+  propertyNames?: JSONSchema;
+  minProperties?: number;
+  maxProperties?: number;
 
   // array
-  items?: JSONSchema;
+  items?: SubSchema;
   minItems?: number;
   maxItems?: number;
+  uniqueItems?: boolean;
 
   // string
   enum?: Json[];
@@ -68,7 +85,15 @@ export interface JSONSchema {
 
   anyOf?: JSONSchema[];
   oneOf?: JSONSchema[];
+  /**
+   * Carries the `if`/`then` clauses that make a field set depend on a
+   * discriminator (`kind: cron` forbids `port`, requires `schedule`). See
+   * `conditionals()` in render.ts.
+   */
   allOf?: JSONSchema[];
+  if?: JSONSchema;
+  then?: JSONSchema;
+  else?: JSONSchema;
 
   /** Charts sometimes carry a version marker; we surface it in the YAML header. */
   $schema?: string;

@@ -1,4 +1,4 @@
-# Rendered by scripts/helm-check.mjs from the acceptance case.
+# Rendered by scripts/helm-check.mjs from the temporal-worker/acceptance case.
 # Regenerate with: npm run helm-check:update
 #
 # Values file the form produced:

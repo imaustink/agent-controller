@@ -55,6 +55,8 @@ charts/
   <name>.form.json    field allowlist + metadata
   <name>.schema.json  a copy of the chart's values.schema.json
   temporal-worker/    fixture chart, rendered by the end-to-end check
+  app-interface/      second fixture: a discriminated-variant schema, so Helm
+                      validates the allOf/if-then handling
 tool/
   helm_values_form.py the Open WebUI Tool: one file, pasteable
 tests/
@@ -72,9 +74,14 @@ npm run build        # -> dist/owui-form.js  (and dist/node/values.mjs)
 npm test             # build + unit tests + python tests + the helm check
 ```
 
-`npm run build` **fails** if the bundle exceeds 32 KB. That is not a style
+`npm run build` **fails** if the bundle exceeds 48 KB. That is not a style
 preference: the bundle is stored in the chat database once per message carrying a
-form.
+form, so it is a per-message cost rather than a one-time download. The budget
+started at 32 KB and moved once, when the renderer gained maps-of-objects,
+discriminated variants and fully recursive cards. If it ever needs to come back
+down, the stylesheet is the cheapest kilobyte — it ships with its newlines
+intact, because esbuild's JS minifier does not touch the contents of a template
+literal.
 
 ## Install into Open WebUI
 
@@ -98,7 +105,7 @@ form.
    |---|---|---|
    | `bundle_path` | `/app/backend/data/helm-values-form/owui-form.js` | the built bundle |
    | `charts_dir` | `/app/backend/data/helm-values-form/charts` | `.form.json` + `.schema.json` files |
-   | `max_bundle_bytes` | `32768` | refuse to render above this |
+   | `max_bundle_bytes` | `49152` | refuse to render above this |
    | `max_config_bytes` | `65536` | refuse to render above this; tighten the allowlist instead of raising it |
 
 4. Enable the tool for a model that uses **Native (Agentic)** tool calling.
@@ -145,9 +152,15 @@ on every call, so no re-paste is needed unless the tool file itself changed.
 form and an unusable one — a full Bitnami schema exposes several hundred fields.
 Prune to what someone actually changes per deployment.
 
-An empty or absent `include` renders the whole schema. It is supported, and you
-should not use it outside of trying a schema out: the entire schema is what gets
-serialized into every message.
+An empty or absent `include` renders the whole schema. It is supported, and for a
+sprawling upstream chart you should not use it outside of trying a schema out:
+the entire schema is what gets serialized into every message.
+
+The one legitimate exception is a schema that was *authored* to be the interface
+rather than to describe every knob of a chart — `app-interface` here is about
+6 KB with nine top-level properties, so pruning it would only hide fields
+somebody deliberately put in front of the user. Judge by the size and intent of
+the schema, not by the rule.
 
 A path that **does not resolve is a hard error**, surfaced in the form and
 refused by the tool, not skipped. That is deliberate. After a chart bump, a
@@ -182,22 +195,30 @@ but a default in the schema is the real fix.)
 
 | Schema | Control |
 |---|---|
-| `object` with `properties` | collapsible section, nested up to 4 deep |
+| `object` with `properties` | collapsible section, nested up to 6 deep |
 | `string` | text input |
 | `string` + `enum` | select |
 | `string` + `format: date \| date-time \| email \| uri` | typed input |
 | `number` / `integer` | number input (`step=1` for integer) |
 | `boolean` | checkbox |
 | `array` of scalars | repeatable rows, add/remove |
-| `array` of objects | repeatable card of sub-fields, one level deep |
-| `additionalProperties` | key/value editor — `podAnnotations`, `nodeSelector` |
+| `array` of objects | repeatable card holding the item's **whole** field set |
+| `additionalProperties: <scalar>` | key/value editor — `podAnnotations`, `nodeSelector` |
+| `additionalProperties: <object>` | repeatable card per entry, keyed by a name you type — `workloads`, `dependencies` |
+| `object` with no `properties` at all | JSON textarea, emitted as YAML — the `advanced` escape hatch |
 | `type: ["string", "null"]` | the control plus an explicit "set to null" toggle |
+| `type: ["object", "null"]` | a section that can be nulled as a whole |
+| `allOf` of `if`/`then` on one property | discriminator select; the field set rebuilds when it changes |
+| `oneOf: [<scalar>, {const: X}]` | the scalar's input plus a "use X" toggle |
+| `array` of `oneOf: [<scalar>, <single-key map>]` | two inputs per row: name, and an optional alias |
 | local `$ref` into `$defs` / `definitions` | resolved before rendering |
 | `anyOf` / `oneOf`, all-scalar branches | rendered as the first branch |
 
 Honored: `title`, `description`, `default`, `required` at every level, `enum`,
-`minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`,
-`minLength`, `maxLength`, `pattern`, `minItems`, `maxItems`.
+`const`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`,
+`multipleOf`, `minLength`, `maxLength`, `pattern`, `minItems`, `maxItems`,
+`uniqueItems`, `minProperties`, `maxProperties`, and `propertyNames` (as
+validation on the *keys* of any map editor).
 
 Anything else renders as a disabled **Unsupported field type** control naming the
 path and the reason. A malformed schema renders an error banner. Neither throws,
@@ -210,6 +231,34 @@ Note that `definitions` is draft-07's own keyword and `$defs` arrived in 2019-09
 The renderer accepts both, but if the chart's schema declares
 `$schema: draft-07`, prefer `definitions`: some Helm versions validate against a
 strict draft-07 implementation.
+
+### Discriminated variants
+
+An `allOf` whose clauses are all `if`/`then` tests against one property is treated
+as a discriminator. This is how a schema says a `cron` workload requires
+`schedule` and forbids `port`, or a `redis` dependency forbids `databases`:
+
+```json
+"allOf": [
+  { "if":   { "required": ["kind"], "properties": { "kind": { "const": "cron" } } },
+    "then": { "required": ["schedule"],
+              "properties": { "port": false, "replicas": false } } }
+]
+```
+
+Picking a `kind` rebuilds the field set: `properties: { port: false }` means the
+field is not rendered at all, and `then.required` is enforced. Values shared
+between variants survive the switch; values belonging to the variant you left do
+not, so you cannot submit a `port` on a cron workload.
+
+Ignoring this would not produce a wrong-looking form — it would produce a form
+that happily builds a file the schema rejects, which is worse. The
+`app-interface` case in the end-to-end check exists to keep it honest.
+
+Not treated as a discriminator, and therefore falling back to the unconditional
+field set: conditions over more than one property, `else` branches, non-`const`
+tests, and an `allOf` entry with no `if`/`then` (a plain constraint, which is
+**not** merged). Nothing breaks — you just get every field, as before.
 
 ## Validation
 
@@ -270,8 +319,9 @@ npm run helm-check          # the end-to-end check
 npm run helm-check:update   # regenerate tests/golden/*.yaml
 ```
 
-`helm-check` is the one that matters. It drives the real pruner and the real
-emitter from scripted form inputs, then:
+`helm-check` is the one that matters. It runs three cases across the two fixture
+charts, driving the real pruner and the real emitter from scripted form inputs —
+not a reimplementation in the harness — and then:
 
 - asserts pruning kept exactly the expected paths;
 - asserts `charts/temporal-worker.schema.json` still matches the fixture chart's
@@ -287,6 +337,19 @@ emitter from scripted form inputs, then:
 
 Quoting, pruning, and nesting bugs all fail here, which no amount of unit testing
 on the emitter can promise. CI runs it on any change under this directory.
+
+The `app-interface` case is what covers the conditional field sets. Its fixture
+chart carries the real `allOf`/`if`-`then` rules in its `values.schema.json`, so
+if the renderer ever offers `port` on a cron workload the emitted file fails
+`helm lint` with the path named:
+
+```
+[ERROR] values.yaml: - at '/workloads/nightly': 'allOf' failed
+  - at '/workloads/nightly/port': false schema
+```
+
+That is a class of bug with no other detector: the form looks right, the YAML
+looks right, and only the schema knows the combination is illegal.
 
 The goldens are byte-compared against `helm template` output, so the Helm version
 is part of the fixture. The workflow pins it; bumping it means regenerating the
@@ -372,15 +435,23 @@ visible route; swapping it means changing the `postMessage` type in
 
 ## Known limitations
 
-- Objects nest four levels deep; deeper renders as unsupported.
-- Arrays of objects are one level deep — a nested object or array inside an array
-  item renders as unsupported.
-- Free-form maps hold scalar values only. Charts needing a map of objects
-  generally model it as an array instead.
-- `anyOf`/`oneOf` with a non-scalar branch is unsupported; there is no
-  "pick a branch" UI.
-- `allOf` is not merged.
+- Nesting stops at 6 levels; deeper renders as unsupported. Containers cost a
+  level, so a map-of-objects card plus three sections reaches the cap.
+- `anyOf`/`oneOf` is only reduced when every branch is a scalar, or when it
+  matches one of the two recognized shapes (scalar-or-`const`,
+  scalar-or-single-key-map). There is no general "pick a branch" UI.
+- A non-`if`/`then` `allOf` entry is **not** merged — its constraints are ignored
+  and every field renders.
+- Conditionals only work off a single discriminator property. `else`,
+  multi-property conditions, and `dependentSchemas` are not applied.
+- Cross-field rules that are not expressible as `if`/`then` are not enforced:
+  the interface schema's own note lists `autoscaling.max >= min`, `uses` entries
+  naming real dependency keys, and combined name+key length. Those belong to
+  whatever validates the file next — CEL on the XRD, or the chart template.
 - `patternProperties` is not supported.
-- No cross-field conditional logic (`if`/`then`, `dependentSchemas`). A field like
-  `tls.secretName`, required only when `tls.enabled` is true, is enforced by the
-  chart template, not by this form.
+- Arrays of free-form maps, and maps whose values are arrays, fall back to
+  unsupported. Both have several plausible controls and no obvious one.
+- The free-form-object textarea takes **JSON**, not YAML. `JSON.parse` is built
+  in and gives real validation; a YAML parser would be the single largest thing
+  in the bundle. YAML is a superset of JSON, so pasted JSON is valid YAML in the
+  output, and the value is re-emitted as ordinary YAML anyway.

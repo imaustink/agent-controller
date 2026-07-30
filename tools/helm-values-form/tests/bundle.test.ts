@@ -16,7 +16,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const bundlePath = join(root, "dist", "owui-form.js");
 
 /** Matches Valves.max_bundle_bytes in tool/helm_values_form.py and build.mjs. */
-const BUDGET = 32768;
+const BUDGET = 49152;
 
 describe("the built bundle", () => {
   it("exists (run `npm run build` first)", () => {

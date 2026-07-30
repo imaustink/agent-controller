@@ -147,10 +147,12 @@ class Tools:
             description="Directory holding <chart>.form.json allowlists and their .schema.json files.",
         )
         max_bundle_bytes: int = Field(
-            default=32768,
+            default=49152,
             description=(
                 "Refuse to render if the bundle exceeds this. The bundle is stored in the "
-                "chat database once per message, so this is a per-message cost."
+                "chat database once per message carrying a form, so this is a per-message "
+                "cost rather than a one-time download. Keep in sync with BUNDLE_BUDGET in "
+                "build.mjs, which fails the build above the same number."
             ),
         )
         max_config_bytes: int = Field(

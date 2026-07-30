@@ -11,7 +11,7 @@ import { pruneToOverrides } from "./prune.js";
 import { emitYaml } from "./yaml.js";
 import type { Json, JSONSchema } from "./types.js";
 
-export { pruneToOverrides, resolveRef, typeOf, deepEqual, resolvePath } from "./prune.js";
+export { asSchema, deepEqual, pruneToOverrides, resolvePath, resolveRef, typeOf } from "./prune.js";
 export { emitYaml, needsQuotes } from "./yaml.js";
 
 export interface ValuesOptions {

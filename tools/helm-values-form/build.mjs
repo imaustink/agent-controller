@@ -16,8 +16,22 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const outfile = join(here, "dist", "owui-form.js");
 
-/** Keep in sync with Valves.max_bundle_bytes in tool/helm_values_form.py. */
-export const BUNDLE_BUDGET = 32768;
+/**
+ * Keep in sync with Valves.max_bundle_bytes in tool/helm_values_form.py and
+ * with tests/bundle.test.ts.
+ *
+ * Raised from 32768 when the renderer gained maps-of-objects, discriminated
+ * variants (allOf/if/then), fully recursive cards, and the smaller schema
+ * features -- roughly a doubling of the supported schema surface, for about
+ * 10 KB. The budget is a real cost (this HTML is stored once per message
+ * carrying a form, not downloaded once), so it moved deliberately rather than
+ * quietly: 48 KB per form-bearing message is still small next to the message
+ * itself, and refusing to render would be the worse failure. If it needs to come
+ * back down, the stylesheet is the cheapest ~1 KB -- it ships with its newlines
+ * and indentation intact, because esbuild's JS minifier does not touch the
+ * contents of a template literal.
+ */
+export const BUNDLE_BUDGET = 49152;
 
 mkdirSync(dirname(outfile), { recursive: true });
 

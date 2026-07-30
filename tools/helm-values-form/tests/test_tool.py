@@ -341,6 +341,74 @@ class TestSchemaPruning(unittest.TestCase):
         self.assertLess(size, full * 0.7)
 
 
+class TestAppInterfaceChart(unittest.TestCase):
+    """The second sidecar: a platform interface schema rather than a Helm chart's."""
+
+    def setUp(self):
+        self.tools = _configured()
+        if not os.path.isfile(self.tools.valves.bundle_path):
+            self.skipTest("dist/owui-form.js is missing; run `npm run build` first")
+
+    def test_it_is_offered_alongside_the_chart(self):
+        out = self.tools.list_charts()
+        self.assertIn("app-interface", out)
+        self.assertIn("temporal-worker", out)
+
+    def test_an_empty_include_renders_the_whole_schema(self):
+        response, context = self.tools.show_values_form("app-interface")
+        self.assertEqual(type(response).__name__, "HTMLResponse")
+        # The README discourages an empty allowlist, but a purpose-built
+        # interface schema is already form-sized -- which is what makes it the
+        # documented exception rather than an oversight.
+        self.assertEqual(context["included_paths"], ["(entire schema)"])
+
+        html = response.body.decode("utf-8")
+        config = json.loads(
+            re.search(r"var CFG = (\{.*?\});", html, re.S).group(1).replace("\\u003c", "<")
+        )
+        self.assertEqual(
+            sorted(config["schema"]["properties"]),
+            [
+                "capabilities",
+                "dependencies",
+                "deployBranch",
+                "env",
+                "infra",
+                "name",
+                "repo",
+                "secrets",
+                "workloads",
+            ],
+        )
+        # The conditional rules have to survive into the form, or the renderer
+        # cannot know which fields a variant forbids.
+        workload = config["schema"]["definitions"]["workload"]
+        self.assertEqual(len(workload["allOf"]), 5)
+        self.assertIn("propertyNames", config["schema"]["properties"]["workloads"])
+
+    def test_the_whole_schema_fits_the_config_budget(self):
+        with open(os.path.join(REPO, "charts", "app-interface.schema.json")) as fh:
+            schema = json.load(fh)
+        size = len(json.dumps(schema, separators=(",", ":")).encode("utf-8"))
+        self.assertLess(size, mod.Tools().valves.max_config_bytes)
+
+    def test_a_path_into_a_definition_backed_property_resolves(self):
+        with open(os.path.join(REPO, "charts", "app-interface.schema.json")) as fh:
+            schema = json.load(fh)
+        pruned, missing = mod._prune_schema(schema, ["name", "infra.hostedZone"])
+        self.assertEqual(missing, [])
+        self.assertEqual(sorted(pruned["properties"]), ["infra", "name"])
+        self.assertEqual(sorted(pruned["properties"]["infra"]["properties"]), ["hostedZone"])
+
+    def test_a_path_into_a_keyed_map_is_a_hard_error(self):
+        # `workloads` is a map whose keys belong to the user, so `workloads.web`
+        # is not a schema property and cannot be allowlisted.
+        with open(os.path.join(REPO, "charts", "app-interface.schema.json")) as fh:
+            schema = json.load(fh)
+        _, missing = mod._prune_schema(schema, ["workloads.web.port"])
+        self.assertEqual(missing, ["workloads.web.port"])
+
+
 class TestListCharts(unittest.TestCase):
     def test_lists_the_configured_charts(self):
         out = _configured().list_charts()

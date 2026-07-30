@@ -172,18 +172,18 @@ describe("nesting", () => {
     expect(h.submissions[0]!.yaml).toContain("resources:\n  limits:\n    cpu: 1500m");
   });
 
-  it("nests four levels and falls back below that", () => {
+  it("nests to the depth limit and falls back below it", () => {
     const deep = (n: number): JSONSchema =>
       n === 0
         ? { type: "object", properties: { leaf: { type: "string" } } }
         : { type: "object", properties: { [`l${n}`]: deep(n - 1) } };
-    const h = mount({ schema: deep(5) });
-    expect(h.all("details.hvf-sec").length).toBe(4);
+    const h = mount({ schema: deep(7) });
+    expect(h.all("details.hvf-sec").length).toBe(6);
     const fallbacks = h.all<HTMLInputElement>("input:disabled");
     expect(fallbacks.length).toBe(1);
     expect(fallbacks[0]!.value).toBe("Unsupported field type");
     // The reason names the path and the depth limit, so the fix is obvious.
-    expect(h.root.textContent).toContain("nesting deeper than 4 levels");
+    expect(h.root.textContent).toContain("nesting deeper than 6 levels");
   });
 
   it("still renders scalar leaves inside the fourth level", () => {
@@ -728,5 +728,506 @@ describe("what gets submitted", () => {
     h.q<HTMLButtonElement>(".hvf-add")!.click();
     h.submit();
     expect(h.values()).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Maps of objects, discriminated variants, and the smaller schema features.
+// ---------------------------------------------------------------------------
+
+describe("maps of objects", () => {
+  const schema: JSONSchema = {
+    type: "object",
+    properties: {
+      workloads: {
+        type: "object",
+        title: "Workloads",
+        propertyNames: { pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", maxLength: 12 },
+        additionalProperties: {
+          type: "object",
+          required: ["kind"],
+          properties: {
+            kind: { type: "string", enum: ["server", "worker"] },
+            port: { type: "integer", minimum: 1 },
+          },
+        },
+      },
+    },
+  };
+
+  it("renders one keyed card per entry and collects a map", () => {
+    const h = mount({ schema });
+    const add = h.q<HTMLButtonElement>(".hvf-add")!;
+    add.click();
+    add.click();
+    const cards = h.all(".hvf-card");
+    expect(cards.length).toBe(2);
+
+    const keys = h.all<HTMLInputElement>(".hvf-card > .hvf-f input.hvf-in");
+    keys[0]!.value = "web";
+    keys[1]!.value = "worker";
+    const selects = h.all<HTMLSelectElement>(".hvf-card select");
+    selects[0]!.value = "server";
+    selects[1]!.value = "worker";
+    const ports = h.all<HTMLInputElement>('.hvf-card input[type="number"]');
+    ports[0]!.value = "8080";
+
+    h.submit();
+    expect(h.values()).toEqual({
+      workloads: { web: { kind: "server", port: 8080 }, worker: { kind: "worker" } },
+    });
+  });
+
+  it("gives each card's controls a distinct id", () => {
+    const h = mount({ schema });
+    const add = h.q<HTMLButtonElement>(".hvf-add")!;
+    add.click();
+    add.click();
+    const ids = h.all<HTMLSelectElement>(".hvf-card select").map((s) => s.id);
+    expect(ids.length).toBe(2);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it("validates entry names against propertyNames", () => {
+    const h = mount({ schema });
+    h.q<HTMLButtonElement>(".hvf-add")!.click();
+    const key = h.q<HTMLInputElement>(".hvf-card > .hvf-f input.hvf-in")!;
+    key.value = "Not_Valid";
+    h.q<HTMLSelectElement>(".hvf-card select")!.value = "server";
+    h.submit();
+    expect(h.submissions.length).toBe(0);
+    expect(h.errors().join(" ")).toContain("Must match");
+  });
+
+  it("rejects a card with no name", () => {
+    const h = mount({ schema });
+    h.q<HTMLButtonElement>(".hvf-add")!.click();
+    h.submit();
+    expect(h.submissions.length).toBe(0);
+    expect(h.errors().join(" ")).toContain("name is required");
+  });
+
+  it("rejects duplicate names", () => {
+    const h = mount({ schema });
+    const add = h.q<HTMLButtonElement>(".hvf-add")!;
+    add.click();
+    add.click();
+    for (const k of h.all<HTMLInputElement>(".hvf-card > .hvf-f input.hvf-in")) k.value = "web";
+    for (const s of h.all<HTMLSelectElement>(".hvf-card select")) s.value = "server";
+    h.submit();
+    expect(h.submissions.length).toBe(0);
+    expect(h.errors().join(" ")).toContain("Duplicate name");
+  });
+
+  it("surfaces a required field missing inside a card", () => {
+    const h = mount({ schema });
+    h.q<HTMLButtonElement>(".hvf-add")!.click();
+    h.q<HTMLInputElement>(".hvf-card > .hvf-f input.hvf-in")!.value = "web";
+    h.submit();
+    expect(h.submissions.length).toBe(0);
+    expect(h.errors().join(" ")).toContain("Required.");
+  });
+
+  it("drops the whole map when nothing was entered", () => {
+    const h = mount({ schema });
+    h.submit();
+    expect(h.values()).toEqual({});
+  });
+
+  it("removes a card without disturbing the others", () => {
+    const h = mount({ schema });
+    const add = h.q<HTMLButtonElement>(".hvf-add")!;
+    add.click();
+    add.click();
+    const keys = h.all<HTMLInputElement>(".hvf-card > .hvf-f input.hvf-in");
+    keys[0]!.value = "first";
+    keys[1]!.value = "second";
+    for (const s of h.all<HTMLSelectElement>(".hvf-card select")) s.value = "worker";
+    h.all<HTMLButtonElement>(".hvf-cardhd .hvf-x")[0]!.click();
+    h.submit();
+    expect(h.values()).toEqual({ workloads: { second: { kind: "worker" } } });
+  });
+});
+
+describe("cards recurse fully", () => {
+  it("renders a nested object inside an array item as a real section", () => {
+    const h = mount({
+      schema: {
+        type: "object",
+        properties: {
+          containers: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                resources: {
+                  type: "object",
+                  title: "Resources",
+                  properties: { cpu: { type: "string" } },
+                },
+                args: { type: "array", items: { type: "string" } },
+              },
+            },
+          },
+        },
+      },
+    });
+    h.q<HTMLButtonElement>(".hvf-add")!.click();
+    // Previously this was the documented "one level deep only" fallback.
+    expect(h.all("input:disabled").length).toBe(0);
+    expect(h.q(".hvf-card details.hvf-sec summary")!.textContent).toContain("Resources");
+
+    h.q<HTMLInputElement>(".hvf-card input.hvf-in")!.value = "app";
+    h.q<HTMLInputElement>(".hvf-card details input.hvf-in")!.value = "500m";
+    h.submit();
+    expect(h.values()).toEqual({ containers: [{ name: "app", resources: { cpu: "500m" } }] });
+  });
+});
+
+describe("discriminated variants (allOf / if / then)", () => {
+  const workload: JSONSchema = {
+    type: "object",
+    required: ["kind"],
+    properties: {
+      kind: { type: "string", enum: ["server", "cron", "image"] },
+      port: { type: "integer" },
+      schedule: { type: "string" },
+      replicas: { type: "integer" },
+      shared: { type: "string" },
+    },
+    allOf: [
+      {
+        if: { required: ["kind"], properties: { kind: { const: "server" } } },
+        then: { properties: { schedule: false } },
+      },
+      {
+        if: { required: ["kind"], properties: { kind: { const: "cron" } } },
+        then: { required: ["schedule"], properties: { port: false, replicas: false } },
+      },
+      {
+        if: { required: ["kind"], properties: { kind: { const: "image" } } },
+        then: { properties: { port: false, schedule: false, replicas: false } },
+      },
+    ],
+  };
+  const schema: JSONSchema = { type: "object", properties: { w: workload } };
+
+  const setKind = (h: ReturnType<typeof mount>, kind: string) => {
+    const sel = h.q<HTMLSelectElement>("select")!;
+    sel.value = kind;
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+
+  it("asks for the discriminator before showing any variant fields", () => {
+    const h = mount({ schema });
+    expect(h.all("input").length).toBe(0);
+    expect(h.root.textContent).toContain("to see its fields");
+  });
+
+  it("shows only the fields a variant permits", () => {
+    const h = mount({ schema });
+    const labels = () => h.all(".hvf-variant .hvf-l").map((l) => l.textContent!.replace("*", ""));
+
+    setKind(h, "server");
+    expect(labels().sort()).toEqual(["port", "replicas", "shared"]);
+
+    setKind(h, "cron");
+    expect(labels().sort()).toEqual(["schedule", "shared"]);
+
+    setKind(h, "image");
+    expect(labels()).toEqual(["shared"]);
+  });
+
+  it("applies a then-branch's extra required field", () => {
+    const h = mount({ schema });
+    setKind(h, "cron");
+    h.submit();
+    expect(h.submissions.length).toBe(0);
+    expect(h.errors().join(" ")).toContain("Required.");
+
+    h.all<HTMLInputElement>(".hvf-variant input")[0]!.value = "0 3 * * *";
+    h.submit();
+    expect(h.values()).toEqual({ w: { kind: "cron", schedule: "0 3 * * *" } });
+  });
+
+  it("carries shared values across a variant switch", () => {
+    const h = mount({ schema });
+    setKind(h, "server");
+    const shared = h.all<HTMLInputElement>(".hvf-variant input.hvf-in").at(-1)!;
+    shared.value = "keep me";
+    setKind(h, "cron");
+    const stillThere = h.all<HTMLInputElement>(".hvf-variant input.hvf-in").at(-1)!;
+    expect(stillThere.value).toBe("keep me");
+  });
+
+  it("drops a value belonging to the variant that was switched away from", () => {
+    const h = mount({ schema });
+    setKind(h, "server");
+    h.all<HTMLInputElement>('.hvf-variant input[type="number"]')[0]!.value = "8080";
+    setKind(h, "image");
+    h.submit();
+    // `port` is forbidden for an image, so it must not survive the switch.
+    expect(h.values()).toEqual({ w: { kind: "image" } });
+  });
+
+  it("falls back to the unconditional field set when the allOf is not a discriminator", () => {
+    const h = mount({
+      schema: {
+        type: "object",
+        properties: {
+          w: {
+            type: "object",
+            properties: { a: { type: "string" }, b: { type: "string" } },
+            // No if/then: a constraint we do not merge, so every field shows.
+            allOf: [{ required: ["a"] }],
+          },
+        },
+      },
+    });
+    // `w` is a section, so its name is a <summary>, not a field label.
+    expect(h.q("details.hvf-sec summary")!.textContent).toBe("w");
+    expect(h.all(".hvf-l").map((l) => l.textContent)).toEqual(["a", "b"]);
+    expect(h.q("select")).toBeNull();
+  });
+});
+
+describe("a scalar or a fixed constant", () => {
+  const schema: JSONSchema = {
+    type: "object",
+    properties: {
+      nameOverride: {
+        oneOf: [{ type: "string", maxLength: 8 }, { const: true }],
+      },
+    },
+  };
+
+  it("renders a text input plus a toggle for the constant", () => {
+    const h = mount({ schema });
+    expect(h.all("input:disabled").length).toBe(0);
+    expect(h.field("nameOverride").type).toBe("text");
+    expect(h.q(".hvf-null")!.textContent).toContain("use true");
+  });
+
+  it("emits the string when the toggle is off", () => {
+    const h = mount({ schema });
+    h.field("nameOverride").value = "custom";
+    h.submit();
+    expect(h.values()).toEqual({ nameOverride: "custom" });
+  });
+
+  it("emits the constant when the toggle is on", () => {
+    const h = mount({ schema });
+    const box = h.q<HTMLInputElement>(".hvf-null input")!;
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    h.submit();
+    expect(h.values()).toEqual({ nameOverride: true });
+  });
+
+  it("stops validating the input once the constant is chosen", () => {
+    const h = mount({ schema });
+    h.field("nameOverride").value = "far too long to pass";
+    h.submit();
+    expect(h.submissions.length).toBe(0);
+    const box = h.q<HTMLInputElement>(".hvf-null input")!;
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    h.submit();
+    expect(h.values()).toEqual({ nameOverride: true });
+  });
+});
+
+describe("a name, or a name with an alias", () => {
+  const schema: JSONSchema = {
+    type: "object",
+    properties: {
+      uses: {
+        type: "array",
+        items: {
+          oneOf: [
+            { type: "string", pattern: "^[a-z]+$" },
+            {
+              type: "object",
+              maxProperties: 1,
+              additionalProperties: { type: "string", pattern: "^[A-Z][A-Z0-9_]*$" },
+            },
+          ],
+        },
+      },
+    },
+  };
+
+  it("renders two inputs per row instead of falling back", () => {
+    const h = mount({ schema });
+    expect(h.all("input:disabled").length).toBe(0);
+    h.q<HTMLButtonElement>(".hvf-add")!.click();
+    const inputs = h.all<HTMLInputElement>(".hvf-row input.hvf-in");
+    expect(inputs.length).toBe(2);
+    expect(inputs[0]!.placeholder).toBe("name");
+    expect(inputs[1]!.placeholder).toContain("as");
+  });
+
+  it("emits a bare string with no alias and a single-key map with one", () => {
+    const h = mount({ schema });
+    const add = h.q<HTMLButtonElement>(".hvf-add")!;
+    add.click();
+    add.click();
+    const inputs = h.all<HTMLInputElement>(".hvf-row input.hvf-in");
+    inputs[0]!.value = "db";
+    inputs[2]!.value = "cache";
+    inputs[3]!.value = "REDIS_URL";
+    h.submit();
+    expect(h.values()).toEqual({ uses: ["db", { cache: "REDIS_URL" }] });
+  });
+
+  it("validates the name and the alias separately", () => {
+    const h = mount({ schema });
+    h.q<HTMLButtonElement>(".hvf-add")!.click();
+    const inputs = h.all<HTMLInputElement>(".hvf-row input.hvf-in");
+    inputs[0]!.value = "db";
+    inputs[1]!.value = "lower_case";
+    h.submit();
+    expect(h.submissions.length).toBe(0);
+    expect(h.errors().join(" ")).toContain("^[A-Z][A-Z0-9_]*$");
+  });
+
+  it("rejects an alias with no name, and duplicate names", () => {
+    const h = mount({ schema });
+    const add = h.q<HTMLButtonElement>(".hvf-add")!;
+    add.click();
+    h.all<HTMLInputElement>(".hvf-row input.hvf-in")[1]!.value = "ORPHAN";
+    h.submit();
+    expect(h.errors().join(" ")).toContain("name is required");
+
+    h.all<HTMLInputElement>(".hvf-row input.hvf-in")[1]!.value = "";
+    h.all<HTMLInputElement>(".hvf-row input.hvf-in")[0]!.value = "db";
+    add.click();
+    h.all<HTMLInputElement>(".hvf-row input.hvf-in")[2]!.value = "db";
+    h.submit();
+    expect(h.errors().join(" ")).toContain("Duplicate entry");
+  });
+});
+
+describe("free-form objects", () => {
+  const schema: JSONSchema = {
+    type: "object",
+    properties: { advanced: { type: "object", description: "Escape hatch." } },
+  };
+
+  it("renders a textarea instead of an unsupported fallback", () => {
+    const h = mount({ schema });
+    expect(h.all("input:disabled").length).toBe(0);
+    expect(h.q("textarea")).not.toBeNull();
+    expect(h.root.textContent).toContain("Enter JSON");
+  });
+
+  it("parses JSON and emits it as YAML", () => {
+    const h = mount({ schema });
+    h.q<HTMLTextAreaElement>("textarea")!.value = '{"tolerations":[{"key":"spot"}],"replicas":2}';
+    h.submit();
+    expect(h.values()).toEqual({ advanced: { tolerations: [{ key: "spot" }], replicas: 2 } });
+    expect(h.submissions[0]!.yaml).toContain("advanced:\n  tolerations:\n    - key: spot");
+  });
+
+  it("blocks submit on invalid JSON, naming the problem", () => {
+    const h = mount({ schema });
+    h.q<HTMLTextAreaElement>("textarea")!.value = "{not json}";
+    h.submit();
+    expect(h.submissions.length).toBe(0);
+    expect(h.errors().join(" ")).toContain("Not valid JSON");
+  });
+
+  it("blocks submit on a JSON scalar, which is not an object", () => {
+    const h = mount({ schema });
+    h.q<HTMLTextAreaElement>("textarea")!.value = '"just a string"';
+    h.submit();
+    expect(h.submissions.length).toBe(0);
+    expect(h.errors().join(" ")).toContain("Must be a JSON object");
+  });
+
+  it("treats an empty textarea as nothing entered", () => {
+    const h = mount({ schema });
+    h.submit();
+    expect(h.values()).toEqual({});
+  });
+});
+
+describe("nullable objects", () => {
+  const schema: JSONSchema = {
+    type: "object",
+    properties: {
+      autoscaling: {
+        type: ["object", "null"],
+        required: ["min", "max"],
+        properties: { min: { type: "integer" }, max: { type: "integer" } },
+      },
+    },
+  };
+
+  it("can be set to null as a whole", () => {
+    const h = mount({ schema });
+    const box = h.q<HTMLInputElement>(".hvf-null input")!;
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    h.submit();
+    expect(h.values()).toEqual({ autoscaling: null });
+  });
+
+  it("stops validating its contents once null", () => {
+    const h = mount({ schema });
+    h.submit();
+    expect(h.submissions.length).toBe(0); // min/max are required
+    const box = h.q<HTMLInputElement>(".hvf-null input")!;
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    h.submit();
+    expect(h.values()).toEqual({ autoscaling: null });
+  });
+});
+
+describe("key and item constraints", () => {
+  it("validates free-form map keys against propertyNames", () => {
+    const h = mount({
+      schema: {
+        type: "object",
+        properties: {
+          env: {
+            type: "object",
+            propertyNames: { pattern: "^[A-Z_][A-Z0-9_]*$" },
+            additionalProperties: { type: "string" },
+          },
+        },
+      },
+    });
+    h.q<HTMLButtonElement>(".hvf-add")!.click();
+    const inputs = h.all<HTMLInputElement>(".hvf-row input.hvf-in");
+    inputs[0]!.value = "lower-case";
+    inputs[1]!.value = "x";
+    h.submit();
+    expect(h.submissions.length).toBe(0);
+    expect(h.errors().join(" ")).toContain("^[A-Z_][A-Z0-9_]*$");
+  });
+
+  it("enforces uniqueItems on an array of enums", () => {
+    const h = mount({
+      schema: {
+        type: "object",
+        properties: {
+          capabilities: {
+            type: "array",
+            uniqueItems: true,
+            items: { type: "string", enum: ["bedrock", "storage"] },
+          },
+        },
+      },
+    });
+    const add = h.q<HTMLButtonElement>(".hvf-add")!;
+    add.click();
+    add.click();
+    for (const s of h.all<HTMLSelectElement>(".hvf-row select")) s.value = "storage";
+    h.submit();
+    expect(h.submissions.length).toBe(0);
+    expect(h.errors().join(" ")).toContain("must be unique");
   });
 });

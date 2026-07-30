@@ -72,6 +72,12 @@ body{margin:0;background:var(--hvf-bg);color:var(--hvf-fg);
 .hvf-cardhd{display:flex;justify-content:space-between;align-items:center;
   padding-top:8px;color:var(--hvf-muted);font-size:11px;text-transform:uppercase;
   letter-spacing:.04em}
+.hvf-cardlabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hvf-ta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
+  resize:vertical;display:block}
+/* The variant field set is replaced wholesale when the discriminator changes;
+   the rule exists so an empty one adds no stray spacing. */
+.hvf-variant:empty{display:none}
 
 .hvf-b{font:inherit;border-radius:6px;cursor:pointer;padding:6px 10px;
   border:1px solid var(--hvf-border);background:var(--hvf-ghost-bg);color:var(--hvf-fg)}

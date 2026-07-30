@@ -1,0 +1,15 @@
+apiVersion: v2
+name: app-interface
+description: |
+  Fixture chart for the helm-values-form end-to-end check, wrapping the platform
+  app interface schema.
+
+  It exists so `helm lint` will validate a form-produced interface file against
+  the real values.schema.json -- including the allOf/if-then rules that make a
+  workload's legal field set depend on its `kind`. Those rules are the one part
+  of the renderer that can be wrong in a way no unit test would notice: emitting
+  `port` on a cron workload produces a file that looks fine and that the schema
+  rejects.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

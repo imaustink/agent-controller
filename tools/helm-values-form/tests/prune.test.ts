@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { pruneToOverrides, resolvePath, resolveRef, collapseUnion, typeOf } from "../src/prune.js";
+import {
+  asSchema,
+  collapseUnion,
+  pruneToOverrides,
+  resolvePath,
+  resolveRef,
+  typeOf,
+} from "../src/prune.js";
 import type { JSONSchema } from "../src/types.js";
 
 const schema: JSONSchema = {
@@ -88,10 +95,22 @@ describe("emptiness with no default to differ from", () => {
     expect(pruneToOverrides({ note: "" }, schema)).toEqual({});
   });
 
-  it("drops an empty array, map, and null", () => {
-    expect(
-      pruneToOverrides({ freeArgs: [], nodeSelector: {}, optionalName: null }, schema),
-    ).toEqual({});
+  it("drops an empty array and an empty map", () => {
+    expect(pruneToOverrides({ freeArgs: [], nodeSelector: {} }, schema)).toEqual({});
+  });
+
+  it("keeps an explicit null where the schema permits null, even with no default", () => {
+    // Deliberately different from the empty cases above. `null` cannot be
+    // produced by leaving a control alone -- it takes checking a "set to null"
+    // box -- and a schema listing "null" among the valid types is saying null
+    // means something. Dropping it would silently discard the choice.
+    expect(pruneToOverrides({ optionalName: null }, schema)).toEqual({ optionalName: null });
+  });
+
+  it("still drops a null where the schema does not permit one", () => {
+    // Not a choice the form can produce; treat it as absence rather than
+    // emitting a value the chart would reject.
+    expect(pruneToOverrides({ note: null }, schema)).toEqual({});
   });
 
   it("still keeps a non-empty value at the same paths", () => {
@@ -158,7 +177,9 @@ describe("schema helpers", () => {
   };
 
   it("resolves a local $ref", () => {
-    expect(resolveRef({ $ref: "#/$defs/tls" }, withDefs)?.properties?.enabled?.type).toBe("boolean");
+    expect(asSchema(resolveRef({ $ref: "#/$defs/tls" }, withDefs)?.properties?.enabled)?.type).toBe(
+      "boolean",
+    );
   });
 
   it("returns null for a remote $ref rather than fetching it", () => {
