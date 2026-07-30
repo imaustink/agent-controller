@@ -31,9 +31,9 @@ jobs:
     name: Node (build, typecheck, test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           # Newest Node the images build on (apps/*/Dockerfile use node:22);
           # engines require >=20, so this stays within every workspace's range.
@@ -73,9 +73,9 @@ jobs:
       run:
         working-directory: ${{ matrix.module }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           # `go-version-file` is resolved from the repo root, not
           # working-directory, so it needs the full path.
@@ -109,9 +109,9 @@ jobs:
       run:
         working-directory: controllers/core-controller
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: controllers/core-controller/go.mod
           cache-dependency-path: controllers/core-controller/go.sum
