@@ -109,6 +109,16 @@ helm upgrade agent-controller charts/agent-controller -n controller-agent \
   subchart's `crds/` dir before any templated resource). Install this chart
   before `community-components`, whose Tool/Skill/Agent CRs require those
   CRDs to already exist.
+- **`extraManifests` escape hatch.** Arbitrary manifests listed under
+  `extraManifests` are installed as part of this release
+  (`templates/extra-manifests.yaml`). Entries are YAML maps, or strings when
+  you need templating across several documents; both are passed through `tpl`,
+  so `.Release.*` / `.Values.*` work inside them. Prefer this over
+  `kubectl apply` for release-scoped extras (an ExternalSecret feeding
+  `agent-orchestrator.secrets.existingSecret`, a ServiceMonitor, an extra
+  NetworkPolicy) — a hand-applied Helm-templated object has no
+  `meta.helm.sh/release-name` annotations and fails the next `helm upgrade`'s
+  ownership check. See the example block in [values.yaml](values.yaml).
 - **CRDs are never removed by Helm.** Uninstalling this release leaves the
   CRDs (and thus any surviving `community-components` CRs) in place; delete
   them explicitly if you want a full teardown.

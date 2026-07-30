@@ -1,0 +1,26 @@
+{{- /*
+  Arbitrary extra manifests rendered as part of this release (values key
+  `extraManifests`, empty by default).
+
+  Escape hatch for cluster-specific objects that don't belong in the chart
+  itself but should share the release's lifecycle -- e.g. an ExternalSecret
+  supplying `agent-orchestrator.secrets.existingSecret`, a ServiceMonitor, a
+  NetworkPolicy, or an extra Ingress. Anything installed this way is created,
+  upgraded and *deleted* with the release, which is the point: it avoids the
+  hand-applied-object problem where a kubectl-applied manifest is missing the
+  meta.helm.sh/release-name ownership annotations and breaks the next
+  `helm upgrade`.
+
+  Each list entry may be either a YAML map (the manifest itself) or a string
+  (a template rendering to one -- or several, '---'-separated -- manifests).
+  Both forms go through `tpl`, so `{{ .Release.Namespace }}` and friends work
+  inside values.
+
+  Not namespaced automatically: set `metadata.namespace` yourself if the
+  object belongs somewhere other than the release namespace (Helm defaults
+  omitted namespaces to `--namespace`).
+*/}}
+{{- range $i, $manifest := .Values.extraManifests }}
+---
+{{ if kindIs "string" $manifest }}{{ tpl $manifest $ }}{{ else }}{{ tpl (toYaml $manifest) $ }}{{ end }}
+{{- end }}
