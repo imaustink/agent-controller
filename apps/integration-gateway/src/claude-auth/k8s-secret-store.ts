@@ -90,6 +90,19 @@ export class K8sSecretClaudeTokenStore implements ClaudeTokenStore {
     }
   }
 
+  /**
+   * Every subject holding a record of `kind`, via a label-selector scan.
+   *
+   * Unlike `get`/`set`/`delete` above, this deliberately does NOT swallow its
+   * error. Those soft-fail because their caller has a sensible response to "no
+   * answer" (offer a link, skip the write). A sweep that reads a failed list as
+   * an empty one would silently do nothing forever, which is precisely the
+   * outcome it exists to prevent -- so the caller is told and can say so.
+   */
+  async listSubjects(kind: ClaudeAuthKind = "setup-token"): Promise<string[]> {
+    return (await this.storeFor(kind).listRecords()).map((r) => r.key);
+  }
+
   async set(subject: string, record: ClaudeTokenRecord): Promise<void> {
     try {
       const fields: Record<string, string> = { kind: record.kind, createdAt: record.createdAt };

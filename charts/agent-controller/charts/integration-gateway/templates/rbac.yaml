@@ -34,7 +34,10 @@ rules:
     resources: ["secrets"]
     # `watch` is what lets a pending link resume the moment the user finishes in
     # their browser instead of on the next poll; `list` is required alongside it
-    # by the API server for a watch request.
+    # by the API server for a watch request, and is now also used directly --
+    # once per sweep interval, label-selector scoped -- by the background
+    # credential refresh (claude-auth/credential-refresher.ts), which has no
+    # subject to compute a Secret name from and so cannot use `get`.
     verbs: ["get", "list", "watch", "create", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

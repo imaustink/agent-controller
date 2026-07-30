@@ -52,6 +52,18 @@ export interface ClaudeTokenStore {
    */
   delete(subject: string, kind?: ClaudeAuthKind): Promise<void>;
   /**
+   * Every subject holding a record of `kind` -- for the background refresh
+   * sweep (claude-auth/credential-refresher.ts), which has no subject to look
+   * up and so cannot use `get`.
+   *
+   * Optional because it is the only method that enumerates: the Secret-backed
+   * store answers it with a label-selector scan, a deliberate exception to that
+   * store's own read-path rule, and no in-memory or test double needs it.
+   * Absent means "this deployment cannot sweep", which the sweeper reports and
+   * then stands down -- never an empty result silently read as "no links".
+   */
+  listSubjects?(kind?: ClaudeAuthKind): Promise<string[]>;
+  /**
    * Moves an existing record from one subject to another, so a credential the
    * human already authorized keeps working under a new key instead of costing
    * them a fresh flow (docs/adr/0031).

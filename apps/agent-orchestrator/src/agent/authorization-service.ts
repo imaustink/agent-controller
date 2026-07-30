@@ -65,6 +65,29 @@ export const PROVIDER_ENV_VAR: Record<string, string> = {
 };
 
 /**
+ * The expiry of the `claude-remote` credentials blob about to be injected, for
+ * the `authorized` log line -- or `null` when this run carries none, or the
+ * blob has no readable `expiresAt`.
+ *
+ * Expiry ONLY. This function is handed the one structure that holds every
+ * resolved credential for a run, so it must never return anything derived from
+ * a token's VALUE (see `logVerdict`'s own warning).
+ */
+function claudeLoginExpiry(secretEnv: Array<{ name: string; value: string }> | undefined): string | null {
+  const blob = secretEnv?.find((e) => e.name === PROVIDER_ENV_VAR["claude-remote"])?.value;
+  if (!blob) return null;
+  try {
+    const parsed = JSON.parse(blob) as Record<string, unknown>;
+    const inner = (parsed.claudeAiOauth ?? parsed) as Record<string, unknown>;
+    const raw = inner.expiresAt;
+    const ms = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Env vars a `claude-remote` launch carries so the run can persist the
  * credentials its Claude Code CLI refreshes in-pod (the gateway's
  * `POST /claude-auth/api/refresh`, read by claude-code-swe-agent's
@@ -649,6 +672,13 @@ export class AuthorizationService {
       injecting: (secretEnv ?? []).map((e) => e.name),
       actorLogin: actorLogin ?? null,
       principal,
+      // Expiry ONLY, of the Remote Control credential this run is being handed.
+      // The agent's own pod (and its logs) are gone long before anyone asks why
+      // a run reported an expired credential, so this is the one durable record
+      // of whether it was already dead at launch or died during the turn --
+      // which is the difference between a rotation that went unpersisted and a
+      // credential resolved from the wrong record.
+      claudeLoginExpiresAt: claudeLoginExpiry(secretEnv),
     });
     return {
       kind: "authorized",
