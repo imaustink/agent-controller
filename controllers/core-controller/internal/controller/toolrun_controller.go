@@ -32,7 +32,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
-	"github.com/go-logr/logr"
 )
 
 const (
@@ -71,8 +70,6 @@ type ToolRunReconciler struct {
 // status is only for lifecycle (Pending/Running/Succeeded/Failed), per the
 // hybrid decision in ADR 0010.
 func (r *ToolRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
 	var run toolv1alpha1.ToolRun
 	if err := r.Get(ctx, req.NamespacedName, &run); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -90,7 +87,7 @@ func (r *ToolRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return r.createJob(ctx, &run)
 	}
 
-	return r.syncJobStatus(ctx, &run, log)
+	return r.syncJobStatus(ctx, &run)
 }
 
 func (r *ToolRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.ToolRun) (ctrl.Result, error) {
@@ -127,7 +124,8 @@ func (r *ToolRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Too
 	return ctrl.Result{}, nil
 }
 
-func (r *ToolRunReconciler) syncJobStatus(ctx context.Context, run *toolv1alpha1.ToolRun, log logr.Logger) (ctrl.Result, error) {
+func (r *ToolRunReconciler) syncJobStatus(ctx context.Context, run *toolv1alpha1.ToolRun) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
 	var job batchv1.Job
 	jobKey := types.NamespacedName{Namespace: run.Namespace, Name: run.Status.JobName}
 	if err := r.Get(ctx, jobKey, &job); err != nil {

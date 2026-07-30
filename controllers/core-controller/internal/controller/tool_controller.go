@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -60,8 +59,6 @@ type ToolReconciler struct {
 // informer/embedder \u2014 this controller does not create tool ServiceAccounts
 // or Agents, only reports whether the referenced one is missing.
 func (r *ToolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
 	var tool toolv1alpha1.Tool
 	if err := r.Get(ctx, req.NamespacedName, &tool); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -72,9 +69,9 @@ func (r *ToolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	var condition metav1.Condition
 	if tool.Spec.AgentRef != "" {
-		condition = r.checkAgentRef(ctx, log, &tool)
+		condition = r.checkAgentRef(ctx, &tool)
 	} else {
-		condition = r.checkServiceAccount(ctx, log, &tool)
+		condition = r.checkServiceAccount(ctx, &tool)
 	}
 	condition.ObservedGeneration = tool.Generation
 
@@ -89,7 +86,8 @@ func (r *ToolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	return ctrl.Result{}, nil
 }
 
-func (r *ToolReconciler) checkServiceAccount(ctx context.Context, log logr.Logger, tool *toolv1alpha1.Tool) metav1.Condition {
+func (r *ToolReconciler) checkServiceAccount(ctx context.Context, tool *toolv1alpha1.Tool) metav1.Condition {
+	log := logf.FromContext(ctx)
 	condition := metav1.Condition{
 		Type:    toolConditionReady,
 		Status:  metav1.ConditionTrue,
@@ -114,7 +112,8 @@ func (r *ToolReconciler) checkServiceAccount(ctx context.Context, log logr.Logge
 	return condition
 }
 
-func (r *ToolReconciler) checkAgentRef(ctx context.Context, log logr.Logger, tool *toolv1alpha1.Tool) metav1.Condition {
+func (r *ToolReconciler) checkAgentRef(ctx context.Context, tool *toolv1alpha1.Tool) metav1.Condition {
+	log := logf.FromContext(ctx)
 	condition := metav1.Condition{
 		Type:    toolConditionReady,
 		Status:  metav1.ConditionTrue,
