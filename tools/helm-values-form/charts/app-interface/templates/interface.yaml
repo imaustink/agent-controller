@@ -1,0 +1,31 @@
+{{/*
+  Renders the whole interface back out as YAML inside a ConfigMap.
+
+  The point is not the ConfigMap -- it is that every value the form emitted takes
+  a round trip through Go's YAML parser and printer. A string that lost its quotes
+  on the way in arrives here as a boolean, an int, or a timestamp, and the
+  chart's own values.schema.json rejects it before this template ever renders.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.name }}-interface
+  labels:
+    app.kubernetes.io/name: {{ .Values.name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  repo: {{ .Values.repo | quote }}
+  {{- with .Values.deployBranch }}
+  deployBranch: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.env }}
+  env: {{ . | quote }}
+  {{- end }}
+  interface.yaml: |
+    {{- toYaml (omit .Values "name") | nindent 4 }}
+  {{- with .Values.workloads }}
+  workloadNames: {{ keys . | sortAlpha | join "," | quote }}
+  {{- end }}
+  {{- with .Values.dependencies }}
+  dependencyNames: {{ keys . | sortAlpha | join "," | quote }}
+  {{- end }}

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: temporal-worker
+description: |
+  Fixture chart for the helm-values-form end-to-end check. It is deliberately
+  small, but every field the form can emit is threaded into a real template so
+  that a quoting, pruning, or nesting bug shows up as a bad manifest or a schema
+  validation failure rather than as a passing unit test.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
