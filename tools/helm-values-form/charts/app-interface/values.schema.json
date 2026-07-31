@@ -1,0 +1,562 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Bitovi platform app interface",
+  "description": "Validates the single-file app interface (charts/interface.yaml).",
+  "type": "object",
+  "required": [
+    "name",
+    "repo"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "$ref": "#/definitions/resourceName"
+    },
+    "repo": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "deployBranch": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._/-]+$"
+    },
+    "env": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+      "maxLength": 12
+    },
+    "workloads": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+        "maxLength": 32
+      },
+      "additionalProperties": {
+        "$ref": "#/definitions/workload"
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+        "maxLength": 24
+      },
+      "additionalProperties": {
+        "$ref": "#/definitions/dependency"
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+        "maxLength": 63
+      },
+      "additionalProperties": {
+        "$ref": "#/definitions/opRef"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "grant",
+          "serviceAccount"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "grant": {
+            "enum": [
+              "bedrock",
+              "storage"
+            ]
+          },
+          "serviceAccount": {
+            "$ref": "#/definitions/resourceName"
+          }
+        }
+      }
+    },
+    "infra": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hostedZone": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "deletionProtection": {
+          "type": "boolean"
+        },
+        "ciSecrets": {
+          "type": "boolean"
+        },
+        "importIds": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "resourceName": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+      "maxLength": 24
+    },
+    "hostname": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+    },
+    "opRef": {
+      "type": "string",
+      "pattern": "^op://[^/]+/.+$"
+    },
+    "quantity": {
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+)?(m|k|M|G|T|Ki|Mi|Gi|Ti)?$"
+    },
+    "pgIdentifier": {
+      "type": "string",
+      "pattern": "^[a-z_][a-z0-9_-]*$",
+      "maxLength": 63
+    },
+    "workload": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "server",
+            "worker",
+            "cron",
+            "static-site",
+            "image"
+          ]
+        },
+        "nameOverride": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+              "maxLength": 48
+            },
+            {
+              "const": true
+            }
+          ]
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "health": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "domain": {
+          "$ref": "#/definitions/hostname"
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "pullPolicy": {
+              "enum": [
+                "IfNotPresent",
+                "Always",
+                "Never"
+              ]
+            }
+          }
+        },
+        "env": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "secrets": {
+          "$ref": "#/definitions/opRef"
+        },
+        "uses": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+              },
+              {
+                "type": "object",
+                "minProperties": 1,
+                "maxProperties": 1,
+                "propertyNames": {
+                  "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Z0-9_]*$"
+                }
+              }
+            ]
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "bedrock",
+              "storage"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "autoscaling": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "min",
+            "max"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "min": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": {
+              "$ref": "#/definitions/quantity"
+            },
+            "memory": {
+              "$ref": "#/definitions/quantity"
+            }
+          }
+        },
+        "migrate": {
+          "type": "object",
+          "required": [
+            "command"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "schedule": {
+          "type": "string",
+          "pattern": "^\\S+( \\S+){4}$"
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/hostname"
+          }
+        },
+        "spa": {
+          "type": "boolean"
+        },
+        "advanced": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "server"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "schedule": false,
+              "aliases": false,
+              "spa": false
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "worker"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "port": false,
+              "health": false,
+              "domain": false,
+              "schedule": false,
+              "aliases": false,
+              "spa": false
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "cron"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "schedule"
+            ],
+            "properties": {
+              "port": false,
+              "health": false,
+              "domain": false,
+              "replicas": false,
+              "autoscaling": false,
+              "migrate": false,
+              "aliases": false,
+              "spa": false
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "static-site"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "domain"
+            ],
+            "properties": {
+              "port": false,
+              "health": false,
+              "image": false,
+              "env": false,
+              "secrets": false,
+              "uses": false,
+              "capabilities": false,
+              "replicas": false,
+              "autoscaling": false,
+              "resources": false,
+              "migrate": false,
+              "schedule": false,
+              "advanced": false
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "image"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "port": false,
+              "health": false,
+              "domain": false,
+              "image": false,
+              "env": false,
+              "secrets": false,
+              "uses": false,
+              "capabilities": false,
+              "replicas": false,
+              "autoscaling": false,
+              "resources": false,
+              "migrate": false,
+              "schedule": false,
+              "aliases": false,
+              "spa": false,
+              "advanced": false
+            }
+          }
+        }
+      ]
+    },
+    "dependency": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "postgres",
+            "redis",
+            "kafka"
+          ]
+        },
+        "instances": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "storage": {
+          "$ref": "#/definitions/quantity"
+        },
+        "storageClass": {
+          "type": "string"
+        },
+        "backup": {
+          "type": "boolean"
+        },
+        "database": {
+          "$ref": "#/definitions/pgIdentifier"
+        },
+        "owner": {
+          "$ref": "#/definitions/pgIdentifier"
+        },
+        "databases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/pgIdentifier"
+          }
+        },
+        "memory": {
+          "$ref": "#/definitions/quantity"
+        },
+        "topics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "postgres"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "memory": false,
+              "topics": false
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "redis"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "instances": false,
+              "backup": false,
+              "database": false,
+              "owner": false,
+              "databases": false,
+              "topics": false
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "kafka"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "instances": false,
+              "storage": false,
+              "storageClass": false,
+              "backup": false,
+              "database": false,
+              "owner": false,
+              "databases": false,
+              "memory": false
+            }
+          }
+        }
+      ]
+    }
+  }
+}

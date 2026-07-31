@@ -1,0 +1,77 @@
+name: helm-values-form
+
+on:
+  pull_request:
+    paths:
+      - "tools/helm-values-form/**"
+      - ".github/workflows/helm-values-form.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # GitHub-hosted runner, not arc-runner-set: this only builds and renders
+    # templates locally, so it has no reason to touch self-hosted infra.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/helm-values-form
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install workspace dependencies
+        run: npm ci
+        working-directory: .
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          # Pinned, and deliberately not the version the other workflows use.
+          # tests/golden/*.yaml are byte-compared against `helm template` output,
+          # so the Helm version is part of the fixture: a different minor can
+          # reformat the render and fail the diff for a reason that has nothing
+          # to do with this tool. Bumping this means regenerating the goldens
+          # with `npm run helm-check:update` in the same commit.
+          version: v4.1.4
+
+      - name: Build the bundle (fails if it exceeds the byte budget)
+        run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Assert the embedded shell matches shell/form_shell.html
+        # The Python tool carries a copy of the shell so it stays pasteable as a
+        # single file; this is what keeps the copy honest.
+        run: node scripts/sync-shell.mjs --check
+
+      - name: Unit tests (renderer, emitter, pruner, bundle)
+        run: npx vitest run
+
+      - name: Python tool tests
+        run: npm run test:py
+
+      # The check that matters. Emits values from scripted form inputs, runs them
+      # through `helm lint` (which validates against the chart's own
+      # values.schema.json) and `helm template`, and diffs the manifests against
+      # a golden file. Quoting, pruning, and nesting bugs all surface here --
+      # an unquoted "true" in podAnnotations becomes a boolean and the chart's
+      # schema rejects it, which no amount of unit testing on the emitter catches.
+      - name: End-to-end helm check
+        run: npm run helm-check
+
+      - name: Show the emitted values files on failure
+        if: failure()
+        run: |
+          for f in dist/helm-check/*.values.yaml; do
+            [ -f "$f" ] || continue
+            echo "::group::$f"
+            cat "$f"
+            echo "::endgroup::"
+          done
