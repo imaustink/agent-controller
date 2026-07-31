@@ -619,17 +619,28 @@ body{{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
 ul{{margin:0;padding-left:20px}}
 code{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}}
 </style>
-<div class="r">
+<div class="r" id="root">
   <p class="h">Values submitted &middot; {html_mod.escape(chart)}</p>
   <p class="s">Overridden paths:</p>
   <ul>{rows}</ul>
 </div>
 <script>
   (function () {{
+    // Measures the content element's own box rather than
+    // document.documentElement.scrollHeight, matching the live shell. The
+    // receipt is inert and only ever grows, so scrollHeight's viewport floor is
+    // harmless here -- but keeping the two measurements identical means the one
+    // that can shrink and the one that can't don't drift apart.
+    var root = document.getElementById("root");
+    function measure() {{
+      var box = root ? root.getBoundingClientRect().height : 0;
+      var body = document.body ? document.body.scrollHeight : 0;
+      return Math.ceil(Math.max(box, body));
+    }}
     var last = -1;
     function report() {{
-      var h = document.documentElement.scrollHeight;
-      if (h === last) return;
+      var h = measure();
+      if (h === last || h === 0) return;
       last = h;
       parent.postMessage({{ type: "iframe:height", height: h }}, "*");
     }}

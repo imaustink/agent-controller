@@ -71,7 +71,8 @@ scripts/
 ```sh
 npm install          # from the repo root; this is an npm workspace
 npm run build        # -> dist/owui-form.js  (and dist/node/values.mjs)
-npm test             # build + unit tests + python tests + the helm check
+npm test             # build + unit tests + python tests (no helm binary needed)
+npm run test:e2e     # the end-to-end helm check (needs a helm binary on PATH)
 ```
 
 `npm run build` **fails** if the bundle exceeds 48 KB. That is not a style
@@ -312,12 +313,16 @@ end-to-end check exists to catch.
 ## Testing
 
 ```sh
-npm test                    # everything
+npm test                    # build + unit tests + python tests (no helm binary)
+npm run test:e2e            # the end-to-end helm check (needs a helm binary)
 npx vitest run              # renderer, emitter, pruner, built bundle
 npm run test:py             # the Python tool
 npm run helm-check          # the end-to-end check
 npm run helm-check:update   # regenerate tests/golden/*.yaml
 ```
+
+`npm test` is deliberately helm-free so it runs anywhere; `npm run test:e2e`
+(and `npm run helm-check`) is the part that needs a `helm` binary on `PATH`.
 
 `helm-check` is the one that matters. It runs three cases across the two fixture
 charts, driving the real pruner and the real emitter from scripted form inputs —

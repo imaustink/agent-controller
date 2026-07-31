@@ -146,6 +146,29 @@ describe("objects", () => {
       podAnnotations: { a: "1" },
     });
   });
+
+  it("drop an open map emptied down to its `{}` default", () => {
+    // A user who adds an annotation row and leaves the value blank must not get
+    // a redundant `podAnnotations: {}` -- that restates the chart default `{}`,
+    // the exact thing the pruner exists to eliminate.
+    expect(pruneToOverrides({ podAnnotations: { k: "" } }, schema)).toEqual({});
+  });
+
+  it("keep an open map the user cleared when the default is populated", () => {
+    // Here `{}` is a real override: the chart populates the map, and clearing it
+    // is a deliberate choice that must survive.
+    const populated: JSONSchema = {
+      type: "object",
+      properties: {
+        labels: {
+          type: "object",
+          additionalProperties: { type: "string" },
+          default: { app: "demo" },
+        },
+      },
+    };
+    expect(pruneToOverrides({ labels: { app: "" } }, populated)).toEqual({ labels: {} });
+  });
 });
 
 describe("key order", () => {

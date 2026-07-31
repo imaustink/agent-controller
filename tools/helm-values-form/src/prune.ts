@@ -295,7 +295,11 @@ function pruneNode(value: Json, schema: JSONSchema | null, root: JSONSchema): Js
   // still get their empty children dropped so `{a: {}}` does not survive.
   if (isPlainJsonObject(value)) {
     const compacted = compactUntyped(value);
-    if (compacted === null) return def === undefined ? DROP : {};
+    // An emptied map that equals the default (usually `{}`) carries nothing --
+    // dropping it is the whole point of the pruner. Keep `{}` only when the
+    // chart populates the map and the user deliberately cleared it, i.e. when
+    // the default is something other than an empty object.
+    if (compacted === null) return def === undefined || deepEqual(def, {}) ? DROP : {};
     return compacted;
   }
 
