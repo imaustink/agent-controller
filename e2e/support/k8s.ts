@@ -136,13 +136,56 @@ export async function waitFor<T>(
   );
 }
 
-/** AgentRuns created since `since`, newest first -- the handle for "did this trigger actually launch an agent". */
+/**
+ * Kubernetes stamps `metadata.creationTimestamp` in RFC3339 with **second**
+ * precision -- `2026-07-31T14:07:05Z`, no milliseconds -- and truncates rather
+ * than rounds.
+ *
+ * `since` is a host-side `new Date()` with millisecond precision. Comparing the
+ * two directly loses a race that is invisible and total: a run created at
+ * 14:07:05.800 is stamped `14:07:05Z`, which parses back as 14:07:05.000, so a
+ * `since` of 14:07:05.200 excludes it -- permanently. The trigger appears to have
+ * launched nothing, however long you poll.
+ *
+ * That is not a hypothetical. It made `resilience.e2e.ts` fail intermittently, on
+ * a different test each run, with `timed out after 420000ms waiting for an
+ * AgentRun to be created (204 attempts)` -- while the very turn in question had
+ * *succeeded*: the agent replied and the gateway posted the reply to the issue,
+ * mid-timeout. Whether a given turn hit it came down to where in the wall-clock
+ * second its trigger happened to land, which is exactly the profile of a flake
+ * that reads as a product bug.
+ */
+const K8S_TIMESTAMP_GRANULARITY_MS = 1_000;
+
+/**
+ * Extra slack for host-vs-node clock skew.
+ *
+ * minikube's VM clock drifts against the host (and jumps after the host sleeps),
+ * and `creationTimestamp` comes from the apiserver on the node while `since` comes
+ * from this process. Skew in the node-behind direction hides runs exactly like the
+ * truncation above.
+ *
+ * Two seconds is deliberately far below the ~20s minimum spacing between triggers
+ * in any spec, so this can widen the window without ever letting a PREVIOUS
+ * turn's run be mistaken for the current one -- which would be the worse failure,
+ * since it would make an assertion pass against the wrong run.
+ */
+const CLOCK_SKEW_TOLERANCE_MS = 2_000;
+
+/**
+ * AgentRuns created since `since`, newest first -- the handle for "did this
+ * trigger actually launch an agent".
+ *
+ * The cutoff is `since` widened by the timestamp granularity and a skew
+ * allowance; see those constants for why comparing directly is a silent trap.
+ */
 export async function agentRunsSince(since: Date): Promise<{ name: string; phase?: string }[]> {
+  const cutoffMs = since.getTime() - K8S_TIMESTAMP_GRANULARITY_MS - CLOCK_SKEW_TOLERANCE_MS;
   const list = await kubectlJson<{
     items: { metadata: { name: string; creationTimestamp: string }; status?: { phase?: string } }[];
   }>(["get", "agentruns"]);
   return list.items
-    .filter((i) => new Date(i.metadata.creationTimestamp) >= since)
+    .filter((i) => new Date(i.metadata.creationTimestamp).getTime() >= cutoffMs)
     .sort((a, b) => b.metadata.creationTimestamp.localeCompare(a.metadata.creationTimestamp))
     .map((i) => ({ name: i.metadata.name, phase: i.status?.phase }));
 }
