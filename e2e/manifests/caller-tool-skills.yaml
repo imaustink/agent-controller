@@ -1,0 +1,80 @@
+# Skill CRs for specs/caller-tools.e2e.ts (docs/adr/0035).
+#
+# Two skills, differing ONLY in `allowCallerTools`, so the gate is asserted by
+# comparison rather than against a hardcoded expectation of what a model would
+# otherwise do.
+#
+# Why skills at all, when caller tools work with no skill? Determinism. A caller
+# tool reaches the action planner either way, but whether the planner CALLS it is
+# a real OpenAI decision, and this suite's standing rule is to assert on
+# deterministic dispatch rather than on model judgement (see e2e/README.md).
+# A skill's markdown is trusted system-prompt content -- the strongest lever over
+# that decision that exists without faking the planner -- so an instruction to
+# always call the caller-supplied tool makes the turn near-deterministic while
+# leaving retrieval, selection, the planner and the prompt entirely real.
+#
+# Both descriptions are deliberately narrow to the point of being useless for
+# anything else. These CRs live in a shared cluster alongside every other spec's
+# fixtures, and a broadly-worded skill here would start winning retrieval for
+# unrelated turns -- turning this file into a source of failures in specs that
+# never heard of it. `afterAll` deletes them regardless.
+#
+# Neither declares toolRefs/agentRefs, which makes both UNRESTRICTED (ADR 0011):
+# visible to any caller with a resolved identity, and needing no authorization
+# pre-flight. That is what lets these specs run without seeding a credential.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Skill
+metadata:
+  name: e2e-caller-tool-telemetry
+  labels:
+    e2e.controller-agent.dev/fixture: caller-tools
+spec:
+  description: >-
+    Reads live battery telemetry for a numbered device in the e2e-widget test
+    fleet. Applies only to requests naming an e2e-widget fleet device serial.
+  markdown: |
+    # e2e-widget fleet telemetry
+
+    You are answering a question about a device in the e2e-widget test fleet.
+
+    You have no telemetry data of your own and MUST NOT guess a value. The
+    caller's client is the only thing that can read a device, so:
+
+    1. On the first turn, call the caller-supplied tool named
+       `caller:get_device_battery`, passing the device serial from the request
+       as the `serial` argument.
+    2. Once `<prior_tool_calls>` contains that tool's result, respond with the
+       battery level it reported, quoting the number exactly as given.
+
+    Never answer without having called the tool first.
+  # allowCallerTools deliberately UNSET -- the default, and the case that must
+  # mean "allowed" (docs/adr/0035 §4). An explicit `true` here would make the
+  # spec pass without exercising the unset-means-allowed path at all, which is
+  # the one every existing Skill CR in the world takes.
+---
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Skill
+metadata:
+  name: e2e-caller-tool-refused
+  labels:
+    e2e.controller-agent.dev/fixture: caller-tools
+spec:
+  description: >-
+    Reads sealed diagnostic counters for a numbered chassis in the e2e-sealed
+    test rack. Applies only to requests naming an e2e-sealed rack chassis id.
+  markdown: |
+    # e2e-sealed rack diagnostics
+
+    You are answering a question about a chassis in the e2e-sealed test rack.
+
+    If a tool named `caller:get_device_battery` is available to you, call it with
+    the chassis id as the `serial` argument.
+
+    If no such tool is available, reply with exactly:
+    SEALED_RACK_NO_TOOL
+  # The point of this fixture: identical instructions to the skill above, but
+  # caller tools are refused, so the planner never sees the tool it is being told
+  # to call and takes the no-tool branch instead. Asserting the branch (rather
+  # than merely "no tool call happened") is what distinguishes the gate working
+  # from the model simply choosing not to call anything.
+  allowCallerTools: false

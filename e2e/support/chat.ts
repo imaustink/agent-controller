@@ -1,9 +1,21 @@
 import { kubectl, withPortForward } from "./k8s.js";
-import { assembleSseContent, mintForwardedUserJwt } from "./openwebui-jwt.js";
+import {
+  assembleSseContent,
+  assembleSseToolCalls,
+  mintForwardedUserJwt,
+  sseFinishReason,
+  type StreamedToolCall,
+} from "./openwebui-jwt.js";
 
 // Re-exported so a spec has one import for "the chat entry point", while the
 // cluster-free helpers stay independently testable (specs/chat-harness.e2e.ts).
-export { assembleSseContent, mintForwardedUserJwt } from "./openwebui-jwt.js";
+export {
+  assembleSseContent,
+  assembleSseToolCalls,
+  mintForwardedUserJwt,
+  sseFinishReason,
+  type StreamedToolCall,
+} from "./openwebui-jwt.js";
 
 /**
  * The CHAT entry point, as a test can drive it.
@@ -93,6 +105,87 @@ export async function chatTurn(
   request: string,
   opts: { sessionId?: string; timeoutMs?: number; allowPark?: boolean } = {},
 ): Promise<ChatTurnResult> {
+  const { raw, parked } = await streamChat(userId, [{ role: "user", content: request }], opts);
+  return { text: assembleSseContent(raw), parked };
+}
+
+/** An OpenAI `tools[]` entry, as a consumer would send it (docs/adr/0035). */
+export interface ChatToolDefinition {
+  type: "function";
+  function: { name: string; description?: string; parameters?: unknown };
+}
+
+/** A message in the conversation a caller sends, including the tool round trip's own shapes. */
+export interface ChatMessage {
+  role: "user" | "assistant" | "tool";
+  content: string | null;
+  /** Set on the assistant message that asked the client to run a tool. */
+  tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[];
+  /** Set on a `role: "tool"` message, echoing the call it answers. */
+  tool_call_id?: string;
+}
+
+export interface ChatToolTurnResult extends ChatTurnResult {
+  /** Tool calls the agent asked THIS CLIENT to execute, assembled off the stream. */
+  toolCalls: StreamedToolCall[];
+  /** `"tool_calls"` when the turn wants the client to run something, `"stop"` when it answered. */
+  finishReason: string | undefined;
+}
+
+/**
+ * Sends a turn carrying the caller's OWN tools, and reports what a real OpenAI
+ * client would be able to act on (docs/adr/0035).
+ *
+ * Takes a full `messages` array rather than one request string, because the
+ * caller-tool round trip is inherently multi-message: the client resumes by
+ * resending the conversation with the `assistant.tool_calls` it was given plus a
+ * `role: "tool"` result. There is no server-side conversation store to resume
+ * from instead, so the wire IS the state, and a harness that could only send one
+ * user message could never exercise the second half of the feature.
+ *
+ * Streaming, like `chatTurn` and for the same reason: it is the shape Open WebUI
+ * actually uses. It also carries the more fragile half of the contract — a
+ * blocking response can set `finish_reason` after the fact, whereas the streaming
+ * path has already flushed its headers and has to get the terminal frame right.
+ */
+export async function chatToolTurn(
+  userId: string,
+  messages: ChatMessage[],
+  opts: {
+    tools?: ChatToolDefinition[];
+    toolChoice?: unknown;
+    sessionId?: string;
+    timeoutMs?: number;
+    allowPark?: boolean;
+  } = {},
+): Promise<ChatToolTurnResult> {
+  const { raw, parked } = await streamChat(userId, messages, opts, {
+    ...(opts.tools ? { tools: opts.tools } : {}),
+    ...(opts.toolChoice !== undefined ? { tool_choice: opts.toolChoice } : {}),
+  });
+  return {
+    text: assembleSseContent(raw),
+    parked,
+    toolCalls: assembleSseToolCalls(raw),
+    finishReason: sseFinishReason(raw),
+  };
+}
+
+/**
+ * The shared streaming core: mints the per-user JWT, posts the completion, and
+ * returns the RAW SSE body.
+ *
+ * Raw rather than pre-assembled so each caller decides what it needs off the same
+ * stream (`chatTurn` wants content, `chatToolTurn` wants content AND tool calls
+ * AND the finish reason) without the fetch/abort/park handling — all of it
+ * learned the hard way, see below — being duplicated per shape.
+ */
+async function streamChat(
+  userId: string,
+  messages: ChatMessage[],
+  opts: { sessionId?: string; timeoutMs?: number; allowPark?: boolean },
+  extraBody: Record<string, unknown> = {},
+): Promise<{ raw: string; parked: boolean }> {
   const secret = await forwardedUserJwtSecret();
   const jwt = mintForwardedUserJwt(secret, userId);
   const sessionId = opts.sessionId ?? `e2e-chat-${userId}-${process.pid}`;
@@ -111,7 +204,7 @@ export async function chatTurn(
           "x-chat-id": sessionId,
           [FORWARDED_USER_JWT_HEADER]: jwt,
         },
-        body: JSON.stringify({ model: "agent-orchestrator", stream: true, messages: [{ role: "user", content: request }] }),
+        body: JSON.stringify({ model: "agent-orchestrator", stream: true, messages, ...extraBody }),
         // A chat turn that needs a link holds its connection open for the whole
         // flow expiry, and a delegated turn waits on a real agent run. Generous,
         // but bounded: an unbounded fetch turns a hung turn into a hung suite.
@@ -126,7 +219,7 @@ export async function chatTurn(
       // land), and `res.text()` discards the partial body on abort -- which is
       // precisely the body of a turn that streamed a link prompt and then waited.
       const reader = res.body?.getReader();
-      if (!reader) return { text: "", parked: false };
+      if (!reader) return { raw: "", parked: false };
       const decoder = new TextDecoder();
       let raw = "";
       try {
@@ -136,10 +229,10 @@ export async function chatTurn(
           raw += decoder.decode(value, { stream: true });
         }
       } catch (err) {
-        if (opts.allowPark && isAbort(err)) return { text: assembleSseContent(raw), parked: true };
+        if (opts.allowPark && isAbort(err)) return { raw, parked: true };
         throw err;
       }
-      return { text: assembleSseContent(raw), parked: false };
+      return { raw, parked: false };
     } catch (err) {
       // Distinguish "the turn parked" from every other failure. Only a caller
       // that expects a park may swallow it; anything else is a real fault and
@@ -148,7 +241,7 @@ export async function chatTurn(
       // Checked by NAME rather than `instanceof Error`: `AbortSignal.timeout`
       // rejects with a DOMException, and undici may surface it wrapped, so the
       // reason can sit on `cause`.
-      if (opts.allowPark && isAbort(err)) return { text: "", parked: true };
+      if (opts.allowPark && isAbort(err)) return { raw: "", parked: true };
       throw err;
     }
   });

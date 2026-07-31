@@ -53,3 +53,77 @@ export function assembleSseContent(body: string): string {
   }
   return text;
 }
+
+/** One tool call the agent asked the CALLER to execute, as a client would read it off the stream. */
+export interface StreamedToolCall {
+  id: string;
+  name: string;
+  /** JSON-encoded arguments, per OpenAI's wire format (a string, not an object). */
+  arguments: string;
+}
+
+/**
+ * Collects `tool_calls` deltas out of an OpenAI-style SSE stream
+ * (docs/adr/0035).
+ *
+ * Assembled by `index` rather than by arrival order, and arguments are
+ * CONCATENATED, because that is the contract a real OpenAI client implements: the
+ * wire format permits a call's arguments to arrive across several deltas. This
+ * orchestrator happens to emit each call whole (its planner produces the
+ * arguments in one shot, so there is nothing to stream incrementally) — but a
+ * harness that assumed that would stop detecting the difference, and the whole
+ * point of asserting on the stream is to check what a real client would be able
+ * to reconstruct.
+ */
+export function assembleSseToolCalls(body: string): StreamedToolCall[] {
+  const byIndex = new Map<number, StreamedToolCall>();
+  for (const line of body.split("\n")) {
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice("data:".length).trim();
+    if (!data || data === "[DONE]") continue;
+    let chunk: {
+      choices?: { delta?: { tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] } }[];
+    };
+    try {
+      chunk = JSON.parse(data) as typeof chunk;
+    } catch {
+      continue;
+    }
+    for (const call of chunk.choices?.[0]?.delta?.tool_calls ?? []) {
+      const index = call.index ?? 0;
+      const existing = byIndex.get(index) ?? { id: "", name: "", arguments: "" };
+      byIndex.set(index, {
+        id: call.id ?? existing.id,
+        name: call.function?.name ?? existing.name,
+        arguments: existing.arguments + (call.function?.arguments ?? ""),
+      });
+    }
+  }
+  return [...byIndex.entries()].sort(([a], [b]) => a - b).map(([, call]) => call);
+}
+
+/**
+ * The stream's terminal `finish_reason`.
+ *
+ * The single most load-bearing field for caller tools: `"tool_calls"` is what
+ * tells a client to EXECUTE something, and `"stop"` is what tells it to render an
+ * answer. A turn that produced tool calls but finished with `"stop"` would leave
+ * every real client showing an empty assistant message — indistinguishable, from
+ * the content alone, from a turn that simply had nothing to say.
+ */
+export function sseFinishReason(body: string): string | undefined {
+  let reason: string | undefined;
+  for (const line of body.split("\n")) {
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice("data:".length).trim();
+    if (!data || data === "[DONE]") continue;
+    try {
+      const chunk = JSON.parse(data) as { choices?: { finish_reason?: string | null }[] };
+      const value = chunk.choices?.[0]?.finish_reason;
+      if (typeof value === "string") reason = value;
+    } catch {
+      // Not a JSON frame.
+    }
+  }
+  return reason;
+}
