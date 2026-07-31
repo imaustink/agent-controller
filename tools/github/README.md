@@ -57,6 +57,13 @@ over static PAT) and the same partial-config rejection every other consumer
 gets, with the errors re-thrown as `GhExecError` so an auth failure keeps
 reporting under this tool's `gh_error` exit code.
 
+**GitHub Enterprise Server:** the tool talks to `github.com` / `api.github.com`
+by default. Point it at a GHES install with `githubTool.githubHost` (wired as
+`GH_HOST`, the host `gh` itself uses) and `githubTool.githubApiUrl` (wired as
+`GITHUB_API_URL`, the REST base App auth mints the installation token against);
+both are plain env, off by default, and independent of which credential is in
+effect.
+
 Note that a shared credential and a per-user one are never both configured:
 the chart wires the App keys only when `identityLink` is off, and per-user
 injection only happens when it's on. That exclusivity is enforced in the

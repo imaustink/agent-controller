@@ -177,6 +177,22 @@ describe("resolveToolToken", () => {
     expect(err.message).toContain("GitHub credentials are required");
   });
 
+  it("mints an installation token that then reaches the spawned gh's env (index.ts's resolve -> runGh wiring)", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ token: "ghs_installation" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Mirror index.ts's run(): resolve the token, then hand it to runGh the
+    // same way -- { ...config, githubToken: token }. This closes the loop
+    // between an App mint and the subprocess it authenticates, which the
+    // isolated resolveToolToken/runGh tests above each leave open.
+    const cfg = makeConfig({ githubToken: "", ...APP_CONFIG });
+    const token = await resolveToolToken(cfg);
+    expect(token).toBe("ghs_installation");
+    const out = await runGh({ ...cfg, githubToken: token }, ["echoenv"]);
+    expect(out).toContain("GH_TOKEN=ghs_installation");
+    expect(out).toContain("GITHUB_TOKEN=ghs_installation");
+  });
+
   it("honors a GitHub Enterprise API base when minting", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ token: "ghs_ghes" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

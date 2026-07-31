@@ -55,6 +55,23 @@ spec:
   {{- end }}
   image: {{ .Values.githubTool.image | quote }}
   serviceAccountName: {{ .Values.githubTool.serviceAccountName | quote }}
+  {{/*
+    GitHub Enterprise Server (optional): GH_HOST points `gh` at the GHES host
+    and GITHUB_API_URL points App minting at its REST base. Plain env, not
+    secrets, and independent of which credential is in effect -- both default
+    empty (github.com / api.github.com) when unset.
+  */}}
+  {{- if or .Values.githubTool.githubHost .Values.githubTool.githubApiUrl }}
+  env:
+    {{- if .Values.githubTool.githubHost }}
+    - name: GH_HOST
+      value: {{ .Values.githubTool.githubHost | quote }}
+    {{- end }}
+    {{- if .Values.githubTool.githubApiUrl }}
+    - name: GITHUB_API_URL
+      value: {{ .Values.githubTool.githubApiUrl | quote }}
+    {{- end }}
+  {{- end }}
   {{- if or $githubTokenWired $githubAppWired }}
   secretEnv:
     {{- if $githubTokenWired }}

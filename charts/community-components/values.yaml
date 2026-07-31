@@ -367,6 +367,15 @@ githubTool:
   githubAppIdSecretKey: ""
   githubAppPrivateKeySecretKey: ""
   githubAppInstallationIdSecretKey: ""
+  # GitHub Enterprise Server (GHES) support, both optional and off by default
+  # (empty == github.com / api.github.com). Wired as plain env, not secrets:
+  #   - githubHost   -> GH_HOST: the host `gh` itself talks to.
+  #   - githubApiUrl -> GITHUB_API_URL: the REST base App auth mints the
+  #     installation token against (App auth only; ignored on the PAT path).
+  # Set both to your GHES install (e.g. githubHost: ghe.example.com,
+  # githubApiUrl: https://ghe.example.com/api/v3) to run App auth against it.
+  githubHost: ""
+  githubApiUrl: ""
   # Per-user GitHub identity linking (docs/adr/0022, extended to container
   # Tools by ADR 0032): when enabled, no static GITHUB_TOKEN secretEnv is set
   # on the Tool CR at all -- agent-orchestrator resolves the calling user's
