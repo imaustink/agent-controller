@@ -364,7 +364,19 @@ describe("resilience: infrastructure moving under an in-flight agent turn", () =
    * issue-derived `session_id`.
    */
   it("recovers the reply on a follow-up turn after a rollout, without launching a second run", async () => {
-    await paceStubAgent({ narrateForMs: 20_000, narrateEveryMs: 2000 });
+    // `replyAckRetryMs` is turned down from the production 10s because this is the
+    // one spec whose assertion depends on WHEN the held reply is re-offered. The
+    // recovery has to complete inside the gateway's own poll budget: the
+    // re-attaching turn only sees the reply on the agent's next re-offer, and if
+    // that lands after the gateway gives up, the gateway posts a failure and the
+    // answer never arrives -- so waiting longer here cannot help.
+    //
+    // It passed at 10s when this file ran alone and failed inside the full suite,
+    // which is the signature of a budget with no headroom rather than of a broken
+    // recovery. Making the re-offer prompt buys that headroom without touching the
+    // gateway's budget, which is deliberately short so abandoned turns release the
+    // relay quickly (see values-e2e.yaml).
+    await paceStubAgent({ narrateForMs: 20_000, narrateEveryMs: 2000, replyAckRetryMs: 2000 });
 
     const { issueNumber, startedAt } = await trigger();
     const created = await runCreated(startedAt);
