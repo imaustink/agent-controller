@@ -36,6 +36,27 @@ to run `gh auth login` or write anything to a persisted config (its
 `GH_CONFIG_DIR` is pointed at the container's writable `/tmp`, wiped every
 run).
 
+### Shared-credential fallback: PAT or GitHub App
+
+A deployment that doesn't want per-user delegation (`identityLink.enabled:
+false`, the chart default) has two options, and the chart wires exactly one
+of them:
+
+- a static `GITHUB_TOKEN` fine-grained PAT (`githubTool.secretKey`), or
+- **GitHub App installation-token auth** (ADR 0018): set all three of
+  `githubTool.githubAppIdSecretKey` / `githubAppPrivateKeySecretKey` /
+  `githubAppInstallationIdSecretKey` and `resolveToolToken` (`src/github.ts`)
+  mints a short-lived, installation-scoped token per invocation instead --
+  no long-lived PAT has to exist anywhere in the stack. A partial set (1-2
+  of the 3) is rejected at render time by the chart and at runtime by the
+  tool, rather than silently falling back to the PAT.
+
+Precedence is deliberately the inverse of the SWE agents' `resolveGithubToken`
+(which prefers the App): here a supplied `GITHUB_TOKEN` always wins, because
+for this tool that token is normally the *calling user's own* delegated one,
+and a per-user credential must never be silently downgraded to the shared
+App installation.
+
 ## Safety model (defense in depth)
 
 1. **The calling user's own GitHub permissions are the primary boundary.**

@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 #
 # Build from the REPO ROOT (this tool depends on the shared
-# @controller-agent/messaging workspace package):
+# @controller-agent/messaging and @controller-agent/github-app-auth workspace
+# packages):
 #
 #   docker build -f tools/github/Dockerfile -t github:latest .
 
@@ -13,22 +14,30 @@ WORKDIR /repo
 
 COPY package.json package-lock.json* ./
 COPY packages/messaging/package.json packages/messaging/package.json
+COPY packages/github-app-auth/package.json packages/github-app-auth/package.json
 COPY tools/github/package.json tools/github/package.json
 RUN npm ci
 
 COPY packages/messaging packages/messaging
+COPY packages/github-app-auth packages/github-app-auth
 COPY tools/github/tsconfig.json tools/github/tsconfig.json
 COPY tools/github/src tools/github/src
 
 RUN npm run build --workspace=@controller-agent/messaging \
+  && npm run build --workspace=@controller-agent/github-app-auth \
   && npm run build --workspace=github \
   && npm prune --omit=dev \
-  # Materialize the workspace package into a real directory (not the npm-created
-  # symlink) so it survives being copied into the runtime stage below.
+  # Materialize the workspace packages into real directories (not the
+  # npm-created symlinks) so they survive being copied into the runtime stage
+  # below.
   && rm -rf node_modules/@controller-agent/messaging \
   && mkdir -p node_modules/@controller-agent/messaging \
   && cp -r packages/messaging/dist node_modules/@controller-agent/messaging/dist \
-  && cp packages/messaging/package.json node_modules/@controller-agent/messaging/package.json
+  && cp packages/messaging/package.json node_modules/@controller-agent/messaging/package.json \
+  && rm -rf node_modules/@controller-agent/github-app-auth \
+  && mkdir -p node_modules/@controller-agent/github-app-auth \
+  && cp -r packages/github-app-auth/dist node_modules/@controller-agent/github-app-auth/dist \
+  && cp packages/github-app-auth/package.json node_modules/@controller-agent/github-app-auth/package.json
 
 ############################
 # Runtime stage

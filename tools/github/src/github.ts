@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { mintInstallationToken } from "@controller-agent/github-app-auth";
 import type { AppConfig } from "./config.js";
 
 export class GhExecError extends Error {
@@ -9,6 +10,59 @@ export class GhExecError extends Error {
   ) {
     super(message);
   }
+}
+
+/**
+ * Resolves the token `gh` will authenticate with, before anything is spawned.
+ *
+ * Precedence is deliberately the INVERSE of the SWE agents'
+ * `resolveGithubToken` (which prefers the App): for this tool `GITHUB_TOKEN`
+ * is normally the CALLING USER's own delegated token, injected per-invocation
+ * via `ToolRunSpec.secretEnv` (ADR 0022/0032), and a per-user credential must
+ * never be silently downgraded to the shared App installation. So a supplied
+ * token always wins; the App is the shared-credential fallback that replaces
+ * a static PAT.
+ *
+ * The chart keeps these mutually exclusive anyway (identityLink wires no
+ * static credential at all), so in practice exactly one path is configured --
+ * this ordering just makes the overlap safe rather than surprising.
+ *
+ * A partial App configuration is rejected rather than falling back, matching
+ * `resolveGithubToken`'s own contract: 1-2 of the 3 vars is a misconfiguration,
+ * not a request for PAT auth.
+ */
+export async function resolveToolToken(cfg: AppConfig, now: number = Date.now()): Promise<string> {
+  const appFieldsSet = [cfg.githubAppId, cfg.githubAppPrivateKey, cfg.githubAppInstallationId].filter(Boolean).length;
+
+  if (appFieldsSet > 0 && appFieldsSet < 3) {
+    throw new GhExecError(
+      "Partial GitHub App configuration: GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must all be set together",
+      "",
+      null,
+    );
+  }
+
+  if (cfg.githubToken) return cfg.githubToken;
+
+  if (appFieldsSet === 3) {
+    const { token } = await mintInstallationToken(
+      {
+        appId: cfg.githubAppId,
+        privateKey: cfg.githubAppPrivateKey,
+        installationId: cfg.githubAppInstallationId,
+      },
+      cfg.githubApiUrl,
+      now,
+    );
+    return token;
+  }
+
+  throw new GhExecError(
+    "No GitHub token configured: set GITHUB_TOKEN/GH_TOKEN (fine-grained PAT, or the per-user token identity linking injects) " +
+      "or all of GITHUB_APP_ID/GITHUB_APP_PRIVATE_KEY/GITHUB_APP_INSTALLATION_ID (GitHub App)",
+    "",
+    null,
+  );
 }
 
 /** Absolute path to the gh binary (see Dockerfile) -- spawned directly, never resolved via PATH. */

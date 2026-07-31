@@ -1,4 +1,21 @@
 {{- if .Values.opencodeSweAgent.enabled }}
+{{- $githubAppConfigured := include "tools.githubAppFullyConfigured" .Values.opencodeSweAgent }}
+{{- $githubAppKeyCount := include "tools.githubAppKeyCount" .Values.opencodeSweAgent }}
+{{- if and (ne $githubAppKeyCount "0") (not $githubAppConfigured) }}
+{{- fail "opencodeSweAgent has a partial GitHub App configuration -- githubAppIdSecretKey, githubAppPrivateKeySecretKey and githubAppInstallationIdSecretKey must all be set together (the agent rejects a partial set at runtime)" }}
+{{- end }}
+{{/*
+  The static GITHUB_TOKEN PAT is wired only when it's actually the credential
+  in effect: identityLink injects the calling user's token per-run instead,
+  and a full GitHub App configuration makes the agent mint an installation
+  token without ever reading GITHUB_TOKEN. Wiring it regardless used to force
+  a placeholder GITHUB_TOKEN key into the Secret, since a secretRef to a
+  missing key fails the pod with CreateContainerConfigError.
+*/}}
+{{- $githubTokenWired := and (not .Values.opencodeSweAgent.identityLink.enabled) (not $githubAppConfigured) .Values.opencodeSweAgent.secretKey }}
+{{- if not (or $githubTokenWired .Values.opencodeSweAgent.identityLink.enabled $githubAppConfigured) }}
+{{- fail "opencodeSweAgent requires a GitHub credential: set secretKey (a GITHUB_TOKEN PAT), all three githubApp*SecretKey values, or identityLink.enabled" }}
+{{- end }}
 apiVersion: {{ .Values.crdApiVersion }}
 kind: Agent
 metadata:
@@ -96,7 +113,7 @@ spec:
     request. An honest blocked-on-access question is always correct here;
     a fabricated deliverable is never an acceptable "sensible default."
   secretEnv:
-    {{- if not .Values.opencodeSweAgent.identityLink.enabled }}
+    {{- if $githubTokenWired }}
     - name: GITHUB_TOKEN
       secretRef:
         name: {{ .Values.opencodeSweAgent.secretName }}
