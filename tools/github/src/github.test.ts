@@ -144,14 +144,25 @@ describe("resolveToolToken", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://api.github.com/app/installations/67890/access_tokens");
   });
 
-  it("prefers a supplied token over the App, so a per-user delegated token is never downgraded to the bot", async () => {
-    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+  it("prefers the App over a static PAT when both are set, matching the shared resolveGithubToken", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ token: "ghs_installation" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(resolveToolToken(makeConfig({ githubToken: "gho_perUser", ...APP_CONFIG }))).resolves.toBe(
-      "gho_perUser",
+    await expect(resolveToolToken(makeConfig({ githubToken: "ghp_pat", ...APP_CONFIG }))).resolves.toBe(
+      "ghs_installation",
     );
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces a mint failure as a GhExecError, so it exits as a gh error rather than a generic one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("no such installation", { status: 404 })),
+    );
+
+    const err = await resolveToolToken(makeConfig({ githubToken: "", ...APP_CONFIG })).catch((e) => e);
+    expect(err).toBeInstanceOf(GhExecError);
+    expect(err.message).toContain("Failed to mint GitHub App installation token");
   });
 
   it("rejects a partial App configuration instead of falling back to the PAT", async () => {
@@ -163,7 +174,7 @@ describe("resolveToolToken", () => {
   it("throws when neither credential is configured", async () => {
     const err = await resolveToolToken(makeConfig({ githubToken: "" })).catch((e) => e);
     expect(err).toBeInstanceOf(GhExecError);
-    expect(err.message).toContain("No GitHub token configured");
+    expect(err.message).toContain("GitHub credentials are required");
   });
 
   it("honors a GitHub Enterprise API base when minting", async () => {

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mintInstallationToken } from "@controller-agent/github-app-auth";
+import { resolveGithubToken } from "@controller-agent/github-app-auth";
 import type { AppConfig } from "./config.js";
 
 export class GhExecError extends Error {
@@ -13,56 +13,35 @@ export class GhExecError extends Error {
 }
 
 /**
- * Resolves the token `gh` will authenticate with, before anything is spawned.
+ * Resolves the token `gh` will authenticate with, before anything is spawned:
+ * a GitHub App installation token when the App is fully configured, otherwise
+ * the static `GITHUB_TOKEN`/`GH_TOKEN` PAT -- the shared
+ * `resolveGithubToken`'s precedence and partial-config rejection verbatim, so
+ * every consumer in the repo resolves a GitHub credential the same way.
  *
- * Precedence is deliberately the INVERSE of the SWE agents'
- * `resolveGithubToken` (which prefers the App): for this tool `GITHUB_TOKEN`
- * is normally the CALLING USER's own delegated token, injected per-invocation
- * via `ToolRunSpec.secretEnv` (ADR 0022/0032), and a per-user credential must
- * never be silently downgraded to the shared App installation. So a supplied
- * token always wins; the App is the shared-credential fallback that replaces
- * a static PAT.
+ * `AppConfig` structurally satisfies `GithubAuthConfig`, so this only exists
+ * to translate the shared function's plain `Error`s into {@link GhExecError} --
+ * index.ts maps that class to the `gh_error` exit code, and an auth failure
+ * should keep reporting as one rather than falling through to `general`.
  *
- * The chart keeps these mutually exclusive anyway (identityLink wires no
- * static credential at all), so in practice exactly one path is configured --
- * this ordering just makes the overlap safe rather than surprising.
- *
- * A partial App configuration is rejected rather than falling back, matching
- * `resolveGithubToken`'s own contract: 1-2 of the 3 vars is a misconfiguration,
- * not a request for PAT auth.
+ * On the coexistence question: `GITHUB_TOKEN` here is normally the CALLING
+ * USER's own delegated token (injected per-invocation via
+ * `ToolRunSpec.secretEnv`, ADR 0022/0032), so preferring the App over it would
+ * mean silently acting as the shared bot instead of the human. That
+ * combination is not reachable -- the chart wires the App keys only when
+ * identityLink is off, and identity injection only happens when it's on -- and
+ * exclusivity is enforced there, in one place, rather than by inverting the
+ * precedence here. If App-as-fallback-for-an-unlinked-caller is ever wanted,
+ * it needs an explicit signal the way the SWE agents use
+ * `GITHUB_IDENTITY_DELEGATION` (see their `isDelegating`), not an implicit
+ * ordering that can't tell a per-user token from a static PAT.
  */
-export async function resolveToolToken(cfg: AppConfig, now: number = Date.now()): Promise<string> {
-  const appFieldsSet = [cfg.githubAppId, cfg.githubAppPrivateKey, cfg.githubAppInstallationId].filter(Boolean).length;
-
-  if (appFieldsSet > 0 && appFieldsSet < 3) {
-    throw new GhExecError(
-      "Partial GitHub App configuration: GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must all be set together",
-      "",
-      null,
-    );
+export async function resolveToolToken(cfg: AppConfig, now?: number): Promise<string> {
+  try {
+    return await resolveGithubToken(cfg, now ?? Date.now());
+  } catch (err) {
+    throw new GhExecError((err as Error).message, "", null);
   }
-
-  if (cfg.githubToken) return cfg.githubToken;
-
-  if (appFieldsSet === 3) {
-    const { token } = await mintInstallationToken(
-      {
-        appId: cfg.githubAppId,
-        privateKey: cfg.githubAppPrivateKey,
-        installationId: cfg.githubAppInstallationId,
-      },
-      cfg.githubApiUrl,
-      now,
-    );
-    return token;
-  }
-
-  throw new GhExecError(
-    "No GitHub token configured: set GITHUB_TOKEN/GH_TOKEN (fine-grained PAT, or the per-user token identity linking injects) " +
-      "or all of GITHUB_APP_ID/GITHUB_APP_PRIVATE_KEY/GITHUB_APP_INSTALLATION_ID (GitHub App)",
-    "",
-    null,
-  );
 }
 
 /** Absolute path to the gh binary (see Dockerfile) -- spawned directly, never resolved via PATH. */

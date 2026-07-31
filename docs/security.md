@@ -215,10 +215,11 @@ mechanism at all. This means:
   GitHub App installation-token auth via the three `githubApp*SecretKey`
   values ([ADR 0018](adr/0018-github-app-auth-fallback.md)), which the tool exchanges
   for a short-lived installation token per invocation (`resolveToolToken` in
-  `tools/github/src/github.ts`) so no long-lived PAT need exist anywhere in
-  the stack. If a per-user token is ever present alongside App config, the
-  per-user token wins -- a delegated credential is never silently downgraded
-  to the shared bot.
+  `tools/github/src/github.ts`, a thin wrapper over the same shared
+  `resolveGithubToken` the SWE agents use) so no long-lived PAT need exist
+  anywhere in the stack. A shared credential and a per-user one are never both
+  configured: the chart wires the App keys only when `identityLink` is off, and
+  per-user injection only happens when it's on.
 
 ## opencode-swe-agent: a deliberately privileged agent
 

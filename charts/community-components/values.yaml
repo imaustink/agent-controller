@@ -360,10 +360,10 @@ githubTool:
   # GITHUB_TOKEN, so the Secret needs no GITHUB_TOKEN key. A partial set fails
   # the render. Leave all three empty (the default) to keep using the PAT.
   #
-  # A per-user token from identityLink still wins over these if both are ever
-  # configured (see resolveToolToken in tools/github/src/github.ts) -- a
-  # per-user credential is never silently downgraded to the shared bot -- but
-  # this chart keeps them mutually exclusive anyway.
+  # Mutually exclusive with identityLink below, and this chart is where that is
+  # enforced: these keys are wired only when identityLink is off, so a shared
+  # credential and the calling user's own token are never both present in the
+  # Job (see resolveToolToken in tools/github/src/github.ts).
   githubAppIdSecretKey: ""
   githubAppPrivateKeySecretKey: ""
   githubAppInstallationIdSecretKey: ""

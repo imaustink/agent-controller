@@ -51,11 +51,20 @@ of them:
   of the 3) is rejected at render time by the chart and at runtime by the
   tool, rather than silently falling back to the PAT.
 
-Precedence is deliberately the inverse of the SWE agents' `resolveGithubToken`
-(which prefers the App): here a supplied `GITHUB_TOKEN` always wins, because
-for this tool that token is normally the *calling user's own* delegated one,
-and a per-user credential must never be silently downgraded to the shared
-App installation.
+`resolveToolToken` is a thin wrapper over the shared
+`resolveGithubToken` (`packages/github-app-auth`) -- the same precedence (App
+over static PAT) and the same partial-config rejection every other consumer
+gets, with the errors re-thrown as `GhExecError` so an auth failure keeps
+reporting under this tool's `gh_error` exit code.
+
+Note that a shared credential and a per-user one are never both configured:
+the chart wires the App keys only when `identityLink` is off, and per-user
+injection only happens when it's on. That exclusivity is enforced in the
+chart, in one place. If App-as-fallback-for-an-unlinked-caller is ever
+wanted, it needs an explicit signal the way the SWE agents use
+`GITHUB_IDENTITY_DELEGATION` (see their `isDelegating`) -- token precedence
+alone can't distinguish a per-user token from a static PAT, since both arrive
+as `GITHUB_TOKEN`.
 
 ## Safety model (defense in depth)
 
