@@ -257,6 +257,32 @@ this needed resolving rather than being a drop-in: no multi-turn memory, no
 tool-internal progress, structured JSON rendered as a fenced code block, and
 per-mode error reporting.
 
+Since ADR 0035 the facade also accepts the caller's **own tools**. A consumer
+may send `tools` / `tool_choice` on `/v1/chat/completions` (or `/invoke`) and
+get standard `tool_calls` + `finish_reason: "tool_calls"` back to execute in
+its own client — a third level of tool calling alongside the orchestrator's
+Skill-scoped loop and a sub-agent's `toolRefs` loop, and the only one the
+orchestrator does not execute. Three things keep it from degrading the other
+two:
+
+- **Its own Qdrant collection**, keyed by a content hash of each definition, so
+  a caller's ephemeral tools never enter the `tools` catalog's candidate set
+  and identical definitions embed once, ever (the collection *is* the embedding
+  cache — a client resending the same array every turn costs nothing).
+- **Top-K pruning** before the planner sees anything, and the index is skipped
+  entirely when the caller sent ≤ K tools, since there is nothing to prune.
+- **A per-skill gate** (`Skill.spec.allowCallerTools`, unset ⇒ allowed) so an
+  authored skill with an exact procedure can refuse them.
+
+Caller tool names/descriptions/schemas are **untrusted** (one level below a
+`Tool` CR description, two below skill markdown) and are rendered in a
+distinctly-labeled block. No RBAC applies, because the caller both supplies and
+executes the function — the orchestrator gains no capability from one. Resuming
+after the client runs the tool reads the `assistant.tool_calls` + `role: "tool"`
+pair off the wire (there is no server-side conversation store) and seeds it into
+the planner's history, which is also what keeps the per-turn step cap bounding a
+resumed loop.
+
 Since ADR 0012 this facade is also where **conversation sessions** attach:
 when the request carries Open WebUI's `X-OpenWebUI-Chat-Id` header (sent when
 its deployment sets `ENABLE_FORWARD_USER_INFO_HEADERS=true`; `/invoke`

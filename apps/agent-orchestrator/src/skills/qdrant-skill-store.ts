@@ -34,6 +34,13 @@ interface SkillPayload {
   effectiveRoles: string[];
   /** True for skills with no toolIds/agentIds — retrievable by any resolved identity. */
   unrestricted: boolean;
+  /**
+   * Whether consumer-supplied tools may be offered alongside this skill's own
+   * (docs/adr/0035 §4). `null` encodes "unset", which means ALLOWED — and is
+   * also what a point written before this field existed reads back as, so a
+   * rolling upgrade keeps the same default without a reindex.
+   */
+  allowCallerTools: boolean | null;
 }
 
 /**
@@ -85,6 +92,7 @@ export class QdrantSkillStore implements SkillStore {
           agentIds: skill.agentIds,
           effectiveRoles: effectiveRoles ?? [],
           unrestricted: effectiveRoles === null,
+          allowCallerTools: skill.allowCallerTools ?? null,
         } satisfies SkillPayload,
       })),
     );
@@ -119,6 +127,7 @@ export class QdrantSkillStore implements SkillStore {
         markdown: payload.markdown,
         toolIds: payload.toolIds,
         agentIds: payload.agentIds,
+        allowCallerTools: payload.allowCallerTools ?? undefined,
       };
       return { skill, score: point.score };
     });
@@ -154,6 +163,7 @@ export class QdrantSkillStore implements SkillStore {
         markdown: payload.markdown,
         toolIds: payload.toolIds,
         agentIds: payload.agentIds,
+        allowCallerTools: payload.allowCallerTools ?? undefined,
       });
     }
     return skills;

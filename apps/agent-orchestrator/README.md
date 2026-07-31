@@ -237,6 +237,17 @@ These are called out explicitly rather than silently glossed over — see
   continuity for **skill routing only** (which skill the conversation is
   in); there is no server-side conversation store — anything that falls out
   of the bounded window (or that the chat client doesn't resend) is gone.
+- **Caller-supplied tools have three deliberate limits** (ADR 0035). A
+  consumer may send `tools`/`tool_choice` and get standard `tool_calls` back to
+  run in its own client, but: `tool_choice: "required"` is a strong planner
+  directive rather than an enforced guarantee (the planner may still conclude
+  nothing fits); `/invoke` can only *offer* tools, not resume from their results
+  (it takes one `request` string, with nowhere to put a `role: "tool"` message —
+  the full round trip is chat-facade-only); and caller tools are unreachable
+  from a sub-agent's own loop (ADR 0028), since a sub-agent has no channel back
+  to the original HTTP caller's client. Per-*turn* planner loops are capped as
+  always, but a client can always resend, so per-conversation depth is unbounded
+  — unchanged from before this existed.
 - **Single skill per turn.** The skill selector (ADR 0008) picks exactly one
   skill per request; merging multiple matched skills' markdown/tool lists
   isn't implemented. A conversation that pivots switches its one active

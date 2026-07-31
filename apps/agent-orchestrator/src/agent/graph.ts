@@ -6,6 +6,7 @@ import { SELF_IMPROVEMENT_FOOTER } from "../openai/chat-completions.js";
 import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-agent-channel.js";
 import { AgentTurnFailedError, AgentTurnTimeoutError, AgentTurnTransportError } from "../agents/nats-agent-channel.js";
 import type { AgentDescriptor, AgentSearchResult, AgentStore } from "../agents/types.js";
+import type { PendingToolCall } from "../caller-tools/types.js";
 import type { JobResultReceiver } from "../callback/receiver.js";
 import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
 import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
@@ -143,6 +144,42 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
+  /**
+   * Tools the CONSUMER supplied in this request (docs/adr/0035), already
+   * parsed/validated and pruned to top-K by the facade. These are executed by
+   * the caller's own client, never here — `runTool` hands the chosen one back as
+   * `pendingToolCalls` and ends the turn. Empty for every caller that sends no
+   * `tools` array, which is the overwhelmingly common case and behaves exactly
+   * as it did before this existed.
+   */
+  callerTools: Annotation<ToolDescriptor[]>({
+    reducer: (_current, update) => update,
+    default: () => [],
+  }),
+  /**
+   * True when the caller sent `tool_choice: "required"` — carried as a planner
+   * directive rather than an enforced constraint, since the planner is our own
+   * Structured-Outputs call and may still legitimately find no tool fits
+   * (docs/adr/0035 §5).
+   */
+  callerToolChoiceRequired: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
+  }),
+  /**
+   * Tool calls the orchestrator is asking the CALLER to execute. Set by
+   * `runTool`'s caller-tool branch, which then ends the turn: the facade renders
+   * these as `choices[0].message.tool_calls` with `finish_reason: "tool_calls"`,
+   * and the conversation resumes when the client resends with the results.
+   *
+   * A second non-error terminal shape for the graph, alongside `result` — a turn
+   * that ends here has produced no assistant text and is not finished, it is
+   * waiting on the client.
+   */
+  pendingToolCalls: Annotation<PendingToolCall[]>({
+    reducer: (_current, update) => update,
+    default: () => [],
+  }),
   identity: Annotation<Identity | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
@@ -188,7 +225,14 @@ export const AgentStateAnnotation = Annotation.Root({
    * planAction<->runTool loop -- fed back to `deps.actionPlanner.plan` so it
    * can decide its next step from what a prior tool actually returned (e.g.
    * fetch a page a prior web-search call surfaced), instead of getting only
-   * one tool call per turn. Reset per turn (never persisted across turns).
+   * one tool call per turn.
+   *
+   * Not persisted server-side, but no longer strictly per-turn: for a
+   * caller-executed tool (docs/adr/0035) the server SEEDS this from the
+   * `assistant.tool_calls` + `role: "tool"` pairs on the incoming request, since
+   * the wire is the only place that result exists. Seeding it is also what keeps
+   * `MAX_TOOL_STEPS` bounding a resumed loop rather than resetting it to zero on
+   * every round trip.
    */
   actionHistory: Annotation<ToolCallRecord[]>({
     reducer: (_current, update) => update,
@@ -720,6 +764,67 @@ async function resolveToolIdentitySecretEnv(
  */
 const MAX_TOOL_STEPS = 4;
 
+/**
+ * The consumer-supplied tools (docs/adr/0035) a given skill may be offered, or
+ * `[]` when it opted out via `Skill.spec.allowCallerTools: false`.
+ *
+ * `undefined` (the CRD field unset) means allowed — see `SkillDescriptor` for
+ * why that's the default. This gate keeps an authored skill's tool loop
+ * predictable; it is deliberately NOT an authorization check, since a caller
+ * tool grants the orchestrator nothing (the caller's own client runs it).
+ */
+/**
+ * "finish" means "the MOST RECENT tool call's result IS the answer" — and
+ * normally `state.result` already holds it, because the `runTool` that produced
+ * it ran in this same graph invocation.
+ *
+ * That doesn't hold for a caller-executed tool (docs/adr/0035): the result was
+ * produced by the client and arrived on the wire as seeded `actionHistory`, with
+ * no `runTool` in this invocation to have set `result`. Without this, a turn
+ * resuming from a client tool result would finish with `result: undefined` and
+ * the caller would get an empty message. Returns `{}` (no override) whenever
+ * `result` is already set, so the ordinary in-process paths are untouched.
+ */
+function lastHistoryResult(state: AgentState): { result?: unknown } {
+  if (state.result !== undefined) return {};
+  const last = state.actionHistory[state.actionHistory.length - 1];
+  return last ? { result: last.result } : {};
+}
+
+/**
+ * Validates the planner's `tool_args` as the JSON-object arguments a caller tool
+ * needs (docs/adr/0035). Every other dispatch kind in this codebase takes a
+ * plain string argument, so this is the one place the planner's output has a
+ * structural contract beyond "a string".
+ *
+ * A malformed value is an ERROR rather than a coerced `{}`: sending the caller's
+ * own client a call whose arguments silently don't match its schema produces a
+ * confusing client-side failure, whereas this surfaces the actual cause. Empty
+ * is fine and means "no arguments" — plenty of functions take none.
+ */
+function callerToolArguments(toolArgs: string | undefined): { json: string } | { error: string } {
+  const raw = (toolArgs ?? "").trim();
+  if (raw === "") return { json: "{}" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { error: `expected a JSON object, got ${JSON.stringify(raw.slice(0, 120))}` };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { error: "expected a JSON object, got a non-object JSON value" };
+  }
+  // Re-serialize so what reaches the client is canonical JSON regardless of the
+  // planner's whitespace.
+  return { json: JSON.stringify(parsed) };
+}
+
+function callerToolsFor(state: AgentState, skill: SkillDescriptor | undefined): ToolDescriptor[] {
+  if (state.callerTools.length === 0) return [];
+  if (skill && skill.allowCallerTools === false) return [];
+  return state.callerTools;
+}
+
 function afterOrEnd(next: string) {
   return (state: AgentState): string => (state.error ? END : next);
 }
@@ -1059,10 +1164,19 @@ async function selectFallbackTool(
   deps: AgentGraphDeps,
 ): Promise<{ tool: ToolDescriptor; toolArgs: string; toolInstanceKey?: string } | undefined> {
   if (!state.identity) return undefined;
+  // No skill matched, so there is no `allowCallerTools` gate to consult — a
+  // consumer-supplied tool (docs/adr/0035) is simply a candidate here.
+  const callerTools = state.callerTools;
   const candidates = await deps.vectorStore.query(state.request, { callerRoles: state.identity.roles }, deps.fallbackToolTopK ?? 3);
-  if (candidates.length === 0) return undefined;
+  if (candidates.length === 0 && callerTools.length === 0) return undefined;
   const fitFlags = await Promise.all(candidates.map((c) => deps.toolFitChecker.fits(state.request, c.tool)));
-  const tools = candidates.filter((_, i) => fitFlags[i]).map((c) => c.tool);
+  // Caller tools skip the fit check on purpose. That gate exists because a
+  // catalog-WIDE embedding search surfaces loose keyword overlap the caller
+  // never asked about ("create a recipe" vs. "create a repository"); a caller
+  // tool was explicitly supplied for this very conversation and was already
+  // relevance-ranked against the request, so re-litigating it would only add an
+  // LLM call per tool for a judgment the caller already made.
+  const tools = [...candidates.filter((_, i) => fitFlags[i]).map((c) => c.tool), ...callerTools];
   if (tools.length === 0) return undefined;
   const syntheticSkill: SkillDescriptor = {
     id: "__fallback_tool__",
@@ -1072,7 +1186,9 @@ async function selectFallbackTool(
     toolIds: tools.map((t) => t.id),
     agentIds: [],
   };
-  const planned = await deps.actionPlanner.plan(state.request, syntheticSkill, tools);
+  const planned = await deps.actionPlanner.plan(state.request, syntheticSkill, tools, [], {
+    callerToolRequired: state.callerToolChoiceRequired,
+  });
   if (planned.action !== "call_tool") return undefined;
   const tool = tools.find((t) => t.id === planned.toolId);
   if (!tool) return undefined;
@@ -1561,10 +1677,16 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         return { error: "no skill selected" };
       }
       const { toolIds, agentIds } = state.selectedSkill;
+      // Consumer-supplied tools (docs/adr/0035), if this skill accepts them.
+      // Already relevance-pruned to top-K by the facade, so this is an append,
+      // not a second retrieval.
+      const callerTools = callerToolsFor(state, state.selectedSkill);
       // Respond-only skill (no toolIds/agentIds, ADR 0011/0021): nothing to
       // load and nothing to authorize -- the planner can only choose "respond".
+      // Caller tools are the one thing that can still make such a skill
+      // tool-capable, since they need no catalog resolution at all.
       if (toolIds.length === 0 && agentIds.length === 0) {
-        return { skillTools: [] };
+        return { skillTools: callerTools };
       }
 
       if (agentIds.length > 0 && !deps.agentStore) {
@@ -1587,6 +1709,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // agentRefs.
       const skillTools: ToolDescriptor[] = [
         ...toolResults.map((r) => r.tool),
+        ...callerTools,
         ...agentResults.map((r) => ({
           id: r.agent.id,
           name: r.agent.name,
@@ -1614,11 +1737,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // last tool's result rather than erroring, since a genuine answer is
       // already in hand.
       if (state.actionHistory.length >= MAX_TOOL_STEPS) {
-        return { plannedAction: "finish" };
+        return { plannedAction: "finish", ...lastHistoryResult(state) };
       }
-      const planned = await deps.actionPlanner.plan(state.request, state.selectedSkill, state.skillTools, state.actionHistory);
+      const planned = await deps.actionPlanner.plan(state.request, state.selectedSkill, state.skillTools, state.actionHistory, {
+        callerToolRequired: state.callerToolChoiceRequired,
+      });
       if (planned.action === "finish") {
-        return { plannedAction: "finish" };
+        return { plannedAction: "finish", ...lastHistoryResult(state) };
       }
       if (planned.action === "respond") {
         return { result: planned.response, plannedAction: "respond" };
@@ -1645,6 +1770,32 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (!tool) {
         return { error: "no tool selected" };
       }
+      if (tool.callerTool) {
+        // Consumer-supplied tool (docs/adr/0035): the ONE dispatch branch that
+        // executes nothing. The caller's own client runs this function, so all
+        // there is to do is hand the call back and end the turn -- the facade
+        // renders it as `tool_calls` with `finish_reason: "tool_calls"`, and the
+        // conversation resumes when the client resends with a `role: "tool"`
+        // result.
+        //
+        // Deliberately skipped here, because none of it has a meaning for a call
+        // the orchestrator doesn't make: the identity gate (no credential is
+        // resolved or injected -- the client uses its own), continuation tokens
+        // (ADR 0017 -- nothing round-trips through a tool we don't launch), and
+        // `actionHistory` (the result doesn't exist yet; it arrives on the next
+        // request and is seeded from the wire).
+        const args = callerToolArguments(state.toolArgs);
+        if ("error" in args) {
+          return { error: `tool ${tool.id} needs JSON arguments: ${args.error}` };
+        }
+        state.progressListener?.("caller-tool", `Requesting ${tool.callerTool.name} from your client.`);
+        return {
+          pendingToolCalls: [
+            { id: `call_${randomUUID().replace(/-/g, "")}`, name: tool.callerTool.name, arguments: args.json },
+          ],
+        };
+      }
+
       const rawInput = state.toolArgs ?? state.request;
       // Scope the stored continuation to the planner's declared instance (if
       // any) so a multi-instance tool's state for one instance (e.g. one
@@ -1961,8 +2112,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     // tool use) -- bounded by MAX_TOOL_STEPS there. A successful FALLBACK
     // tool call (no skill selected -- selectFallbackTool/noMatchFallback,
     // which never re-plans) goes straight to composeResponse as before.
+    // A caller-executed tool (docs/adr/0035) ends the turn regardless of which
+    // path reached it: the answer is with the consumer's client now, and looping
+    // back to planAction would re-plan against a result that doesn't exist yet.
+    // The turn resumes as a NEW invocation when the client resends.
     .addConditionalEdges("runTool", (state) => {
-      if (state.error || state.result === undefined) return END;
+      if (state.error || state.pendingToolCalls.length > 0) return END;
+      if (state.result === undefined) return END;
       return state.selectedSkill ? "planAction" : "composeResponse";
     })
     .addEdge("composeResponse", END);

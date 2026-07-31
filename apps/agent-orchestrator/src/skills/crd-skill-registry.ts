@@ -27,6 +27,12 @@ export interface SkillCustomResource {
      * derivation and what the action planner may select from.
      */
     agentRefs?: string[];
+    /**
+     * Whether consumer-supplied tools (docs/adr/0035) may be offered alongside
+     * this skill's own refs. Absent means allowed — see `SkillSpec` in
+     * `skill_types.go` for why unset-means-allowed rather than the reverse.
+     */
+    allowCallerTools?: boolean;
   };
 }
 
@@ -125,5 +131,10 @@ export function toSkillDescriptor(cr: SkillCustomResource): SkillDescriptor | un
     markdown: spec.markdown,
     toolIds: spec.toolRefs ?? [],
     agentIds: spec.agentRefs ?? [],
+    // Carried through as-is, INCLUDING undefined: the tri-state (unset /
+    // true / false) is load-bearing, since unset means allowed (docs/adr/0035
+    // §4). Defaulting it here would erase the distinction the CRD's pointer
+    // type exists to preserve.
+    allowCallerTools: spec.allowCallerTools,
   };
 }

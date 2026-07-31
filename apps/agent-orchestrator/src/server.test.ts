@@ -1569,3 +1569,275 @@ describe("InvokeServer signed sender assertion (docs/adr/0030 §6)", () => {
     await server.close();
   });
 });
+
+describe("InvokeServer consumer-supplied tools (docs/adr/0035)", () => {
+  /** A valid OpenAI `tools[]` entry. */
+  function toolDef(name: string, description = "does a thing") {
+    return {
+      type: "function",
+      function: { name, description, parameters: { type: "object", properties: { q: { type: "string" } } } },
+    };
+  }
+
+  it("resolves the caller's tools onto the graph input", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ result: "ok" } as AgentState),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "what's the weather?" }],
+        tools: [toolDef("get_weather", "Look up the weather")],
+      }),
+    });
+
+    expect(graph.invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callerTools: [
+          expect.objectContaining({
+            id: "caller:get_weather",
+            name: "get_weather",
+            allowedRoles: [],
+            callerTool: expect.objectContaining({ name: "get_weather" }),
+          }),
+        ],
+      }),
+    );
+    await server.close();
+  });
+
+  it("leaves the graph input untouched when the caller sends no tools", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ result: "ok" } as AgentState),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+
+    expect(graph.invoke).toHaveBeenCalledWith({ request: "hi", authToken: "tok-1" });
+    await server.close();
+  });
+
+  it("400s a malformed tools array instead of silently ignoring it", async () => {
+    // A client that offers tools and silently never gets a tool call can't tell
+    // "not chosen" from "never seen".
+    const graph: AgentGraphLike = { invoke: vi.fn(), stream: vi.fn() };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "hi" }],
+        tools: [{ type: "function", function: { name: "bad name!" } }],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toContain("must match");
+    expect(graph.invoke).not.toHaveBeenCalled();
+    await server.close();
+  });
+
+  it("(non-streaming) returns tool_calls with finish_reason tool_calls", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({
+        pendingToolCalls: [{ id: "call_abc", name: "get_weather", arguments: '{"city":"Chicago"}' }],
+      } as AgentState),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "weather?" }],
+        tools: [toolDef("get_weather")],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      choices: { message: { content: unknown; tool_calls: { function: { name: string } }[] }; finish_reason: string }[];
+    };
+    expect(body.choices[0]!.finish_reason).toBe("tool_calls");
+    expect(body.choices[0]!.message.content).toBeNull();
+    expect(body.choices[0]!.message.tool_calls[0]!.function.name).toBe("get_weather");
+    await server.close();
+  });
+
+  it("(streaming) emits a tool_calls delta then a tool_calls finish", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn(),
+      stream: vi.fn().mockResolvedValue(
+        toStream([
+          { resolveIdentity: { identity: { subject: "alice", roles: ["reader"] } } },
+          { runTool: { pendingToolCalls: [{ id: "call_abc", name: "get_weather", arguments: '{"city":"Chicago"}' }] } },
+        ]),
+      ),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({
+        stream: true,
+        messages: [{ role: "user", content: "weather?" }],
+        tools: [toolDef("get_weather")],
+      }),
+    });
+
+    const chunks = (await readSse(res)) as {
+      choices?: { delta: { tool_calls?: { index: number; function: { name: string } }[] }; finish_reason: string | null }[];
+    }[];
+    const withChoices = chunks.filter((c) => c.choices);
+    expect(withChoices[0]!.choices![0]!.delta.tool_calls).toEqual([
+      { index: 0, id: "call_abc", type: "function", function: { name: "get_weather", arguments: '{"city":"Chicago"}' } },
+    ]);
+    expect(withChoices.at(-1)!.choices![0]!.finish_reason).toBe("tool_calls");
+    await server.close();
+  });
+
+  it("passes a client-executed tool result back as seeded actionHistory", async () => {
+    // The full round trip: the client ran our tool call and resent the
+    // conversation with the result (docs/adr/0035 §1).
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ result: "It's 58F and raining." } as AgentState),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({
+        messages: [
+          { role: "user", content: "weather in Chicago?" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_abc", type: "function", function: { name: "get_weather", arguments: '{"city":"Chicago"}' } }],
+          },
+          { role: "tool", tool_call_id: "call_abc", content: "58F and raining" },
+        ],
+        tools: [toolDef("get_weather")],
+      }),
+    });
+
+    expect(graph.invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: "weather in Chicago?",
+        actionHistory: [
+          { toolId: "caller:get_weather", toolArgs: '{"city":"Chicago"}', result: "58F and raining" },
+        ],
+      }),
+    );
+    await server.close();
+  });
+
+  it("never reaches the graph — or emits a tool call — for an Open WebUI housekeeping request", async () => {
+    // Open WebUI sends title/tag generation to the SAME endpoint with the same
+    // body, tool array included. Emitting a tool call here would have the client
+    // execute a real function as a side effect of rendering a chat title
+    // (docs/adr/0035 §5).
+    const graph: AgentGraphLike = { invoke: vi.fn(), stream: vi.fn() };
+    const server = new InvokeServer(graph, undefined, {
+      complete: vi.fn().mockResolvedValue("Chicago Weather"),
+    } as unknown as ConstructorParameters<typeof InvokeServer>[2]);
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "### Task:\nGenerate a concise title" }],
+        tools: [toolDef("get_weather")],
+      }),
+    });
+
+    expect(graph.invoke).not.toHaveBeenCalled();
+    const body = (await res.json()) as { choices: { message: { content: string }; finish_reason: string }[] };
+    expect(body.choices[0]!.finish_reason).toBe("stop");
+    expect(body.choices[0]!.message.content).toBe("Chicago Weather");
+    await server.close();
+  });
+
+  it("consults the caller-tool store only above the top-K threshold", async () => {
+    // Below it there is nothing to prune, so the JIT index must not be touched
+    // at all (docs/adr/0035 §3).
+    const callerToolStore = {
+      index: vi.fn().mockResolvedValue(undefined),
+      search: vi.fn().mockImplementation((_t: string, tools: unknown[], k: number) => Promise.resolve(tools.slice(0, k))),
+      prune: vi.fn(),
+    };
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ result: "ok" } as AgentState),
+      stream: vi.fn(),
+    };
+    const server = new InvokeServer(graph, undefined, undefined, undefined, undefined, undefined, callerToolStore, 2);
+    const port = await listenOn(server);
+
+    const post = (tools: unknown[]): Promise<Response> =>
+      fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }], tools }),
+      });
+
+    await post([toolDef("a"), toolDef("b")]);
+    expect(callerToolStore.index).not.toHaveBeenCalled();
+
+    await post([toolDef("a"), toolDef("b"), toolDef("c")]);
+    expect(callerToolStore.index).toHaveBeenCalledTimes(1);
+    expect(callerToolStore.search).toHaveBeenCalledWith("hi", expect.arrayContaining([expect.anything()]), 2);
+    // Pruned to top-K before it ever reaches the planner.
+    const lastCall = (graph.invoke as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0] as { callerTools: unknown[] };
+    expect(lastCall.callerTools).toHaveLength(2);
+
+    await server.close();
+  });
+
+  it("surfaces pendingToolCalls on GET /invoke/:id for a programmatic caller", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({
+        pendingToolCalls: [{ id: "call_abc", name: "get_weather", arguments: "{}" }],
+      } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const postRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "weather?", tools: [toolDef("get_weather")] }),
+    });
+    const { id } = (await postRes.json()) as { id: string };
+    await vi.waitFor(async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
+      const body = (await res.json()) as { status: string; pendingToolCalls?: { name: string }[] };
+      expect(body.status).toBe("succeeded");
+      expect(body.pendingToolCalls?.[0]?.name).toBe("get_weather");
+    });
+
+    await server.close();
+  });
+});
