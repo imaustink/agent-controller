@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { normalizePem } from "@controller-agent/github-app-auth";
 
 /**
  * Central configuration. Kept deliberately narrow: this container's only
@@ -85,17 +86,6 @@ function list(raw: string | undefined): string[] {
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-}
-
-/**
- * k8s Secret values often store multi-line PEM keys with literal `\n`
- * escapes rather than real newlines (depends how the Secret was created);
- * normalize both forms so `createSign(...).sign(privateKeyPem)` gets valid
- * PEM either way. Same helper as the SWE agents' own config loaders.
- */
-function normalizePem(value: string | undefined): string {
-  if (!value) return "";
-  return value.includes("\\n") ? value.replace(/\\n/g, "\n") : value;
 }
 
 function transport(raw: string | undefined): AppConfig["transport"] {

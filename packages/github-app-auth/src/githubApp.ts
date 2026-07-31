@@ -17,6 +17,21 @@ function base64url(input: Buffer | string): string {
 }
 
 /**
+ * k8s Secret values often store multi-line PEM keys with literal `\n` escapes
+ * rather than real newlines (depends how the Secret was created); normalize
+ * both forms so {@link signAppJwt}'s `createSign(...).sign(privateKeyPem)`
+ * gets valid PEM either way.
+ *
+ * Lives here, next to the only code that consumes a private key, because
+ * every consumer that reads `GITHUB_APP_PRIVATE_KEY` out of the environment
+ * needs it -- it was copy-pasted into three config loaders before.
+ */
+export function normalizePem(value: string | undefined): string {
+  if (!value) return "";
+  return value.includes("\\n") ? value.replace(/\\n/g, "\n") : value;
+}
+
+/**
  * Signs a GitHub App JWT (RS256), per GitHub's App-authentication spec. `iat`
  * is backdated 60s to tolerate clock drift between this container and
  * GitHub's servers; `exp` sits at GitHub's 10-minute maximum. This JWT

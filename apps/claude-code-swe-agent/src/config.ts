@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { normalizePem } from "@controller-agent/github-app-auth";
 
 /**
  * Tool-specific configuration for the claude-code-swe-agent. The generic
@@ -141,17 +142,6 @@ export interface AgentToolConfig {
    */
   credentialsWritebackUrl: string;
   credentialsWritebackToken: string;
-}
-
-/**
- * k8s Secret values often store multi-line PEM keys with literal `\n`
- * escapes rather than real newlines (depends how the Secret was created);
- * normalize both forms so `createSign(...).sign(privateKeyPem)` gets valid
- * PEM either way.
- */
-function normalizePem(value: string | undefined): string {
-  if (!value) return "";
-  return value.includes("\\n") ? value.replace(/\\n/g, "\n") : value;
 }
 
 /**
