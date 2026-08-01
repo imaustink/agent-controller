@@ -430,6 +430,22 @@ GitHub Issues adapter, actionable ONLY on an explicit label application:
   omitting `labelName` still matches any label, unchanged from before.
   Either way the label is applied by a human — the gateway drops bot-authored
   events, so the agent that opened the PR cannot self-trigger on its own work.
+- **Each review comment carries its own fix (no follow-up ticket).** When the
+  PR review (`github-pr-labeled-review`) leaves a comment requesting a change,
+  its `promptTemplate` has the agent deliver the fix inside that same comment
+  rather than opening a separate issue. Every change-requesting comment is an
+  inline review comment anchored to the exact `file:line`, and includes (a) a
+  GitHub `suggestion` block with the corrected replacement for the commented
+  lines whenever the fix is a concrete line edit — so the author gets a
+  one-click **Apply suggestion** button — and/or (b) an optional, copy-pasteable
+  prompt for fixing the issue with an AI coding agent, tucked into a collapsible
+  `<details>` block so it stays out of the way until the author wants it. The
+  suggestion sits at the comment's top level (so GitHub renders the apply
+  button); the agent prompt stays inside the `<details>`. Fixes that are not a
+  mechanical line edit (architectural, multi-file) skip the suggestion and rely
+  on the copyable prompt. A clean approval adds neither, and no issue or ticket
+  is opened either way — the loop from "review found a problem" to "here is the
+  fix" closes in the comment itself.
 - Identity resolution's primary path is now real, no-redeploy-needed
   verification against GitHub itself, via two resolvers
   (`CompositeGithubIdentityResolver` tries both):
