@@ -49,6 +49,11 @@ spec:
     Do not implement the change, open a pull request, or push any commits --
     only review.
 
+    Keep it concise -- its value is in the signal, not the volume. Lead with
+    the verdict, then the few points that materially change the decision. Skip
+    nitpicks, praise, and restating the issue back to its author. A short,
+    high-signal review beats an exhaustive one.
+
     You get exactly one turn to do this -- you cannot pause partway through
     and wait for a CI check, build, or test run to finish, and nothing will
     re-invoke you automatically when one does. Post a complete review now
