@@ -55,8 +55,11 @@ export function buildClaudeSettings(): object {
 
 /**
  * The task prompt handed to Claude Code. The user's instruction is embedded
- * as data; the surrounding text is fixed, trusted policy (the git workflow
- * and the "never destructive" rules). On a continuation turn the marker pins
+ * as data; the surrounding text is fixed, trusted policy (the git workflow,
+ * the "never destructive" rules, and the scope-discipline rules that keep the
+ * headless agent from over-reaching — stay in scope, and when blocked or
+ * unsure STOP and surface the blocker for a human rather than improvising a
+ * workaround). On a continuation turn the marker pins
  * the repo/branch/PR so Claude Code resumes the same work (this agent has no
  * long-lived local session to `--resume` across separate AgentRun Jobs — see
  * marker.ts — so continuity comes entirely from this re-framing plus
@@ -88,6 +91,9 @@ export function buildPrompt(instruction: string, marker: SweMarker | null): stri
     `If a task genuinely needs something outside this list, install it yourself, but check this list first.`,
     ``,
     `## Rules (must follow)`,
+    `- Stay within the scope of the task as given. Do the task that was asked and no more: do not add unrequested features, refactors, cleanups, or "while I'm here" changes. If you notice other things worth doing, list them in your final summary instead of doing them.`,
+    `- When you are blocked or unsure, STOP rather than improvising. Missing repository access or permissions, an instruction that looks wrong or ambiguous, a command that keeps failing, or anything that tempts you to work around the task as stated all mean you are done for this turn. Do NOT substitute a different repository, create a new repository the task didn't call for, broaden the task, or guess at the intent to keep making progress.`,
+    `- When you stop this way, surface the blocker instead of hiding it: explain plainly in your final reply (and, where the task provides a channel such as an issue or pull request, in a comment there) exactly what is blocking you or what you need clarified, so a human can decide and re-trigger you. A halted turn with a clear question or blocker is a successful outcome, not a failure — prefer it over doing more than was asked.`,
     `- Work only inside the current working directory.`,
     `- Never commit directly to the default branch; use a dedicated feature branch.`,
     `- Commit with clear messages and push the branch to the remote.`,
