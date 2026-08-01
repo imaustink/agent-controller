@@ -505,6 +505,14 @@ integrationRoutes:
     # (both match pull_request/labeled -- the label is the only thing telling
     # them apart). Must equal integration-gateway's config.githubReviewLabel.
     labelName: ai-review
+    # When the review requests changes, the agent also opens a follow-up ticket
+    # (a GitHub issue in the reviewed repo) that captures the findings and ends
+    # with a ready-to-run AI-agent fix prompt. fixLabelName is the label the
+    # ticket tells maintainers to apply to dispatch that fix, so it must equal
+    # the trigger label the triage routes react to (githubPrLabeledTriage /
+    # githubIssueLabeledTriage, integration-gateway's config.githubTriggerLabel)
+    # -- otherwise the ticket advertises a label nothing is listening for.
+    fixLabelName: ai-triage
   # github-pr-labeled-triage: an IntegrationRoute CR dispatching a GitHub
   # `pull_request`/`labeled` webhook to a SWE Agent with a "pick this PR back
   # up" prompt -- address the review feedback on it, push the updates, and sync

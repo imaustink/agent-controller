@@ -30,6 +30,16 @@ spec:
   # the gateway drops bot-authored events, so the agent that opened the PR
   # cannot self-trigger a review of its own pull request.
   agentRef: {{ .Values.integrationRoutes.githubPrLabeledReview.agentRef | default "opencode-swe-agent" }}
+  # When the review requests changes, the agent also opens a follow-up ticket
+  # (a GitHub issue in the same {{`{{owner}}`}}/{{`{{repo}}`}}) capturing the
+  # findings and an AI-agent fix prompt. fixLabelName is the label a maintainer
+  # applies to that ticket to dispatch the fix -- it must equal the trigger
+  # label the triage routes react to (github-pr-labeled-triage /
+  # github-issue-labeled-triage, integration-gateway's config.githubTriggerLabel,
+  # e.g. "ai-triage"), or the ticket will tell maintainers to apply a label
+  # nothing is listening for. Opening the ticket does not self-trigger anything:
+  # the gateway acts only on the trigger label being applied, and drops
+  # bot-authored events regardless.
   promptTemplate: |
     Pull request {{`{{owner}}`}}/{{`{{repo}}`}}#{{`{{prNumber}}`}} was labeled "{{`{{labelName}}`}}": "{{`{{title}}`}}"
 
@@ -40,6 +50,25 @@ spec:
     review on the PR (e.g. `gh pr review {{`{{prNumber}}`}}` with inline
     comments where a specific file/line is at issue), being concrete and
     citing file:line. Do not merge or push changes -- only review.
+
+    If -- and only if -- your review leaves comments requesting a change
+    (anything beyond a clean approval), open one follow-up tracking ticket so
+    the fix is not lost. Run `gh issue create` in
+    {{`{{owner}}`}}/{{`{{repo}}`}} (the same repository the PR targets, not a
+    new one) with a title that names the problem and a body that:
+      1. Summarizes every issue you raised, citing file:line and linking back
+         to PR #{{`{{prNumber}}`}} so the ticket and the review stay connected.
+      2. Ends with a ready-to-run fix prompt for an AI coding agent, fenced in
+         a ```text code block. Write it as a direct instruction (goal,
+         affected files, and concrete acceptance criteria) that another agent
+         could act on without re-reading the diff -- e.g. "In
+         {{`{{owner}}`}}/{{`{{repo}}`}}, fix <problem> in <file:line> so that
+         <criteria>; add a regression test; do not change unrelated behavior."
+    In the ticket body and in your PR review, note that applying the
+    "{{ .Values.integrationRoutes.githubPrLabeledReview.fixLabelName | default "ai-triage" }}"
+    label to that ticket will dispatch an AI agent to implement the fix. Open
+    exactly one ticket covering all findings -- not one per comment -- and do
+    not open any ticket when your review is an approval with nothing to fix.
 
     You get exactly one turn to do this -- you cannot pause partway through
     and wait for a CI check, build, or test run to finish, and nothing will

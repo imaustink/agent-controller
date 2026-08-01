@@ -271,6 +271,11 @@ integrationRoutes:
     enabled: true
     agentRef: claude-code-swe-agent
     labelName: ai-review
+    # A change-requesting review also opens a follow-up ticket carrying an
+    # AI-agent fix prompt; this is the label that ticket tells maintainers to
+    # apply to dispatch the fix. Kept equal to the trigger label the triage
+    # routes react to (integrationGateway.config.githubTriggerLabel, "ai-triage").
+    fixLabelName: ai-triage
   # github-pr-labeled-triage: applying the SAME trigger label as issue triage
   # (charts/agent-controller/values-production.yaml's
   # integrationGateway.config.githubTriggerLabel, "ai-triage") to a PR instead

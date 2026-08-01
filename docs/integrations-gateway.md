@@ -430,6 +430,21 @@ GitHub Issues adapter, actionable ONLY on an explicit label application:
   omitting `labelName` still matches any label, unchanged from before.
   Either way the label is applied by a human — the gateway drops bot-authored
   events, so the agent that opened the PR cannot self-trigger on its own work.
+- **Review handoff to a fix ticket.** When the PR review
+  (`github-pr-labeled-review`) leaves comments requesting a change, its
+  `promptTemplate` also has the agent open one follow-up tracking ticket — a
+  GitHub issue in the same `owner/repo` — that summarizes the findings
+  (citing `file:line`, linked back to the PR) and ends with a ready-to-run fix
+  prompt for an AI coding agent, fenced in a `text` code block. The ticket, and
+  the review, tell maintainers that applying the route's **`fixLabelName`**
+  (`integrationRoutes.githubPrLabeledReview.fixLabelName`, kept equal to the
+  triage/trigger label `GATEWAY_GITHUB_TRIGGER_LABEL`, e.g. `"ai-triage"`) to
+  that ticket dispatches an SWE agent to implement the fix — closing the loop
+  from "review found a problem" to "an agent can fix it" without a human
+  re-transcribing the review into a prompt. Opening the ticket is not itself a
+  trigger: the gateway acts only when the trigger label is applied and drops
+  bot-authored events, so the review agent cannot self-trigger the fix. A clean
+  approval opens no ticket.
 - Identity resolution's primary path is now real, no-redeploy-needed
   verification against GitHub itself, via two resolvers
   (`CompositeGithubIdentityResolver` tries both):
