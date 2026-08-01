@@ -13,6 +13,11 @@
 > `ToolRun`, `AgentRun`, and `LocalTool` CRs, not just tools, so "tool-controller"
 > no longer described what it did. This ADR's body below is left as originally
 > written and still says `tool-controller` throughout.
+>
+> **Editorial note (2026-07-19):** the "one-shot-at-startup read, no watch
+> loop yet" limitation called out below (and its restart-required staleness)
+> is resolved by [ADR 0020](0020-crd-catalog-hot-reload-via-k8s-watch.md) —
+> the orchestrator now watches Tool/LocalTool/Skill/Agent CRs live.
 
 ## Context
 
@@ -69,5 +74,6 @@ as ADR 0009, but the refresh no longer requires an image rebuild.
 - New moving part: the controller Deployment + CRDs must be installed
   (charts/tool-controller) before the orchestrator is useful.
 - CRD changes require the regeneration chain: edit Go types → `make
-  generate manifests` → copy CRD yaml into `charts/tool-controller/crds/`
-  (manual sync) → rebuild controller image.
+  generate manifests` (the latter also syncs the CRD yaml into
+  `charts/agent-controller/charts/core-controller/crds/`, which is generated
+  and not committed) → rebuild controller image.

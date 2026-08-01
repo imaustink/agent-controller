@@ -1,3 +1,5 @@
+import type { CrdChangeEvent } from "../k8s/crd-watcher.js";
+
 /**
  * An Agent is a full agent loop launched as a one-shot Job, retrievable via
  * RAG exactly like a Tool or Skill (top-level delegation target, alongside
@@ -26,6 +28,24 @@ export interface AgentDescriptor {
    * orchestrator never sees or needs.
    */
   orchestratorPrompt?: string;
+  /**
+   * External identity providers (e.g. `["github"]`) the CALLING user must
+   * have linked (one-time OAuth Device Flow, apps/integration-gateway's
+   * identity-link API) before this Agent can be launched -- launching it
+   * injects THAT caller's own current token as the AgentRun's identity
+   * secretEnv instead of the shared static credential every Agent used
+   * before this field existed. Absent/empty means no identity linking is
+   * required (today's behavior, unchanged).
+   */
+  identityProviders?: string[];
+  /**
+   * Names of `Tool` CRs this Agent's OWN internal loop may call at run time
+   * (`AgentSpec.ToolRefs`, docs/adr/0028) — NOT a retrieval-relevant field
+   * (unlike `description`), only consulted while a launched AgentRun is live,
+   * to validate an incoming `tool_call` up-message before dispatching it.
+   * Absent/empty means the sub-agent has no callable tools.
+   */
+  toolRefs?: string[];
   /** Everything needed to launch an AgentRun CR referencing this Agent. */
   agentRunTemplate: AgentRunTemplate;
 }
@@ -71,4 +91,14 @@ export interface AgentStore {
 /** Port for discovering the current catalog of agents (mirrors ToolRegistry/SkillRegistry). */
 export interface AgentRegistry {
   listAll(): Promise<AgentDescriptor[]>;
+  /**
+   * Live catalog updates after the initial `listAll()` (ADR 0020) -- an
+   * Agent CR created/edited/deleted after startup is reported here instead
+   * of only taking effect on the next orchestrator restart. Returns a handle
+   * to stop watching (used on shutdown).
+   */
+  watch(
+    onChange: (event: CrdChangeEvent<AgentDescriptor>) => void,
+    onError?: (err: unknown) => void,
+  ): { stop: () => void };
 }

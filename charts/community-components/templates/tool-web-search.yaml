@@ -1,0 +1,28 @@
+{{- if .Values.webSearch.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: Tool
+metadata:
+  name: web-search
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Searches the web via an in-cluster SearXNG instance and returns the top
+    results. The SearXNG target is fixed via this tool's own configuration,
+    never taken from the caller's input.
+  input: A single search query as a plain string.
+  output: >-
+    A Markdown list of results (title, URL, and snippet) from SearXNG, or a
+    failed event if the search could not be completed.
+  # Read-only web search -- safe for both roles.
+  allowedRoles:
+    - reader
+    - writer
+  tier: standard
+  image: {{ .Values.webSearch.image | quote }}
+  serviceAccountName: {{ .Values.webSearch.serviceAccountName | quote }}
+  env:
+    # Not a secret -- the in-cluster SearXNG Service DNS name.
+    - name: SEARXNG_BASE_URL
+      value: {{ .Values.webSearch.searxngBaseUrl | quote }}
+{{- end }}

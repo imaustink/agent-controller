@@ -61,6 +61,20 @@ spec:
               value: {{ .Values.config.qdrantVectorSize | quote }}
             - name: AGENT_QDRANT_SKILLS_COLLECTION
               value: {{ .Values.config.qdrantSkillsCollection | quote }}
+            - name: AGENT_QDRANT_CALLER_TOOLS_COLLECTION
+              value: {{ .Values.config.qdrantCallerToolsCollection | quote }}
+            {{- if .Values.config.callerToolTopK }}
+            - name: AGENT_CALLER_TOOL_TOP_K
+              value: {{ .Values.config.callerToolTopK | quote }}
+            {{- end }}
+            {{- if .Values.config.callerToolTtlSeconds }}
+            - name: AGENT_CALLER_TOOL_TTL_SECONDS
+              value: {{ .Values.config.callerToolTtlSeconds | quote }}
+            {{- end }}
+            {{- if .Values.config.callerToolPruneIntervalSeconds }}
+            - name: AGENT_CALLER_TOOL_PRUNE_INTERVAL_SECONDS
+              value: {{ .Values.config.callerToolPruneIntervalSeconds | quote }}
+            {{- end }}
             - name: AGENT_EMBEDDING_MODEL
               value: {{ .Values.config.embeddingModel | quote }}
             - name: AGENT_SELECTION_MODEL
@@ -77,15 +91,66 @@ spec:
               value: {{ .Values.config.crdGroup | quote }}
             - name: AGENT_CRD_VERSION
               value: {{ .Values.config.crdVersion | quote }}
+            {{- if .Values.config.agentRunTimeoutSeconds }}
+            - name: AGENT_RUN_TIMEOUT_SECONDS
+              value: {{ .Values.config.agentRunTimeoutSeconds | quote }}
+            {{- end }}
+            {{- if .Values.config.agentIdleTimeoutSeconds }}
+            - name: AGENT_IDLE_TIMEOUT_SECONDS
+              value: {{ .Values.config.agentIdleTimeoutSeconds | quote }}
+            {{- end }}
+            {{- if .Values.config.shutdownDrainMs }}
+            - name: AGENT_SHUTDOWN_DRAIN_MS
+              value: {{ .Values.config.shutdownDrainMs | quote }}
+            {{- end }}
             {{- if .Values.localTool.enabled }}
             - name: AGENT_LOCALTOOL_SOCKET_DIR
               value: {{ .Values.localTool.socketDir | quote }}
             - name: AGENT_LOCALTOOL_TIMEOUT_SECONDS
               value: {{ .Values.localTool.defaultTimeoutSeconds | quote }}
             {{- end }}
-            {{- if .Values.config.staticIdentities }}
+            {{- if eq .Values.config.identityResolver "oidc" }}
+            - name: AGENT_IDENTITY_RESOLVER
+              value: "oidc"
+            - name: AGENT_OIDC_ISSUER
+              value: {{ .Values.config.oidcIssuer | quote }}
+            - name: AGENT_OIDC_JWKS_URI
+              value: {{ .Values.config.oidcJwksUri | quote }}
+            {{- if .Values.config.oidcAudience }}
+            - name: AGENT_OIDC_AUDIENCE
+              value: {{ .Values.config.oidcAudience | quote }}
+            {{- end }}
+            {{- if .Values.config.oidcRolesClaim }}
+            - name: AGENT_OIDC_ROLES_CLAIM
+              value: {{ .Values.config.oidcRolesClaim | quote }}
+            {{- end }}
+            {{- end }}
+            {{/*
+            Independent of identityResolver above (not else-if): when oidc is
+            primary, a static map here becomes a CompositeIdentityResolver
+            fallback for callers that can't present a real OIDC token (e.g.
+            Open WebUI) instead of being mutually exclusive with it.
+            */}}
+            {{- if .Values.config.staticIdentitiesExistingSecret }}
+            - name: AGENT_STATIC_IDENTITIES
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.staticIdentitiesExistingSecret }}
+                  key: {{ .Values.config.staticIdentitiesExistingSecretKey }}
+            {{- else if .Values.config.staticIdentities }}
             - name: AGENT_STATIC_IDENTITIES
               value: {{ .Values.config.staticIdentities | quote }}
+            {{- end }}
+            {{- if .Values.config.openWebUiUserJwtSecretExistingSecret }}
+            - name: AGENT_OPENWEBUI_USER_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.openWebUiUserJwtSecretExistingSecret }}
+                  key: {{ .Values.config.openWebUiUserJwtSecretExistingSecretKey }}
+            {{- end }}
+            {{- if .Values.config.openWebUiUserRoles }}
+            - name: AGENT_OPENWEBUI_USER_ROLES
+              value: {{ .Values.config.openWebUiUserRoles | quote }}
             {{- end }}
             {{- if or .Values.config.natsUrl (index .Values "nats" "enabled") }}
             - name: AGENT_NATS_URL
@@ -94,6 +159,10 @@ spec:
             {{- if or .Values.config.redisUrl .Values.redis.enabled }}
             - name: AGENT_REDIS_URL
               value: {{ include "agent-orchestrator.redisUrl" . | quote }}
+            {{- end }}
+            {{- if .Values.identityLink.enabled }}
+            - name: IDENTITY_LINK_GATEWAY_URL
+              value: {{ .Values.identityLink.gatewayUrl | quote }}
             {{- end }}
             - name: OPENAI_API_KEY
               valueFrom:
@@ -133,6 +202,21 @@ spec:
                   name: {{ .Values.secrets.existingSecret | default (include "agent-orchestrator.fullname" .) }}
                   key: {{ .Values.secrets.qdrantApiKeyKey }}
                   optional: true
+            {{- end }}
+            {{- if .Values.secrets.senderAssertionSecretKey }}
+            - name: AGENT_SENDER_ASSERTION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "agent-orchestrator.fullname" .) }}
+                  key: {{ .Values.secrets.senderAssertionSecretKey }}
+                  optional: true
+            {{- end }}
+            {{- if .Values.identityLink.enabled }}
+            - name: IDENTITY_LINK_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "agent-orchestrator.fullname" .) }}
+                  key: {{ .Values.secrets.identityLinkGatewayTokenKey }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

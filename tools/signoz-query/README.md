@@ -2,8 +2,14 @@
 
 A self-contained subagent container: a single bounded SigNoz logs/traces/
 metrics query in, results out. Part of the `cluster-debug-skill` (see
-`apps/agent-orchestrator/config/samples/cluster-debug-skill.yaml`), paired
+`charts/community-components/templates/skill-cluster-debug.yaml`), paired
 with `kubectl-readonly` to correlate cluster state with observability data.
+
+The `signoz-query` Tool CR, its ServiceAccount, and this skill are defined
+solely as Helm templates in `charts/community-components` (there is no
+standalone `tool.yaml` — see main's "Remove duplicate plain-CR copies"
+cleanup); toggle them with the `signozQuery` / `skills.clusterDebug` keys in
+that chart's `values.yaml`.
 
 ## Contract
 
@@ -15,8 +21,9 @@ with `kubectl-readonly` to correlate cluster state with observability data.
 ## Safety model
 
 - **No SSRF surface** — `SIGNOZ_BASE_URL` is a fixed, operator-configured
-  env value (`tool.yaml`'s `env`), never derived from caller input. The
-  caller can only shape the query body, never the target host.
+  env value (the Tool template's `env`, from `signozQuery.baseUrl`), never
+  derived from caller input. The caller can only shape the query body, never
+  the target host.
 - **Read-only** — only `POST /api/v3/query_range` is ever called; no other
   SigNoz endpoint (dashboards, alerts, users, ...) is reachable from this
   code.
@@ -24,7 +31,7 @@ with `kubectl-readonly` to correlate cluster state with observability data.
   query whose `end - start` exceeds it, regardless of what the caller asks
   for, to bound both cost and blast radius of a single call.
 - **No k8s access** — this tool never touches the Kubernetes API; its
-  ServiceAccount (`tool.yaml`) has zero RBAC bindings.
+  ServiceAccount (`serviceaccount-signoz-query.yaml`) has zero RBAC bindings.
 
 ## Local development
 

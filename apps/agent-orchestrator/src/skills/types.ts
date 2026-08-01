@@ -1,3 +1,5 @@
+import type { CrdChangeEvent } from "../k8s/crd-watcher.js";
+
 /**
  * A Skill sits between a user's request and tool retrieval (docs/adr/0008):
  * it is RAG-matched against the request first, then its `markdown` is
@@ -23,15 +25,35 @@ export interface SkillDescriptor {
    * empty for respond-only skills (pure system-prompt knowledge).
    */
   toolIds: string[];
+  /**
+   * Ids of {@link AgentDescriptor}s (docs/adr/0021) this skill may delegate
+   * to directly — dispatched as an AgentRun the same way an agent-backed
+   * Tool already is, without needing a Tool CR to wrap the Agent first. May
+   * be empty (or combined with toolIds — a skill isn't limited to one kind).
+   */
+  agentIds: string[];
+  /**
+   * Whether consumer-supplied tools (docs/adr/0035 — the request body's `tools`
+   * array, executed by the caller's own client) may be offered to the action
+   * planner alongside this skill's own `toolIds`/`agentIds`.
+   *
+   * `undefined` means ALLOWED, matching `Skill.spec.allowCallerTools` being
+   * unset: the default that agrees with the OpenAI wire contract is "the tools I
+   * sent are usable", and a skill encoding an exact auditable procedure is the
+   * exception that opts out. NOT an authorization boundary — caller tools carry
+   * no RBAC at all, since the caller both supplies and runs them.
+   */
+  allowCallerTools?: boolean;
 }
 
 /**
- * A skill plus its derived retrieval audience (docs/adr/0011). Skills carry
- * no allowedRoles of their own — they are trusted markdown, not capability;
- * all RBAC lives on tools (and agents). `effectiveRoles` is computed by
- * derive-access.ts as the intersection of the referenced tools'
- * `allowedRoles`; `null` means unrestricted (a skill with no toolIds — any
- * caller with a resolved identity may select it).
+ * A skill plus its derived retrieval audience (docs/adr/0011, extended by
+ * ADR 0021 to agents). Skills carry no allowedRoles of their own — they are
+ * trusted markdown, not capability; all RBAC lives on tools and agents.
+ * `effectiveRoles` is computed by derive-access.ts as the intersection of
+ * the referenced tools' AND agents' `allowedRoles`; `null` means
+ * unrestricted (a skill with no toolIds/agentIds — any caller with a
+ * resolved identity may select it).
  */
 export interface SkillAccess {
   skill: SkillDescriptor;
@@ -92,4 +114,14 @@ export interface SkillStore {
  */
 export interface SkillRegistry {
   listAll(): Promise<SkillDescriptor[]>;
+  /**
+   * Live catalog updates after the initial `listAll()` (ADR 0020) -- a Skill
+   * CR created/edited/deleted after startup is reported here instead of only
+   * taking effect on the next orchestrator restart. Returns a handle to stop
+   * watching (used on shutdown).
+   */
+  watch(
+    onChange: (event: CrdChangeEvent<SkillDescriptor>) => void,
+    onError?: (err: unknown) => void,
+  ): { stop: () => void };
 }

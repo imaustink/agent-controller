@@ -58,11 +58,14 @@ Options considered:
   docs/security.md). If a genuinely sensitive-knowledge skill ever appears,
   an optional explicit override could be reintroduced — deliberately not
   built now.
-- Derivation happens once at startup (same one-shot catalog load as ADR
-  0010), so **a Tool CR `allowedRoles` change only affects skill visibility
-  after an orchestrator restart**. This staleness now applies to
-  authorization, not just catalog content — called out here explicitly
-  rather than glossed over. The Qdrant skill payload gains
+- Derivation happens at startup (same catalog load as ADR 0010) **and again
+  on every subsequent Tool/LocalTool/Skill catalog change**, per
+  [ADR 0020](0020-crd-catalog-hot-reload-via-k8s-watch.md) — a Tool CR
+  `allowedRoles` change now reaches skill visibility within that watch's
+  debounce window rather than only on the next orchestrator restart. This
+  staleness window applies to authorization, not just catalog content —
+  called out here explicitly rather than glossed over. The Qdrant skill
+  payload gains
   `effectiveRoles`/`unrestricted` fields (replacing `allowedRoles`), and the
   retrieval filter becomes an OR of `unrestricted: true` and
   `effectiveRoles ∩ callerRoles ≠ ∅`.

@@ -217,16 +217,19 @@ See [values.yaml](values.yaml) for the full, commented list. Key ones:
 | `secrets.create` | chart-managed Secret from `secrets.openaiApiKey`/`secrets.callbackSecret` (dev only) | `false` |
 | `ingress.enabled` | expose the invoke Service via Ingress | `false` |
 | `networkPolicy.enabled` | apply the invoke/callback NetworkPolicy pair | `false` |
-| `config.staticIdentities` | DEV/TEST-ONLY bearer-token map, see the app's known gaps | unset |
+| `config.identityResolver` | `static` (dev/test) or `oidc` (verify caller bearer tokens as JWTs) | `static` |
+| `config.staticIdentities` | DEV/TEST-ONLY bearer-token map, used when `identityResolver=static` | unset |
+| `config.oidcIssuer` / `config.oidcJwksUri` | required when `identityResolver=oidc`: expected JWT issuer and JWKS endpoint | unset |
+| `config.oidcAudience` | expected JWT audience; unset skips audience verification | unset |
+| `config.oidcRolesClaim` | dot-path to the roles claim, e.g. `realm_access.roles` (Keycloak) | `roles` |
 | `openwebui.enabled` | deploy a bundled Open WebUI chat UI (dev/demo only, see above) | `false` |
-| `openwebui.openaiApiKey` | bearer token Open WebUI sends — must match a key in `config.staticIdentities` | `""` |
+| `openwebui.openaiApiKey` | bearer token Open WebUI sends — must match a key in `config.staticIdentities` (static resolver only) | `""` |
 
 ## Known gaps
 
 Same ones documented in the
 [app README's "Known gaps"](../../apps/agent-orchestrator/README.md#known-gaps-by-design-not-yet-implemented)
-section — this chart doesn't work around any of them (e.g. identity
-resolution is still dev-only unless you supply your own `IdentityResolver`
-in the image; invocation state is in-memory only, so multi-replica/
+section — this chart doesn't work around any of them (e.g. invocation state
+is in-memory only, so multi-replica/
 `autoscaling.enabled` deployments won't share `/invoke/:id` state across
 pods yet).

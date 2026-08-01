@@ -93,19 +93,24 @@ src/
 ## Registering a tool
 
 Tools are **`Tool` custom resources** discovered from the cluster (ADR 0010),
-not baked into this image. `CrdToolRegistry` lists every `Tool` CR once at
-startup and upserts it into the RAG index; the Go core-controller
-(`controllers/core-controller/`) reconciles each invocation's `ToolRun` CR into
-a hardened one-shot Job — the orchestrator itself never creates a Job. To
-register a container tool:
+not baked into this image. `CrdToolRegistry` lists every `Tool` CR at startup
+and upserts it into the RAG index, then keeps watching for changes (ADR
+0020) so later CR creates/edits/deletes take effect live; the Go
+core-controller (`controllers/core-controller/`) reconciles each invocation's
+`ToolRun` CR into a hardened one-shot Job — the orchestrator itself never
+creates a Job. To register a container tool:
 
-1. Add `tools/<name>/tool.yaml` — a `Tool` CR with its
-   description/input/output/allowedRoles/tier plus the launch metadata
-   (image, serviceAccountName, env/secretEnv, resources). See
-   [tools/recipe-scraper/tool.yaml](../../tools/recipe-scraper/tool.yaml).
-2. `kubectl apply` it into the orchestrator's namespace, then restart the
-   orchestrator so it re-reads the catalog (one-shot-at-startup, no watch loop
-   yet — ADR 0010).
+1. Add a template under
+   [charts/community-components/templates/](../../charts/community-components/templates/)
+   — a `Tool` CR with its description/input/output/allowedRoles/tier plus the
+   launch metadata (image, serviceAccountName, env/secretEnv, resources),
+   gated by an `enabled` flag in that chart's `values.yaml`. See
+   [tool-recipe-scraper.yaml](../../charts/community-components/templates/tool-recipe-scraper.yaml)
+   for the pattern. This chart is the only place Tool/Skill/Agent CRs are
+   defined — no separate plain-CR copy to keep in sync.
+2. `helm upgrade` the `community-components` release into the orchestrator's
+   namespace — no orchestrator restart needed, the watch (ADR 0020) picks up
+   the new CR within seconds.
 
 The target namespace's `serviceAccountName` (e.g. `recipe-scraper`) still
 needs to actually exist in the cluster — this app doesn't create tool
@@ -206,9 +211,12 @@ authenticates Job → orchestrator callbacks).
 These are called out explicitly rather than silently glossed over — see
 [docs/orchestrator.md#open-questions-explicitly-deferred](../../docs/orchestrator.md#open-questions-explicitly-deferred):
 
-- **Identity resolution** ships only a `StaticIdentityResolver` (a hardcoded
-  dev/test token map). Real OIDC/JWT verification is not implemented — do not
-  run this outside local development as-is.
+- **Identity resolution** ships two `IdentityResolver`s: `StaticIdentityResolver`
+  (a hardcoded dev/test token map) and `OidcIdentityResolver` (verifies caller
+  bearer tokens as JWTs against a configured OIDC issuer's JWKS — works with
+  any standards-compliant IdP, no vendor SDK). Select via `AGENT_IDENTITY_RESOLVER`
+  (`static`, the default, or `oidc`) — see `.env.example` and
+  `src/rbac/oidc-identity-resolver.ts`.
 - **Manifest staleness** (ADR 0009): the tool catalog only reflects what was
   baked into the orchestrator image at build time — there's no live drift
   detection between a manifest and whether that tool's image/ServiceAccount
@@ -229,6 +237,17 @@ These are called out explicitly rather than silently glossed over — see
   continuity for **skill routing only** (which skill the conversation is
   in); there is no server-side conversation store — anything that falls out
   of the bounded window (or that the chat client doesn't resend) is gone.
+- **Caller-supplied tools have three deliberate limits** (ADR 0035). A
+  consumer may send `tools`/`tool_choice` and get standard `tool_calls` back to
+  run in its own client, but: `tool_choice: "required"` is a strong planner
+  directive rather than an enforced guarantee (the planner may still conclude
+  nothing fits); `/invoke` can only *offer* tools, not resume from their results
+  (it takes one `request` string, with nowhere to put a `role: "tool"` message —
+  the full round trip is chat-facade-only); and caller tools are unreachable
+  from a sub-agent's own loop (ADR 0028), since a sub-agent has no channel back
+  to the original HTTP caller's client. Per-*turn* planner loops are capped as
+  always, but a client can always resend, so per-conversation depth is unbounded
+  — unchanged from before this existed.
 - **Single skill per turn.** The skill selector (ADR 0008) picks exactly one
   skill per request; merging multiple matched skills' markdown/tool lists
   isn't implemented. A conversation that pivots switches its one active

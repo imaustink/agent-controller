@@ -12,7 +12,7 @@ import OpenAI from "openai";
  * told not to claim any external action was taken.
  */
 export interface BestEffortResponder {
-  respond(request: string): Promise<string>;
+  respond(request: string, onToken?: (delta: string) => void): Promise<string>;
 }
 
 const SYSTEM_PROMPT = [
@@ -37,14 +37,22 @@ export class OpenAiBestEffortResponder implements BestEffortResponder {
     this.model = opts.model ?? "gpt-4o-2024-08-06";
   }
 
-  async respond(request: string): Promise<string> {
-    const response = await this.client.chat.completions.create({
+  async respond(request: string, onToken?: (delta: string) => void): Promise<string> {
+    const stream = await this.client.chat.completions.create({
       model: this.model,
+      stream: true,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: request },
       ],
     });
-    return response.choices[0]?.message?.content ?? "I'm not able to help with that right now.";
+    let content = "";
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content;
+      if (!delta) continue;
+      content += delta;
+      onToken?.(delta);
+    }
+    return content || "I'm not able to help with that right now.";
   }
 }

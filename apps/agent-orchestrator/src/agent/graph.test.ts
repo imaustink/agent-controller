@@ -14,10 +14,18 @@ import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { AgentDescriptor, AgentStore } from "../agents/types.js";
 import type { DelegateSelector } from "./delegate-selector.js";
-import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-agent-channel.js";
+import {
+  AgentTurnFailedError,
+  AgentTurnTimeoutError,
+  AgentTurnTransportError,
+  type AgentOrchestratorChannel,
+  type AgentTurnResult,
+} from "../agents/nats-agent-channel.js";
 import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
 import type { BestEffortResponder } from "./best-effort-responder.js";
+import type { CapabilityNeedChecker } from "./capability-need-checker.js";
+import type { IdentityLinkPort } from "../identity-link/gateway-client.js";
 
 const scraperTool: ToolDescriptor = {
   id: "recipe-scraper",
@@ -41,6 +49,7 @@ const skill: SkillDescriptor = {
   description: "Extract, adjust, and publish recipes",
   markdown: "# instructions",
   toolIds: ["recipe-scraper", "recipe-publisher"],
+  agentIds: [],
 };
 
 function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
@@ -91,6 +100,10 @@ function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
   // to mock this explicitly; override per-test to exercise a rejection.
   const toolFitChecker: ToolFitChecker = { fits: vi.fn().mockResolvedValue(true) };
   const bestEffortResponder: BestEffortResponder = { respond: vi.fn().mockResolvedValue("best-effort answer") };
+  // Defaults to "needs capability" so every existing test (which assumes full
+  // retrieval runs) is unaffected; override per-test to exercise the
+  // capability-need gate itself.
+  const capabilityNeedChecker: CapabilityNeedChecker = { needsCapability: vi.fn().mockResolvedValue(true) };
 
   return {
     identityResolver,
@@ -104,6 +117,7 @@ function baseDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
     jobResultReceiver: callbackReceiver,
     toolFitChecker,
     bestEffortResponder,
+    capabilityNeedChecker,
     callbackBaseUrl: "http://orchestrator",
     callbackSecret: "s3cret",
     ...overrides,
@@ -118,7 +132,7 @@ describe("buildAgentGraph", () => {
     const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
 
     expect(final.error).toBeUndefined();
-    expect(final.identity).toEqual({ subject: "alice", roles: ["reader"] });
+    expect(final.identity).toEqual({ subject: "alice", roles: ["reader"], principal: "alice" });
     expect(final.selectedSkill?.id).toBe("recipe-publisher-skill");
     expect(final.selectedTool?.id).toBe("recipe-scraper");
     expect(final.result).toEqual({ title: "Pancakes" });
@@ -126,6 +140,35 @@ describe("buildAgentGraph", () => {
       scraperTool.jobTemplate,
       expect.objectContaining({ callbackSecret: "s3cret", args: ["https://example.com/recipe"] }),
     );
+  });
+
+  it("forwards state.sessionId to the container tool launcher as options.sessionId (docs/adr/0012)", async () => {
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "extract the recipe at https://example.com/recipe",
+      authToken: "tok",
+      sessionId: "chat-42",
+    });
+
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
+      scraperTool.jobTemplate,
+      expect.objectContaining({ sessionId: "chat-42" }),
+    );
+  });
+
+  it("omits options.sessionId from the container tool launcher when the turn has no sessionId", async () => {
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    const [, options] = (deps.containerToolLauncher.launch as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      unknown,
+      { sessionId?: string },
+    ];
+    expect(options.sessionId).toBeUndefined();
   });
 
   it("responds directly with no tool call for an in-chat edit action", async () => {
@@ -243,6 +286,61 @@ describe("buildAgentGraph", () => {
 
     expect(final.error).toMatch(/unauthorized/);
     expect(deps.skillStore.query).not.toHaveBeenCalled();
+  });
+
+  it("resolves identity from the forwarded-user token instead of the shared authToken when both are present", async () => {
+    // Regression test: authToken is Open WebUI's single static bearer token,
+    // shared by every one of its users. Resolving identity from it alone
+    // would collapse every human into one subject (see
+    // OpenWebUiForwardedUserResolver's doc comment) -- forwardedUserToken
+    // must take priority whenever a forwardedUserIdentityResolver is wired.
+    const identityResolver: IdentityResolver = { resolve: vi.fn().mockResolvedValue({ subject: "openwebui", roles: ["reader"] }) };
+    const forwardedUserIdentityResolver: IdentityResolver = {
+      resolve: vi.fn().mockResolvedValue({ subject: "openwebui:alice", roles: ["reader"] }),
+    };
+    const deps = baseDeps({ identityResolver, forwardedUserIdentityResolver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "extract the recipe at https://example.com/recipe",
+      authToken: "shared-static-token",
+      forwardedUserToken: "alices-signed-jwt",
+    });
+
+    expect(final.identity).toEqual({ subject: "openwebui:alice", roles: ["reader"], principal: "openwebui:alice" });
+    expect(forwardedUserIdentityResolver.resolve).toHaveBeenCalledWith("alices-signed-jwt");
+    expect(identityResolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it("falls back to authToken-based resolution when no forwardedUserToken is sent", async () => {
+    const identityResolver: IdentityResolver = { resolve: vi.fn().mockResolvedValue({ subject: "openwebui", roles: ["reader"] }) };
+    const forwardedUserIdentityResolver: IdentityResolver = { resolve: vi.fn() };
+    const deps = baseDeps({ identityResolver, forwardedUserIdentityResolver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "extract the recipe at https://example.com/recipe",
+      authToken: "shared-static-token",
+    });
+
+    expect(final.identity).toEqual({ subject: "openwebui", roles: ["reader"], principal: "openwebui" });
+    expect(forwardedUserIdentityResolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the forwarded-user token fails to resolve, without falling back to the shared authToken", async () => {
+    const identityResolver: IdentityResolver = { resolve: vi.fn().mockResolvedValue({ subject: "openwebui", roles: ["reader"] }) };
+    const forwardedUserIdentityResolver: IdentityResolver = { resolve: vi.fn().mockResolvedValue(undefined) };
+    const deps = baseDeps({ identityResolver, forwardedUserIdentityResolver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "do a thing",
+      authToken: "shared-static-token",
+      forwardedUserToken: "bad-jwt",
+    });
+
+    expect(final.error).toMatch(/unauthorized/);
+    expect(identityResolver.resolve).not.toHaveBeenCalled();
   });
 
   it("falls through to a best-effort LLM answer (no error) when no candidate skills are retrieved", async () => {
@@ -366,7 +464,7 @@ describe("buildAgentGraph", () => {
 
     expect(final.error).toBeUndefined();
     expect(final.result).toEqual({ status: 200, body: "hi" });
-    expect(localToolExecutor.run).toHaveBeenCalledWith(localTool, "https://example.com");
+    expect(localToolExecutor.run).toHaveBeenCalledWith(localTool, "https://example.com", undefined);
     // A LocalTool must never take the Job path.
     expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
@@ -409,6 +507,189 @@ describe("buildAgentGraph", () => {
 
     expect(final.error).toMatch(/local execution is not configured/);
     expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+});
+
+describe("buildAgentGraph multi-step tool use (docs/adr/0008 update: fixes the single-tool-call limit)", () => {
+  const searchTool: ToolDescriptor = {
+    id: "web-search",
+    name: "web-search",
+    description: "Searches the web",
+    allowedRoles: ["reader"],
+    jobTemplate: { image: "example.com/web-search:latest", namespace: "default", serviceAccountName: "sa" },
+  };
+  const fetchTool: ToolDescriptor = {
+    id: "web-fetch",
+    name: "web-fetch",
+    description: "Fetches a URL",
+    allowedRoles: ["reader"],
+    jobTemplate: { image: "example.com/web-fetch:latest", namespace: "default", serviceAccountName: "sa" },
+  };
+  const searchSkill: SkillDescriptor = {
+    id: "web-search-skill",
+    name: "Web Search",
+    description: "Search the web, fetch a promising result, and answer",
+    markdown: "# instructions",
+    toolIds: ["web-search", "web-fetch"],
+    agentIds: [],
+  };
+
+  function searchDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    return baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: searchSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([searchSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(searchSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn(),
+        getByIds: vi.fn().mockResolvedValue([
+          { tool: searchTool, score: 1 },
+          { tool: fetchTool, score: 1 },
+        ]),
+      },
+      ...overrides,
+    });
+  }
+
+  it("chains a second tool call (web-fetch) using the first tool's (web-search) result, then responds with its own synthesized answer", async () => {
+    const plan = vi
+      .fn()
+      .mockResolvedValueOnce({
+        action: "call_tool",
+        toolId: "web-search",
+        toolArgs: "countries that made the World Cup finals",
+      } satisfies PlannedAction)
+      .mockResolvedValueOnce({
+        action: "call_tool",
+        toolId: "web-fetch",
+        toolArgs: "https://en.wikipedia.org/wiki/List_of_FIFA_World_Cup_finals",
+      } satisfies PlannedAction)
+      .mockResolvedValueOnce({
+        action: "respond",
+        response: "Uruguay, Argentina, Brazil, and others have made World Cup finals -- see the full list for every year.",
+      } satisfies PlannedAction);
+    const actionPlanner: ActionPlanner = { plan };
+
+    const awaitJob = vi
+      .fn()
+      .mockResolvedValueOnce({
+        type: "succeeded",
+        job_id: "job-1",
+        seq: 1,
+        ts: new Date().toISOString(),
+        result: "- [List of FIFA World Cup finals](https://en.wikipedia.org/wiki/List_of_FIFA_World_Cup_finals): ...",
+      } satisfies Event)
+      .mockResolvedValueOnce({
+        type: "succeeded",
+        job_id: "job-2",
+        seq: 1,
+        ts: new Date().toISOString(),
+        result: "Full page content: Uruguay 1930, Argentina 1930, ... every World Cup final by year.",
+      } satisfies Event);
+    const jobResultReceiver = { awaitJob, onJobProgress: vi.fn().mockReturnValue(() => {}) } as unknown as JobResultReceiver;
+
+    const deps = searchDeps({ actionPlanner, jobResultReceiver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "What countries made the World Cup finals?", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(plan).toHaveBeenCalledTimes(3);
+    // The second decision is planned with the FIRST tool's result as context.
+    expect(plan.mock.calls[1]?.[3]).toEqual([
+      {
+        toolId: "web-search",
+        toolArgs: "countries that made the World Cup finals",
+        result: "- [List of FIFA World Cup finals](https://en.wikipedia.org/wiki/List_of_FIFA_World_Cup_finals): ...",
+      },
+    ]);
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledTimes(2);
+    // The final answer is the planner's OWN synthesized text -- not either raw tool result pasted back verbatim
+    // (this is the exact bug being fixed: previously the graph could never make this second tool call at all).
+    expect(final.result).toBe(
+      "Uruguay, Argentina, Brazil, and others have made World Cup finals -- see the full list for every year.",
+    );
+  });
+
+  it("finishes with the last tool's verbatim result (no rewrite) when the planner says finish after chaining", async () => {
+    const plan = vi
+      .fn()
+      .mockResolvedValueOnce({ action: "call_tool", toolId: "web-search", toolArgs: "pancake recipe site" } satisfies PlannedAction)
+      .mockResolvedValueOnce({
+        action: "call_tool",
+        toolId: "web-fetch",
+        toolArgs: "https://example.com/recipe",
+      } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "finish" } satisfies PlannedAction);
+    const actionPlanner: ActionPlanner = { plan };
+
+    const awaitJob = vi
+      .fn()
+      .mockResolvedValueOnce({
+        type: "succeeded",
+        job_id: "job-1",
+        seq: 1,
+        ts: new Date().toISOString(),
+        result: "search results markdown",
+      } satisfies Event)
+      .mockResolvedValueOnce({
+        type: "succeeded",
+        job_id: "job-2",
+        seq: 1,
+        ts: new Date().toISOString(),
+        result: "# Pancakes\n\n## Ingredients\n\n1. 2 eggs",
+      } satisfies Event);
+    const jobResultReceiver = { awaitJob, onJobProgress: vi.fn().mockReturnValue(() => {}) } as unknown as JobResultReceiver;
+
+    const deps = searchDeps({ actionPlanner, jobResultReceiver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fetch the recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedTool?.id).toBe("web-fetch");
+    expect(final.result).toBe("# Pancakes\n\n## Ingredients\n\n1. 2 eggs");
+    expect(deps.responseComposer.compose).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ id: "web-search-skill" }),
+      fetchTool,
+      "# Pancakes\n\n## Ingredients\n\n1. 2 eggs",
+    );
+  });
+
+  it("bounds the loop at a fixed max step count, finishing with the last tool result instead of looping forever", async () => {
+    let n = 0;
+    const plan = vi.fn().mockImplementation(async () => {
+      n += 1;
+      return { action: "call_tool", toolId: "web-fetch", toolArgs: `https://example.com/page-${n}` } satisfies PlannedAction;
+    });
+    const actionPlanner: ActionPlanner = { plan };
+
+    const awaitJob = vi.fn().mockImplementation(async () => ({
+      type: "succeeded",
+      job_id: `job-${n}`,
+      seq: 1,
+      ts: new Date().toISOString(),
+      result: `page ${n} content`,
+    } satisfies Event));
+    const jobResultReceiver = { awaitJob, onJobProgress: vi.fn().mockReturnValue(() => {}) } as unknown as JobResultReceiver;
+
+    const deps = searchDeps({ actionPlanner, jobResultReceiver });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "keep fetching pages forever", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    // The planner never settles (always a fresh call_tool with new args, so
+    // the identical-repeat guard never kicks in) -- the loop still stops.
+    expect(plan.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledTimes(plan.mock.calls.length);
+    expect(final.result).toBe(`page ${plan.mock.calls.length} content`);
   });
 });
 
@@ -758,6 +1039,149 @@ describe("buildAgentGraph agent delegation continuation tokens (ADR 0017)", () =
   });
 });
 
+describe("buildAgentGraph checkIntegrationRoute (IntegrationRoute-forced dispatch)", () => {
+  it("resolves a forcedSkillId directly, bypassing RAG skill retrieval", async () => {
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "triage this issue",
+      authToken: "tok",
+      forcedSkillId: "recipe-publisher-skill",
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedSkill?.id).toBe("recipe-publisher-skill");
+    // RAG retrieval (skillStore.query) never runs -- checkIntegrationRoute
+    // resolved selectedSkill directly via skillStore.getByIds, routing
+    // straight to loadSkillTools.
+    expect(deps.skillStore.query).not.toHaveBeenCalled();
+    expect(deps.skillStore.getByIds).toHaveBeenCalledWith(["recipe-publisher-skill"], { callerRoles: ["reader"] });
+  });
+
+  it("resolves a forcedAgentId directly, bypassing RAG retrieval, and delegates to that agent", async () => {
+    const codingAgent: AgentDescriptor = {
+      id: "opencode-swe-agent",
+      name: "opencode-swe-agent",
+      description: "Does software engineering tasks",
+      allowedRoles: ["reader"],
+      agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
+    };
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: codingAgent }]),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({ message: "Opened a pull request", final: true, narration: [] } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    const deps = baseDeps({
+      agentStore,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      forcedAgentId: "opencode-swe-agent",
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedAgent?.id).toBe("opencode-swe-agent");
+    expect(deps.skillStore.query).not.toHaveBeenCalled();
+    expect(agentRunLauncher.launch).toHaveBeenCalled();
+  });
+
+  it("returns only the agent's final message (NOT the progress narration) for a non-streaming caller, e.g. a GitHub triage comment", async () => {
+    // Regression: the triage relay is fire-and-forget (no progressListener),
+    // and it used to get the entire narration trail prepended -- turning the
+    // issue comment into a giant "Authenticating… / running Bash / …"
+    // transcript ending in the actual summary. The durable comment must be
+    // just the final answer.
+    const codingAgent: AgentDescriptor = {
+      id: "claude-code-swe-agent",
+      name: "claude-code-swe-agent",
+      description: "Does software engineering tasks",
+      allowedRoles: ["reader"],
+      agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe-agent" },
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened a pull request: https://github.com/acme/widgets/pull/42\n\n## Summary\nAdded dark mode.",
+        final: true,
+        narration: ["Authenticating…", "Running Claude Code…", "running Bash", "running Read"],
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = baseDeps({
+      agentStore: {
+        upsert: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([{ agent: codingAgent }]),
+      },
+      agentChannel,
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+    const graph = buildAgentGraph(deps);
+
+    // No progressListener -- exactly the fire-and-forget triage relay shape.
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      forcedAgentId: "claude-code-swe-agent",
+    });
+
+    expect(final.result).toBe(
+      "Opened a pull request: https://github.com/acme/widgets/pull/42\n\n## Summary\nAdded dark mode.",
+    );
+    expect(final.result).not.toMatch(/Authenticating|running Bash|running Read/);
+  });
+
+  it("falls through to ordinary retrieval when forcedSkillId doesn't resolve to any Skill", async () => {
+    const skillStore: SkillStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ skill, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([]),
+    };
+    const deps = baseDeps({ skillStore });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "extract the recipe at https://example.com/recipe",
+      authToken: "tok",
+      forcedSkillId: "nonexistent-skill",
+    });
+
+    expect(final.error).toBeUndefined();
+    // Falls through to ordinary RAG retrieval, which still finds `skill`.
+    expect(deps.skillSelector.select).toHaveBeenCalled();
+    expect(final.selectedSkill?.id).toBe("recipe-publisher-skill");
+  });
+
+  it("does nothing when neither forcedSkillId nor forcedAgentId is set (ordinary turn, unaffected)", async () => {
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedSkill?.id).toBe("recipe-publisher-skill");
+  });
+});
+
 describe("buildAgentGraph agent-backed Tool (runTool via AgentRun)", () => {
   const agentBackedTool: ToolDescriptor = {
     id: "opencode-swe-agent-tool",
@@ -773,6 +1197,7 @@ describe("buildAgentGraph agent-backed Tool (runTool via AgentRun)", () => {
     description: "Drafts and PRs a new skill",
     markdown: "# instructions",
     toolIds: ["opencode-swe-agent-tool"],
+    agentIds: [],
   };
 
   function agentBackedToolDeps(overrides: Partial<AgentGraphDeps> = {}, reply: Partial<AgentTurnResult> = {}) {
@@ -854,6 +1279,312 @@ describe("buildAgentGraph agent-backed Tool (runTool via AgentRun)", () => {
 
     expect(final.error).toMatch(/agent delegation is not configured/);
   });
+
+  describe("identity-gated agent-backed tool (ADR 0022)", () => {
+    const identityGatedTool: ToolDescriptor = { ...agentBackedTool, identityProviders: ["github"] };
+
+    function identityGatedDeps(overrides: Partial<AgentGraphDeps> = {}) {
+      const vectorStore: VectorStore = {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([{ tool: identityGatedTool, score: 1 }]),
+      };
+      const identityLinkGateway: IdentityLinkPort = {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getToken: vi.fn().mockResolvedValue(undefined),
+      };
+      return agentBackedToolDeps({ vectorStore, identityLinkGateway, ...overrides });
+    }
+
+    it("injects the caller's already-linked token as secretEnv instead of erroring", async () => {
+      const identityLinkGateway: IdentityLinkPort = {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getToken: vi.fn().mockResolvedValue({ token: "gho_alice-token" }),
+      };
+      const deps = identityGatedDeps({ identityLinkGateway });
+      const graph = buildAgentGraph(deps);
+
+      const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+      expect(final.error).toBeUndefined();
+      expect(identityLinkGateway.getToken).toHaveBeenCalledWith("github", "alice");
+      expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+        identityGatedTool.agentRunTemplate,
+        expect.any(String),
+        expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_alice-token" }] }),
+      );
+    });
+
+    it("errors (without launching) instead of silently running credential-less when the caller has no linked token", async () => {
+      const deps = identityGatedDeps();
+      const graph = buildAgentGraph(deps);
+
+      const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+      expect(final.error).toMatch(/requires linking your github account/);
+      expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    });
+
+    it("errors when identity providers are declared but no identity-link gateway is configured", async () => {
+      const deps = identityGatedDeps({ identityLinkGateway: undefined });
+      const graph = buildAgentGraph(deps);
+
+      const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+      expect(final.error).toMatch(/no identity-link gateway is configured/);
+      expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("buildAgentGraph identity-gated container Tool (ADR 0032, e.g. the github Tool)", () => {
+  const githubTool: ToolDescriptor = {
+    id: "github",
+    name: "github",
+    description: "Runs a single gh CLI command against GitHub, authenticated as the calling user",
+    allowedRoles: ["writer"],
+    jobTemplate: { image: "example.com/github:latest", namespace: "default", serviceAccountName: "github-tool" },
+    identityProviders: ["github"],
+  };
+
+  const githubToolSkill: SkillDescriptor = {
+    id: "github-cli-skill",
+    name: "GitHub CLI",
+    description: "Runs gh CLI commands against GitHub",
+    markdown: "# instructions",
+    toolIds: ["github"],
+    agentIds: [],
+  };
+
+  function githubToolDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    const skillStore: SkillStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ skill: githubToolSkill, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([githubToolSkill]),
+    };
+    const vectorStore: VectorStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ tool: githubTool, score: 1 }]),
+    };
+    const actionPlanner: ActionPlanner = {
+      plan: vi.fn().mockResolvedValue({
+        action: "call_tool",
+        toolId: "github",
+        toolArgs: "issue view 86 --repo imaustink/agent-controller",
+      } satisfies PlannedAction),
+    };
+    return baseDeps({ skillStore, vectorStore, actionPlanner, ...overrides });
+  }
+
+  it("injects the caller's already-linked token as secretEnv instead of erroring", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "gho_alice-token" }),
+    };
+    const deps = githubToolDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "what does issue 86 say", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(identityLinkGateway.getToken).toHaveBeenCalledWith("github", "alice");
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
+      githubTool.jobTemplate,
+      expect.objectContaining({ secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_alice-token" }] }),
+    );
+  });
+
+  it("errors (without launching) instead of silently running credential-less when the caller has no linked token", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = githubToolDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "what does issue 86 say", authToken: "tok" });
+
+    expect(final.error).toMatch(/requires linking your github account/);
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+
+  it("errors when identity providers are declared but no identity-link gateway is configured", async () => {
+    const deps = githubToolDeps({ identityLinkGateway: undefined });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "what does issue 86 say", authToken: "tok" });
+
+    expect(final.error).toMatch(/no identity-link gateway is configured/);
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+
+  it("resolves a non-github provider through the provider-aware gateway, not the GitHub-only one", async () => {
+    // A container Tool declaring identityProviders:["claude"] must have its
+    // token read from claudeAuthGateway (via identityGatewayFor/AuthorizationService),
+    // NOT the GitHub-only identityLinkGateway -- guarding the bypass that
+    // hard-coding deps.identityLinkGateway would have re-introduced.
+    const claudeTool: ToolDescriptor = { ...githubTool, identityProviders: ["claude"] };
+    const claudeToolSkill: SkillDescriptor = { ...githubToolSkill, toolIds: ["github"] };
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "claude-oauth-alice" }),
+    };
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "gho_should-not-be-used" }),
+    };
+    const vectorStore: VectorStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ tool: claudeTool, score: 1 }]),
+    };
+    const skillStore: SkillStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ skill: claudeToolSkill, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([claudeToolSkill]),
+    };
+    const deps = githubToolDeps({ skillStore, vectorStore, claudeAuthGateway, identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "run a claude command", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(claudeAuthGateway.getToken).toHaveBeenCalledWith("claude", "alice");
+    // The GitHub-only gateway may be consulted for principal establishment, but
+    // must never be asked to resolve the "claude" provider's credential.
+    expect(identityLinkGateway.getToken).not.toHaveBeenCalledWith("claude", expect.anything());
+    // Definitive proof of correct routing: the launched token is the one from
+    // claudeAuthGateway, not identityLinkGateway's "gho_should-not-be-used".
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
+      claudeTool.jobTemplate,
+      expect.objectContaining({ secretEnv: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", value: "claude-oauth-alice" }] }),
+    );
+  });
+});
+
+describe("buildAgentGraph Skill.agentRefs (ADR 0021, no Tool wrapper)", () => {
+  const opencodeAgent: AgentDescriptor = {
+    id: "opencode-swe-agent",
+    name: "opencode-swe-agent",
+    description: "General-purpose coding agent",
+    allowedRoles: ["reader"],
+    agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
+  };
+
+  const selfImprovementSkill: SkillDescriptor = {
+    id: "self-improvement-skill",
+    name: "Self Improvement",
+    description: "Drafts and PRs a new skill",
+    markdown: "# instructions",
+    toolIds: [],
+    agentIds: ["opencode-swe-agent"],
+  };
+
+  function agentRefsDeps(overrides: Partial<AgentGraphDeps> = {}, reply: Partial<AgentTurnResult> = {}) {
+    const skillStore: SkillStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ skill: selfImprovementSkill, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([selfImprovementSkill]),
+    };
+    const skillSelector: SkillSelector = { select: vi.fn().mockResolvedValue(selfImprovementSkill) };
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: opencodeAgent, score: 1 }]),
+    };
+    const actionPlanner: ActionPlanner = {
+      plan: vi.fn().mockResolvedValue({
+        action: "call_tool",
+        toolId: "opencode-swe-agent",
+        toolArgs: "open a PR adding this skill",
+      } satisfies PlannedAction),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened https://github.com/imaustink/agent-controller/pull/42",
+        final: true,
+        narration: [],
+        ...reply,
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      skillStore,
+      skillSelector,
+      agentStore,
+      actionPlanner,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("resolves a skill's agentRefs via agentStore and dispatches straight to an AgentRun, no Tool CR involved", async () => {
+    const deps = agentRefsDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedTool?.id).toBe("opencode-swe-agent");
+    expect(final.selectedTool?.agentRunTemplate).toEqual(opencodeAgent.agentRunTemplate);
+    expect(final.result).toBe("Opened https://github.com/imaustink/agent-controller/pull/42");
+    expect(deps.agentStore!.getByIds).toHaveBeenCalledWith(["opencode-swe-agent"], { callerRoles: ["reader"] });
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      opencodeAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ goal: "open a PR adding this skill" }),
+    );
+  });
+
+  it("errors when a skill declares agentRefs but agent delegation (agentStore) is not configured", async () => {
+    const deps = agentRefsDeps({ agentStore: undefined });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+    expect(final.error).toMatch(/agent delegation is not configured/);
+  });
+
+  it("carries an agentRefs-resolved Agent's identityProviders through to the ToolDescriptor and gates the launch on it (regression: this used to launch with no credentials at all)", async () => {
+    const identityGatedAgent: AgentDescriptor = { ...opencodeAgent, identityProviders: ["github"] };
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: identityGatedAgent, score: 1 }]),
+    };
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = agentRefsDeps({ agentStore, identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "add a permanent skill for this", authToken: "tok" });
+
+    expect(final.error).toMatch(/requires linking your github account/);
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildAgentGraph best-effort LLM answer on no match (no hardcoded fallback agent)", () => {
@@ -906,7 +1637,7 @@ describe("buildAgentGraph best-effort LLM answer on no match (no hardcoded fallb
   it("gives a bare best-effort LLM answer when the delegate selector picks no candidate", async () => {
     const deps = noMatchDeps();
     (deps.skillStore.query as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { skill: { id: "unrelated", name: "unrelated", description: "x", markdown: "x", toolIds: [] }, score: 0.1 },
+      { skill: { id: "unrelated", name: "unrelated", description: "x", markdown: "x", toolIds: [], agentIds: [] }, score: 0.1 },
     ]);
     const graph = buildAgentGraph(deps);
 
@@ -1058,3 +1789,2222 @@ describe("buildAgentGraph fallback tool-fit (tried before the best-effort LLM an
   });
 });
 
+describe("buildAgentGraph capability-need gate (no search for conversational requests, ADR 0019)", () => {
+  it("skips catalog retrieval and the self-improvement suggestion when no capability is needed", async () => {
+    const capabilityNeedChecker: CapabilityNeedChecker = { needsCapability: vi.fn().mockResolvedValue(false) };
+    const deps = baseDeps({ capabilityNeedChecker });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "what's a good substitute for buttermilk?", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.capabilityNeedChecker.needsCapability).toHaveBeenCalledWith("what's a good substitute for buttermilk?");
+    expect(deps.skillStore.query).not.toHaveBeenCalled();
+    expect(deps.vectorStore.query).not.toHaveBeenCalled();
+    expect(deps.bestEffortResponder.respond).toHaveBeenCalledWith("what's a good substitute for buttermilk?");
+    expect(final.result).toBe("best-effort answer");
+    expect(final.result).not.toContain("self-improvement");
+    expect(final.wasFallback).toBe(false);
+  });
+
+  it("streams the answer via the progress listener and leaves result empty, still with no self-improvement suggestion", async () => {
+    const capabilityNeedChecker: CapabilityNeedChecker = { needsCapability: vi.fn().mockResolvedValue(false) };
+    const bestEffortResponder: BestEffortResponder = {
+      respond: vi.fn().mockImplementation(async (_request: string, onToken?: (delta: string) => void) => {
+        onToken?.("streamed answer");
+        return "streamed answer";
+      }),
+    };
+    const deps = baseDeps({ capabilityNeedChecker, bestEffortResponder });
+    const graph = buildAgentGraph(deps);
+    const progressListener = vi.fn();
+
+    const final = await graph.invoke({ request: "tell me a joke", authToken: "tok", progressListener });
+
+    expect(final.error).toBeUndefined();
+    expect(progressListener).toHaveBeenCalledWith("agent-text", "streamed answer");
+    expect(final.result).toBe("");
+    expect(deps.skillStore.query).not.toHaveBeenCalled();
+  });
+
+  it("proceeds with the normal retrieval flow unchanged when a capability is judged needed", async () => {
+    const capabilityNeedChecker: CapabilityNeedChecker = { needsCapability: vi.fn().mockResolvedValue(true) };
+    const deps = baseDeps({ capabilityNeedChecker });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "scrape and publish this recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.capabilityNeedChecker.needsCapability).toHaveBeenCalledWith("scrape and publish this recipe");
+    expect(deps.skillStore.query).toHaveBeenCalled();
+  });
+});
+
+describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)", () => {
+  const githubAgent: AgentDescriptor = {
+    id: "opencode-swe",
+    name: "opencode-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    identityProviders: ["github"],
+    agentRunTemplate: { namespace: "default", agentRef: "opencode-swe" },
+  };
+
+  function identityLinkDeps(overrides: Partial<AgentGraphDeps> = {}, reply: Partial<AgentTurnResult> = {}) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: githubAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([githubAgent]),
+    };
+    const delegateSelector: DelegateSelector = {
+      select: vi.fn().mockResolvedValue({ type: "agent", agent: githubAgent }),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened a pull request",
+        final: true,
+        narration: [],
+        ...reply,
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "device" as const,
+        verificationUri: "https://github.com/login/device",
+        userCode: "ABCD-1234",
+        deviceCode: "raw-device-code",
+        expiresInSeconds: 900,
+        pollIntervalSeconds: 5,
+      }),
+      poll: vi.fn().mockResolvedValue("complete"),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher,
+      identityLinkGateway,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("starts a device-flow link (identityLinkFlow: \"device\" explicitly set) and does NOT launch the agent when the caller has no linked token yet", async () => {
+    const deps = identityLinkDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "open a PR that fixes the bug",
+      authToken: "tok",
+      identityLinkFlow: "device",
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.identityLinkGateway!.getToken).toHaveBeenCalledWith("github", "alice");
+    expect(deps.identityLinkGateway!.start).toHaveBeenCalledWith("github", "alice", "device");
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual({
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "device",
+      deviceCode: "raw-device-code",
+      expiresAt: expect.any(Number),
+      subject: "alice",
+      request: "open a PR that fixes the bug",
+    });
+    expect(final.result).toMatch(/github\.com\/login\/device/);
+    expect(final.result).toMatch(/ABCD-1234/);
+  });
+
+  it("starts an authcode-flow link by default (no identityLinkFlow set) and does NOT launch the agent when the caller has no linked token yet", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "authcode" as const,
+        authorizeUrl: "https://github.com/login/oauth/authorize?state=xyz",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "open a PR that fixes the bug", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(identityLinkGateway.getToken).toHaveBeenCalledWith("github", "alice");
+    expect(identityLinkGateway.start).toHaveBeenCalledWith("github", "alice", "authcode");
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual({
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "authcode",
+      expiresAt: expect.any(Number),
+      subject: "alice",
+      request: "open a PR that fixes the bug",
+    });
+    expect(final.pendingIdentityLink?.deviceCode).toBeUndefined();
+    expect(final.result).toMatch(/github\.com\/login\/oauth\/authorize/);
+  });
+
+  it("holds the turn open via waitForCompletion on a streaming call and launches without ending the turn once linked", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "authcode" as const,
+        authorizeUrl: "https://github.com/login/oauth/authorize?state=xyz",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      waitForCompletion: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+    const progressListener = vi.fn();
+
+    const final = await graph.invoke({ request: "open a PR that fixes the bug", authToken: "tok", progressListener });
+
+    expect(progressListener).toHaveBeenCalledWith("identity-link", expect.stringContaining("github.com/login/oauth/authorize"));
+    expect(identityLinkGateway.waitForCompletion).toHaveBeenCalledWith("github", "alice", 600_000);
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      githubAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ] }),
+    );
+    expect(final.identityLinkPending).toBeFalsy();
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(final.agentRunId).toBeDefined();
+  });
+
+  it("degrades to the pending-link state (not a crashed turn) when waitForCompletion throws a network error", async () => {
+    // Regression for the reported "❌ fetch failed": the long-held wait can
+    // throw (gateway pod rolled mid-deploy, idle connection dropped, undici
+    // headers-timeout) -- that must NOT surface as a raw error, since the
+    // link itself is still completable. It should park pendingIdentityLink
+    // exactly like a plain timeout.
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "authcode" as const,
+        authorizeUrl: "https://github.com/login/oauth/authorize?state=xyz",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      waitForCompletion: vi.fn().mockRejectedValue(new TypeError("fetch failed")),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "open a PR that fixes the bug", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).not.toMatch(/fetch failed/i);
+    expect(final.result).toMatch(/link your GitHub account/i);
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toMatchObject({ agentId: "opencode-swe", provider: "github", flow: "authcode" });
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
+  it("posts the link immediately and parks a pending link (does NOT block on waitForCompletion) for a fire-and-forget caller with no progressListener, e.g. integration-gateway's GitHub-issue relay", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "device" as const,
+        verificationUri: "https://github.com/login/device",
+        userCode: "ABCD-1234",
+        deviceCode: "raw-device-code",
+        expiresInSeconds: 900,
+        pollIntervalSeconds: 5,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      // Would resolve a token if awaited -- the point of this test is that on a
+      // no-progressListener caller it is NEVER awaited.
+      waitForCompletion: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    // No progressListener -- integration-gateway's relay shape (fire-and-forget
+    // /invoke, polled for a result). There is no live channel to show the link
+    // on, so it reaches the user only in the final result comment. Blocking on
+    // waitForCompletion would hide the link for the whole wait window (nobody
+    // can complete a link they can't see), so the link must be posted
+    // immediately and the pending link parked for checkPendingIdentityLink to
+    // resume on the next trigger.
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      identityLinkFlow: "device",
+    });
+
+    expect(identityLinkGateway.waitForCompletion).not.toHaveBeenCalled();
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual({
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "device",
+      deviceCode: "raw-device-code",
+      expiresAt: expect.any(Number),
+      subject: "alice",
+      request: "triage and resolve this issue",
+    });
+    expect(final.result).toMatch(/link your GitHub account/i);
+    expect(final.result).toMatch(/enter code `ABCD-1234`/);
+  });
+
+  it("resumes automatically via waitForCompletion within the same turn for a streaming caller (progressListener present)", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "device" as const,
+        verificationUri: "https://github.com/login/device",
+        userCode: "ABCD-1234",
+        deviceCode: "raw-device-code",
+        expiresInSeconds: 900,
+        pollIntervalSeconds: 5,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      waitForCompletion: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+    const progressListener = vi.fn();
+
+    // A streaming chat turn HAS a live channel: the link is surfaced live via
+    // progressListener, so it is safe (and desirable) to block up to expiry and
+    // resume the SAME turn once the user links -- no follow-up message needed.
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      identityLinkFlow: "device",
+      progressListener,
+    });
+
+    expect(progressListener).toHaveBeenCalledWith("identity-link", expect.stringMatching(/link your GitHub account/i));
+    expect(identityLinkGateway.waitForCompletion).toHaveBeenCalledWith("github", "alice", 900_000);
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      githubAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({
+        secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ],
+        goal: "triage and resolve this issue",
+      }),
+    );
+    expect(final.identityLinkPending).toBeFalsy();
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(final.agentRunId).toBeDefined();
+  });
+
+  it("falls back to the pending-link message when waitForCompletion times out on a streaming call", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "authcode" as const,
+        authorizeUrl: "https://github.com/login/oauth/authorize?state=xyz",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      waitForCompletion: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+    const progressListener = vi.fn();
+
+    const final = await graph.invoke({ request: "open a PR that fixes the bug", authToken: "tok", progressListener });
+
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual({
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "authcode",
+      expiresAt: expect.any(Number),
+      subject: "alice",
+      request: "open a PR that fixes the bug",
+    });
+    // Streaming turn: the link was already surfaced live via progressListener,
+    // so the terminal result is a short nudge that does NOT repeat the
+    // `[link your account](url)` markdown -- otherwise the caller renders the
+    // auth prompt twice (the "doubled up" chat message).
+    expect(progressListener).toHaveBeenCalledWith(
+      "identity-link",
+      expect.stringContaining("I'll continue automatically once you finish"),
+    );
+    expect(final.result).toMatch(/Send any message once you're done and I'll continue/);
+    expect(final.result).not.toContain("](");
+  });
+
+  it("resumes delegation and launches with secretEnv once a pending link's poll reports complete", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn().mockResolvedValue("complete"),
+      getToken: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "continue please",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: {
+        agentId: "opencode-swe",
+        provider: "github",
+        flow: "device",
+        deviceCode: "raw-device-code",
+        expiresAt: Date.now() + 900_000,
+      },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(identityLinkGateway.poll).toHaveBeenCalledWith("github", "alice", "raw-device-code");
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      githubAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ] }),
+    );
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(final.agentRunId).toBeDefined();
+  });
+
+  it("resumes with the ORIGINAL request captured at pause time, not the resuming turn's throwaway text", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn().mockResolvedValue("complete"),
+      getToken: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      // The resuming turn's own text is just an unrelated ack -- the agent
+      // must be launched with the ORIGINAL goal below, not this.
+      request: "Done!",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: {
+        agentId: "opencode-swe",
+        provider: "github",
+        flow: "device",
+        deviceCode: "raw-device-code",
+        expiresAt: Date.now() + 900_000,
+        request: "triage and resolve this issue: add dark mode",
+      },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      githubAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ goal: "triage and resolve this issue: add dark mode" }),
+    );
+  });
+
+  it("falls back to the resuming turn's own text when the pending link predates the request field (older in-flight session)", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn().mockResolvedValue("complete"),
+      getToken: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "continue please",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: {
+        agentId: "opencode-swe",
+        provider: "github",
+        flow: "device",
+        deviceCode: "raw-device-code",
+        expiresAt: Date.now() + 900_000,
+        // No `request` field -- simulates a session paused before this fix.
+      },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      githubAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ goal: "continue please" }),
+    );
+  });
+
+  it("ends the turn with identityLinkPending true and the pending link preserved when poll reports still-pending before expiry", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn().mockResolvedValue("pending"),
+      getToken: vi.fn(),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+    const pending = {
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "device" as const,
+      deviceCode: "raw-device-code",
+      expiresAt: Date.now() + 900_000,
+    };
+
+    const final = await graph.invoke({
+      request: "still working on it",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: pending,
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual(pending);
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.result).toMatch(/still waiting/i);
+  });
+
+  it("clears the pending link and falls through to normal selection when poll reports expired", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "device" as const,
+        verificationUri: "https://github.com/login/device",
+        userCode: "NEW-CODE",
+        deviceCode: "new-device-code",
+        expiresInSeconds: 900,
+        pollIntervalSeconds: 5,
+      }),
+      poll: vi.fn().mockResolvedValue("expired"),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "let's try again",
+      authToken: "tok",
+      sessionSubject: "alice",
+      // Same caller forces device flow again on the fresh attempt below.
+      identityLinkFlow: "device",
+      pendingIdentityLink: {
+        agentId: "opencode-swe",
+        provider: "github",
+        flow: "device",
+        deviceCode: "raw-device-code",
+        expiresAt: Date.now() - 1_000, // already expired
+      },
+    });
+
+    expect(final.error).toBeUndefined();
+    // Falls through to fresh retrieval/selection, which re-detects the
+    // missing link and starts a BRAND NEW device-flow attempt.
+    expect(deps.identityLinkGateway!.start).toHaveBeenCalledWith("github", "alice", "device");
+    expect(final.pendingIdentityLink).toEqual({
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "device",
+      deviceCode: "new-device-code",
+      expiresAt: expect.any(Number),
+      subject: "alice",
+      request: "let's try again",
+    });
+  });
+
+  it("resumes delegation via authcode's getToken check (not poll) when a pending authcode link's token has landed", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "gho_resolved-token", githubLogin: "alice-gh" }),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "continue please",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: {
+        agentId: "opencode-swe",
+        provider: "github",
+        flow: "authcode",
+        expiresAt: Date.now() + 900_000,
+      },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(identityLinkGateway.poll).not.toHaveBeenCalled();
+    expect(identityLinkGateway.getToken).toHaveBeenCalledWith("github", "alice");
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      githubAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ secretEnv: [
+          { name: "GITHUB_TOKEN", value: "gho_resolved-token" },
+          // Resolved by the authorization pre-flight from the github link's
+          // own githubLogin (docs/adr/0030 §5) -- so the agent never calls
+          // GitHub's /user itself.
+          { name: "AGENT_ACTOR_LOGIN", value: "alice-gh" },
+        ] }),
+    );
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(final.agentRunId).toBeDefined();
+  });
+
+  it("ends the turn with identityLinkPending true when a pending authcode link's token has not landed yet and it hasn't expired (poll not called)", async () => {
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = identityLinkDeps({ identityLinkGateway });
+    const graph = buildAgentGraph(deps);
+    const pending = {
+      agentId: "opencode-swe",
+      provider: "github",
+      flow: "authcode" as const,
+      expiresAt: Date.now() + 900_000,
+    };
+
+    const final = await graph.invoke({
+      request: "still working on it",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: pending,
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(identityLinkGateway.poll).not.toHaveBeenCalled();
+    expect(identityLinkGateway.getToken).toHaveBeenCalledWith("github", "alice");
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual(pending);
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.result).toMatch(/still waiting/i);
+  });
+});
+
+describe("buildAgentGraph per-caller Claude Code OAuth linking (docs/adr/0027)", () => {
+  const claudeAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks with Claude Code",
+    allowedRoles: ["reader"],
+    identityProviders: ["claude"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  function claudeAuthDeps(overrides: Partial<AgentGraphDeps> = {}, reply: Partial<AgentTurnResult> = {}) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: claudeAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([claudeAgent]),
+    };
+    const delegateSelector: DelegateSelector = {
+      select: vi.fn().mockResolvedValue({ type: "agent", agent: claudeAgent }),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened a pull request",
+        final: true,
+        narration: [],
+        ...reply,
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-1?u=https://claude.ai/oauth/authorize",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher,
+      claudeAuthGateway,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("starts a page-flow Claude link and does NOT launch the agent when the caller has no linked token yet", async () => {
+    const deps = claudeAuthDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.claudeAuthGateway!.getToken).toHaveBeenCalledWith("claude", "alice");
+    expect(deps.claudeAuthGateway!.start).toHaveBeenCalled();
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toEqual({
+      agentId: "claude-code-swe",
+      provider: "claude",
+      flow: "page",
+      expiresAt: expect.any(Number),
+      subject: "alice",
+      request: "fix the failing test",
+    });
+    expect(final.result).toMatch(/claude-auth\/flow-1/);
+    expect(final.result).toMatch(/link your Claude account/i);
+  });
+
+  it("fires reportIdentityLinkPending (with provider + subject) as soon as the token is missing, before start()", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-1?u=...",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway });
+    const graph = buildAgentGraph(deps);
+    const reportIdentityLinkPending = vi.fn();
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok", reportIdentityLinkPending });
+
+    expect(reportIdentityLinkPending).toHaveBeenCalledWith({ provider: "claude", subject: "alice" });
+    // Signalled before start() resolves the URL -- i.e. its invocation order
+    // precedes start()'s.
+    expect(reportIdentityLinkPending.mock.invocationCallOrder[0]).toBeLessThan(
+      (claudeAuthGateway.start as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("does NOT fire reportIdentityLinkPending when the caller already has a linked token", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-existing" }),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway });
+    const graph = buildAgentGraph(deps);
+    const reportIdentityLinkPending = vi.fn();
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok", reportIdentityLinkPending });
+
+    expect(reportIdentityLinkPending).not.toHaveBeenCalled();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalled();
+  });
+
+  it("ends the turn with a friendly retryable message (not a crashed turn) when start() itself throws -- e.g. the Claude setup-token PTY never prints a URL", async () => {
+    // Regression guard for the triage path: start() for the "claude" provider
+    // spawns a `claude setup-token` PTY and scrapes the authorize URL within a
+    // timeout, so it can throw before any link exists. On the fire-and-forget
+    // GitHub-issue relay a thrown node would be posted to the ticket as a raw
+    // "Something went wrong: ...setup-token did not print...". Instead the turn
+    // must end cleanly with a retryable message and NOT launch the agent.
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn().mockRejectedValue(new Error("claude setup-token did not print an authorize URL in time")),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok", identityLinkFlow: "device" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).not.toMatch(/something went wrong/i);
+    expect(final.result).not.toMatch(/setup-token/i);
+    expect(final.result).toMatch(/couldn't start the one-time Claude account-linking/i);
+    expect(final.identityLinkPending).toBeFalsy();
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
+  it("launches with CLAUDE_CODE_OAUTH_TOKEN once waitForCompletion resolves a linked token (streaming caller)", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-1?u=...",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+      waitForCompletion: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway });
+    const graph = buildAgentGraph(deps);
+    // Same-turn resume only happens on a caller with a live channel; the
+    // page-flow link is surfaced live via progressListener before the wait.
+    const progressListener = vi.fn();
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok", progressListener });
+
+    expect(claudeAuthGateway.waitForCompletion).toHaveBeenCalledWith("claude", "alice", 600_000);
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      claudeAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ secretEnv: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-resolved" }] }),
+    );
+    expect(final.pendingIdentityLink).toBeUndefined();
+  });
+
+  it("resumes delegation via getToken (not poll) when a pending page-flow link's token has landed", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "continue please",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: {
+        agentId: "claude-code-swe",
+        provider: "claude",
+        flow: "page",
+        expiresAt: Date.now() + 900_000,
+      },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(claudeAuthGateway.poll).not.toHaveBeenCalled();
+    expect(claudeAuthGateway.getToken).toHaveBeenCalledWith("claude", "alice");
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      claudeAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({ secretEnv: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-resolved" }] }),
+    );
+    expect(final.pendingIdentityLink).toBeUndefined();
+  });
+
+  it("invalidates the stored token and returns a friendly retry message when the agent reports an expired Claude credential mid-run", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-stale" }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockRejectedValue(new AgentTurnFailedError("claude_auth_expired", "credential expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = claudeAuthDeps({ claudeAuthGateway, agentChannel });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(claudeAuthGateway.invalidate).toHaveBeenCalledWith("claude", "alice");
+    expect(final.error).toBeUndefined();
+    expect(final.result).toMatch(/expired or invalid/i);
+  });
+});
+
+describe("buildAgentGraph delegation with multiple identityProviders", () => {
+  // Regression test: delegateToAgent used to only ever resolve
+  // identityProviders[0], so an Agent declaring TWO providers (e.g.
+  // claude-code-swe-agent's ["claude", "claude-remote"] for Remote Control)
+  // silently never got the second one's token injected at all -- no error,
+  // no link prompt, just a missing secretEnv entry.
+  const multiProviderAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks with Claude Code",
+    allowedRoles: ["reader"],
+    identityProviders: ["claude", "claude-remote"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  function multiProviderDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: multiProviderAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([multiProviderAgent]),
+    };
+    const delegateSelector: DelegateSelector = {
+      select: vi.fn().mockResolvedValue({ type: "agent", agent: multiProviderAgent }),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({ message: "Opened a pull request", final: true, narration: [] } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("resolves EVERY declared provider's token, not just the first, when both are already linked", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"full-login-blob"}' }),
+    };
+    const deps = multiProviderDeps({ claudeAuthGateway, claudeRemoteGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(claudeAuthGateway.getToken).toHaveBeenCalledWith("claude", "alice");
+    expect(claudeRemoteGateway.getToken).toHaveBeenCalledWith("claude-remote", "alice");
+    expect(final.error).toBeUndefined();
+    expect(final.pendingIdentityLink).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      multiProviderAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({
+        secretEnv: [
+          { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-resolved" },
+          { name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: '{"claudeAiOauth":"full-login-blob"}' },
+        ],
+      }),
+    );
+  });
+
+  it("prompts to link the SECOND provider (not silently proceeding) when the first is already linked but the second is not", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-2?u=https://claude.ai/oauth/authorize&mode=login",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = multiProviderDeps({ claudeAuthGateway, claudeRemoteGateway });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(claudeAuthGateway.getToken).toHaveBeenCalledWith("claude", "alice");
+    expect(claudeRemoteGateway.getToken).toHaveBeenCalledWith("claude-remote", "alice");
+    expect(claudeRemoteGateway.start).toHaveBeenCalled();
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink?.provider).toBe("claude-remote");
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
+  // The stored claude-remote credential is a whole ~/.claude/.credentials.json
+  // that the run's CLI refreshes (and thereby rotates) in an emptyDir HOME. The
+  // grant injected here is how that refreshed file gets persisted; without it
+  // the stored copy is stale the moment a run refreshes, and later runs fail
+  // with "Login expired · Please run /login".
+  it("injects a credential write-back grant alongside the claude-remote credential", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"full-login-blob"}' }),
+    };
+    const claudeRemoteWriteback = {
+      createWritebackGrant: vi
+        .fn()
+        .mockResolvedValue({ url: "https://gateway.example/claude-auth/api/refresh", token: "grant-xyz" }),
+    };
+    const deps = multiProviderDeps({ claudeAuthGateway, claudeRemoteGateway, claudeRemoteWriteback });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(claudeRemoteWriteback.createWritebackGrant).toHaveBeenCalledWith("alice", expect.any(Number));
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      multiProviderAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({
+        secretEnv: [
+          { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-resolved" },
+          { name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: '{"claudeAiOauth":"full-login-blob"}' },
+          { name: "CLAUDE_CREDENTIALS_WRITEBACK_URL", value: "https://gateway.example/claude-auth/api/refresh" },
+          { name: "CLAUDE_CREDENTIALS_WRITEBACK_TOKEN", value: "grant-xyz" },
+        ],
+      }),
+    );
+  });
+
+  it("launches normally when a write-back grant can't be minted -- write-back is not a precondition for running", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-resolved" }),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"full-login-blob"}' }),
+    };
+    const deps = multiProviderDeps({
+      claudeAuthGateway,
+      claudeRemoteGateway,
+      claudeRemoteWriteback: { createWritebackGrant: vi.fn().mockResolvedValue(undefined) },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
+      multiProviderAgent.agentRunTemplate,
+      expect.any(String),
+      expect.objectContaining({
+        secretEnv: [
+          { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-resolved" },
+          { name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: '{"claudeAiOauth":"full-login-blob"}' },
+        ],
+      }),
+    );
+  });
+
+  // Regression: the invalidated provider used to be identityProviders[0]
+  // ("claude"), no matter which credential actually failed -- so a stale
+  // Remote Control login blob survived, failed again on the next run, and took
+  // a perfectly good setup-token down with it every time.
+  it("invalidates the claude-remote credential (not the setup-token) when the run reports the login blob expired", async () => {
+    const claudeAuthGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-fine" }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"stale-login-blob"}' }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi
+        .fn()
+        .mockRejectedValue(new AgentTurnFailedError("claude_remote_auth_expired", "credentials look expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = multiProviderDeps({ claudeAuthGateway, claudeRemoteGateway, agentChannel });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(claudeRemoteGateway.invalidate).toHaveBeenCalledWith("claude-remote", "alice");
+    expect(claudeAuthGateway.invalidate).not.toHaveBeenCalled();
+    expect(final.error).toBeUndefined();
+    expect(final.result).toMatch(/expired or invalid/i);
+    // No live channel (a label-triggered relay): "send your request again" is
+    // not a thing the human can do -- re-applying the label is.
+    expect(final.result).toMatch(/re-apply the label/i);
+  });
+
+  // The whole point of the recovery: ONE label application has to produce
+  // something the human can act on. Invalidating the credential and then
+  // telling them to trigger the run again cost a round trip to receive a link
+  // that could have been in the first reply -- observed live on #146, where the
+  // only comment posted was "re-apply the label to try again".
+  it("posts the relink URL in the SAME turn and arms auto-resume, instead of telling the user to trigger again", async () => {
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-9?u=https://claude.ai/oauth/authorize&mode=login",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"stale-login-blob"}' }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi
+        .fn()
+        .mockRejectedValue(new AgentTurnFailedError("claude_remote_auth_expired", "credentials look expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = multiProviderDeps({
+      claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-fine" }) },
+      claudeRemoteGateway,
+      agentChannel,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "review pull request #146", authToken: "tok" });
+
+    // Stale credential cleared, THEN a replacement flow started for the same
+    // provider -- in that order, or the new link would be deleted too.
+    expect(claudeRemoteGateway.invalidate).toHaveBeenCalledWith("claude-remote", "alice");
+    expect(claudeRemoteGateway.start).toHaveBeenCalledWith("claude-remote", "alice", expect.any(String));
+    expect(final.error).toBeUndefined();
+    expect(final.result).toContain("https://gateway.example/claude-auth/flow-9");
+    expect(final.result).not.toMatch(/re-apply the label|send your request again/i);
+    // Arms the caller's auto-resume (integration-gateway's waitAndResume), and
+    // carries THIS request so the resume re-runs the interrupted work.
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink).toMatchObject({
+      agentId: "claude-code-swe",
+      provider: "claude-remote",
+      flow: "page",
+      request: "review pull request #146",
+    });
+  });
+
+  it("falls back to a retry message when the replacement link flow can't be started", async () => {
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn().mockRejectedValue(new Error("claude-auth start (login) failed: 502")),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"stale-login-blob"}' }),
+      invalidate: vi.fn().mockResolvedValue(undefined),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi
+        .fn()
+        .mockRejectedValue(new AgentTurnFailedError("claude_remote_auth_expired", "credentials look expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = multiProviderDeps({
+      claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-fine" }) },
+      claudeRemoteGateway,
+      agentChannel,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // The credential IS gone, so a retry genuinely will prompt for a link --
+    // it just costs another trigger.
+    expect(final.error).toBeUndefined();
+    expect(final.result).toMatch(/re-apply the label/i);
+    expect(final.identityLinkPending).toBeFalsy();
+  });
+
+  // Telling someone to retry only helps if the stale record is actually gone;
+  // otherwise the next attempt resolves the same dead credential and fails
+  // identically, forever.
+  it("does not promise that a retry will work when the stale credential could not be cleared", async () => {
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue({ token: '{"claudeAiOauth":"stale-login-blob"}' }),
+      invalidate: vi.fn().mockRejectedValue(new Error("claude-auth invalidate (login) failed: 502")),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi
+        .fn()
+        .mockRejectedValue(new AgentTurnFailedError("claude_remote_auth_expired", "credentials look expired")),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const deps = multiProviderDeps({
+      claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01-fine" }) },
+      claudeRemoteGateway,
+      agentChannel,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).toMatch(/couldn't clear the stored credential/i);
+    expect(final.result).not.toMatch(/re-apply the label/i);
+  });
+});
+
+
+describe("buildAgentGraph canonical credential subject (cross-flow Claude credential sharing)", () => {
+  const claudeRemoteAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks with Claude Code",
+    allowedRoles: ["reader"],
+    identityProviders: ["claude-remote"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  /**
+   * `identityLinkGateway` here is the `github` provider's gateway -- the
+   * source of the `githubLogin` that becomes the canonical subject. Its
+   * `getToken` is what `resolveCredentialSubject` reads on the chat path.
+   */
+  function canonicalDeps(
+    overrides: Partial<AgentGraphDeps> = {},
+    githubLogin: string | null = "Imaustink",
+  ) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: claudeRemoteAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([claudeRemoteAgent]),
+    };
+    const delegateSelector: DelegateSelector = {
+      select: vi.fn().mockResolvedValue({ type: "agent", agent: claudeRemoteAgent }),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({
+        message: "Opened a pull request",
+        final: true,
+        narration: [],
+      } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const identityLinkGateway: IdentityLinkPort = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(githubLogin ? { token: "gh-token", githubLogin } : undefined),
+    };
+    const claudeRemoteGateway: IdentityLinkPort = {
+      start: vi.fn().mockResolvedValue({
+        flow: "page" as const,
+        pageUrl: "https://gateway.example/claude-auth/flow-1",
+        expiresInSeconds: 600,
+      }),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      identityLinkGateway,
+      claudeRemoteGateway,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  /**
+   * A chat caller as `OpenWebUiForwardedUserResolver` resolves one: a per-user
+   * subject, asserted as such. `perUser` is what lets the pre-flight establish a
+   * principal against it (docs/adr/0031) -- the default double here omits it,
+   * standing in for a subject that may be shared.
+   */
+  const chatCaller = (): IdentityResolver => ({
+    resolve: vi.fn().mockResolvedValue({ subject: "alice", roles: ["reader"], perUser: true }),
+  });
+
+  it("keys a chat caller's claude-remote credential by github:<login> from their GitHub link, not the raw openwebui subject", async () => {
+    const deps = canonicalDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // Lower-cased: the webhook payload says "Imaustink", the OAuth API says
+    // "imaustink"; both must land on ONE key or the flows split again.
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:imaustink");
+    expect(deps.claudeRemoteGateway!.getToken).not.toHaveBeenCalledWith("claude-remote", "alice");
+  });
+
+  it("keys a triage turn's claude-remote credential by the same github:<login>, taken from senderLogin", async () => {
+    const deps = canonicalDeps({}, null); // no GitHub link at all on this path
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "triage this issue",
+      authToken: "tok",
+      // The shared service subject resolves to "alice" here; senderLogin is
+      // the only per-user identifier a webhook-driven turn carries.
+      senderLogin: "imaustink",
+    });
+
+    // Same key the chat test above asserts -- that identity IS the fix.
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:imaustink");
+  });
+
+  it("prefers senderLogin over the GitHub link so a triage turn never inherits the service account's link", async () => {
+    const deps = canonicalDeps({}, "someone-else");
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "triage this issue", authToken: "tok", senderLogin: "imaustink" });
+
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:imaustink");
+  });
+
+  it("falls back to the raw subject when no GitHub login is resolvable, preserving pre-change behavior", async () => {
+    const deps = canonicalDeps({}, null);
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "alice");
+  });
+
+  it("falls back to the raw subject (rather than failing the turn) when the GitHub link lookup throws", async () => {
+    const deps = canonicalDeps();
+    (deps.identityLinkGateway!.getToken as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("gateway down"));
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "alice");
+  });
+
+  it("keeps the github provider itself on the raw subject -- it is the source of the mapping, not a consumer", async () => {
+    const githubOnlyAgent: AgentDescriptor = { ...claudeRemoteAgent, identityProviders: ["github"] };
+    const deps = canonicalDeps({
+      agentStore: {
+        upsert: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ agent: githubOnlyAgent, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([githubOnlyAgent]),
+      },
+      delegateSelector: { select: vi.fn().mockResolvedValue({ type: "agent", agent: githubOnlyAgent }) },
+    });
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "open a PR", authToken: "tok" });
+
+    expect(deps.identityLinkGateway!.getToken).toHaveBeenCalledWith("github", "alice");
+    expect(deps.identityLinkGateway!.getToken).not.toHaveBeenCalledWith("github", "github:imaustink");
+  });
+
+  it("adopts a chat caller's existing credential onto their principal, so converging costs them no re-auth (docs/adr/0031)", async () => {
+    // The reported scenario, end to end: this human has been running agents from
+    // chat for weeks -- their credential sits at the raw `alice` subject, written
+    // before principals existed -- and triage was prompting them because it reads
+    // `github:imaustink`. After this, neither flow prompts.
+    const deps = canonicalDeps({ identityResolver: chatCaller() }, null);
+    (deps.identityLinkGateway!.start as ReturnType<typeof vi.fn>).mockResolvedValue({
+      flow: "authcode" as const,
+      authorizeUrl: "https://gateway.example/identity-link/github/authorize",
+      expiresInSeconds: 600,
+    });
+    deps.identityLinkGateway!.waitForCompletion = vi
+      .fn()
+      .mockResolvedValue({ token: "gh-token", githubLogin: "Imaustink" });
+    // A credential that exists ONLY under the pre-principal subject.
+    const stored = new Map<string, { token: string }>([["alice", { token: "creds-json-from-chat" }]]);
+    (deps.claudeRemoteGateway!.getToken as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_provider: string, subject: string) => stored.get(subject),
+    );
+    deps.claudeRemoteGateway!.rekey = vi.fn(async (_provider: string, from: string, to: string) => {
+      const record = stored.get(from);
+      if (!record) return false;
+      stored.set(to, record);
+      stored.delete(from);
+      return true;
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "fix the failing test",
+      authToken: "tok",
+      progressListener: vi.fn(),
+    });
+
+    expect(final.error).toBeUndefined();
+    // No Claude flow was started: the credential they already authorized was
+    // moved, not re-created.
+    expect(deps.claudeRemoteGateway!.start).not.toHaveBeenCalled();
+    expect(deps.claudeRemoteGateway!.rekey).toHaveBeenCalledWith("claude-remote", "alice", "github:imaustink");
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]![2] as {
+      secretEnv?: { name: string; value: string }[];
+    };
+    expect(launched.secretEnv).toContainEqual({ name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: "creds-json-from-chat" });
+  });
+
+  it("offers a chat caller with no GitHub mapping the principal link FIRST, before any claude-remote flow (docs/adr/0031)", async () => {
+    // The production defect, end to end: this caller could authorize Claude in
+    // chat all day and a triage turn would still prompt, because chat wrote
+    // `claude-remote@alice` and triage reads `claude-remote@github:<login>`.
+    // Establishing the mapping first is what makes the two the same record.
+    const deps = canonicalDeps({ identityResolver: chatCaller() }, null);
+    (deps.identityLinkGateway!.start as ReturnType<typeof vi.fn>).mockResolvedValue({
+      flow: "authcode" as const,
+      authorizeUrl: "https://gateway.example/identity-link/github/authorize",
+      expiresInSeconds: 600,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "fix the failing test",
+      authToken: "tok",
+      progressListener: vi.fn(),
+    });
+
+    expect(deps.identityLinkGateway!.start).toHaveBeenCalledWith("github", "alice", "authcode");
+    expect(final.pendingIdentityLink).toMatchObject({ provider: "github", subject: "alice" });
+    // Nothing was keyed to the subject this caller is one link away from
+    // abandoning -- that is what would have split the records again.
+    expect(deps.claudeRemoteGateway!.start).not.toHaveBeenCalled();
+  });
+
+  it("converges the SAME turn once the principal link lands mid-wait", async () => {
+    const deps = canonicalDeps({ identityResolver: chatCaller() }, null);
+    (deps.identityLinkGateway!.start as ReturnType<typeof vi.fn>).mockResolvedValue({
+      flow: "authcode" as const,
+      authorizeUrl: "https://gateway.example/identity-link/github/authorize",
+      expiresInSeconds: 600,
+    });
+    // The caller completes the GitHub link in their browser while the turn
+    // holds open, exactly as the claude flows already do.
+    deps.identityLinkGateway!.waitForCompletion = vi
+      .fn()
+      .mockResolvedValue({ token: "gh-token", githubLogin: "Imaustink" });
+    (deps.claudeRemoteGateway!.getToken as ReturnType<typeof vi.fn>).mockResolvedValue({ token: "creds-json" });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "fix the failing test",
+      authToken: "tok",
+      progressListener: vi.fn(),
+    });
+
+    expect(final.error).toBeUndefined();
+    // The key a triage turn reads. Same human, same record, either entry point.
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:imaustink");
+    // The mapping stayed a mapping: no GITHUB_TOKEN went to the run, so the
+    // agent's delegated-write path (the observed 401) stays unreachable.
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]![2] as {
+      secretEnv?: { name: string }[];
+    };
+    expect(launched.secretEnv?.map((e) => e.name)).not.toContain("GITHUB_TOKEN");
+    // And the upgraded principal is carried on the turn's identity, so a later
+    // expired-credential invalidate clears the record that was actually read.
+    expect(final.identity?.principal).toBe("github:imaustink");
+  });
+
+  it("starts the link against the canonical subject AND records it on pendingIdentityLink, so store and wait cannot drift (the PR #144 regression)", async () => {
+    const deps = canonicalDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(deps.claudeRemoteGateway!.start).toHaveBeenCalledWith("claude-remote", "github:imaustink", "authcode");
+    // The subject the caller's auto-resume will wait on must be the SAME one
+    // the link was started against. Recomputing it downstream is what made
+    // PR #144 loop forever.
+    expect(final.pendingIdentityLink?.subject).toBe("github:imaustink");
+  });
+
+  it("resumes a pending link against the stored subject, not a freshly derived one", async () => {
+    const deps = canonicalDeps();
+    (deps.claudeRemoteGateway!.getToken as ReturnType<typeof vi.fn>).mockResolvedValue({ token: "creds-json" });
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "any nudge message",
+      authToken: "tok",
+      sessionSubject: "alice",
+      pendingIdentityLink: {
+        agentId: "claude-code-swe",
+        provider: "claude-remote",
+        flow: "page",
+        expiresAt: Date.now() + 60_000,
+        // Deliberately NOT what this turn would derive on its own -- proves
+        // the resume reads the stored value.
+        subject: "github:stored-login",
+        request: "fix the failing test",
+      },
+    });
+
+    expect(deps.claudeRemoteGateway!.getToken).toHaveBeenCalledWith("claude-remote", "github:stored-login");
+  });
+
+  it("mints the claude-remote write-back grant against the canonical subject the credential was read from", async () => {
+    const createWritebackGrant = vi.fn().mockResolvedValue({ url: "http://gw/refresh", token: "grant" });
+    const deps = canonicalDeps({ claudeRemoteWriteback: { createWritebackGrant } });
+    (deps.claudeRemoteGateway!.getToken as ReturnType<typeof vi.fn>).mockResolvedValue({ token: "creds-json" });
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // A grant against the raw subject would write refreshed credentials to a
+    // record nothing reads, and the shared one would die on the next refresh.
+    expect(createWritebackGrant).toHaveBeenCalledWith("github:imaustink", expect.any(Number));
+  });
+});
+
+describe("buildAgentGraph batch authorization pre-flight (docs/adr/0030)", () => {
+  const twoProviderAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    identityProviders: ["github", "claude"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  function preflightDeps(github: Partial<IdentityLinkPort>, claude: Partial<IdentityLinkPort>) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: twoProviderAgent, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([twoProviderAgent]),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector: { select: vi.fn().mockResolvedValue({ type: "agent", agent: twoProviderAgent }) },
+      agentChannel: {
+        awaitReply: vi.fn().mockResolvedValue({ message: "done", final: true, narration: [] } satisfies AgentTurnResult),
+        sendPrompt: vi.fn(),
+        close: vi.fn(),
+      },
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      identityLinkGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue(undefined), ...github } as IdentityLinkPort,
+      claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue(undefined), ...claude } as IdentityLinkPort,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+  }
+
+  const startsOk = (url: string) => vi.fn().mockResolvedValue({ flow: "authcode" as const, authorizeUrl: url, expiresInSeconds: 600 });
+
+  it("starts EVERY missing provider's link on one turn and prompts for them together", async () => {
+    const deps = preflightDeps(
+      { start: startsOk("https://github.example/auth") },
+      { start: startsOk("https://claude.example/auth") },
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // Both started on THIS turn. Before ADR 0030 the gate returned after the
+    // first gap, so the second provider's link was not even attempted and the
+    // user needed a separate trigger to discover it.
+    expect(deps.identityLinkGateway!.start).toHaveBeenCalled();
+    expect(deps.claudeAuthGateway!.start).toHaveBeenCalled();
+    expect(final.result).toMatch(/2 accounts/i);
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
+  it("does not let one provider's start failure hide another's link", async () => {
+    // The exact production coupling ADR 0030 removes: `github` failing to
+    // start ended the turn before `claude` was evaluated, so a GitHub OAuth
+    // failure blocked Claude authorization entirely.
+    const deps = preflightDeps(
+      { start: vi.fn().mockRejectedValue(new Error("github oauth down")) },
+      { start: startsOk("https://claude.example/auth") },
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    expect(deps.claudeAuthGateway!.start).toHaveBeenCalled();
+    expect(final.result).toMatch(/claude\.example\/auth/);
+    expect(final.result).toMatch(/couldn't start the GitHub/i);
+    // Still parks a resume anchor, so finishing the Claude link resumes.
+    expect(final.identityLinkPending).toBe(true);
+    expect(final.pendingIdentityLink?.provider).toBe("claude");
+  });
+
+  it("reads as a standalone message when EVERY provider failed to start", async () => {
+    const deps = preflightDeps(
+      { start: vi.fn().mockRejectedValue(new Error("down")) },
+      { start: vi.fn().mockRejectedValue(new Error("down")) },
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // No preceding clause, so it must not open with "I also".
+    expect(final.result).not.toMatch(/^I also/);
+    expect(final.result).toMatch(/couldn't start the one-time/i);
+    expect(final.identityLinkPending).toBeFalsy();
+  });
+
+  it("injects the actor login from the github link, so the agent never resolves identity itself", async () => {
+    const deps = preflightDeps(
+      { getToken: vi.fn().mockResolvedValue({ token: "gho_t", githubLogin: "Imaustink" }) },
+      { getToken: vi.fn().mockResolvedValue({ token: "sk-ant-oat01" }) },
+    );
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the failing test", authToken: "tok" });
+
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as {
+      secretEnv?: { name: string; value: string }[];
+    };
+    // Taken verbatim off the link record -- no /user round trip, which is the
+    // call that was returning 401 in production.
+    expect(launched.secretEnv).toContainEqual({ name: "AGENT_ACTOR_LOGIN", value: "Imaustink" });
+  });
+});
+
+describe("credentials never reach the model (docs/adr/0030 §3)", () => {
+  const SECRET_TOKEN = "sk-ant-oat01-SUPER-SECRET-VALUE";
+  const SECRET_CREDS = '{"claudeAiOauth":{"accessToken":"SUPER-SECRET-CREDENTIALS-JSON"}}';
+
+  const agent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    identityProviders: ["claude", "claude-remote"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  it("passes no credential material to any model-facing dependency", async () => {
+    // Every model-facing dep records the arguments it was called with. If a
+    // credential can reach an LLM at all, it has to pass through one of these.
+    const seen: unknown[] = [];
+    const record = <T>(result: T) => vi.fn((...args: unknown[]) => { seen.push(args); return Promise.resolve(result); });
+
+    const deps = baseDeps({
+      agentStore: {
+        upsert: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ agent, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([agent]),
+      },
+      delegateSelector: { select: record({ type: "agent" as const, agent }) },
+      skillFitChecker: { fits: record(true) },
+      capabilityNeedChecker: { needsCapability: record(true) },
+      responseComposer: { compose: record({ prefix: null, suffix: null }) },
+      agentChannel: {
+        awaitReply: vi.fn().mockResolvedValue({ message: "done", final: true, narration: [] } satisfies AgentTurnResult),
+        sendPrompt: vi.fn(),
+        close: vi.fn(),
+      },
+      agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
+      claudeAuthGateway: {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getToken: vi.fn().mockResolvedValue({ token: SECRET_TOKEN }),
+      } as IdentityLinkPort,
+      claudeRemoteGateway: {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getToken: vi.fn().mockResolvedValue({ token: SECRET_CREDS }),
+      } as IdentityLinkPort,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+
+    const final = await buildAgentGraph(deps).invoke({ request: "fix the failing test", authToken: "tok" });
+
+    // Sanity: the credentials really were resolved, so a passing assertion
+    // below means "not leaked" rather than "never present".
+    const launched = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as {
+      secretEnv?: { name: string; value: string }[];
+    };
+    expect(launched.secretEnv?.map((e) => e.value)).toContain(SECRET_TOKEN);
+
+    // The actual guarantee.
+    const modelFacing = JSON.stringify(seen);
+    expect(modelFacing).not.toContain(SECRET_TOKEN);
+    expect(modelFacing).not.toContain(SECRET_CREDS);
+
+    // Nor may they survive on the returned graph state, which is persisted to
+    // the session store and echoed into later prompts.
+    const serializedState = JSON.stringify(final);
+    expect(serializedState).not.toContain(SECRET_TOKEN);
+    expect(serializedState).not.toContain(SECRET_CREDS);
+  });
+});
+
+/**
+ * Resumability of an agent turn whose wait is interrupted by something that has
+ * nothing to do with the agent — an orchestrator rollout, a dropped NATS
+ * connection. The run keeps working in its own Job pod and holds its concluding
+ * message for us, so the correct behaviour is to pause, keep an anchor, and
+ * re-attach on the next turn — never to report the run as failed.
+ */
+describe("buildAgentGraph agent-turn resumability", () => {
+  const swe: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  function resumeDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: swe, score: 0.9 }]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: swe, score: 1 }]),
+    };
+    const delegateSelector: DelegateSelector = {
+      select: vi.fn().mockResolvedValue({ type: "agent", agent: swe }),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({ message: "done", final: true, narration: [] } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      agentStore,
+      delegateSelector,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      markAgentRunAwaitingReply: vi.fn().mockResolvedValue(undefined),
+      clearAgentRunAwaitingReply: vi.fn().mockResolvedValue(undefined),
+      ...overrides,
+    });
+  }
+
+  it("anchors the run to the conversation BEFORE waiting, so a killed pod still leaves something to resume", async () => {
+    const deps = resumeDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the bug", authToken: "tok", sessionId: "session-1" });
+
+    // Written during the turn, not with its outcome: the failure mode this
+    // covers is the process not surviving to produce an outcome at all.
+    expect(deps.markAgentRunAwaitingReply).toHaveBeenCalledWith("session-1", {
+      subject: "alice",
+      agentId: "claude-code-swe",
+      agentRunId: expect.any(String),
+    });
+  });
+
+  it("reports a lost channel as a resumable pause, not a failure", async () => {
+    const deps = resumeDeps();
+    (deps.agentChannel!.awaitReply as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new AgentTurnTransportError("lost the NATS subscription for agent run run-1 before it replied"),
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "fix the bug", authToken: "tok", sessionId: "session-1" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.agentResumePending).toBe(true);
+    expect(final.result).toMatch(/Still working/);
+    // The anchor's survival is what the next turn re-attaches on, so the
+    // selected agent has to come back with it (the server persists both).
+    expect(final.selectedAgent?.id).toBe("claude-code-swe");
+  });
+
+  it("re-attaches WITHOUT sending a prompt when the conversation is owed a reply", async () => {
+    const deps = resumeDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "any update?",
+      authToken: "tok",
+      sessionId: "session-1",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+      sessionSubject: "alice",
+    });
+
+    // The agent is working, not waiting for input: publishing "any update?" as a
+    // prompt would inject it into the run's conversation.
+    expect(deps.agentChannel!.sendPrompt).not.toHaveBeenCalled();
+    expect(deps.agentChannel!.awaitReply).toHaveBeenCalledWith("run-1", expect.anything());
+    expect(final.result).toBe("done");
+    expect(final.error).toBeUndefined();
+  });
+
+  it("still sends a prompt when the run is parked on a question (ordinary HITL)", async () => {
+    const deps = resumeDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "use the main branch",
+      authToken: "tok",
+      sessionId: "session-1",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      sessionSubject: "alice",
+    });
+
+    expect(deps.agentChannel!.sendPrompt).toHaveBeenCalledWith("run-1", "use the main branch");
+  });
+
+  it("bounds a re-attached wait far more tightly than a live one", async () => {
+    const deps = resumeDeps({ agentIdleTimeoutSeconds: 600 });
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "any update?",
+      authToken: "tok",
+      sessionId: "session-1",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+      sessionSubject: "alice",
+    });
+
+    // Silence is diagnostic on a re-attach (anything alive announces itself
+    // within seconds), so the user is not made to wait out the full window to
+    // learn the run is gone.
+    const opts = (deps.agentChannel!.awaitReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as {
+      idleTimeoutMs?: number;
+    };
+    expect(opts.idleTimeoutMs).toBe(45_000);
+  });
+
+  it("drops the anchor when a re-attached wait finds the run gone", async () => {
+    const deps = resumeDeps();
+    (deps.agentChannel!.awaitReply as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new AgentTurnTimeoutError("agent run run-1 went silent for 45000ms after 0 progress message(s)"),
+    );
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "any update?",
+      authToken: "tok",
+      sessionId: "session-1",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+      sessionSubject: "alice",
+    });
+
+    // Otherwise every later turn in this conversation would re-attach to a dead
+    // run and spend its whole window before falling through.
+    expect(deps.clearAgentRunAwaitingReply).toHaveBeenCalledWith("session-1");
+    expect(final.agentResumePending).toBeFalsy();
+    expect(final.result).toMatch(/no longer reachable/);
+  });
+});
+
+/**
+ * The label-triggered path's half of resumability. A matched IntegrationRoute
+ * dispatches deterministically, skipping retrieval — which also skipped the
+ * re-attach check, so a re-applied trigger label launched a SECOND run while the
+ * first was still holding the answer (docs/adr/0033).
+ */
+describe("buildAgentGraph route-driven turns re-attach before dispatching again", () => {
+  const routedAgent: AgentDescriptor = {
+    id: "claude-code-swe",
+    name: "claude-code-swe",
+    description: "Does software engineering tasks",
+    allowedRoles: ["reader"],
+    agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe" },
+  };
+
+  function routeDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: routedAgent }]),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({ message: "the held answer", final: true, narration: [] } satisfies AgentTurnResult),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-2", namespace: "default" }),
+    };
+    return baseDeps({
+      agentStore,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      markAgentRunAwaitingReply: vi.fn().mockResolvedValue(undefined),
+      clearAgentRunAwaitingReply: vi.fn().mockResolvedValue(undefined),
+      ...overrides,
+    });
+  }
+
+  it("collects the held reply instead of launching a second run", async () => {
+    const deps = routeDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      forcedAgentId: "claude-code-swe",
+      sessionId: "github:acme/widgets#42",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+      sessionSubject: "alice",
+    });
+
+    expect(deps.agentChannel!.awaitReply).toHaveBeenCalledWith("run-1", expect.anything());
+    // The point: no second AgentRun. On a real coding agent that would be a
+    // second branch and a second PR for one request.
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(deps.agentChannel!.sendPrompt).not.toHaveBeenCalled();
+    expect(final.result).toBe("the held answer");
+  });
+
+  it("still dispatches the route's own target when the anchor is stale", async () => {
+    const deps = routeDeps({
+      // Anchor points at a run whose Agent CR is gone/revoked -> the re-attach
+      // misses, and the turn must fall back to the route's target rather than
+      // silently becoming an ordinary retrieval turn.
+      agentStore: {
+        upsert: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi
+          .fn()
+          .mockResolvedValueOnce([{ agent: routedAgent }]) // checkIntegrationRoute's own lookup
+          .mockResolvedValueOnce([]), // checkActiveAgentRun's re-verify: gone
+      } as AgentStore,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "triage and resolve this issue",
+      authToken: "tok",
+      forcedAgentId: "claude-code-swe",
+      sessionId: "github:acme/widgets#42",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+      sessionSubject: "alice",
+    });
+
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalled();
+    expect(deps.skillStore.query).not.toHaveBeenCalled();
+    expect(final.selectedAgent?.id).toBe("claude-code-swe");
+  });
+});
+
+describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
+  const weatherTool: ToolDescriptor = {
+    id: "caller:get_weather",
+    name: "get_weather",
+    description: "Look up the weather for a city",
+    allowedRoles: [],
+    callerTool: {
+      name: "get_weather",
+      description: "Look up the weather for a city",
+      parametersJson: '{"properties":{"city":{"type":"string"}},"type":"object"}',
+      hash: "a".repeat(64),
+    },
+  };
+
+  /** Deps whose planner picks the caller tool rather than a catalog one. */
+  function callerToolDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
+    return baseDeps({
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "caller:get_weather",
+          toolArgs: '{"city":"Chicago"}',
+        } satisfies PlannedAction),
+      },
+      ...overrides,
+    });
+  }
+
+  it("offers caller tools to the planner alongside the skill's own, and ends the turn with a pending call", async () => {
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "what's the weather in Chicago?",
+      authToken: "tok",
+      callerTools: [weatherTool],
+    });
+
+    // Appended to the skill's resolved tools, not replacing them.
+    expect(deps.actionPlanner.plan).toHaveBeenCalledWith(
+      "what's the weather in Chicago?",
+      expect.objectContaining({ id: "recipe-publisher-skill" }),
+      [scraperTool, publisherTool, weatherTool],
+      [],
+      expect.anything(),
+    );
+    expect(final.error).toBeUndefined();
+    expect(final.pendingToolCalls).toEqual([
+      { id: expect.stringMatching(/^call_[0-9a-f]{32}$/), name: "get_weather", arguments: '{"city":"Chicago"}' },
+    ]);
+  });
+
+  it("executes nothing for a caller tool — no Job, no ToolRun, no continuation bookkeeping", async () => {
+    // The defining property of this dispatch kind: the caller's own client runs
+    // the function, so the orchestrator must not launch or record anything.
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "what's the weather in Chicago?",
+      authToken: "tok",
+      callerTools: [weatherTool],
+    });
+
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+    expect(deps.jobResultReceiver.awaitJob).not.toHaveBeenCalled();
+    expect(final.extractedContinuation).toBeUndefined();
+    expect(final.actionHistory).toEqual([]);
+    // No assistant text at all -- the answer depends on the client running this.
+    expect(final.result).toBeUndefined();
+  });
+
+  it("does not loop back to planAction after a caller tool call", async () => {
+    // Re-planning would judge against a result that doesn't exist yet.
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(deps.actionPlanner.plan).toHaveBeenCalledTimes(1);
+  });
+
+  it("withholds caller tools from a skill that opted out via allowCallerTools: false", async () => {
+    const guardedSkill: SkillDescriptor = { ...skill, allowCallerTools: false };
+    const deps = callerToolDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: guardedSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([guardedSkill]),
+      } as SkillStore,
+      skillSelector: { select: vi.fn().mockResolvedValue(guardedSkill) },
+      // The planner would still name the caller tool; planAction's re-validation
+      // against the resolved list is what must reject it.
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(deps.actionPlanner.plan).toHaveBeenCalledWith(
+      "weather?",
+      expect.objectContaining({ id: "recipe-publisher-skill" }),
+      [scraperTool, publisherTool],
+      [],
+      expect.anything(),
+    );
+    expect(final.pendingToolCalls).toEqual([]);
+    expect(final.error).toBe("planner selected a tool outside the skill's scope");
+  });
+
+  it("offers caller tools to a skill that leaves allowCallerTools unset", async () => {
+    // Unset means allowed -- the default that matches the OpenAI wire contract.
+    expect(skill.allowCallerTools).toBeUndefined();
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(final.pendingToolCalls).toHaveLength(1);
+  });
+
+  it("makes a respond-only skill tool-capable via caller tools alone", async () => {
+    const respondOnly: SkillDescriptor = { ...skill, toolIds: [], agentIds: [] };
+    const deps = callerToolDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: respondOnly, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([respondOnly]),
+      } as SkillStore,
+      skillSelector: { select: vi.fn().mockResolvedValue(respondOnly) },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(final.pendingToolCalls).toHaveLength(1);
+    // Nothing was resolved out of the catalog for this skill.
+    expect(deps.vectorStore.getByIds).not.toHaveBeenCalled();
+  });
+
+  it("errors clearly when the planner produces non-JSON arguments for a caller tool", async () => {
+    // Every other dispatch kind takes a plain string; sending the client
+    // arguments that don't match its schema would fail confusingly on its side.
+    const deps = callerToolDeps({
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "caller:get_weather",
+          toolArgs: "the weather in Chicago please",
+        } satisfies PlannedAction),
+      },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(final.pendingToolCalls).toEqual([]);
+    expect(final.error).toContain("needs JSON arguments");
+  });
+
+  it("treats empty planner arguments as a no-argument call", async () => {
+    const deps = callerToolDeps({
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "caller:get_weather",
+          toolArgs: "",
+        } satisfies PlannedAction),
+      },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(final.pendingToolCalls[0]!.arguments).toBe("{}");
+  });
+
+  it("considers caller tools on the no-match fallback path, with no fit-check gate", async () => {
+    // No skill matched, so there is no allowCallerTools gate -- and the
+    // fit-checker exists for loose CATALOG matches, not for tools the caller
+    // explicitly supplied.
+    const deps = callerToolDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([]),
+      } as SkillStore,
+      skillSelector: { select: vi.fn().mockResolvedValue(undefined) },
+      toolFitChecker: { fits: vi.fn().mockResolvedValue(false) },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(deps.toolFitChecker.fits).not.toHaveBeenCalled();
+    expect(deps.bestEffortResponder.respond).not.toHaveBeenCalled();
+    expect(final.pendingToolCalls).toHaveLength(1);
+  });
+
+  it("resumes from client-executed results seeded into actionHistory", async () => {
+    // The wire is the only place a caller-executed result exists (docs/adr/0035
+    // §1): the planner must see it and be able to finish on it, with `result`
+    // populated even though no runTool ran in this invocation.
+    const deps = baseDeps({
+      actionPlanner: { plan: vi.fn().mockResolvedValue({ action: "finish" } satisfies PlannedAction) },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "what's the weather in Chicago?",
+      authToken: "tok",
+      callerTools: [weatherTool],
+      actionHistory: [{ toolId: "caller:get_weather", toolArgs: '{"city":"Chicago"}', result: "58F and raining" }],
+    });
+
+    expect(deps.actionPlanner.plan).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.anything(),
+      expect.arrayContaining([weatherTool]),
+      [{ toolId: "caller:get_weather", toolArgs: '{"city":"Chicago"}', result: "58F and raining" }],
+      expect.anything(),
+    );
+    expect(final.error).toBeUndefined();
+    expect(final.result).toBe("58F and raining");
+  });
+
+  it("finishes on the seeded result when a resumed planner re-issues the already-run call", async () => {
+    // tool_choice: "required" is re-applied on the resend (server.ts sets it
+    // whenever tools are present), which nudges the planner to re-call the one
+    // tool already in seeded actionHistory. The verbatim-repeat guard must then
+    // finish with THAT result -- not `undefined` -- since no runTool ran this
+    // invocation to populate state.result. Regression for the caller-tool
+    // resume path where the guard used to drop the seeded result.
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "what's the weather in Chicago?",
+      authToken: "tok",
+      callerTools: [weatherTool],
+      callerToolChoiceRequired: true,
+      actionHistory: [{ toolId: "caller:get_weather", toolArgs: '{"city":"Chicago"}', result: "58F and raining" }],
+    });
+
+    // Planner re-issues the identical call; the guard treats it as done and
+    // carries the seeded result rather than finishing with `undefined`.
+    expect(deps.actionPlanner.plan).toHaveBeenCalledTimes(1);
+    expect(final.pendingToolCalls).toEqual([]);
+    expect(final.error).toBeUndefined();
+    expect(final.result).toBe("58F and raining");
+  });
+
+  it("bounds a resumed loop with seeded history rather than restarting the step count", async () => {
+    // Otherwise a client could drive an unbounded planner loop by resending.
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "weather?",
+      authToken: "tok",
+      callerTools: [weatherTool],
+      actionHistory: Array.from({ length: 4 }, (_, i) => ({
+        toolId: "caller:get_weather",
+        toolArgs: `{"n":${i}}`,
+        result: `r${i}`,
+      })),
+    });
+
+    // MAX_TOOL_STEPS reached -> finish without ever consulting the planner.
+    expect(deps.actionPlanner.plan).not.toHaveBeenCalled();
+    expect(final.pendingToolCalls).toEqual([]);
+    expect(final.result).toBe("r3");
+  });
+
+  it("passes tool_choice: required through to the planner as a directive", async () => {
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "weather?",
+      authToken: "tok",
+      callerTools: [weatherTool],
+      callerToolChoiceRequired: true,
+    });
+
+    expect(deps.actionPlanner.plan).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.anything(),
+      expect.anything(),
+      [],
+      { callerToolRequired: true },
+    );
+  });
+
+  it("behaves exactly as before when the caller supplies no tools", async () => {
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.pendingToolCalls).toEqual([]);
+    expect(final.result).toEqual({ title: "Pancakes" });
+  });
+});

@@ -33,7 +33,7 @@ spec:
   serviceAccountName: {{ .Values.recipePublisher.serviceAccountName | quote }}
   env:
     - name: MEALIE_BASE_URL
-      value: {{ .Values.recipePublisher.mealieBaseUrl | quote }}
+      value: {{ .Values.recipePublisher.mealieBaseUrl | required "recipePublisher.mealieBaseUrl is required when recipePublisher.enabled=true" | quote }}
     # Which of Mealie's registered ingredient parsers to use (nlp | brute |
     # openai) -- "nlp" works out of the box; "openai" needs an AI Provider
     # configured in Mealie's own Settings.

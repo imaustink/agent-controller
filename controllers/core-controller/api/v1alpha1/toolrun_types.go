@@ -90,6 +90,17 @@ type ToolRunSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
+
+	// secretEnv are per-invocation environment variables sourced from Secret
+	// keys (same namespace), merged over the referenced Tool's static
+	// ToolSpec.SecretEnv at Job-build time. An entry here with the same
+	// `name` as a Tool-level entry wins for this run only; entries unique to
+	// either side are both included. Mirrors AgentRunSpec.SecretEnv (ADR
+	// 0022/0027) -- intended for short-lived, caller-scoped credentials
+	// (e.g. a per-user GitHub identity-link token, see the `github` Tool)
+	// that must not be baked into the Tool template.
+	// +optional
+	SecretEnv []SecretEnvVar `json:"secretEnv,omitempty"`
 }
 
 // ToolRunPhase is the coarse lifecycle state of a ToolRun, mirrored from its

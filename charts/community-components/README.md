@@ -40,6 +40,7 @@ helm install community-components oci://ghcr.io/imaustink/charts/community-compo
 | ---------- | ---- | ---------- | ------- |
 | `recipeScraper` | Tool | URL -> recipe Markdown extraction | on |
 | `recipePublisher` | Tool | publishes/updates a recipe on Mealie | on |
+| `webSearch` | Tool | queries an in-cluster SearXNG instance for web results | off |
 | `skills.recipeRefining` | Skill | extract -> confirm -> publish -> refine, using the two tools above | on |
 | `skills.softwareEngineering` | Skill | superseded by `opencodeSweAgent` below; keep disabled when that's enabled | off |
 | `opencodeSweAgent` | Agent | privileged GitHub coding sub-agent (opencode CLI + Anthropic API) | off |
@@ -49,20 +50,45 @@ See [values.yaml](values.yaml) for the full set of per-component knobs
 
 ## Prerequisites for enabled components
 
-Each Tool/Agent CR references a ServiceAccount and Secret that this chart
-does **not** create -- they must already exist in the namespace:
+Each Tool/Agent CR's ServiceAccount is created by this chart by default (see
+`<component>.serviceAccount.create` in values.yaml). What's still required
+out-of-band is:
 
-- `recipeScraper`: ServiceAccount `recipe-scraper`; Secret with `OPENAI_API_KEY`
-  (default `agent-orchestrator-secrets`).
-- `recipePublisher`: ServiceAccount `recipe-publisher`; Secret
+- `recipeScraper`: Secret with `OPENAI_API_KEY` (default
+  `agent-orchestrator-secrets`).
+- `recipePublisher`: `recipePublisher.mealieBaseUrl` must be set to your own
+  Mealie instance (no default -- install fails without it); Secret
   `recipe-publisher-secrets` with `MEALIE_API_TOKEN`.
-- `opencodeSweAgent` (if enabled): ServiceAccount `opencode-swe-agent`; Secret
-  `opencode-swe-secrets` with `GITHUB_TOKEN` and `ANTHROPIC_API_KEY`.
+- `webSearch` (if enabled): the `agent-controller` release's
+  `searxng.enabled=true`, and `webSearch.searxngBaseUrl` pointed at that
+  release's SearXNG Service (defaults to the minikube demo release name).
+- `githubTool` (if enabled): Secret `github-tool-secrets` with a GitHub
+  credential — `GITHUB_TOKEN` (a PAT), or the three `GITHUB_APP_*` keys, or
+  nothing at all when `identityLink.enabled` injects the calling user's own
+  token per-invocation. The chart wires exactly one; the render fails if none
+  is configured.
+- `opencodeSweAgent` (if enabled): Secret `opencode-swe-secrets` with
+  `ANTHROPIC_API_KEY`, plus a GitHub credential — `GITHUB_TOKEN` (a PAT), or
+  the three `GITHUB_APP_*` keys, or neither when `identityLink.enabled`
+  injects the calling user's own token per-run. The chart wires only the one
+  that's actually in effect, so a Secret using App auth or identity linking
+  needs **no** `GITHUB_TOKEN` key at all — the render fails if none of the
+  three is configured. Same for `claudeCodeSweAgent` (Secret
+  `claude-code-swe-secrets`, whose model credential is `ANTHROPIC_API_KEY`
+  and/or `CLAUDE_CODE_OAUTH_TOKEN`).
+
+Every tool/agent image (`recipeScraper.image`, `recipePublisher.image`,
+`webSearch.image`, `opencodeSweAgent.image`) also needs to point at a registry
+you actually have access to -- see the top-level
+[agent-controller README](../agent-controller/README.md#prerequisites).
 
 ## Adding a new community component
 
 1. Add a new `Tool`/`Skill`/`Agent` template under `templates/`, gated by an
    `enabled` flag in `values.yaml`, following the pattern in the existing
-   templates.
+   templates. This chart is the only place these CRs are defined -- there is
+   no separate plain-CR copy for manual `kubectl apply` to keep in sync;
+   `.github/workflows/validate-crds.yml` validates by rendering this chart
+   with every component enabled and dry-run applying that output.
 2. Document any new ServiceAccount/Secret prerequisites above.
 3. Bump `version` in `Chart.yaml`.

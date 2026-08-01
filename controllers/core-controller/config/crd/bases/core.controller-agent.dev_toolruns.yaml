@@ -96,6 +96,50 @@ spec:
                       Required when natsSubject is empty.
                     type: string
                 type: object
+              secretEnv:
+                description: |-
+                  secretEnv are per-invocation environment variables sourced from Secret
+                  keys (same namespace), merged over the referenced Tool's static
+                  ToolSpec.SecretEnv at Job-build time. An entry here with the same
+                  `name` as a Tool-level entry wins for this run only; entries unique to
+                  either side are both included. Mirrors AgentRunSpec.SecretEnv (ADR
+                  0022/0027) -- intended for short-lived, caller-scoped credentials
+                  (e.g. a per-user GitHub identity-link token, see the `github` Tool)
+                  that must not be baked into the Tool template.
+                items:
+                  description: |-
+                    SecretEnvVar names a Job container environment variable whose value comes
+                    from a Secret key in the SAME namespace as the Tool/ToolRun, resolved via
+                    corev1.EnvVarSource.SecretKeyRef at Job-build time. Only the reference
+                    (secret name + key) lives in the Tool spec — never the secret value
+                    itself, same discipline as ToolRunCallback.SecretRef for the callback
+                    HMAC secret. Needed because ordinary tool containers (e.g. recipe-scraper's
+                    OPENAI_API_KEY, recipe-publisher's GITHUB_TOKEN) require real secrets that
+                    `env` (non-secret, catalog metadata) cannot carry.
+                  properties:
+                    name:
+                      description: name of the environment variable to set in the
+                        tool's Job container.
+                      type: string
+                    secretRef:
+                      description: secretRef selects the Secret key providing the
+                        value.
+                      properties:
+                        key:
+                          description: key within the Secret's data.
+                          type: string
+                        name:
+                          description: name of the Secret.
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                  required:
+                  - name
+                  - secretRef
+                  type: object
+                type: array
               timeoutSeconds:
                 description: timeoutSeconds bounds the Job's activeDeadlineSeconds.
                   Defaults to 300 if unset.

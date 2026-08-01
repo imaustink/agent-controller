@@ -22,10 +22,15 @@ required for the container to start.
 {{- end }}
 {{- end }}
 
+{{- if ne .Values.config.identityResolver "oidc" }}
 {{- if .Values.config.staticIdentities }}
 
-WARNING: config.staticIdentities is set. StaticIdentityResolver is a
-DEV/TEST-ONLY stub with no real token verification — do not use this in
-production (see apps/agent-orchestrator/src/rbac/static-identity-resolver.ts).
+WARNING: config.staticIdentities is set and config.identityResolver is not
+"oidc". StaticIdentityResolver is a DEV/TEST-ONLY stub with no real token
+verification — do not use this in production (see
+apps/agent-orchestrator/src/rbac/static-identity-resolver.ts). Set
+config.identityResolver=oidc (and the config.oidc* fields) for real IdP
+verification instead.
+{{- end }}
 {{- end }}
 

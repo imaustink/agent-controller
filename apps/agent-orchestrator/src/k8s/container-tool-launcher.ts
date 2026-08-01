@@ -26,7 +26,30 @@ export interface LaunchOptions {
    */
   natsUrl?: string;
   ttlSecondsAfterFinished?: number;
+  /**
+   * Caller's Open WebUI session id (docs/adr/0012), if any -- set as
+   * {@link SessionIDAnnotation} on the launched ToolRun CR so the Go
+   * core-controller can copy it onto the Job/Pod for `kubectl describe`
+   * debugging. Absent -> no annotation is set, same as before this field
+   * existed.
+   */
+  sessionId?: string;
+  /**
+   * Per-invocation plaintext values (e.g. the calling user's own linked
+   * GitHub token, ADR 0022/0027) that must reach the launched Job as env
+   * vars WITHOUT ever being embedded as plaintext in the ToolRun CR itself
+   * -- CRs aren't RBAC-hidden the way k8s Secrets are. When non-empty,
+   * `ToolRunLauncher.launch()` creates a dedicated k8s Secret first and
+   * references it via `ToolRunSpec.secretEnv` (`SecretEnvVar`,
+   * controllers/core-controller/api/v1alpha1/toolrun_types.go), which the Go
+   * reconciler merges on top of the Tool template's own static `secretEnv`
+   * when building the Job. Mirrors `AgentLaunchOptions.secretEnv` exactly.
+   */
+  secretEnv?: { name: string; value: string }[];
 }
+
+/** Well-known annotation key mirroring `SessionIDAnnotation` in controllers/core-controller/internal/controller/run_job.go. */
+export const SESSION_ID_ANNOTATION = "controller-agent.dev/session-id";
 
 export interface LaunchedJob {
   name: string;

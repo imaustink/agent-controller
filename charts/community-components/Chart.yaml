@@ -9,7 +9,7 @@ description: >-
   in the cluster. Grows independently of the core system as more tools,
   skills, and agents are contributed.
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:

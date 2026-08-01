@@ -1,12 +1,26 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AgentState } from "./agent/graph.js";
+import type { ToolCallRecord } from "./agent/action-planner.js";
+import type { AgentOrchestratorChannel } from "./agents/nats-agent-channel.js";
+import {
+  callerToolId,
+  type CallerToolStore,
+  type PendingToolCall,
+  type PriorCallerToolCall,
+} from "./caller-tools/types.js";
+import { parseCallerTools } from "./caller-tools/parse.js";
+import { resolveCallerTools, toCallerToolDescriptor } from "./caller-tools/resolve.js";
+import type { ToolDescriptor } from "./tool-descriptor.js";
 import type { SessionStore } from "./session/types.js";
+import { renderPromptTemplate, type CrdIntegrationRouteRegistry } from "./routing/crd-integration-route-registry.js";
 import {
   buildAgentRequest,
   chatCompletionChunk,
   chatCompletionId,
   chatCompletionResponse,
+  chatCompletionToolCallResponse,
+  toolCallDeltaChunk,
   errorStatusAndCode,
   isInternalUiTaskRequest,
   listModelsResponse,
@@ -19,6 +33,7 @@ import {
   writeSseDone,
   writeSseStatus,
 } from "./openai/chat-completions.js";
+import { SENDER_ASSERTION_HEADER, verifySenderAssertion } from "./rbac/sender-assertion.js";
 import type { TaskCompleter } from "./openai/task-completer.js";
 import { withHeartbeat } from "./openai/with-heartbeat.js";
 
@@ -29,6 +44,40 @@ export interface InvocationRecord {
   status: InvocationStatus;
   result?: unknown;
   error?: string;
+  /**
+   * True once this turn has determined the caller must link an identity
+   * before any agent can run. Set EARLY (mid-run, before the link URL even
+   * exists) via the graph's `reportIdentityLinkPending`, and reaffirmed at
+   * terminal from `state.identityLinkPending`. A polling caller
+   * (integration-gateway's triage relay) reads this to withhold a premature
+   * "starting work" comment and, once terminal, to drive the link-then-resume
+   * flow instead of treating the link prompt as a finished result.
+   */
+  identityLinkPending?: boolean;
+  /** Provider + subject the pending link is keyed on, so a caller that owns the token store can wait for completion and auto-resume. Present only alongside `identityLinkPending`. */
+  identityLink?: { provider: string; subject: string };
+  /**
+   * The most recent progress message seen with `stage: "remote-control-url"`
+   * (a Remote Control session URL, `https://claude.ai/code/session_...`) --
+   * only ever set when the delegated agent actually emits one (today: a
+   * later phase of `claude-code-swe-agent`; `opencode-swe-agent` and every
+   * other run never sets it). A polling caller (integration-gateway's triage
+   * relay) uses this to prefer linking a live Remote Control session over its
+   * own session page once available. Omitted/undefined for every run that
+   * never emits this progress event -- fully backward compatible.
+   */
+  remoteControlUrl?: string;
+  /**
+   * Tool calls the turn is asking the CALLER to execute (docs/adr/0035), present
+   * only when the planner chose a consumer-supplied tool. A `succeeded` record
+   * carrying these has produced no `result`: the answer depends on the caller
+   * running these functions.
+   *
+   * Note `/invoke` can only OFFER tools, not resume from their results — it takes
+   * a single `request` string with nowhere to put a `role: "tool"` message. The
+   * full round trip is chat-facade-only.
+   */
+  pendingToolCalls?: PendingToolCall[];
 }
 
 /** How often to emit an SSE keep-alive comment while waiting on a slow graph step (e.g. a tool Job). */
@@ -42,22 +91,74 @@ const HEARTBEAT_MS = 15_000;
  */
 const CHAT_ID_HEADER = "x-openwebui-chat-id";
 
+/**
+ * Per-request signed user JWT forwarded by Open WebUI on every upstream
+ * request when its deployment sets `ENABLE_FORWARD_USER_INFO_HEADERS=true`.
+ * Unlike the `Authorization` bearer token (a single static value shared by
+ * every Open WebUI user), this identifies the specific human sending the
+ * request -- see `OpenWebUiForwardedUserResolver`. Absent header -> identity
+ * resolution falls back to the shared static/OIDC path, same as before this
+ * header was read.
+ */
+const FORWARDED_USER_JWT_HEADER = "x-openwebui-user-jwt";
+
 /** Input passed to the agent graph for one turn (see AgentStateAnnotation in agent/graph.ts). */
 export interface AgentGraphInput {
   request: string;
   authToken: string;
+  /**
+   * Open WebUI's per-request signed user JWT (`X-OpenWebUI-User-Jwt`), if
+   * the caller sent one -- see `FORWARDED_USER_JWT_HEADER` and
+   * `OpenWebUiForwardedUserResolver`.
+   */
+  forwardedUserToken?: string;
+  /**
+   * Caller's Open WebUI session id (`X-OpenWebUI-Chat-Id` or the `/invoke`
+   * `session_id` body field), if any -- forwarded to every launched
+   * ToolRun/AgentRun CR as an annotation (docs/adr/0012) so a Job/Pod can be
+   * traced back to the conversation that spawned it via `kubectl describe`.
+   */
+  sessionId?: string;
+  /**
+   * Tools the CONSUMER supplied in this request (docs/adr/0035), already parsed,
+   * validated and relevance-pruned to top-K. Executed by the caller's own client,
+   * never here. Absent for every caller that sends no `tools` array.
+   */
+  callerTools?: ToolDescriptor[];
+  /** The caller sent `tool_choice: "required"` — a planner directive, not a guarantee (docs/adr/0035 §5). */
+  callerToolChoiceRequired?: boolean;
+  /**
+   * Seeds `AgentState.actionHistory` from tool calls the CLIENT already executed
+   * for the exchange in flight (docs/adr/0035 §1) — the wire is the only place
+   * those results exist, and seeding is also what keeps `MAX_TOOL_STEPS` bounding
+   * a resumed loop.
+   */
+  actionHistory?: ToolCallRecord[];
   /** Active skill id from the caller's session, if any (docs/adr/0012). */
   activeSkillId?: string;
   /** Id of the Agent CR the conversation is continuing, if any. */
   activeAgentId?: string;
   /** Name of the specific AgentRun CR the conversation is continuing, if any. */
   activeAgentRunId?: string;
+  /** True when `activeAgentRunId` still owes this conversation a reply (see `SessionRecord.activeAgentRunAwaitingReply`). */
+  activeAgentRunAwaitingReply?: boolean;
   /** Identity subject the session record was created under (docs/adr/0012). */
   sessionSubject?: string;
   /** Per-tool continuation tokens from the caller's session, keyed by tool id (docs/adr/0017). */
   toolContinuations?: Record<string, string>;
   /** Per-agent continuation tokens from the caller's session, keyed by agent id (docs/adr/0017). */
   agentContinuations?: Record<string, string>;
+  /** A device-flow identity-link attempt this conversation is waiting on, if any (see `SessionRecord.pendingIdentityLink`). */
+  pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number; subject?: string; request?: string };
+  /**
+   * Per-request override of which OAuth flow `delegateToAgent` starts if
+   * this caller needs to link an identity (see `AgentState.identityLinkFlow`
+   * in agent/graph.ts). Absent -> the graph's own default ("authcode")
+   * applies. Only ever set by `handleInvoke`'s `identity_link_flow` body
+   * field -- the Open WebUI-facing chat-completions facade never sets this,
+   * so it always gets the browser-redirect default.
+   */
+  identityLinkFlow?: "device" | "authcode";
   /**
    * Per-request progress listener — set by the SSE streaming handler to
    * forward tool Job progress/warning events as Open WebUI status steps.
@@ -67,6 +168,47 @@ export interface AgentGraphInput {
    * have their own handler (deps is shared across all requests).
    */
   progressListener?: (stage: string, message: string | undefined) => void;
+  /**
+   * Separate from `progressListener` above on purpose: `delegateToAgent`
+   * treats a set `progressListener` as "this caller has a live channel,
+   * synchronously wait for an identity link to land." A fire-and-forget
+   * `/invoke` caller that only wants to capture a `remote-control-url`
+   * progress event (to post a Remote Control link on a GitHub issue) must
+   * NOT be treated as a live channel, or the whole turn silently blocks for
+   * minutes with nothing posted anywhere -- exactly the regression this
+   * field exists to avoid. See `AgentState.remoteControlUrlListener`'s doc
+   * in agent/graph.ts for the full incident writeup.
+   */
+  remoteControlUrlListener?: (url: string) => void;
+  /**
+   * Fired the instant this turn decides the caller must link an identity,
+   * before the (possibly slow) link `start()`. Set only by `handleInvoke` for
+   * the fire-and-forget `/invoke` path, so it can mark the in-flight job
+   * identity-link-pending immediately (see `InvocationRecord.identityLinkPending`).
+   */
+  reportIdentityLinkPending?: (info: { provider: string; subject: string }) => void;
+  /**
+   * Id of a Skill CR to dispatch to directly, bypassing RAG skill retrieval —
+   * set when `/invoke`'s optional `event` field matched an `IntegrationRoute`
+   * CR (deterministic event routing, e.g. a GitHub issue being assigned to
+   * the bot). Mutually exclusive with `forcedAgentId` in practice (a route
+   * has exactly one target), though the graph tolerates either being unset.
+   */
+  forcedSkillId?: string;
+  /** Id of an Agent CR to dispatch to directly — see `forcedSkillId`. */
+  forcedAgentId?: string;
+  /**
+   * GitHub login of the human who triggered this turn, taken from
+   * `/invoke`'s `event.senderLogin` (integration-gateway populates it from
+   * the signature-verified webhook payload, and drops the event outright if
+   * that sender resolves to no identity).
+   *
+   * The webhook path authenticates with the gateway's own service token, so
+   * `identity.subject` is the same shared value for every trigger; this is
+   * the only per-user identifier such a turn carries. See
+   * `AgentState.senderLogin`.
+   */
+  senderLogin?: string;
 }
 
 /** The slice of the compiled LangGraph agent this server needs — kept small and mockable for tests. */
@@ -104,6 +246,20 @@ export interface AgentGraphLike {
  * is a thin translation layer over the same graph — it doesn't change how
  * `/invoke` behaves.
  */
+/**
+ * Everything a single turn needs to know about consumer-supplied tools
+ * (docs/adr/0035), bundled so it can ride along as one trailing
+ * `buildGraphInput` argument instead of three more positional params.
+ */
+interface CallerToolTurn {
+  /** Resolved, top-K-pruned tools to offer the planner. */
+  tools: ToolDescriptor[];
+  /** `tool_choice: "required"` — a directive, not a guarantee. */
+  required: boolean;
+  /** Prior client-executed calls, mapped into the planner's own history shape. */
+  actionHistory: ToolCallRecord[];
+}
+
 export class InvokeServer {
   private server: Server | undefined;
   private readonly invocations = new Map<string, InvocationRecord>();
@@ -125,6 +281,44 @@ export class InvokeServer {
      * generic static reply (safety takes priority over title quality).
      */
     private readonly taskCompleter?: TaskCompleter,
+    /**
+     * Optional declarative event→Skill/Agent/Tool routing table (a new
+     * IntegrationRoute CR per docs/integrations-gateway.md's deferred "Open
+     * Questions" proposal). Absent -> `/invoke`'s `event` field, if sent, is
+     * simply ignored and every request goes through RAG retrieval exactly as
+     * before this feature existed.
+     */
+    private readonly integrationRouteRegistry?: CrdIntegrationRouteRegistry,
+    /**
+     * Optional live-session tunnel (ADR 0026): lets `GET /sessions/:id/live`,
+     * `GET /agent-runs/:id/events`, and `POST /agent-runs/:id/opencode`
+     * probe/stream/proxy a still-resident agent Pod. Absent (e.g. no NATS
+     * configured) -> those three routes 404, same as if this feature didn't
+     * exist; `/invoke` and the chat-completions facade are unaffected either way.
+     */
+    private readonly agentChannel?: AgentOrchestratorChannel,
+    /**
+     * Shared secret integration-gateway signs its sender assertions with
+     * (docs/adr/0030 §6).
+     *
+     * When set, a webhook turn's sender login is accepted ONLY from a verified
+     * assertion and the unsigned `event.senderLogin` body field is ignored.
+     * When unset, the body field is trusted -- the pre-assertion behaviour,
+     * kept so an existing deployment is not broken by upgrading, and warned
+     * about at startup (see index.ts).
+     */
+    private readonly senderAssertionSecret?: string,
+    /**
+     * Just-in-time index for consumer-supplied tools (docs/adr/0035), in its own
+     * Qdrant collection. Only consulted when a caller sends MORE tools than
+     * `callerToolTopK` — below that there is nothing to prune, so the store is
+     * skipped and the feature costs nothing. Absent -> a caller sending a large
+     * tool array gets an unranked truncation instead of relevance ranking, never
+     * an error.
+     */
+    private readonly callerToolStore?: CallerToolStore,
+    /** Max consumer-supplied tools that may reach the action planner (docs/adr/0035 §3). */
+    private readonly callerToolTopK: number = 5,
   ) {}
 
   /** Builds the graph input for one turn, folding in any session-scoped active skill or agent run (docs/adr/0012). */
@@ -133,18 +327,52 @@ export class InvokeServer {
     authToken: string,
     sessionId: string | undefined,
     progressListener?: (stage: string, message: string | undefined) => void,
+    identityLinkFlow?: "device" | "authcode",
+    forwardedUserToken?: string,
+    forcedSkillId?: string,
+    forcedAgentId?: string,
+    // Deliberately a separate trailing param, not folded into
+    // `progressListener` -- see `AgentGraphInput.remoteControlUrlListener`'s
+    // doc for why conflating the two caused a real incident (a fire-and-
+    // forget triage turn silently blocking for minutes on identity-link's
+    // synchronous wait, because setting `progressListener` made
+    // delegateToAgent think this caller had a live channel).
+    remoteControlUrlListener?: (url: string) => void,
+    senderLogin?: string,
+    /**
+     * Consumer-supplied tools for this turn (docs/adr/0035), already resolved by
+     * `resolveCallerTools`. Only the chat-completions/invoke facades pass this;
+     * every other caller (webhook triage, session-page follow-ups) has no client
+     * to execute a tool call, so it stays absent.
+     */
+    callerTools?: CallerToolTurn,
   ): Promise<AgentGraphInput> {
     const input: AgentGraphInput = { request, authToken };
+    if (senderLogin) input.senderLogin = senderLogin;
+    if (callerTools && callerTools.tools.length > 0) input.callerTools = callerTools.tools;
+    if (callerTools?.required) input.callerToolChoiceRequired = true;
+    if (callerTools && callerTools.actionHistory.length > 0) input.actionHistory = callerTools.actionHistory;
     if (progressListener) input.progressListener = progressListener;
+    if (remoteControlUrlListener) input.remoteControlUrlListener = remoteControlUrlListener;
+    if (identityLinkFlow) input.identityLinkFlow = identityLinkFlow;
+    if (forwardedUserToken) input.forwardedUserToken = forwardedUserToken;
+    if (forcedSkillId) input.forcedSkillId = forcedSkillId;
+    if (forcedAgentId) input.forcedAgentId = forcedAgentId;
+    // Carried through to every launched ToolRun/AgentRun CR as an annotation
+    // (docs/adr/0012) purely for kubectl-level debugging -- independent of
+    // whether a session store is configured, unlike the fields below.
+    if (sessionId) input.sessionId = sessionId;
     if (!sessionId || !this.sessionStore) return input;
     const record = await this.sessionStore.get(sessionId);
     if (!record) return input;
     input.activeSkillId = record.activeSkillId;
     input.activeAgentId = record.activeAgentId;
     input.activeAgentRunId = record.activeAgentRunId;
+    input.activeAgentRunAwaitingReply = record.activeAgentRunAwaitingReply;
     input.sessionSubject = record.subject;
     input.toolContinuations = record.toolContinuations;
     input.agentContinuations = record.agentContinuations;
+    input.pendingIdentityLink = record.pendingIdentityLink;
     return input;
   }
 
@@ -171,8 +399,11 @@ export class InvokeServer {
       selectedAgent?: { id: string };
       agentRunId?: string;
       agentAwaitingReply?: boolean;
+      agentResumePending?: boolean;
       extractedContinuation?: { toolId: string; token: string };
       extractedAgentContinuation?: { agentId: string; token: string };
+      pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number; subject?: string; request?: string };
+      identityLinkPending?: boolean;
     },
   ): Promise<void> {
     if (!sessionId || !this.sessionStore || !identity) return;
@@ -197,14 +428,40 @@ export class InvokeServer {
       subject: identity.subject,
       ...(Object.keys(toolContinuations).length > 0 ? { toolContinuations } : {}),
       ...(Object.keys(agentContinuations).length > 0 ? { agentContinuations } : {}),
+      // Kept even once activeAgentRunId is cleared below (ADR 0026) -- a
+      // live-session viewer's only way to know which run id to probe.
+      ...(outcome.agentRunId ? { lastAgentRunId: outcome.agentRunId } : { lastAgentRunId: existing?.lastAgentRunId }),
     };
+
+    if (outcome.identityLinkPending) {
+      // A turn paused on a one-time device-flow authorization never also
+      // sets selectedSkill/agentRunId (delegateToAgent/checkPendingIdentityLink
+      // return early before either), so this is checked first and is always
+      // mutually exclusive with the branches below.
+      await this.sessionStore.set(sessionId, { ...base, pendingIdentityLink: outcome.pendingIdentityLink });
+      return;
+    }
 
     if (outcome.selectedSkill) {
       await this.sessionStore.set(sessionId, { ...base, activeSkillId: outcome.selectedSkill.id });
       return;
     }
     if (outcome.agentRunId) {
-      if (outcome.agentAwaitingReply && outcome.selectedAgent) {
+      if (outcome.agentResumePending && outcome.selectedAgent) {
+        // The turn ended without the reply because the channel to the run was
+        // lost, not because the run concluded. Keep the anchor (already written
+        // eagerly before the wait) with the awaiting-reply flag intact, so the
+        // next turn re-attaches and waits rather than publishing its text as a
+        // prompt to an agent that never asked anything.
+        await this.sessionStore.set(sessionId, {
+          ...base,
+          activeAgentId: outcome.selectedAgent.id,
+          activeAgentRunId: outcome.agentRunId,
+          activeAgentRunAwaitingReply: true,
+        });
+      } else if (outcome.agentAwaitingReply && outcome.selectedAgent) {
+        // Parked on a question: the next turn's text IS the answer, so no
+        // awaiting-reply flag -- it gets published as a prompt.
         await this.sessionStore.set(sessionId, {
           ...base,
           activeAgentId: outcome.selectedAgent.id,
@@ -236,10 +493,18 @@ export class InvokeServer {
     });
   }
 
+  /**
+   * Stops accepting new connections and resolves once in-flight requests have
+   * finished. Idle keep-alive connections are closed explicitly — without
+   * that, `server.close()` waits on sockets that are holding no request at
+   * all, and a shutdown that should take milliseconds instead runs out the
+   * pod's termination grace period.
+   */
   close(): Promise<void> {
     return new Promise((resolve, reject) => {
       if (!this.server) return resolve();
       this.server.close((err) => (err ? reject(err) : resolve()));
+      this.server.closeIdleConnections();
     });
   }
 
@@ -267,7 +532,150 @@ export class InvokeServer {
       return;
     }
 
+    // Live-session tunnel (ADR 0026) -- `sessionId` travels as a query param
+    // rather than a path segment since it commonly contains `#`/`/`
+    // (`github:<owner>/<repo>#<issueNumber>`).
+    if (req.method === "GET" && url.pathname === "/sessions/live") {
+      await this.handleSessionLive(req, res, url);
+      return;
+    }
+    const eventsMatch = /^\/agent-runs\/([^/]+)\/events$/.exec(url.pathname);
+    if (req.method === "GET" && eventsMatch) {
+      await this.handleAgentRunEvents(req, res, url, eventsMatch[1] as string);
+      return;
+    }
+    const opencodeMatch = /^\/agent-runs\/([^/]+)\/opencode$/.exec(url.pathname);
+    if (req.method === "POST" && opencodeMatch) {
+      await this.handleAgentRunOpencode(req, res, url, opencodeMatch[1] as string);
+      return;
+    }
+
     res.writeHead(404).end();
+  }
+
+  /**
+   * `GET /sessions/live?sessionId=...` -> `{ live, agentRunId? }` (ADR 0026).
+   * Deliberately a real-time NATS round trip against the session's
+   * `lastAgentRunId` (a cheap `GET /global/health` proxied through
+   * `forwardOpencodeRequest`) rather than trusting any cached liveness flag
+   * -- self-corrects if the Pod crashed/was evicted without a clean
+   * `session_ended`.
+   */
+  private async handleSessionLive(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    if (!this.agentChannel?.forwardOpencodeRequest || !this.sessionStore) {
+      res.writeHead(404).end();
+      return;
+    }
+    if (!bearerToken(req.headers.authorization)) {
+      res.writeHead(401).end();
+      return;
+    }
+    const sessionId = url.searchParams.get("sessionId");
+    if (!sessionId) {
+      res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "sessionId query param is required" }));
+      return;
+    }
+    const record = await this.sessionStore.get(sessionId);
+    const agentRunId = record?.lastAgentRunId;
+    if (!agentRunId) {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ live: false }));
+      return;
+    }
+    try {
+      const probe = await this.agentChannel.forwardOpencodeRequest(agentRunId, { method: "GET", path: "/global/health" }, 2_000);
+      const live = probe.status >= 200 && probe.status < 300;
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(live ? { live: true, agentRunId } : { live: false }));
+    } catch {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ live: false }));
+    }
+  }
+
+  /**
+   * `GET /agent-runs/:runId/events?sessionId=...` -> SSE stream of the run's
+   * `opencode_event`s (ADR 0026). `sessionId` is cross-checked against the
+   * session store's OWN record of `lastAgentRunId` -- a bare `runId` alone
+   * is never trusted, since it's the only thing standing between "watch
+   * your own session" and "watch anyone's".
+   */
+  private async handleAgentRunEvents(req: IncomingMessage, res: ServerResponse, url: URL, runId: string): Promise<void> {
+    if (!this.agentChannel?.subscribeLive || !this.sessionStore) {
+      res.writeHead(404).end();
+      return;
+    }
+    if (!bearerToken(req.headers.authorization)) {
+      res.writeHead(401).end();
+      return;
+    }
+    const sessionId = url.searchParams.get("sessionId");
+    const record = sessionId ? await this.sessionStore.get(sessionId) : undefined;
+    if (!sessionId || record?.lastAgentRunId !== runId) {
+      res.writeHead(404).end();
+      return;
+    }
+
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+    res.flushHeaders?.();
+
+    const live = this.agentChannel.subscribeLive(runId, (msg) => {
+      if (msg.type === "opencode_event") {
+        res.write(`data: ${JSON.stringify(msg.event ?? null)}\n\n`);
+      } else if (msg.type === "session_ended") {
+        res.write(`event: session_ended\ndata: ${JSON.stringify({ reason: msg.reason })}\n\n`);
+        res.end();
+      }
+    });
+    req.on("close", () => live.unsubscribe());
+  }
+
+  /**
+   * `POST /agent-runs/:runId/opencode?sessionId=...` -> forwards
+   * `{ method, path, body? }` into the run's local opencode server and
+   * returns `{ status, body? }` (ADR 0026). Same session/runId cross-check
+   * as `handleAgentRunEvents`.
+   */
+  private async handleAgentRunOpencode(req: IncomingMessage, res: ServerResponse, url: URL, runId: string): Promise<void> {
+    if (!this.agentChannel?.forwardOpencodeRequest || !this.sessionStore) {
+      res.writeHead(404).end();
+      return;
+    }
+    if (!bearerToken(req.headers.authorization)) {
+      res.writeHead(401).end();
+      return;
+    }
+    const sessionId = url.searchParams.get("sessionId");
+    const record = sessionId ? await this.sessionStore.get(sessionId) : undefined;
+    if (!sessionId || record?.lastAgentRunId !== runId) {
+      res.writeHead(404).end();
+      return;
+    }
+
+    const rawBody = await readBody(req);
+    let parsed: { method?: unknown; path?: unknown; body?: unknown };
+    try {
+      parsed = rawBody ? (JSON.parse(rawBody) as typeof parsed) : {};
+    } catch {
+      res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "body must be JSON" }));
+      return;
+    }
+    if (typeof parsed.method !== "string" || typeof parsed.path !== "string") {
+      res.writeHead(400, { "content-type": "application/json" }).end(
+        JSON.stringify({ error: '"method" and "path" are required strings' }),
+      );
+      return;
+    }
+
+    try {
+      const result = await this.agentChannel.forwardOpencodeRequest(runId, {
+        method: parsed.method,
+        path: parsed.path,
+        body: parsed.body,
+      });
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
+    } catch (err) {
+      res.writeHead(502, { "content-type": "application/json" }).end(
+        JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+      );
+    }
   }
 
   private async handleInvoke(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -275,6 +683,17 @@ export class InvokeServer {
 
     let request: string;
     let sessionId: string | undefined;
+    let identityLinkFlow: "device" | "authcode" | undefined;
+    let forcedSkillId: string | undefined;
+    let forcedAgentId: string | undefined;
+    let senderLogin: string | undefined;
+    // Consumer-supplied tools (docs/adr/0035), accepted here too so a
+    // programmatic `/invoke` caller has parity with the chat facade. The raw
+    // fields are captured inside the parse block and resolved after it, since
+    // resolution is async (it may hit the caller-tool index) while this block is
+    // deliberately synchronous.
+    let rawTools: unknown;
+    let rawToolChoice: unknown;
     try {
       const parsed: unknown = rawBody ? JSON.parse(rawBody) : {};
       if (
@@ -288,10 +707,86 @@ export class InvokeServer {
       request = (parsed as { request: string }).request;
       const rawSessionId = (parsed as { session_id?: unknown }).session_id;
       sessionId = typeof rawSessionId === "string" && rawSessionId.trim() !== "" ? rawSessionId : undefined;
+      // Power-user/headless-caller convenience field, not required -- an
+      // absent or invalid value is silently ignored (the graph's own
+      // "authcode" default applies) rather than 400ing the whole request.
+      const rawFlow = (parsed as { identity_link_flow?: unknown }).identity_link_flow;
+      identityLinkFlow = rawFlow === "device" || rawFlow === "authcode" ? rawFlow : undefined;
+      rawTools = (parsed as { tools?: unknown }).tools;
+      rawToolChoice = (parsed as { tool_choice?: unknown }).tool_choice;
+
+      // Optional event descriptor (e.g. { source: "github", event: "issues",
+      // action: "assigned", owner, repo, issueNumber, ... }) -- an adapter
+      // (integration-gateway) sends this alongside `request` when the
+      // inbound trigger already names an unambiguous target via an
+      // IntegrationRoute CR, so this call can bypass RAG skill retrieval
+      // entirely. No match (or no `event` at all) leaves `request` as the
+      // request text and behaves exactly as before this field existed.
+      const rawEvent = (parsed as { event?: unknown }).event;
+      // Read OUTSIDE the IntegrationRoute block below on purpose: the
+      // principal must resolve for every webhook-driven turn, including ones
+      // that match no route (or run with no route registry configured) and
+      // fall back to ordinary RAG retrieval. Gating it on a route match would
+      // have made cross-entry-point credential sharing quietly depend on
+      // routing config.
+      //
+      // WHERE the login is trusted from depends on configuration
+      // (docs/adr/0030 §6). It selects the caller's principal, and therefore
+      // which stored credentials the run receives, so with an assertion secret
+      // configured ONLY a signed assertion is accepted and the body field is
+      // ignored entirely -- otherwise anything holding the gateway's /invoke
+      // token could name an arbitrary login and be handed that person's
+      // credentials.
+      if (this.senderAssertionSecret) {
+        senderLogin = verifySenderAssertion(
+          this.senderAssertionSecret,
+          headerValue(req.headers[SENDER_ASSERTION_HEADER]),
+        );
+      } else if (rawEvent && typeof rawEvent === "object") {
+        const login = (rawEvent as Record<string, unknown>).senderLogin;
+        if (typeof login === "string" && login.trim() !== "") senderLogin = login;
+      }
+      if (this.integrationRouteRegistry && rawEvent && typeof rawEvent === "object") {
+        const eventFields = rawEvent as Record<string, unknown>;
+        const source = eventFields.source;
+        const eventName = eventFields.event;
+        const action = eventFields.action;
+        // `labelName` participates in matching too: GitHub's
+        // `pull_request`/`labeled` triple carries more than one intent (a
+        // review request vs. a triage request), told apart only by which
+        // label was applied.
+        const labelName = eventFields.labelName;
+        if (typeof source === "string" && typeof eventName === "string") {
+          const route = this.integrationRouteRegistry.match(
+            source,
+            eventName,
+            typeof action === "string" ? action : undefined,
+            typeof labelName === "string" ? labelName : undefined,
+          );
+          if (route) {
+            request = renderPromptTemplate(
+              route.promptTemplate,
+              eventFields as Record<string, string | number | undefined>,
+            );
+            forcedSkillId = route.skillRef;
+            forcedAgentId = route.agentRef;
+          }
+        }
+      }
     } catch {
       res.writeHead(400, { "content-type": "application/json" }).end(
         JSON.stringify({ error: "body must be JSON: { \"request\": \"<non-empty string>\" }" }),
       );
+      return;
+    }
+
+    // `/invoke` has no prior-tool-call history to read: it takes a single
+    // `request` string, not a message array, so a caller resuming a tool call
+    // here has nowhere to have put the result. Tool offering works; the
+    // round-trip resume is chat-facade-only (see the app README's known gaps).
+    const callerTools = await this.resolveCallerToolTurn(request, rawTools, rawToolChoice, []);
+    if ("error" in callerTools) {
+      res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: callerTools.error }));
       return;
     }
 
@@ -302,8 +797,48 @@ export class InvokeServer {
     // Fire-and-forget: the HTTP response returns immediately; the graph run
     // (which blocks on the launched tool Job's callback) updates the record
     // when it eventually settles.
-    void this.buildGraphInput(request, authToken, sessionId).then((graphInput) =>
-      this.graph
+    void this.buildGraphInput(
+      request,
+      authToken,
+      sessionId,
+      // Deliberately `undefined` -- this is a fire-and-forget caller with no
+      // live channel, so `progressListener` must stay unset here (see its
+      // doc and `remoteControlUrlListener`'s doc below for why: setting it
+      // makes `delegateToAgent` treat this as a live channel and
+      // synchronously `waitForCompletion` an identity link for minutes,
+      // which is exactly the regression that caused a real triage turn to
+      // silently hang with nothing posted to the issue).
+      undefined,
+      identityLinkFlow,
+      undefined,
+      forcedSkillId,
+      forcedAgentId,
+      // Tracks the latest "remote-control-url" progress message onto this
+      // invocation's record (see `InvocationRecord.remoteControlUrl`) --
+      // passed via the dedicated `remoteControlUrlListener` param, NOT
+      // `progressListener` (see above). Only mutate while still pending --
+      // never clobber a terminal record (mirrors `reportIdentityLinkPending`
+      // below).
+      (url) => {
+        const current = this.invocations.get(id);
+        if (current && current.status === "pending") {
+          this.invocations.set(id, { ...current, remoteControlUrl: url });
+        }
+      },
+      senderLogin,
+      callerTools,
+    ).then((graphInput) => {
+      // Mark the in-flight job identity-link-pending the moment the graph
+      // decides a link is needed (before the link URL exists), so a polling
+      // caller can withhold a premature "starting work" ack. Only mutate while
+      // still pending -- never clobber a terminal record.
+      graphInput.reportIdentityLinkPending = (info) => {
+        const current = this.invocations.get(id);
+        if (current && current.status === "pending") {
+          this.invocations.set(id, { ...current, identityLinkPending: true, identityLink: info });
+        }
+      };
+      return this.graph
         .invoke(graphInput)
         .then(async (state) => {
           await this.persistSession(sessionId, state.identity, {
@@ -311,24 +846,52 @@ export class InvokeServer {
             selectedAgent: state.selectedAgent,
             agentRunId: state.agentRunId,
             agentAwaitingReply: state.agentAwaitingReply,
+            agentResumePending: state.agentResumePending,
             extractedContinuation: state.extractedContinuation,
             extractedAgentContinuation: state.extractedAgentContinuation,
+            pendingIdentityLink: state.pendingIdentityLink,
+            identityLinkPending: state.identityLinkPending,
           });
+          // Carry forward any remoteControlUrl already recorded by the
+          // progress listener above -- this terminal write replaces the whole
+          // record, so it would otherwise be dropped on a successful/failed turn.
+          const remoteControlUrl = this.invocations.get(id)?.remoteControlUrl;
           this.invocations.set(id, {
             id,
             status: state.error ? "failed" : "succeeded",
             result: state.result,
             error: state.error,
+            ...(remoteControlUrl ? { remoteControlUrl } : {}),
+            // `?? []` for the same reason as the chat facade's read: a partial
+            // `AgentGraphLike` implementation must not turn a successful turn
+            // into a failed one.
+            ...((state.pendingToolCalls ?? []).length > 0 ? { pendingToolCalls: state.pendingToolCalls } : {}),
+            ...(state.identityLinkPending && state.pendingIdentityLink && state.identity
+              ? {
+                  identityLinkPending: true,
+                  identityLink: {
+                    provider: state.pendingIdentityLink.provider,
+                    // The subject the graph actually started the link
+                    // against -- NOT `state.identity.subject`. This record is
+                    // what integration-gateway's `waitAndResume` blocks on,
+                    // so deriving it independently here is the exact
+                    // store-vs-wait split that made PR #144 loop forever.
+                    subject: state.pendingIdentityLink.subject ?? state.identity.subject,
+                  },
+                }
+              : {}),
           });
         })
         .catch((err: unknown) => {
+          const remoteControlUrl = this.invocations.get(id)?.remoteControlUrl;
           this.invocations.set(id, {
             id,
             status: "failed",
             error: err instanceof Error ? err.message : String(err),
+            ...(remoteControlUrl ? { remoteControlUrl } : {}),
           });
-        }),
-    );
+        });
+    });
 
     res.writeHead(202, { "content-type": "application/json", location: `/invoke/${id}` }).end(
       JSON.stringify({ id, status: "pending" }),
@@ -346,7 +909,7 @@ export class InvokeServer {
 
   private async handleChatCompletions(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const rawBody = await readBody(req);
-    let parsed: { messages?: unknown; model?: unknown; stream?: unknown };
+    let parsed: { messages?: unknown; model?: unknown; stream?: unknown; tools?: unknown; tool_choice?: unknown };
     try {
       parsed = rawBody ? (JSON.parse(rawBody) as typeof parsed) : {};
     } catch {
@@ -356,33 +919,94 @@ export class InvokeServer {
       return;
     }
 
-    const request = buildAgentRequest(parsed.messages);
-    if (!request) {
+    const built = buildAgentRequest(parsed.messages);
+    if (!built) {
       res.writeHead(400, { "content-type": "application/json" }).end(
         JSON.stringify(openAiError('messages must include a non-empty "user" message', "invalid_request")),
       );
       return;
     }
+    const { request, priorToolCalls } = built;
 
     const model = typeof parsed.model === "string" && parsed.model ? parsed.model : MODEL_ID;
     const authToken = bearerToken(req.headers.authorization);
     const sessionId = headerValue(req.headers[CHAT_ID_HEADER]);
+    const forwardedUserToken = headerValue(req.headers[FORWARDED_USER_JWT_HEADER]);
     const stream = parsed.stream === true;
 
     // Open WebUI's own housekeeping completions (title/tags/query/follow-up
     // generation) must NEVER reach the agent graph — see
     // isInternalUiTaskRequest. Answered directly, with no delegation, no
     // identity resolution, and no session mutation, regardless of `stream`.
+    //
+    // This check stays AHEAD of caller-tool parsing on purpose (docs/adr/0035
+    // §5): Open WebUI sends these to the same endpoint with the same body, so a
+    // title-generation request that happens to carry the chat's tool array must
+    // come back as prose. Emitting a tool call here would have the client
+    // execute a real function as a side effect of rendering a chat title.
     if (isInternalUiTaskRequest(request)) {
       await this.handleInternalUiTask(res, parsed.messages, model, stream);
       return;
     }
 
-    if (!stream) {
-      await this.handleChatCompletionsBlocking(res, request, model, authToken, sessionId);
+    // Consumer-supplied tools (docs/adr/0035). Rejected loudly rather than
+    // dropped: a client that offers tools and silently never gets a tool call
+    // has no way to tell "the agent chose not to" from "the agent never saw
+    // them".
+    const callerTools = await this.resolveCallerToolTurn(request, parsed.tools, parsed.tool_choice, priorToolCalls);
+    if ("error" in callerTools) {
+      res.writeHead(400, { "content-type": "application/json" }).end(
+        JSON.stringify(openAiError(callerTools.error, "invalid_request")),
+      );
       return;
     }
-    await this.handleChatCompletionsStreaming(res, request, model, authToken, sessionId);
+
+    if (!stream) {
+      await this.handleChatCompletionsBlocking(res, request, model, authToken, sessionId, forwardedUserToken, callerTools);
+      return;
+    }
+    await this.handleChatCompletionsStreaming(res, request, model, authToken, sessionId, forwardedUserToken, callerTools);
+  }
+
+  /**
+   * Validates the request's `tools`/`tool_choice` and resolves which of them
+   * reach the planner (docs/adr/0035) — the just-in-time vectorization step,
+   * skipped entirely when the caller sent few enough tools that there is nothing
+   * to prune.
+   *
+   * Also maps prior client-executed calls into the planner's own
+   * {@link ToolCallRecord} shape, using the same `caller:`-namespaced ids the
+   * planner was originally offered, so its duplicate-call guard and
+   * `MAX_TOOL_STEPS` both see them as the calls they actually were.
+   */
+  private async resolveCallerToolTurn(
+    request: string,
+    rawTools: unknown,
+    rawToolChoice: unknown,
+    priorToolCalls: PriorCallerToolCall[],
+  ): Promise<CallerToolTurn | { error: string }> {
+    const parsed = parseCallerTools(rawTools, rawToolChoice);
+    if ("error" in parsed) return parsed;
+    const actionHistory: ToolCallRecord[] = priorToolCalls.map((call) => ({
+      toolId: callerToolId(call.name),
+      toolArgs: call.arguments,
+      result: call.result,
+    }));
+    if (parsed.tools.length === 0) return { tools: [], required: false, actionHistory };
+
+    const resolved = await resolveCallerTools(
+      request,
+      parsed.tools,
+      parsed.choice,
+      this.callerToolTopK,
+      this.callerToolStore,
+      (message, err) => console.warn(`[caller-tools] ${message}`, err ?? ""),
+    );
+    return {
+      tools: resolved.map(toCallerToolDescriptor),
+      required: parsed.choice.kind === "auto" && parsed.choice.required === true,
+      actionHistory,
+    };
   }
 
   /**
@@ -429,8 +1053,28 @@ export class InvokeServer {
     model: string,
     authToken: string,
     sessionId: string | undefined,
+    forwardedUserToken?: string,
+    callerTools?: CallerToolTurn,
   ): Promise<void> {
-    const graphInput = await this.buildGraphInput(request, authToken, sessionId);
+    // A Remote Control session URL is deliberately NOT surfaced on the
+    // non-streaming path: RC's whole value is a LIVE session to watch/steer,
+    // and a blocking response only returns once the turn is already complete
+    // (nothing live left to join). The streaming path -- the actual Open WebUI
+    // chat surface -- streams it inline as it arrives (see
+    // handleChatCompletionsStreaming).
+    const graphInput = await this.buildGraphInput(
+      request,
+      authToken,
+      sessionId,
+      undefined,
+      undefined,
+      forwardedUserToken,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      callerTools,
+    );
     const state = await this.graph.invoke(graphInput);
     if (state.error) {
       const { status, code } = errorStatusAndCode(state.error);
@@ -442,10 +1086,28 @@ export class InvokeServer {
       selectedAgent: state.selectedAgent,
       agentRunId: state.agentRunId,
       agentAwaitingReply: state.agentAwaitingReply,
+            agentResumePending: state.agentResumePending,
       extractedContinuation: state.extractedContinuation,
       extractedAgentContinuation: state.extractedAgentContinuation,
+      pendingIdentityLink: state.pendingIdentityLink,
+      identityLinkPending: state.identityLinkPending,
     });
     const id = chatCompletionId();
+    // The turn is asking the CALLER to run a tool (docs/adr/0035): hand back
+    // `tool_calls` + `finish_reason: "tool_calls"` instead of an answer. Checked
+    // before `result` because this turn deliberately produced no assistant text —
+    // rendering it as a normal completion would show an empty message and the
+    // client would never execute anything.
+    // `?? []` because `AgentGraphLike` is a structural interface: the compiled
+    // LangGraph always populates every annotated field, but a hand-rolled
+    // implementation (every test fake) legitimately returns only the fields it
+    // cares about, and a missing one must not throw on the happy path.
+    if ((state.pendingToolCalls ?? []).length > 0) {
+      res.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify(chatCompletionToolCallResponse(id, model, state.pendingToolCalls)),
+      );
+      return;
+    }
     const content = renderResult(state.result);
     res.writeHead(200, { "content-type": "application/json" }).end(
       JSON.stringify(chatCompletionResponse(id, model, content, "stop")),
@@ -458,6 +1120,8 @@ export class InvokeServer {
     model: string,
     authToken: string,
     sessionId: string | undefined,
+    forwardedUserToken?: string,
+    callerTools?: CallerToolTurn,
   ): Promise<void> {
     const id = chatCompletionId();
     res.writeHead(200, {
@@ -467,9 +1131,38 @@ export class InvokeServer {
     });
     res.flushHeaders?.();
 
+    // Tracks the most recent in-progress ("done: false") status step so it
+    // can be closed out before the stream ends -- otherwise Open WebUI's
+    // StatusHistory spinner is left stuck on that step forever, since a
+    // "done: false" event is never followed by a matching "done: true" one
+    // for the same step once the agent turn completes.
+    let openStatusLabel: string | undefined;
     const finish = (content: string): void => {
+      if (openStatusLabel !== undefined) {
+        writeSseStatus(res, openStatusLabel, true);
+        openStatusLabel = undefined;
+      }
       writeSseChunk(res, chatCompletionChunk(id, model, { content }, null));
       writeSseChunk(res, chatCompletionChunk(id, model, {}, "stop"));
+      writeSseDone(res);
+      res.end();
+    };
+
+    /**
+     * Terminal variant for a turn that ends by asking the CALLER to run a tool
+     * (docs/adr/0035). Separate from `finish` because the two differ in more than
+     * content: this emits a `tool_calls` delta and finishes with
+     * `finish_reason: "tool_calls"`, which is what tells the client to execute
+     * something rather than render an answer. Any open status spinner is still
+     * closed out the same way.
+     */
+    const finishWithToolCalls = (calls: PendingToolCall[]): void => {
+      if (openStatusLabel !== undefined) {
+        writeSseStatus(res, openStatusLabel, true);
+        openStatusLabel = undefined;
+      }
+      writeSseChunk(res, toolCallDeltaChunk(id, model, calls));
+      writeSseChunk(res, chatCompletionChunk(id, model, {}, "tool_calls"));
       writeSseDone(res);
       res.end();
     };
@@ -481,7 +1174,29 @@ export class InvokeServer {
         // works. Stream that live as real chat content so the user reads it
         // like normal assistant prose, rather than burying it in the
         // collapsible status spinner with the mechanical tool-call noise.
-        if (stage === "agent-text" && message) {
+        // "identity-link" (agent/graph.ts's delegateToAgent) is the one-time
+        // "please link your GitHub account" prompt -- also real content, not
+        // a status step, since the status label is truncated to 120 chars
+        // and would mangle the markdown link/URL.
+        // "remote-control-url" (claude-code-swe-agent's live Remote Control
+        // session link) is likewise streamed as real content -- a clickable
+        // "watch live / take over" link -- for the same reason (a truncated
+        // status label would mangle the URL). This gives a chat turn the same
+        // live Remote Control surface the GitHub triage path already posts
+        // (integration-gateway's relayAndReply), replacing the deprecated
+        // session-page link for Claude-backed sessions.
+        if (stage === "remote-control-url" && message) {
+          // Leading AND trailing blank lines so this link stands as its own
+          // paragraph -- an earlier streamed chunk (e.g. agent-text) may not
+          // end in a newline, and without the leading break the two run
+          // together into one mangled line in the chat client.
+          writeSseChunk(
+            res,
+            chatCompletionChunk(id, model, { content: `\n\n🤖 Watch live or take over this session here: ${message}\n\n` }, null),
+          );
+          return;
+        }
+        if ((stage === "agent-text" || stage === "identity-link") && message) {
           writeSseChunk(res, chatCompletionChunk(id, model, { content: message }, null));
           return;
         }
@@ -491,8 +1206,9 @@ export class InvokeServer {
         const label = message
           ? `${stage ? `${stage}: ` : ""}${message.slice(0, 120)}`
           : stage || "working…";
+        openStatusLabel = label;
         writeSseStatus(res, label, false);
-      });
+      }, undefined, forwardedUserToken, undefined, undefined, undefined, undefined, callerTools);
       const source = await this.graph.stream(graphInput, { streamMode: "updates" });
       // Accumulated across updates so the session can be persisted once the
       // turn reaches a successful terminal node (docs/adr/0012).
@@ -509,6 +1225,10 @@ export class InvokeServer {
       let result: unknown;
       let extractedContinuation: { toolId: string; token: string } | undefined;
       let extractedAgentContinuation: { agentId: string; token: string } | undefined;
+      let pendingIdentityLink:
+        | { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number }
+        | undefined;
+      let identityLinkPending: boolean | undefined;
       const persist = (): Promise<void> =>
         this.persistSession(sessionId, identity, {
           selectedSkill,
@@ -517,6 +1237,8 @@ export class InvokeServer {
           agentAwaitingReply,
           extractedContinuation,
           extractedAgentContinuation,
+          pendingIdentityLink,
+          identityLinkPending,
         });
       for await (const item of withHeartbeat(source, HEARTBEAT_MS)) {
         if (item.type === "heartbeat") {
@@ -539,9 +1261,41 @@ export class InvokeServer {
             | { agentId: string; token: string }
             | undefined;
         }
+        if ("pendingIdentityLink" in update) {
+          pendingIdentityLink = update.pendingIdentityLink as
+            | { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number }
+            | undefined;
+        }
+        if ("identityLinkPending" in update) identityLinkPending = update.identityLinkPending as boolean | undefined;
 
         if (typeof update.error === "string") {
           finish(`❌ ${update.error}`);
+          return;
+        }
+        // runTool is terminal when it asked the CALLER to execute a tool
+        // (docs/adr/0035): the answer is with the client now. Checked before the
+        // node-specific branches below because this turn has no `result` to
+        // render at all -- falling through would end it as an empty message and
+        // the client would never run anything.
+        //
+        // The session is still persisted: the conversation's active skill has to
+        // survive so the resumed turn re-enters the same skill with the same
+        // declared tools rather than re-running full retrieval on a message the
+        // user didn't write.
+        if (Array.isArray(update.pendingToolCalls) && update.pendingToolCalls.length > 0) {
+          await persist();
+          finishWithToolCalls(update.pendingToolCalls as PendingToolCall[]);
+          return;
+        }
+        // checkPendingIdentityLink (still waiting on an existing device-flow
+        // attempt) and delegateToAgent (just started a FRESH one) are both
+        // terminal for this graph invocation whenever identityLinkPending is
+        // true -- `result` is the "please link/still waiting" message, set
+        // directly on the node, with no agentRunId (no AgentRun was ever
+        // launched yet).
+        if ((nodeName === "checkPendingIdentityLink" || nodeName === "delegateToAgent") && identityLinkPending) {
+          await persist();
+          finish(renderResult(result));
           return;
         }
         if (nodeName === "composeResponse") {
@@ -565,6 +1319,16 @@ export class InvokeServer {
         // graph routes straight to END without ever reaching runTool or
         // composeResponse.
         if (nodeName === "selectDelegate" && update.result !== undefined) {
+          await persist();
+          finish(renderResult(update.result));
+          return;
+        }
+        // bareAnswer is terminal when the capability-need gate (docs/adr/0019)
+        // judged the request needs no skill/tool/agent at all — a plain
+        // conversational answer with no catalog search ever attempted.
+        // `result` is set directly on this node and the graph routes
+        // straight to END.
+        if (nodeName === "bareAnswer" && update.result !== undefined) {
           await persist();
           finish(renderResult(update.result));
           return;

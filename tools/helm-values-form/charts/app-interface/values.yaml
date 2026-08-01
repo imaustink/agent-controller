@@ -1,0 +1,10 @@
+# The schema requires `name` and `repo` and sets `additionalProperties: false`,
+# so this is the minimum that lints. Everything else the form emits merges over
+# it.
+#
+# Unlike temporal-worker, this schema declares almost no defaults, so there is no
+# defaults-agree-with-the-schema invariant to hold here -- prune has nothing to
+# compare against and passes values through. That is the normal shape for an
+# interface schema, where every field is either absent or deliberately set.
+name: placeholder
+repo: bitovi/placeholder

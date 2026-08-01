@@ -1,0 +1,108 @@
+# values-ci-all.yaml — enable EVERY component, for CI validation only.
+#
+# Consumed by .github/workflows/validate-crds.yml, which renders this chart and
+# dry-run applies the result against a real API server (a kind cluster) so CEL
+# `x-kubernetes-validations` rules — which no static schema linter evaluates —
+# are actually checked.
+#
+# It exists because that workflow used to carry the same list as a wall of
+# `--set` flags, and the list went stale silently: it enabled two values that no
+# longer exist (`opencodeSweAgentTool`, `skills.softwareEngineering`) while
+# never enabling six templates that do — including
+# `agent-claude-code-swe.yaml`, the Agent production actually runs. Anything
+# not enabled here is never validated, and nothing complained.
+#
+# The workflow now also asserts that every template under templates/ appears in
+# the render, so a newly-added component that is missing from this file fails CI
+# instead of quietly going unvalidated. If that check fails, add the component
+# here rather than relaxing the check.
+#
+# NOT a deployable values file: it turns on an e2e-only test double
+# (stubAgent) and enables components that conflict in intent (both SWE agents at
+# once). Production is charts/community-components/values-production.yaml.
+
+enabled: true
+
+recipeScraper:
+  enabled: true
+
+webSearch:
+  enabled: true
+
+webFetch:
+  enabled: true
+
+kubectlReadonly:
+  enabled: true
+
+signozQuery:
+  enabled: true
+
+recipePublisher:
+  enabled: true
+  # Required by the template when enabled; never reached, the render is discarded.
+  mealieBaseUrl: http://mealie.example.invalid
+
+opencodeSweAgent:
+  enabled: true
+
+# Container Tool with per-user GitHub identity delegation (ADR 0025). Enabled
+# with identityLink so the CR's identityProviders path renders and is validated;
+# the ServiceAccount template also requires enabled: true to render.
+githubTool:
+  enabled: true
+  identityLink:
+    enabled: true
+    providers:
+      - github
+
+# The Agent production runs, and previously the one the "full catalog"
+# validation never touched. Its template hard-`fail`s unless some model
+# credential is guaranteed at launch time, so identityLink must cover `claude`.
+claudeCodeSweAgent:
+  enabled: true
+  identityLink:
+    enabled: true
+    providers:
+      - claude
+      - claude-remote
+  remoteControl:
+    enabled: true
+    # Set here purely so validate-crds renders these two template branches;
+    # the values are the production defaults spelled out (see values.yaml).
+    idleTimeoutMs: "1200000"
+    idleStatusGraceMs: "90000"
+    waitingTimeoutMs: "300000"
+    maxWaitMs: ""
+
+# E2E-only test double. Validated here anyway: it is a real chart template that
+# renders a real Agent CR, and the acknowledgement flag below is exactly the
+# guard that keeps it out of a production values file.
+stubAgent:
+  enabled: true
+  acknowledgeNotForProduction: true
+  identityLink:
+    enabled: true
+    providers:
+      - claude
+      - claude-remote
+
+skills:
+  recipeRefining:
+    enabled: true
+  selfImprovement:
+    enabled: true
+  webSearch:
+    enabled: true
+  clusterDebug:
+    enabled: true
+
+integrationRoutes:
+  githubIssueLabeledReview:
+    enabled: true
+  githubIssueLabeledTriage:
+    enabled: true
+  githubPrLabeledReview:
+    enabled: true
+  githubPrLabeledTriage:
+    enabled: true

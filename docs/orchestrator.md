@@ -130,14 +130,15 @@ only ever sees a short list of *relevant* tools, not the full catalog:
   superseded the dynamic Deployment discovery of ADR 0004): each tool ships a
   `Tool` CR (id/name/description/input/output/allowedRoles/tier plus
   image/serviceAccount/env/resources). `CrdToolRegistry` lists every `Tool`
-  CR once at startup and upserts it into the RAG index; the Go core-controller
-  reconciles each invocation's `ToolRun` CR into a hardened one-shot Job, so
-  the orchestrator itself never creates a Job. Dynamic Deployment-based
-  discovery had been rejected earlier for a chicken-and-egg problem: tools are
-  only ever launched on demand as one-shot Jobs (ADR 0005), so there is no
-  live, always-running Deployment to discover. "Register a tool" is now: add
-  `tools/<name>/tool.yaml`, `kubectl apply` it, restart the orchestrator so it
-  re-reads the catalog (one-shot-at-startup, no watch loop yet).
+  CR at startup and upserts it into the RAG index, then keeps watching for
+  changes (ADR 0020) so later CR creates/edits/deletes take effect live; the
+  Go core-controller reconciles each invocation's `ToolRun` CR into a
+  hardened one-shot Job, so the orchestrator itself never creates a Job.
+  Dynamic Deployment-based discovery had been rejected earlier for a
+  chicken-and-egg problem: tools are only ever launched on demand as
+  one-shot Jobs (ADR 0005), so there is no live, always-running Deployment
+  to discover. "Register a tool" is now: add `tools/<name>/tool.yaml`,
+  `kubectl apply` it — no orchestrator restart needed.
 
 ### 3. RBAC-scoped tool discovery
 
@@ -176,6 +177,16 @@ Which tools even show up as retrieval candidates depends on **who is asking**:
 - Job retry/backoff and TTL cleanup (`ttlSecondsAfterFinished`) are owned by the
   controller, which also mirrors terminal Job state onto the `ToolRun` as a
   fallback for crashes that never emit a `failed` callback event.
+- A container Tool can optionally declare `identityProviders` (e.g.
+  `["github"]`, ADR 0032 — extending the Agent-only mechanism from ADR 0022):
+  before launching, `runTool` resolves the calling user's own linked token via
+  `agent-orchestrator`'s identity-link gateway client and passes it as
+  `ToolRunLauncher.launch()`'s `options.secretEnv`, which creates a per-run k8s
+  Secret and references it from `ToolRunSpec.secretEnv` — the Go controller
+  merges that over the Tool's own static `secretEnv` when building the Job.
+  The `github` Tool (`tools/github/`) is the reference implementation: it runs
+  `gh` authenticated as the caller's own GitHub identity rather than a shared
+  bot credential.
 
 ### 4b. LocalTool executor sidecars (ADR 0014)
 
@@ -246,6 +257,32 @@ this needed resolving rather than being a drop-in: no multi-turn memory, no
 tool-internal progress, structured JSON rendered as a fenced code block, and
 per-mode error reporting.
 
+Since ADR 0035 the facade also accepts the caller's **own tools**. A consumer
+may send `tools` / `tool_choice` on `/v1/chat/completions` (or `/invoke`) and
+get standard `tool_calls` + `finish_reason: "tool_calls"` back to execute in
+its own client — a third level of tool calling alongside the orchestrator's
+Skill-scoped loop and a sub-agent's `toolRefs` loop, and the only one the
+orchestrator does not execute. Three things keep it from degrading the other
+two:
+
+- **Its own Qdrant collection**, keyed by a content hash of each definition, so
+  a caller's ephemeral tools never enter the `tools` catalog's candidate set
+  and identical definitions embed once, ever (the collection *is* the embedding
+  cache — a client resending the same array every turn costs nothing).
+- **Top-K pruning** before the planner sees anything, and the index is skipped
+  entirely when the caller sent ≤ K tools, since there is nothing to prune.
+- **A per-skill gate** (`Skill.spec.allowCallerTools`, unset ⇒ allowed) so an
+  authored skill with an exact procedure can refuse them.
+
+Caller tool names/descriptions/schemas are **untrusted** (one level below a
+`Tool` CR description, two below skill markdown) and are rendered in a
+distinctly-labeled block. No RBAC applies, because the caller both supplies and
+executes the function — the orchestrator gains no capability from one. Resuming
+after the client runs the tool reads the `assistant.tool_calls` + `role: "tool"`
+pair off the wire (there is no server-side conversation store) and seeds it into
+the planner's history, which is also what keeps the per-turn step cap bounding a
+resumed loop.
+
 Since ADR 0012 this facade is also where **conversation sessions** attach:
 when the request carries Open WebUI's `X-OpenWebUI-Chat-Id` header (sent when
 its deployment sets `ENABLE_FORWARD_USER_INFO_HEADERS=true`; `/invoke`
@@ -308,7 +345,16 @@ existing SSRF/prompt-injection mitigations:
 
 ## Open questions (explicitly deferred)
 
-- Identity/auth mechanism: which IdP, how tokens map to roles/scopes.
+- ~~Identity/auth mechanism: which IdP, how tokens map to roles/scopes.~~
+  Resolved for the "verify a real token" half: `OidcIdentityResolver`
+  (`apps/agent-orchestrator/src/rbac/oidc-identity-resolver.ts`) verifies
+  caller bearer tokens as JWTs against a configurable OIDC issuer's JWKS —
+  issuer/audience/JWKS URL and the roles-claim path are all config, so it
+  works with any standards-compliant IdP without a vendor-specific SDK.
+  Select it with `AGENT_IDENTITY_RESOLVER=oidc` (default remains `static`,
+  the dev/test-only stub). Still open: no specific IdP is deployed/wired up
+  in any chart — operators must point `oidcIssuer`/`oidcJwksUri` at their
+  own.
 - Embedding model for the RAG index.
 - **Manifest staleness** (ADR 0009): the tool catalog only changes when the
   orchestrator image is rebuilt/redeployed with updated `manifest.json`
@@ -343,3 +389,7 @@ existing SSRF/prompt-injection mitigations:
   result reporting.
 - [security.md](security.md) — container hardening contract Job templates
   build on.
+- [integrations-gateway.md](integrations-gateway.md) — event-driven
+  integrations (GitHub Issues implemented; email/Slack/job triggers and the
+  FAAS-style direct tool/agent invocation path proposed), layered on this
+  document's interfaces without modifying them.

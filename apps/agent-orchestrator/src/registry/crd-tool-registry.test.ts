@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { WatchCrdFn } from "../k8s/crd-watcher.js";
 import { CrdToolRegistry, type CustomObjectsApiLike, type ToolCustomResource } from "./crd-tool-registry.js";
 
 const validTool: ToolCustomResource = {
@@ -92,11 +93,104 @@ describe("CrdToolRegistry", () => {
     expect(tools[0].jobTemplate).toBeUndefined();
   });
 
+  it("carries Tool.spec.identityProviders through to the ToolDescriptor for a container Tool (ADR 0032, e.g. the github Tool)", async () => {
+    const identityLinked: ToolCustomResource = {
+      metadata: { name: "github" },
+      spec: {
+        description: "Runs a gh CLI command against GitHub",
+        input: "a gh CLI command line",
+        output: "gh's own output",
+        allowedRoles: ["writer"],
+        image: "example.com/github:latest",
+        serviceAccountName: "github-tool",
+        identityProviders: ["github"],
+      },
+    };
+    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [identityLinked] });
+    const api: CustomObjectsApiLike = { listNamespacedCustomObject };
+    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+
+    const tools = await registry.listAll();
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0]!.identityProviders).toEqual(["github"]);
+  });
+
+  it("omits identityProviders when the Tool CR does not declare any", async () => {
+    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [validTool] });
+    const api: CustomObjectsApiLike = { listNamespacedCustomObject };
+    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+
+    const tools = await registry.listAll();
+
+    expect(tools[0]!.identityProviders).toBeUndefined();
+  });
+
   it("returns an empty catalog when there are zero Tool resources", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
     const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     expect(await registry.listAll()).toEqual([]);
+  });
+
+  describe("watch", () => {
+    it("throws when constructed without a watchFn", () => {
+      const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
+      const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      expect(() => registry.watch(() => {})).toThrow();
+    });
+
+    it("maps ADDED/MODIFIED to upsert events with the decoded descriptor", () => {
+      const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
+      let onEvent!: (phase: string, obj: unknown) => void;
+      const watchFn: WatchCrdFn = (opts, cb) => {
+        expect(opts).toEqual({ group: "core.controller-agent.dev", version: "v1alpha1", namespace: "default", plural: "tools" });
+        onEvent = cb;
+        return { stop: vi.fn() };
+      };
+      const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const onChange = vi.fn();
+      registry.watch(onChange);
+
+      onEvent("ADDED", validTool);
+
+      expect(onChange).toHaveBeenCalledWith({
+        type: "upsert",
+        descriptor: expect.objectContaining({ id: "recipe-scraper" }),
+      });
+    });
+
+    it("maps DELETED to a delete event carrying just the id", () => {
+      const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
+      let onEvent!: (phase: string, obj: unknown) => void;
+      const watchFn: WatchCrdFn = (_opts, cb) => {
+        onEvent = cb;
+        return { stop: vi.fn() };
+      };
+      const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const onChange = vi.fn();
+      registry.watch(onChange);
+
+      onEvent("DELETED", { metadata: { name: "recipe-scraper" }, spec: {} });
+
+      expect(onChange).toHaveBeenCalledWith({ type: "delete", id: "recipe-scraper" });
+    });
+
+    it("skips an event with no metadata.name rather than throwing", () => {
+      const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
+      let onEvent!: (phase: string, obj: unknown) => void;
+      const watchFn: WatchCrdFn = (_opts, cb) => {
+        onEvent = cb;
+        return { stop: vi.fn() };
+      };
+      const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const onChange = vi.fn();
+      registry.watch(onChange);
+
+      onEvent("ADDED", {});
+
+      expect(onChange).not.toHaveBeenCalled();
+    });
   });
 });

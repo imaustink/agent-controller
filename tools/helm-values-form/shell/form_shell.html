@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Helm values</title>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!--
+      Two block-comment markers below are replaced by tool/helm_values_form.py
+      using str.replace (not an f-string or .format -- this file is dense with
+      braces and both would fight it):
+
+        the BUNDLE marker, inside the first script tag, becomes the built IIFE
+        from dist/owui-form.js;
+
+        the CONFIG marker becomes the JSON-serialized FormConfig, with every
+        less-than sign rewritten to its JSON unicode escape first, so that a
+        chart description containing a closing script tag cannot terminate this
+        script early.
+
+      Both markers are written out only once each, at their substitution sites:
+      str.replace hits every occurrence, so naming them literally in this
+      comment would inject the bundle in here too.
+    -->
+    <script>
+      /*__BUNDLE__*/
+    </script>
+    <script>
+      (function () {
+        var CFG = /*__CONFIG__*/;
+        var root = document.getElementById("root");
+
+        try {
+          OWUIForm.render(root, CFG, function (yaml) {
+            var text =
+              "Values for **" + CFG.chart + "**\n\n" + "```yaml\n" + yaml + "\n```";
+            // Arrives as the user's next chat message. Open WebUI shows a
+            // confirmation dialog first, because this is a cross-origin prompt
+            // submission from a sandboxed frame.
+            parent.postMessage({ type: "input:prompt:submit", text: text }, "*");
+          });
+        } catch (e) {
+          // A blank embed is the worst outcome: it looks like the tool is
+          // broken, with no way to tell why. Say something, in plain text.
+          root.textContent = "This form failed to render: " + (e && e.message ? e.message : e);
+        }
+
+        // Height reporting is mandatory, not an optimization. With same-origin
+        // access off (the default) the parent cannot measure this document, so
+        // without these messages the embed is clipped to a small default height
+        // with its own scrollbar. Collapsible sections mean the height changes
+        // constantly, hence the observer as well as the load handler.
+        function measure() {
+          // Deliberately NOT document.documentElement.scrollHeight: that value is
+          // floored at the viewport height, so once the parent has sized this
+          // frame to N it can never report anything smaller than N -- collapsing
+          // a section would leave dead space that never goes away. The content
+          // element's own box is independent of how tall the frame currently is.
+          var box = root ? root.getBoundingClientRect().height : 0;
+          var body = document.body ? document.body.scrollHeight : 0;
+          return Math.ceil(Math.max(box, body));
+        }
+
+        var last = -1;
+        function report() {
+          var h = measure();
+          if (h === last || h === 0) return;
+          last = h;
+          parent.postMessage({ type: "iframe:height", height: h }, "*");
+        }
+        window.addEventListener("load", report);
+        if (typeof ResizeObserver === "function") {
+          new ResizeObserver(report).observe(document.body);
+        }
+        // Toggling a <details> resizes the body, but the observer can lag a
+        // frame behind layout; this makes expand/collapse feel immediate.
+        document.addEventListener("toggle", report, true);
+        // One measurement now so a browser without ResizeObserver still gets a
+        // size, and one after layout settles -- the synchronous value can be
+        // taken before the frame has its final width, which wraps everything and
+        // overestimates badly.
+        report();
+        if (typeof requestAnimationFrame === "function") requestAnimationFrame(report);
+      })();
+    </script>
+  </body>
+</html>

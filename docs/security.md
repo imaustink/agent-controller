@@ -169,6 +169,58 @@ addition specific to it:
   within the same authenticated Mealie account/group (`MEALIE_API_TOKEN`
   can't reach other tenants).
 
+## tools/github: a container Tool authenticated as the calling user (ADR 0032)
+
+[tools/github](../tools/github/) runs a single allowlisted `gh` CLI command,
+authenticated with a `GITHUB_TOKEN` that -- when
+`Tool.spec.identityProviders: [github]` is set (the recommended, default-in-
+`values-production.yaml` configuration) -- is the **calling user's own**
+identity-linked GitHub token, resolved and injected per-invocation via
+`ToolRunSpec.secretEnv` exactly the way `AgentRunSpec.secretEnv` already
+worked for `opencode-swe-agent` (ADR 0022), extended one CRD kind further
+(ADR 0032) since `ToolRun` previously had no per-invocation secretEnv
+mechanism at all. This means:
+
+- **The primary authorization boundary is GitHub itself**, not this
+  container's ServiceAccount/RBAC (which grants nothing beyond ordinary pod
+  scheduling) -- a caller can only do what they could already do on GitHub
+  directly with their own account. This is the same posture as
+  `opencode-swe-agent` below, not a new trust model.
+- **In-process command allowlist** (`src/allowlist.ts`) is defense-in-depth
+  clarity about the tool's intended purpose (issue/PR/repo-read/release/
+  search/workflow-read operations), not the primary control -- `auth`/`api`/
+  `config`/`secret`/`ssh-key`/etc. are excluded entirely, and a handful of
+  individually irreversible-ish subcommands (`repo delete`, `issue delete`/
+  `transfer`, `workflow run`, `run cancel`/`rerun`, `release`/`label delete`)
+  are excluded even within an otherwise-allowed command. Unlike
+  `kubectl-readonly` (whose fixed cluster-wide ServiceAccount is the same
+  regardless of caller, so flag-level restriction is the only thing standing
+  between "get pods" and "get secrets -o json"), this tool does not
+  additionally restrict flags/values, since GitHub's own per-user
+  authorization already gates what a write can actually do.
+- **No persisted credentials.** `GH_CONFIG_DIR` points at the container's
+  writable `/tmp` (wiped every run); the token lives only in this process's
+  env for the run's duration, sourced from a per-run k8s Secret
+  (`<toolrun-name>-identity`) that is garbage-collected with its `ToolRun`.
+- A caller who has not yet linked their GitHub account gets an explicit
+  error directing them to link it via a direct conversation with an
+  identity-linking-capable agent (e.g. `opencode-swe-agent`) first -- the
+  same v1 scope cut as the agent-backed-tool identity gate in `graph.ts`'s
+  `runTool`: this call path cannot itself start a fresh device-flow link.
+- A deployment that does not want per-user delegation can instead configure
+  `githubTool.identityLink.enabled: false` (the chart default) with a shared
+  credential in a Secret, same as any other tool's `secretEnv` -- the blast
+  radius then reverts to whatever that shared credential is scoped to. Two
+  options, and the chart wires exactly one: a static `GITHUB_TOKEN` PAT, or
+  GitHub App installation-token auth via the three `githubApp*SecretKey`
+  values ([ADR 0018](adr/0018-github-app-auth-fallback.md)), which the tool exchanges
+  for a short-lived installation token per invocation (`resolveToolToken` in
+  `tools/github/src/github.ts`, a thin wrapper over the same shared
+  `resolveGithubToken` the SWE agents use) so no long-lived PAT need exist
+  anywhere in the stack. A shared credential and a per-user one are never both
+  configured: the chart wires the App keys only when `identityLink` is off, and
+  per-user injection only happens when it's on.
+
 ## opencode-swe-agent: a deliberately privileged agent
 
 `apps/opencode-swe-agent` (an agentic opencode CLI wrapper, calling Anthropic
@@ -199,6 +251,43 @@ Copilot-CLI-based `copilot-swe`/`copilot-swe-agent` (see
   auto-expires without manual rotation, but doesn't remove the need for the
   deny-rule/branch-protection layers below — a compromised installation token
   is still live for up to an hour.
+- **Per-user GitHub identity as a third option, replacing the shared
+  credential entirely** ([ADR
+  0022](adr/0022-per-user-github-device-flow-identity.md), opt-in via
+  `opencodeSweAgent.identityLink.enabled`). Instead of a bot/App-installation
+  token shared by every caller, `agent-orchestrator` resolves and injects the
+  **calling user's own** linked GitHub token per invocation, via a new
+  `AgentRunSpec.SecretEnv` (a per-run override of this Agent's static
+  `secretEnv`, referencing a short-lived k8s `Secret` created and owned by
+  that one `AgentRun`, garbage-collected with it). The link itself is
+  established once per person via GitHub OAuth Device Flow, brokered by
+  `apps/integration-gateway` (a new subject-keyed, encrypted-at-rest store,
+  `IDENTITY_LINK_ENCRYPTION_KEY` — needs the same rotation/no-plaintext-
+  logging discipline as `opencode-swe-secrets`) and transparently refreshed
+  thereafter — no re-prompting on subsequent requests. This narrows blast
+  radius to **the linked human's own GitHub permissions** rather than
+  whatever the shared PAT/App installation was scoped to, and correspondingly
+  widens `agent-orchestrator`'s own k8s RBAC with `secrets: create`/`patch`
+  (gated behind `identityLink.enabled`, same discipline as the LocalTool-
+  gated `secrets: get` grant below). The deny-rule/branch-protection layers
+  immediately below are unchanged and still required either way — a
+  compromised per-user token is still live for its own lifetime (~8h, or up
+  to ~6 months if its refresh token is also compromised).
+- **Claude credentials are keyed by a canonical GitHub identity, not by
+  whichever entry point resolved the caller** (docs/adr/0029). The `claude`
+  and `claude-remote` records are stored under `github:<login>` rather than
+  the raw `identity.subject`, so one authorization covers both the
+  GitHub-webhook triage path (which authenticates with the gateway's shared
+  OIDC service token) and Open WebUI chat (`openwebui:<id>`). The login is
+  never caller-supplied: it comes either from a signature-verified webhook's
+  `senderLogin` or from the caller's own completed GitHub device-flow link.
+  The deliberate consequence is that these two entry points **share one
+  credential record per GitHub identity** — reaching it requires proving
+  control of that GitHub account, but it does mean the sharing boundary for a
+  Claude credential is the GitHub identity, not the chat account. The
+  `github` link itself stays keyed by the raw subject (it is the source of
+  the mapping), and triage's GitHub writes still use the App installation
+  token.
 - **No irreversible actions — defense in depth, because no single layer
   suffices.** A PAT with `Administration` write can both create and delete
   repos, so token permissions alone cannot forbid deletion. Therefore:

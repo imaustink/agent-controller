@@ -23,14 +23,24 @@ interface SkillPayload {
   description: string;
   markdown: string;
   toolIds: string[];
+  /** Agent ids this skill may delegate to directly (ADR 0021). */
+  agentIds: string[];
   /**
-   * Derived retrieval audience (docs/adr/0011): intersection of the
-   * referenced tools' allowedRoles, computed at index time by
-   * derive-access.ts — skills carry no allowedRoles of their own.
+   * Derived retrieval audience (docs/adr/0011, extended to agents by ADR
+   * 0021): intersection of the referenced tools'/agents' allowedRoles,
+   * computed at index time by derive-access.ts — skills carry no
+   * allowedRoles of their own.
    */
   effectiveRoles: string[];
-  /** True for skills with no toolIds — retrievable by any resolved identity. */
+  /** True for skills with no toolIds/agentIds — retrievable by any resolved identity. */
   unrestricted: boolean;
+  /**
+   * Whether consumer-supplied tools may be offered alongside this skill's own
+   * (docs/adr/0035 §4). `null` encodes "unset", which means ALLOWED — and is
+   * also what a point written before this field existed reads back as, so a
+   * rolling upgrade keeps the same default without a reindex.
+   */
+  allowCallerTools: boolean | null;
 }
 
 /**
@@ -79,8 +89,10 @@ export class QdrantSkillStore implements SkillStore {
           description: skill.description,
           markdown: skill.markdown,
           toolIds: skill.toolIds,
+          agentIds: skill.agentIds,
           effectiveRoles: effectiveRoles ?? [],
           unrestricted: effectiveRoles === null,
+          allowCallerTools: skill.allowCallerTools ?? null,
         } satisfies SkillPayload,
       })),
     );
@@ -114,6 +126,8 @@ export class QdrantSkillStore implements SkillStore {
         description: payload.description,
         markdown: payload.markdown,
         toolIds: payload.toolIds,
+        agentIds: payload.agentIds,
+        allowCallerTools: payload.allowCallerTools ?? undefined,
       };
       return { skill, score: point.score };
     });
@@ -148,6 +162,8 @@ export class QdrantSkillStore implements SkillStore {
         description: payload.description,
         markdown: payload.markdown,
         toolIds: payload.toolIds,
+        agentIds: payload.agentIds,
+        allowCallerTools: payload.allowCallerTools ?? undefined,
       });
     }
     return skills;

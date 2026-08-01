@@ -30,4 +30,10 @@ go.work.sum
 # Recursive so the umbrella chart's nested subchart deps are covered too
 # (e.g. charts/controller-agent/charts/agent-orchestrator/charts/qdrant-*.tgz).
 charts/**/charts/*.tgz
+
+# Generated copy of the CRDs from controllers/core-controller/config/crd/bases/
+# (run `make manifests` there, or `make sync-crds` to just refresh the copy,
+# before `helm install`/`helm template`/`helm package` against this chart --
+# see charts/agent-controller/charts/core-controller/crds/README.md).
+charts/agent-controller/charts/core-controller/crds/*.yaml
 .claude/settings.local.json

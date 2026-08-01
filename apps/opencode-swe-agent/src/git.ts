@@ -17,10 +17,10 @@ export interface CommandResult {
 export function runCommand(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {},
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env ?? process.env });
+    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env ?? process.env, signal: opts.signal });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d.toString()));
@@ -41,8 +41,8 @@ export interface GitIdentity {
  * failure the caller falls back to a generic identity. This doubles as a
  * lightweight token sanity check (a bad token makes `gh api user` fail).
  */
-export async function resolveGitIdentity(env: NodeJS.ProcessEnv): Promise<GitIdentity | null> {
-  const res = await runCommand("gh", ["api", "user"], { env });
+export async function resolveGitIdentity(env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<GitIdentity | null> {
+  const res = await runCommand("gh", ["api", "user"], { env, signal });
   if (res.code !== 0) return null;
   try {
     const user = JSON.parse(res.stdout) as { login?: string; id?: number; name?: string };
@@ -80,6 +80,49 @@ export async function setupGitAuth(opts: {
     `[safe]\n` +
     `\tdirectory = *\n`;
   await writeFile(gitconfig, content, { mode: 0o600 });
+}
+
+export interface CoAuthor {
+  login: string;
+  /** Numeric GitHub user id — used to build the standard `id+login@users.noreply.github.com` trailer email. */
+  id: number;
+}
+
+/**
+ * Deterministically appends a `Co-authored-by` trailer to the single commit
+ * this turn produced, then force-pushes the amended commit — done at the git
+ * level in code, not left to the LLM to remember. Only acts when the turn
+ * produced EXACTLY one new commit relative to `priorHeadSha` (or, if there
+ * was no prior SHA — a brand-new branch/repo — exactly one commit total):
+ * a turn that made several commits is left untouched rather than rewriting
+ * a longer, organic history non-deterministically. Returns whether the
+ * trailer was actually applied.
+ */
+export async function appendCoAuthorTrailer(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  coAuthor: CoAuthor,
+  priorHeadSha: string | null,
+): Promise<boolean> {
+  const countArgs = priorHeadSha
+    ? ["-C", repoDir, "rev-list", "--count", `${priorHeadSha}..HEAD`]
+    : ["-C", repoDir, "rev-list", "--count", "HEAD"];
+  const countRes = await runCommand("git", countArgs, { env });
+  if (countRes.code !== 0 || countRes.stdout.trim() !== "1") return false;
+
+  const msgRes = await runCommand("git", ["-C", repoDir, "log", "-1", "--pretty=%B"], { env });
+  if (msgRes.code !== 0) return false;
+
+  const email = `${coAuthor.id}+${coAuthor.login}@users.noreply.github.com`;
+  const newMessage = `${msgRes.stdout.trimEnd()}\n\nCo-authored-by: ${coAuthor.login} <${email}>\n`;
+
+  const amendRes = await runCommand("git", ["-C", repoDir, "commit", "--amend", "--allow-empty", "-m", newMessage], {
+    env,
+  });
+  if (amendRes.code !== 0) return false;
+
+  const pushRes = await runCommand("git", ["-C", repoDir, "push", "--force-with-lease"], { env });
+  return pushRes.code === 0;
 }
 
 /** Ensures a directory exists (recursive, idempotent). */
@@ -150,25 +193,34 @@ export interface RepoResult {
  * for an open PR on that branch. Best-effort: a missing PR is reported as
  * null rather than failing.
  */
-export async function discoverResult(repoDir: string, env: NodeJS.ProcessEnv): Promise<RepoResult | null> {
-  const remote = await runCommand("git", ["-C", repoDir, "remote", "get-url", "origin"], { env });
+export async function discoverResult(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<RepoResult | null> {
+  const remote = await runCommand("git", ["-C", repoDir, "remote", "get-url", "origin"], { env, signal });
   if (remote.code !== 0) return null;
   const repo = parseOwnerRepoFromRemote(remote.stdout);
   if (!repo) return null;
 
-  const branchRes = await runCommand("git", ["-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD"], { env });
+  const branchRes = await runCommand("git", ["-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD"], { env, signal });
   const branch = branchRes.code === 0 ? branchRes.stdout.trim() : "";
   if (!branch || branch === "HEAD") return { repo, branch: branch || "", pr: null, prUrl: null };
 
-  const pr = await findOpenPr(repo, branch, env);
+  const pr = await findOpenPr(repo, branch, env, signal);
   return { repo, branch, pr: pr?.number ?? null, prUrl: pr?.url ?? null };
 }
 
-async function findOpenPr(repo: string, branch: string, env: NodeJS.ProcessEnv): Promise<{ number: string; url: string } | null> {
+async function findOpenPr(
+  repo: string,
+  branch: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<{ number: string; url: string } | null> {
   const res = await runCommand(
     "gh",
     ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,url", "--limit", "1"],
-    { env },
+    { env, signal },
   );
   if (res.code !== 0) return null;
   try {

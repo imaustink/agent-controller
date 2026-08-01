@@ -4,6 +4,7 @@ import { extractImage } from "./extractors/image.js";
 import { extractTikTokPhoto } from "./extractors/tiktok-photo.js";
 import { extractVideo } from "./extractors/video.js";
 import { extractWeb } from "./extractors/web.js";
+import { hasRecipeContent } from "./has-recipe-content.js";
 import { formatRecipe } from "./llm/format.js";
 import { renderMarkdown } from "./markdown.js";
 import { createSink, JobEmitter } from "./messaging/index.js";
@@ -70,7 +71,13 @@ async function run(emitter: JobEmitter, rawUrl: string): Promise<void> {
 
   const warnings = [...extraction.warnings];
   if (!extraction.text.trim()) {
-    warnings.push("No text content was extracted from the source");
+    // Nothing was scraped from the source at all -- there's no content to
+    // hand the formatting LLM, and letting it run on empty input risks it
+    // filling the gap with a plausible-looking but fabricated recipe. Fail
+    // the job outright so the orchestrator surfaces this as a hard error
+    // (never routed through an LLM turn -- see docs/adr/0015) instead of a
+    // "succeeded" result containing an empty or invented recipe.
+    fail("extraction", EXIT.extraction, "No text content was extracted from the source");
   }
   for (const warning of warnings) {
     await emitter.warning(warning);
@@ -82,6 +89,27 @@ async function run(emitter: JobEmitter, rawUrl: string): Promise<void> {
     recipe = await formatRecipe(extraction.text);
   } catch (err) {
     fail("formatting", EXIT.formatting, `Recipe formatting failed: ${(err as Error).message}`);
+  }
+
+  if (!recipe.isRecipe) {
+    // The formatting LLM itself judged (llm/format.ts's SYSTEM_PROMPT) that
+    // this content isn't a real recipe -- e.g. an unrelated article, an
+    // error/blocked page, or a dish mentioned without concrete ingredients or
+    // steps. Trust that explicit call rather than the LLM's raw JSON shape:
+    // Structured Outputs guarantees a schema-shaped object either way, so
+    // relying on "did it happen to leave the arrays empty" would let a model
+    // that hallucinates a plausible-looking recipe slip through undetected.
+    fail("formatting", EXIT.formatting, "The extracted content does not contain a recognizable recipe");
+  }
+  if (!hasRecipeContent(recipe)) {
+    // Defense-in-depth: even when the model says isRecipe: true, a schema-shaped
+    // object with no actual ingredients or directions is not something to hand
+    // back as a "succeeded" recipe.
+    fail(
+      "formatting",
+      EXIT.formatting,
+      "No recognizable recipe (ingredients and directions) was found in the extracted content",
+    );
   }
 
   const envelope = EnvelopeSchema.parse({

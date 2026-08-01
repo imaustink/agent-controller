@@ -98,6 +98,17 @@ type AgentSpec struct {
 	// +optional
 	SkillRefs []string `json:"skillRefs,omitempty"`
 
+	// toolRefs are the names of Tool CRs this agent's OWN internal loop may
+	// call at run time — mirrors Skill.spec.toolRefs, but scopes the
+	// sub-agent's callable set instead of the parent orchestrator's planner.
+	// Dispatched via the tool_call/tool_result protocol pair
+	// (@controller-agent/agent-runtime's AgentSession.callTool()), re-validated
+	// against this list by the orchestrator at call time — like skillRefs,
+	// this CRD-level check is a static-config sanity check, not the
+	// authorization boundary itself (docs/adr/0028).
+	// +optional
+	ToolRefs []string `json:"toolRefs,omitempty"`
+
 	// model is the LLM model id the agent loop should use (advisory; the
 	// agent image decides how to interpret it).
 	// +optional
@@ -107,6 +118,61 @@ type AgentSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	MaxIterations int32 `json:"maxIterations,omitempty"`
+
+	// identityProviders declares which external identity providers (e.g.
+	// "github") must be linked for the calling user before this Agent can be
+	// launched. This controller does not consume the field itself — it is
+	// read by the agent-orchestrator when deciding whether/how to launch an
+	// AgentRun for a given user (e.g. resolving and injecting a per-user
+	// token via AgentRunSpec.SecretEnv) — but it belongs on the CRD as the
+	// source of truth an operator deploys alongside the rest of the Agent
+	// catalog entry.
+	// +optional
+	IdentityProviders []string `json:"identityProviders,omitempty"`
+
+	// initContainers are Job pod init containers run before the main "run"
+	// container starts (e.g. to seed a shared /tmp volume with a credential
+	// file a later phase's controller needs). Each gets the same tmp
+	// emptyDir mount the main container has, at /tmp, automatically -- no
+	// volume config needed on this struct itself.
+	// +optional
+	InitContainers []InitContainer `json:"initContainers,omitempty"`
+}
+
+// InitContainer is a narrow, opt-in Job pod init container run before the
+// main "run" container starts. Kept deliberately minimal (name/image/
+// command/args/env) rather than importing corev1.Container wholesale --
+// same narrow-mirror convention as EnvVar/SecretEnvVar/ResourceRequirements
+// above. Always gets the same "tmp" emptyDir mounted at /tmp as the main
+// container (buildRunJob wires the VolumeMount; there is nothing to
+// configure here), so an init container can write into the same path the
+// main container's HOME lives under (e.g. seeding a credentials file).
+type InitContainer struct {
+	// name of the init container.
+	// +required
+	Name string `json:"name"`
+
+	// image the init container runs.
+	// +required
+	Image string `json:"image"`
+
+	// command overrides the image's entrypoint, if set.
+	// +optional
+	Command []string `json:"command,omitempty"`
+
+	// args are passed to the entrypoint/command.
+	// +optional
+	Args []string `json:"args,omitempty"`
+
+	// env are static, non-secret environment variables for the init container.
+	// +optional
+	Env []EnvVar `json:"env,omitempty"`
+
+	// secretEnv are environment variables sourced from Secret keys (same
+	// namespace), resolved via secretKeyRef at Job-build time — same
+	// discipline as AgentSpec.SecretEnv.
+	// +optional
+	SecretEnv []SecretEnvVar `json:"secretEnv,omitempty"`
 }
 
 // AgentStatus defines the observed state of Agent.

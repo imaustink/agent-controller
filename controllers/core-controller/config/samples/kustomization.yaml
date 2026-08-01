@@ -5,4 +5,5 @@ resources:
 - tool_v1alpha1_toolrun.yaml
 - tool_v1alpha1_agent.yaml
 - tool_v1alpha1_agentrun.yaml
+- tool_v1alpha1_integrationroute.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

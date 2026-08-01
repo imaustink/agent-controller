@@ -1,0 +1,603 @@
+# values-production.yaml — agent-controller system chart on the homelab
+# cluster (namespace controller-agent). Consumed automatically by
+# .github/workflows/deploy.yml on every push to main; formerly lived as
+# values-agent-controller.yaml in the private imaustink/homelab repo and was
+# fetched cross-repo via a GitHub App token on every deploy -- moved here to
+# drop that indirection now that nothing in this file is a real secret (see
+# values-minikube-demo.yaml's note: real secrets stay in k8s Secrets
+# referenced by name only).
+#
+# First-time manual install (after creating the namespace, ServiceAccounts,
+# secrets and docker-registry-credentials pull secret described in
+# imaustink/homelab's kubernetes/manifests/agent-controller/README.md):
+#
+#   helm dependency update charts/agent-controller/charts/agent-orchestrator
+#   helm dependency update charts/agent-controller
+#   helm install agent-controller charts/agent-controller -n controller-agent \
+#     -f charts/agent-controller/values-production.yaml
+#
+# Must be installed BEFORE the community-components chart (its Tool/Skill/Agent
+# CRs depend on the Tool/Skill/Agent/ToolRun/AgentRun/LocalTool CRDs that this
+# chart's core-controller subchart installs).
+
+agent-orchestrator:
+  enabled: true
+  fullnameOverride: agent-orchestrator
+
+  image:
+    repository: registry.kurpuis.com:5000/agent-orchestrator
+    tag: latest
+    pullPolicy: Always
+
+  imagePullSecrets:
+    - name: docker-registry-credentials
+
+  # Bring-your-own secret: OPENAI_API_KEY, AGENT_CALLBACK_SECRET (required),
+  # AGENT_QDRANT_API_KEY (optional), IDENTITY_LINK_GATEWAY_TOKEN (required
+  # once identityLink.enabled below is true -- see that block's comment).
+  #
+  # AGENT_SENDER_ASSERTION_SECRET is required in practice too, and its absence
+  # is a real weakness rather than a missing feature: without it the orchestrator
+  # trusts the sender login from the /invoke request BODY, unsigned. That field
+  # selects the caller's principal and therefore which stored Claude credentials
+  # a run receives (docs/adr/0030 §6, 0031), so anything holding the gateway's
+  # /invoke token could name a login and be handed that person's credentials.
+  # Both processes log a startup WARNING while it is unset. Must match
+  # integration-gateway-secrets' GATEWAY_SENDER_ASSERTION_SECRET below exactly --
+  # the gateway signs with it and the orchestrator verifies with it, so two
+  # different values present as "the sender login vanished" (every webhook turn
+  # falls back to the shared service subject and re-prompts) rather than as a
+  # signature error.
+  #
+  # Create/update with:
+  #   kubectl create secret generic agent-orchestrator-secrets -n controller-agent \
+  #     --from-literal=OPENAI_API_KEY=sk-... \
+  #     --from-literal=AGENT_CALLBACK_SECRET=<random-string> \
+  #     --from-literal=IDENTITY_LINK_GATEWAY_TOKEN=<same value as
+  #       integration-gateway-secrets' GATEWAY_IDENTITY_LINK_TOKEN below> \
+  #     --from-literal=AGENT_SENDER_ASSERTION_SECRET=<same value as
+  #       integration-gateway-secrets' GATEWAY_SENDER_ASSERTION_SECRET below>
+  #   # (or `kubectl edit secret agent-orchestrator-secrets -n controller-agent`
+  #   # / patch it if the Secret already exists)
+  secrets:
+    existingSecret: agent-orchestrator-secrets
+
+  # Per-user GitHub identity linking (docs/adr/0022): lets agent-orchestrator
+  # resolve/inject a caller's own linked GitHub token instead of a shared
+  # bot/PAT credential, for any Agent that declares identityProviders.
+  # Requires PR #47 (integration-gateway's opt-in startup-check fix) merged
+  # FIRST, and integration-gateway.identityLink below configured with the
+  # same GitHub App. Enabling this here is inert by itself -- opencode-swe-agent
+  # (charts/community-components) still doesn't declare identityProviders
+  # yet, so nothing actually uses this path until that's flipped on
+  # separately, once the linking flow is verified end-to-end.
+  identityLink:
+    enabled: true
+    # Matches this umbrella chart's default subchart naming (no
+    # fullnameOverride set on the integration-gateway block below, and the
+    # release name is "agent-controller"), which Helm's standard
+    # <release>-<chart> fullname template resolves to
+    # "agent-controller-integration-gateway".
+    gatewayUrl: "http://agent-controller-integration-gateway:8090"
+
+  config:
+    # oidc against Pocket ID (kubernetes/manifests/services/pocket-id in
+    # imaustink/homelab), not Google -- the 2026-07-19 outage was caused by
+    # Google id_tokens: neither caller could present one (Open WebUI has no
+    # way to obtain one for its backend-to-backend calls, and
+    # integration-gateway -- a server-to-server webhook relay, no user login
+    # flow -- can't mint one at all).
+    #
+    # integration-gateway is this repo's own code and does real
+    # client_credentials against Pocket ID -- its granted permission keys
+    # land in the JWT's `scp` claim (a real JSON array -- see
+    # imaustink/homelab's
+    # kubernetes/manifests/services/pocket-id/provision-agent-orchestrator.sh),
+    # which oidcRolesClaim below reads.
+    #
+    # Open WebUI structurally cannot do the same (a static API-key field, no
+    # refresh mechanism of its own) -- rather than force it through an IdP
+    # flow it can't sustain, it authenticates via the
+    # staticIdentitiesExistingSecret fallback below (chart 0.2.2+:
+    # CompositeIdentityResolver -- oidc verification first, falling back to
+    # this static map only for tokens that fail it). integration-gateway
+    # still must pass real oidc verification; only Open WebUI's token gets
+    # this pass.
+    identityResolver: oidc
+    oidcIssuer: "https://pocket-id.kurpuis.com"
+    oidcJwksUri: "https://pocket-id.kurpuis.com/.well-known/jwks.json"
+    # The Custom API "resource" provisioned in Pocket ID -- see
+    # provision-agent-orchestrator.sh. integration-gateway requests this as
+    # the client_credentials `resource` param.
+    oidcAudience: "https://agent-orchestrator.controller-agent.svc.cluster.local"
+    oidcRolesClaim: scp
+    # JSON map of bearer token -> {subject, roles}, sourced from a Secret
+    # created out-of-band (never committed -- this values file is public).
+    # One entry: Open WebUI's long-lived static token. See
+    # imaustink/homelab's README for the kubectl command that creates it.
+    staticIdentitiesExistingSecret: agent-orchestrator-openwebui-static-identity
+    staticIdentitiesExistingSecretKey: AGENT_STATIC_IDENTITIES
+    # Same Secret Open WebUI's own FORWARD_USER_INFO_HEADER_JWT_SECRET reads
+    # (see openwebui.config.extraEnvVars above) -- lets
+    # OpenWebUiForwardedUserResolver verify Open WebUI's per-request signed
+    # X-OpenWebUI-User-Jwt header and resolve each Open WebUI user to their
+    # OWN subject, instead of every Open WebUI user sharing the single
+    # subject the static map above assigns to Open WebUI's static bearer
+    # token. Required for the identity-link feature (ADR 0022) to be safe
+    # under multiple Open WebUI users -- without this, whichever user links
+    # a GitHub identity first makes it usable by every other Open WebUI user
+    # with no authentication at all.
+    openWebUiUserJwtSecretExistingSecret: openwebui-forward-jwt-secret
+    openWebUiUserJwtSecretExistingSecretKey: secret
+
+  # Invoke API stays internal — no ingress, only Open WebUI (in-cluster) calls it.
+  ingress:
+    enabled: false
+
+  # Bundled Qdrant vector store (github.com/qdrant/qdrant-helm). No external
+  # Qdrant exists in this cluster, so this single-replica dev/demo instance
+  # backs the RAG tool/skill selection. See charts/agent-orchestrator's
+  # values.yaml for the production caveats (no backup/DR story).
+  qdrant:
+    enabled: true
+
+  # The orchestrator unconditionally lists LocalTool CRs at startup even
+  # though no LocalTool CRs are deployed by community-components today, so
+  # the Role needs the `localtools` grant that only ships when this is
+  # enabled (see charts/agent-orchestrator/templates/rbac.yaml).
+  #
+  # Executor sidecars for all 4 runtimes: this repo's publish.yml CI now
+  # builds+pushes registry.kurpuis.com:5000/localtool-executor-<runtime> on
+  # every merge to main, so point the chart's default `<runtime>:latest`
+  # images at our private registry instead of leaving runtimes empty.
+  # Requires unprivileged user namespaces enabled on every node (bubblewrap
+  # per-invocation sandboxing, see charts/agent-orchestrator's own
+  # values.yaml comment + docs/adr/0014) — the sidecar's
+  # securityContext.seccompProfile is Unconfined by chart default for
+  # exactly this reason.
+  localTool:
+    enabled: true
+    runtimes:
+      - name: node
+        image: registry.kurpuis.com:5000/localtool-executor-node:latest
+      - name: python
+        image: registry.kurpuis.com:5000/localtool-executor-python:latest
+      - name: go
+        image: registry.kurpuis.com:5000/localtool-executor-go:latest
+      - name: shell
+        image: registry.kurpuis.com:5000/localtool-executor-shell:latest
+    pullPolicy: Always
+
+  # Agent delegation (Agent CRs, e.g. opencode-swe-agent) only runs over NATS
+  # (ADR 0010/0017) -- without this, AGENT_NATS_URL is never set on the
+  # orchestrator and it silently degrades to skills-only: no "agents" Qdrant
+  # collection ever gets created, so it never finds an Agent CR to delegate
+  # to. The umbrella chart's top-level `nats.enabled` below deploys the NATS
+  # server itself; this just tells the orchestrator to use it.
+  nats:
+    enabled: true
+
+  # Conversation sessions (docs/adr/0016) and integration-gateway's session
+  # pages. Points at "agent-orchestrator-redis"
+  # (charts/integration-gateway/values.yaml), which only exists when this
+  # chart's own templates/redis.yaml is rendered -- leaving this at its default
+  # (false) with identityLink on made integration-gateway crash-loop on
+  # ENOTFOUND agent-orchestrator-redis.
+  #
+  # Deliberately EPHEMERAL (--save "" --appendonly no, on an emptyDir): a restart
+  # costs in-flight conversations and posted session-page links, and nothing
+  # else. Credentials used to be in here too, which is what made that restart an
+  # incident -- it deleted every identity link and Claude credential in the
+  # cluster and asked already-authorized users to link again. Those are
+  # Kubernetes Secrets as of docs/adr/0034, which is why this can stay a cache.
+  # Do not move durable state back into it without giving it persistence first.
+  redis:
+    enabled: true
+
+core-controller:
+  enabled: true
+  fullnameOverride: core-controller
+
+  image:
+    repository: registry.kurpuis.com:5000/core-controller
+    tag: latest
+    pullPolicy: Always
+
+  # Every tool/agent image here (recipe-scraper, claude-code-swe-agent, etc.)
+  # is also pushed to registry.kurpuis.com under a mutable ":latest" tag, same
+  # as core-controller's own image above -- so the Jobs core-controller
+  # launches need "Always" too, or a node that already pulled a tag once will
+  # keep running that stale digest through every later push+redeploy.
+  runJob:
+    imagePullPolicy: Always
+
+  # Must match the actual in-cluster NATS Service (the release-name-prefixed
+  # "agent-controller-nats", not the chart's placeholder default
+  # "nats://nats:4222", which doesn't resolve to anything in this namespace).
+  # This is the URL core-controller stamps into every AgentRun Job it
+  # launches -- get it wrong and every delegated agent (opencode-swe-agent)
+  # crashes on startup trying to reach NATS.
+  nats:
+    agentUrl: "nats://agent-controller-nats.controller-agent.svc.cluster.local:4222"
+
+  imagePullSecrets:
+    - name: docker-registry-credentials
+
+# GitHub Issues adapter (phase 1 of the integrations-gateway proposal) —
+# relays GitHub issue/comment webhooks into agent-orchestrator's existing
+# conversational /invoke API, one session per issue.
+integration-gateway:
+  enabled: true
+
+  image:
+    repository: registry.kurpuis.com:5000/integration-gateway
+    tag: latest
+    pullPolicy: Always
+
+  imagePullSecrets:
+    - name: docker-registry-credentials
+
+  config:
+    # Loop prevention — the gateway ignores comments authored by this login.
+    githubBotLogin: "agent-controller[bot]"
+    # Triggers automated triage (ADR 0024) when applied to a GitHub issue
+    # (investigate and open a PR -> community-components'
+    # github-issue-labeled-triage route) or to a pull request (address the
+    # feedback on it, push the updates, sync it with its base branch ->
+    # github-pr-labeled-triage). One label, two routes, told apart by
+    # event + match.labelName. Removed from the issue/PR once the run ends, so
+    # re-applying it re-triggers. A label, not an assignee —
+    # agent-controller[bot] can't be set as an issue assignee (GitHub App bot
+    # users generally can't be).
+    githubTriggerLabel: "ai-triage"
+    # Triggers an automated PR review when applied to a pull request — a
+    # read-only review, distinct from the trigger label above, which changes
+    # the PR. A human applies this label (the gateway drops bot-authored
+    # events, so the agent that opened the PR can't self-trigger). Matches the
+    # community-components github-pr-labeled-review IntegrationRoute
+    # (event: pull_request, action: labeled, labelName: ai-review) ->
+    # claude-code-swe-agent. Also removed once the review finishes.
+    githubReviewLabel: "ai-review"
+    # DEV/TEST-GRADE static allowlist mapping GitHub logins to identities --
+    # kept only as CompositeGithubIdentityResolver's last-resort fallback now
+    # that githubCollaboratorRoles below is the primary, prod-grade path (no
+    # commit/redeploy needed to add/remove a person). JSON:
+    # {"<login>": {"subject": "...", "roles": [...]}}
+    githubIdentities: '{"imaustink": {"subject": "imaustink", "roles": ["writer"]}}'
+    # Left empty: imaustink/agent-controller is a personal-account repo, not
+    # org-owned, so there's no GitHub org/team to check membership against
+    # (src/identity.ts's GithubTeamMembershipResolver needs an org). Set this
+    # instead of/in addition to githubCollaboratorRoles below only if this
+    # repo is ever transferred to (or a team created under) a GitHub
+    # Organization -- example: '{"my-org/writers": ["writer"]}'.
+    githubTeamRoles: ""
+    # PROD-GRADE primary identity source for this personal-account repo
+    # (src/identity.ts's GithubCollaboratorPermissionResolver): grants roles
+    # by the sender's actual collaborator permission on the repo the webhook
+    # fired on, instead of the static map above. "admin" is the repo owner
+    # (imaustink) and any collaborator granted Owner-equivalent access;
+    # "write" is anyone added as a collaborator with Write access -- both map
+    # to "writer" since either is sufficient to reach the SWE agent
+    # (allowedRoles: [writer]). Adding/removing a person from here on out is
+    # just a GitHub "Settings -> Collaborators" change on this repo.
+    githubCollaboratorRoles: '{"admin": ["writer"], "write": ["writer"]}'
+    # Must comfortably exceed agent-orchestrator's own AGENT_RUN_TIMEOUT_SECONDS
+    # (default 28800s/8h -- the wall-clock ceiling on a real
+    # opencode-swe-agent run: clone, run Claude, open a PR, iterate). The
+    # chart default here (15 min) is far shorter, so a real task taking longer
+    # than 15 minutes would finish successfully just AFTER the gateway had
+    # already given up polling and posted a "no terminal result within
+    # 900000ms" comment -- confirmed happening in practice. Same class of bug
+    # as the orchestrator's old "produced no reply" timeout: a bound shorter
+    # than the work it's bounding turns a success into a visible failure.
+    # 8h5m leaves a 5-minute buffer past the agent-run ceiling.
+    pollTimeoutMs: "29100000"
+
+  # Automatic OIDC client_credentials token fetch/refresh (previously a
+  # documented, unbuilt follow-up -- Pocket ID's client_credentials access
+  # tokens expire in a fixed 1 hour, and until this was built the gateway
+  # just read a static, manually-rotated GATEWAY_ORCHESTRATOR_TOKEN that went
+  # stale every hour with no one automatically noticing). Now the gateway
+  # holds the "integration-gateway" Pocket ID client's client_secret (which
+  # does not expire, only rotates if regenerated) and fetches/caches/renews
+  # its own access token as needed.
+  orchestratorOidc:
+    enabled: true
+    tokenEndpoint: "https://pocket-id.kurpuis.com/api/oidc/token"
+    clientId: "integration-gateway"
+    resource: "https://agent-orchestrator.controller-agent.svc.cluster.local"
+
+  # Bring-your-own secret: GITHUB_WEBHOOK_SECRET,
+  # GATEWAY_ORCHESTRATOR_OIDC_CLIENT_SECRET, and GITHUB_TOKEN.
+  # GATEWAY_ORCHESTRATOR_OIDC_CLIENT_SECRET is the "integration-gateway"
+  # Pocket ID client's client_secret (see
+  # kubernetes/manifests/services/pocket-id/provision-agent-orchestrator.sh in
+  # imaustink/homelab, or its "regenerate secret" endpoint) -- NOT an access
+  # token; the gateway exchanges this for a fresh access token itself as
+  # needed, so this key does not go stale on its own.
+  #
+  # GATEWAY_SENDER_ASSERTION_SECRET signs the gateway's claim about WHICH HUMAN
+  # triggered a webhook turn (docs/adr/0030 §6). Any random string; must match
+  # agent-orchestrator-secrets' AGENT_SENDER_ASSERTION_SECRET above exactly.
+  # While it is unset the login rides to /invoke unsigned and the orchestrator
+  # trusts it from the request body -- see that Secret's comment for why that
+  # matters. Safe to set here FIRST: the orchestrator ignores the header until
+  # its own key exists, and the gateway keeps sending the body field either way.
+  #
+  # Per-user GitHub identity linking (docs/adr/0022, identityLink.enabled
+  # below) needs FOUR more keys in this same Secret: GATEWAY_IDENTITY_LINK_TOKEN
+  # (any random string -- must match agent-orchestrator-secrets'
+  # IDENTITY_LINK_GATEWAY_TOKEN above exactly), IDENTITY_LINK_ENCRYPTION_KEY
+  # (32-byte AES-256-GCM key, base64), IDENTITY_LINK_STATE_SECRET (distinct
+  # random key -- do NOT reuse the encryption key, so rotating one never
+  # forces rotating the other), and GITHUB_APP_CLIENT_SECRET (generated on
+  # the GitHub App's own settings page -- device flow never needed one, the
+  # authorization-code flow does).
+  #
+  # DO NOT MERGE identityLink.enabled=true below before creating/updating
+  # this Secret with all four -- deploy.yml auto-applies on every push to
+  # main, and integration-gateway will otherwise fail to start
+  # (CreateContainerConfigError, missing Secret keys).
+  #
+  # Create/update with:
+  #   kubectl create secret generic integration-gateway-secrets -n controller-agent \
+  #     --from-literal=GITHUB_WEBHOOK_SECRET="$(openssl rand -hex 32)" \
+  #     --from-literal=GATEWAY_ORCHESTRATOR_OIDC_CLIENT_SECRET=<Pocket ID client_secret> \
+  #     --from-literal=GITHUB_TOKEN=github_pat_... \
+  #     --from-literal=GATEWAY_IDENTITY_LINK_TOKEN="$(openssl rand -hex 32)" \
+  #     --from-literal=IDENTITY_LINK_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+  #     --from-literal=IDENTITY_LINK_STATE_SECRET="$(openssl rand -base64 32)" \
+  #     --from-literal=GITHUB_APP_CLIENT_SECRET=<from the GitHub App's settings page> \
+  #     --from-literal=GATEWAY_SENDER_ASSERTION_SECRET="$(openssl rand -hex 32)"
+  #   # (or `kubectl edit secret integration-gateway-secrets -n controller-agent`
+  #   # if it already exists -- just add/replace the relevant keys)
+  secrets:
+    existingSecret: integration-gateway-secrets
+
+  # Per-user GitHub identity linking (docs/adr/0022) -- see the secrets
+  # comment above for the required Secret keys, and the setup checklist in
+  # this PR's description for the GitHub App-side steps (Device Flow
+  # enabled, client secret generated, callback URL registered).
+  identityLink:
+    enabled: true
+    # GitHub App OAuth client_id -- PUBLIC, not a secret (see this field's
+    # doc comment in charts/agent-controller/charts/integration-gateway/values.yaml).
+    # This is the App's Client ID (Iv1./Iv23... string), NOT its numeric App ID.
+    githubAppClientId: "Iv23liVElRYG8F7GBzRy"
+    # Must exactly match the GitHub App's registered "Callback URL"
+    # (scheme/host/path/trailing-slash all significant) -- see
+    # charts/agent-controller/charts/integration-gateway/values.yaml's
+    # githubOauthRedirectUri comment for the same discipline
+    # GOOGLE_REDIRECT_URI already follows elsewhere in this file.
+    githubOauthRedirectUri: "https://gateway.kurpuis.com/identity-link/github/callback"
+
+  # Session page (issue #81/ADR 0025/0026) -- was never turned on in
+  # production before now; required as a prerequisite for claudeAuth below
+  # (the claude-auth link page needs a reachable public host the same way
+  # the session page itself does), and as a side effect also turns on the
+  # "starting work" comment + live turn-history page for the ai-triage
+  # trigger generally. redisUrl is left unset -- it falls back to
+  # identityLink.redisUrl (see that field's comment in
+  # charts/agent-controller/charts/integration-gateway/values.yaml).
+  #
+  # That Redis is ephemeral, so a posted page link dies with its pod. Tolerable
+  # (the link 404s) and unlike a credential, which is why only the credentials
+  # moved to Secrets in docs/adr/0034. Worth fixing separately.
+  sessionPage:
+    publicBaseUrl: "https://gateway.kurpuis.com"
+
+  # Per-user Claude Code OAuth linking (docs/adr/0027) -- the `claude`
+  # provider's counterpart to identityLink above, for claude-code-swe-agent
+  # (charts/community-components/values-production.yaml). Reuses
+  # identityLink's encryption-key/bearer-token config and requires
+  # sessionPage.publicBaseUrl above; requires this integration-gateway image
+  # to actually have the `claude` CLI + node-pty compiled in (both stages of
+  # apps/integration-gateway/Dockerfile changed for this).
+  claudeAuth:
+    enabled: true
+
+  # GitHub must reach this Service directly (unlike the orchestrator's
+  # in-cluster-only callback port).
+  ingress:
+    enabled: true
+    className: traefik
+    annotations:
+      kubernetes.io/ingress.class: traefik
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      traefik.ingress.kubernetes.io/router.middlewares: default-redirect-https@kubernetescrd
+      # Without this, external-dns defaults new hosts to the Traefik
+      # LoadBalancer Service's address (192.168.0.200) -- a private LAN IP
+      # Let's Encrypt's HTTP-01 validator can never reach, so issuance fails
+      # with "no valid A records found" even though DNS itself resolves fine
+      # (same bug fixed for pocket-id.kurpuis.com; see that manifest's
+      # comment in imaustink/homelab). CNAME to lab.kurpuis.com (the actual
+      # publicly-routable address, same pattern chat.kurpuis.com uses)
+      # instead of an A record.
+      external-dns.alpha.kubernetes.io/target: lab.kurpuis.com
+    host: "gateway.kurpuis.com"
+    tls:
+      - secretName: gateway-kurpuis-tls
+        hosts:
+          - "gateway.kurpuis.com"
+
+openwebui:
+  enabled: true
+
+  # Sourced from a Secret (chart PR #27) instead of plaintext here, so it
+  # doesn't land in the Helm release's stored values. NOT a Pocket ID token --
+  # Open WebUI has no refresh mechanism of its own (a static API-key field,
+  # read as an env var at container start), so rather than chase Pocket ID's
+  # 1-hour client_credentials expiry with a periodic restart job, this is a
+  # long-lived, manually-rotated shared secret matched by
+  # agent-orchestrator.config.staticIdentitiesExistingSecret above
+  # (CompositeIdentityResolver's static fallback -- see that comment).
+  # Must be the same value as that Secret's one token entry. Create with:
+  #   kubectl create secret generic agent-orchestrator-openwebui-static-identity \
+  #     -n controller-agent \
+  #     --from-literal=AGENT_STATIC_IDENTITIES='{"<token>": {"subject": "openwebui", "roles": ["reader", "writer"]}}'
+  #   kubectl create secret generic openwebui-openai-api-key -n controller-agent \
+  #     --from-literal=openai-api-key=<same token>
+  #
+  # GOTCHA (cost real debugging time): Open WebUI persists this Connection's
+  # API key into its own Postgres `config` table (key openai.api_keys) the
+  # FIRST time it boots, and never re-reads OPENAI_API_KEY from the env
+  # again after that -- rotating this Secret and restarting the pod does
+  # NOT change what Open WebUI actually sends. To rotate for real: update it
+  # in Open WebUI's own Admin Settings -> Connections UI (or the `config`
+  # table's `openai.api_keys` row directly), THEN match that same value in
+  # agent-orchestrator-openwebui-static-identity above -- not the other way
+  # around.
+  openaiApiKeyExistingSecret: openwebui-openai-api-key
+  openaiApiKeyExistingSecretKey: openai-api-key
+  openaiBaseApiUrl: "http://agent-orchestrator-invoke:8081/v1"
+
+  ollama:
+    enabled: false
+  pipelines:
+    enabled: false
+
+  persistence:
+    size: 2Gi
+
+  service:
+    type: ClusterIP
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 2Gi
+    limits:
+      cpu: "1"
+      memory: 3Gi
+
+  ingress:
+    enabled: true
+    class: traefik
+    annotations:
+      kubernetes.io/ingress.class: traefik
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      traefik.ingress.kubernetes.io/router.middlewares: default-redirect-https@kubernetescrd
+    host: "chat.kurpuis.com"
+    tls: true
+    existingSecret: "chat-kurpuis-tls"
+
+  # Google OAuth SSO -- disabled (see google.enabled below), Pocket ID is the
+  # only SSO path now. Config left in place, not deleted, in case it's ever
+  # re-enabled as a fallback; it was only ever ungoverned anyway, since
+  # Google can't emit custom roles/groups claims (the same limitation that
+  # broke oidc verification against Google in the first place, see
+  # values-production.yaml's git history). If re-enabled, the client-secret
+  # Secret and Google Cloud Console redirect URI are still:
+  #   kubectl create secret generic controller-agent-openwebui-google-oauth \
+  #     -n controller-agent --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
+  #   https://chat.kurpuis.com/oauth/google/login/callback
+  #
+  # Pocket ID OIDC SSO: real per-user login, roles managed via Pocket ID
+  # Groups + a custom "roles" claim (see
+  # kubernetes/manifests/services/pocket-id/provision-openwebui-sso.sh in
+  # imaustink/homelab) -- NOT the same Pocket ID client integration-gateway
+  # uses (that one's client_credentials-only, no login flow). Create the
+  # client-secret Secret first:
+  #   kubectl create secret generic openwebui-pocket-id-oauth -n controller-agent \
+  #     --from-literal=client-secret=<POCKET_ID_CLIENT_SECRET>
+  # Callback URLs registered on the Pocket ID client must include both
+  # https://chat.kurpuis.com/oauth/oidc/callback (what this Open WebUI
+  # version actually redirects to) and .../oauth/oidc/login/callback (a
+  # newer route also present in its source) -- provision-openwebui-sso.sh
+  # in imaustink/homelab registers both.
+  sso:
+    enabled: true
+    enableSignup: true
+    enableRoleManagement: true
+    enableGroupManagement: true
+    google:
+      # Disabled -- Pocket ID is the only managed SSO path now. Left
+      # configured (not deleted) so re-enabling is a one-line flip if ever
+      # needed; it was only ever an ungoverned fallback since Google can't
+      # emit custom roles/groups claims.
+      enabled: false
+      clientId: "916932714292-6900thjm1dq3e4fnqrcj3ipe4iud70o8.apps.googleusercontent.com"
+      clientExistingSecret: controller-agent-openwebui-google-oauth
+      clientExistingSecretKey: "client-secret"
+    oidc:
+      enabled: true
+      clientId: "openwebui"
+      clientExistingSecret: openwebui-pocket-id-oauth
+      clientExistingSecretKey: "client-secret"
+      providerUrl: "https://pocket-id.kurpuis.com/.well-known/openid-configuration"
+      providerName: "Pocket ID"
+      scopes: "openid email profile groups"
+    roleManagement:
+      # Pocket ID has no native "roles" concept -- this claim is emitted via
+      # a custom claim on a Pocket ID Group (key "roles", JSON array value),
+      # not anything built-in. See provision-openwebui-sso.sh.
+      rolesClaim: "roles"
+      allowedRoles: "user,admin"
+      adminRoles: "admin"
+    groupManagement:
+      # Pocket ID's native group-name list (no custom claim needed) --
+      # matches Open WebUI Groups by name if you create ones with matching
+      # names. Unused for role assignment (see roleManagement above).
+      groupsClaim: "groups"
+
+  # NOTE: Helm replaces arrays wholesale — every entry must stay together here.
+  extraEnvVars:
+    - name: GOOGLE_REDIRECT_URI
+      value: "https://chat.kurpuis.com/oauth/google/login/callback"
+    - name: ENABLE_FORWARD_USER_INFO_HEADERS
+      value: "true"
+    # Switches ENABLE_FORWARD_USER_INFO_HEADERS from the legacy plaintext
+    # X-OpenWebUI-User-* headers to a single signed JWT
+    # (X-OpenWebUI-User-Jwt, HS256, minted fresh on every outbound request --
+    # no refresh problem, unlike Pocket ID's client_credentials tokens).
+    # Verified by agent-orchestrator's OpenWebUiForwardedUserResolver (see
+    # agent-orchestrator.config.openWebUiUserJwtSecretExistingSecret below,
+    # pointed at this same Secret) -- until that was wired up, every Open
+    # WebUI user resolved to the SAME shared subject via the
+    # CompositeIdentityResolver static fallback, so any OAuth identity one
+    # user linked (e.g. GitHub, ADR 0022) was usable by every other Open
+    # WebUI user with no authentication at all.
+    - name: FORWARD_USER_INFO_HEADER_JWT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: openwebui-forward-jwt-secret
+          key: secret
+    # ---- Database (CNPG Postgres — see imaustink/homelab's
+    # manifests/agent-controller/003-openwebui-postgres.yaml) ----
+    # Replaces the default SQLite file, which has no retry/failover behavior
+    # and turned a transient Longhorn replica blip into a full outage.
+    - name: DATABASE_TYPE
+      value: "postgres"
+    - name: DATABASE_HOST
+      value: "agent-controller-openwebui-postgres-rw"
+    - name: DATABASE_PORT
+      value: "5432"
+    - name: DATABASE_NAME
+      value: "openwebui"
+    - name: DATABASE_USER
+      valueFrom:
+        secretKeyRef:
+          name: agent-controller-openwebui-postgres-app
+          key: username
+    - name: DATABASE_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: agent-controller-openwebui-postgres-app
+          key: password
+
+# Bundled NATS server (nats subchart) backing agent delegation's result
+# channel (agent-orchestrator.nats.enabled + core-controller.nats.agentUrl
+# above both depend on this actually running). Pinning explicitly rather
+# than relying on Helm's implicit "enabled if condition path is unset"
+# fallback, which is what let this stay on accidentally with no NATS wiring
+# actually pointed at it.
+nats:
+  enabled: true
+
+# Hand-authored SearXNG instance (chart templates/searxng.yaml, not a Helm
+# subchart) backing community-components' web-search Tool. ClusterIP only,
+# no Ingress. Requires the searxng-secrets Secret to already exist:
+#   kubectl create secret generic searxng-secrets -n controller-agent \
+#     --from-literal=secret-key="$(openssl rand -hex 32)"
+searxng:
+  enabled: true

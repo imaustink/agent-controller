@@ -1,0 +1,91 @@
+{{- if .Values.integrationRoutes.githubPrLabeledReview.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: IntegrationRoute
+metadata:
+  name: github-pr-labeled-review
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  match:
+    source: github
+    event: pull_request
+    action: labeled
+    # This route and github-pr-labeled-triage share the exact same
+    # source/event/action triple -- the label is the ONLY thing distinguishing
+    # "review this PR" from "triage this PR", so both must pin match.labelName
+    # or the two are indistinguishable and one silently swallows the other.
+    # Must equal integration-gateway's config.githubReviewLabel (the gateway
+    # ignores a pull_request.labeled event for any other label).
+    labelName: {{ .Values.integrationRoutes.githubPrLabeledReview.labelName | default "ai-review" | quote }}
+  # No Tool wrapper needed -- dispatches straight to the Agent CR (ADR 0021),
+  # same pattern as integrationroute-github-issue-labeled-triage.yaml. Which
+  # SWE Agent CR reviews the PR is value-driven (default opencode-swe-agent)
+  # so an environment can point it at claude-code-swe-agent instead without
+  # editing this template -- whichever it names must have enabled=true in the
+  # same values file, or this route dispatches to a non-existent Agent.
+  #
+  # Triggered when integration-gateway relays a pull_request.labeled event
+  # whose label matches its configured review label (integration-gateway's
+  # config.githubReviewLabel, e.g. "ai-review"). A human applies that label:
+  # the gateway drops bot-authored events, so the agent that opened the PR
+  # cannot self-trigger a review of its own pull request.
+  agentRef: {{ .Values.integrationRoutes.githubPrLabeledReview.agentRef | default "opencode-swe-agent" }}
+  promptTemplate: |
+    Pull request {{`{{owner}}`}}/{{`{{repo}}`}}#{{`{{prNumber}}`}} was labeled "{{`{{labelName}}`}}": "{{`{{title}}`}}"
+
+    {{`{{body}}`}}
+
+    Review this pull request. Check out the branch, examine the diff, and
+    assess correctness, test coverage, security, and any risks. Post your
+    review on the PR as inline comments anchored to the exact file and line at
+    issue -- create them as pull-request review comments (e.g. `gh pr review
+    {{`{{prNumber}}`}}` with inline comments, or `gh api` on the PR's
+    review-comments endpoint) so each renders on its line. Be concrete and
+    cite file:line. Do not merge or push changes -- only review.
+
+    Every comment that requests a change must carry its own fix, so the author
+    can act on it without leaving the diff. In each such comment include:
+
+      1. A GitHub SUGGESTION block whenever the fix is a concrete, localized
+         edit to the commented line(s). Put a fenced ```suggestion block at the
+         TOP LEVEL of the comment (not inside the collapsible section below)
+         holding the exact, complete replacement for the line range the comment
+         is anchored to -- GitHub then renders an "Apply suggestion" button the
+         author can commit in one click. The block must contain only the
+         corrected replacement for those lines; if the fix touches lines you did
+         not anchor to, widen the comment's line range to cover them. Skip the
+         suggestion only when the fix is not a mechanical line edit (e.g. it is
+         architectural or spans several files) -- then rely on the prompt below.
+
+      2. An optional, copy-pasteable prompt to fix the issue with an AI coding
+         agent, hidden in a collapsible section so it never clutters the
+         comment. Append it at the end of the comment exactly like this
+         (keep the blank line after </summary> or the block will not render):
+
+           <details>
+           <summary>🤖 Prompt to fix this with an AI agent</summary>
+
+           ```text
+           In {{`{{owner}}`}}/{{`{{repo}}`}} on PR #{{`{{prNumber}}`}}, fix
+           <problem> at <file:line> so that <acceptance criteria>. Do not
+           change unrelated behavior; add or update a test covering the fix.
+           ```
+
+           </details>
+
+         Write the prompt as a direct, self-contained instruction (goal,
+         affected file:line, concrete acceptance criteria) that another agent
+         could act on without re-reading the diff.
+
+    Do NOT open a follow-up issue or ticket -- the fix belongs in the comment
+    itself, as the one-click suggestion and/or the copyable agent prompt. A
+    clean approval with nothing to change needs neither.
+
+    You get exactly one turn to do this -- you cannot pause partway through
+    and wait for a CI check, build, or test run to finish, and nothing will
+    re-invoke you automatically when one does. Post a complete review now
+    based on the diff and code alone. If a check is still running, mention
+    its current status as one line in the review (e.g. "CI is still running
+    as of this review") -- do not let it block or delay posting the rest of
+    your assessment, and do not say you'll "finalize" or "resume" later.
+{{- end }}

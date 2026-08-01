@@ -1,0 +1,98 @@
+{{- if .Values.githubTool.enabled }}
+{{- $githubAppConfigured := include "tools.githubAppFullyConfigured" .Values.githubTool }}
+{{- $githubAppKeyCount := include "tools.githubAppKeyCount" .Values.githubTool }}
+{{- if and (ne $githubAppKeyCount "0") (not $githubAppConfigured) }}
+{{- fail "githubTool has a partial GitHub App configuration -- githubAppIdSecretKey, githubAppPrivateKeySecretKey and githubAppInstallationIdSecretKey must all be set together (the tool rejects a partial set at runtime)" }}
+{{- end }}
+{{/*
+  Exactly one shared credential is wired, and only when identityLink isn't
+  already supplying the calling user's own token per-invocation: a full GitHub
+  App configuration makes the tool mint a short-lived installation token and
+  never read GITHUB_TOKEN, so wiring the PAT alongside it would only force an
+  unused key into the Secret (a secretRef to a missing key fails the Job with
+  CreateContainerConfigError).
+*/}}
+{{- $githubTokenWired := and (not .Values.githubTool.identityLink.enabled) (not $githubAppConfigured) .Values.githubTool.secretKey }}
+{{- $githubAppWired := and (not .Values.githubTool.identityLink.enabled) $githubAppConfigured }}
+{{- if not (or $githubTokenWired $githubAppWired .Values.githubTool.identityLink.enabled) }}
+{{- fail "githubTool requires a GitHub credential: set secretKey (a GITHUB_TOKEN PAT), all three githubApp*SecretKey values, or identityLink.enabled" }}
+{{- end }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: Tool
+metadata:
+  name: github
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Runs a single GitHub CLI (gh) command -- view/list/comment/create/edit on
+    issues and pull requests, view repos and releases, search GitHub, merge
+    or review a PR, inspect Actions workflows/runs -- authenticated as the
+    CALLING user's own linked GitHub identity, not a shared bot credential.
+    Use this for quick, targeted GitHub operations; for anything requiring
+    cloning a repo, reading/writing files, or opening a pull request from
+    code changes, delegate to a coding agent instead.
+  input: >-
+    A single gh CLI command line, everything after "gh" (e.g.
+    "issue view 86 --repo imaustink/agent-controller --json title,body",
+    "issue comment 86 --repo imaustink/agent-controller --body "thanks!"",
+    "pr list --repo imaustink/agent-controller --state open",
+    "search issues "is:open label:bug" --repo imaustink/agent-controller").
+    Only a fixed allowlist of commands/subcommands is accepted (see
+    tools/github/README.md); anything else is rejected before it reaches
+    GitHub.
+  output: >-
+    gh's own stdout (JSON when --json was requested, otherwise gh's normal
+    text output), wrapped in a fenced code block.
+  allowedRoles:
+    - writer
+  tier: standard
+  {{- if .Values.githubTool.identityLink.enabled }}
+  identityProviders:
+    {{- range .Values.githubTool.identityLink.providers }}
+    - {{ . }}
+    {{- end }}
+  {{- end }}
+  image: {{ .Values.githubTool.image | quote }}
+  serviceAccountName: {{ .Values.githubTool.serviceAccountName | quote }}
+  {{/*
+    GitHub Enterprise Server (optional): GH_HOST points `gh` at the GHES host
+    and GITHUB_API_URL points App minting at its REST base. Plain env, not
+    secrets, and independent of which credential is in effect -- both default
+    empty (github.com / api.github.com) when unset.
+  */}}
+  {{- if or .Values.githubTool.githubHost .Values.githubTool.githubApiUrl }}
+  env:
+    {{- if .Values.githubTool.githubHost }}
+    - name: GH_HOST
+      value: {{ .Values.githubTool.githubHost | quote }}
+    {{- end }}
+    {{- if .Values.githubTool.githubApiUrl }}
+    - name: GITHUB_API_URL
+      value: {{ .Values.githubTool.githubApiUrl | quote }}
+    {{- end }}
+  {{- end }}
+  {{- if or $githubTokenWired $githubAppWired }}
+  secretEnv:
+    {{- if $githubTokenWired }}
+    - name: GITHUB_TOKEN
+      secretRef:
+        name: {{ .Values.githubTool.secretName | quote }}
+        key: {{ .Values.githubTool.secretKey | quote }}
+    {{- end }}
+    {{- if $githubAppWired }}
+    - name: GITHUB_APP_ID
+      secretRef:
+        name: {{ .Values.githubTool.secretName | quote }}
+        key: {{ .Values.githubTool.githubAppIdSecretKey | quote }}
+    - name: GITHUB_APP_PRIVATE_KEY
+      secretRef:
+        name: {{ .Values.githubTool.secretName | quote }}
+        key: {{ .Values.githubTool.githubAppPrivateKeySecretKey | quote }}
+    - name: GITHUB_APP_INSTALLATION_ID
+      secretRef:
+        name: {{ .Values.githubTool.secretName | quote }}
+        key: {{ .Values.githubTool.githubAppInstallationIdSecretKey | quote }}
+    {{- end }}
+  {{- end }}
+{{- end }}

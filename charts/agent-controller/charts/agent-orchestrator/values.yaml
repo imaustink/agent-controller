@@ -43,9 +43,21 @@ config:
   qdrantCollection: tools
   qdrantVectorSize: 1536
   qdrantSkillsCollection: skills
+  # Consumer-supplied tools (docs/adr/0035) live in their own collection, keyed
+  # by content hash so identical definitions are embedded once, ever. Kept apart
+  # from the catalog collections above so a caller's ephemeral definitions can
+  # never affect catalog retrieval.
+  qdrantCallerToolsCollection: caller_tools
   embeddingModel: text-embedding-3-small
   selectionModel: gpt-4o-2024-08-06
   skillTopK: 3
+  # Max consumer-supplied tools that may reach the action planner, and the
+  # threshold below which the caller-tool index is skipped entirely (with this
+  # many or fewer there is nothing to prune). Leave empty for the orchestrator's
+  # own defaults (5 tools, 7-day TTL swept hourly).
+  callerToolTopK: ""
+  callerToolTtlSeconds: ""
+  callerToolPruneIntervalSeconds: ""
   # Base URL Job pods use to reach the callback receiver. Leave empty to
   # default to the in-cluster callback Service DNS name (ADR 0006).
   callbackBaseUrl: ""
@@ -53,10 +65,73 @@ config:
   # charts/core-controller's installed CRDs.
   crdGroup: core.controller-agent.dev
   crdVersion: v1alpha1
-  # DEV/TEST ONLY (see src/rbac/static-identity-resolver.ts) — JSON map of
-  # bearer token -> {subject, roles}. Leave unset in any real deployment;
-  # prefer a real OIDC/JWT identity resolver instead (not implemented yet).
+  # Agent-run timeouts. Leave empty to use the orchestrator's own defaults
+  # (8h wall clock, 10m of silence, 25s shutdown drain) -- these exist so the
+  # e2e environment can shrink the idle window to something a test can wait out.
+  #
+  # agentRunTimeoutSeconds is the Job's activeDeadlineSeconds: a backstop for a
+  # wedged pod, NOT a task budget. agentIdleTimeoutSeconds bounds SILENCE and is
+  # what actually ends a stuck run -- any up-message resets it, so a narrating
+  # run is never cut off however long it takes.
+  agentRunTimeoutSeconds: ""
+  agentIdleTimeoutSeconds: ""
+  shutdownDrainMs: ""
+  # Which IdentityResolver to build: "static" (default) or "oidc". See
+  # src/rbac/static-identity-resolver.ts and src/rbac/oidc-identity-resolver.ts.
+  identityResolver: static
+  # JSON map of bearer token -> {subject, roles}. When identityResolver=static
+  # this is the only resolver; when identityResolver=oidc it becomes a
+  # fallback for tokens that fail oidc verification (see
+  # staticIdentitiesExistingSecret below for the not-mutually-exclusive
+  # behavior). Prefer staticIdentitiesExistingSecret for anything beyond
+  # local/dev use: `staticIdentities` here lands in plaintext in the Helm
+  # release's stored values (same caveat as secrets.create/values above),
+  # which is not appropriate once the values file itself is committed
+  # anywhere outside a private, secret-free repo.
   staticIdentities: ""
+  # Existing Secret name holding the same JSON map (see staticIdentities
+  # above) under staticIdentitiesExistingSecretKey. Takes precedence over
+  # the inline `staticIdentities` value when set.
+  #
+  # Not exclusive with identityResolver=oidc: when both are set, the app
+  # builds a CompositeIdentityResolver -- oidc verification first, falling
+  # back to this static map only for tokens that fail it. Use this for
+  # callers that structurally cannot present a real, refreshable OIDC token
+  # (e.g. a chat UI with only a static API-key field), while callers capable
+  # of real OIDC still go through full verification.
+  staticIdentitiesExistingSecret: ""
+  staticIdentitiesExistingSecretKey: AGENT_STATIC_IDENTITIES
+  # Existing Secret holding the HS256 secret Open WebUI signs its per-request
+  # X-OpenWebUI-User-Jwt header with (Open WebUI's own
+  # FORWARD_USER_INFO_HEADER_JWT_SECRET, ENABLE_FORWARD_USER_INFO_HEADERS).
+  # Required whenever staticIdentitiesExistingSecret/staticIdentities above is
+  # serving Open WebUI: without it, every Open WebUI user resolves to the
+  # SAME shared subject from the static map (Open WebUI's Authorization
+  # bearer token is one static value for all of its users), so any OAuth
+  # identity one user links (e.g. GitHub, ADR 0022) becomes usable by every
+  # other Open WebUI user with no authentication. See
+  # src/rbac/openwebui-forwarded-user-resolver.ts.
+  openWebUiUserJwtSecretExistingSecret: ""
+  openWebUiUserJwtSecretExistingSecretKey: AGENT_OPENWEBUI_USER_JWT_SECRET
+  # RBAC roles (this system's vocabulary, e.g. Tool/Agent allowedRoles --
+  # NOT Open WebUI's own "user"/"admin" role) granted to every Open WebUI
+  # user resolved via openWebUiUserJwtSecretExistingSecret above. Comma-
+  # separated. Defaults (in the app itself) to "reader,writer" -- the same
+  # roles the old shared AGENT_STATIC_IDENTITIES entry granted everyone --
+  # so leave unset unless you need a narrower/different grant.
+  openWebUiUserRoles: ""
+  # Required when identityResolver=oidc: expected JWT `iss` claim.
+  oidcIssuer: ""
+  # Required when identityResolver=oidc: JWKS endpoint used to verify JWT
+  # signatures (e.g. an IdP's `.well-known/jwks.json` or provider-specific
+  # certs endpoint).
+  oidcJwksUri: ""
+  # Optional: expected JWT `aud` claim. Leave empty to skip audience
+  # verification.
+  oidcAudience: ""
+  # Dot-path to the roles claim in the verified JWT, e.g. "roles" or
+  # "realm_access.roles" (Keycloak).
+  oidcRolesClaim: roles
   # NATS URL for the queue-based tool-result channel. Ignored when
   # nats.enabled=true (the in-cluster Service URL is derived automatically).
   # When non-empty the orchestrator uses NatsJobReceiver instead of the HTTP
@@ -69,6 +144,30 @@ config:
   # automatically). When non-empty the orchestrator uses RedisSessionStore
   # instead of the single-replica in-memory default.
   redisUrl: ""
+
+# Per-chat-user GitHub identity linking (docs/adr/0022): lets the
+# orchestrator resolve the CALLING USER's own linked GitHub token (via
+# integration-gateway's new /identity-link/* API) and inject it per-run into
+# an identity-linked Agent's launched Job, instead of that Agent always
+# using a shared bot/PAT credential. Off by default -- both fields below are
+# optional and, when left empty, no Agent should declare identityProviders
+# (see charts/community-components) and this feature has no effect.
+identityLink:
+  enabled: false
+  # Base URL of integration-gateway's identity-link API (in-cluster Service
+  # DNS). Mirrors config.orchestratorUrl above's naming precedent, just in
+  # the opposite direction -- pointing at integration-gateway's Service
+  # instead of this chart's own. No default: set this to the
+  # integration-gateway release's Service name/port (see that chart's
+  # templates/service.yaml), e.g.
+  # "http://integration-gateway:8090" for the umbrella chart's pinned name.
+  gatewayUrl: ""
+  # Secrets: IDENTITY_LINK_GATEWAY_TOKEN (see secrets block below). Must
+  # match the value configured as integration-gateway's
+  # identityLink.secrets.identityLinkToken (GATEWAY_IDENTITY_LINK_TOKEN env
+  # var on that side) -- same shared-secret-value convention already used
+  # for AGENT_CALLBACK_SECRET / GATEWAY_ORCHESTRATOR_TOKEN in the reverse
+  # direction.
 
 # Secrets: OPENAI_API_KEY (required), AGENT_CALLBACK_SECRET (required, no
 # default — must not be guessable), AGENT_QDRANT_API_KEY (optional).
@@ -85,10 +184,18 @@ secrets:
   openaiApiKeyKey: OPENAI_API_KEY
   callbackSecretKey: AGENT_CALLBACK_SECRET
   qdrantApiKeyKey: AGENT_QDRANT_API_KEY
+  # Only used when identityLink.enabled=true above.
+  identityLinkGatewayTokenKey: IDENTITY_LINK_GATEWAY_TOKEN
+  # Verifies integration-gateway's signed sender assertion (docs/adr/0030 §6).
+  # MUST match that chart's senderAssertionSecretKey value. When the key is
+  # absent from the Secret the orchestrator falls back to trusting the
+  # unsigned request-body login and warns at startup.
+  senderAssertionSecretKey: AGENT_SENDER_ASSERTION_SECRET
   # Only read when secrets.create=true.
   openaiApiKey: ""
   callbackSecret: ""
   qdrantApiKey: ""
+  identityLinkGatewayToken: ""
 
 service:
   invoke:

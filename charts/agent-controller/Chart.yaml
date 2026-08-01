@@ -9,7 +9,7 @@ description: >-
   one release. Install the community-components chart afterward to populate
   the catalog with Tool/Skill/Agent CRs.
 type: application
-version: 0.1.0
+version: 0.3.0
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:
@@ -27,7 +27,7 @@ dependencies:
   # own optional Qdrant instance as a transitive dependency (see the
   # subchart's own Chart.yaml / values `qdrant.enabled`).
   - name: agent-orchestrator
-    version: "0.1.0"
+    version: "0.2.2"
     repository: "file://charts/agent-orchestrator"
     condition: agent-orchestrator.enabled
   # The Go/kubebuilder operator (controllers/core-controller). Its CRDs ship
@@ -38,6 +38,14 @@ dependencies:
     version: "0.1.0"
     repository: "file://charts/core-controller"
     condition: core-controller.enabled
+  # GitHub Issues adapter (apps/integration-gateway) -- phase 1 of
+  # docs/integrations-gateway.md's conversational path. Off by default;
+  # calls the agent-orchestrator subchart's invoke Service, so enable that
+  # too if you enable this.
+  - name: integration-gateway
+    version: "0.1.0"
+    repository: "file://charts/integration-gateway"
+    condition: integration-gateway.enabled
   # Optional Open WebUI chat UI (https://github.com/open-webui/open-webui) in
   # front of the orchestrator's OpenAI-compatible facade (ADR 0007), off by
   # default. Aliased to lowercase `openwebui` (no hyphen/camelCase) because
@@ -61,3 +69,9 @@ dependencies:
     version: "2.14.2"
     repository: https://nats-io.github.io/k8s/helm/charts/
     condition: nats.enabled
+  # NOTE: optional SearXNG metasearch instance (values.yaml's `searxng` key,
+  # backing community-components' web-search Tool) is deliberately NOT a
+  # dependency here -- there is no maintained official SearXNG Helm chart to
+  # pin to (searxng/searxng-helm-chart was archived May 2025). It's a
+  # first-party template instead: templates/searxng.yaml, same reasoning
+  # already applied to Redis (see agent-orchestrator/templates/redis.yaml).

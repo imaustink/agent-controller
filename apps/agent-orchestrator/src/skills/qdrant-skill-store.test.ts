@@ -66,6 +66,11 @@ describe("QdrantSkillStore", () => {
             toolIds: skill.toolIds,
             effectiveRoles: ["reader"],
             unrestricted: false,
+            // null encodes "unset", which means caller tools are ALLOWED
+            // (docs/adr/0035 §4) -- and is also what a point written before
+            // this field existed reads back as, so a rolling upgrade keeps the
+            // same default with no reindex.
+            allowCallerTools: null,
           },
         },
       ],

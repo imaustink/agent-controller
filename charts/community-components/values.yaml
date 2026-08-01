@@ -13,41 +13,115 @@ enabled: true
 # orchestrator side too).
 crdApiVersion: core.controller-agent.dev/v1alpha1
 
+# Image pull secrets attached to every ServiceAccount this chart creates
+# (recipe-scraper, web-search, recipe-publisher, opencode-swe-agent), so Tool/
+# Agent pods running as those ServiceAccounts can pull from a private
+# registry. Each entry must reference a `kubernetes.io/dockerconfigjson`
+# Secret that already exists in this namespace, e.g.:
+#   kubectl -n <ns> create secret docker-registry docker-registry-credentials \
+#     --docker-server=registry.example.com \
+#     --docker-username=... --docker-password=...
+imagePullSecrets: []
+# imagePullSecrets:
+#   - name: docker-registry-credentials
+
 # recipe-scraper: read-only URL -> recipe Markdown extraction.
 recipeScraper:
   enabled: true
   image: recipe-scraper:latest
   serviceAccountName: recipe-scraper
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
   # Secret (must already exist) supplying the tool's OPENAI_API_KEY.
   openai:
     secretName: agent-orchestrator-secrets
     secretKey: OPENAI_API_KEY
+
+# web-search: queries an in-cluster SearXNG instance for web results.
+# Requires the agent-controller release's `searxng.enabled=true` (see that
+# chart's values.yaml) -- searxngBaseUrl below must point at its Service.
+webSearch:
+  enabled: false
+  image: web-search:latest
+  serviceAccountName: web-search
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need to attach annotations managed elsewhere (e.g. IRSA)
+  # that this chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+  # Not a secret -- <agent-controller release name>-searxng, ClusterIP,
+  # same namespace as this release. Defaults to the minikube demo release
+  # name; override to match your own agent-controller release name.
+  searxngBaseUrl: "http://agent-controller-searxng:8080"
+
+# web-fetch: fetches a single URL and returns its main readable content as
+# Markdown. Pairs with web-search above -- the search tool only returns short
+# snippets, so the web-search-skill calls this tool on a result's URL to
+# actually read the page. SSRF-guarded; no other configuration needed.
+webFetch:
+  enabled: false
+  image: web-fetch:latest
+  serviceAccountName: web-fetch
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need to attach annotations managed elsewhere (e.g. IRSA)
+  # that this chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+
+# kubectl-readonly: runs a single allowlisted read-only kubectl command
+# (get/describe/logs/events/top) for cluster debugging. Disabled by default:
+# unlike every other tool in this chart, enabling it grants its
+# ServiceAccount a cluster-wide ClusterRole (get/list/watch across a fixed
+# resource-kind list, including `secrets` -- see
+# tools/kubectl-readonly/README.md's "Secrets: keys and lengths only"
+# section for the trade-off that implies before turning this on).
+kubectlReadonly:
+  enabled: false
+  image: kubectl-readonly:latest
+  serviceAccountName: kubectl-readonly
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own. Note this does NOT gate the ClusterRole/
+  # ClusterRoleBinding -- those are always created when kubectlReadonly.enabled
+  # is true, regardless of who owns the ServiceAccount.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
 
 # recipe-publisher: publishes/updates a recipe on a Mealie instance.
 recipePublisher:
   enabled: true
   image: recipe-publisher:latest
   serviceAccountName: recipe-publisher
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
   # Target Mealie instance (not a secret) + which ingredient parser to use.
-  mealieBaseUrl: "https://recipes.kurpuis.com"
+  # No default on purpose -- must be set to your own Mealie instance, never
+  # inherited from this repo's demo config.
+  mealieBaseUrl: ""
   ingredientParser: "nlp"
   # Secret (must already exist) supplying MEALIE_API_TOKEN.
   secretName: recipe-publisher-secrets
   secretKey: MEALIE_API_TOKEN
 
-# kubectl-readonly: read-only kubectl (get/describe/logs/events/top) against
-# the live cluster, for debugging. Prerequisites (out-of-band):
-#   kubectl -n <ns> create serviceaccount kubectl-readonly
-#   kubectl apply -n <ns> -f tools/kubectl-readonly/rbac.yaml   # ClusterRole + ClusterRoleBinding
-kubectlReadonly:
-  enabled: false
-  image: kubectl-readonly:latest
-  serviceAccountName: kubectl-readonly
-
 # signoz-query: bounded logs/traces/metrics queries against a SigNoz
 # instance, for correlating application behavior with cluster issues.
-# Prerequisites (out-of-band):
-#   kubectl -n <ns> create serviceaccount signoz-query
+# Prerequisites (out-of-band -- Helm can't source secret values on its own):
 #   # Only if your SigNoz instance requires an API key -- omit secretName
 #   # below (set it to "") for an unauthenticated self-hosted OSS instance:
 #   kubectl -n <ns> create secret generic signoz-query-secrets \
@@ -56,6 +130,14 @@ signozQuery:
   enabled: false
   image: signoz-query:latest
   serviceAccountName: signoz-query
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own. Unlike kubectlReadonly this SA needs no k8s RBAC at
+  # all -- signoz-query only makes outbound HTTP calls to baseUrl below.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
   # Target SigNoz Query Service instance (not a secret).
   baseUrl: "http://signoz.monitoring.svc.cluster.local:8080"
   # Leave secretName empty ("") to omit secretEnv entirely (unauthenticated
@@ -65,26 +147,48 @@ signozQuery:
 
 # opencode-swe-agent: Agent-SDK software-engineering sub-agent (bidirectional
 # NATS, HITL) that runs the opencode CLI against Anthropic's API directly
-# (Claude Sonnet 5) instead of GitHub Copilot. Replaces the old copilotSwe
-# Tool + softwareEngineering Skill when enabled.
-# Prerequisites (out-of-band):
-#   kubectl -n <ns> create serviceaccount opencode-swe-agent
-#   kubectl -n <ns> create secret generic opencode-swe-secrets \
-#     --from-literal=GITHUB_TOKEN=github_pat_... \
-#     --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+# (Claude Sonnet 5).
+#
+# Three mutually-exclusive ways to give it a GitHub credential:
+#   1. GITHUB_TOKEN PAT (default) -- prerequisite (out-of-band -- Helm can't
+#      source secret values on its own):
+#        kubectl -n <ns> create secret generic opencode-swe-secrets \
+#          --from-literal=GITHUB_TOKEN=github_pat_... \
+#          --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+#   2. GitHub App installation-token auth (ADR 0018) -- see the three
+#      githubApp*SecretKey fields below.
+#   3. Per-user identity linking (ADR 0022, identityLink block below) -- no
+#      static GitHub credential is baked into this Agent's template at all;
+#      agent-orchestrator resolves and injects the CALLING USER's own linked
+#      GitHub token per-run instead. Requires agent-orchestrator's own
+#      identityLink.enabled=true and a configured integration-gateway (see
+#      those charts' values.yaml).
 opencodeSweAgent:
   enabled: false
   image: opencode-swe-agent:latest
   serviceAccountName: opencode-swe-agent
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
   # Two independent secrets in one k8s Secret: a fine-grained GitHub PAT for
   # git/gh operations, and an Anthropic API key for the opencode model.
   secretName: opencode-swe-secrets
+  # Key holding the GITHUB_TOKEN PAT. Not needed -- and not wired onto the
+  # Agent CR at all -- when a full GitHub App configuration or identityLink
+  # supplies the credential instead (see below); set it to "" in that case
+  # rather than putting a placeholder value in the Secret.
   secretKey: GITHUB_TOKEN
   anthropicSecretKey: ANTHROPIC_API_KEY
-  # Optional (ADR 0018): GitHub App installation-token auth, preferred over
-  # the GITHUB_TOKEN PAT above when all three keys below are set (a partial
-  # set is rejected by the agent, not silently ignored). Leave all three
-  # empty (the default) to keep using the PAT -- no behavior change.
+  # Optional (ADR 0018): GitHub App installation-token auth, which REPLACES
+  # the GITHUB_TOKEN PAT above when all three keys below are set -- the agent
+  # mints an installation token and never reads GITHUB_TOKEN, so the chart
+  # stops wiring that secretEnv and the Secret needs no GITHUB_TOKEN key. A
+  # partial set fails the render. Leave all three empty (the default) to keep
+  # using the PAT -- no behavior change.
   #   kubectl -n <ns> create secret generic opencode-swe-secrets \
   #     --from-literal=GITHUB_APP_ID=... \
   #     --from-literal=GITHUB_APP_PRIVATE_KEY="$(cat app-key.pem)" \
@@ -93,13 +197,222 @@ opencodeSweAgent:
   githubAppIdSecretKey: ""
   githubAppPrivateKeySecretKey: ""
   githubAppInstallationIdSecretKey: ""
+  # The App's slug (from its GitHub settings page, e.g. "my-cool-app") --
+  # public, not a secret. Only used when identityLink.enabled and a full App
+  # configuration are both set (the dual-token pattern below): builds the
+  # bot's commit identity directly as "<slug>[bot]" instead of a generic
+  # placeholder, since an installation token can't call GET /user to derive
+  # it the way a PAT/user token can.
+  githubAppSlug: ""
+  # Per-user GitHub identity linking (docs/adr/0022, dual-token pattern):
+  # when enabled AND a full GitHub App configuration is also set (the three
+  # githubApp*SecretKey values above), this agent uses BOTH tokens per turn --
+  # the calling user's own linked GitHub token gates whether a write is
+  # authorized (does this specific person actually have push access?), while
+  # a freshly minted, repo-scoped App installation token performs the actual
+  # write, so commits/PRs attribute to the bot rather than the human. If
+  # identityLink.enabled is set but the App isn't fully configured, this
+  # agent falls back to writing with the user's own token directly (today's
+  # single-token behavior). Requires agent-orchestrator's own
+  # identityLink.enabled=true and a configured integration-gateway (see
+  # those charts). Leave disabled (default) for the shared-credential
+  # behavior (GITHUB_TOKEN PAT or GitHub App installation token) unchanged.
+  identityLink:
+    enabled: false
+    providers:
+      - github
 
-# opencode-swe-agent-tool: an agent-backed Tool (spec.agentRef) wrapping the
-# opencodeSweAgent Agent CR above, so a Skill's toolRefs can delegate to it
-# via the ordinary tool-call path (self-improvement-skill below). Requires
-# opencodeSweAgent.enabled=true.
-opencodeSweAgentTool:
+# claude-code-swe-agent: Agent-SDK software-engineering sub-agent (same job as
+# opencodeSweAgent above, different engine) that runs the Claude Code CLI
+# headless, one `claude -p` invocation per turn -- no long-lived local server
+# to keep resident (unlike opencode-swe-agent since ADR 0026), so continuation
+# across turns comes from re-cloning the saved repo/branch rather than a live
+# session resume.
+#
+# GitHub credential: same three mutually-exclusive options as opencodeSweAgent
+# above (GITHUB_TOKEN PAT / GitHub App installation token / per-user identity
+# linking) -- see that block's comments, unchanged here.
+#
+# Claude/model credential: exactly one of anthropicSecretKey (metered API-key
+# billing) or claudeCodeOAuthTokenSecretKey (a Claude subscription/Enterprise
+# seat's long-lived token from `claude setup-token`) must resolve to a real
+# secret key -- the Agent CR template fails the chart render if neither is
+# set. Prerequisite either way (out-of-band -- Helm can't source secret
+# values on its own):
+#   kubectl -n <ns> create secret generic claude-code-swe-secrets \
+#     --from-literal=GITHUB_TOKEN=github_pat_... \
+#     --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+#   # or, for the OAuth-token option instead of/alongside the API key:
+#   #   --from-literal=CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+claudeCodeSweAgent:
   enabled: false
+  image: claude-code-swe-agent:latest
+  serviceAccountName: claude-code-swe-agent
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+  secretName: claude-code-swe-secrets
+  # Key holding the GITHUB_TOKEN PAT. Not needed -- and not wired onto the
+  # Agent CR at all -- when a full GitHub App configuration or identityLink
+  # supplies the credential instead (see below); set it to "" in that case
+  # rather than putting a placeholder value in the Secret.
+  secretKey: GITHUB_TOKEN
+  # At least one of these two must be set (validated at render time).
+  anthropicSecretKey: ANTHROPIC_API_KEY
+  claudeCodeOAuthTokenSecretKey: ""
+  # Optional (ADR 0018): GitHub App installation-token auth, which REPLACES
+  # the GITHUB_TOKEN PAT above when all three keys below are set -- the agent
+  # mints an installation token and never reads GITHUB_TOKEN, so the chart
+  # stops wiring that secretEnv and the Secret needs no GITHUB_TOKEN key. A
+  # partial set fails the render. Leave all three empty (the default) to keep
+  # using the PAT.
+  githubAppIdSecretKey: ""
+  githubAppPrivateKeySecretKey: ""
+  githubAppInstallationIdSecretKey: ""
+  githubAppSlug: ""
+  # Claude Code model id/alias (e.g. "sonnet", "claude-sonnet-5"). Empty uses
+  # the CLI's own default.
+  model: ""
+  # Per-user identity linking. `providers` may list "github" (docs/adr/0022,
+  # same semantics as opencodeSweAgent.identityLink above -- a per-user
+  # GitHub token gates/attributes writes) AND/OR "claude" (docs/adr/0027 --
+  # a per-user Claude Code OAuth token, from `claude setup-token`, replaces
+  # the static anthropicSecretKey/claudeCodeOAuthTokenSecretKey above
+  # entirely for THIS agent's launches once linked). Requires
+  # agent-orchestrator's own identityLink.enabled=true either way; the
+  # "claude" provider additionally requires integration-gateway's
+  # claudeAuth.enabled=true (see that chart's values.yaml) -- the `claude`
+  # CLI must be present in ITS image for the setup-token PTY flow to work.
+  identityLink:
+    enabled: false
+    providers:
+      - github
+      # - claude
+  # Remote Control (Claude Code's headless session takeover) needs a full
+  # ~/.claude/.credentials.json seeded into the pod before the main container
+  # starts. Enabling this adds an init container, sharing the main
+  # container's tmp emptyDir mount, that writes CLAUDE_LOGIN_CREDENTIALS_JSON
+  # to $SWE_HOME/.claude/.credentials.json, and sets CLAUDE_REMOTE_CONTROL=true
+  # on the main container so it actually runs claude-runner.ts's
+  # `--bg --remote-control` path instead of the plain one-shot `-p` turn.
+  # `identityLink.providers` above MUST also include "claude-remote" --
+  # without it, agent-orchestrator never resolves/injects the per-run
+  # CLAUDE_LOGIN_CREDENTIALS_JSON secret this init container reads, so
+  # remoteControl.enabled alone is not sufficient.
+  remoteControl:
+    enabled: false
+    # Static fallback secretRef for CLAUDE_LOGIN_CREDENTIALS_JSON, only used
+    # when both are set. In the common case this is left empty: the real
+    # per-user credential secret is resolved and injected at AgentRun launch
+    # time by agent-orchestrator's delegation logic (a later phase), not
+    # baked into this catalog entry.
+    credentialsSecretName: ""
+    credentialsSecretKey: ""
+    # FALLBACK bound, used only while `claude agents --json` reports no status
+    # for the session: how long it may produce NO transcript activity (no
+    # assistant message, no tool call, no tool result) before its turn is
+    # declared stuck. Bounds SILENCE, not total duration. Empty uses
+    # claude-runner.ts's default (20 minutes).
+    idleTimeoutMs: ""
+    # How long a session REPORTING "idle" may stay that way before its turn is
+    # declared stuck. Much shorter than idleTimeoutMs above, because it is much
+    # better evidence: the session is not being quiet, it is saying it is not
+    # working. (A session that is working reports "busy" and is never cut off,
+    # however long a single tool call keeps its transcript static.) Empty uses
+    # claude-runner.ts's default (90 seconds).
+    idleStatusGraceMs: ""
+    # How long a session REPORTING "waiting" -- blocked on a prompt or dialog
+    # only a human can clear -- may stay blocked. Nothing in a headless Job
+    # will ever answer it, so this is purely the window someone has to take
+    # over the session at its claude.ai URL (which the run's own first comment
+    # links). Empty uses claude-runner.ts's default (5 minutes).
+    waitingTimeoutMs: ""
+    # Escape hatch only: an ABSOLUTE cap on a turn's total duration. Empty
+    # (the default) means no cap -- the idle bound above ends a stuck turn and
+    # the AgentRun Job's activeDeadlineSeconds is the wall-clock ceiling.
+    # Setting this reintroduces the behaviour behind issue #149, where a
+    # healthy half-hour coding turn was killed and reported as a timeout.
+    maxWaitMs: ""
+
+# github: runs a single allowlisted gh CLI command (issue/pr/repo/release/
+# search/workflow/run), preferably authenticated as the calling user's own
+# linked GitHub identity rather than a shared bot credential (ADR 0022/0032).
+#
+# Three mutually-exclusive ways to give it a GitHub credential:
+#   1. GITHUB_TOKEN PAT (default) -- prerequisite (out-of-band -- Helm can't
+#      source secret values on its own):
+#        kubectl -n <ns> create secret generic github-tool-secrets \
+#          --from-literal=GITHUB_TOKEN=github_pat_...
+#   2. GitHub App installation-token auth (ADR 0018) -- see the three
+#      githubApp*SecretKey fields below. Same shared-credential role as the
+#      PAT, but short-lived and scoped to the App's installation, so no
+#      long-lived PAT has to exist anywhere in the stack:
+#        kubectl -n <ns> create secret generic github-tool-secrets \
+#          --from-literal=GITHUB_APP_ID=... \
+#          --from-literal=GITHUB_APP_PRIVATE_KEY="$(cat app-key.pem)" \
+#          --from-literal=GITHUB_APP_INSTALLATION_ID=...
+#   3. Per-user identity linking (identityLink block below) -- no static
+#      GitHub credential is baked into this Tool's template at all;
+#      agent-orchestrator resolves and injects the CALLING USER's own linked
+#      GitHub token per-invocation instead, exactly like opencodeSweAgent's
+#      identityLink option. Requires agent-orchestrator's own
+#      identityLink.enabled=true and a configured integration-gateway (see
+#      those charts' values.yaml), AND core-controller/agent-orchestrator
+#      built with ToolRun-level secretEnv support (ADR 0032).
+githubTool:
+  enabled: false
+  image: github:latest
+  serviceAccountName: github-tool
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+  # Secret (must already exist) supplying whichever shared credential is in
+  # effect -- the GITHUB_TOKEN PAT or the three GITHUB_APP_* keys. Ignored
+  # entirely when identityLink.enabled below.
+  secretName: github-tool-secrets
+  # Key holding the GITHUB_TOKEN PAT. Not needed -- and not wired onto the
+  # Tool CR at all -- when the GitHub App keys below or identityLink supply
+  # the credential instead; set it to "" in that case rather than putting a
+  # placeholder value in the Secret.
+  secretKey: GITHUB_TOKEN
+  # Optional (ADR 0018): GitHub App installation-token auth, which REPLACES
+  # the GITHUB_TOKEN PAT above when all three keys below are set -- the tool
+  # mints a short-lived installation token per invocation and never reads
+  # GITHUB_TOKEN, so the Secret needs no GITHUB_TOKEN key. A partial set fails
+  # the render. Leave all three empty (the default) to keep using the PAT.
+  #
+  # Mutually exclusive with identityLink below, and this chart is where that is
+  # enforced: these keys are wired only when identityLink is off, so a shared
+  # credential and the calling user's own token are never both present in the
+  # Job (see resolveToolToken in tools/github/src/github.ts).
+  githubAppIdSecretKey: ""
+  githubAppPrivateKeySecretKey: ""
+  githubAppInstallationIdSecretKey: ""
+  # GitHub Enterprise Server (GHES) support, both optional and off by default
+  # (empty == github.com / api.github.com). Wired as plain env, not secrets:
+  #   - githubHost   -> GH_HOST: the host `gh` itself talks to.
+  #   - githubApiUrl -> GITHUB_API_URL: the REST base App auth mints the
+  #     installation token against (App auth only; ignored on the PAT path).
+  # Set both to your GHES install (e.g. githubHost: ghe.example.com,
+  # githubApiUrl: https://ghe.example.com/api/v3) to run App auth against it.
+  githubHost: ""
+  githubApiUrl: ""
+  # Per-user GitHub identity linking (docs/adr/0022, extended to container
+  # Tools by ADR 0032): when enabled, no static GITHUB_TOKEN secretEnv is set
+  # on the Tool CR at all -- agent-orchestrator resolves the calling user's
+  # own linked token per-invocation and injects it via ToolRunSpec.secretEnv
+  # instead. Requires agent-orchestrator's own identityLink.enabled=true and
+  # a configured integration-gateway. Leave disabled (default) for the
+  # shared-credential (GITHUB_TOKEN PAT) behavior unchanged.
+  identityLink:
+    enabled: false
+    providers:
+      - github
 
 skills:
   # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +
@@ -107,18 +420,137 @@ skills:
   # (ADR 0011) to be non-empty.
   recipeRefining:
     enabled: true
-  # software-engineering: SUPERSEDED by opencodeSweAgent Agent CR above.
-  # Keep disabled when opencodeSweAgent.enabled=true.
-  softwareEngineering:
-    enabled: false
   # self-improvement: drafts a new Skill/Tool CR from a successful fallback
   # turn (graph.ts's selectDelegate fallback) and opens a PR against
-  # imaustink/agent-controller via opencode-swe-agent-tool. Requires
-  # opencodeSweAgentTool.enabled=true for its derived audience to be non-empty.
+  # imaustink/agent-controller by delegating straight to a SWE Agent CR
+  # (ADR 0021 -- no Tool wrapper needed).
   selfImprovement:
+    enabled: false
+    # Which SWE Agent CR this skill delegates to. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to run it on the Claude Code engine instead). The
+    # named agent's enabled=true is what makes this skill's derived audience
+    # (ADR 0011) non-empty.
+    agentRef: opencode-swe-agent
+  # web-search: answers a request using an in-cluster SearXNG search, and can
+  # follow up with web-fetch to read a promising result's full page (see
+  # webSearch and webFetch Tools above). Enable both webSearch.enabled=true
+  # and webFetch.enabled=true for its derived audience (ADR 0011) to be
+  # non-empty -- the skill's toolRefs lists both.
+  webSearch:
     enabled: false
   # cluster-debug: read-only kubectl + SigNoz-query triage skill. Enable both
   # kubectlReadonly and signozQuery above for its derived audience (ADR 0011)
   # to be non-empty.
   clusterDebug:
     enabled: false
+
+# stub-agent: an END-TO-END TEST DOUBLE, not a component of the catalog.
+#
+# It speaks the real NATS agent protocol and returns a canned reply without
+# calling a model, so the e2e suite can assert the whole webhook -> triage ->
+# AgentRun -> reply -> issue-comment chain in a cluster that holds no Anthropic
+# credential. Enabled only by values-e2e.yaml; see apps/stub-agent.
+#
+# `enabled: true` alone is not enough -- the template also requires
+# acknowledgeNotForProduction, so that pointing a production route at an agent
+# which silently answers everything with a stub cannot happen by typo.
+stubAgent:
+  enabled: false
+  acknowledgeNotForProduction: false
+  image: stub-agent:latest
+  serviceAccountName: stub-agent
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+  # Which identityProviders the stub declares. Set these to match whichever
+  # agent it stands in for, or the identity gate takes a different path than
+  # production and the suite stops testing it (see agent-stub.yaml).
+  identityLink:
+    enabled: false
+    providers: []
+  # Turn pacing (apps/stub-agent/src/pacing.ts). All zero = reply immediately,
+  # which is what every spec other than resilience.e2e.ts wants; that one
+  # patches these onto the CR per test.
+  pacing:
+    narrateForMs: 0
+    narrateEveryMs: 2000
+    silentForMs: 0
+  # How long the stub holds an unacked concluding message before giving up
+  # (AGENT_REPLY_ACK_TIMEOUT_MS -- packages/agent-runtime's `publishHeld`).
+  # Empty = the runtime's own 10-minute default. Worth shortening in a test
+  # environment: an uncollected reply keeps the Job's pod alive for this long,
+  # so a spec that deliberately strands one (resilience.e2e.ts's rollout) would
+  # otherwise wait out the full default before the AgentRun reaches a terminal
+  # phase.
+  replyAckTimeoutMs: ""
+
+integrationRoutes:
+  # github-issue-labeled-triage: an IntegrationRoute CR (docs/adr/0024)
+  # dispatching a GitHub `issues`/`labeled` webhook event straight to
+  # opencode-swe-agent with a triage prompt, deterministically bypassing RAG
+  # skill retrieval -- integration-gateway relays the event once its
+  # configured trigger label (integration-gateway's config.githubTriggerLabel)
+  # is applied to the issue. A label, not an assignee: GitHub App bot users
+  # generally cannot be set as issue assignees.
+  githubIssueLabeledTriage:
+    enabled: false
+    # Which SWE Agent CR handles a labeled issue. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to triage on the Claude Code engine instead).
+    agentRef: opencode-swe-agent
+  # github-issue-labeled-review: an IntegrationRoute CR dispatching a GitHub
+  # `issues`/`labeled` webhook straight to a SWE Agent with a review prompt,
+  # bypassing RAG skill retrieval -- integration-gateway relays the event once
+  # its configured review label (integration-gateway's config.githubReviewLabel,
+  # e.g. "ai-review") is applied to an issue. Sibling to githubPrLabeledReview
+  # but for issues. A human applies that label: the gateway drops bot-authored
+  # events, so the agent that filed an issue cannot self-trigger a review of it.
+  # The gateway removes the label when the run ends, so re-applying it
+  # re-triggers.
+  githubIssueLabeledReview:
+    enabled: false
+    # Which SWE Agent CR reviews a labeled issue. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to review on the Claude Code engine instead).
+    agentRef: opencode-swe-agent
+    # Which label selects this route rather than githubIssueLabeledTriage above
+    # (both match issues/labeled -- the label is the only thing telling them
+    # apart). Must equal integration-gateway's config.githubReviewLabel.
+    labelName: ai-review
+  # github-pr-labeled-review: an IntegrationRoute CR dispatching a GitHub
+  # `pull_request`/`labeled` webhook straight to a SWE Agent with a review
+  # prompt, bypassing RAG skill retrieval -- integration-gateway relays the
+  # event once its configured review label
+  # (integration-gateway's config.githubReviewLabel) is applied to a PR. A
+  # human applies that label: the gateway drops bot-authored events, so the
+  # agent that opened the PR cannot self-trigger a review of its own PR.
+  githubPrLabeledReview:
+    enabled: false
+    # Which SWE Agent CR reviews a labeled PR. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to review on the Claude Code engine instead).
+    agentRef: opencode-swe-agent
+    # Which label selects this route rather than githubPrLabeledTriage below
+    # (both match pull_request/labeled -- the label is the only thing telling
+    # them apart). Must equal integration-gateway's config.githubReviewLabel.
+    labelName: ai-review
+  # github-pr-labeled-triage: an IntegrationRoute CR dispatching a GitHub
+  # `pull_request`/`labeled` webhook to a SWE Agent with a "pick this PR back
+  # up" prompt -- address the review feedback on it, push the updates, and sync
+  # the branch with its base. Triggered by the SAME label as issue triage
+  # (integration-gateway's config.githubTriggerLabel): "triage this" means
+  # investigate-and-open-a-PR on an issue and address-feedback-and-update on a
+  # PR, so which work it means is decided by what got labeled. Unlike the
+  # review route above, this one pushes commits. The gateway removes the label
+  # when the run ends, so re-applying it re-triggers.
+  githubPrLabeledTriage:
+    enabled: false
+    # Which SWE Agent CR updates a labeled PR. Must name an Agent that is
+    # enabled in this same values file (default opencode-swe-agent; set to
+    # claude-code-swe-agent to run on the Claude Code engine instead).
+    agentRef: opencode-swe-agent
+    # Which label selects this route rather than githubPrLabeledReview above.
+    # Must equal integration-gateway's config.githubTriggerLabel.
+    labelName: ai-triage

@@ -22,6 +22,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,7 +32,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
-	"github.com/go-logr/logr"
 )
 
 const (
@@ -70,8 +70,6 @@ type ToolRunReconciler struct {
 // status is only for lifecycle (Pending/Running/Succeeded/Failed), per the
 // hybrid decision in ADR 0010.
 func (r *ToolRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
 	var run toolv1alpha1.ToolRun
 	if err := r.Get(ctx, req.NamespacedName, &run); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -89,7 +87,7 @@ func (r *ToolRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return r.createJob(ctx, &run)
 	}
 
-	return r.syncJobStatus(ctx, &run, log)
+	return r.syncJobStatus(ctx, &run)
 }
 
 func (r *ToolRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.ToolRun) (ctrl.Result, error) {
@@ -126,7 +124,8 @@ func (r *ToolRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Too
 	return ctrl.Result{}, nil
 }
 
-func (r *ToolRunReconciler) syncJobStatus(ctx context.Context, run *toolv1alpha1.ToolRun, log logr.Logger) (ctrl.Result, error) {
+func (r *ToolRunReconciler) syncJobStatus(ctx context.Context, run *toolv1alpha1.ToolRun) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
 	var job batchv1.Job
 	jobKey := types.NamespacedName{Namespace: run.Namespace, Name: run.Status.JobName}
 	if err := r.Get(ctx, jobKey, &job); err != nil {
@@ -163,14 +162,28 @@ func (r *ToolRunReconciler) syncJobStatus(ctx context.Context, run *toolv1alpha1
 func (r *ToolRunReconciler) markFailed(ctx context.Context, run *toolv1alpha1.ToolRun, reason, message string) (ctrl.Result, error) {
 	run.Status.Phase = toolv1alpha1.ToolRunPhaseFailed
 	run.Status.Message = message
-	cond := metav1.Condition{
+	// meta.SetStatusCondition, not append: it stamps LastTransitionTime (which
+	// the CRD schema REQUIRES, so a hand-built condition without it is rejected
+	// outright -- "status.conditions[0].lastTransitionTime: Required value") and
+	// replaces any existing condition of the same type instead of adding a
+	// duplicate, which the schema also rejects since conditions is a map-list
+	// keyed by type.
+	//
+	// Appending raw wedged runs permanently. This function is the ONLY thing that
+	// moves a run whose Job has vanished to a terminal phase, so a rejected
+	// update meant the run stayed Running forever, was re-reconciled every few
+	// minutes, failed the same way, and was never eligible for the retention
+	// sweep below -- which only reclaims TERMINAL runs. Observed in production:
+	// three AgentRuns and a ToolRun stuck Running for two days, each logging this
+	// error on every reconcile. Every other controller here already used this
+	// helper; these two were the outliers.
+	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionFalse,
 		Reason:             reason,
 		Message:            message,
 		ObservedGeneration: run.Generation,
-	}
-	run.Status.Conditions = append(run.Status.Conditions, cond)
+	})
 	if err := r.Status().Update(ctx, run); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -199,8 +212,9 @@ func buildJob(run *toolv1alpha1.ToolRun, tool *toolv1alpha1.Tool) (*batchv1.Job,
 	}
 
 	return buildRunJob(runJobParams{
-		jobName:   fmt.Sprintf("toolrun-%s", run.Name),
-		namespace: run.Namespace,
+		jobName:     fmt.Sprintf("toolrun-%s", run.Name),
+		namespace:   run.Namespace,
+		annotations: sessionIDAnnotations(run.Annotations),
 		labels: map[string]string{
 			"core.controller-agent.dev/toolrun": run.Name,
 			"core.controller-agent.dev/tool":    tool.Name,
@@ -209,10 +223,15 @@ func buildJob(run *toolv1alpha1.ToolRun, tool *toolv1alpha1.Tool) (*batchv1.Job,
 		serviceAccountName: tool.Spec.ServiceAccountName,
 		args:               args,
 		staticEnv:          tool.Spec.Env,
-		secretEnv:          tool.Spec.SecretEnv,
-		resources:          tool.Spec.Resources,
-		callback:           run.Spec.Callback,
-		timeoutSeconds:     timeoutSeconds,
+		// mergeSecretEnv lets a caller inject a per-invocation credential
+		// (e.g. a per-user GitHub identity-link token, ADR 0032) that
+		// overrides or adds to the Tool's baked-in static secretEnv for this
+		// one run only, without mutating the Tool CR -- same mechanism
+		// AgentRunReconciler already uses for Agent/AgentRun.
+		secretEnv:      mergeSecretEnv(tool.Spec.SecretEnv, run.Spec.SecretEnv),
+		resources:      tool.Spec.Resources,
+		callback:       run.Spec.Callback,
+		timeoutSeconds: timeoutSeconds,
 	})
 }
 

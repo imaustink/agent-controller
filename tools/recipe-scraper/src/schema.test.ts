@@ -7,6 +7,7 @@ import { RecipeSchema, EnvelopeSchema, RECIPE_JSON_SCHEMA } from "./schema.js";
 describe("RecipeSchema", () => {
   it("accepts a well-formed recipe with a single unnamed section", () => {
     const recipe = {
+      isRecipe: true,
       name: "Scrambled Eggs",
       ingredientSections: [{ name: null, items: ["2 eggs"] }],
       directionSections: [{ name: null, items: ["Beat eggs"] }],
@@ -18,6 +19,7 @@ describe("RecipeSchema", () => {
 
   it("accepts multiple named sections", () => {
     const recipe = {
+      isRecipe: true,
       name: "Layered Cake",
       ingredientSections: [
         { name: "Topping", items: ["1 cup sugar"] },
@@ -35,9 +37,22 @@ describe("RecipeSchema", () => {
 
   it("accepts name: null", () => {
     const recipe = {
+      isRecipe: true,
       name: null,
       ingredientSections: [{ name: null, items: ["2 eggs"] }],
       directionSections: [{ name: null, items: ["Beat eggs"] }],
+      equipment: [],
+      tips: [],
+    };
+    expect(RecipeSchema.parse(recipe)).toEqual(recipe);
+  });
+
+  it("accepts isRecipe: false with every other field empty", () => {
+    const recipe = {
+      isRecipe: false,
+      name: null,
+      ingredientSections: [],
+      directionSections: [],
       equipment: [],
       tips: [],
     };
@@ -48,9 +63,22 @@ describe("RecipeSchema", () => {
     expect(() => RecipeSchema.parse({ ingredientSections: [] })).toThrow();
   });
 
+  it("rejects a missing isRecipe field", () => {
+    expect(() =>
+      RecipeSchema.parse({
+        name: null,
+        ingredientSections: [],
+        directionSections: [],
+        equipment: [],
+        tips: [],
+      }),
+    ).toThrow();
+  });
+
   it("rejects wrong types", () => {
     expect(() =>
       RecipeSchema.parse({
+        isRecipe: true,
         name: null,
         ingredientSections: "not-an-array",
         directionSections: [],
@@ -76,6 +104,7 @@ describe("EnvelopeSchema", () => {
       url: "https://example.com/recipe",
       title: "Test",
       recipe: {
+        isRecipe: true,
         name: "Test Recipe",
         ingredientSections: [],
         directionSections: [],
@@ -94,7 +123,14 @@ describe("EnvelopeSchema", () => {
         source_type: "pdf",
         url: "https://example.com",
         title: null,
-        recipe: { name: null, ingredientSections: [], directionSections: [], equipment: [], tips: [] },
+        recipe: {
+          isRecipe: true,
+          name: null,
+          ingredientSections: [],
+          directionSections: [],
+          equipment: [],
+          tips: [],
+        },
         provenance: {},
         warnings: [],
       }),

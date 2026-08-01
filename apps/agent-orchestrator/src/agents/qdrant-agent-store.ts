@@ -24,6 +24,7 @@ interface AgentPayload {
   allowedRoles: string[];
   tier: string | null;
   orchestratorPrompt: string | null;
+  identityProviders: string[] | null;
   namespace: string;
   agentRef: string;
 }
@@ -73,6 +74,7 @@ export class QdrantAgentStore implements AgentStore {
           allowedRoles: agent.allowedRoles,
           tier: agent.tier ?? null,
           orchestratorPrompt: agent.orchestratorPrompt ?? null,
+          identityProviders: agent.identityProviders ?? null,
           namespace: agent.agentRunTemplate.namespace,
           agentRef: agent.agentRunTemplate.agentRef,
         } satisfies AgentPayload,
@@ -129,6 +131,7 @@ function toAgentDescriptor(payload: AgentPayload): AgentDescriptor {
     allowedRoles: payload.allowedRoles,
     tier: payload.tier ?? undefined,
     orchestratorPrompt: payload.orchestratorPrompt ?? undefined,
+    identityProviders: payload.identityProviders ?? undefined,
     agentRunTemplate: { namespace: payload.namespace, agentRef: payload.agentRef },
   };
 }

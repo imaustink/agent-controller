@@ -27,6 +27,7 @@ charts/agent-controller/
 └── charts/
     ├── agent-orchestrator/     # local subchart (with its own qdrant dependency)
     ├── core-controller/        # local subchart (ships the CRDs)
+    │   └── crds/               # generated from controllers/core-controller, not committed (gitignored) -- see its README.md
     ├── open-webui-*.tgz        # fetched remote dependency (gitignored)
     └── nats-*.tgz              # fetched remote dependency (gitignored)
 ```
@@ -34,8 +35,21 @@ charts/agent-controller/
 ## Prerequisites
 
 - A Kubernetes cluster and `helm` 3.
-- Secrets created out-of-band (never via `--set`), e.g. for the demo:
-  - `agent-orchestrator-secrets` with `OPENAI_API_KEY` + `AGENT_CALLBACK_SECRET`
+- A Secret created out-of-band (never via `--set`) with `OPENAI_API_KEY` +
+  `AGENT_CALLBACK_SECRET`. With default values this must be named
+  `agent-orchestrator` (`agent-orchestrator.fullnameOverride`, since
+  `agent-orchestrator.secrets.existingSecret` is unset) — the demo values file
+  overrides this to `agent-orchestrator-secrets` instead
+  (`values-minikube-demo.yaml`'s `secrets.existingSecret`), so match whichever
+  values file you actually install with.
+- Your own images for `agent-orchestrator.image`/`core-controller.image` (and,
+  for `community-components`, `recipeScraper`/`recipePublisher`/`webSearch`/
+  `opencodeSweAgent`). `.github/workflows/publish.yml` currently only pushes
+  these to a private self-hosted registry (`registry.kurpuis.com:5000`), and
+  every chart default is a bare `<name>:latest` with no registry prefix — that
+  resolves against Docker Hub and 404s for anyone without access to that
+  registry. Build and push your own images and override the `image`/
+  `image.repository` values accordingly.
 
 ## Fetching dependencies
 
@@ -95,6 +109,16 @@ helm upgrade agent-controller charts/agent-controller -n controller-agent \
   subchart's `crds/` dir before any templated resource). Install this chart
   before `community-components`, whose Tool/Skill/Agent CRs require those
   CRDs to already exist.
+- **`extraManifests` escape hatch.** Arbitrary manifests listed under
+  `extraManifests` are installed as part of this release
+  (`templates/extra-manifests.yaml`). Entries are YAML maps, or strings when
+  you need templating across several documents; both are passed through `tpl`,
+  so `.Release.*` / `.Values.*` work inside them. Prefer this over
+  `kubectl apply` for release-scoped extras (an ExternalSecret feeding
+  `agent-orchestrator.secrets.existingSecret`, a ServiceMonitor, an extra
+  NetworkPolicy) — a hand-applied Helm-templated object has no
+  `meta.helm.sh/release-name` annotations and fails the next `helm upgrade`'s
+  ownership check. See the example block in [values.yaml](values.yaml).
 - **CRDs are never removed by Helm.** Uninstalling this release leaves the
   CRDs (and thus any surviving `community-components` CRs) in place; delete
   them explicitly if you want a full teardown.

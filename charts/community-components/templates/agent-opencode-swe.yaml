@@ -1,4 +1,21 @@
 {{- if .Values.opencodeSweAgent.enabled }}
+{{- $githubAppConfigured := include "tools.githubAppFullyConfigured" .Values.opencodeSweAgent }}
+{{- $githubAppKeyCount := include "tools.githubAppKeyCount" .Values.opencodeSweAgent }}
+{{- if and (ne $githubAppKeyCount "0") (not $githubAppConfigured) }}
+{{- fail "opencodeSweAgent has a partial GitHub App configuration -- githubAppIdSecretKey, githubAppPrivateKeySecretKey and githubAppInstallationIdSecretKey must all be set together (the agent rejects a partial set at runtime)" }}
+{{- end }}
+{{/*
+  The static GITHUB_TOKEN PAT is wired only when it's actually the credential
+  in effect: identityLink injects the calling user's token per-run instead,
+  and a full GitHub App configuration makes the agent mint an installation
+  token without ever reading GITHUB_TOKEN. Wiring it regardless used to force
+  a placeholder GITHUB_TOKEN key into the Secret, since a secretRef to a
+  missing key fails the pod with CreateContainerConfigError.
+*/}}
+{{- $githubTokenWired := and (not .Values.opencodeSweAgent.identityLink.enabled) (not $githubAppConfigured) .Values.opencodeSweAgent.secretKey }}
+{{- if not (or $githubTokenWired .Values.opencodeSweAgent.identityLink.enabled $githubAppConfigured) }}
+{{- fail "opencodeSweAgent requires a GitHub credential: set secretKey (a GITHUB_TOKEN PAT), all three githubApp*SecretKey values, or identityLink.enabled" }}
+{{- end }}
 apiVersion: {{ .Values.crdApiVersion }}
 kind: Agent
 metadata:
@@ -7,23 +24,40 @@ metadata:
     {{- include "tools.labels" . | nindent 4 }}
 spec:
   description: >-
-    Performs software-engineering work on GitHub end-to-end: creates or
-    clones repositories, implements features and fixes, writes code and
-    tests, and opens or updates pull requests. Handles multi-turn
-    refinement and supports human-in-the-loop clarifying questions when
-    the task needs more context before it can proceed.
+    Performs software-engineering work on GitHub end-to-end. Runs the
+    opencode coding-agent CLI — which has bash, file-read, grep, and glob
+    tools — plus the git and gh (GitHub CLI) command-line tools, so it can
+    clone, browse, and read any repository's files and history, not only
+    write to them. That means it covers both: (1) read-only questions
+    about what is actually in a repository, e.g. "how many levels does my
+    lander game have, check GitHub" or "what does this repo's config
+    say" — it clones/inspects the repo and answers directly, no code
+    change required; and (2) changes — creating or cloning repositories,
+    implementing features and fixes, writing code and tests, and opening
+    or updating pull requests. Handles multi-turn refinement and supports
+    human-in-the-loop clarifying questions when the task needs more
+    context before it can proceed.
   input: >-
-    A natural-language software-engineering instruction (e.g. "create a
-    repo called hello-svc with a Node HTTP server and open a PR"), or a
-    follow-up refinement instruction for a session that is already in
-    progress.
+    A natural-language software-engineering instruction or question about
+    a GitHub repository's contents (e.g. "create a repo called hello-svc
+    with a Node HTTP server and open a PR", or "how many levels does my
+    lander-game repo have?"), or a follow-up refinement instruction for a
+    session that is already in progress.
   output: >-
     A summary of the changes plus a link to the opened/updated pull
-    request; or a mid-turn clarifying question to the user if more
-    context is needed before work can begin.
+    request when the task changed code; a direct answer when the task
+    was only a question about a repository's contents; or a mid-turn
+    clarifying question to the user if more context is needed before
+    work can begin.
   allowedRoles:
     - writer
   tier: privileged
+  {{- if .Values.opencodeSweAgent.identityLink.enabled }}
+  identityProviders:
+    {{- range .Values.opencodeSweAgent.identityLink.providers }}
+    - {{ . }}
+    {{- end }}
+  {{- end }}
   image: {{ .Values.opencodeSweAgent.image }}
   serviceAccountName: {{ .Values.opencodeSweAgent.serviceAccountName }}
   resources:
@@ -36,9 +70,15 @@ spec:
       memory: "2Gi"
       ephemeral-storage: "8Gi"
   orchestratorPrompt: |
-    Delegate to this agent for any software-engineering request: creating
-    or cloning repositories, implementing features, fixing bugs, writing
-    tests, and opening or updating pull requests on GitHub.
+    Delegate to this agent for any software-engineering request AND for any
+    question that requires actually looking at a GitHub repository's
+    contents to answer — it has git/gh CLIs plus file read/search tools, so
+    it can clone and inspect a repo instead of guessing. This covers both:
+    creating or cloning repositories, implementing features, fixing bugs,
+    writing tests, and opening or updating pull requests; and answering
+    read-only questions about what is in a repo (e.g. "how many levels
+    does my lander game have, check GitHub" or "what does this repo's
+    README say").
 
     Pass the user's request verbatim as the goal. Continuing a pull request
     across separate turns needs no special handling from you: the
@@ -50,21 +90,46 @@ spec:
     non-final reply in the chat). Answer naturally; the conversation
     will resume automatically.
   agentPrompt: |
-    You are a software-engineering sub-agent. Implement the requested
-    coding task using the opencode CLI (Claude Sonnet 5 via the Anthropic
-    API) and the gh/git CLIs, then return a summary and PR link. Only ask
-    the user a question if you genuinely cannot proceed without their
-    answer; otherwise use sensible defaults. Never perform irreversible
-    operations (force-push, delete branches/repos).
+    You are a software-engineering sub-agent. Using the opencode CLI
+    (Claude Sonnet 5 via the Anthropic API, with its bash/file-read/grep/
+    glob tools) and the gh/git CLIs, satisfy the request: implement the
+    requested coding task and return a summary and PR link, or, if it's a
+    read-only question about a repository's contents, clone or inspect it
+    with git/gh and answer directly — no commit or PR is needed unless the
+    task actually calls for a change. Only ask the user a question if you
+    genuinely cannot proceed without their answer; otherwise use sensible
+    defaults. Never perform irreversible operations (force-push, delete
+    branches/repos).
+
+    If the request depends on reading specific source material you were
+    given (a repo, a PR, a file, an issue) and you cannot actually access
+    it — clone/read fails, or the API returns 403/404 — you CANNOT proceed
+    without the user's answer: stop immediately and ask a clarifying
+    question describing exactly what you couldn't access and why (e.g.
+    "I can't read imaustink/ai-experiments#1 — my GitHub access doesn't
+    include that repo"). Do not substitute a different repo, a different
+    task, or invented content for material you couldn't read, and do not
+    report success on work that doesn't actually satisfy the original
+    request. An honest blocked-on-access question is always correct here;
+    a fabricated deliverable is never an acceptable "sensible default."
   secretEnv:
+    {{- if $githubTokenWired }}
     - name: GITHUB_TOKEN
       secretRef:
         name: {{ .Values.opencodeSweAgent.secretName }}
         key: {{ .Values.opencodeSweAgent.secretKey }}
+    {{- end }}
     - name: ANTHROPIC_API_KEY
       secretRef:
         name: {{ .Values.opencodeSweAgent.secretName }}
         key: {{ .Values.opencodeSweAgent.anthropicSecretKey }}
+    {{/*
+      GITHUB_APP_* are available whenever configured, regardless of
+      identityLink -- when identityLink is also enabled, these back the
+      dual-token pattern (a per-user token gates authorization, an
+      App-installation token performs the write); when identityLink is off,
+      they're the same shared-installation-token auth as before.
+    */}}
     {{- if .Values.opencodeSweAgent.githubAppIdSecretKey }}
     - name: GITHUB_APP_ID
       secretRef:
@@ -83,4 +148,15 @@ spec:
         name: {{ .Values.opencodeSweAgent.secretName }}
         key: {{ .Values.opencodeSweAgent.githubAppInstallationIdSecretKey }}
     {{- end }}
+  {{- if or .Values.opencodeSweAgent.identityLink.enabled .Values.opencodeSweAgent.githubAppSlug }}
+  env:
+    {{- if .Values.opencodeSweAgent.identityLink.enabled }}
+    - name: GITHUB_IDENTITY_DELEGATION
+      value: "true"
+    {{- end }}
+    {{- if .Values.opencodeSweAgent.githubAppSlug }}
+    - name: GITHUB_APP_SLUG
+      value: {{ .Values.opencodeSweAgent.githubAppSlug | quote }}
+    {{- end }}
+  {{- end }}
 {{- end }}

@@ -57,10 +57,38 @@ type SkillSpec struct {
 	// Note a Skill deliberately carries NO allowedRoles of its own (ADR 0011):
 	// skills are trusted markdown, not capability — all RBAC lives on the
 	// dangerous things (Tool/Agent). A skill's effective audience is derived
-	// by the orchestrator as the intersection of its tools' allowedRoles
-	// (unrestricted when toolRefs is empty).
+	// by the orchestrator as the intersection of its tools' AND agents'
+	// allowedRoles (unrestricted when both toolRefs and agentRefs are empty).
 	// +optional
 	ToolRefs []string `json:"toolRefs,omitempty"`
+
+	// agentRefs are the names of Agent CRs this skill is permitted to
+	// delegate to directly (docs/adr/0021) — dispatched as an AgentRun the
+	// same way an agent-backed Tool (Tool.spec.agentRef) already is, but
+	// without needing a Tool CR to wrap the Agent first. Combined with
+	// toolRefs for both RBAC derivation (ADR 0011) and what the action
+	// planner may select from. May be empty for skills that call only tools
+	// (or neither, for a respond-only skill).
+	// +optional
+	AgentRefs []string `json:"agentRefs,omitempty"`
+
+	// allowCallerTools controls whether tools supplied by the CONSUMER in the
+	// request body (docs/adr/0035 — `/v1/chat/completions`'s `tools` array,
+	// executed by the caller's own client rather than by this cluster) may be
+	// offered to the action planner alongside this skill's own toolRefs/agentRefs.
+	//
+	// Unset means ALLOWED. The default that matches the OpenAI wire contract is
+	// "the tools I sent are usable"; a skill whose markdown encodes an exact,
+	// auditable procedure is the exception that turns them off. That's why this is
+	// a pointer — a plain bool's zero value would silently mean "refuse" on every
+	// existing Skill CR.
+	//
+	// This is NOT an authorization boundary and must not be relied on as one: it
+	// keeps an authored skill's tool loop predictable, nothing more. Caller tools
+	// carry no RBAC because the caller both supplies and executes them (the
+	// orchestrator never gains a capability from one).
+	// +optional
+	AllowCallerTools *bool `json:"allowCallerTools,omitempty"`
 }
 
 // SkillStatus defines the observed state of Skill.

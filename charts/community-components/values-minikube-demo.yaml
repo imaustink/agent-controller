@@ -6,16 +6,30 @@
 enabled: true
 
 # recipe-scraper + recipe-publisher are on by default (see values.yaml).
+# mealieBaseUrl has no chart default (must point at your own Mealie
+# instance) -- this is the demo's own instance.
+recipePublisher:
+  mealieBaseUrl: "https://recipes.kurpuis.com"
+# web-search needs the agent-controller release's searxng.enabled=true (see
+# ../agent-controller/values-minikube-demo.yaml) -- the default searxngBaseUrl
+# in values.yaml already matches that release's name ("agent-controller").
+webSearch:
+  enabled: true
+# web-fetch has no external dependency -- it's on here so the web-search-skill
+# (which needs both toolRefs) actually has a non-empty audience.
+webFetch:
+  enabled: true
 # opencode-swe (the privileged GitHub coding agent, calling Anthropic
-# directly) is enabled here; it needs the opencode-swe-agent ServiceAccount +
-# opencode-swe-secrets (keys GITHUB_TOKEN and ANTHROPIC_API_KEY) to already
-# exist in-cluster.
+# directly) is enabled here; its ServiceAccount is created by this chart --
+# it still needs opencode-swe-secrets (keys GITHUB_TOKEN and
+# ANTHROPIC_API_KEY) to already exist in-cluster.
 opencodeSweAgent:
   enabled: true
-# Agent-backed Tool wrapping opencode-swe-agent above, and the skill that
-# uses it to draft+PR a new Skill/Tool CR from a successful fallback turn.
-opencodeSweAgentTool:
-  enabled: true
 skills:
+  # Delegates straight to the opencode-swe-agent Agent CR above (ADR 0021 --
+  # no Tool wrapper needed) to draft+PR a new Skill/Tool CR from a
+  # successful fallback turn.
   selfImprovement:
+    enabled: true
+  webSearch:
     enabled: true

@@ -38,6 +38,19 @@ core-controller:
   fullnameOverride: core-controller
 
 # ---------------------------------------------------------------------------
+# GitHub Issues adapter (charts/integration-gateway) -- phase 1 of
+# docs/integrations-gateway.md's conversational path. Off by default: enable
+# alongside agent-orchestrator (its default config.orchestratorUrl above
+# points at that subchart's pinned `agent-orchestrator-invoke` Service name).
+# ---------------------------------------------------------------------------
+integration-gateway:
+  enabled: false
+  # Common overrides live under here, e.g.:
+  #   config: { githubBotLogin: "agent-controller[bot]", githubIdentities: "..." }
+  #   secrets: { existingSecret: integration-gateway-secrets }
+  #   ingress: { enabled: true, host: "gateway.example.com" }
+
+# ---------------------------------------------------------------------------
 # Optional Open WebUI chat UI (upstream open-webui chart, aliased `openwebui`)
 # in front of the orchestrator's OpenAI-compatible facade (ADR 0007). Off by
 # default. Run `helm dependency update charts/agent-controller` once so the
@@ -46,12 +59,21 @@ core-controller:
 # IMPORTANT auth caveat: Open WebUI sends `openaiApiKey` as a plain
 # `Authorization: Bearer <key>` header on every request, and the
 # orchestrator's StaticIdentityResolver (dev/test-only) rejects any token not
-# in agent-orchestrator.config.staticIdentities. Set `openwebui.openaiApiKey`
-# AND add the same value as a key in that map.
+# in agent-orchestrator.config.staticIdentities. Set the token below AND add
+# the same value as a key in that map.
+#
+# Bring your own Secret via `openaiApiKeyExistingSecret`/Key (e.g. populated
+# by an external-secrets operator / sealed secrets / `kubectl create secret`)
+# rather than setting `openaiApiKey` directly -- that value lands in
+# plaintext in the Helm release's stored values, which is not appropriate
+# for production. See the upstream open-webui chart's values.yaml for the
+# full field docs.
 # ---------------------------------------------------------------------------
 openwebui:
   enabled: false
   openaiApiKey: ""
+  openaiApiKeyExistingSecret: ""
+  openaiApiKeyExistingSecretKey: ""
   # Base URL Open WebUI targets for the OpenAI-compatible API. Points at the
   # orchestrator's invoke Service (pinned to `agent-orchestrator-invoke` via
   # agent-orchestrator.fullnameOverride above), same namespace as this release.
@@ -111,3 +133,83 @@ openwebui:
       value: "http://localhost:8080/oauth/google/login/callback"
     - name: ENABLE_FORWARD_USER_INFO_HEADERS
       value: "true"
+
+# ---------------------------------------------------------------------------
+# Optional SearXNG metasearch instance (https://docs.searxng.org/), backing
+# community-components' web-search Tool. Off by default. Hand-authored
+# templates (charts/agent-controller/templates/searxng.yaml), not a Helm
+# dependency -- there is no maintained official SearXNG Helm chart to pin to
+# (searxng/searxng-helm-chart was archived May 2025), the same reasoning
+# agent-orchestrator/templates/redis.yaml already applies to Redis.
+#
+# ClusterIP only, never exposed via Ingress: this is meant to be called only
+# by the web-search Tool from inside the cluster. SearXNG's JSON output
+# format is disabled by default upstream and enabled here specifically for
+# that in-cluster caller -- safe only because the Service is never
+# internet-reachable (SearXNG's own bot-detection limiter is designed for
+# public-facing instances, not this use case).
+#
+# secret_key (searxng's session/CSRF key) must come from a real k8s Secret,
+# never a plaintext value in this file:
+#   kubectl create secret generic searxng-secrets \
+#     -n <namespace> --from-literal=secret-key="$(openssl rand -hex 32)"
+# ---------------------------------------------------------------------------
+searxng:
+  enabled: false
+  image:
+    tag: latest
+  # Secret (must already exist) supplying the real secret_key, substituted
+  # into settings.yml by an initContainer at pod startup (see searxng.yaml
+  # for why SearXNG's own auto-generation doesn't apply here).
+  secretKeyExistingSecret: searxng-secrets
+  secretKeyExistingSecretKey: secret-key
+  # Extra settings.yml overrides merged in verbatim under the top level
+  # (e.g. `engines:` to trim/add search engines). Rarely needed --
+  # use_default_settings: true already gives a full working instance.
+  extraSettings: {}
+  service:
+    port: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Arbitrary extra manifests to install as part of this release
+# (templates/extra-manifests.yaml). Empty by default.
+#
+# Use this for cluster-specific objects that should share the release's
+# lifecycle instead of being applied by hand -- a hand-applied Helm-templated
+# object lacks the meta.helm.sh/release-name + release-namespace ownership
+# annotations and makes the next `helm upgrade` fail its ownership check.
+#
+# Entries are YAML maps, or strings when you need templating over several
+# documents. Both forms are passed through `tpl`, so `.Release.*`, `.Values.*`
+# and `include` work inside them:
+#
+#   extraManifests:
+#     # 1. plain map
+#     - apiVersion: v1
+#       kind: ConfigMap
+#       metadata:
+#         name: extra-config
+#       data:
+#         key: value
+#     # 2. templated string (note the outer quotes + `|` block)
+#     - |
+#       apiVersion: networking.k8s.io/v1
+#       kind: NetworkPolicy
+#       metadata:
+#         name: {{ .Release.Name }}-deny-egress
+#         namespace: {{ .Release.Namespace }}
+#       spec:
+#         podSelector: {}
+#         policyTypes: [Egress]
+#
+# Note Helm replaces arrays wholesale -- an override re-specifies the whole
+# list, it does not append to it.
+# ---------------------------------------------------------------------------
+extraManifests: []

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"fmt"
+	"os"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -28,14 +29,40 @@ import (
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 )
 
+// imagePullPolicy resolves the run Job's ImagePullPolicy from AGENT_IMAGE_PULL_POLICY
+// (values: "Always", "IfNotPresent", "Never"), defaulting to IfNotPresent -- the right
+// default for local/minikube dev, where images are built straight into the cluster's own
+// container runtime and never pushed to a registry (see buildRunJob's Container comment).
+// Deployments that push run images to a real registry under a mutable tag (e.g. ":latest")
+// must set this to "Always", or a kubelet that already pulled that tag once will keep
+// reusing the stale cached image on every subsequent redeploy.
+func imagePullPolicy() corev1.PullPolicy {
+	switch os.Getenv("AGENT_IMAGE_PULL_POLICY") {
+	case "Always":
+		return corev1.PullAlways
+	case "Never":
+		return corev1.PullNever
+	default:
+		return corev1.PullIfNotPresent
+	}
+}
+
+// SessionIDAnnotation is the well-known annotation key the orchestrator sets
+// on a ToolRun/AgentRun CR to carry the caller's Open WebUI session id
+// (docs/adr/0012) through to the Job/Pod it launches, for debugging/log
+// correlation via `kubectl describe`. Copied verbatim by toolrun_controller.go
+// / agentrun_controller.go from the CR's own annotations, if present.
+const SessionIDAnnotation = "controller-agent.dev/session-id"
+
 // runJobParams is everything the shared hardened-Job builder needs, shaped
 // so both ToolRun (tool image + args) and AgentRun (agent image + goal)
 // reconcilers produce byte-identical security/callback wiring.
 type runJobParams struct {
 	// jobName must be unique per run; convention: "<kind>-<run name>".
-	jobName   string
-	namespace string
-	labels    map[string]string
+	jobName     string
+	namespace   string
+	labels      map[string]string
+	annotations map[string]string
 
 	image              string
 	serviceAccountName string
@@ -43,6 +70,13 @@ type runJobParams struct {
 	staticEnv          []toolv1alpha1.EnvVar
 	secretEnv          []toolv1alpha1.SecretEnvVar
 	resources          toolv1alpha1.ResourceRequirements
+
+	// initContainers, if non-empty, run before the "run" container starts,
+	// each sharing the same "tmp" emptyDir mount at /tmp (e.g. to seed a
+	// credential file the main container's HOME reads from). Left nil for
+	// every Agent/Tool that doesn't set AgentSpec.InitContainers, in which
+	// case the Job pod's InitContainers field is left unset entirely.
+	initContainers []toolv1alpha1.InitContainer
 
 	callback       toolv1alpha1.ToolRunCallback
 	timeoutSeconds int32
@@ -67,21 +101,7 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 		timeout = int64(p.timeoutSeconds)
 	}
 
-	env := make([]corev1.EnvVar, 0, len(p.staticEnv)+len(p.secretEnv)+3)
-	for _, e := range p.staticEnv {
-		env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
-	}
-	for _, e := range p.secretEnv {
-		env = append(env, corev1.EnvVar{
-			Name: e.Name,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: e.SecretRef.Name},
-					Key:                  e.SecretRef.Key,
-				},
-			},
-		})
-	}
+	env := toCoreEnv(p.staticEnv, p.secretEnv, 3)
 
 	if p.callback.NatsSubject != "" {
 		// NATS delivery mode: no HMAC secret needed; subject is the capability.
@@ -112,11 +132,38 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 		return nil, err
 	}
 
+	var initContainers []corev1.Container
+	if len(p.initContainers) > 0 {
+		initContainers = make([]corev1.Container, 0, len(p.initContainers))
+		for _, ic := range p.initContainers {
+			// An init container's own SecretEnv (from the Agent template's
+			// static AgentSpec.InitContainers) is layered ON TOP OF the same
+			// per-run merged secretEnv (p.secretEnv, already
+			// mergeSecretEnv(agent.Spec.SecretEnv, run.Spec.SecretEnv)) the
+			// main "run" container gets -- otherwise a per-invocation
+			// credential a caller injects via AgentRun.Spec.SecretEnv (e.g. a
+			// delegated CLAUDE_LOGIN_CREDENTIALS_JSON) would silently never
+			// reach a credential-seeding init container, which is the whole
+			// point of having one.
+			initContainers = append(initContainers, corev1.Container{
+				Name:    ic.Name,
+				Image:   ic.Image,
+				Command: ic.Command,
+				Args:    ic.Args,
+				Env:     toCoreEnv(ic.Env, mergeSecretEnv(p.secretEnv, ic.SecretEnv), 0),
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "tmp", MountPath: "/tmp"},
+				},
+			})
+		}
+	}
+
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      p.jobName,
-			Namespace: p.namespace,
-			Labels:    p.labels,
+			Name:        p.jobName,
+			Namespace:   p.namespace,
+			Labels:      p.labels,
+			Annotations: p.annotations,
 		},
 		Spec: batchv1.JobSpec{
 			ActiveDeadlineSeconds:   ptr.To(timeout),
@@ -124,7 +171,8 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 			BackoffLimit:            ptr.To(int32(0)),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: p.labels,
+					Labels:      p.labels,
+					Annotations: p.annotations,
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: p.serviceAccountName,
@@ -140,6 +188,7 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 					Volumes: []corev1.Volume{
 						{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 					},
+					InitContainers: initContainers,
 					Containers: []corev1.Container{
 						{
 							Name:  "run",
@@ -150,7 +199,9 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 							// runtime (e.g. minikube's docker daemon) for local/dev use,
 							// never pushed to a registry, so "Always" would wrongly try
 							// to pull from Docker Hub and fail with ImagePullBackOff.
-							ImagePullPolicy: corev1.PullIfNotPresent,
+							// Overridable via AGENT_IMAGE_PULL_POLICY (see imagePullPolicy
+							// above) for deployments that do push to a real registry.
+							ImagePullPolicy: imagePullPolicy(),
 							Args:            p.args,
 							Env:             env,
 							Resources:       resources,
@@ -170,6 +221,81 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 		},
 	}
 	return job, nil
+}
+
+// toCoreEnv builds a corev1.EnvVar list from static name/value pairs plus
+// secretEnv references (resolved via SecretKeyRef), in that order. Shared by
+// the main "run" container and any initContainers so both get identical
+// env-building behavior. extraCap is additional capacity to reserve for
+// env vars the caller appends afterward (e.g. the main container's
+// transport/callback vars) -- purely a sizing hint, doesn't affect output.
+func toCoreEnv(staticEnv []toolv1alpha1.EnvVar, secretEnv []toolv1alpha1.SecretEnvVar, extraCap int) []corev1.EnvVar {
+	env := make([]corev1.EnvVar, 0, len(staticEnv)+len(secretEnv)+extraCap)
+	for _, e := range staticEnv {
+		env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
+	}
+	for _, e := range secretEnv {
+		env = append(env, corev1.EnvVar{
+			Name: e.Name,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: e.SecretRef.Name},
+					Key:                  e.SecretRef.Key,
+				},
+			},
+		})
+	}
+	return env
+}
+
+// sessionIDAnnotations extracts just the SessionIDAnnotation from a ToolRun/
+// AgentRun CR's own annotations (if set) for copying onto the Job/Pod it
+// launches -- deliberately narrow rather than passing the CR's whole
+// annotation map through, so any other annotation a caller happens to set on
+// the CR (e.g. via kubectl) isn't silently propagated too.
+func sessionIDAnnotations(crAnnotations map[string]string) map[string]string {
+	sessionID, ok := crAnnotations[SessionIDAnnotation]
+	if !ok || sessionID == "" {
+		return nil
+	}
+	return map[string]string{SessionIDAnnotation: sessionID}
+}
+
+// mergeSecretEnv merges per-run secretEnv overrides over an Agent template's
+// static secretEnv, keyed by Name: an override entry wins over a base entry
+// with the same Name, and entries unique to either side are both included.
+// Base ordering is preserved for unchanged/unmatched base entries, with
+// overrides appended afterward (winning overrides replace in place;
+// override-only entries are appended at the end). Used to let an AgentRun
+// inject a per-invocation credential (e.g. a short-lived per-user GitHub
+// token) that overrides or adds to the Agent's baked-in static credentials
+// for that one run only, without mutating the Agent CR.
+func mergeSecretEnv(base, overrides []toolv1alpha1.SecretEnvVar) []toolv1alpha1.SecretEnvVar {
+	if len(overrides) == 0 {
+		return base
+	}
+
+	overrideByName := make(map[string]toolv1alpha1.SecretEnvVar, len(overrides))
+	for _, o := range overrides {
+		overrideByName[o.Name] = o
+	}
+
+	merged := make([]toolv1alpha1.SecretEnvVar, 0, len(base)+len(overrides))
+	seen := make(map[string]bool, len(overrides))
+	for _, b := range base {
+		if o, ok := overrideByName[b.Name]; ok {
+			merged = append(merged, o)
+			seen[b.Name] = true
+		} else {
+			merged = append(merged, b)
+		}
+	}
+	for _, o := range overrides {
+		if !seen[o.Name] {
+			merged = append(merged, o)
+		}
+	}
+	return merged
 }
 
 // jobPhase maps an observed Job's status to the shared run-phase enum, plus

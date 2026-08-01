@@ -45,7 +45,7 @@ graph TD
     subgraph CRDs["Custom Resources (core.controller-agent.dev/v1alpha1)"]
         ToolCR[Tool CR\nimage · SA · secretEnv · allowedRoles]
         SkillCR[Skill CR\nmarkdown · toolRefs]
-        AgentCR[Agent CR\nimage · SA · skillRefs]
+        AgentCR[Agent CR\nimage · SA · skillRefs · toolRefs]
         ToolRunCR[ToolRun CR\ntoolRef · args · callback]
         AgentRunCR[AgentRun CR\nagentRef · goal · callback]
     end
@@ -83,20 +83,24 @@ orchestrator service, and `controllers/` holds the Go controller.
 │   ├── messaging.md            # event protocol & transports
 │   ├── security.md             # threat model & mitigations
 │   ├── orchestrator.md         # orchestrator architecture
+│   ├── integrations-gateway.md # event integrations proposal (GitHub Issues implemented)
 │   └── adr/                    # Architecture Decision Records
 ├── packages/
-│   └── messaging/              # @controller-agent/messaging — shared event protocol
+│   ├── messaging/              # @controller-agent/messaging — shared event protocol
+│   └── github-app-auth/        # @controller-agent/github-app-auth — GitHub App JWT/token auth
 ├── tools/                      # on-demand tool containers (example implementations)
 │   ├── recipe-scraper/         # URL → recipe Markdown
-│   └── recipe-publisher/       # recipe Markdown → Mealie instance
+│   ├── recipe-publisher/       # recipe Markdown → Mealie instance
+│   └── github/                 # gh CLI command → GitHub, as the calling user's own identity
 ├── apps/
-│   └── agent-orchestrator/     # RAG skill selection + ToolRun/AgentRun creator
+│   ├── agent-orchestrator/     # RAG skill selection + ToolRun/AgentRun creator
+│   └── integration-gateway/    # GitHub Issues → agent-orchestrator webhook adapter
 ├── controllers/
 │   └── core-controller/        # Go controller — watches CRDs, launches Jobs
 │       ├── api/v1alpha1/        # Tool, Skill, Agent, ToolRun, AgentRun types
 │       └── internal/controller/ # reconciliation logic
 └── charts/                     # Helm charts
-    ├── agent-controller/       # system chart: orchestrator + core-controller (+ CRDs) + optional Redis/Qdrant/NATS/Open WebUI
+    ├── agent-controller/       # system chart: orchestrator + core-controller (+ CRDs) + optional Redis/Qdrant/NATS/Open WebUI/integration-gateway
     └── community-components/   # catalog chart: Tool/Skill/Agent custom resources
 ```
 
@@ -134,6 +138,7 @@ identity, selects a Skill via RAG, plans an action, and creates a `ToolRun` or
 | ---- | ----- | ------ | ---- |
 | **recipe-scraper** | any recipe URL (web page, video, or image) | recipe Markdown | [tools/recipe-scraper/README.md](tools/recipe-scraper/README.md) |
 | **recipe-publisher** | recipe Markdown | published/updated recipe in a Mealie instance | [tools/recipe-publisher/README.md](tools/recipe-publisher/README.md) |
+| **github** | a single `gh` CLI command line | `gh`'s own output, authenticated as the calling user's own linked GitHub identity | [tools/github/README.md](tools/github/README.md) |
 
 ## Shared standards
 
@@ -191,13 +196,19 @@ cluster, in your own terminal (never paste real secrets into chat or files):
 ```bash
 # Generate a random callback HMAC secret
 CALLBACK_SECRET=$(openssl rand -hex 32)
+# ...and the secret the gateway signs a webhook's sender login with, which the
+# orchestrator verifies (docs/adr/0030 §6). ONE value, set on both sides: it
+# decides which human a webhook turn acts as, and hence whose stored Claude
+# credentials the run gets. Left unset, that login is trusted unsigned.
+SENDER_ASSERTION_SECRET=$(openssl rand -hex 32)
 
 kubectl create namespace controller-agent
 
 # OpenAI key + callback HMAC secret (used by the orchestrator)
 kubectl -n controller-agent create secret generic agent-orchestrator-secrets \
   --from-literal=OPENAI_API_KEY=<your-openai-api-key> \
-  --from-literal=AGENT_CALLBACK_SECRET="$CALLBACK_SECRET"
+  --from-literal=AGENT_CALLBACK_SECRET="$CALLBACK_SECRET" \
+  --from-literal=AGENT_SENDER_ASSERTION_SECRET="$SENDER_ASSERTION_SECRET"
 
 # Mealie long-lived API token (create at /user/profile/api-tokens in your Mealie instance)
 kubectl -n controller-agent create secret generic recipe-publisher-secrets \

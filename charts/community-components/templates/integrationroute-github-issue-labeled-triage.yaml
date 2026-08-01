@@ -1,0 +1,43 @@
+{{- if .Values.integrationRoutes.githubIssueLabeledTriage.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: IntegrationRoute
+metadata:
+  name: github-issue-labeled-triage
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  match:
+    source: github
+    event: issues
+    action: labeled
+  # No Tool wrapper needed -- dispatches straight to the Agent CR (ADR 0021),
+  # same pattern as skill-self-improvement.yaml's agentRefs. Which SWE Agent
+  # CR handles triage is value-driven (default opencode-swe-agent) so an
+  # environment can point it at claude-code-swe-agent instead without editing
+  # this template -- whichever it names must have enabled=true in the same
+  # values file, or this route dispatches to a non-existent Agent.
+  agentRef: {{ .Values.integrationRoutes.githubIssueLabeledTriage.agentRef | default "opencode-swe-agent" }}
+  promptTemplate: |
+    GitHub issue {{`{{owner}}`}}/{{`{{repo}}`}}#{{`{{issueNumber}}`}} was labeled "{{`{{labelName}}`}}": "{{`{{title}}`}}"
+
+    {{`{{body}}`}}
+
+    Triage and resolve this issue: investigate the {{`{{owner}}`}}/{{`{{repo}}`}}
+    repository (the repository this issue was filed in), implement a fix or
+    feature there if the issue calls for one, and open a pull request against
+    {{`{{owner}}`}}/{{`{{repo}}`}}. Do not create a new repository and do not
+    substitute any other repository, even if you lack permission to do
+    something the task seems to ask for (e.g. creating a repo) -- if you
+    cannot complete the task in {{`{{owner}}`}}/{{`{{repo}}`}} as given, stop
+    and post a comment explaining exactly what's blocking you instead of
+    working around it elsewhere. If the issue is unclear or you need more
+    context before proceeding, post a comment asking a clarifying question
+    instead of guessing.
+
+    When you open a pull request, end its description with a short note
+    inviting a maintainer to apply the "ai-review" label to the PR to request
+    an automated code review, or the "{{`{{labelName}}`}}" label to have the
+    review feedback on it addressed and the branch brought back in sync with
+    its base. (The automation cannot apply either label to its own PR, so a
+    human applies it.)
+{{- end }}

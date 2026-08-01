@@ -85,3 +85,10 @@ openwebui:
       #   kubectl create secret generic agent-controller-openwebui-google-oauth \
       #     -n controller-agent --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
       clientExistingSecret: agent-controller-openwebui-google-oauth
+
+searxng:
+  enabled: true
+  # Secret created out-of-band (never via --set/chat):
+  #   kubectl create secret generic searxng-secrets \
+  #     -n controller-agent --from-literal=secret-key="$(openssl rand -hex 32)"
+  secretKeyExistingSecret: searxng-secrets

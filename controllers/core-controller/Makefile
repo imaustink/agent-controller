@@ -43,9 +43,22 @@ help: ## Display this help.
 
 ##@ Development
 
+## Path to the core-controller Helm subchart's crds/ dir (untracked -- Helm's
+## crds/ directory is install-only and must be populated from the generated
+## CRDs below before `helm install`/`helm template`/`helm package` will see
+## current schemas; see charts/agent-controller/charts/core-controller/README
+## and docs/adr/0010).
+CHART_CRDS_DIR ?= ../../charts/agent-controller/charts/core-controller/crds
+
 .PHONY: manifests
-manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
+manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects, then sync them into the Helm chart's crds/ dir.
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(MAKE) sync-crds
+
+.PHONY: sync-crds
+sync-crds: ## Copy generated CRDs into the core-controller Helm subchart's crds/ dir.
+	mkdir -p "$(CHART_CRDS_DIR)"
+	cp config/crd/bases/*.yaml "$(CHART_CRDS_DIR)/"
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.

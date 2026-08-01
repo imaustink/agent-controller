@@ -15,6 +15,13 @@ export type RecipeSection = z.infer<typeof RecipeSectionSchema>;
 
 /** The normalized recipe artifact this subagent produces. */
 export const RecipeSchema = z.object({
+  // Listed first (and mirrored first in RECIPE_JSON_SCHEMA below) so the
+  // model commits to this judgment BEFORE generating the ingredient/direction
+  // arrays -- Structured Outputs fills fields in schema order, so putting the
+  // yes/no call up front forces an explicit "is this actually a recipe?"
+  // decision instead of letting the model default to fabricating a plausible
+  // recipe and only reporting empty arrays as an afterthought.
+  isRecipe: z.boolean(),
   name: z.string().nullable(),
   ingredientSections: z.array(RecipeSectionSchema),
   directionSections: z.array(RecipeSectionSchema),
@@ -44,8 +51,9 @@ const RECIPE_SECTION_JSON_SCHEMA = {
 export const RECIPE_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["name", "ingredientSections", "directionSections", "equipment", "tips"],
+  required: ["isRecipe", "name", "ingredientSections", "directionSections", "equipment", "tips"],
   properties: {
+    isRecipe: { type: "boolean" },
     name: { type: ["string", "null"] },
     ingredientSections: { type: "array", items: RECIPE_SECTION_JSON_SCHEMA },
     directionSections: { type: "array", items: RECIPE_SECTION_JSON_SCHEMA },

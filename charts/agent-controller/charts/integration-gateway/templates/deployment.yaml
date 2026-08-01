@@ -1,0 +1,233 @@
+{{- if and .Values.claudeAuth.enabled (not (and .Values.identityLink.enabled .Values.sessionPage.publicBaseUrl)) }}
+{{- fail "claudeAuth.enabled requires identityLink.enabled and sessionPage.publicBaseUrl to also be set (docs/adr/0027)" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "integration-gateway.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "integration-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "integration-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "integration-gateway.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "integration-gateway.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: integration-gateway
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.port }}
+              protocol: TCP
+          env:
+            # The namespace the credential Secrets live in (docs/adr/0034) --
+            # this pod's own, which is the only one the Role below grants access
+            # to. Via the downward API rather than a templated value so it stays
+            # correct if the release is moved.
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GATEWAY_HTTP_PORT
+              value: {{ .Values.port | quote }}
+            - name: GATEWAY_ORCHESTRATOR_URL
+              value: {{ .Values.config.orchestratorUrl | quote }}
+            - name: GITHUB_API_URL
+              value: {{ .Values.config.githubApiUrl | quote }}
+            - name: GITHUB_BASE_URL
+              value: {{ .Values.config.githubBaseUrl | quote }}
+            - name: GATEWAY_GITHUB_BOT_LOGIN
+              value: {{ .Values.config.githubBotLogin | quote }}
+            - name: GATEWAY_GITHUB_TRIGGER_LABEL
+              value: {{ .Values.config.githubTriggerLabel | quote }}
+            - name: GATEWAY_GITHUB_REVIEW_LABEL
+              value: {{ .Values.config.githubReviewLabel | quote }}
+            {{- if .Values.config.githubTeamRoles }}
+            - name: GATEWAY_GITHUB_TEAM_ROLES
+              value: {{ .Values.config.githubTeamRoles | quote }}
+            {{- end }}
+            {{- if .Values.config.githubCollaboratorRoles }}
+            - name: GATEWAY_GITHUB_COLLABORATOR_ROLES
+              value: {{ .Values.config.githubCollaboratorRoles | quote }}
+            {{- end }}
+            {{- if .Values.config.githubIdentities }}
+            - name: GATEWAY_GITHUB_IDENTITIES
+              value: {{ .Values.config.githubIdentities | quote }}
+            {{- end }}
+            - name: GATEWAY_POLL_INTERVAL_MS
+              value: {{ .Values.config.pollIntervalMs | quote }}
+            - name: GATEWAY_POLL_TIMEOUT_MS
+              value: {{ .Values.config.pollTimeoutMs | quote }}
+            - name: GATEWAY_RESUME_WAIT_MS
+              value: {{ .Values.config.resumeWaitMs | quote }}
+            {{- if .Values.sessionPage.publicBaseUrl }}
+            - name: GATEWAY_PUBLIC_URL
+              value: {{ .Values.sessionPage.publicBaseUrl | quote }}
+            {{- if .Values.sessionPage.redisUrl }}
+            - name: SESSION_PAGE_REDIS_URL
+              value: {{ .Values.sessionPage.redisUrl | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.orchestratorOidc.enabled }}
+            - name: GATEWAY_ORCHESTRATOR_OIDC_TOKEN_ENDPOINT
+              value: {{ .Values.orchestratorOidc.tokenEndpoint | quote }}
+            - name: GATEWAY_ORCHESTRATOR_OIDC_CLIENT_ID
+              value: {{ .Values.orchestratorOidc.clientId | quote }}
+            - name: GATEWAY_ORCHESTRATOR_OIDC_RESOURCE
+              value: {{ .Values.orchestratorOidc.resource | quote }}
+            {{- end }}
+            {{- if .Values.identityLink.enabled }}
+            - name: GITHUB_APP_CLIENT_ID
+              value: {{ .Values.identityLink.githubAppClientId | quote }}
+            {{- if .Values.identityLink.githubDeviceFlowScope }}
+            - name: GITHUB_DEVICE_FLOW_SCOPE
+              value: {{ .Values.identityLink.githubDeviceFlowScope | quote }}
+            {{- end }}
+            - name: AGENT_REDIS_URL
+              value: {{ .Values.identityLink.redisUrl | quote }}
+            - name: GITHUB_OAUTH_REDIRECT_URI
+              value: {{ .Values.identityLink.githubOauthRedirectUri | quote }}
+            {{- end }}
+            - name: GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.githubWebhookSecretKey }}
+            {{- if .Values.orchestratorOidc.enabled }}
+            - name: GATEWAY_ORCHESTRATOR_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.orchestratorOidcClientSecretKey }}
+            {{- else }}
+            - name: GATEWAY_ORCHESTRATOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.orchestratorTokenKey }}
+            {{- end }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.githubTokenKey }}
+                  optional: true
+            - name: GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.githubAppIdKey }}
+                  optional: true
+            - name: GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.githubAppPrivateKeyKey }}
+                  optional: true
+            - name: GITHUB_APP_INSTALLATION_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.githubAppInstallationIdKey }}
+                  optional: true
+            {{- if .Values.identityLink.enabled }}
+            - name: IDENTITY_LINK_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.identityLinkEncryptionKeyKey }}
+            - name: GATEWAY_IDENTITY_LINK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.identityLinkTokenKey }}
+            {{- if .Values.secrets.senderAssertionSecretKey }}
+            - name: GATEWAY_SENDER_ASSERTION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.senderAssertionSecretKey }}
+                  optional: true
+            {{- end }}
+            - name: GITHUB_APP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.githubAppClientSecretKey }}
+            - name: IDENTITY_LINK_STATE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.identityLinkStateSecretKey }}
+            {{- end }}
+            {{- if .Values.claudeAuth.enabled }}
+            - name: GATEWAY_CLAUDE_AUTH_ENABLED
+              value: "true"
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.claudeAuth.enabled }}
+          volumeMounts:
+            # `claude setup-token` (docs/adr/0027) needs a writable HOME for
+            # its own config/session state -- this container otherwise holds
+            # nothing on disk, so this mount is only added when the feature
+            # that needs it is actually enabled (the readOnlyRootFilesystem
+            # securityContext above would otherwise make even /tmp read-only).
+            - name: tmp
+              mountPath: /tmp
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.claudeAuth.enabled }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- end }}

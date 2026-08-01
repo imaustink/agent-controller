@@ -39,6 +39,37 @@ export interface SessionRecord {
    */
   activeAgentRunId?: string;
   /**
+   * True when `activeAgentRunId` is a run this conversation is still owed a
+   * REPLY from, rather than one parked on a question awaiting the user's next
+   * prompt.
+   *
+   * The distinction decides what the next turn does. Parked-on-a-question is
+   * the ordinary HITL case: the turn's message is the answer, so it gets
+   * published as a `prompt`. Owed-a-reply means the previous turn's wait was
+   * cut short while the agent was still working -- the orchestrator pod was
+   * rolled or lost its NATS channel -- and the run is very likely still going
+   * or already finished. Sending it a `prompt` in that state would be wrong
+   * twice over: the agent isn't waiting for input, and the text (e.g. "any
+   * update?") isn't an instruction. So the next turn re-attaches to the run's
+   * subject and waits for the reply the agent is still holding for us (see the
+   * protocol's `reply_ack`).
+   *
+   * Written EAGERLY, before the wait starts, precisely because the failure it
+   * covers can be a hard pod kill: an outcome persisted only after the graph
+   * returns is exactly what does not survive a SIGKILL.
+   */
+  activeAgentRunAwaitingReply?: boolean;
+  /**
+   * The most recent AgentRun id this conversation delegated to, kept even
+   * after the run concludes and `activeAgentRunId` is cleared (ADR 0026) --
+   * NOT used for routing/continuation (that's `activeAgentRunId`/
+   * `agentContinuations`), only as a hint for a live-session viewer to probe
+   * ("is this Pod still up and tunnelable?") via a real-time NATS round trip
+   * rather than trusting any cached liveness flag, which could go stale if
+   * the Pod crashed unexpectedly.
+   */
+  lastAgentRunId?: string;
+  /**
    * Per-tool continuation tokens for this conversation, keyed by tool id
    * (docs/adr/0016). When the orchestrator's `runTool` node extracts a
    * `<!-- continuation: ... -->` marker from a tool's success output, the
@@ -58,6 +89,13 @@ export interface SessionRecord {
    * to round-trip this state through the conversation history itself.
    */
   agentContinuations?: Record<string, string>;
+  /**
+   * A device-flow identity-link attempt this conversation is waiting on
+   * (agent/graph.ts's `pendingIdentityLink` state field — see its doc
+   * comment). Persisted so the NEXT turn's `checkPendingIdentityLink` node
+   * can poll it without the caller having to repeat their request.
+   */
+  pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number; subject?: string; request?: string };
   /** Last touch time (ms since epoch); used for sliding TTL expiry. */
   updatedAt: number;
 }

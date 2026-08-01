@@ -1,0 +1,163 @@
+{{- if .Values.searxng.enabled }}
+{{- /*
+  Optional SearXNG metasearch instance (https://docs.searxng.org/), backing
+  community-components' web-search Tool. Off by default.
+
+  Hand-authored here (not a Helm dependency like `openwebui`/`nats` above)
+  because there is no maintained official SearXNG Helm chart to pin to --
+  searxng/searxng-helm-chart was archived May 2025. Same call already made
+  for Redis (see agent-orchestrator/templates/redis.yaml): a first-party
+  Deployment/Service against the official `searxng/searxng` image avoids
+  depending on unmaintained/unofficial community charts.
+
+  ClusterIP only, never an Ingress: SearXNG's own bot-detection limiter
+  (limiter.toml) is designed for internet-facing instances and would risk
+  rate-limiting this tool's own programmatic JSON requests if
+  `public_instance: true` were ever set. Reachability is restricted to
+  in-cluster callers by the Service type alone.
+*/}}
+{{- $name := printf "%s-searxng" .Release.Name }}
+{{- $labels := printf "app.kubernetes.io/name: %s\napp.kubernetes.io/instance: %s" $name .Release.Name }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+    helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/component: searxng
+data:
+  # "ultrasecretkey" is a literal placeholder, substituted at pod startup by
+  # the initContainer below -- SearXNG's own docker-entrypoint.sh only does
+  # this substitution when settings.yml doesn't already exist at the mount
+  # path (container/entrypoint.sh's setup()), which never applies here since
+  # we always provide the file. There is no ${VAR} expansion inside
+  # settings.yml itself, so the real secret has to be substituted in before
+  # the searxng process ever reads this file.
+  settings.yml: |
+    use_default_settings: true
+    server:
+      secret_key: "ultrasecretkey"
+    search:
+      # JSON is disabled by default upstream (403 on ?format=json without
+      # this) -- required by the web-search Tool's SearXNG client.
+      formats:
+        - html
+        - json
+    {{- with .Values.searxng.extraSettings }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+    helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/component: searxng
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- $labels | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- $labels | nindent 8 }}
+        app.kubernetes.io/component: searxng
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 977
+        runAsGroup: 977
+      # Substitutes the real secret_key into the mounted settings.yml before
+      # the main container starts, the same sed-a-placeholder idiom
+      # searxng's own entrypoint uses on a fresh volume (see comment on the
+      # ConfigMap above) -- just performed by us since that path never
+      # triggers when the file is provided ahead of time. Reuses the searxng
+      # image itself (has sh+sed) rather than pulling in a second image.
+      initContainers:
+        - name: render-settings
+          image: "searxng/searxng:{{ .Values.searxng.image.tag | default "latest" }}"
+          imagePullPolicy: {{ .Values.searxng.image.pullPolicy | default "IfNotPresent" }}
+          command:
+            - /bin/sh
+            - -c
+            - sed "s/ultrasecretkey/$SEARXNG_SECRET_KEY/" /template/settings.yml > /config/settings.yml
+          env:
+            - name: SEARXNG_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.searxng.secretKeyExistingSecret | required "searxng.secretKeyExistingSecret is required when searxng.enabled=true" | quote }}
+                  key: {{ .Values.searxng.secretKeyExistingSecretKey | default "secret-key" | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: settings-template
+              mountPath: /template
+              readOnly: true
+            - name: settings
+              mountPath: /config
+      containers:
+        - name: searxng
+          image: "searxng/searxng:{{ .Values.searxng.image.tag | default "latest" }}"
+          imagePullPolicy: {{ .Values.searxng.image.pullPolicy | default "IfNotPresent" }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.searxng.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: settings
+              mountPath: /etc/searxng/settings.yml
+              subPath: settings.yml
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /var/cache/searxng
+      volumes:
+        - name: settings-template
+          configMap:
+            name: {{ $name }}
+        - name: settings
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+    helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/component: searxng
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.searxng.service.port | default 8080 }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- $labels | nindent 4 }}
+{{- end }}

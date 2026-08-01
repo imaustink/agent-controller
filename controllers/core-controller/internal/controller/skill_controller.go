@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -44,12 +45,13 @@ type SkillReconciler struct {
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=skills/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=skills/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=tools,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agents,verbs=get;list;watch
 
-// Reconcile validates that every name in a Skill's toolRefs corresponds to an
-// existing Tool CR in the same namespace, and sets a Ready condition
-// accordingly. The action planner (JS orchestrator) still re-validates a
-// chosen toolId against this list at call time — this is a static-config
-// sanity check, not an authorization boundary.
+// Reconcile validates that every name in a Skill's toolRefs/agentRefs
+// corresponds to an existing Tool/Agent CR in the same namespace, and sets a
+// Ready condition accordingly. The action planner (JS orchestrator) still
+// re-validates a chosen tool/agent id against these lists at call time —
+// this is a static-config sanity check, not an authorization boundary.
 func (r *SkillReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -61,7 +63,7 @@ func (r *SkillReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	var missing []string
+	var missingTools []string
 	for _, ref := range skill.Spec.ToolRefs {
 		var t toolv1alpha1.Tool
 		key := types.NamespacedName{Namespace: skill.Namespace, Name: ref}
@@ -69,22 +71,41 @@ func (r *SkillReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			if !apierrors.IsNotFound(err) {
 				return ctrl.Result{}, err
 			}
-			missing = append(missing, ref)
+			missingTools = append(missingTools, ref)
+		}
+	}
+
+	var missingAgents []string
+	for _, ref := range skill.Spec.AgentRefs {
+		var a toolv1alpha1.Agent
+		key := types.NamespacedName{Namespace: skill.Namespace, Name: ref}
+		if err := r.Get(ctx, key, &a); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			missingAgents = append(missingAgents, ref)
 		}
 	}
 
 	condition := metav1.Condition{
 		Type:               skillConditionReady,
 		Status:             metav1.ConditionTrue,
-		Reason:             "ToolRefsResolved",
-		Message:            "all toolRefs resolved to existing Tool resources",
+		Reason:             "RefsResolved",
+		Message:            "all toolRefs/agentRefs resolved to existing Tool/Agent resources",
 		ObservedGeneration: skill.Generation,
 	}
-	if len(missing) > 0 {
+	if len(missingTools) > 0 || len(missingAgents) > 0 {
 		condition.Status = metav1.ConditionFalse
-		condition.Reason = "ToolRefsMissing"
-		condition.Message = fmt.Sprintf("toolRefs not found: %v", missing)
-		log.Info("skill references missing tools", "skill", skill.Name, "missing", missing)
+		condition.Reason = "RefsMissing"
+		var parts []string
+		if len(missingTools) > 0 {
+			parts = append(parts, fmt.Sprintf("toolRefs not found: %v", missingTools))
+		}
+		if len(missingAgents) > 0 {
+			parts = append(parts, fmt.Sprintf("agentRefs not found: %v", missingAgents))
+		}
+		condition.Message = strings.Join(parts, "; ")
+		log.Info("skill references missing tools/agents", "skill", skill.Name, "missingTools", missingTools, "missingAgents", missingAgents)
 	}
 
 	meta.SetStatusCondition(&skill.Status.Conditions, condition)

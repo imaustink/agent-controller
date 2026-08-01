@@ -1,4 +1,5 @@
 import * as k8s from "@kubernetes/client-node";
+import { makeCrdWatcher, type CrdChangeEvent, type WatchCrdFn } from "../k8s/crd-watcher.js";
 import type { LocalToolSpec, ToolDescriptor } from "../tool-descriptor.js";
 import type { CustomObjectsApiLike } from "./crd-tool-registry.js";
 import type { ToolRegistry } from "./types.js";
@@ -45,8 +46,9 @@ export const LOCAL_TOOL_PLURAL = "localtools";
  * unioned with the Tool catalog and indexed into the same RAG store, so skills
  * reference either kind transparently by CR name.
  *
- * One-shot `listAll()` read at startup, same limitation as CrdToolRegistry
- * (refreshes only on orchestrator restart, not a live watch).
+ * `listAll()` is a one-shot read used only for the initial catalog at
+ * startup; `watch()` (ADR 0020) keeps it current afterward via a live k8s
+ * watch, same shape as {@link CrdToolRegistry}.
  */
 export class CrdLocalToolRegistry implements ToolRegistry {
   constructor(
@@ -54,6 +56,8 @@ export class CrdLocalToolRegistry implements ToolRegistry {
     private readonly group: string,
     private readonly version: string,
     private readonly api: CustomObjectsApiLike,
+    /** Absent in tests that only exercise `listAll()`; real instances always pass one via `fromKubeConfig`. */
+    private readonly watchFn?: WatchCrdFn,
   ) {}
 
   static fromKubeConfig(
@@ -62,7 +66,13 @@ export class CrdLocalToolRegistry implements ToolRegistry {
     version: string,
     kubeConfig: k8s.KubeConfig,
   ): CrdLocalToolRegistry {
-    return new CrdLocalToolRegistry(namespace, group, version, kubeConfig.makeApiClient(k8s.CustomObjectsApi));
+    return new CrdLocalToolRegistry(
+      namespace,
+      group,
+      version,
+      kubeConfig.makeApiClient(k8s.CustomObjectsApi),
+      makeCrdWatcher(kubeConfig),
+    );
   }
 
   async listAll(): Promise<ToolDescriptor[]> {
@@ -78,6 +88,30 @@ export class CrdLocalToolRegistry implements ToolRegistry {
       if (descriptor) tools.push(descriptor);
     }
     return tools;
+  }
+
+  watch(
+    onChange: (event: CrdChangeEvent<ToolDescriptor>) => void,
+    onError?: (err: unknown) => void,
+  ): { stop: () => void } {
+    if (!this.watchFn) {
+      throw new Error("CrdLocalToolRegistry.watch() requires a watchFn (construct via fromKubeConfig)");
+    }
+    return this.watchFn(
+      { group: this.group, version: this.version, namespace: this.namespace, plural: LOCAL_TOOL_PLURAL },
+      (phase, obj) => {
+        const cr = obj as LocalToolCustomResource;
+        const id = cr?.metadata?.name;
+        if (!id) return;
+        if (phase === "DELETED") {
+          onChange({ type: "delete", id });
+          return;
+        }
+        const descriptor = toLocalToolDescriptor(cr);
+        if (descriptor) onChange({ type: "upsert", descriptor });
+      },
+      onError,
+    );
   }
 }
 

@@ -19,9 +19,11 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,7 +33,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
-	"github.com/go-logr/logr"
 )
 
 // AgentRunReconciler reconciles a AgentRun object
@@ -42,6 +43,11 @@ type AgentRunReconciler struct {
 	// Job so the @controller-agent/agent-runtime SDK can connect on startup.
 	// Set from the controller manager's own env at startup (cmd/main.go).
 	NatsConfig AgentNatsConfig
+	// Retention is how long a terminal AgentRun (and the Secret it owns) is
+	// kept before reclamation. Zero means DefaultAgentRunRetention -- there is
+	// deliberately no "keep forever" setting, since that is the behaviour that
+	// let credential-bearing Secrets accumulate indefinitely.
+	Retention time.Duration
 }
 
 // AgentNatsConfig is the NATS connection config injected into every agent Job.
@@ -78,16 +84,59 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	// Already terminal — nothing left to reconcile for lifecycle purposes.
+	// Already terminal — reclaim it once its retention window has elapsed.
+	//
+	// Nothing else ever deleted an AgentRun. The Job it creates carries a TTL
+	// and disappears, but the CR and the per-run `<name>-identity` Secret it
+	// owns persisted forever: a live cluster was found holding runs 8 days old,
+	// each still carrying encrypted credential material in etcd long after the
+	// run that needed it had finished. That is both unbounded object growth and
+	// a credential-lifetime problem, so retention is bounded here rather than
+	// left to an operator remembering to prune.
+	//
+	// Deleting the CR cascades to the Secret through its ownerReference, so
+	// this single delete reclaims both.
 	if run.Status.Phase == toolv1alpha1.ToolRunPhaseSucceeded || run.Status.Phase == toolv1alpha1.ToolRunPhaseFailed {
-		return ctrl.Result{}, nil
+		retention := r.retention()
+		// A run whose completion time was never recorded (older CRs predate the
+		// field) falls back to its creation time -- reclaiming late is fine,
+		// never reclaiming is not.
+		finishedAt := run.Status.CompletionTime
+		if finishedAt == nil {
+			finishedAt = &run.CreationTimestamp
+		}
+		age := time.Since(finishedAt.Time)
+		if age >= retention {
+			log.Info("reclaiming terminal AgentRun", "name", run.Name, "phase", run.Status.Phase, "age", age.String())
+			if err := r.Delete(ctx, &run); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+		// Come back exactly when it becomes eligible rather than polling.
+		return ctrl.Result{RequeueAfter: retention - age}, nil
 	}
 
 	if run.Status.JobName == "" {
 		return r.createJob(ctx, &run)
 	}
 
-	return r.syncJobStatus(ctx, &run, log)
+	return r.syncJobStatus(ctx, &run)
+}
+
+// DefaultAgentRunRetention is how long a terminal AgentRun (and the Secret it
+// owns) is kept before being reclaimed. Long enough to inspect a failure by
+// hand, short enough that credential material does not linger.
+const DefaultAgentRunRetention = 1 * time.Hour
+
+// retention returns the configured retention window, falling back to
+// DefaultAgentRunRetention when unset so an operator who never configures it
+// still gets bounded growth.
+func (r *AgentRunReconciler) retention() time.Duration {
+	if r.Retention > 0 {
+		return r.Retention
+	}
+	return DefaultAgentRunRetention
 }
 
 func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.AgentRun) (ctrl.Result, error) {
@@ -101,8 +150,9 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 	}
 
 	job, err := buildRunJob(runJobParams{
-		jobName:   fmt.Sprintf("agentrun-%s", run.Name),
-		namespace: run.Namespace,
+		jobName:     fmt.Sprintf("agentrun-%s", run.Name),
+		namespace:   run.Namespace,
+		annotations: sessionIDAnnotations(run.Annotations),
 		labels: map[string]string{
 			"core.controller-agent.dev/agentrun": run.Name,
 			"core.controller-agent.dev/agent":    agent.Name,
@@ -113,8 +163,9 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 		// to avoid shell escaping issues with arbitrary natural-language goals.
 		args:           nil,
 		staticEnv:      append(agent.Spec.Env, r.agentRuntimeEnv(run.Name, run.Spec.Goal)...),
-		secretEnv:      agent.Spec.SecretEnv,
+		secretEnv:      mergeSecretEnv(agent.Spec.SecretEnv, run.Spec.SecretEnv),
 		resources:      agent.Spec.Resources,
+		initContainers: agent.Spec.InitContainers,
 		callback:       run.Spec.Callback,
 		timeoutSeconds: run.Spec.TimeoutSeconds,
 	})
@@ -141,7 +192,8 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 	return ctrl.Result{}, nil
 }
 
-func (r *AgentRunReconciler) syncJobStatus(ctx context.Context, run *toolv1alpha1.AgentRun, log logr.Logger) (ctrl.Result, error) {
+func (r *AgentRunReconciler) syncJobStatus(ctx context.Context, run *toolv1alpha1.AgentRun) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
 	var job batchv1.Job
 	jobKey := types.NamespacedName{Namespace: run.Namespace, Name: run.Status.JobName}
 	if err := r.Get(ctx, jobKey, &job); err != nil {
@@ -178,14 +230,28 @@ func (r *AgentRunReconciler) syncJobStatus(ctx context.Context, run *toolv1alpha
 func (r *AgentRunReconciler) markFailed(ctx context.Context, run *toolv1alpha1.AgentRun, reason, message string) (ctrl.Result, error) {
 	run.Status.Phase = toolv1alpha1.ToolRunPhaseFailed
 	run.Status.Message = message
-	cond := metav1.Condition{
+	// meta.SetStatusCondition, not append: it stamps LastTransitionTime (which
+	// the CRD schema REQUIRES, so a hand-built condition without it is rejected
+	// outright -- "status.conditions[0].lastTransitionTime: Required value") and
+	// replaces any existing condition of the same type instead of adding a
+	// duplicate, which the schema also rejects since conditions is a map-list
+	// keyed by type.
+	//
+	// Appending raw wedged runs permanently. This function is the ONLY thing that
+	// moves a run whose Job has vanished to a terminal phase, so a rejected
+	// update meant the run stayed Running forever, was re-reconciled every few
+	// minutes, failed the same way, and was never eligible for the retention
+	// sweep below -- which only reclaims TERMINAL runs. Observed in production:
+	// three AgentRuns and a ToolRun stuck Running for two days, each logging this
+	// error on every reconcile. Every other controller here already used this
+	// helper; these two were the outliers.
+	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionFalse,
 		Reason:             reason,
 		Message:            message,
 		ObservedGeneration: run.Generation,
-	}
-	run.Status.Conditions = append(run.Status.Conditions, cond)
+	})
 	if err := r.Status().Update(ctx, run); err != nil {
 		return ctrl.Result{}, err
 	}

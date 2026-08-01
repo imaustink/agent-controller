@@ -1,0 +1,365 @@
+replicaCount: 1
+
+image:
+  repository: integration-gateway
+  # Defaults to .Chart.AppVersion if empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # With identityLink disabled this app never talks to the k8s API (it only calls
+  # agent-orchestrator's HTTP API and the GitHub REST API), so the
+  # ServiceAccount exists only because every Pod needs one and the token is not
+  # mounted.
+  #
+  # With identityLink ENABLED it stores linked credentials as Secrets
+  # (docs/adr/0034), so it needs both the token and the Role in rbac.yaml. The
+  # template mounts the token automatically in that case -- this flag only forces
+  # it on when it would otherwise be off.
+  create: true
+  annotations: {}
+  name: ""
+  automount: false
+
+rbac:
+  # Creates the namespace-scoped Role/RoleBinding granting access to the
+  # credential Secrets (docs/adr/0034). Only rendered when identityLink is also
+  # enabled, since that is what stores them. Disable only if you manage the
+  # binding out-of-band -- without it, every link attempt fails with a 403 that
+  # the store reports as "not linked", which looks to a user like an endless
+  # re-authorization prompt.
+  create: true
+
+port: 8090
+
+config:
+  # Base URL of agent-orchestrator's consumer-facing /invoke API (ADR 0006).
+  orchestratorUrl: "http://agent-orchestrator-invoke:8081"
+  # How this gateway authenticates its /invoke calls -- must resolve, via the
+  # orchestrator's own identity resolver (config.staticIdentities on the
+  # agent-orchestrator chart), to a role allowed to reach the SWE agent.
+  # Read from a Secret (see secrets.orchestratorTokenKey below), never set
+  # here in plaintext. Only used when orchestratorOidc.enabled is false --
+  # see that block below for the preferred, auto-refreshing alternative.
+  #
+  # GitHub API base URL (override for GitHub Enterprise Server).
+  githubApiUrl: "https://api.github.com"
+  # GitHub WEB/OAuth base URL -- where the identity-link device-flow and
+  # authorization-code endpoints live (/login/device/code,
+  # /login/oauth/access_token). Separate from githubApiUrl because GitHub
+  # Enterprise Server splits them: the REST API sits at https://<host>/api/v3
+  # while these OAuth routes stay on https://<host>. Leaving this at the
+  # github.com default on a GHES deployment sends users to
+  # github.com/login/device/code, which 404s for a GHES-registered App's
+  # client id. Only consulted when identityLink.enabled=true.
+  githubBaseUrl: "https://github.com"
+  # The App/bot's own GitHub login -- its own comments are ignored (loop
+  # prevention). Required once the App/webhook is wired up.
+  githubBotLogin: ""
+  # The label that triggers automated triage (ADR 0024) when applied to a
+  # GitHub issue OR a pull request. On an issue: investigate and open a PR.
+  # On a PR: address the feedback/comments on it, push the updates, and sync
+  # it with its base branch. One label for both -- the two dispatch to
+  # different IntegrationRoutes (community-components'
+  # integrationRoutes.githubIssueLabeledTriage and githubPrLabeledTriage),
+  # matched on event plus match.labelName, which must equal this value.
+  # Not an assignee -- GitHub App bot users generally cannot be set as issue
+  # assignees. Whichever run it starts removes this label when it finishes,
+  # so re-applying it is all it takes to re-trigger. Empty string disables
+  # the trigger.
+  githubTriggerLabel: ""
+  # The label that triggers an automated PR review when applied to a pull
+  # request (a pull_request.labeled event) -- sibling to githubTriggerLabel:
+  # a distinct label so a read-only review stays separate from triage
+  # changing the PR. The review runs as
+  # whoever applied the label (same identity gate as triage), and the gateway
+  # drops bot-authored events, so a human must apply it -- the agent that
+  # opened the PR (a bot) can't self-trigger a review. Must equal the
+  # community-components chart's integrationRoutes.githubPrLabeledReview
+  # route's match.labelName (event: pull_request, action: labeled), which is
+  # what tells it apart from the PR-triage route on the same event. Removed
+  # from the PR once the review finishes, so re-applying it re-reviews.
+  # Empty string disables it.
+  githubReviewLabel: ""
+  # PROD-GRADE, preferred for org-owned repos: grants roles based on live
+  # GitHub org/team membership (see GithubTeamMembershipResolver in
+  # src/identity.ts) -- JSON: {"<org>/<team-slug>": ["role", ...]}.
+  # Adding/removing a person is a GitHub team membership change, no
+  # commit/redeploy needed. Uses the same GitHub App/PAT credentials as the
+  # reply client (needs Members: Read org permission, or read:org PAT scope).
+  # Leave empty for a personal-account repo -- there's no org to check team
+  # membership against; use githubCollaboratorRoles below instead.
+  githubTeamRoles: ""
+  # PROD-GRADE, preferred for personal-account repos (no GitHub Organization
+  # to hang teams off of): grants roles based on the sender's actual
+  # collaborator permission on the specific repo the webhook fired on (see
+  # GithubCollaboratorPermissionResolver in src/identity.ts) -- JSON:
+  # {"<permission-level>": ["role", ...]}, where permission-level is one of
+  # GitHub's repo permission levels ("admin", "maintain", "write", "triage",
+  # "read"). Adding/removing a person is a repo "manage access" change, no
+  # commit/redeploy needed. Same credentials as githubTeamRoles above.
+  githubCollaboratorRoles: ""
+  # DEV/TEST-GRADE static allowlist mapping GitHub logins to identities (see
+  # src/identity.ts) -- JSON: {"<login>": {"subject": "...", "roles": [...]}}.
+  # Only consulted as a fallback for logins githubTeamRoles above doesn't
+  # grant anything to -- e.g. a service account that isn't a team member.
+  githubIdentities: ""
+  pollIntervalMs: 3000
+  pollTimeoutMs: 900000
+  # How long a PARKED turn (one waiting on the caller to finish linking an
+  # account) holds its relay open before giving up. Much longer than
+  # pollTimeoutMs above because it is bounded by human reaction time, and it
+  # matches the link flow's own ~10-minute expiry.
+  #
+  # Lower it wherever turns park routinely rather than exceptionally: each
+  # parked turn occupies a relay for this whole window, so a long hold delays
+  # unrelated triggers behind it.
+  resumeWaitMs: 600000
+
+# Automatic OIDC client_credentials token fetch/refresh for this gateway's
+# own /invoke calls to agent-orchestrator -- an opt-in alternative to
+# config's static, manually-rotated orchestratorToken. Requires a real
+# client_credentials-capable IdP (e.g. Pocket ID); see
+# imaustink/homelab's kubernetes/manifests/agent-controller/README.md for
+# provisioning. Off by default: config.orchestratorToken (a Secret-backed
+# static token) is used unchanged unless this is enabled.
+orchestratorOidc:
+  enabled: false
+  # OIDC token endpoint, e.g. "https://pocket-id.example.com/api/oidc/token".
+  tokenEndpoint: ""
+  clientId: ""
+  # RFC 8707 `resource` param -- the audience the minted token should be
+  # scoped to (agent-orchestrator's own URL, matching its own oidcAudience).
+  resource: ""
+
+# Per-chat-user GitHub identity linking (OAuth Device Flow, docs/adr/0022):
+# turns this gateway into a general external-identity credential broker in
+# addition to its existing GitHub-webhook-relay role, exposing a new
+# internal HTTP API under /identity-link/* (bearer-token-authed, same HTTP
+# server/port as the webhook endpoint -- see src/server.ts's handleRequest --
+# no new Service/port needed). Off by default: none of the fields below are
+# required/rendered unless enabled, and existing webhook-relay behavior is
+# completely unaffected either way.
+#
+# As of the authorization-code (web) flow addition, the GitHub App backing
+# this needs BOTH a client_id (device flow) AND a generated client secret
+# (authcode token exchange -- device flow alone never needed one), plus a
+# registered OAuth callback URL (see githubOauthRedirectUri below). Browser
+# callers default to the authcode flow; device flow remains an explicit
+# fallback for headless callers.
+identityLink:
+  enabled: false
+  # GitHub App OAuth client_id, used by both the device flow and the
+  # authorization-code flow. PUBLIC by design -- GitHub App client ids are
+  # not sensitive (same reasoning values-minikube-demo.yaml already
+  # documents for the Google OAuth client ID), so this is a plain config
+  # value, never wired through the Secret.
+  githubAppClientId: ""
+  # Optional device-flow OAuth scope. Leave empty to use the app's own
+  # default ("repo").
+  githubDeviceFlowScope: ""
+  # Redis URL passed to this app as AGENT_REDIS_URL.
+  #
+  # No longer the credential store: linked credentials are Kubernetes Secrets as
+  # of docs/adr/0034, because this instance runs with persistence disabled on an
+  # emptyDir and its restart deleted every link in the cluster. What still uses it
+  # is the session-page store (see `sessionPage.redisUrl` below), which is
+  # cache-shaped and can afford that.
+  #
+  # Reuses the SAME Redis instance agent-orchestrator's conversation-session store uses
+  # (docs/adr/0016) -- integration-gateway is a sibling subchart under the
+  # same parent (charts/agent-controller), deployed into the same
+  # release/namespace, so agent-orchestrator's Redis Service
+  # ("<agent-orchestrator fullname>-redis", see
+  # charts/agent-orchestrator/templates/redis.yaml) is trivially reachable
+  # cross-subchart by in-cluster DNS. The umbrella chart pins
+  # agent-orchestrator's fullnameOverride to "agent-orchestrator", so the
+  # default below matches that pinned name -- override if you've changed
+  # that pin or point this at a different/external Redis instance entirely.
+  redisUrl: "redis://agent-orchestrator-redis:6379"
+  # OAuth callback URL for the authorization-code (web) flow. MUST exactly
+  # match the URL registered as this GitHub App's "Callback URL" -- GitHub
+  # rejects the token exchange on any mismatch (scheme, host, path, or
+  # trailing slash) -- and that registered URL must itself point at
+  # https://<this gateway's public host>/identity-link/github/callback
+  # (see src/server.ts's handleRequest for the route). Same
+  # externally-registered-value-must-match-verbatim discipline as
+  # GOOGLE_REDIRECT_URI in charts/agent-controller/values.yaml /
+  # values-production.yaml (Open WebUI's Google SSO callback). No default on
+  # purpose -- this MUST be set explicitly by whoever deploys with the
+  # authcode flow enabled.
+  githubOauthRedirectUri: ""
+
+# Session page (issue #81): when the ai-triage label kicks off a run, the
+# gateway posts a "starting work" comment linking to a minimal
+# server-rendered page (served by this same app, GET /sessions/:token) that
+# shows that session's turn history and lets you send it follow-up prompts
+# without posting another GitHub comment. Off by default -- an empty
+# publicBaseUrl disables the whole feature (no link is ever posted, and the
+# page routes are never wired up).
+sessionPage:
+  # Public base URL this Service is reachable at, e.g. matching ingress.host
+  # below (with scheme, no trailing slash) -- required to enable the feature.
+  publicBaseUrl: ""
+  # Redis URL for session-page state, so a posted link (and its turn
+  # history) survives a pod restart. Empty by default -- an in-memory store
+  # is used instead (fine for a single-replica/dev setup, lost on restart).
+  # If identityLink.enabled=true this Release already has a Redis reachable
+  # at "redis://agent-orchestrator-redis:6379" (see that field's comment for
+  # why cross-subchart DNS just works) -- point this at the same instance to
+  # reuse it rather than standing up a second one.
+  redisUrl: ""
+
+# Per-user Claude Code OAuth `setup-token` linking (docs/adr/0027) -- lets a
+# chat user authorize claude-code-swe-agent to run as THEIR OWN Claude
+# subscription/Enterprise seat instead of a shared ANTHROPIC_API_KEY, mirroring
+# identityLink above but for the Anthropic credential. Requires
+# identityLink.enabled=true (reuses its Redis/encryption-key/bearer-token
+# config -- no separate secret) AND sessionPage.publicBaseUrl to be set (the
+# page link handed back needs a reachable host) -- the chart fails to render
+# if this is enabled without both. Also requires the `claude` CLI to actually
+# be present in this image (see the Dockerfile) -- harmless if left disabled.
+claudeAuth:
+  enabled: false
+
+# Secrets: GITHUB_WEBHOOK_SECRET (required), GATEWAY_ORCHESTRATOR_TOKEN
+# (required), and either GITHUB_TOKEN or the three GITHUB_APP_* fields
+# (required for posting issue comments). When identityLink.enabled=true,
+# also: IDENTITY_LINK_ENCRYPTION_KEY (required, a 32-byte AES-256-GCM key,
+# base64-encoded, used to encrypt stored per-user GitHub tokens at rest),
+# GATEWAY_IDENTITY_LINK_TOKEN (required, the bearer token agent-orchestrator
+# authenticates its NEW /identity-link/* calls with -- the opposite
+# direction from GATEWAY_ORCHESTRATOR_TOKEN above, which is how THIS gateway
+# authenticates its calls to the orchestrator; two distinct tokens for two
+# distinct directions), GITHUB_APP_CLIENT_SECRET (required once the
+# authorization-code flow's token-exchange code path is invoked -- the
+# GitHub App's generated client secret; device flow alone never needed
+# this), and IDENTITY_LINK_STATE_SECRET (required for the same reason -- an
+# HMAC signing key for the authcode flow's CSRF `state` tokens; a distinct
+# key from IDENTITY_LINK_ENCRYPTION_KEY on purpose, so rotating one never
+# forces rotating the other).
+#
+# By default the chart does NOT create a Secret -- bring your own via
+# `existingSecret` (see charts/agent-orchestrator's values.yaml for the same
+# convention/rationale). `secrets.create: true` is for local/dev convenience
+# only.
+secrets:
+  create: false
+  existingSecret: ""
+  githubWebhookSecretKey: GITHUB_WEBHOOK_SECRET
+  orchestratorTokenKey: GATEWAY_ORCHESTRATOR_TOKEN
+  orchestratorOidcClientSecretKey: GATEWAY_ORCHESTRATOR_OIDC_CLIENT_SECRET
+  githubTokenKey: GITHUB_TOKEN
+  githubAppIdKey: GITHUB_APP_ID
+  githubAppPrivateKeyKey: GITHUB_APP_PRIVATE_KEY
+  githubAppInstallationIdKey: GITHUB_APP_INSTALLATION_ID
+  identityLinkEncryptionKeyKey: IDENTITY_LINK_ENCRYPTION_KEY
+  identityLinkTokenKey: GATEWAY_IDENTITY_LINK_TOKEN
+  githubAppClientSecretKey: GITHUB_APP_CLIENT_SECRET
+  identityLinkStateSecretKey: IDENTITY_LINK_STATE_SECRET
+  # Signs the sender assertion sent to agent-orchestrator (docs/adr/0030 §6).
+  # MUST match agent-orchestrator's senderAssertionSecretKey value. Unset (or
+  # absent from the Secret) means the sender login is relayed unsigned and the
+  # orchestrator falls back to trusting it -- both sides log a warning.
+  senderAssertionSecretKey: GATEWAY_SENDER_ASSERTION_SECRET
+  # Only read when secrets.create=true.
+  githubWebhookSecret: ""
+  orchestratorToken: ""
+  orchestratorOidcClientSecret: ""
+  githubToken: ""
+  githubAppId: ""
+  githubAppPrivateKey: ""
+  githubAppInstallationId: ""
+  identityLinkEncryptionKey: ""
+  identityLinkToken: ""
+  githubAppClientSecret: ""
+  identityLinkStateSecret: ""
+
+service:
+  type: ClusterIP
+  port: 8090
+
+ingress:
+  # GitHub must reach this Service directly -- unlike agent-orchestrator's
+  # callback port, there's no in-cluster-only port to keep private here.
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  path: /
+  pathType: Prefix
+  tls: []
+
+# Sized for the WORST case this pod actually has, which is not the HTTP relay:
+# it is the relay plus up to two concurrent `claude` CLI subprocesses.
+#
+# MEASURED in this image (a throwaway pod with a 2Gi limit, so nothing was
+# clipped by the limit under test):
+#
+#   one `claude` process        ~152 MiB RSS
+#   two `claude` processes      482 MiB cgroup (299 MiB anon + 179 MiB cache)
+#   the gateway's own node proc ~112 MiB RSS
+#   gateway + two `claude`      ~411 MiB anon, ~590 MiB with page cache
+#
+# Against the previous 256Mi limit, that does not fit -- and it did not fit for
+# ONE subprocess either. `claude auth login` alone drove a fresh container to
+# 280 MiB. So this limit was under-provisioned from the moment claudeAuth was
+# enabled, not merely after docs/adr/0034 added `@kubernetes/client-node`; what
+# that change did was consume the remaining slack that had been letting a single
+# flow squeak through, which is when it started failing.
+#
+# Why two `claude` processes overlap: an Agent declaring both `claude` and
+# `claude-remote` has both link flows started on ONE turn (ADR 0030 §4), and the
+# first flow's PTY stays alive for up to FLOW_IDLE_TIMEOUT_MS (10 min) waiting
+# for the user to paste their code. Each is a Node process of its own.
+#
+# How it presented, which is why the limit is worth this much comment: nothing
+# was OOM-killed (`oom_kill 0`) and the container never restarted. The second
+# `claude` PTY simply spawned into a cgroup with no headroom and printed nothing
+# within its 30s authorize-URL timeout -- a large Node CLI's startup is mostly
+# reading its own JS, and there was no cache left to hold it. Its link flow was
+# reported as failed-to-start, the user authorized only the link they were
+# offered, and the NEXT turn offered them the other. The visible symptom was
+# being asked to authorize twice; nothing in the logs said "memory".
+#
+# 1Gi/1 matches agent-orchestrator. It is ~1.7x the measured worst case, which is
+# headroom for page cache rather than padding: squeezed to the measured figure
+# the cache thrashing is exactly what starves the subprocess. The request is
+# raised off 128Mi too -- the scheduler was placing this as a much smaller pod
+# than it is.
+resources:
+  limits:
+    cpu: 1
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 384Mi
+
+# Matches the hardened run contract in docs/security.md.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+podAnnotations: {}
+podLabels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+extraEnv: []

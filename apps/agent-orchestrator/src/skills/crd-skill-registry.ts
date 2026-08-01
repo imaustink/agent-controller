@@ -1,4 +1,5 @@
 import * as k8s from "@kubernetes/client-node";
+import { makeCrdWatcher, type CrdChangeEvent, type WatchCrdFn } from "../k8s/crd-watcher.js";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import type { SkillDescriptor, SkillRegistry } from "./types.js";
 
@@ -16,9 +17,22 @@ export interface SkillCustomResource {
     /**
      * May be absent/empty for respond-only skills. A Skill CR carries no
      * allowedRoles (docs/adr/0011) — its audience is derived from these
-     * tools' allowedRoles at index time (see derive-access.ts).
+     * tools' (and agentRefs' below, ADR 0021) allowedRoles at index time
+     * (see derive-access.ts).
      */
     toolRefs?: string[];
+    /**
+     * Names of Agent CRs this skill may delegate to directly (ADR 0021) —
+     * no Tool CR wrapper required. Combined with toolRefs for both RBAC
+     * derivation and what the action planner may select from.
+     */
+    agentRefs?: string[];
+    /**
+     * Whether consumer-supplied tools (docs/adr/0035) may be offered alongside
+     * this skill's own refs. Absent means allowed — see `SkillSpec` in
+     * `skill_types.go` for why unset-means-allowed rather than the reverse.
+     */
+    allowCallerTools?: boolean;
   };
 }
 
@@ -28,9 +42,10 @@ export const SKILL_PLURAL = "skills";
 /**
  * Discovers the skill catalog from `Skill` custom resources (ADR 0010) —
  * supersedes the static, hand-authored `catalog.ts` array (ADR 0008).
- * Skills become configurable in-cluster without an image rebuild, at the
- * cost of the same one-shot-at-startup limitation `CrdToolRegistry` has (no
- * live watch loop yet).
+ * Skills become configurable in-cluster without an image rebuild.
+ * `listAll()` is a one-shot read used only for the initial catalog at
+ * startup; `watch()` (ADR 0020) keeps it current afterward via a live k8s
+ * watch, same shape as `CrdToolRegistry`.
  */
 export class CrdSkillRegistry implements SkillRegistry {
   constructor(
@@ -38,6 +53,8 @@ export class CrdSkillRegistry implements SkillRegistry {
     private readonly group: string,
     private readonly version: string,
     private readonly api: CustomObjectsApiLike,
+    /** Absent in tests that only exercise `listAll()`; real instances always pass one via `fromKubeConfig`. */
+    private readonly watchFn?: WatchCrdFn,
   ) {}
 
   static fromKubeConfig(
@@ -46,7 +63,13 @@ export class CrdSkillRegistry implements SkillRegistry {
     version: string,
     kubeConfig: k8s.KubeConfig,
   ): CrdSkillRegistry {
-    return new CrdSkillRegistry(namespace, group, version, kubeConfig.makeApiClient(k8s.CustomObjectsApi));
+    return new CrdSkillRegistry(
+      namespace,
+      group,
+      version,
+      kubeConfig.makeApiClient(k8s.CustomObjectsApi),
+      makeCrdWatcher(kubeConfig),
+    );
   }
 
   async listAll(): Promise<SkillDescriptor[]> {
@@ -63,9 +86,31 @@ export class CrdSkillRegistry implements SkillRegistry {
     }
     return skills;
   }
+
+  watch(
+    onChange: (event: CrdChangeEvent<SkillDescriptor>) => void,
+    onError?: (err: unknown) => void,
+  ): { stop: () => void } {
+    if (!this.watchFn) throw new Error("CrdSkillRegistry.watch() requires a watchFn (construct via fromKubeConfig)");
+    return this.watchFn(
+      { group: this.group, version: this.version, namespace: this.namespace, plural: SKILL_PLURAL },
+      (phase, obj) => {
+        const cr = obj as SkillCustomResource;
+        const id = cr?.metadata?.name;
+        if (!id) return;
+        if (phase === "DELETED") {
+          onChange({ type: "delete", id });
+          return;
+        }
+        const descriptor = toSkillDescriptor(cr);
+        if (descriptor) onChange({ type: "upsert", descriptor });
+      },
+      onError,
+    );
+  }
 }
 
-function toSkillDescriptor(cr: SkillCustomResource): SkillDescriptor | undefined {
+export function toSkillDescriptor(cr: SkillCustomResource): SkillDescriptor | undefined {
   const name = cr.metadata?.name;
   const spec = cr.spec;
   // toolRefs may legitimately be empty (respond-only skill, ADR 0011); only
@@ -85,5 +130,11 @@ function toSkillDescriptor(cr: SkillCustomResource): SkillDescriptor | undefined
     description,
     markdown: spec.markdown,
     toolIds: spec.toolRefs ?? [],
+    agentIds: spec.agentRefs ?? [],
+    // Carried through as-is, INCLUDING undefined: the tri-state (unset /
+    // true / false) is load-bearing, since unset means allowed (docs/adr/0035
+    // §4). Defaulting it here would erase the distinction the CRD's pointer
+    // type exists to preserve.
+    allowCallerTools: spec.allowCallerTools,
   };
 }

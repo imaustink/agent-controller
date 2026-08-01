@@ -87,14 +87,20 @@ export interface LocalToolExecutorOptions {
 export class LocalToolExecutor {
   constructor(private readonly opts: LocalToolExecutorOptions) {}
 
-  async run(descriptor: ToolDescriptor, input: string): Promise<Event> {
+  /**
+   * `sessionId`, if given, is set as `SESSION_ID` in the tool process's own
+   * env (docs/adr/0012) — local tools run in-pod rather than as a separate
+   * Job/Pod, so there's no k8s annotation to attach it to; this is how their
+   * own logs can still be correlated back to the caller's Open WebUI session.
+   */
+  async run(descriptor: ToolDescriptor, input: string, sessionId?: string): Promise<Event> {
     const jobId = randomUUID();
     const spec = descriptor.localExec;
     if (!spec) {
       return failed(jobId, "not_local", `tool ${descriptor.id} has no localExec spec`);
     }
 
-    const env: Record<string, string> = { ...(spec.env ?? {}) };
+    const env: Record<string, string> = { ...(spec.env ?? {}), ...(sessionId ? { SESSION_ID: sessionId } : {}) };
     for (const secretEnv of spec.secretEnv ?? []) {
       let value: string | undefined;
       try {

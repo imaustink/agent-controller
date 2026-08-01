@@ -86,6 +86,102 @@ describe("parseRecipeMarkdown", () => {
     expect(parseRecipeMarkdown("## Ingredients\n\n1. Eggs").title).toBeNull();
   });
 
+  it("parses ### top-level sections (no ## used at all)", () => {
+    const markdown = [
+      "Here's a recipe:",
+      "",
+      "### Ingredients",
+      "- 2 cups fresh peaches",
+      "- 1 cup sugar",
+      "",
+      "### Instructions",
+      "1. Simmer the peaches and sugar.",
+      "2. Strain and cool.",
+    ].join("\n");
+
+    const parsed = parseRecipeMarkdown(markdown);
+    expect(parsed.ingredientSections).toEqual([{ name: null, items: ["2 cups fresh peaches", "1 cup sugar"] }]);
+    expect(parsed.directionSections).toEqual([
+      { name: null, items: ["Simmer the peaches and sugar.", "Strain and cool."] },
+    ]);
+  });
+
+  it.each(["Instructions", "Steps", "Method", "Preparation"])(
+    "treats '%s' as a synonym for the Directions heading",
+    (label) => {
+      const markdown = ["# Pancakes", "", "## Ingredients", "", "1. 2 eggs", "", `## ${label}`, "", "1. Mix"].join(
+        "\n",
+      );
+      expect(parseRecipeMarkdown(markdown).directionSections).toEqual([{ name: null, items: ["Mix"] }]);
+    },
+  );
+
+  it("still nests multi-component subsections one level deeper when the parent section uses ###", () => {
+    const markdown = [
+      "### Ingredients",
+      "#### Crust",
+      "1. Flour",
+      "",
+      "#### Filling",
+      "1. Sugar",
+      "",
+      "### Directions",
+      "1. Mix and bake",
+    ].join("\n");
+
+    const parsed = parseRecipeMarkdown(markdown);
+    expect(parsed.ingredientSections).toEqual([
+      { name: "Crust", items: ["Flour"] },
+      { name: "Filling", items: ["Sugar"] },
+    ]);
+    expect(parsed.directionSections).toEqual([{ name: null, items: ["Mix and bake"] }]);
+  });
+
+  it("uses a non-H1 heading as the title when the recipe doesn't use recipe-scraper's canonical `#`", () => {
+    const markdown = ["### Peach Cocktail Syrup Recipe", "", "#### Ingredients", "- 2 cups peaches"].join("\n");
+    expect(parseRecipeMarkdown(markdown).title).toBe("Peach Cocktail Syrup Recipe");
+  });
+
+  it("strips a heading's own trailing colon (e.g. '#### Ingredients:')", () => {
+    const markdown = ["#### Ingredients:", "- 2 cups peaches", "", "#### Instructions:", "1. Simmer"].join("\n");
+    const parsed = parseRecipeMarkdown(markdown);
+    expect(parsed.ingredientSections).toEqual([{ name: null, items: ["2 cups peaches"] }]);
+    expect(parsed.directionSections).toEqual([{ name: null, items: ["Simmer"] }]);
+  });
+
+  it("folds an indented continuation line into the numbered item above it", () => {
+    const markdown = [
+      "### Peach Cocktail Syrup",
+      "",
+      "#### Ingredients:",
+      "- 2 cups peaches",
+      "",
+      "#### Instructions:",
+      "",
+      "1. **Prepare the Peaches:**",
+      "   - Peel, pit, and slice the fresh peaches.",
+      "2. **Combine Ingredients:**",
+      "   - Mix the peaches, sugar, water, and lemon juice.",
+    ].join("\n");
+
+    const parsed = parseRecipeMarkdown(markdown);
+    expect(parsed.title).toBe("Peach Cocktail Syrup");
+    expect(parsed.directionSections).toEqual([
+      {
+        name: null,
+        items: [
+          "**Prepare the Peaches:** Peel, pit, and slice the fresh peaches.",
+          "**Combine Ingredients:** Mix the peaches, sugar, water, and lemon juice.",
+        ],
+      },
+    ]);
+  });
+
+  it("does not fold an unindented trailing line (e.g. the [Source] link) into the last item", () => {
+    const markdown = ["## Tips", "", "1. Don't overmix", "", "[Source](https://example.com/recipe)"].join("\n");
+    expect(parseRecipeMarkdown(markdown).tips).toEqual(["Don't overmix"]);
+  });
+
   it.each(["-", "*", "•"])("parses %s-bulleted lists the same as numbered lists", (marker) => {
     const markdown = [
       "# Pancakes",

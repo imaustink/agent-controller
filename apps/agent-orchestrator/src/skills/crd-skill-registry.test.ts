@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import type { WatchCrdFn } from "../k8s/crd-watcher.js";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
-import { CrdSkillRegistry, type SkillCustomResource } from "./crd-skill-registry.js";
+import { CrdSkillRegistry, toSkillDescriptor, type SkillCustomResource } from "./crd-skill-registry.js";
 
 const validSkill: SkillCustomResource = {
   metadata: { name: "recipe-publisher-skill" },
@@ -32,8 +33,28 @@ describe("CrdSkillRegistry", () => {
         description: "Extract, adjust, and publish a recipe",
         markdown: "# Recipe Extraction & Publishing\n\n...",
         toolIds: ["recipe-scraper", "recipe-publisher"],
+        agentIds: [],
       },
     ]);
+  });
+
+  it("maps agentRefs to agentIds (ADR 0021)", async () => {
+    const agentBacked: SkillCustomResource = {
+      metadata: { name: "self-improvement-skill" },
+      spec: {
+        description: "Draft a new Skill/Tool CR",
+        markdown: "# Self Improvement",
+        agentRefs: ["opencode-swe-agent"],
+      },
+    };
+    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [agentBacked] });
+    const api: CustomObjectsApiLike = { listNamespacedCustomObject };
+    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+
+    const skills = await registry.listAll();
+
+    expect(skills[0].toolIds).toEqual([]);
+    expect(skills[0].agentIds).toEqual(["opencode-swe-agent"]);
   });
 
   it("maps a respond-only Skill (no toolRefs, ADR 0011) with empty toolIds instead of skipping it", async () => {
@@ -92,5 +113,57 @@ describe("CrdSkillRegistry", () => {
     const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
 
     expect(await registry.listAll()).toEqual([]);
+  });
+
+  describe("watch", () => {
+    it("maps ADDED to an upsert event and DELETED to a delete event", () => {
+      const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
+      let onEvent!: (phase: string, obj: unknown) => void;
+      const watchFn: WatchCrdFn = (opts, cb) => {
+        expect(opts.plural).toBe("skills");
+        onEvent = cb;
+        return { stop: vi.fn() };
+      };
+      const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const onChange = vi.fn();
+      registry.watch(onChange);
+
+      onEvent("ADDED", validSkill);
+      expect(onChange).toHaveBeenCalledWith({
+        type: "upsert",
+        descriptor: expect.objectContaining({ id: "recipe-publisher-skill" }),
+      });
+
+      onEvent("DELETED", validSkill);
+      expect(onChange).toHaveBeenCalledWith({ type: "delete", id: "recipe-publisher-skill" });
+    });
+
+    it("throws when constructed without a watchFn", () => {
+      const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
+      const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      expect(() => registry.watch(() => {})).toThrow();
+    });
+  });
+});
+
+describe("CrdSkillRegistry — allowCallerTools (docs/adr/0035 §4)", () => {
+  function descriptorFor(spec: Partial<SkillCustomResource["spec"]>) {
+    const cr: SkillCustomResource = { ...validSkill, spec: { ...validSkill.spec, ...spec } };
+    return toSkillDescriptor(cr);
+  }
+
+  it("carries an unset field through as undefined, not as a default", () => {
+    // The tri-state is load-bearing: unset means ALLOWED, so collapsing it to a
+    // boolean here would erase the distinction the CRD's pointer type exists to
+    // preserve.
+    expect(descriptorFor({})!.allowCallerTools).toBeUndefined();
+  });
+
+  it("carries an explicit opt-out through", () => {
+    expect(descriptorFor({ allowCallerTools: false })!.allowCallerTools).toBe(false);
+  });
+
+  it("carries an explicit opt-in through", () => {
+    expect(descriptorFor({ allowCallerTools: true })!.allowCallerTools).toBe(true);
   });
 });
