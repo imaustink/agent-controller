@@ -1196,6 +1196,29 @@ async function selectFallbackTool(
 }
 
 /**
+ * Guards `checkActiveSkill`'s fit-check (docs/adr/0012) against a failure mode
+ * the fit-checker's own prompt can't see: it only judges topic continuity
+ * ("is this still the same task?"), so a turn that explicitly asks for a
+ * DIFFERENT capability mid-task (e.g. "use your kubectl access to debug
+ * this" while still inside skill-web-search) reads as "still fits" even
+ * though the active skill's own `toolIds` could never satisfy it — the turn
+ * then gets a flat "I can't do that" from the model instead of ever reaching
+ * a tool that could. Reuses the same narrow `toolFitChecker` the fallback
+ * path (`selectFallbackTool`) already trusts for exactly this judgment,
+ * scoped to candidates NOT already in the skill's own `toolIds`. A hit means
+ * this turn needs full retrieval, not the tools already loaded for the
+ * active skill.
+ */
+async function hasOutOfScopeToolMatch(state: AgentState, skill: SkillDescriptor, deps: AgentGraphDeps): Promise<boolean> {
+  if (!state.identity) return false;
+  const candidates = await deps.vectorStore.query(state.request, { callerRoles: state.identity.roles }, deps.fallbackToolTopK ?? 3);
+  const outOfScope = candidates.filter((c) => !skill.toolIds.includes(c.tool.id));
+  if (outOfScope.length === 0) return false;
+  const fitFlags = await Promise.all(outOfScope.map((c) => deps.toolFitChecker.fits(state.request, c.tool)));
+  return fitFlags.some(Boolean);
+}
+
+/**
  * Calls `bestEffortResponder` for the raw request, streaming deltas through
  * `progressListener` (as "agent-text" content, the same convention
  * `composeAgentTurnMessage` uses) when one is attached. Shared by
@@ -1307,6 +1330,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (!skill) return {};
       const fits = await deps.skillFitChecker.fits(state.request, skill);
       if (!fits) return {};
+      // A "yes, still the same task" verdict can still be wrong if this turn
+      // names a capability outside the skill's own toolIds (see
+      // hasOutOfScopeToolMatch) -- don't reuse the active skill in that case,
+      // fall through to full retrieval instead.
+      if (await hasOutOfScopeToolMatch(state, skill, deps)) return {};
       return { selectedSkill: skill };
     })
     .addNode("checkPendingIdentityLink", async (state) => {

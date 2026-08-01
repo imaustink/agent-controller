@@ -783,6 +783,73 @@ describe("buildAgentGraph session-scoped active skill (ADR 0012)", () => {
     expect(deps.skillFitChecker.fits).not.toHaveBeenCalled();
     expect(deps.skillStore.query).toHaveBeenCalled();
   });
+
+  it("falls back to full retrieval when the turn names a capability outside the active skill's own toolIds, even though the fit-check says it still fits", async () => {
+    // Regression: the fit-checker only judges topic continuity, so "use your
+    // kubectl access to debug this" reads as a continuation of the same
+    // debugging conversation and passes the fit-check -- but the active
+    // skill's toolIds could never call kubectl, so it must not be reused.
+    const kubectlTool: ToolDescriptor = {
+      id: "kubectl-readonly",
+      name: "kubectl-readonly",
+      description: "Runs read-only kubectl commands against the cluster",
+      allowedRoles: ["reader"],
+      jobTemplate: { image: "example.com/kubectl-readonly:latest", namespace: "default", serviceAccountName: "sa" },
+    };
+    const deps = baseDeps({
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ tool: kubectlTool, score: 0.8 }]),
+        getByIds: vi.fn().mockResolvedValue([
+          { tool: scraperTool, score: 1 },
+          { tool: publisherTool, score: 1 },
+        ]),
+      },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "use your kubectl access to debug it",
+      authToken: "tok",
+      activeSkillId: skill.id,
+      sessionSubject: "alice",
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(deps.skillFitChecker.fits).toHaveBeenCalledWith("use your kubectl access to debug it", skill);
+    expect(deps.toolFitChecker.fits).toHaveBeenCalledWith("use your kubectl access to debug it", kubectlTool);
+    // Fell through to full retrieval + selection instead of reusing the skill as-is.
+    expect(deps.skillStore.query).toHaveBeenCalled();
+    expect(deps.skillSelector.select).toHaveBeenCalled();
+  });
+
+  it("keeps the active skill when the only vector-store candidates are already within its toolIds", async () => {
+    const deps = baseDeps({
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ tool: scraperTool, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([
+          { tool: scraperTool, score: 1 },
+          { tool: publisherTool, score: 1 },
+        ]),
+      },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "yes, publish it",
+      authToken: "tok",
+      activeSkillId: skill.id,
+      sessionSubject: "alice",
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedSkill?.id).toBe(skill.id);
+    expect(deps.toolFitChecker.fits).not.toHaveBeenCalled();
+    expect(deps.skillStore.query).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildAgentGraph tool continuation tokens (ADR 0017)", () => {
