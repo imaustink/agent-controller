@@ -61,6 +61,20 @@ spec:
               value: {{ .Values.config.qdrantVectorSize | quote }}
             - name: AGENT_QDRANT_SKILLS_COLLECTION
               value: {{ .Values.config.qdrantSkillsCollection | quote }}
+            - name: AGENT_QDRANT_CALLER_TOOLS_COLLECTION
+              value: {{ .Values.config.qdrantCallerToolsCollection | quote }}
+            {{- if .Values.config.callerToolTopK }}
+            - name: AGENT_CALLER_TOOL_TOP_K
+              value: {{ .Values.config.callerToolTopK | quote }}
+            {{- end }}
+            {{- if .Values.config.callerToolTtlSeconds }}
+            - name: AGENT_CALLER_TOOL_TTL_SECONDS
+              value: {{ .Values.config.callerToolTtlSeconds | quote }}
+            {{- end }}
+            {{- if .Values.config.callerToolPruneIntervalSeconds }}
+            - name: AGENT_CALLER_TOOL_PRUNE_INTERVAL_SECONDS
+              value: {{ .Values.config.callerToolPruneIntervalSeconds | quote }}
+            {{- end }}
             - name: AGENT_EMBEDDING_MODEL
               value: {{ .Values.config.embeddingModel | quote }}
             - name: AGENT_SELECTION_MODEL

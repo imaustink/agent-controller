@@ -28,6 +28,7 @@ Third-party services are stubbed; nothing else is.
 
 | Dependency | Treatment | Why |
 | --- | --- | --- |
+| A consumer's own tools | The test IS the consumer | Caller-supplied tools (ADR 0035) are executed by the client, not by this cluster, so a spec sending `tools` and running the returned call itself is not a stub — it is the real other half of the contract. `support/chat.ts`'s `chatToolTurn` sends a full `messages` array precisely so it can resume by resending the result the way a real client does. |
 | GitHub REST API | `fake-github` in-cluster service | Tests must assert *what we posted* (comments, labels) without writing to a real repo, and must serve deterministic `/user` + permission responses. Pointed at via the existing `githubApiUrl` value — no production code changes. |
 | GitHub webhooks | Signed locally by `support/webhook.ts` | The signature path is real (same HMAC the gateway verifies); only the sender is us. |
 | Anthropic / Claude Code CLI | `stub-agent` image (`apps/stub-agent`) | A real agent run needs a real paid credential and makes the test slow and nondeterministic — and in a cluster holding no credential it never reaches a terminal phase at all, which is why the happy-path spec was once skipped. The stub speaks the **real** NATS agent protocol and declares the **same** `identityProviders` as the agent it stands in for, so everything between the webhook and the reply — routing, RBAC, the identity gate (including its refusal to launch), AgentRun creation, secret injection, the callback — is exercised for real. |
@@ -67,6 +68,14 @@ A rule worth keeping: **when a behaviour differs per entry point, cover it from
 each of them.** Every keying bug in this repo's history has been an asymmetry
 between the two.
 
+`support/invoke.ts` is that rule applied to the third entry point — the
+programmatic accept-then-poll `/invoke` (ADR 0006), driven directly rather than
+through a gateway relay. Caller-supplied tools are the behaviour that needed it:
+both facades may *offer* tools, only the chat facade can *resume* from their
+results, and `/invoke` translates a pending call differently (`pendingToolCalls`
+on the polled record, not `tool_calls` on a message). A documented asymmetry with
+nothing asserting it is just a claim.
+
 ## Running
 
 ```bash
@@ -84,21 +93,95 @@ lists) that concurrent runs would race on.
 ```
 support/
   guard.ts          context safety check — imported by every CLUSTER spec
-  k8s.ts            kubectl wrappers, waitFor helpers
+  k8s.ts            kubectl wrappers, waitFor helpers, port-forwarding
   redis.ts          reads credential/session keys out of the orchestrator's Redis
+  qdrant.ts         reads the orchestrator's Qdrant: which collection holds which points
   webhook.ts        HMAC-signs and posts GitHub webhook payloads
   chat.ts           drives the CHAT entry point (per-user JWT + streaming /v1/chat/completions)
+  invoke.ts         drives the PROGRAMMATIC entry point (accept-then-poll /invoke)
   openwebui-jwt.ts  chat.ts's cluster-free half: JWT minting, SSE assembly
   fixtures.ts       per-test namespace-scoped setup/teardown
   resilience.ts     paces the stub's turn, and DISRUPTS the cluster (NATS, rollouts)
 specs/
   happy-path.e2e.ts       webhook -> triage -> AgentRun -> comment posted
   identity-keying.e2e.ts  which subject each entry point keys credentials under
-  chat-harness.e2e.ts     the harness's own signing, vs. the real resolver (no cluster)
+  caller-tools.e2e.ts     consumer-supplied tools: real Qdrant queries + the tool_calls round trip
+  chat-harness.e2e.ts     the harness's own signing/SSE parsing, vs. the real product (no cluster)
+  waitfor-guard.e2e.ts    waitFor's own bounded-probe guarantee (no cluster)
   resilience.e2e.ts       what survives NATS/orchestrator moving mid-turn
 manifests/
-  fake-github.yaml   in-cluster GitHub API stub (Deployment + Service + script)
+  fake-github.yaml          in-cluster GitHub API stub (Deployment + Service + script)
+  caller-tool-skills.yaml   two Skill CRs differing only in `allowCallerTools`
 ```
+
+### `caller-tools.e2e.ts` is the only thing that validates the Qdrant filter DSL
+
+`apps/agent-orchestrator`'s unit tests mock the Qdrant client outright, which
+means they prove *which method the code meant to call* and nothing about whether
+the query is valid. Caller-supplied tools (ADR 0035) added three hand-written
+filter shapes — `has_id` for the id-restricted search, a payload-only
+`setPayload` for cache-hit touches, and a delete-by-filter `range` for the TTL
+sweep — and a mock accepts all three whether or not Qdrant would.
+
+That matters more than it sounds. `has_id` **is** the isolation boundary for the
+caller-tool collection: it has no RBAC payload filter, because a caller both
+supplies and executes their own function, so a mis-shaped filter is not just a
+500 but a cross-caller leak. And the `range` sweep is the only thing bounding a
+collection Qdrant gives no native TTL. Its first describe block therefore drives
+the real `QdrantCallerToolStore` against the real Qdrant, in **its own throwaway
+collection** (never the deployment's), with a deterministic stand-in embedder —
+the subject is the filter DSL, and paying for real embeddings would add cost and
+nondeterminism to assertions that never look at similarity quality.
+
+The second block asserts the claim no unit test can see: a caller's definitions
+land in `caller_tools` and the `tools`/`skills`/`agents` point counts do not
+move.
+
+Two things worth knowing before editing it:
+
+- **It seeds two Skill CRs, and the planner decision is deliberately made
+  deterministic.** Whether the planner *calls* a caller tool is a real OpenAI
+  decision, and this suite's rule is to assert on deterministic dispatch rather
+  than model judgement. A skill's markdown is trusted system-prompt content — the
+  strongest lever over that decision short of faking the planner — so
+  `manifests/caller-tool-skills.yaml` instructs one skill to always call the
+  caller's tool and gives its `allowCallerTools: false` twin an explicit
+  no-tool branch to take instead. Asserting that branch (not merely "no tool call
+  happened") is what separates the gate working from the model declining anyway.
+  Both descriptions are narrow to the point of uselessness so they can't win
+  retrieval in other specs, and `afterAll` deletes them.
+- **`values-e2e.yaml` sets `callerToolTopK: 3`** (production defaults to 5). The
+  threshold, not the number, is the interesting boundary: below it the
+  just-in-time index is skipped entirely, above it a turn embeds, upserts and runs
+  the filtered search. A smaller K makes both sides reachable with fewer tools,
+  which is fewer real embedding calls per test.
+
+### Every wait is bounded, and that is not decoration
+
+Two rules the harness now enforces, both written down because breaking either
+produced a failure that looked like a product bug and cost a full run to
+disprove:
+
+1. **`waitFor` bounds every probe attempt.** It used to `await probe()`
+   unbounded, which made `timeoutMs` *unreachable* whenever a probe failed to
+   settle — the loop stopped forever without re-checking its own deadline. That
+   is reachable: probes `fetch` through a `kubectl port-forward`, Node's `fetch`
+   has no default timeout, and a forward dropped by a busy apiserver leaves a
+   socket nobody answers. A resilience run sat at **0% CPU for eight minutes** on
+   exactly this — no processes, no sockets, no output — until vitest's per-test
+   timeout killed it and reported "the test timed out", which says nothing about
+   which hop stalled. Hung attempts are now counted and reported separately from
+   failed ones, because "all attempts hung" and "the condition was never true"
+   have different fixes. `specs/waitfor-guard.e2e.ts` pins this, with no cluster.
+2. **Never call `fetch` directly against a cluster service — use
+   `fetchThrough(forward, path)`.** It bounds the request *and* reports whether
+   the port-forward died mid-flight, so a dropped forward reads as a dropped
+   forward instead of as a service that went quiet. `withPortForward` hands
+   `body` the forward as its second argument for precisely this; pass it along
+   rather than closing over `baseUrl` alone.
+
+The practical payoff is that a dropped forward now fails one poll and the next
+poll gets a fresh forward, instead of wedging the entire run.
 
 ### `resilience.e2e.ts` disrupts the cluster on purpose
 

@@ -1,4 +1,4 @@
-import { withPortForward } from "./k8s.js";
+import { fetchThrough, withPortForward } from "./k8s.js";
 
 /**
  * integration-gateway's internal, bearer-gated identity-link API.
@@ -30,8 +30,8 @@ const BEARER = "e2e-identity-link-token";
  * metadata, never credential values (see support/redis.ts).
  */
 export async function identityLinkTokenStatus(subject: string): Promise<number> {
-  return withPortForward(GATEWAY_SERVICE, GATEWAY_PORT, LOCAL_PORT, async (baseUrl) => {
-    const res = await fetch(`${baseUrl}/identity-link/github/token?subject=${encodeURIComponent(subject)}`, {
+  return withPortForward(GATEWAY_SERVICE, GATEWAY_PORT, LOCAL_PORT, async (_baseUrl, forward) => {
+    const res = await fetchThrough(forward, `/identity-link/github/token?subject=${encodeURIComponent(subject)}`, {
       headers: { authorization: `Bearer ${BEARER}` },
     });
     return res.status;
@@ -46,8 +46,8 @@ export async function identityLinkTokenStatus(subject: string): Promise<number> 
  * credential, which is why this one may return its value.
  */
 export async function identityLinkLogin(subject: string): Promise<string | undefined> {
-  return withPortForward(GATEWAY_SERVICE, GATEWAY_PORT, LOCAL_PORT, async (baseUrl) => {
-    const res = await fetch(`${baseUrl}/identity-link/github/identity?subject=${encodeURIComponent(subject)}`, {
+  return withPortForward(GATEWAY_SERVICE, GATEWAY_PORT, LOCAL_PORT, async (_baseUrl, forward) => {
+    const res = await fetchThrough(forward, `/identity-link/github/identity?subject=${encodeURIComponent(subject)}`, {
       headers: { authorization: `Bearer ${BEARER}` },
     });
     if (res.status === 404) return undefined;

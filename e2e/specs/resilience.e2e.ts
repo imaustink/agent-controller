@@ -39,6 +39,28 @@ const WARM_UP_BUDGET_MS = 150_000;
 const GATEWAY_POLL_BUDGET_MS = 90_000;
 
 /**
+ * Issue numbers, unique per call AND unlikely to repeat across runs.
+ *
+ * `Date.now() % 100000` was tempting and wrong in a way worth naming: the issue
+ * number decides the session id (integration-gateway derives
+ * `github:owner/repo#N`), sessions outlive a spec by the orchestrator's session
+ * TTL, and a turn landing on a session that still carries an awaiting-reply anchor
+ * RE-ATTACHES to that old run instead of launching a new one. The symptom would be
+ * `timed out waiting for an AgentRun to be created` — a real product behaviour
+ * (docs/adr/0033) triggered by a fixture, and indistinguishable from a regression.
+ *
+ * A modulo of the clock repeats every 100 seconds' worth of values, so two turns
+ * that happen to be congruent collide. A per-run base plus a counter cannot,
+ * within a run or between back-to-back runs. Test 5 still re-triggers a specific
+ * issue deliberately, via `trigger(issueNumber)` — that path is unaffected.
+ */
+let issueCounter = 0;
+const ISSUE_BASE = 10_000 + (Date.now() % 40_000);
+function nextIssueNumber(): number {
+  return ISSUE_BASE + issueCounter++ * 137;
+}
+
+/**
  * What survives infrastructure moving underneath an in-flight agent turn.
  *
  * These exist because of a real incident that no unit test could have caught
@@ -132,7 +154,7 @@ describe("resilience: infrastructure moving under an in-flight agent turn", () =
    * to a run a previous turn was cut off from.
    */
   async function trigger(onIssue?: number): Promise<{ issueNumber: number; startedAt: Date }> {
-    const issueNumber = onIssue ?? Date.now() % 100000;
+    const issueNumber = onIssue ?? nextIssueNumber();
     const startedAt = new Date();
     const status = await withPortForward(
       "agent-controller-integration-gateway",
@@ -287,12 +309,6 @@ describe("resilience: infrastructure moving under an in-flight agent turn", () =
 
     await rollOrchestrator();
 
-    // The Job runs in its own pod, so this held even BEFORE the fix -- it is
-    // asserted to prove the run really was healthy, which is what made the old
-    // error message a lie rather than a report.
-    const run = await runTerminal(startedAt);
-    expect(run.phase).toBe("Succeeded");
-
     const comment = await commentOn(issueNumber);
     console.log(`  [resilience] post-rollout comment: ${comment?.body?.slice(0, 160)}`);
 
@@ -311,6 +327,27 @@ describe("resilience: infrastructure moving under an in-flight agent turn", () =
     // the NEXT turn re-attaching -- see the resumability spec below, which
     // asserts exactly that.
     expect(comment).toBeDefined();
+
+    // The run SURVIVED the roll: same run, not Failed. That is what makes the old
+    // error message a lie rather than a report -- the thing it claimed had timed
+    // out was in fact alive and holding an answer.
+    //
+    // It is deliberately NOT asserted to be `Succeeded`, and that is not a
+    // weakening -- it is the assertion this test used to make, before
+    // docs/adr/0033 made it unreachable. The agent now HOLDS its concluding
+    // message until someone acks it, re-offering every 10s and giving up only
+    // after `REPLY_ACK_TIMEOUT_MS` (10 minutes, packages/agent-runtime/runtime.ts).
+    // Nothing acks here: this test rolls the orchestrator and never re-triggers,
+    // so the new pod has no reason to re-attach. The run therefore stays Running
+    // for ten minutes by design -- twice this test's whole budget, and past
+    // vitest's per-test timeout. Waiting for `Succeeded` could only ever fail.
+    //
+    // The half this drops is not lost: the very next spec re-triggers the same
+    // issue, and asserts the run reaches `Succeeded` precisely BECAUSE the
+    // re-attach acked it.
+    const [survivor] = await agentRunsSince(startedAt);
+    expect(survivor?.name).toBe(created.name);
+    expect(survivor?.phase).not.toBe("Failed");
   });
 
   /**
@@ -327,7 +364,19 @@ describe("resilience: infrastructure moving under an in-flight agent turn", () =
    * issue-derived `session_id`.
    */
   it("recovers the reply on a follow-up turn after a rollout, without launching a second run", async () => {
-    await paceStubAgent({ narrateForMs: 20_000, narrateEveryMs: 2000 });
+    // `replyAckRetryMs` is turned down from the production 10s because this is the
+    // one spec whose assertion depends on WHEN the held reply is re-offered. The
+    // recovery has to complete inside the gateway's own poll budget: the
+    // re-attaching turn only sees the reply on the agent's next re-offer, and if
+    // that lands after the gateway gives up, the gateway posts a failure and the
+    // answer never arrives -- so waiting longer here cannot help.
+    //
+    // It passed at 10s when this file ran alone and failed inside the full suite,
+    // which is the signature of a budget with no headroom rather than of a broken
+    // recovery. Making the re-offer prompt buys that headroom without touching the
+    // gateway's budget, which is deliberately short so abandoned turns release the
+    // relay quickly (see values-e2e.yaml).
+    await paceStubAgent({ narrateForMs: 20_000, narrateEveryMs: 2000, replyAckRetryMs: 2000 });
 
     const { issueNumber, startedAt } = await trigger();
     const created = await runCreated(startedAt);

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { kubectl, kubectlApplyStdin, withPortForward } from "./k8s.js";
+import { fetchThrough, kubectl, kubectlApplyStdin, withPortForward } from "./k8s.js";
 
 const FAKE_GITHUB_PORT = 18081;
 
@@ -75,9 +75,19 @@ export async function ensureFakeGithub(): Promise<void> {
   await kubectl(["rollout", "status", "deploy/fake-github", "--timeout=120s"]);
 }
 
+/**
+ * Every request fake-github has recorded.
+ *
+ * Uses `fetchThrough` rather than a bare `fetch` for a reason with a scar: this
+ * is polled repeatedly by `commentOn`-style waits, and Node's fetch has no
+ * default timeout, so a port-forward dropped mid-poll left this awaiting a socket
+ * nobody would ever answer. `waitFor` was then stuck inside a probe that could not
+ * finish and never re-checked its own deadline — a resilience run sat silent for
+ * eight minutes on exactly this.
+ */
 export async function fakeGithubRequests(): Promise<RecordedRequest[]> {
-  return withPortForward("fake-github", 80, FAKE_GITHUB_PORT, async (baseUrl) => {
-    const res = await fetch(`${baseUrl}/_e2e/requests`);
+  return withPortForward("fake-github", 80, FAKE_GITHUB_PORT, async (_baseUrl, forward) => {
+    const res = await fetchThrough(forward, "/_e2e/requests");
     return (await res.json()) as RecordedRequest[];
   });
 }
@@ -89,7 +99,7 @@ export async function fakeGithubRequests(): Promise<RecordedRequest[]> {
  */
 export async function resetFakeGithub(): Promise<void> {
   await ensureFakeGithub();
-  await withPortForward("fake-github", 80, FAKE_GITHUB_PORT, async (baseUrl) => {
-    await fetch(`${baseUrl}/_e2e/reset`, { method: "POST" });
+  await withPortForward("fake-github", 80, FAKE_GITHUB_PORT, async (_baseUrl, forward) => {
+    await fetchThrough(forward, "/_e2e/reset", { method: "POST" });
   });
 }

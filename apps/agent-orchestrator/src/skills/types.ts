@@ -32,6 +32,18 @@ export interface SkillDescriptor {
    * be empty (or combined with toolIds — a skill isn't limited to one kind).
    */
   agentIds: string[];
+  /**
+   * Whether consumer-supplied tools (docs/adr/0035 — the request body's `tools`
+   * array, executed by the caller's own client) may be offered to the action
+   * planner alongside this skill's own `toolIds`/`agentIds`.
+   *
+   * `undefined` means ALLOWED, matching `Skill.spec.allowCallerTools` being
+   * unset: the default that agrees with the OpenAI wire contract is "the tools I
+   * sent are usable", and a skill encoding an exact auditable procedure is the
+   * exception that opts out. NOT an authorization boundary — caller tools carry
+   * no RBAC at all, since the caller both supplies and runs them.
+   */
+  allowCallerTools?: boolean;
 }
 
 /**

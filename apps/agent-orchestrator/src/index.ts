@@ -26,6 +26,7 @@ import { ClaudeAuthGatewayClient } from "./identity-link/claude-auth-gateway-cli
 import { ClaudeRemoteGatewayClient } from "./identity-link/claude-remote-gateway-client.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { QdrantToolStore } from "./vector-store/qdrant-store.js";
+import { QdrantCallerToolStore } from "./caller-tools/qdrant-caller-tool-store.js";
 import { OpenAiActionPlanner } from "./agent/action-planner.js";
 import { OpenAiToolFitChecker } from "./agent/tool-fit-checker.js";
 import { OpenAiBestEffortResponder } from "./agent/best-effort-responder.js";
@@ -559,6 +560,35 @@ async function main(): Promise<void> {
   // generation) directly, bypassing the agent graph -- see server.ts's
   // handleInternalUiTask and isInternalUiTaskRequest.
   const taskCompleter = new OpenAiTaskCompleter();
+  // Just-in-time index for consumer-supplied tools (docs/adr/0035), in its own
+  // collection so nothing here can touch the catalog collections above. Nothing
+  // is upserted at startup (there is no catalog to load — definitions arrive in
+  // request bodies), so this only ensures the collection exists.
+  const callerToolStore = new QdrantCallerToolStore(
+    {
+      url: config.qdrantUrl,
+      apiKey: config.qdrantApiKey,
+      collection: config.callerToolsQdrantCollection,
+      vectorSize: config.qdrantVectorSize,
+    },
+    embedder,
+  );
+  await callerToolStore.ensureCollection();
+  // Qdrant has no native TTL, so definitions that stopped being sent are swept
+  // on a timer. `unref()` so an idle sweep timer never holds the process open
+  // during shutdown; it is also cleared explicitly below.
+  const callerToolPruneTimer = setInterval(
+    () => {
+      void callerToolStore
+        .prune(config.callerToolTtlSeconds * 1_000)
+        // A failed sweep is not worth failing anything else over: the only
+        // consequence is that stale definitions live until the next sweep.
+        .catch((err: unknown) => console.warn("caller-tool prune failed:", err));
+    },
+    config.callerToolPruneIntervalSeconds * 1_000,
+  );
+  callerToolPruneTimer.unref();
+
   const invokeServer = new InvokeServer(
     graph,
     sessionStore,
@@ -566,6 +596,8 @@ async function main(): Promise<void> {
     integrationRouteRegistry,
     agentDelegation?.agentChannel,
     config.senderAssertionSecret,
+    callerToolStore,
+    config.callerToolTopK,
   );
   if (!config.senderAssertionSecret) {
     console.error(
@@ -598,6 +630,7 @@ async function main(): Promise<void> {
     agentWatch?.stop();
     integrationRouteWatch.stop();
     if (skillReindexTimer) clearTimeout(skillReindexTimer);
+    clearInterval(callerToolPruneTimer);
 
     // Phase 1 -- stop accepting new work, then let in-flight requests finish.
     // This MUST complete before the transports below are torn down: an

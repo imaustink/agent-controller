@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { WatchCrdFn } from "../k8s/crd-watcher.js";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
-import { CrdSkillRegistry, type SkillCustomResource } from "./crd-skill-registry.js";
+import { CrdSkillRegistry, toSkillDescriptor, type SkillCustomResource } from "./crd-skill-registry.js";
 
 const validSkill: SkillCustomResource = {
   metadata: { name: "recipe-publisher-skill" },
@@ -143,5 +143,27 @@ describe("CrdSkillRegistry", () => {
       const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
       expect(() => registry.watch(() => {})).toThrow();
     });
+  });
+});
+
+describe("CrdSkillRegistry — allowCallerTools (docs/adr/0035 §4)", () => {
+  function descriptorFor(spec: Partial<SkillCustomResource["spec"]>) {
+    const cr: SkillCustomResource = { ...validSkill, spec: { ...validSkill.spec, ...spec } };
+    return toSkillDescriptor(cr);
+  }
+
+  it("carries an unset field through as undefined, not as a default", () => {
+    // The tri-state is load-bearing: unset means ALLOWED, so collapsing it to a
+    // boolean here would erase the distinction the CRD's pointer type exists to
+    // preserve.
+    expect(descriptorFor({})!.allowCallerTools).toBeUndefined();
+  });
+
+  it("carries an explicit opt-out through", () => {
+    expect(descriptorFor({ allowCallerTools: false })!.allowCallerTools).toBe(false);
+  });
+
+  it("carries an explicit opt-in through", () => {
+    expect(descriptorFor({ allowCallerTools: true })!.allowCallerTools).toBe(true);
   });
 });

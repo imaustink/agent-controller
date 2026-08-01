@@ -1,4 +1,5 @@
 import type { AgentRunTemplate } from "./agents/types.js";
+import type { CallerToolDescriptor } from "./caller-tools/types.js";
 
 /**
  * k8s Job template needed to run a tool/sub-agent — everything the launcher
@@ -89,7 +90,7 @@ export interface ToolDescriptor {
   /**
    * Local execution spec (LocalTools, ADR 0014). Set for tools run in-pod by
    * an executor sidecar; absent otherwise. Exactly one of `jobTemplate` /
-   * `localExec` / `agentRunTemplate` is present.
+   * `localExec` / `agentRunTemplate` / `callerTool` is present.
    */
   localExec?: LocalToolSpec;
   /**
@@ -102,6 +103,16 @@ export interface ToolDescriptor {
    * merge. Absent for container/LocalTools.
    */
   agentRunTemplate?: AgentRunTemplate;
+  /**
+   * Caller-supplied function definition (docs/adr/0035) — set when this tool
+   * came from the request body's `tools` array rather than from a `Tool`/
+   * `LocalTool` CR. The fourth mutually-exclusive dispatch kind, and the only
+   * one the orchestrator does NOT execute: `runTool` hands the call back to the
+   * caller as `tool_calls` and ends the turn, because the caller's own client
+   * runs the function. Ids in this namespace are prefixed `caller:` so they can
+   * never collide with or shadow a catalog tool id.
+   */
+  callerTool?: CallerToolDescriptor;
   /**
    * External identity providers the CALLING user must have linked (ADR
    * 0022/0027) before this tool can be launched. For an agent-backed tool,

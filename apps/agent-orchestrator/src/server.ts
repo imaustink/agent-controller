@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AgentState } from "./agent/graph.js";
+import type { ToolCallRecord } from "./agent/action-planner.js";
 import type { AgentOrchestratorChannel } from "./agents/nats-agent-channel.js";
+import {
+  callerToolId,
+  type CallerToolStore,
+  type PendingToolCall,
+  type PriorCallerToolCall,
+} from "./caller-tools/types.js";
+import { parseCallerTools } from "./caller-tools/parse.js";
+import { resolveCallerTools, toCallerToolDescriptor } from "./caller-tools/resolve.js";
+import type { ToolDescriptor } from "./tool-descriptor.js";
 import type { SessionStore } from "./session/types.js";
 import { renderPromptTemplate, type CrdIntegrationRouteRegistry } from "./routing/crd-integration-route-registry.js";
 import {
@@ -9,6 +19,8 @@ import {
   chatCompletionChunk,
   chatCompletionId,
   chatCompletionResponse,
+  chatCompletionToolCallResponse,
+  toolCallDeltaChunk,
   errorStatusAndCode,
   isInternalUiTaskRequest,
   listModelsResponse,
@@ -55,6 +67,17 @@ export interface InvocationRecord {
    * never emits this progress event -- fully backward compatible.
    */
   remoteControlUrl?: string;
+  /**
+   * Tool calls the turn is asking the CALLER to execute (docs/adr/0035), present
+   * only when the planner chose a consumer-supplied tool. A `succeeded` record
+   * carrying these has produced no `result`: the answer depends on the caller
+   * running these functions.
+   *
+   * Note `/invoke` can only OFFER tools, not resume from their results — it takes
+   * a single `request` string with nowhere to put a `role: "tool"` message. The
+   * full round trip is chat-facade-only.
+   */
+  pendingToolCalls?: PendingToolCall[];
 }
 
 /** How often to emit an SSE keep-alive comment while waiting on a slow graph step (e.g. a tool Job). */
@@ -96,6 +119,21 @@ export interface AgentGraphInput {
    * traced back to the conversation that spawned it via `kubectl describe`.
    */
   sessionId?: string;
+  /**
+   * Tools the CONSUMER supplied in this request (docs/adr/0035), already parsed,
+   * validated and relevance-pruned to top-K. Executed by the caller's own client,
+   * never here. Absent for every caller that sends no `tools` array.
+   */
+  callerTools?: ToolDescriptor[];
+  /** The caller sent `tool_choice: "required"` — a planner directive, not a guarantee (docs/adr/0035 §5). */
+  callerToolChoiceRequired?: boolean;
+  /**
+   * Seeds `AgentState.actionHistory` from tool calls the CLIENT already executed
+   * for the exchange in flight (docs/adr/0035 §1) — the wire is the only place
+   * those results exist, and seeding is also what keeps `MAX_TOOL_STEPS` bounding
+   * a resumed loop.
+   */
+  actionHistory?: ToolCallRecord[];
   /** Active skill id from the caller's session, if any (docs/adr/0012). */
   activeSkillId?: string;
   /** Id of the Agent CR the conversation is continuing, if any. */
@@ -208,6 +246,20 @@ export interface AgentGraphLike {
  * is a thin translation layer over the same graph — it doesn't change how
  * `/invoke` behaves.
  */
+/**
+ * Everything a single turn needs to know about consumer-supplied tools
+ * (docs/adr/0035), bundled so it can ride along as one trailing
+ * `buildGraphInput` argument instead of three more positional params.
+ */
+interface CallerToolTurn {
+  /** Resolved, top-K-pruned tools to offer the planner. */
+  tools: ToolDescriptor[];
+  /** `tool_choice: "required"` — a directive, not a guarantee. */
+  required: boolean;
+  /** Prior client-executed calls, mapped into the planner's own history shape. */
+  actionHistory: ToolCallRecord[];
+}
+
 export class InvokeServer {
   private server: Server | undefined;
   private readonly invocations = new Map<string, InvocationRecord>();
@@ -256,6 +308,17 @@ export class InvokeServer {
      * about at startup (see index.ts).
      */
     private readonly senderAssertionSecret?: string,
+    /**
+     * Just-in-time index for consumer-supplied tools (docs/adr/0035), in its own
+     * Qdrant collection. Only consulted when a caller sends MORE tools than
+     * `callerToolTopK` — below that there is nothing to prune, so the store is
+     * skipped and the feature costs nothing. Absent -> a caller sending a large
+     * tool array gets an unranked truncation instead of relevance ranking, never
+     * an error.
+     */
+    private readonly callerToolStore?: CallerToolStore,
+    /** Max consumer-supplied tools that may reach the action planner (docs/adr/0035 §3). */
+    private readonly callerToolTopK: number = 5,
   ) {}
 
   /** Builds the graph input for one turn, folding in any session-scoped active skill or agent run (docs/adr/0012). */
@@ -276,9 +339,19 @@ export class InvokeServer {
     // delegateToAgent think this caller had a live channel).
     remoteControlUrlListener?: (url: string) => void,
     senderLogin?: string,
+    /**
+     * Consumer-supplied tools for this turn (docs/adr/0035), already resolved by
+     * `resolveCallerTools`. Only the chat-completions/invoke facades pass this;
+     * every other caller (webhook triage, session-page follow-ups) has no client
+     * to execute a tool call, so it stays absent.
+     */
+    callerTools?: CallerToolTurn,
   ): Promise<AgentGraphInput> {
     const input: AgentGraphInput = { request, authToken };
     if (senderLogin) input.senderLogin = senderLogin;
+    if (callerTools && callerTools.tools.length > 0) input.callerTools = callerTools.tools;
+    if (callerTools?.required) input.callerToolChoiceRequired = true;
+    if (callerTools && callerTools.actionHistory.length > 0) input.actionHistory = callerTools.actionHistory;
     if (progressListener) input.progressListener = progressListener;
     if (remoteControlUrlListener) input.remoteControlUrlListener = remoteControlUrlListener;
     if (identityLinkFlow) input.identityLinkFlow = identityLinkFlow;
@@ -614,6 +687,13 @@ export class InvokeServer {
     let forcedSkillId: string | undefined;
     let forcedAgentId: string | undefined;
     let senderLogin: string | undefined;
+    // Consumer-supplied tools (docs/adr/0035), accepted here too so a
+    // programmatic `/invoke` caller has parity with the chat facade. The raw
+    // fields are captured inside the parse block and resolved after it, since
+    // resolution is async (it may hit the caller-tool index) while this block is
+    // deliberately synchronous.
+    let rawTools: unknown;
+    let rawToolChoice: unknown;
     try {
       const parsed: unknown = rawBody ? JSON.parse(rawBody) : {};
       if (
@@ -632,6 +712,8 @@ export class InvokeServer {
       // "authcode" default applies) rather than 400ing the whole request.
       const rawFlow = (parsed as { identity_link_flow?: unknown }).identity_link_flow;
       identityLinkFlow = rawFlow === "device" || rawFlow === "authcode" ? rawFlow : undefined;
+      rawTools = (parsed as { tools?: unknown }).tools;
+      rawToolChoice = (parsed as { tool_choice?: unknown }).tool_choice;
 
       // Optional event descriptor (e.g. { source: "github", event: "issues",
       // action: "assigned", owner, repo, issueNumber, ... }) -- an adapter
@@ -698,6 +780,16 @@ export class InvokeServer {
       return;
     }
 
+    // `/invoke` has no prior-tool-call history to read: it takes a single
+    // `request` string, not a message array, so a caller resuming a tool call
+    // here has nowhere to have put the result. Tool offering works; the
+    // round-trip resume is chat-facade-only (see the app README's known gaps).
+    const callerTools = await this.resolveCallerToolTurn(request, rawTools, rawToolChoice, []);
+    if ("error" in callerTools) {
+      res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: callerTools.error }));
+      return;
+    }
+
     const authToken = bearerToken(req.headers.authorization);
     const id = randomUUID();
     this.invocations.set(id, { id, status: "pending" });
@@ -734,6 +826,7 @@ export class InvokeServer {
         }
       },
       senderLogin,
+      callerTools,
     ).then((graphInput) => {
       // Mark the in-flight job identity-link-pending the moment the graph
       // decides a link is needed (before the link URL exists), so a polling
@@ -769,6 +862,10 @@ export class InvokeServer {
             result: state.result,
             error: state.error,
             ...(remoteControlUrl ? { remoteControlUrl } : {}),
+            // `?? []` for the same reason as the chat facade's read: a partial
+            // `AgentGraphLike` implementation must not turn a successful turn
+            // into a failed one.
+            ...((state.pendingToolCalls ?? []).length > 0 ? { pendingToolCalls: state.pendingToolCalls } : {}),
             ...(state.identityLinkPending && state.pendingIdentityLink && state.identity
               ? {
                   identityLinkPending: true,
@@ -812,7 +909,7 @@ export class InvokeServer {
 
   private async handleChatCompletions(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const rawBody = await readBody(req);
-    let parsed: { messages?: unknown; model?: unknown; stream?: unknown };
+    let parsed: { messages?: unknown; model?: unknown; stream?: unknown; tools?: unknown; tool_choice?: unknown };
     try {
       parsed = rawBody ? (JSON.parse(rawBody) as typeof parsed) : {};
     } catch {
@@ -822,13 +919,14 @@ export class InvokeServer {
       return;
     }
 
-    const request = buildAgentRequest(parsed.messages);
-    if (!request) {
+    const built = buildAgentRequest(parsed.messages);
+    if (!built) {
       res.writeHead(400, { "content-type": "application/json" }).end(
         JSON.stringify(openAiError('messages must include a non-empty "user" message', "invalid_request")),
       );
       return;
     }
+    const { request, priorToolCalls } = built;
 
     const model = typeof parsed.model === "string" && parsed.model ? parsed.model : MODEL_ID;
     const authToken = bearerToken(req.headers.authorization);
@@ -840,16 +938,75 @@ export class InvokeServer {
     // generation) must NEVER reach the agent graph — see
     // isInternalUiTaskRequest. Answered directly, with no delegation, no
     // identity resolution, and no session mutation, regardless of `stream`.
+    //
+    // This check stays AHEAD of caller-tool parsing on purpose (docs/adr/0035
+    // §5): Open WebUI sends these to the same endpoint with the same body, so a
+    // title-generation request that happens to carry the chat's tool array must
+    // come back as prose. Emitting a tool call here would have the client
+    // execute a real function as a side effect of rendering a chat title.
     if (isInternalUiTaskRequest(request)) {
       await this.handleInternalUiTask(res, parsed.messages, model, stream);
       return;
     }
 
-    if (!stream) {
-      await this.handleChatCompletionsBlocking(res, request, model, authToken, sessionId, forwardedUserToken);
+    // Consumer-supplied tools (docs/adr/0035). Rejected loudly rather than
+    // dropped: a client that offers tools and silently never gets a tool call
+    // has no way to tell "the agent chose not to" from "the agent never saw
+    // them".
+    const callerTools = await this.resolveCallerToolTurn(request, parsed.tools, parsed.tool_choice, priorToolCalls);
+    if ("error" in callerTools) {
+      res.writeHead(400, { "content-type": "application/json" }).end(
+        JSON.stringify(openAiError(callerTools.error, "invalid_request")),
+      );
       return;
     }
-    await this.handleChatCompletionsStreaming(res, request, model, authToken, sessionId, forwardedUserToken);
+
+    if (!stream) {
+      await this.handleChatCompletionsBlocking(res, request, model, authToken, sessionId, forwardedUserToken, callerTools);
+      return;
+    }
+    await this.handleChatCompletionsStreaming(res, request, model, authToken, sessionId, forwardedUserToken, callerTools);
+  }
+
+  /**
+   * Validates the request's `tools`/`tool_choice` and resolves which of them
+   * reach the planner (docs/adr/0035) — the just-in-time vectorization step,
+   * skipped entirely when the caller sent few enough tools that there is nothing
+   * to prune.
+   *
+   * Also maps prior client-executed calls into the planner's own
+   * {@link ToolCallRecord} shape, using the same `caller:`-namespaced ids the
+   * planner was originally offered, so its duplicate-call guard and
+   * `MAX_TOOL_STEPS` both see them as the calls they actually were.
+   */
+  private async resolveCallerToolTurn(
+    request: string,
+    rawTools: unknown,
+    rawToolChoice: unknown,
+    priorToolCalls: PriorCallerToolCall[],
+  ): Promise<CallerToolTurn | { error: string }> {
+    const parsed = parseCallerTools(rawTools, rawToolChoice);
+    if ("error" in parsed) return parsed;
+    const actionHistory: ToolCallRecord[] = priorToolCalls.map((call) => ({
+      toolId: callerToolId(call.name),
+      toolArgs: call.arguments,
+      result: call.result,
+    }));
+    if (parsed.tools.length === 0) return { tools: [], required: false, actionHistory };
+
+    const resolved = await resolveCallerTools(
+      request,
+      parsed.tools,
+      parsed.choice,
+      this.callerToolTopK,
+      this.callerToolStore,
+      (message, err) => console.warn(`[caller-tools] ${message}`, err ?? ""),
+    );
+    return {
+      tools: resolved.map(toCallerToolDescriptor),
+      required: parsed.choice.kind === "auto" && parsed.choice.required === true,
+      actionHistory,
+    };
   }
 
   /**
@@ -897,6 +1054,7 @@ export class InvokeServer {
     authToken: string,
     sessionId: string | undefined,
     forwardedUserToken?: string,
+    callerTools?: CallerToolTurn,
   ): Promise<void> {
     // A Remote Control session URL is deliberately NOT surfaced on the
     // non-streaming path: RC's whole value is a LIVE session to watch/steer,
@@ -904,7 +1062,19 @@ export class InvokeServer {
     // (nothing live left to join). The streaming path -- the actual Open WebUI
     // chat surface -- streams it inline as it arrives (see
     // handleChatCompletionsStreaming).
-    const graphInput = await this.buildGraphInput(request, authToken, sessionId, undefined, undefined, forwardedUserToken);
+    const graphInput = await this.buildGraphInput(
+      request,
+      authToken,
+      sessionId,
+      undefined,
+      undefined,
+      forwardedUserToken,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      callerTools,
+    );
     const state = await this.graph.invoke(graphInput);
     if (state.error) {
       const { status, code } = errorStatusAndCode(state.error);
@@ -923,6 +1093,21 @@ export class InvokeServer {
       identityLinkPending: state.identityLinkPending,
     });
     const id = chatCompletionId();
+    // The turn is asking the CALLER to run a tool (docs/adr/0035): hand back
+    // `tool_calls` + `finish_reason: "tool_calls"` instead of an answer. Checked
+    // before `result` because this turn deliberately produced no assistant text —
+    // rendering it as a normal completion would show an empty message and the
+    // client would never execute anything.
+    // `?? []` because `AgentGraphLike` is a structural interface: the compiled
+    // LangGraph always populates every annotated field, but a hand-rolled
+    // implementation (every test fake) legitimately returns only the fields it
+    // cares about, and a missing one must not throw on the happy path.
+    if ((state.pendingToolCalls ?? []).length > 0) {
+      res.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify(chatCompletionToolCallResponse(id, model, state.pendingToolCalls)),
+      );
+      return;
+    }
     const content = renderResult(state.result);
     res.writeHead(200, { "content-type": "application/json" }).end(
       JSON.stringify(chatCompletionResponse(id, model, content, "stop")),
@@ -936,6 +1121,7 @@ export class InvokeServer {
     authToken: string,
     sessionId: string | undefined,
     forwardedUserToken?: string,
+    callerTools?: CallerToolTurn,
   ): Promise<void> {
     const id = chatCompletionId();
     res.writeHead(200, {
@@ -958,6 +1144,25 @@ export class InvokeServer {
       }
       writeSseChunk(res, chatCompletionChunk(id, model, { content }, null));
       writeSseChunk(res, chatCompletionChunk(id, model, {}, "stop"));
+      writeSseDone(res);
+      res.end();
+    };
+
+    /**
+     * Terminal variant for a turn that ends by asking the CALLER to run a tool
+     * (docs/adr/0035). Separate from `finish` because the two differ in more than
+     * content: this emits a `tool_calls` delta and finishes with
+     * `finish_reason: "tool_calls"`, which is what tells the client to execute
+     * something rather than render an answer. Any open status spinner is still
+     * closed out the same way.
+     */
+    const finishWithToolCalls = (calls: PendingToolCall[]): void => {
+      if (openStatusLabel !== undefined) {
+        writeSseStatus(res, openStatusLabel, true);
+        openStatusLabel = undefined;
+      }
+      writeSseChunk(res, toolCallDeltaChunk(id, model, calls));
+      writeSseChunk(res, chatCompletionChunk(id, model, {}, "tool_calls"));
       writeSseDone(res);
       res.end();
     };
@@ -1003,7 +1208,7 @@ export class InvokeServer {
           : stage || "working…";
         openStatusLabel = label;
         writeSseStatus(res, label, false);
-      }, undefined, forwardedUserToken);
+      }, undefined, forwardedUserToken, undefined, undefined, undefined, undefined, callerTools);
       const source = await this.graph.stream(graphInput, { streamMode: "updates" });
       // Accumulated across updates so the session can be persisted once the
       // turn reaches a successful terminal node (docs/adr/0012).
@@ -1065,6 +1270,21 @@ export class InvokeServer {
 
         if (typeof update.error === "string") {
           finish(`❌ ${update.error}`);
+          return;
+        }
+        // runTool is terminal when it asked the CALLER to execute a tool
+        // (docs/adr/0035): the answer is with the client now. Checked before the
+        // node-specific branches below because this turn has no `result` to
+        // render at all -- falling through would end it as an empty message and
+        // the client would never run anything.
+        //
+        // The session is still persisted: the conversation's active skill has to
+        // survive so the resumed turn re-enters the same skill with the same
+        // declared tools rather than re-running full retrieval on a message the
+        // user didn't write.
+        if (Array.isArray(update.pendingToolCalls) && update.pendingToolCalls.length > 0) {
+          await persist();
+          finishWithToolCalls(update.pendingToolCalls as PendingToolCall[]);
           return;
         }
         // checkPendingIdentityLink (still waiting on an existing device-flow

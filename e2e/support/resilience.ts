@@ -14,6 +14,20 @@ export interface StubPacing {
   narrateForMs?: number;
   narrateEveryMs?: number;
   silentForMs?: number;
+  /**
+   * How often the runtime RE-OFFERS a concluding reply nobody has acked yet
+   * (`AGENT_REPLY_ACK_RETRY_MS`, packages/agent-runtime). Production default is
+   * 10s, which is a sensible cadence for a real run and too slow for a spec that
+   * has to observe a recovery inside the gateway's poll budget.
+   *
+   * Only worth setting on the resumability spec: after a rollout the held reply is
+   * collected by the NEXT turn re-attaching, and if the re-offer lands late the
+   * gateway gives up on its own poll first and posts a failure instead of the
+   * reply. Turning this down makes the recovery prompt rather than making the test
+   * wait longer -- which it cannot do, since waiting past the gateway's budget
+   * means the answer never arrives at all.
+   */
+  replyAckRetryMs?: number;
 }
 
 /**
@@ -30,6 +44,11 @@ export async function paceStubAgent(pacing: StubPacing): Promise<void> {
     { name: "STUB_NARRATE_FOR_MS", value: String(pacing.narrateForMs ?? 0) },
     { name: "STUB_NARRATE_EVERY_MS", value: String(pacing.narrateEveryMs ?? 2000) },
     { name: "STUB_SILENT_FOR_MS", value: String(pacing.silentForMs ?? 0) },
+    // Omitted unless asked for, so every other spec keeps the production cadence
+    // and this stays a deliberate, local choice rather than a suite-wide default.
+    ...(pacing.replyAckRetryMs === undefined
+      ? []
+      : [{ name: "AGENT_REPLY_ACK_RETRY_MS", value: String(pacing.replyAckRetryMs) }]),
   ];
   await kubectl([
     "patch",

@@ -3701,3 +3701,310 @@ describe("buildAgentGraph route-driven turns re-attach before dispatching again"
     expect(final.selectedAgent?.id).toBe("claude-code-swe");
   });
 });
+
+describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
+  const weatherTool: ToolDescriptor = {
+    id: "caller:get_weather",
+    name: "get_weather",
+    description: "Look up the weather for a city",
+    allowedRoles: [],
+    callerTool: {
+      name: "get_weather",
+      description: "Look up the weather for a city",
+      parametersJson: '{"properties":{"city":{"type":"string"}},"type":"object"}',
+      hash: "a".repeat(64),
+    },
+  };
+
+  /** Deps whose planner picks the caller tool rather than a catalog one. */
+  function callerToolDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
+    return baseDeps({
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "caller:get_weather",
+          toolArgs: '{"city":"Chicago"}',
+        } satisfies PlannedAction),
+      },
+      ...overrides,
+    });
+  }
+
+  it("offers caller tools to the planner alongside the skill's own, and ends the turn with a pending call", async () => {
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "what's the weather in Chicago?",
+      authToken: "tok",
+      callerTools: [weatherTool],
+    });
+
+    // Appended to the skill's resolved tools, not replacing them.
+    expect(deps.actionPlanner.plan).toHaveBeenCalledWith(
+      "what's the weather in Chicago?",
+      expect.objectContaining({ id: "recipe-publisher-skill" }),
+      [scraperTool, publisherTool, weatherTool],
+      [],
+      expect.anything(),
+    );
+    expect(final.error).toBeUndefined();
+    expect(final.pendingToolCalls).toEqual([
+      { id: expect.stringMatching(/^call_[0-9a-f]{32}$/), name: "get_weather", arguments: '{"city":"Chicago"}' },
+    ]);
+  });
+
+  it("executes nothing for a caller tool — no Job, no ToolRun, no continuation bookkeeping", async () => {
+    // The defining property of this dispatch kind: the caller's own client runs
+    // the function, so the orchestrator must not launch or record anything.
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "what's the weather in Chicago?",
+      authToken: "tok",
+      callerTools: [weatherTool],
+    });
+
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+    expect(deps.jobResultReceiver.awaitJob).not.toHaveBeenCalled();
+    expect(final.extractedContinuation).toBeUndefined();
+    expect(final.actionHistory).toEqual([]);
+    // No assistant text at all -- the answer depends on the client running this.
+    expect(final.result).toBeUndefined();
+  });
+
+  it("does not loop back to planAction after a caller tool call", async () => {
+    // Re-planning would judge against a result that doesn't exist yet.
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(deps.actionPlanner.plan).toHaveBeenCalledTimes(1);
+  });
+
+  it("withholds caller tools from a skill that opted out via allowCallerTools: false", async () => {
+    const guardedSkill: SkillDescriptor = { ...skill, allowCallerTools: false };
+    const deps = callerToolDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: guardedSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([guardedSkill]),
+      } as SkillStore,
+      skillSelector: { select: vi.fn().mockResolvedValue(guardedSkill) },
+      // The planner would still name the caller tool; planAction's re-validation
+      // against the resolved list is what must reject it.
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(deps.actionPlanner.plan).toHaveBeenCalledWith(
+      "weather?",
+      expect.objectContaining({ id: "recipe-publisher-skill" }),
+      [scraperTool, publisherTool],
+      [],
+      expect.anything(),
+    );
+    expect(final.pendingToolCalls).toEqual([]);
+    expect(final.error).toBe("planner selected a tool outside the skill's scope");
+  });
+
+  it("offers caller tools to a skill that leaves allowCallerTools unset", async () => {
+    // Unset means allowed -- the default that matches the OpenAI wire contract.
+    expect(skill.allowCallerTools).toBeUndefined();
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(final.pendingToolCalls).toHaveLength(1);
+  });
+
+  it("makes a respond-only skill tool-capable via caller tools alone", async () => {
+    const respondOnly: SkillDescriptor = { ...skill, toolIds: [], agentIds: [] };
+    const deps = callerToolDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: respondOnly, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([respondOnly]),
+      } as SkillStore,
+      skillSelector: { select: vi.fn().mockResolvedValue(respondOnly) },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(final.pendingToolCalls).toHaveLength(1);
+    // Nothing was resolved out of the catalog for this skill.
+    expect(deps.vectorStore.getByIds).not.toHaveBeenCalled();
+  });
+
+  it("errors clearly when the planner produces non-JSON arguments for a caller tool", async () => {
+    // Every other dispatch kind takes a plain string; sending the client
+    // arguments that don't match its schema would fail confusingly on its side.
+    const deps = callerToolDeps({
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "caller:get_weather",
+          toolArgs: "the weather in Chicago please",
+        } satisfies PlannedAction),
+      },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(final.pendingToolCalls).toEqual([]);
+    expect(final.error).toContain("needs JSON arguments");
+  });
+
+  it("treats empty planner arguments as a no-argument call", async () => {
+    const deps = callerToolDeps({
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "caller:get_weather",
+          toolArgs: "",
+        } satisfies PlannedAction),
+      },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(final.pendingToolCalls[0]!.arguments).toBe("{}");
+  });
+
+  it("considers caller tools on the no-match fallback path, with no fit-check gate", async () => {
+    // No skill matched, so there is no allowCallerTools gate -- and the
+    // fit-checker exists for loose CATALOG matches, not for tools the caller
+    // explicitly supplied.
+    const deps = callerToolDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([]),
+      } as SkillStore,
+      skillSelector: { select: vi.fn().mockResolvedValue(undefined) },
+      toolFitChecker: { fits: vi.fn().mockResolvedValue(false) },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "weather?", authToken: "tok", callerTools: [weatherTool] });
+
+    expect(deps.toolFitChecker.fits).not.toHaveBeenCalled();
+    expect(deps.bestEffortResponder.respond).not.toHaveBeenCalled();
+    expect(final.pendingToolCalls).toHaveLength(1);
+  });
+
+  it("resumes from client-executed results seeded into actionHistory", async () => {
+    // The wire is the only place a caller-executed result exists (docs/adr/0035
+    // §1): the planner must see it and be able to finish on it, with `result`
+    // populated even though no runTool ran in this invocation.
+    const deps = baseDeps({
+      actionPlanner: { plan: vi.fn().mockResolvedValue({ action: "finish" } satisfies PlannedAction) },
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "what's the weather in Chicago?",
+      authToken: "tok",
+      callerTools: [weatherTool],
+      actionHistory: [{ toolId: "caller:get_weather", toolArgs: '{"city":"Chicago"}', result: "58F and raining" }],
+    });
+
+    expect(deps.actionPlanner.plan).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.anything(),
+      expect.arrayContaining([weatherTool]),
+      [{ toolId: "caller:get_weather", toolArgs: '{"city":"Chicago"}', result: "58F and raining" }],
+      expect.anything(),
+    );
+    expect(final.error).toBeUndefined();
+    expect(final.result).toBe("58F and raining");
+  });
+
+  it("finishes on the seeded result when a resumed planner re-issues the already-run call", async () => {
+    // tool_choice: "required" is re-applied on the resend (server.ts sets it
+    // whenever tools are present), which nudges the planner to re-call the one
+    // tool already in seeded actionHistory. The verbatim-repeat guard must then
+    // finish with THAT result -- not `undefined` -- since no runTool ran this
+    // invocation to populate state.result. Regression for the caller-tool
+    // resume path where the guard used to drop the seeded result.
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "what's the weather in Chicago?",
+      authToken: "tok",
+      callerTools: [weatherTool],
+      callerToolChoiceRequired: true,
+      actionHistory: [{ toolId: "caller:get_weather", toolArgs: '{"city":"Chicago"}', result: "58F and raining" }],
+    });
+
+    // Planner re-issues the identical call; the guard treats it as done and
+    // carries the seeded result rather than finishing with `undefined`.
+    expect(deps.actionPlanner.plan).toHaveBeenCalledTimes(1);
+    expect(final.pendingToolCalls).toEqual([]);
+    expect(final.error).toBeUndefined();
+    expect(final.result).toBe("58F and raining");
+  });
+
+  it("bounds a resumed loop with seeded history rather than restarting the step count", async () => {
+    // Otherwise a client could drive an unbounded planner loop by resending.
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "weather?",
+      authToken: "tok",
+      callerTools: [weatherTool],
+      actionHistory: Array.from({ length: 4 }, (_, i) => ({
+        toolId: "caller:get_weather",
+        toolArgs: `{"n":${i}}`,
+        result: `r${i}`,
+      })),
+    });
+
+    // MAX_TOOL_STEPS reached -> finish without ever consulting the planner.
+    expect(deps.actionPlanner.plan).not.toHaveBeenCalled();
+    expect(final.pendingToolCalls).toEqual([]);
+    expect(final.result).toBe("r3");
+  });
+
+  it("passes tool_choice: required through to the planner as a directive", async () => {
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({
+      request: "weather?",
+      authToken: "tok",
+      callerTools: [weatherTool],
+      callerToolChoiceRequired: true,
+    });
+
+    expect(deps.actionPlanner.plan).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.anything(),
+      expect.anything(),
+      [],
+      { callerToolRequired: true },
+    );
+  });
+
+  it("behaves exactly as before when the caller supplies no tools", async () => {
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.pendingToolCalls).toEqual([]);
+    expect(final.result).toEqual({ title: "Pancakes" });
+  });
+});

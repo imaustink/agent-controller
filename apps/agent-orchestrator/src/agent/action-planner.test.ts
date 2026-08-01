@@ -183,3 +183,83 @@ describe("OpenAiActionPlanner", () => {
     expect(result).toEqual({ action: "respond", response: "fallback text" });
   });
 });
+
+describe("OpenAiActionPlanner — consumer-supplied tools (docs/adr/0035)", () => {
+  const callerTool: ToolDescriptor = {
+    id: "caller:get_weather",
+    name: "get_weather",
+    description: "Look up the weather",
+    allowedRoles: [],
+    callerTool: {
+      name: "get_weather",
+      description: "Look up the weather",
+      parametersJson: '{"properties":{"city":{"type":"string"}},"type":"object"}',
+      hash: "b".repeat(64),
+    },
+  };
+
+  /** The prompt the planner actually sent, for assertions below. */
+  function sentPrompt(client: OpenAI): { system: string; user: string } {
+    const call = (client.chat.completions.create as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]?.[0] as {
+      messages: { role: string; content: string }[];
+    };
+    return {
+      system: call.messages.find((m) => m.role === "system")?.content ?? "",
+      user: call.messages.find((m) => m.role === "user")?.content ?? "",
+    };
+  }
+
+  it("renders caller tools in their own block, out of <available_tools>", async () => {
+    const client = fakeClient({ action: "respond", response: "ok", tool_id: null, tool_args: null });
+    const planner = new OpenAiActionPlanner({ client });
+
+    await planner.plan("weather?", skill, [...tools, callerTool]);
+
+    const { user } = sentPrompt(client);
+    // Catalog tool stays in the plain list; the caller tool does not.
+    const availableBlock = user.slice(user.indexOf("<available_tools>"), user.indexOf("</available_tools>"));
+    expect(availableBlock).toContain("recipe-scraper");
+    expect(availableBlock).not.toContain("caller:get_weather");
+    expect(user).toContain("<caller_supplied_tools>");
+    expect(user).toContain("caller:get_weather");
+  });
+
+  it("frames caller-supplied text as untrusted and includes the JSON schema", async () => {
+    // Untrusted because it's per-request caller data -- a level below a Tool CR
+    // description and two below the skill markdown. The schema has to be there
+    // for the planner to produce conforming arguments.
+    const client = fakeClient({ action: "respond", response: "ok", tool_id: null, tool_args: null });
+    const planner = new OpenAiActionPlanner({ client });
+
+    await planner.plan("weather?", skill, [callerTool]);
+
+    const { user } = sentPrompt(client);
+    expect(user).toContain("UNTRUSTED");
+    expect(user).toContain('json_schema: {"properties":{"city":{"type":"string"}},"type":"object"}');
+    expect(user).toContain("JSON OBJECT literal");
+  });
+
+  it("omits the block entirely when no caller tools were supplied", async () => {
+    const client = fakeClient({ action: "respond", response: "ok", tool_id: null, tool_args: null });
+    const planner = new OpenAiActionPlanner({ client });
+
+    await planner.plan("do a thing", skill, tools);
+
+    expect(sentPrompt(client).user).not.toContain("<caller_supplied_tools>");
+  });
+
+  it("adds a tool-required directive only when the caller asked for one AND has tools on offer", async () => {
+    const withTools = fakeClient({ action: "respond", response: "ok", tool_id: null, tool_args: null });
+    await new OpenAiActionPlanner({ client: withTools }).plan("weather?", skill, [callerTool], [], {
+      callerToolRequired: true,
+    });
+    expect(sentPrompt(withTools).system).toContain("requested that a tool be called");
+
+    // No caller tools -> the directive would be meaningless.
+    const withoutTools = fakeClient({ action: "respond", response: "ok", tool_id: null, tool_args: null });
+    await new OpenAiActionPlanner({ client: withoutTools }).plan("do a thing", skill, tools, [], {
+      callerToolRequired: true,
+    });
+    expect(sentPrompt(withoutTools).system).not.toContain("requested that a tool be called");
+  });
+});

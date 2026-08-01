@@ -16,6 +16,30 @@ export interface AppConfig {
   skillsQdrantCollection: string;
   /** Collection name for the agent catalog, same Qdrant instance, separate collection from tools/skills. */
   agentsQdrantCollection: string;
+  /**
+   * Collection name for consumer-supplied tools (docs/adr/0035) — same Qdrant
+   * instance, deliberately its OWN collection so a caller's ephemeral function
+   * definitions can never enter the tool catalog's candidate set or affect its
+   * recall. Points are keyed by content hash, which makes the collection an
+   * embedding cache: an identical definition is embedded once, ever.
+   */
+  callerToolsQdrantCollection: string;
+  /**
+   * Max consumer-supplied tools that may reach the action planner
+   * (docs/adr/0035 §3). Doubles as the threshold below which the caller-tool
+   * index is skipped ENTIRELY: with this many tools or fewer there is nothing to
+   * prune, so a caller sending a handful pays no embedding or Qdrant cost at all.
+   */
+  callerToolTopK: number;
+  /**
+   * How long an unused caller-tool definition survives before being swept
+   * (Qdrant has no native TTL, so this is a periodic `prune`). Any turn that
+   * references a definition refreshes it, so this only ages out tool sets that
+   * genuinely stopped being sent.
+   */
+  callerToolTtlSeconds: number;
+  /** How often to run that sweep. */
+  callerToolPruneIntervalSeconds: number;
   embeddingModel: string;
   selectionModel: string;
   /** Max candidate skills retrieved per request, before skill selection (docs/adr/0008). */
@@ -192,6 +216,10 @@ export const config: AppConfig = {
   qdrantVectorSize: num(process.env.AGENT_QDRANT_VECTOR_SIZE, 1536),
   skillsQdrantCollection: process.env.AGENT_QDRANT_SKILLS_COLLECTION ?? "skills",
   agentsQdrantCollection: process.env.AGENT_QDRANT_AGENTS_COLLECTION ?? "agents",
+  callerToolsQdrantCollection: process.env.AGENT_QDRANT_CALLER_TOOLS_COLLECTION ?? "caller_tools",
+  callerToolTopK: num(process.env.AGENT_CALLER_TOOL_TOP_K, 5),
+  callerToolTtlSeconds: num(process.env.AGENT_CALLER_TOOL_TTL_SECONDS, 604_800), // 7 days
+  callerToolPruneIntervalSeconds: num(process.env.AGENT_CALLER_TOOL_PRUNE_INTERVAL_SECONDS, 3_600),
   embeddingModel: process.env.AGENT_EMBEDDING_MODEL ?? "text-embedding-3-small",
   selectionModel: process.env.AGENT_SELECTION_MODEL ?? "gpt-4o-2024-08-06",
   skillTopK: num(process.env.AGENT_SKILL_TOP_K, 3),

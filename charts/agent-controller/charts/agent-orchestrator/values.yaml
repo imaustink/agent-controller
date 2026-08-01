@@ -43,9 +43,21 @@ config:
   qdrantCollection: tools
   qdrantVectorSize: 1536
   qdrantSkillsCollection: skills
+  # Consumer-supplied tools (docs/adr/0035) live in their own collection, keyed
+  # by content hash so identical definitions are embedded once, ever. Kept apart
+  # from the catalog collections above so a caller's ephemeral definitions can
+  # never affect catalog retrieval.
+  qdrantCallerToolsCollection: caller_tools
   embeddingModel: text-embedding-3-small
   selectionModel: gpt-4o-2024-08-06
   skillTopK: 3
+  # Max consumer-supplied tools that may reach the action planner, and the
+  # threshold below which the caller-tool index is skipped entirely (with this
+  # many or fewer there is nothing to prune). Leave empty for the orchestrator's
+  # own defaults (5 tools, 7-day TTL swept hourly).
+  callerToolTopK: ""
+  callerToolTtlSeconds: ""
+  callerToolPruneIntervalSeconds: ""
   # Base URL Job pods use to reach the callback receiver. Leave empty to
   # default to the in-cluster callback Service DNS name (ADR 0006).
   callbackBaseUrl: ""

@@ -205,3 +205,13 @@ agent-orchestrator:
     # wall-clock ceiling, and a short one here would mask an idle-window bug by
     # failing runs for the wrong reason.
     agentRunTimeoutSeconds: 28800
+    # Lowered from the default 5 so caller-tools.e2e.ts can cross the top-K
+    # threshold with a 4-tool array instead of a 6-tool one (docs/adr/0035 §3).
+    #
+    # The threshold is the interesting boundary, not the number: below it the
+    # just-in-time index is skipped ENTIRELY (nothing to prune), above it a turn
+    # embeds, upserts and runs a filtered vector search. Both sides need
+    # exercising against a real Qdrant, and a smaller K makes each side reachable
+    # with fewer tools -- which is fewer real embedding calls per test, not just
+    # a shorter fixture.
+    callerToolTopK: 3

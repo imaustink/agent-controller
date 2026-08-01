@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
+import type { PendingToolCall, PriorCallerToolCall } from "../caller-tools/types.js";
 
 /**
  * Translation layer between the OpenAI Chat Completions wire format and the
@@ -12,6 +13,10 @@ export const MODEL_ID = "agent-orchestrator";
 interface ChatMessage {
   role?: unknown;
   content?: unknown;
+  /** Present on an assistant message that asked the client to run a tool (docs/adr/0035). */
+  tool_calls?: unknown;
+  /** Present on a `role: "tool"` message, correlating it back to that request. */
+  tool_call_id?: unknown;
 }
 
 export function listModelsResponse(): unknown {
@@ -36,6 +41,18 @@ function findLastMessageIndex(messages: ChatMessage[], role: string, before: num
     }
   }
   return -1;
+}
+
+/** What {@link buildAgentRequest} extracts from an incoming `messages` array. */
+export interface AgentRequest {
+  /** The request string the graph sees, including any folded `<conversation_history>`. */
+  request: string;
+  /**
+   * Tool calls the CALLER already executed for the exchange in flight, paired
+   * with their results (docs/adr/0035). Seeds `AgentState.actionHistory`; empty
+   * for every ordinary turn.
+   */
+  priorToolCalls: PriorCallerToolCall[];
 }
 
 /** Most recent prior messages folded into the request (see {@link buildAgentRequest}). */
@@ -88,13 +105,21 @@ function stripSelfImprovementFooter(content: string): string {
  * markdown's untrusted-data framing. It's bounded (message count + char
  * budget, oldest dropped first) so a long chat can't grow the prompt — and
  * the RAG embedding of it — without limit.
+ *
+ * Tool calls the client already executed are NOT folded into that prose. They're
+ * returned separately as {@link AgentRequest.priorToolCalls} (docs/adr/0035 §1),
+ * so the planner reads them as structured tool results rather than as
+ * conversation text.
  */
-export function buildAgentRequest(messages: unknown): string | undefined {
+export function buildAgentRequest(messages: unknown): AgentRequest | undefined {
   if (!Array.isArray(messages)) return undefined;
   const arr = messages as ChatMessage[];
   const userIdx = findLastMessageIndex(arr, "user");
   if (userIdx === -1) return undefined;
   const userContent = arr[userIdx]!.content as string;
+  // Tool calls the CLIENT already executed for us, lifted out as structured
+  // history rather than folded into the prose below (docs/adr/0035 §1).
+  const priorToolCalls = collectPriorToolCalls(arr, userIdx);
 
   // Collect prior user/assistant turns, newest-last, bounded by count.
   const prior: { role: string; content: string }[] = [];
@@ -111,10 +136,64 @@ export function buildAgentRequest(messages: unknown): string | undefined {
   while (prior.length > 0 && total > HISTORY_MAX_CHARS) {
     total -= prior.shift()!.content.length;
   }
-  if (prior.length === 0) return userContent;
+  if (prior.length === 0) return { request: userContent, priorToolCalls };
 
   const history = prior.map((m) => `<message role="${m.role}">\n${m.content}\n</message>`).join("\n");
-  return `<conversation_history>\n${history}\n</conversation_history>\n\n${userContent}`;
+  return {
+    request: `<conversation_history>\n${history}\n</conversation_history>\n\n${userContent}`,
+    priorToolCalls,
+  };
+}
+
+/**
+ * Pairs up `assistant.tool_calls` with their matching `role: "tool"` results
+ * (docs/adr/0035 §1) — the ONLY way a caller-executed tool's output reaches the
+ * orchestrator, since there is no server-side conversation store.
+ *
+ * Scoped to messages AFTER the last user turn: those are the calls belonging to
+ * the exchange currently in flight. Anything before it belongs to a completed
+ * exchange and is already represented by the assistant prose in
+ * `<conversation_history>` — replaying it as live tool history would make the
+ * planner think it had just called those tools this turn.
+ *
+ * Note the two failure modes this closes. Before this existed, a `role: "tool"`
+ * message was dropped outright (the history fold keeps only user/assistant), so
+ * a client's result vanished and the planner would re-issue the same call
+ * forever. And an assistant message carrying only `tool_calls` has
+ * `content: null`, which the history fold skips — so lifting the pair out here
+ * is also what keeps the call itself from disappearing.
+ */
+function collectPriorToolCalls(messages: ChatMessage[], userIdx: number): PriorCallerToolCall[] {
+  // Every tool call the assistant asked for after the last user turn, in order.
+  const requested = new Map<string, { name: string; arguments: string }>();
+  for (let i = userIdx + 1; i < messages.length; i++) {
+    const message = messages[i];
+    if (!message || message.role !== "assistant" || !Array.isArray(message.tool_calls)) continue;
+    for (const call of message.tool_calls as { id?: unknown; function?: { name?: unknown; arguments?: unknown } }[]) {
+      const id = call?.id;
+      const name = call?.function?.name;
+      if (typeof id !== "string" || typeof name !== "string") continue;
+      const args = call.function?.arguments;
+      requested.set(id, { name, arguments: typeof args === "string" ? args : JSON.stringify(args ?? {}) });
+    }
+  }
+  if (requested.size === 0) return [];
+
+  const calls: PriorCallerToolCall[] = [];
+  for (let i = userIdx + 1; i < messages.length; i++) {
+    const message = messages[i];
+    if (!message || message.role !== "tool") continue;
+    const id = message.tool_call_id;
+    if (typeof id !== "string") continue;
+    const request = requested.get(id);
+    // An unmatched result is skipped rather than guessed at: without the paired
+    // call there's no tool name to attribute it to, so it would enter the
+    // planner's history as an orphan blob.
+    if (!request) continue;
+    const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? null);
+    calls.push({ id, name: request.name, arguments: request.arguments, result: content });
+  }
+  return calls;
 }
 
 /**
@@ -219,6 +298,69 @@ export function chatCompletionChunk(
     model,
     choices: [{ index: 0, delta, finish_reason: finishReason }],
   };
+}
+
+/**
+ * Renders pending caller-tool calls in OpenAI's `tool_calls` wire shape
+ * (docs/adr/0035 §1). The client matches `function.name` back to one of its own
+ * functions, runs it, and resends the conversation with a `role: "tool"` message
+ * whose `tool_call_id` echoes `id`.
+ */
+function toolCallsPayload(calls: PendingToolCall[]): unknown[] {
+  return calls.map((call) => ({
+    id: call.id,
+    type: "function",
+    function: { name: call.name, arguments: call.arguments },
+  }));
+}
+
+/**
+ * Blocking response for a turn that ended by asking the CALLER to run a tool.
+ *
+ * `content: null` (not `""`) and `finish_reason: "tool_calls"` are what tell an
+ * OpenAI client this is a tool-call turn rather than a finished answer — a client
+ * that sees `"stop"` here would render an empty assistant message and never
+ * execute anything.
+ */
+export function chatCompletionToolCallResponse(id: string, model: string, calls: PendingToolCall[]): unknown {
+  return {
+    id,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: null, tool_calls: toolCallsPayload(calls) },
+        finish_reason: "tool_calls",
+      },
+    ],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+  };
+}
+
+/**
+ * Streaming counterpart: one delta carrying the whole `tool_calls` array (this
+ * agent never streams partial arguments — the planner produces them in one shot,
+ * so there is nothing to emit incrementally), followed by a
+ * `finish_reason: "tool_calls"` chunk. `index` is required on each entry: it's
+ * how a streaming client assembles multiple calls.
+ */
+export function toolCallDeltaChunk(id: string, model: string, calls: PendingToolCall[]): unknown {
+  return chatCompletionChunk(
+    id,
+    model,
+    {
+      role: "assistant",
+      tool_calls: calls.map((call, index) => ({
+        index,
+        id: call.id,
+        type: "function",
+        function: { name: call.name, arguments: call.arguments },
+      })),
+    },
+    null,
+  );
 }
 
 export function chatCompletionResponse(id: string, model: string, content: string, finishReason: string): unknown {
