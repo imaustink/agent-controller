@@ -58,6 +58,12 @@ export interface RemoteControlRunOptions extends ClaudeRunOptions {
    */
   startupTimeoutMs?: number;
   /**
+   * How long a finished turn may be held open, after completion, waiting for the
+   * Remote Control bridge to surface its session URL when it has not already.
+   * Defaults to {@link REMOTE_CONTROL_URL_GRACE_MS}; injectable for tests.
+   */
+  urlGraceMs?: number;
+  /**
    * Optional ABSOLUTE wall-clock backstop. Defaults to no bound at all: a real
    * coding turn can legitimately run for hours, the idle bound above is what
    * ends a stuck one, and the AgentRun Job's `activeDeadlineSeconds` is the
@@ -416,6 +422,34 @@ const REMOTE_CONTROL_WAITING_TIMEOUT_MS = 5 * 60_000;
  * takes seconds when it works.
  */
 const REMOTE_CONTROL_STARTUP_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * How long a FINISHED turn may be held open, after `turn_duration` lands, purely
+ * to let the Remote Control bridge surface its session URL (the transcript's
+ * `bridgeSessionId` line) before we return.
+ *
+ * This is the deterministic fix for issue #183: the "watch live / take over the
+ * session" link was posted for most runs but dropped intermittently on the
+ * `ai-review` flow. The two facts behind it are the reply loop's ordering (the
+ * URL is emitted the instant `bridgeSessionId` is seen, `turn_duration` ends the
+ * wait) and that the bridge's `bridgeSessionId` line is written when its ASYNC
+ * registration handshake with claude.ai completes -- NOT necessarily before the
+ * turn does. A long triage turn registers the bridge many polls before it
+ * finishes, so the URL is always emitted first. A fast, read-only review can
+ * finish in the same poll window the bridge is still registering in, and
+ * returning the instant `turn_duration` appears drops the link -- which of the
+ * two the transcript flushed first is a race, and that race is exactly the
+ * "sometimes it fails to" the maintainer saw. Reporting the URL is deterministic
+ * once the `bridgeSessionId` line exists; this bound just stops a fast
+ * completion from racing it out of existence.
+ *
+ * Only ever paid when a turn completes WITHOUT its URL already reported (the
+ * failing case) -- the common path, where the bridge registered early and the
+ * URL was emitted mid-turn, skips this entirely. Bounded because a bridge that
+ * has not registered within seconds of the turn finishing almost certainly
+ * never will (registration failed), and a completed review must not hang on it.
+ */
+const REMOTE_CONTROL_URL_GRACE_MS = 15_000;
 
 /**
  * Builds the Remote Control URL from a transcript `bridgeSessionId`, mirroring
@@ -880,6 +914,7 @@ export async function runClaudeTurnRemoteControlled(
   const idleStatusGraceMs = opts.idleStatusGraceMs ?? REMOTE_CONTROL_IDLE_STATUS_GRACE_MS;
   const waitingTimeoutMs = opts.waitingTimeoutMs ?? REMOTE_CONTROL_WAITING_TIMEOUT_MS;
   const startupTimeoutMs = opts.startupTimeoutMs ?? REMOTE_CONTROL_STARTUP_TIMEOUT_MS;
+  const urlGraceMs = opts.urlGraceMs ?? REMOTE_CONTROL_URL_GRACE_MS;
   const heartbeatMs = opts.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
   // No absolute cap by default -- see `maxWaitMs`'s doc comment and issue #149.
   const absoluteDeadline = opts.maxWaitMs === undefined ? Infinity : Date.now() + opts.maxWaitMs;
@@ -998,6 +1033,28 @@ export async function runClaudeTurnRemoteControlled(
                 authError: true,
                 sessionId: session.sessionId,
               };
+            }
+            // Issue #183: don't let a fast completion race the Remote Control
+            // URL out of existence. The URL is emitted the instant the
+            // transcript's `bridgeSessionId` line appears (line ~1010 above),
+            // but that line lands when the bridge's async registration with
+            // claude.ai completes -- which, for a quick read-only review, can be
+            // AFTER `turn_duration`. If we haven't reported the URL yet, hold the
+            // finished turn open briefly and keep re-reading the transcript so a
+            // just-registered bridge still surfaces its link before we return.
+            // Bounded by `urlGraceMs`; skipped entirely once the URL is known
+            // (the common case, where the bridge registered mid-turn), so it
+            // costs nothing on the happy path. The interactive child stays
+            // resident (killed only in the `finally` below), so its registration
+            // keeps progressing throughout this wait.
+            if (!urlReported) {
+              const graceDeadline = Date.now() + urlGraceMs;
+              while (!urlReported && !opts.signal?.aborted && Date.now() < graceDeadline) {
+                await sleep(pollIntervalMs, opts.signal);
+                const graceRaw = await readTranscript(homeDir, opts.cwd, session.sessionId);
+                const graceBridge = graceRaw ? parseTranscript(graceRaw).bridgeSessionId : null;
+                if (graceBridge) reportUrl(remoteControlUrlFromBridge(graceBridge));
+              }
             }
             return { finalMessage: st.finalText, failed: false, failureDetail: null, authError: false, sessionId: session.sessionId };
           }
