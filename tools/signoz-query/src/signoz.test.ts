@@ -76,6 +76,25 @@ describe("buildQueryRangePayload", () => {
     expect(builder.filters.items[1]).toEqual({ key: { key: "service.name" }, op: "=", value: "checkout" });
   });
 
+  it("uses the traces-specific serviceName filter key (not service.name)", () => {
+    const q = QuerySchema.parse({
+      signal: "traces",
+      start: "-1h",
+      end: "now",
+      serviceName: "checkout",
+    });
+    const range = resolveRange(q, cfg, NOW);
+    const payload = buildQueryRangePayload(q, range) as any;
+    const builder = payload.compositeQuery.builderQueries.A;
+    expect(builder.dataSource).toBe("traces");
+    expect(payload.compositeQuery.panelType).toBe("list");
+    expect(builder.filters.items).toContainEqual({
+      key: { key: "serviceName" },
+      op: "=",
+      value: "checkout",
+    });
+  });
+
   it("requires metricName for metrics signal", () => {
     expect(() => QuerySchema.parse({ signal: "metrics", start: "-1h", end: "now" })).toThrow();
   });

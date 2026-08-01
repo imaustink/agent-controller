@@ -2,7 +2,7 @@ import { config } from "./config.js";
 import { createSink, JobEmitter } from "./messaging/index.js";
 import type { ErrorCode } from "./schema.js";
 import { QuerySchema } from "./schema.js";
-import { clip } from "./security/redact.js";
+import { clip, registerSecret } from "./security/redact.js";
 import { buildQueryRangePayload, InvalidQueryError, queryRange, resolveRange, SignozRequestError } from "./signoz.js";
 
 const EXIT = {
@@ -68,6 +68,11 @@ async function run(emitter: JobEmitter, rawInput: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // Register the API key so redact() scrubs it verbatim from any surfaced
+  // message, even if a SigNoz error body echoes the bare value with no header
+  // prefix (which the header-form patterns wouldn't catch).
+  registerSecret(config.signozApiKey);
+
   const sink = createSink(config);
   const emitter = new JobEmitter(config.jobId, sink);
   const rawInput = process.argv[2];
