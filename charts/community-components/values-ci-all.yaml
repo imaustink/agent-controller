@@ -35,6 +35,9 @@ webFetch:
 kubectlReadonly:
   enabled: true
 
+signozQuery:
+  enabled: true
+
 recipePublisher:
   enabled: true
   # Required by the template when enabled; never reached, the render is discarded.
@@ -90,6 +93,8 @@ skills:
   selfImprovement:
     enabled: true
   webSearch:
+    enabled: true
+  clusterDebug:
     enabled: true
 
 integrationRoutes:
