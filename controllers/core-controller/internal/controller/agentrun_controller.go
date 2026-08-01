@@ -33,7 +33,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
-	"github.com/go-logr/logr"
 )
 
 // AgentRunReconciler reconciles a AgentRun object
@@ -122,7 +121,7 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.createJob(ctx, &run)
 	}
 
-	return r.syncJobStatus(ctx, &run, log)
+	return r.syncJobStatus(ctx, &run)
 }
 
 // DefaultAgentRunRetention is how long a terminal AgentRun (and the Secret it
@@ -193,7 +192,8 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 	return ctrl.Result{}, nil
 }
 
-func (r *AgentRunReconciler) syncJobStatus(ctx context.Context, run *toolv1alpha1.AgentRun, log logr.Logger) (ctrl.Result, error) {
+func (r *AgentRunReconciler) syncJobStatus(ctx context.Context, run *toolv1alpha1.AgentRun) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
 	var job batchv1.Job
 	jobKey := types.NamespacedName{Namespace: run.Namespace, Name: run.Status.JobName}
 	if err := r.Get(ctx, jobKey, &job); err != nil {
