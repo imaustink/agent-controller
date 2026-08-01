@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { normalizePem } from "@controller-agent/github-app-auth";
 
 /**
  * Central configuration. Kept deliberately narrow: this container's only
@@ -48,6 +49,25 @@ export interface AppConfig {
    * wrapper regardless of which one the caller supplied -- see github.ts).
    */
   githubToken: string;
+  /**
+   * Optional GitHub App installation-token auth (ADR 0018), the alternative
+   * to a static `GITHUB_TOKEN` PAT for the shared-credential case: when all
+   * three are set, this container mints a short-lived installation token per
+   * invocation and `GITHUB_TOKEN` is neither needed nor read. A partial set
+   * is rejected rather than silently falling back to the PAT -- see
+   * `resolveGithubToken` in @controller-agent/github-app-auth.
+   *
+   * Orthogonal to identity linking: when the orchestrator injects the calling
+   * user's own delegated token via `ToolRunSpec.secretEnv`, that arrives as
+   * `GITHUB_TOKEN` and takes precedence over these (see resolveToolToken in
+   * ./github.ts) -- a per-user token is strictly more specific than the
+   * shared App installation.
+   */
+  githubAppId: string;
+  githubAppPrivateKey: string;
+  githubAppInstallationId: string;
+  /** GitHub REST API base, only used to mint App installation tokens. */
+  githubApiUrl: string;
   /** Fixed GitHub API host `gh` is configured to talk to -- see github.ts. Not caller-controlled. */
   githubHost: string;
   /** Bound on how long a single `gh` invocation may run. */
@@ -91,6 +111,10 @@ export const config: AppConfig = {
   natsUrl: process.env.RECIPE_NATS_URL,
   natsSubject: process.env.RECIPE_NATS_SUBJECT,
   githubToken: process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? "",
+  githubAppId: process.env.GITHUB_APP_ID ?? "",
+  githubAppPrivateKey: normalizePem(process.env.GITHUB_APP_PRIVATE_KEY),
+  githubAppInstallationId: process.env.GITHUB_APP_INSTALLATION_ID ?? "",
+  githubApiUrl: process.env.GITHUB_API_URL ?? "https://api.github.com",
   githubHost: process.env.GH_HOST ?? "github.com",
   ghTimeoutMs: num(process.env.GITHUB_TOOL_TIMEOUT_MS, 30_000),
 };

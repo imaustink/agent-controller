@@ -1,6 +1,6 @@
 import { generateKeyPairSync, verify as cryptoVerify } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { mintInstallationToken, resolveGithubToken, signAppJwt } from "./githubApp.js";
+import { mintInstallationToken, normalizePem, resolveGithubToken, signAppJwt } from "./githubApp.js";
 
 let privateKey: string;
 let publicKey: string;
@@ -17,6 +17,30 @@ beforeAll(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("normalizePem", () => {
+  it("converts literal backslash-n escapes into real newlines", () => {
+    expect(normalizePem("-----BEGIN KEY-----\\nabc\\n-----END KEY-----")).toBe(
+      "-----BEGIN KEY-----\nabc\n-----END KEY-----",
+    );
+  });
+
+  it("leaves a PEM that already has real newlines untouched", () => {
+    const pem = "-----BEGIN KEY-----\nabc\n-----END KEY-----";
+    expect(normalizePem(pem)).toBe(pem);
+  });
+
+  it("yields an empty string for undefined or empty input, never undefined", () => {
+    expect(normalizePem(undefined)).toBe("");
+    expect(normalizePem("")).toBe("");
+  });
+
+  it("produces a key signAppJwt can actually sign with", () => {
+    const escaped = privateKey.replace(/\n/g, "\\n");
+    expect(escaped).toContain("\\n");
+    expect(() => signAppJwt("123", normalizePem(escaped), 1_700_000_000_000)).not.toThrow();
+  });
 });
 
 describe("signAppJwt", () => {

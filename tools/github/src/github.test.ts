@@ -1,7 +1,8 @@
+import { generateKeyPairSync } from "node:crypto";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "./config.js";
 
 /**
@@ -27,7 +28,19 @@ let dir: string;
 // `GH_BIN` is read at module-load time in github.ts, so the env var must be set
 // before the module is first imported -- hence the dynamic import in beforeAll.
 let runGh: typeof import("./github.js").runGh;
+let resolveToolToken: typeof import("./github.js").resolveToolToken;
 let GhExecError: typeof import("./github.js").GhExecError;
+
+/**
+ * A 2048-bit RSA key, generated here rather than hardcoded, so the App-auth
+ * case exercises real RS256 JWT signing (`signAppJwt` calls `createSign`,
+ * which rejects anything that isn't a usable key).
+ */
+const { privateKey: APP_PEM } = generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+  privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  publicKeyEncoding: { type: "spki", format: "pem" },
+});
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
@@ -41,6 +54,10 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     natsUrl: undefined,
     natsSubject: undefined,
     githubToken: "ghp_testtoken0123456789abcdef",
+    githubAppId: "",
+    githubAppPrivateKey: "",
+    githubAppInstallationId: "",
+    githubApiUrl: "https://api.github.com",
     githubHost: "github.com",
     ghTimeoutMs: 5_000,
     ...overrides,
@@ -56,6 +73,7 @@ beforeAll(async () => {
   vi.resetModules();
   const mod = await import("./github.js");
   runGh = mod.runGh;
+  resolveToolToken = mod.resolveToolToken;
   GhExecError = mod.GhExecError;
 });
 
@@ -96,5 +114,92 @@ describe("runGh", () => {
     expect(out).toContain("GH_TOKEN=gho_delegated999");
     expect(out).toContain("GITHUB_TOKEN=gho_delegated999");
     expect(out).toContain("GH_HOST=example.com");
+  });
+});
+
+describe("resolveToolToken", () => {
+  const APP_CONFIG = {
+    githubAppId: "12345",
+    githubAppPrivateKey: APP_PEM,
+    githubAppInstallationId: "67890",
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns the supplied token as-is when no App is configured", async () => {
+    await expect(resolveToolToken(makeConfig({ githubToken: "ghp_pat" }))).resolves.toBe("ghp_pat");
+  });
+
+  it("mints an installation token when only the App is configured", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ token: "ghs_installation", expires_at: "2026-01-01T00:00:00Z" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const token = await resolveToolToken(makeConfig({ githubToken: "", ...APP_CONFIG }));
+    expect(token).toBe("ghs_installation");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://api.github.com/app/installations/67890/access_tokens");
+  });
+
+  it("prefers the App over a static PAT when both are set, matching the shared resolveGithubToken", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ token: "ghs_installation" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(resolveToolToken(makeConfig({ githubToken: "ghp_pat", ...APP_CONFIG }))).resolves.toBe(
+      "ghs_installation",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces a mint failure as a GhExecError, so it exits as a gh error rather than a generic one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("no such installation", { status: 404 })),
+    );
+
+    const err = await resolveToolToken(makeConfig({ githubToken: "", ...APP_CONFIG })).catch((e) => e);
+    expect(err).toBeInstanceOf(GhExecError);
+    expect(err.message).toContain("Failed to mint GitHub App installation token");
+  });
+
+  it("rejects a partial App configuration instead of falling back to the PAT", async () => {
+    const err = await resolveToolToken(makeConfig({ githubToken: "ghp_pat", githubAppId: "12345" })).catch((e) => e);
+    expect(err).toBeInstanceOf(GhExecError);
+    expect(err.message).toContain("Partial GitHub App configuration");
+  });
+
+  it("throws when neither credential is configured", async () => {
+    const err = await resolveToolToken(makeConfig({ githubToken: "" })).catch((e) => e);
+    expect(err).toBeInstanceOf(GhExecError);
+    expect(err.message).toContain("GitHub credentials are required");
+  });
+
+  it("mints an installation token that then reaches the spawned gh's env (index.ts's resolve -> runGh wiring)", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ token: "ghs_installation" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Mirror index.ts's run(): resolve the token, then hand it to runGh the
+    // same way -- { ...config, githubToken: token }. This closes the loop
+    // between an App mint and the subprocess it authenticates, which the
+    // isolated resolveToolToken/runGh tests above each leave open.
+    const cfg = makeConfig({ githubToken: "", ...APP_CONFIG });
+    const token = await resolveToolToken(cfg);
+    expect(token).toBe("ghs_installation");
+    const out = await runGh({ ...cfg, githubToken: token }, ["echoenv"]);
+    expect(out).toContain("GH_TOKEN=ghs_installation");
+    expect(out).toContain("GITHUB_TOKEN=ghs_installation");
+  });
+
+  it("honors a GitHub Enterprise API base when minting", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ token: "ghs_ghes" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await resolveToolToken(makeConfig({ githubToken: "", ...APP_CONFIG, githubApiUrl: "https://ghe.example.com/api/v3" }));
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "https://ghe.example.com/api/v3/app/installations/67890/access_tokens",
+    );
   });
 });

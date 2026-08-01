@@ -151,12 +151,18 @@ opencodeSweAgent:
   # Two independent secrets in one k8s Secret: a fine-grained GitHub PAT for
   # git/gh operations, and an Anthropic API key for the opencode model.
   secretName: opencode-swe-secrets
+  # Key holding the GITHUB_TOKEN PAT. Not needed -- and not wired onto the
+  # Agent CR at all -- when a full GitHub App configuration or identityLink
+  # supplies the credential instead (see below); set it to "" in that case
+  # rather than putting a placeholder value in the Secret.
   secretKey: GITHUB_TOKEN
   anthropicSecretKey: ANTHROPIC_API_KEY
-  # Optional (ADR 0018): GitHub App installation-token auth, preferred over
-  # the GITHUB_TOKEN PAT above when all three keys below are set (a partial
-  # set is rejected by the agent, not silently ignored). Leave all three
-  # empty (the default) to keep using the PAT -- no behavior change.
+  # Optional (ADR 0018): GitHub App installation-token auth, which REPLACES
+  # the GITHUB_TOKEN PAT above when all three keys below are set -- the agent
+  # mints an installation token and never reads GITHUB_TOKEN, so the chart
+  # stops wiring that secretEnv and the Secret needs no GITHUB_TOKEN key. A
+  # partial set fails the render. Leave all three empty (the default) to keep
+  # using the PAT -- no behavior change.
   #   kubectl -n <ns> create secret generic opencode-swe-secrets \
   #     --from-literal=GITHUB_APP_ID=... \
   #     --from-literal=GITHUB_APP_PRIVATE_KEY="$(cat app-key.pem)" \
@@ -221,13 +227,20 @@ claudeCodeSweAgent:
     annotations: {}
     automount: true
   secretName: claude-code-swe-secrets
+  # Key holding the GITHUB_TOKEN PAT. Not needed -- and not wired onto the
+  # Agent CR at all -- when a full GitHub App configuration or identityLink
+  # supplies the credential instead (see below); set it to "" in that case
+  # rather than putting a placeholder value in the Secret.
   secretKey: GITHUB_TOKEN
   # At least one of these two must be set (validated at render time).
   anthropicSecretKey: ANTHROPIC_API_KEY
   claudeCodeOAuthTokenSecretKey: ""
-  # Optional (ADR 0018): GitHub App installation-token auth, preferred over
-  # the GITHUB_TOKEN PAT above when all three keys below are set. Leave all
-  # three empty (the default) to keep using the PAT.
+  # Optional (ADR 0018): GitHub App installation-token auth, which REPLACES
+  # the GITHUB_TOKEN PAT above when all three keys below are set -- the agent
+  # mints an installation token and never reads GITHUB_TOKEN, so the chart
+  # stops wiring that secretEnv and the Secret needs no GITHUB_TOKEN key. A
+  # partial set fails the render. Leave all three empty (the default) to keep
+  # using the PAT.
   githubAppIdSecretKey: ""
   githubAppPrivateKeySecretKey: ""
   githubAppInstallationIdSecretKey: ""
@@ -300,12 +313,20 @@ claudeCodeSweAgent:
 # search/workflow/run), preferably authenticated as the calling user's own
 # linked GitHub identity rather than a shared bot credential (ADR 0022/0032).
 #
-# Two mutually-exclusive ways to give it a GitHub credential:
+# Three mutually-exclusive ways to give it a GitHub credential:
 #   1. GITHUB_TOKEN PAT (default) -- prerequisite (out-of-band -- Helm can't
 #      source secret values on its own):
 #        kubectl -n <ns> create secret generic github-tool-secrets \
 #          --from-literal=GITHUB_TOKEN=github_pat_...
-#   2. Per-user identity linking (identityLink block below) -- no static
+#   2. GitHub App installation-token auth (ADR 0018) -- see the three
+#      githubApp*SecretKey fields below. Same shared-credential role as the
+#      PAT, but short-lived and scoped to the App's installation, so no
+#      long-lived PAT has to exist anywhere in the stack:
+#        kubectl -n <ns> create secret generic github-tool-secrets \
+#          --from-literal=GITHUB_APP_ID=... \
+#          --from-literal=GITHUB_APP_PRIVATE_KEY="$(cat app-key.pem)" \
+#          --from-literal=GITHUB_APP_INSTALLATION_ID=...
+#   3. Per-user identity linking (identityLink block below) -- no static
 #      GitHub credential is baked into this Tool's template at all;
 #      agent-orchestrator resolves and injects the CALLING USER's own linked
 #      GitHub token per-invocation instead, exactly like opencodeSweAgent's
@@ -324,10 +345,37 @@ githubTool:
     create: true
     annotations: {}
     automount: true
-  # Secret (must already exist) supplying the tool's GITHUB_TOKEN. Ignored
-  # when identityLink.enabled below.
+  # Secret (must already exist) supplying whichever shared credential is in
+  # effect -- the GITHUB_TOKEN PAT or the three GITHUB_APP_* keys. Ignored
+  # entirely when identityLink.enabled below.
   secretName: github-tool-secrets
+  # Key holding the GITHUB_TOKEN PAT. Not needed -- and not wired onto the
+  # Tool CR at all -- when the GitHub App keys below or identityLink supply
+  # the credential instead; set it to "" in that case rather than putting a
+  # placeholder value in the Secret.
   secretKey: GITHUB_TOKEN
+  # Optional (ADR 0018): GitHub App installation-token auth, which REPLACES
+  # the GITHUB_TOKEN PAT above when all three keys below are set -- the tool
+  # mints a short-lived installation token per invocation and never reads
+  # GITHUB_TOKEN, so the Secret needs no GITHUB_TOKEN key. A partial set fails
+  # the render. Leave all three empty (the default) to keep using the PAT.
+  #
+  # Mutually exclusive with identityLink below, and this chart is where that is
+  # enforced: these keys are wired only when identityLink is off, so a shared
+  # credential and the calling user's own token are never both present in the
+  # Job (see resolveToolToken in tools/github/src/github.ts).
+  githubAppIdSecretKey: ""
+  githubAppPrivateKeySecretKey: ""
+  githubAppInstallationIdSecretKey: ""
+  # GitHub Enterprise Server (GHES) support, both optional and off by default
+  # (empty == github.com / api.github.com). Wired as plain env, not secrets:
+  #   - githubHost   -> GH_HOST: the host `gh` itself talks to.
+  #   - githubApiUrl -> GITHUB_API_URL: the REST base App auth mints the
+  #     installation token against (App auth only; ignored on the PAT path).
+  # Set both to your GHES install (e.g. githubHost: ghe.example.com,
+  # githubApiUrl: https://ghe.example.com/api/v3) to run App auth against it.
+  githubHost: ""
+  githubApiUrl: ""
   # Per-user GitHub identity linking (docs/adr/0022, extended to container
   # Tools by ADR 0032): when enabled, no static GITHUB_TOKEN secretEnv is set
   # on the Tool CR at all -- agent-orchestrator resolves the calling user's

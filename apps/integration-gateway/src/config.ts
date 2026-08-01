@@ -1,3 +1,5 @@
+import { normalizePem } from "@controller-agent/github-app-auth";
+
 /** Central configuration for the GitHub Issues integration gateway. */
 export interface AppConfig {
   /** Consumer-facing HTTP port for POST /webhooks/github. */
@@ -187,11 +189,6 @@ function num(raw: string | undefined, fallback: number): number {
   if (raw === undefined) return fallback;
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-/** Normalizes a `\n`-escaped PEM (common in env-var-injected secrets) back into real newlines. */
-function normalizePem(raw: string | undefined): string {
-  return raw?.includes("\\n") ? raw.replace(/\\n/g, "\n") : (raw ?? "");
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {

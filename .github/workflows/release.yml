@@ -96,6 +96,7 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - 'packages/messaging/**'
+              - 'packages/github-app-auth/**'
               - 'tools/github/**'
             core-controller:
               - 'controllers/core-controller/**'
