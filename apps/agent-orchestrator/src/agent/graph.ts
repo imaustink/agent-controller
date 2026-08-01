@@ -1756,7 +1756,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (last && last.toolId === planned.toolId && last.toolArgs === planned.toolArgs) {
         // Guard against a stuck loop re-issuing an identical call: treat a
         // verbatim repeat as "done", same as an explicit finish.
-        return { plannedAction: "finish" };
+        //
+        // Carry the seeded result the same way the sibling `finish` branches
+        // do: on a resumed caller-tool turn (docs/adr/0035) no runTool ran this
+        // invocation, so `state.result` is unset and the answer lives only in
+        // the seeded actionHistory. Without `lastHistoryResult` the blocking
+        // facade would render `renderResult(undefined)` here.
+        return { plannedAction: "finish", ...lastHistoryResult(state) };
       }
       return {
         selectedTool: tool,

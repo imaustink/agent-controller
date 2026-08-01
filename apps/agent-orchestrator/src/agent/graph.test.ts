@@ -3930,6 +3930,32 @@ describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
     expect(final.result).toBe("58F and raining");
   });
 
+  it("finishes on the seeded result when a resumed planner re-issues the already-run call", async () => {
+    // tool_choice: "required" is re-applied on the resend (server.ts sets it
+    // whenever tools are present), which nudges the planner to re-call the one
+    // tool already in seeded actionHistory. The verbatim-repeat guard must then
+    // finish with THAT result -- not `undefined` -- since no runTool ran this
+    // invocation to populate state.result. Regression for the caller-tool
+    // resume path where the guard used to drop the seeded result.
+    const deps = callerToolDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "what's the weather in Chicago?",
+      authToken: "tok",
+      callerTools: [weatherTool],
+      callerToolChoiceRequired: true,
+      actionHistory: [{ toolId: "caller:get_weather", toolArgs: '{"city":"Chicago"}', result: "58F and raining" }],
+    });
+
+    // Planner re-issues the identical call; the guard treats it as done and
+    // carries the seeded result rather than finishing with `undefined`.
+    expect(deps.actionPlanner.plan).toHaveBeenCalledTimes(1);
+    expect(final.pendingToolCalls).toEqual([]);
+    expect(final.error).toBeUndefined();
+    expect(final.result).toBe("58F and raining");
+  });
+
   it("bounds a resumed loop with seeded history rather than restarting the step count", async () => {
     // Otherwise a client could drive an unbounded planner loop by resending.
     const deps = callerToolDeps();
