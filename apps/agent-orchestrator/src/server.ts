@@ -891,6 +891,17 @@ export class InvokeServer {
             ...(remoteControlUrl ? { remoteControlUrl } : {}),
           });
         });
+    }).catch((err: unknown) => {
+      // `buildGraphInput` itself can reject (e.g. `sessionStore.get` hitting
+      // Redis) before the graph ever runs. Without this, that rejection is
+      // unhandled -- Node terminates the process, wiping the in-memory
+      // `invocations` Map and turning every in-flight poll (not just this
+      // one) into a 404 the caller reports as "poll failed: 404".
+      this.invocations.set(id, {
+        id,
+        status: "failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
     });
 
     res.writeHead(202, { "content-type": "application/json", location: `/invoke/${id}` }).end(

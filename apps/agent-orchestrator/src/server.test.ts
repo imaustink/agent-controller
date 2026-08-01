@@ -224,6 +224,42 @@ describe("InvokeServer", () => {
 
     await server.close();
   });
+
+  /**
+   * `buildGraphInput` awaits `sessionStore.get` before the graph ever runs
+   * (see server.ts) -- a Redis blip there rejects that promise before the
+   * `this.graph.invoke(...).catch(...)` chain even exists to catch it. Left
+   * unhandled, that crashes the process, wiping every other in-flight
+   * invocation and turning their polls into "poll failed: 404" for the
+   * caller. This asserts the record still resolves to "failed" instead.
+   */
+  it("marks the invocation failed (not an unhandled rejection) when buildGraphInput itself rejects", async () => {
+    const graph: AgentGraphLike = { invoke: vi.fn(), stream: vi.fn() };
+    const failingSessionStore = {
+      get: vi.fn().mockRejectedValue(new Error("redis: connection reset")),
+      set: vi.fn(),
+    };
+    const server = new InvokeServer(graph, failingSessionStore as unknown as InMemorySessionStore);
+    const port = await listenOn(server);
+
+    const postRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ request: "do a thing", session_id: "session-1" }),
+    });
+    const { id } = (await postRes.json()) as { id: string };
+
+    await new Promise((r) => setTimeout(r, 10));
+    const res = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { status: string; error: string }).toMatchObject({
+      status: "failed",
+      error: "redis: connection reset",
+    });
+    expect(graph.invoke).not.toHaveBeenCalled();
+
+    await server.close();
+  });
 });
 
 describe("InvokeServer /invoke event field -> IntegrationRoute dispatch (ADR 0024)", () => {
