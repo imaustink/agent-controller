@@ -388,6 +388,38 @@ githubTool:
     providers:
       - github
 
+# ssh: runs a single allowlisted read-only diagnostic command (df/ps/
+# systemctl status/docker ps/journalctl/...) over SSH against a fixed set of
+# allowlisted hosts, authenticated with one shared, operator-provisioned key
+# -- there is no per-user SSH identity model in this repo (contrast
+# githubTool's identityLink above). See tools/ssh/README.md for the full
+# defense-in-depth model (host allowlist, command allowlist, plain-argument
+# charset, pinned host keys) before enabling this against real
+# infrastructure.
+sshTool:
+  enabled: false
+  image: ssh:latest
+  serviceAccountName: ssh-tool
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+  # The authoritative authorization boundary -- comma-separated
+  # "user@host[:port]" entries with no wildcard. Empty by default so this
+  # tool refuses every target until explicitly configured.
+  allowedHosts: ""
+  # Secret (must already exist) supplying the shared private key and pinned
+  # known_hosts content:
+  #   kubectl create secret generic ssh-tool-secrets -n <ns> \
+  #     --from-file=SSH_PRIVATE_KEY=./id_ed25519_monitor \
+  #     --from-literal=SSH_KNOWN_HOSTS="$(ssh-keyscan nas.kurpuis.internal)"
+  secretName: ssh-tool-secrets
+  privateKeySecretKey: SSH_PRIVATE_KEY
+  knownHostsSecretKey: SSH_KNOWN_HOSTS
+
 skills:
   # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +
   # recipe-publisher). Enable both those tools above for its derived audience

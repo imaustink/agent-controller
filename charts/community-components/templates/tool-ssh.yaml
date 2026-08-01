@@ -1,0 +1,44 @@
+{{- if .Values.sshTool.enabled }}
+{{- if not .Values.sshTool.allowedHosts }}
+{{- fail "sshTool.allowedHosts must be set to a non-empty \"user@host[:port]\" list before enabling sshTool -- there is no wildcard default" }}
+{{- end }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: Tool
+metadata:
+  name: ssh
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Runs a single read-only diagnostic command (df, ps, uptime, systemctl
+    status, docker ps/logs/inspect, journalctl, ...) over SSH against one of
+    a fixed set of allowlisted hosts, for debugging infrastructure outside
+    the cluster. Strictly read-only: an in-tool command allowlist blocks any
+    write/restart/delete action or interactive shell, and the target host
+    itself must match a fixed allowlist -- there is no wildcard.
+  input: >-
+    A single "<target> <command> [args...]" line (e.g. "nas.kurpuis.internal
+    df -h", "monitor@bastion.kurpuis.internal:2222 systemctl status
+    docker"). Only allowlisted hosts and a fixed set of read-only diagnostic
+    commands are accepted; anything else is rejected before it reaches the
+    target.
+  output: >-
+    The remote command's own stdout, wrapped in a fenced code block.
+  allowedRoles:
+    - reader
+  tier: standard
+  image: {{ .Values.sshTool.image | quote }}
+  serviceAccountName: {{ .Values.sshTool.serviceAccountName | quote }}
+  env:
+    - name: SSH_ALLOWED_HOSTS
+      value: {{ .Values.sshTool.allowedHosts | quote }}
+  secretEnv:
+    - name: SSH_PRIVATE_KEY
+      secretRef:
+        name: {{ .Values.sshTool.secretName | quote }}
+        key: {{ .Values.sshTool.privateKeySecretKey | quote }}
+    - name: SSH_KNOWN_HOSTS
+      secretRef:
+        name: {{ .Values.sshTool.secretName | quote }}
+        key: {{ .Values.sshTool.knownHostsSecretKey | quote }}
+{{- end }}

@@ -190,6 +190,42 @@ githubTool:
     providers:
       - github
 
+# ssh: read-only diagnostic command over SSH against a fixed set of
+# allowlisted homelab hosts (kube0-8, home/bastion, db1-3, printcam/
+# airvinyl/airbuddy -- pulled from ~/.ssh/config; deliberately excludes the
+# Verizon/client boxes and "parents" also in that file).
+#
+# TEMPORARY CREDENTIAL: this tool's SSH_PRIVATE_KEY is currently the
+# operator's own personal id_rsa (full interactive/admin access to every
+# host below), not a dedicated scoped key -- see tools/ssh/README.md's
+# "Choosing a credential" section for why that's a real blast-radius
+# tradeoff. Rotate to a dedicated keypair + restricted authorized_keys entry
+# per tools/ssh/README.md, then update SSH_PRIVATE_KEY in the Secret below
+# and delete this note.
+#
+# console (192.168.1.83) is in ~/.ssh/config but omitted here -- it was
+# unreachable when generating SSH_KNOWN_HOSTS below; add it once it's back
+# on the network:
+#   ssh-keyscan -t ed25519 192.168.1.83
+#
+# Prerequisite:
+#   kubectl create secret generic ssh-tool-secrets -n controller-agent \
+#     --from-file=SSH_PRIVATE_KEY=~/.ssh/id_rsa \
+#     --from-literal=SSH_KNOWN_HOSTS="$(ssh-keyscan -t ed25519 \
+#       192.168.1.59 192.168.1.48 192.168.1.15 192.168.1.94 192.168.1.229 \
+#       192.168.1.192 192.168.1.167 192.168.1.27 192.168.1.170 \
+#       166.113.38.187 192.168.1.43 \
+#       192.168.1.129 192.168.1.149 192.168.1.236 \
+#       192.168.1.235 airvinyl.local 192.168.1.218)"
+sshTool:
+  enabled: true
+  image: registry.kurpuis.com:5000/ssh:latest
+  serviceAccountName: ssh-tool
+  allowedHosts: "ubuntu@192.168.1.59,ubuntu@192.168.1.48,ubuntu@192.168.1.15,ubuntu@192.168.1.94,ubuntu@192.168.1.229,ubuntu@192.168.1.192,ubuntu@192.168.1.167,ubuntu@192.168.1.27,ubuntu@192.168.1.170,austinkurpuis@166.113.38.187,austinkurpuis@192.168.1.43,ubuntu@192.168.1.129,ubuntu@192.168.1.149,ubuntu@192.168.1.236,pi@192.168.1.235,pi@airvinyl.local,pi@192.168.1.218"
+  secretName: ssh-tool-secrets
+  privateKeySecretKey: SSH_PRIVATE_KEY
+  knownHostsSecretKey: SSH_KNOWN_HOSTS
+
 skills:
   recipeRefining:
     enabled: true
