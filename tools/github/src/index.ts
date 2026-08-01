@@ -1,6 +1,6 @@
 import { BlockedCommandError, tokenize, validateCommand } from "./allowlist.js";
 import { config } from "./config.js";
-import { GhExecError, runGh } from "./github.js";
+import { GhExecError, resolveToolToken, runGh } from "./github.js";
 import { createSink, JobEmitter } from "./messaging/index.js";
 import type { ErrorCode } from "./schema.js";
 import { clip } from "./security/redact.js";
@@ -42,7 +42,11 @@ async function run(emitter: JobEmitter, commandLine: string): Promise<void> {
   await emitter.progress("exec", { message: argv.join(" ") });
   let stdout: string;
   try {
-    stdout = await runGh(config, argv);
+    // Resolved here rather than inside runGh: with GitHub App auth this mints
+    // a short-lived installation token over the network, which must happen
+    // once per invocation and outside the spawn path.
+    const token = await resolveToolToken(config);
+    stdout = await runGh({ ...config, githubToken: token }, argv);
   } catch (err) {
     if (err instanceof GhExecError) {
       fail("gh_error", EXIT.ghError, `gh failed: ${err.stderr || err.message}`);

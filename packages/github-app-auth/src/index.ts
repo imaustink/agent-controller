@@ -1,4 +1,5 @@
 export {
+  normalizePem,
   signAppJwt,
   mintInstallationToken,
   resolveGithubToken,

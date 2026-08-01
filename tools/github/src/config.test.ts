@@ -18,6 +18,10 @@ const ENV_KEYS = [
   "GH_TOKEN",
   "GH_HOST",
   "GITHUB_TOOL_TIMEOUT_MS",
+  "GITHUB_APP_ID",
+  "GITHUB_APP_PRIVATE_KEY",
+  "GITHUB_APP_INSTALLATION_ID",
+  "GITHUB_API_URL",
 ];
 
 let saved: Record<string, string | undefined>;
@@ -84,6 +88,27 @@ describe("config", () => {
 
     process.env.GITHUB_TOOL_TIMEOUT_MS = "1234";
     expect((await loadConfig()).ghTimeoutMs).toBe(1234);
+  });
+
+  it("defaults the GitHub App fields to empty and the API base to github.com", async () => {
+    const config = await loadConfig();
+    expect(config.githubAppId).toBe("");
+    expect(config.githubAppPrivateKey).toBe("");
+    expect(config.githubAppInstallationId).toBe("");
+    expect(config.githubApiUrl).toBe("https://api.github.com");
+  });
+
+  it("normalizes a PEM stored with literal backslash-n escapes into real newlines", async () => {
+    process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\\nMIIabc\\n-----END RSA PRIVATE KEY-----";
+    expect((await loadConfig()).githubAppPrivateKey).toBe(
+      "-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----",
+    );
+  });
+
+  it("leaves a PEM that already has real newlines untouched", async () => {
+    const pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----";
+    process.env.GITHUB_APP_PRIVATE_KEY = pem;
+    expect((await loadConfig()).githubAppPrivateKey).toBe(pem);
   });
 
   it("parses a comma list into trimmed, lower-cased, non-empty hosts", async () => {

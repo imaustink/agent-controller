@@ -36,6 +36,43 @@ to run `gh auth login` or write anything to a persisted config (its
 `GH_CONFIG_DIR` is pointed at the container's writable `/tmp`, wiped every
 run).
 
+### Shared-credential fallback: PAT or GitHub App
+
+A deployment that doesn't want per-user delegation (`identityLink.enabled:
+false`, the chart default) has two options, and the chart wires exactly one
+of them:
+
+- a static `GITHUB_TOKEN` fine-grained PAT (`githubTool.secretKey`), or
+- **GitHub App installation-token auth** (ADR 0018): set all three of
+  `githubTool.githubAppIdSecretKey` / `githubAppPrivateKeySecretKey` /
+  `githubAppInstallationIdSecretKey` and `resolveToolToken` (`src/github.ts`)
+  mints a short-lived, installation-scoped token per invocation instead --
+  no long-lived PAT has to exist anywhere in the stack. A partial set (1-2
+  of the 3) is rejected at render time by the chart and at runtime by the
+  tool, rather than silently falling back to the PAT.
+
+`resolveToolToken` is a thin wrapper over the shared
+`resolveGithubToken` (`packages/github-app-auth`) -- the same precedence (App
+over static PAT) and the same partial-config rejection every other consumer
+gets, with the errors re-thrown as `GhExecError` so an auth failure keeps
+reporting under this tool's `gh_error` exit code.
+
+**GitHub Enterprise Server:** the tool talks to `github.com` / `api.github.com`
+by default. Point it at a GHES install with `githubTool.githubHost` (wired as
+`GH_HOST`, the host `gh` itself uses) and `githubTool.githubApiUrl` (wired as
+`GITHUB_API_URL`, the REST base App auth mints the installation token against);
+both are plain env, off by default, and independent of which credential is in
+effect.
+
+Note that a shared credential and a per-user one are never both configured:
+the chart wires the App keys only when `identityLink` is off, and per-user
+injection only happens when it's on. That exclusivity is enforced in the
+chart, in one place. If App-as-fallback-for-an-unlinked-caller is ever
+wanted, it needs an explicit signal the way the SWE agents use
+`GITHUB_IDENTITY_DELEGATION` (see their `isDelegating`) -- token precedence
+alone can't distinguish a per-user token from a static PAT, since both arrive
+as `GITHUB_TOKEN`.
+
 ## Safety model (defense in depth)
 
 1. **The calling user's own GitHub permissions are the primary boundary.**

@@ -62,8 +62,20 @@ out-of-band is:
 - `webSearch` (if enabled): the `agent-controller` release's
   `searxng.enabled=true`, and `webSearch.searxngBaseUrl` pointed at that
   release's SearXNG Service (defaults to the minikube demo release name).
+- `githubTool` (if enabled): Secret `github-tool-secrets` with a GitHub
+  credential — `GITHUB_TOKEN` (a PAT), or the three `GITHUB_APP_*` keys, or
+  nothing at all when `identityLink.enabled` injects the calling user's own
+  token per-invocation. The chart wires exactly one; the render fails if none
+  is configured.
 - `opencodeSweAgent` (if enabled): Secret `opencode-swe-secrets` with
-  `GITHUB_TOKEN` and `ANTHROPIC_API_KEY`.
+  `ANTHROPIC_API_KEY`, plus a GitHub credential — `GITHUB_TOKEN` (a PAT), or
+  the three `GITHUB_APP_*` keys, or neither when `identityLink.enabled`
+  injects the calling user's own token per-run. The chart wires only the one
+  that's actually in effect, so a Secret using App auth or identity linking
+  needs **no** `GITHUB_TOKEN` key at all — the render fails if none of the
+  three is configured. Same for `claudeCodeSweAgent` (Secret
+  `claude-code-swe-secrets`, whose model credential is `ANTHROPIC_API_KEY`
+  and/or `CLAUDE_CODE_OAUTH_TOKEN`).
 
 Every tool/agent image (`recipeScraper.image`, `recipePublisher.image`,
 `webSearch.image`, `opencodeSweAgent.image`) also needs to point at a registry

@@ -3,6 +3,23 @@
 {{- if not (or .Values.claudeCodeSweAgent.anthropicSecretKey .Values.claudeCodeSweAgent.claudeCodeOAuthTokenSecretKey $identityLinkCoversClaude) }}
 {{- fail "claudeCodeSweAgent requires anthropicSecretKey, claudeCodeOAuthTokenSecretKey, or identityLink.providers to include \"claude\" -- some model credential must be guaranteed at launch time" }}
 {{- end }}
+{{- $githubAppConfigured := include "tools.githubAppFullyConfigured" .Values.claudeCodeSweAgent }}
+{{- $githubAppKeyCount := include "tools.githubAppKeyCount" .Values.claudeCodeSweAgent }}
+{{- if and (ne $githubAppKeyCount "0") (not $githubAppConfigured) }}
+{{- fail "claudeCodeSweAgent has a partial GitHub App configuration -- githubAppIdSecretKey, githubAppPrivateKeySecretKey and githubAppInstallationIdSecretKey must all be set together (the agent rejects a partial set at runtime)" }}
+{{- end }}
+{{/*
+  The static GITHUB_TOKEN PAT is wired only when it's actually the credential
+  in effect: identityLink injects the calling user's token per-run instead,
+  and a full GitHub App configuration makes the agent mint an installation
+  token without ever reading GITHUB_TOKEN. Wiring it regardless used to force
+  a placeholder GITHUB_TOKEN key into the Secret, since a secretRef to a
+  missing key fails the pod with CreateContainerConfigError.
+*/}}
+{{- $githubTokenWired := and (not .Values.claudeCodeSweAgent.identityLink.enabled) (not $githubAppConfigured) .Values.claudeCodeSweAgent.secretKey }}
+{{- if not (or $githubTokenWired .Values.claudeCodeSweAgent.identityLink.enabled $githubAppConfigured) }}
+{{- fail "claudeCodeSweAgent requires a GitHub credential: set secretKey (a GITHUB_TOKEN PAT), all three githubApp*SecretKey values, or identityLink.enabled" }}
+{{- end }}
 apiVersion: {{ .Values.crdApiVersion }}
 kind: Agent
 metadata:
@@ -121,7 +138,7 @@ spec:
     couldn't read, and do not report success on work that doesn't actually
     satisfy the original request.
   secretEnv:
-    {{- if not .Values.claudeCodeSweAgent.identityLink.enabled }}
+    {{- if $githubTokenWired }}
     - name: GITHUB_TOKEN
       secretRef:
         name: {{ .Values.claudeCodeSweAgent.secretName }}

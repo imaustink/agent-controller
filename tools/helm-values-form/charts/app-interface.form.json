@@ -1,0 +1,7 @@
+{
+  "chart": "app-interface",
+  "title": "Bitovi platform app",
+  "description": "The whole app interface. Workloads and dependencies are keyed by name; each one's fields depend on its kind.",
+  "schema": "app-interface.schema.json",
+  "include": []
+}

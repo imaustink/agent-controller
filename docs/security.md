@@ -208,9 +208,18 @@ mechanism at all. This means:
   same v1 scope cut as the agent-backed-tool identity gate in `graph.ts`'s
   `runTool`: this call path cannot itself start a fresh device-flow link.
 - A deployment that does not want per-user delegation can instead configure
-  `githubTool.identityLink.enabled: false` (the chart default) with a static
-  `GITHUB_TOKEN` PAT in a Secret, same as any other tool's `secretEnv` --
-  the blast radius then reverts to whatever that shared PAT is scoped to.
+  `githubTool.identityLink.enabled: false` (the chart default) with a shared
+  credential in a Secret, same as any other tool's `secretEnv` -- the blast
+  radius then reverts to whatever that shared credential is scoped to. Two
+  options, and the chart wires exactly one: a static `GITHUB_TOKEN` PAT, or
+  GitHub App installation-token auth via the three `githubApp*SecretKey`
+  values ([ADR 0018](adr/0018-github-app-auth-fallback.md)), which the tool exchanges
+  for a short-lived installation token per invocation (`resolveToolToken` in
+  `tools/github/src/github.ts`, a thin wrapper over the same shared
+  `resolveGithubToken` the SWE agents use) so no long-lived PAT need exist
+  anywhere in the stack. A shared credential and a per-user one are never both
+  configured: the chart wires the App keys only when `identityLink` is off, and
+  per-user injection only happens when it's on.
 
 ## opencode-swe-agent: a deliberately privileged agent
 
