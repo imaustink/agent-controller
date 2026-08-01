@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AppConfig } from "./config.js";
 import { QuerySchema } from "./schema.js";
-import { buildQueryRangePayload, InvalidQueryError, resolveRange } from "./signoz.js";
+import { buildQueryRangePayload, InvalidQueryError, queryRangeUrl, resolveRange } from "./signoz.js";
 
 const cfg: AppConfig = {
   transport: "stdout",
@@ -17,6 +17,7 @@ const cfg: AppConfig = {
   signozApiKey: undefined,
   maxLookbackMs: 24 * 60 * 60 * 1000,
   fetchTimeoutMs: 15_000,
+  maxResultChars: 100_000,
 };
 
 const NOW = Date.parse("2026-07-17T12:00:00.000Z");
@@ -109,6 +110,26 @@ describe("buildQueryRangePayload", () => {
     const range = resolveRange(q, cfg, NOW);
     const payload = buildQueryRangePayload(q, range) as any;
     expect(payload.compositeQuery.panelType).toBe("graph");
+    expect(payload.compositeQuery.builderQueries.A.aggregateOperator).toBe("avg");
     expect(payload.compositeQuery.builderQueries.A.aggregateAttribute).toEqual({ key: "http_requests_total" });
+  });
+});
+
+describe("queryRangeUrl", () => {
+  it("appends the query_range path to a bare base URL", () => {
+    expect(queryRangeUrl("http://signoz.example").toString()).toBe(
+      "http://signoz.example/api/v3/query_range",
+    );
+  });
+
+  it("preserves a reverse-proxy path prefix on the base URL", () => {
+    // An absolute "/api/..." path would discard the "/signoz" prefix; the
+    // relative-join keeps it.
+    expect(queryRangeUrl("https://host/signoz").toString()).toBe(
+      "https://host/signoz/api/v3/query_range",
+    );
+    expect(queryRangeUrl("https://host/signoz/").toString()).toBe(
+      "https://host/signoz/api/v3/query_range",
+    );
   });
 });

@@ -19,6 +19,10 @@ export interface AppConfig {
   maxLookbackMs: number;
   /** Timeout for the SigNoz HTTP request. */
   fetchTimeoutMs: number;
+  /** Upper bound on the rendered success result, so a pathological SigNoz
+   * response can't emit an unbounded payload. Generous by default (the query
+   * itself already caps entries at 500). */
+  maxResultChars: number;
 }
 
 function num(raw: string | undefined, fallback: number): number {
@@ -61,4 +65,5 @@ export const config: AppConfig = {
   signozApiKey: process.env.SIGNOZ_API_KEY,
   maxLookbackMs: num(process.env.SIGNOZ_MAX_LOOKBACK_MS, 24 * 60 * 60 * 1000),
   fetchTimeoutMs: num(process.env.SIGNOZ_FETCH_TIMEOUT_MS, 15_000),
+  maxResultChars: num(process.env.SIGNOZ_MAX_RESULT_CHARS, 100_000),
 };

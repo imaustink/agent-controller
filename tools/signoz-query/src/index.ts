@@ -64,7 +64,12 @@ async function run(emitter: JobEmitter, rawInput: string): Promise<void> {
     fail("signoz_error", EXIT.signozError, `SigNoz request failed: ${(err as Error).message}`);
   }
 
-  await emitter.succeeded(`\`\`\`json\n${JSON.stringify(response, null, 2)}\n\`\`\``);
+  // `JobEmitter.succeeded` does not run `sanitize` on its `result` (only the
+  // free-text progress/warning/failed fields are sanitized), so redact + bound
+  // the response here: a proxy that echoes the API key in a 200 body, or an
+  // unbounded payload, would otherwise pass through verbatim.
+  const rendered = clip(JSON.stringify(response, null, 2), config.maxResultChars);
+  await emitter.succeeded(`\`\`\`json\n${rendered}\n\`\`\``);
 }
 
 async function main(): Promise<void> {
@@ -85,7 +90,9 @@ async function main(): Promise<void> {
         'Usage: signoz-query \'{"signal":"logs","start":"-1h","end":"now","serviceName":"checkout"}\'',
       );
     }
-    await emitter.accepted(rawInput);
+    // `accepted` is not sanitized by the emitter either; clip the raw caller
+    // input to a short echo (matching web-fetch / recipe-publisher).
+    await emitter.accepted(clip(rawInput, 200));
     await run(emitter, rawInput);
     await emitter.close();
   } catch (err) {

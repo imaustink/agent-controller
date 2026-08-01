@@ -20,6 +20,8 @@ spec:
     "limit"?: <=500}. Lookback windows longer than 24h are rejected.
   output: >-
     The SigNoz query_range JSON response, wrapped in a fenced code block.
+    For "metrics", each series value is a 60-second average (avg) of the
+    metric, not a raw sample -- read latency/rate spikes accordingly.
   allowedRoles:
     - reader
   tier: standard

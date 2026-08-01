@@ -53,7 +53,9 @@ spec:
     - `signoz-query` — call with `tool_args` set to a single JSON object:
       `{"signal":"logs"|"traces"|"metrics","start":"-1h"|"now"|<ISO-8601>,"end":"now"|<ISO-8601>,"serviceName"?,"metricName"? (required for "metrics"),"filters"?:[{"key","op":"="|"!="|"contains"|"in","value"}],"limit"?}`.
       The lookback window is capped server-side (24h) — pick the narrowest
-      window that's still likely to contain the issue.
+      window that's still likely to contain the issue. For `metrics`, each
+      returned series value is a 60-second **average**, not a raw sample —
+      keep that in mind when reasoning about latency or rate spikes.
 
     ## Method
 

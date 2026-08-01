@@ -87,6 +87,10 @@ export function buildQueryRangePayload(query: Query, range: ResolvedRange) {
   };
 
   if (query.signal === "metrics") {
+    // Metrics are returned as a 60s `avg` time series (see `step` below). The
+    // aggregate is fixed rather than caller-selectable to keep the v3 payload
+    // surface small; the Tool's `output` description tells callers the value
+    // is a 60s average so an LLM doesn't read it as a raw sample.
     builderQuery.aggregateOperator = "avg";
     builderQuery.aggregateAttribute = { key: query.metricName };
   } else {
@@ -108,6 +112,18 @@ export function buildQueryRangePayload(query: Query, range: ResolvedRange) {
   };
 }
 
+/**
+ * Resolve the `query_range` endpoint against the operator-configured base URL,
+ * preserving any path prefix on `baseUrl`. Using a *relative* path against a
+ * trailing-slash base means a reverse-proxied SigNoz mounted under a prefix
+ * (e.g. `https://host/signoz`) resolves to `https://host/signoz/api/v3/...`;
+ * an absolute path (`/api/v3/...`) would silently discard the prefix.
+ */
+export function queryRangeUrl(baseUrl: string): URL {
+  const base = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+  return new URL("api/v3/query_range", base);
+}
+
 export async function queryRange(
   cfg: AppConfig,
   payload: unknown,
@@ -119,7 +135,7 @@ export async function queryRange(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(new URL("/api/v3/query_range", cfg.signozBaseUrl), {
+    const res = await fetch(queryRangeUrl(cfg.signozBaseUrl), {
       method: "POST",
       headers: {
         "content-type": "application/json",

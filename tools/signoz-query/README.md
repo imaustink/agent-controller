@@ -30,6 +30,11 @@ that chart's `values.yaml`.
 - **Bounded lookback** — `SIGNOZ_MAX_LOOKBACK_MS` (default 24h) rejects any
   query whose `end - start` exceeds it, regardless of what the caller asks
   for, to bound both cost and blast radius of a single call.
+- **Bounded, redacted result** — the success payload is run through `redact()`
+  and clipped to `SIGNOZ_MAX_RESULT_CHARS` (default 100000) before it leaves
+  the process, so a misbehaving proxy can't echo the API key back in a 200
+  body or emit an unbounded response. The registered API-key value is also
+  scrubbed from any surfaced message even without a header prefix.
 - **No k8s access** — this tool never touches the Kubernetes API; its
   ServiceAccount (`serviceaccount-signoz-query.yaml`) has zero RBAC bindings.
 
@@ -51,4 +56,11 @@ SIGNOZ_BASE_URL=http://localhost:8080 SIGNOZ_TRANSPORT=stdout \
 common "list recent logs/traces" / "read a metric" shape. SigNoz's v3 query
 API has evolved across releases — verify the constructed payload against
 your SigNoz version and adjust `buildQueryRangePayload` if it rejects the
-request.
+request. Note that for `signal: "metrics"` the payload always uses a fixed
+`aggregateOperator: "avg"` over a 60s `step`, so each returned series value
+is a 60-second average rather than a raw sample (surfaced in the Tool's
+`output` description and the skill markdown so a caller doesn't misread it).
+
+`SIGNOZ_BASE_URL` may include a path prefix for a reverse-proxied SigNoz
+(e.g. `https://host/signoz`); `queryRangeUrl` joins the endpoint relative to
+it so the prefix is preserved.
