@@ -2,7 +2,7 @@ import { config } from "./config.js";
 import { createSink, JobEmitter } from "./messaging/index.js";
 import type { ErrorCode } from "./schema.js";
 import { QuerySchema } from "./schema.js";
-import { clip, registerSecret } from "./security/redact.js";
+import { clip, redact, registerSecret } from "./security/redact.js";
 import { buildQueryRangePayload, InvalidQueryError, queryRange, resolveRange, SignozRequestError } from "./signoz.js";
 
 const EXIT = {
@@ -61,6 +61,12 @@ async function run(emitter: JobEmitter, rawInput: string): Promise<void> {
     if (err instanceof SignozRequestError) {
       fail("signoz_error", EXIT.signozError, `SigNoz request failed (${err.status}): ${clip(err.body, 1000)}`);
     }
+    // The AbortController firing at fetchTimeoutMs surfaces as an AbortError;
+    // give it a dedicated message rather than the raw "This operation was
+    // aborted" string, so an LLM/operator sees that the server never responded.
+    if ((err as Error)?.name === "AbortError") {
+      fail("signoz_error", EXIT.signozError, `SigNoz request timed out after ${config.fetchTimeoutMs}ms (no response).`);
+    }
     fail("signoz_error", EXIT.signozError, `SigNoz request failed: ${(err as Error).message}`);
   }
 
@@ -68,8 +74,16 @@ async function run(emitter: JobEmitter, rawInput: string): Promise<void> {
   // free-text progress/warning/failed fields are sanitized), so redact + bound
   // the response here: a proxy that echoes the API key in a 200 body, or an
   // unbounded payload, would otherwise pass through verbatim.
-  const rendered = clip(JSON.stringify(response, null, 2), config.maxResultChars);
-  await emitter.succeeded(`\`\`\`json\n${rendered}\n\`\`\``);
+  const body = redact(JSON.stringify(response, null, 2));
+  const truncated = body.length > config.maxResultChars;
+  const rendered = truncated ? `${body.slice(0, config.maxResultChars)}…` : body;
+  // When bounded, the JSON inside the fence is intentionally incomplete; make
+  // the boundary explicit (outside the fence) so the truncation doesn't read
+  // as a malformed SigNoz response.
+  const note = truncated
+    ? `\n\n_Result truncated to ${config.maxResultChars} characters; the JSON above is incomplete._`
+    : "";
+  await emitter.succeeded(`\`\`\`json\n${rendered}\n\`\`\`${note}`);
 }
 
 async function main(): Promise<void> {

@@ -1,11 +1,33 @@
 import { z } from "zod";
 
 /** A single equality/inclusion filter on a log/trace attribute. */
-export const FilterSchema = z.object({
-  key: z.string().min(1),
-  op: z.enum(["=", "!=", "contains", "in"]),
-  value: z.union([z.string(), z.array(z.string())]),
-});
+export const FilterSchema = z
+  .object({
+    key: z.string().min(1),
+    op: z.enum(["=", "!=", "contains", "in"]),
+    value: z.union([z.string(), z.array(z.string())]),
+  })
+  .superRefine((f, ctx) => {
+    // Tie the value shape to the operator so a mismatch surfaces here as a
+    // clear invalid_query rather than being forwarded to SigNoz and coming
+    // back as an opaque signoz_error: `in` needs an array, the scalar ops a
+    // single string.
+    const isArray = Array.isArray(f.value);
+    if (f.op === "in" && !isArray) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["value"],
+        message: 'op "in" requires an array value, e.g. {"op":"in","value":["a","b"]}.',
+      });
+    }
+    if (f.op !== "in" && isArray) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["value"],
+        message: `op "${f.op}" requires a single string value, not an array.`,
+      });
+    }
+  });
 export type Filter = z.infer<typeof FilterSchema>;
 
 /**

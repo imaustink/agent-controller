@@ -15,8 +15,16 @@ that chart's `values.yaml`.
 
 - **Input** (`argv[2]`): a single JSON object, e.g.
   `{"signal":"logs","start":"-1h","end":"now","serviceName":"checkout","filters":[{"key":"severity_text","op":"=","value":"ERROR"}],"limit":50}`.
+  A filter's `value` shape is tied to its `op`: `in` takes an array
+  (`{"op":"in","value":["a","b"]}`), while `=`/`!=`/`contains` take a single
+  string. A mismatch is rejected up front as an `invalid_query` rather than
+  forwarded to SigNoz as an opaque error.
 - **Output**: the SigNoz `query_range` JSON response, wrapped in a fenced
-  code block, delivered via the event contract in `docs/messaging.md`.
+  code block, delivered via the event contract in `docs/messaging.md`. If the
+  response exceeds `SIGNOZ_MAX_RESULT_CHARS` it is truncated and an explicit
+  `_Result truncated …_` note follows the fence so the incomplete JSON isn't
+  mistaken for a malformed response. A fetch that exceeds
+  `SIGNOZ_FETCH_TIMEOUT_MS` fails with a dedicated "request timed out" message.
 
 ## Safety model
 
