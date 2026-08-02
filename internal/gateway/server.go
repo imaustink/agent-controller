@@ -150,7 +150,14 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 
 	sessionID, ephemeral := resolveSessionID(c)
 	workflowID := "conversation-" + sessionID
-	turnInput := workflows.TurnInput{Message: userMessage, Caller: resolveCaller(c, s.identity)}
+	// Live: a streaming request is watched as it runs, so the authorization
+	// pre-flight may surface a link prompt and wait. A blocking request gets
+	// its answer in one shot, same as a fire-and-forget caller.
+	turnInput := workflows.TurnInput{
+		Message: userMessage,
+		Caller:  resolveCaller(c, s.identity),
+		Live:    req.Stream,
+	}
 	if len(seedHistory) > 0 {
 		turnInput.SeedHistory = seedHistory
 	}

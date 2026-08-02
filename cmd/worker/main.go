@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"time"
 
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/worker"
@@ -12,6 +13,8 @@ import (
 
 	"k8s.io/client-go/dynamic"
 
+	"durable-agents/internal/authz"
+	"durable-agents/internal/identitylink"
 	"durable-agents/internal/kubeconfig"
 	"durable-agents/internal/llm"
 	"durable-agents/internal/temporal"
@@ -67,12 +70,49 @@ func main() {
 	w.RegisterActivityWithOptions(agentLoop.SelectDelegate, activity.RegisterOptions{Name: activities.SelectDelegateActivityName})
 	w.RegisterActivityWithOptions(agentLoop.PlanAgentAction, activity.RegisterOptions{Name: activities.PlanAgentActionActivityName})
 
-	identityLinks, err := activities.NewStaticIdentityLinks(os.Getenv("IDENTITY_LINKS"), os.Getenv("IDENTITY_LINK_URLS"))
-	if err != nil {
-		log.Fatalf("build identity link store: %v", err)
+	// Authorization pre-flight. The real credential store lives in
+	// agent-controller's integration-gateway; without a URL for it we fall
+	// back to the in-memory fake, which is dev-only and says so.
+	var links identitylink.Port
+	if baseURL := os.Getenv("IDENTITY_LINK_GATEWAY_URL"); baseURL != "" {
+		links = identitylink.New(identitylink.Options{
+			BaseURL: baseURL,
+			Token:   os.Getenv("IDENTITY_LINK_GATEWAY_TOKEN"),
+		})
+		log.Printf("identity-link gateway: %s", baseURL)
+	} else {
+		fake, err := identitylink.NewFake(os.Getenv("IDENTITY_LINKS"), os.Getenv("IDENTITY_LINK_URLS"))
+		if err != nil {
+			log.Fatalf("build fake identity link store: %v", err)
+		}
+		links = fake
+		log.Printf("IDENTITY_LINK_GATEWAY_URL not set; using the in-memory identity-link fake (dev only)")
 	}
-	identity := &activities.IdentityLinkActivities{Store: identityLinks}
-	w.RegisterActivityWithOptions(identity.GetIdentityLink, activity.RegisterOptions{Name: activities.GetIdentityLinkActivityName})
+
+	// The Secret writer is what keeps a credential out of Temporal's event
+	// history: the pre-flight writes values here and returns only a name.
+	var secretWriter authz.SecretWriter
+	if kubeCfg, err := kubeconfig.Load(); err == nil {
+		if dynamicClient, err := dynamic.NewForConfig(kubeCfg); err == nil {
+			secretWriter = authz.NewK8sSecretWriter(dynamicClient, getenv("CATALOG_NAMESPACE", "controller-agent"))
+		} else {
+			log.Printf("no dynamic client for credential secrets: %v", err)
+		}
+	} else {
+		log.Printf("no kube config for credential secrets: %v", err)
+	}
+
+	authorize := &activities.AuthorizeActivities{Service: authz.New(authz.Deps{
+		Links:  links,
+		Secret: secretWriter,
+		// One bounded hop. The workflow's own durable wait is what spans a
+		// human's attention; this only lets the gateway short-circuit it when
+		// the link lands immediately.
+		WaitForLink: 30 * time.Second,
+	})}
+	w.RegisterActivityWithOptions(authorize.Authorize, activity.RegisterOptions{Name: activities.AuthorizeActivityName})
+	w.RegisterActivityWithOptions(authorize.ResolveLinked, activity.RegisterOptions{Name: activities.ResolveLinkedActivityName})
+	w.RegisterActivityWithOptions(authorize.ResolveToolCredentials, activity.RegisterOptions{Name: activities.ResolveToolCredentialsActivityName})
 
 	// Retrieval activities need Qdrant; without it the worker still serves
 	// plain conversations (hello-world mode).

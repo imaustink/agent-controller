@@ -13,6 +13,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
+	"durable-agents/internal/authz"
 	"durable-agents/internal/catalog"
 	"durable-agents/internal/messaging"
 	"durable-agents/internal/temporal/activities"
@@ -36,6 +37,13 @@ type loopEnv struct {
 	toolFitCalls        int
 	toolFitInputs       []activities.CheckToolFitInput
 	completeTurnInputs  []activities.CompleteTurnInput
+
+	// Authorization knobs. Nil means "authorized with no credentials", which
+	// is what an Agent or Tool declaring no identityProviders gets anyway.
+	authorizeVerdict      func() authz.Verdict
+	authorizeInputs       []activities.AuthorizeInput
+	toolCredentialVerdict func() authz.Verdict
+	toolCredentialInputs  []activities.ToolCredentialsInput
 
 	// knobs
 	needsCapability bool
@@ -126,6 +134,24 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	reg(activities.ResolveAgentActivityName, func(context.Context, activities.ResolveAgentInput) (*catalog.AgentDescriptor, error) {
 		le.resolveAgentCalls++
 		return le.resolvedAgent, nil
+	})
+	// The authorization pre-flight. Only reached by an Agent that declares
+	// identityProviders, so most fixtures never touch it; registered here so
+	// the ones that do can flip a knob instead of racing a second
+	// registration.
+	reg(activities.AuthorizeActivityName, func(_ context.Context, in activities.AuthorizeInput) (authz.Verdict, error) {
+		le.authorizeInputs = append(le.authorizeInputs, in)
+		if le.authorizeVerdict != nil {
+			return le.authorizeVerdict(), nil
+		}
+		return authz.Verdict{Kind: authz.KindAuthorized}, nil
+	})
+	reg(activities.ResolveToolCredentialsActivityName, func(_ context.Context, in activities.ToolCredentialsInput) (authz.Verdict, error) {
+		le.toolCredentialInputs = append(le.toolCredentialInputs, in)
+		if le.toolCredentialVerdict != nil {
+			return le.toolCredentialVerdict(), nil
+		}
+		return authz.Verdict{Kind: authz.KindAuthorized}, nil
 	})
 	reg(activities.CheckSkillFitActivityName, func(context.Context, activities.CheckSkillFitInput) (bool, error) {
 		le.fitCalls++

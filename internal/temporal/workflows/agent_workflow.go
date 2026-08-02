@@ -63,6 +63,18 @@ type AgentWorkflowInput struct {
 	Caller           activities.Caller       `json:"caller"`
 	ParentWorkflowID string                  `json:"parentWorkflowId"`
 	Depth            int                     `json:"depth"`
+
+	// Credentials references the Secret the parent's authorization pre-flight
+	// wrote for this run. The gate itself already ran in the parent — a child
+	// never re-decides authorization, it only carries the reference to the
+	// Jobs it launches.
+	//
+	// PodAgentWorkflow attaches it to its step Jobs, which is the per-user
+	// token injection docs/pod-agents.md recorded as blocked. The declarative
+	// AgentWorkflow has no pod of its own to inject into: for it, an Agent's
+	// identityProviders act purely as a launch gate, and the tools it calls
+	// carry their own (ADR 0032).
+	Credentials credentials `json:"credentials,omitempty"`
 }
 
 // AgentWorkflow runs one agent episode. It reports everything to the parent

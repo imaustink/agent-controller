@@ -81,8 +81,10 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 				logger.Warn("forced agent lookup failed; falling through to retrieval", "agentId", in.ForcedAgentID, "error", err)
 			} else if agent != nil {
 				note("Routing to agent " + agent.ID)
-				reply, m, err := delegateToAgent(ctx, state, in, *agent, &meta, note)
-				m.Path = "agent-routed"
+				reply, m, err := delegateToAgent(ctx, actx, state, in, *agent, &meta, note)
+				if m.Path == "agent" {
+					m.Path = "agent-routed"
+				}
 				return reply, m, err
 			} else {
 				logger.Info("forced agent not visible to caller; falling through", "agentId", in.ForcedAgentID)
@@ -102,6 +104,16 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			} else {
 				logger.Info("forced skill not visible to caller; falling through", "skillId", in.ForcedSkillID)
 			}
+		}
+	}
+
+	// 0.6. A turn that stopped for an account link resumes here, with the
+	// ORIGINAL goal (upstream's checkPendingIdentityLink). Re-running the
+	// pre-flight is the only thing that decides whether the link landed —
+	// never the user saying it did.
+	if skillTools == nil && state.PendingIdentityLink != nil && in.Caller.Subject != "" {
+		if reply, m, handled, err := resumePendingLink(ctx, actx, state, in, &meta, note); handled {
+			return reply, m, err
 		}
 	}
 
@@ -185,7 +197,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			}
 			if choice.Kind == activities.DelegateAgent {
 				if agent := findAgent(choice.ID, agents); agent != nil {
-					return delegateToAgent(ctx, state, in, *agent, &meta, note)
+					return delegateToAgent(ctx, actx, state, in, *agent, &meta, note)
 				}
 			}
 			skillID = ""
@@ -255,8 +267,16 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			break
 		}
 
+		// Identity gate for a container Tool acting as the calling human
+		// (ADR 0032 §5). Before this, only an agent-backed Tool had one.
+		creds, refusal := toolCredentials(ctx, actx, in, *findTool(plan.ToolID, skillTools))
+		if refusal != "" {
+			note(plan.ToolID + " needs a linked account")
+			return refusal, meta, nil
+		}
+
 		note("Running " + plan.ToolID + "…")
-		outcome, err := runToolWithContinuation(ctx, state, plan.ToolID, plan.ToolInput, note)
+		outcome, err := runToolWithContinuation(ctx, state, plan.ToolID, plan.ToolInput, creds, note)
 		if err != nil {
 			return "", meta, err
 		}
@@ -306,6 +326,7 @@ func runToolWithContinuation(
 	ctx workflow.Context,
 	state *ConversationState,
 	toolID, toolInput string,
+	creds credentials,
 	note func(string),
 ) (ToolOutcome, error) {
 	if token := state.ToolContinuations[toolID]; token != "" {
@@ -313,8 +334,10 @@ func runToolWithContinuation(
 	}
 
 	outcome, err := runTool(ctx, RunToolParams{
-		ToolRef: toolID,
-		Args:    []string{toolInput},
+		ToolRef:              toolID,
+		Args:                 []string{toolInput},
+		CredentialSecretName: creds.SecretName,
+		CredentialEnvVars:    creds.EnvVars,
 		OnProgress: func(e messaging.Event) {
 			line := e.Message
 			if e.Stage != "" {
@@ -353,12 +376,19 @@ func bareAnswerWithMeta(ctx workflow.Context, actx workflow.Context, state *Conv
 }
 
 func toolInScope(toolID string, st *activities.SkillTools) bool {
-	for _, t := range st.Tools {
-		if t.ID == toolID {
-			return true
+	return findTool(toolID, st) != nil
+}
+
+// findTool resolves an id the planner chose against the skill's own resolved,
+// role-visible tools. Only ever called after toolInScope, so a nil return
+// would mean the two disagree.
+func findTool(toolID string, st *activities.SkillTools) *catalog.ToolDescriptor {
+	for i := range st.Tools {
+		if st.Tools[i].ID == toolID {
+			return &st.Tools[i]
 		}
 	}
-	return false
+	return nil
 }
 
 func repeatsLastCall(history []activities.ActionRecord, plan activities.PlannedAction) bool {

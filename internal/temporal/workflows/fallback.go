@@ -196,10 +196,18 @@ func runFallbackTool(
 	note func(string),
 ) (string, TurnMeta, error) {
 	meta.Path = "fallback-tool"
+
+	// The identity gate applies here too: a Tool reached ad-hoc must not skip
+	// a check a Tool reached through a skill has to pass.
+	creds, refusal := toolCredentials(ctx, actx, in, tool)
+	if refusal != "" {
+		return refusal, *meta, nil
+	}
+
 	meta.ToolCalls = append(meta.ToolCalls, tool.ID)
 	note("No skill matched; trying " + tool.ID + "…")
 
-	outcome, err := runToolWithContinuation(ctx, state, tool.ID, toolInput, note)
+	outcome, err := runToolWithContinuation(ctx, state, tool.ID, toolInput, creds, note)
 	if err != nil {
 		return "", *meta, err
 	}

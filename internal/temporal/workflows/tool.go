@@ -31,6 +31,11 @@ type RunToolParams struct {
 	ToolRef        string
 	Args           []string
 	TimeoutSeconds int32
+	// CredentialSecretName / CredentialEnvVars carry caller-scoped credentials
+	// into the Job. A reference and key names only; the values are already in
+	// the Secret and must never enter workflow state.
+	CredentialSecretName string
+	CredentialEnvVars    []string
 	// OnJobID fires once the job id exists (before the launch activity), so
 	// callers can expose it via queries while the tool is still running.
 	// OnProgress observes progress/warning events. Both run in workflow
@@ -76,11 +81,13 @@ func runTool(ctx workflow.Context, p RunToolParams) (ToolOutcome, error) {
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 	})
 	err := workflow.ExecuteActivity(actx, activities.LaunchToolRunActivityName, activities.LaunchToolRunInput{
-		JobID:          jobID,
-		ToolRef:        p.ToolRef,
-		Args:           p.Args,
-		WorkflowID:     workflow.GetInfo(ctx).WorkflowExecution.ID,
-		TimeoutSeconds: timeoutSeconds,
+		JobID:                jobID,
+		ToolRef:              p.ToolRef,
+		Args:                 p.Args,
+		WorkflowID:           workflow.GetInfo(ctx).WorkflowExecution.ID,
+		TimeoutSeconds:       timeoutSeconds,
+		CredentialSecretName: p.CredentialSecretName,
+		CredentialEnvVars:    p.CredentialEnvVars,
 	}).Get(ctx, nil)
 	if err != nil {
 		return ToolOutcome{}, fmt.Errorf("launch tool %s: %w", p.ToolRef, err)

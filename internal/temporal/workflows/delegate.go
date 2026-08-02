@@ -5,6 +5,7 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
+	"durable-agents/internal/authz"
 	"durable-agents/internal/catalog"
 	"durable-agents/internal/continuation"
 )
@@ -13,9 +14,46 @@ import (
 // relays its first non-progress up-signal into the turn: a question becomes
 // the reply with the episode left active for the next turn; a final message
 // closes the episode and banks the agent's continuation token.
-func delegateToAgent(ctx workflow.Context, state *ConversationState, in TurnInput, agent catalog.AgentDescriptor, meta *TurnMeta, note func(string)) (string, TurnMeta, error) {
+func delegateToAgent(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput, agent catalog.AgentDescriptor, meta *TurnMeta, note func(string)) (string, TurnMeta, error) {
 	meta.Path = "agent"
 	meta.AgentID = agent.ID
+
+	// Authorization pre-flight, before anything is launched (upstream ADR
+	// 0030). Plain control flow: no model call reaches this decision, and
+	// nothing downstream can skip it.
+	verdict, err := authorizeAgent(ctx, actx, in, agent)
+	if err != nil {
+		return "", *meta, fmt.Errorf("authorize %s: %w", agent.ID, err)
+	}
+	switch verdict.Kind {
+	case authz.KindAuthorized:
+		// Adopt the principal the credentials were actually keyed by. The
+		// pre-flight may have UPGRADED it this turn; without adopting it,
+		// anything that later re-derives the key would invalidate a record
+		// that was never written and leave the caller re-reading a dead
+		// credential forever.
+		if verdict.Principal != "" {
+			in.Caller.Principal = verdict.Principal
+		}
+		state.PendingIdentityLink = nil
+	case authz.KindLinkRequired:
+		meta.Path = "link-required"
+		note("Waiting for an account link")
+		if verdict.Pending != nil {
+			anchor := *verdict.Pending
+			// Capture the goal, not the message that eventually notices the
+			// link landed. Without this the resume re-delegates "ok, linked
+			// it" and the user's actual request is lost.
+			anchor.Request = in.Message
+			state.PendingIdentityLink = &anchor
+		}
+		return verdict.Message, *meta, nil
+	default:
+		meta.Path = "misconfigured"
+		state.PendingIdentityLink = nil
+		return "I can't run that agent right now: " + verdict.Error, *meta, nil
+	}
+
 	note("Delegating to agent " + agent.ID + "…")
 
 	goal := in.Message
@@ -34,6 +72,9 @@ func delegateToAgent(ctx workflow.Context, state *ConversationState, in TurnInpu
 		Caller:           in.Caller,
 		ParentWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 		Depth:            1,
+		// A reference, not credentials: the child attaches it to the Jobs it
+		// launches, and the kubelet is the only thing that reads a value.
+		Credentials: credentials{SecretName: verdict.SecretName, EnvVars: verdict.EnvVarNames},
 	})
 	// Wait for the start (not completion): the update handler returns while
 	// the child keeps running under this conversation. ParentClosePolicy

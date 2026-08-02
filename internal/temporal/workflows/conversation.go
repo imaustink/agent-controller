@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
+	"durable-agents/internal/authz"
 	"durable-agents/internal/llm"
 	"durable-agents/internal/temporal/activities"
 )
@@ -91,6 +92,18 @@ type TurnInput struct {
 	// configured. Consumed by the authorization pre-flight in A4; carried
 	// through the loop unread until then.
 	SenderLogin string `json:"senderLogin,omitempty"`
+
+	// Live says the caller is watching this turn as it runs (a streaming chat
+	// request), as opposed to a fire-and-forget caller that will only ever see
+	// the final result.
+	//
+	// It decides whether the authorization pre-flight may wait for a human to
+	// finish linking an account. For a fire-and-forget caller it must not: the
+	// link reaches that user only in the turn's result, so waiting would hide
+	// the prompt for the whole window and could only ever time out. This is
+	// the direct analogue of upstream keying the same decision off whether a
+	// progressListener is attached.
+	Live bool `json:"live,omitempty"`
 }
 
 type TurnResult struct {
@@ -123,6 +136,13 @@ type ConversationState struct {
 	// AgentContinuations holds per-agent opaque episode tokens, prepended to
 	// the same agent's next goal (never shown to the transcript).
 	AgentContinuations map[string]string `json:"agentContinuations,omitempty"`
+
+	// PendingIdentityLink anchors a turn that stopped to ask the caller to
+	// link an account. It carries the ORIGINAL request, so the turn that
+	// notices the link completed re-delegates the goal the user actually
+	// asked for rather than whatever text happened to arrive next ("ok,
+	// linked it").
+	PendingIdentityLink *authz.PendingLink `json:"pendingIdentityLink,omitempty"`
 }
 
 type StateSummary struct {

@@ -23,6 +23,16 @@ const (
 type Caller struct {
 	Subject string   `json:"subject"`
 	Roles   []string `json:"roles,omitempty"`
+
+	// Principal is the stable per-human credential key, when established
+	// (upstream ADR 0030 §6 / 0031). Subject stays what sessions and RBAC key
+	// on; only durable per-user credentials move to the principal.
+	Principal string `json:"principal,omitempty"`
+
+	// PerUser asserts that Subject identifies ONE human. Set only by a
+	// resolver that structurally knows — see authz.Identity for why inferring
+	// it is unsound in the direction that leaks.
+	PerUser bool `json:"perUser,omitempty"`
 }
 
 type RetrieveInput struct {

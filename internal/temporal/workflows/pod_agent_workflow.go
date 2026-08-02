@@ -2,14 +2,11 @@ package workflows
 
 import (
 	"fmt"
-	"time"
 
-	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	"durable-agents/internal/continuation"
 	"durable-agents/internal/messaging"
-	"durable-agents/internal/temporal/activities"
 )
 
 // PodAgentWorkflow is the checkpoint-resume adapter for heavyweight pod
@@ -45,32 +42,17 @@ func PodAgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 		return fail("config_error", "pod agent "+in.Agent.ID+" has no step tool annotation")
 	}
 
-	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
-	})
 	prompts := workflow.GetSignalChannel(ctx, AgentPromptSignal)
 
-	// Identity gate (ADR 0022 mechanics): agents acting as the caller need
-	// the caller's own linked credential. Not linked → tell the human where
-	// to link and durably wait; every reply re-checks (fail closed).
-	for len(in.Agent.IdentityProviders) > 0 {
-		var status activities.IdentityLinkStatus
-		if err := workflow.ExecuteActivity(actx, activities.GetIdentityLinkActivityName, activities.IdentityLinkInput{
-			Caller:    in.Caller,
-			Providers: in.Agent.IdentityProviders,
-		}).Get(ctx, &status); err != nil {
-			return fail("identity_check_error", err.Error())
-		}
-		if status.Linked {
-			break
-		}
-		up(AgentUp{Message: fmt.Sprintf(
-			"I need access to your %s account first. Link it here: %s — then reply here and I'll continue.",
-			status.MissingProvider, status.LinkURL)})
-		var answer AgentPrompt
-		prompts.Receive(ctx, &answer)
-	}
+	// No identity gate here: the parent's pre-flight already decided it and
+	// this workflow only exists because that decision was `authorized`. A
+	// second gate would be a second copy of credential keying, which is the
+	// shape of upstream's PR #144 bug — one owner, and it is the parent's.
+	//
+	// What DOES arrive is a reference to the Secret holding this run's
+	// caller-scoped credentials, attached to every step Job below. That is the
+	// per-user token injection docs/pod-agents.md recorded as blocked on
+	// ToolRunSpec.secretEnv, which upstream has since added.
 
 	// The parent delivers prior-episode state as a leading marker on the
 	// goal; from here the token lives in workflow state only.
@@ -90,9 +72,11 @@ func PodAgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 
 		up(AgentUp{Progress: true, Message: fmt.Sprintf("Running %s (step %d)…", in.Agent.StepToolRef, step+1)})
 		outcome, err := runTool(ctx, RunToolParams{
-			ToolRef:        in.Agent.StepToolRef,
-			Args:           []string{arg},
-			TimeoutSeconds: podStepTimeoutSeconds,
+			ToolRef:              in.Agent.StepToolRef,
+			Args:                 []string{arg},
+			TimeoutSeconds:       podStepTimeoutSeconds,
+			CredentialSecretName: in.Credentials.SecretName,
+			CredentialEnvVars:    in.Credentials.EnvVars,
 			OnProgress: func(e messaging.Event) {
 				line := e.Message
 				if e.Stage != "" {

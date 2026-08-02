@@ -60,11 +60,23 @@ tool can serve as a degenerate one-shot agent.
 
 ## Identity gate
 
-If the Agent CR declares `identityProviders`, `PodAgentWorkflow` checks the
-caller's linked credentials before the first step (fail closed). Missing →
-the turn's reply is the link instruction and the workflow waits; every user
-reply re-checks. Dev store: `IDENTITY_LINKS` / `IDENTITY_LINK_URLS` env
-JSON on the worker.
+If the Agent CR declares `identityProviders`, the authorization pre-flight
+runs in the **parent conversation** before any child starts (upstream ADR
+0030 — one owner, plain control flow, no model call involved). Missing links
+→ the turn's reply is the link instruction, and the pending anchor captures
+the original goal so the resume re-delegates what the user actually asked
+for. Whether a link completed is decided by re-running the pre-flight, never
+by the user saying they linked it.
+
+`PodAgentWorkflow` performs no gate of its own — a second one would be a
+second copy of credential keying. What arrives is a **reference** to the
+Secret holding this run's caller-scoped credentials, attached to every step
+Job as `ToolRunSpec.secretEnv`. Values never enter workflow state, because
+anything a workflow holds is written to Temporal event history in the clear.
+
+Real store: `IDENTITY_LINK_GATEWAY_URL` / `IDENTITY_LINK_GATEWAY_TOKEN`
+pointing at agent-controller's integration-gateway. Dev fallback:
+`IDENTITY_LINKS` / `IDENTITY_LINK_URLS` env JSON.
 
 ## Adapting opencode-swe-agent (upstream follow-ups)
 
@@ -77,13 +89,10 @@ reply. `session.ask()` becomes "return a question envelope and exit."
 
 Known upstream gaps:
 
-1. ~~**Per-user token injection**~~ — **closed upstream.** `ToolRunSpec.secretEnv`
-   landed with agent-controller's ADR 0032 §1, mirroring `AgentRunSpec`'s, and
-   the reconciler merges it over the Tool's static `secretEnv` at Job-build
-   time. `LaunchSpec.SecretEnv` carries it here, so a caller-scoped credential
-   can ride a step Job without being baked into the Tool template. What
-   remains is resolving the token in the first place — see the authorization
-   pre-flight in [upstream-catchup-plan.md](upstream-catchup-plan.md) A4.
+1. ~~**Per-user token injection**~~ — **closed.** `ToolRunSpec.secretEnv` landed
+   upstream with ADR 0032 §1; `LaunchSpec.SecretEnv` carries it here, and A4's
+   authorization pre-flight resolves the token and writes it to the per-run
+   Secret the step Job references. End to end, no gap left.
 2. **opencode image adaptation** as described above — TypeScript changes in
    the agent-controller repo. Note that this is no longer on the critical
    path: the catch-up plan's D2 keeps the NATS `AgentRun` channel alongside
