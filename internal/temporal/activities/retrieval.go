@@ -45,8 +45,8 @@ type ResolveAgentInput struct {
 // SkillTools is a selected skill plus its resolved, role-visible tools and
 // agents — everything the planner needs for a turn.
 type SkillTools struct {
-	Skill  catalog.SkillDescriptor  `json:"skill"`
-	Tools  []catalog.ToolDescriptor `json:"tools,omitempty"`
+	Skill  catalog.SkillDescriptor   `json:"skill"`
+	Tools  []catalog.ToolDescriptor  `json:"tools,omitempty"`
 	Agents []catalog.AgentDescriptor `json:"agents,omitempty"`
 }
 

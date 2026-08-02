@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	LaunchToolRunActivityName  = "LaunchToolRun"
+	LaunchToolRunActivityName   = "LaunchToolRun"
 	GetToolRunPhaseActivityName = "GetToolRunPhase"
 )
 

@@ -195,10 +195,10 @@ type ActionRecord struct {
 }
 
 type PlanActionInput struct {
-	Request       string                    `json:"request"`
-	SkillMarkdown string                    `json:"skillMarkdown"`
-	Tools         []catalog.ToolDescriptor  `json:"tools"`
-	History       []ActionRecord            `json:"history,omitempty"`
+	Request       string                   `json:"request"`
+	SkillMarkdown string                   `json:"skillMarkdown"`
+	Tools         []catalog.ToolDescriptor `json:"tools"`
+	History       []ActionRecord           `json:"history,omitempty"`
 }
 
 // PlanAction decides the next step of a skill-driven turn. The skill's

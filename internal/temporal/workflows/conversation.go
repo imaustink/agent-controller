@@ -8,8 +8,8 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"durable-agents/internal/temporal/activities"
 	"durable-agents/internal/llm"
+	"durable-agents/internal/temporal/activities"
 )
 
 const (

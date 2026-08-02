@@ -98,9 +98,15 @@ type SkillDescriptor struct {
 
 // EmbeddingText is what gets vectorized for retrieval, mirroring
 // agent-controller's "description + Input/Output" composition.
-func (t ToolDescriptor) EmbeddingText() string  { return embeddingText(t.Description, t.Input, t.Output) }
-func (a AgentDescriptor) EmbeddingText() string { return embeddingText(a.Description, a.Input, a.Output) }
-func (s SkillDescriptor) EmbeddingText() string { return embeddingText(s.Description, s.Input, s.Output) }
+func (t ToolDescriptor) EmbeddingText() string {
+	return embeddingText(t.Description, t.Input, t.Output)
+}
+func (a AgentDescriptor) EmbeddingText() string {
+	return embeddingText(a.Description, a.Input, a.Output)
+}
+func (s SkillDescriptor) EmbeddingText() string {
+	return embeddingText(s.Description, s.Input, s.Output)
+}
 
 func embeddingText(description, input, output string) string {
 	text := description
