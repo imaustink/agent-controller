@@ -35,6 +35,11 @@ async function installFake(name: string, body: string): Promise<void> {
 //
 // Modes:
 //   complete  - bridge line + assistant text + turn_duration, written at once
+//   latebridge- assistant text + turn_duration first, then the bridge line
+//               appended FAKE_LATE_BRIDGE_MS later. Models issue #183: a fast
+//               read-only turn that finishes before the bridge finishes its
+//               async registration with claude.ai, so the session URL is not in
+//               the transcript yet when turn_duration lands.
 //   running   - bridge line + assistant text, never completes (works, then wedges)
 //   stalled   - bridge line only (registers, but the turn never begins)
 //   streaming - bridge line, then a tool_use entry every FAKE_STEP_MS for
@@ -77,6 +82,13 @@ if (mode !== "nofile") {
       clearInterval(timer);
       fs.appendFileSync(file, assistant(process.env.FAKE_ASSISTANT_TEXT || "DONE") + "\\n" + done() + "\\n");
     }, stepMs);
+  } else if (mode === "latebridge") {
+    // Turn finishes (assistant text + turn_duration) BEFORE the bridge line is
+    // written -- the bridge's registration handshake lands FAKE_LATE_BRIDGE_MS
+    // later. Reproduces issue #183's dropped session URL on fast turns.
+    fs.writeFileSync(file, assistant(process.env.FAKE_ASSISTANT_TEXT || "DONE") + "\\n" + done() + "\\n");
+    const lateMs = Number(process.env.FAKE_LATE_BRIDGE_MS || 60);
+    setTimeout(() => { fs.appendFileSync(file, bridge() + "\\n"); }, lateMs);
   } else {
     const lines = [bridge()];
     if (mode !== "stalled") lines.push(assistant(process.env.FAKE_ASSISTANT_TEXT || "DONE"));
@@ -162,6 +174,32 @@ describe("runClaudeTurnRemoteControlled (interactive)", () => {
       sessionId: FAKE_SID,
     });
     // URL derived from bridgeSessionId "cse_TESTBRIDGE" -> session_TESTBRIDGE.
+    expect(progress).toContainEqual({ message: "https://claude.ai/code/session_TESTBRIDGE", stage: "remote-control-url" });
+  });
+
+  // Regression for issue #183 ("Review Agent Doesn't Post a Session Link"). The
+  // "watch live / take over the session" link was posted for most runs but
+  // dropped intermittently on the fast, read-only `ai-review` flow. Root cause:
+  // the turn can finish (turn_duration) BEFORE the Remote Control bridge writes
+  // its `bridgeSessionId` line (that line lands when the async registration with
+  // claude.ai completes), and the loop used to return the instant it saw
+  // completion -- so the URL was never emitted. Here the bridge line is written
+  // AFTER completion; the URL must still be reported (deterministically), not
+  // raffled off by which of the two the transcript flushed first.
+  it("still reports the session URL when the bridge line lands AFTER turn_duration (issue #183)", async () => {
+    const progress: Array<{ message: string; stage: string }> = [];
+    const result = await runClaudeTurnRemoteControlled("review the PR", {
+      cwd,
+      env: env({ FAKE_SCRIPT_MODE: "latebridge", FAKE_LATE_BRIDGE_MS: "60" }),
+      settings: {},
+      runId: "run-late-bridge",
+      pollIntervalMs: 20,
+      urlGraceMs: 5000,
+      maxWaitMs: 5000,
+      onProgress: (message, stage) => progress.push({ message, stage }),
+    });
+
+    expect(result).toMatchObject({ finalMessage: "DONE", failed: false, authError: false });
     expect(progress).toContainEqual({ message: "https://claude.ai/code/session_TESTBRIDGE", stage: "remote-control-url" });
   });
 
