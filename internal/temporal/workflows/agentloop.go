@@ -16,7 +16,15 @@ const maxToolSteps = 4
 
 // TurnMeta reports what the agent loop did, for TurnResult/debugging.
 type TurnMeta struct {
-	Path      string   `json:"path"`              // bare | skill | skill-continued | agent | agent-continued
+	// Path is how this turn reached its target:
+	//   bare             — no capability needed, or nothing matched
+	//   skill            — selected by retrieval
+	//   skill-continued  — the conversation's active skill still fits
+	//   skill-routed     — named by an IntegrationRoute (ADR 0024)
+	//   agent            — selected by retrieval
+	//   agent-continued  — an episode already in flight took the turn
+	//   agent-routed     — named by an IntegrationRoute (ADR 0024)
+	Path      string   `json:"path"`
 	SkillID   string   `json:"skillId,omitempty"` // active skill after this turn
 	AgentID   string   `json:"agentId,omitempty"` // agent handling this turn
 	ToolCalls []string `json:"toolCalls,omitempty"`
@@ -25,11 +33,10 @@ type TurnMeta struct {
 	Narration []string `json:"narration,omitempty"`
 }
 
-// runAgentTurn is the ported agent loop: active-skill fit check →
-// capability gate → retrieve → select → resolve tools → plan⇄runTool →
-// compose. It returns the reply plus which skill (if any) stays active.
-// Mirrors agent-controller's graph nodes; sub-agent delegation lands in
-// milestone 6.
+// runAgentTurn is the ported agent loop: active agent → integration route →
+// active-skill fit check → capability gate → retrieve → select → resolve
+// tools → plan⇄runTool → compose. It returns the reply plus which skill (if
+// any) stays active. Mirrors agent-controller's graph nodes.
 func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput, note func(string)) (string, TurnMeta, error) {
 	logger := workflow.GetLogger(ctx)
 	meta := TurnMeta{Path: "bare"}
@@ -53,11 +60,53 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		state.ActiveAgentID, state.ActiveAgentWorkflowID = "", ""
 	}
 
+	var skillTools *activities.SkillTools
+
+	// 0.5. Deterministic dispatch (ADR 0024). The gateway matched this turn's
+	// event descriptor to an IntegrationRoute and named a target; re-resolve
+	// it under the caller's CURRENT roles and go straight there, skipping
+	// retrieval. Deliberately AFTER the active-agent check above: a re-applied
+	// trigger label on an issue an agent is already working would otherwise
+	// start the work a second time — a second branch and a second PR on a real
+	// coding agent. A miss falls through, never an error.
+	if in.Caller.Subject != "" {
+		if in.ForcedAgentID != "" {
+			var agent *catalog.AgentDescriptor
+			if err := workflow.ExecuteActivity(actx, activities.ResolveAgentActivityName, activities.ResolveAgentInput{
+				Caller:  in.Caller,
+				AgentID: in.ForcedAgentID,
+			}).Get(ctx, &agent); err != nil {
+				logger.Warn("forced agent lookup failed; falling through to retrieval", "agentId", in.ForcedAgentID, "error", err)
+			} else if agent != nil {
+				note("Routing to agent " + agent.ID)
+				reply, m, err := delegateToAgent(ctx, state, in, *agent, &meta, note)
+				m.Path = "agent-routed"
+				return reply, m, err
+			} else {
+				logger.Info("forced agent not visible to caller; falling through", "agentId", in.ForcedAgentID)
+			}
+		}
+		if in.ForcedSkillID != "" {
+			var resolved *activities.SkillTools
+			if err := workflow.ExecuteActivity(actx, activities.ResolveSkillToolsActivityName, activities.ResolveSkillToolsInput{
+				Caller:  in.Caller,
+				SkillID: in.ForcedSkillID,
+			}).Get(ctx, &resolved); err != nil {
+				logger.Warn("forced skill lookup failed; falling through to retrieval", "skillId", in.ForcedSkillID, "error", err)
+			} else if resolved != nil {
+				skillTools = resolved
+				meta.Path = "skill-routed"
+				note("Routing to skill " + resolved.Skill.ID)
+			} else {
+				logger.Info("forced skill not visible to caller; falling through", "skillId", in.ForcedSkillID)
+			}
+		}
+	}
+
 	// 1. Session continuity (ADR 0012): re-fetch the active skill under the
 	// caller's CURRENT roles (fail closed), then a cheap fit check. Any miss
 	// falls through to the full path — never an error.
-	var skillTools *activities.SkillTools
-	if state.ActiveSkillID != "" && in.Caller.Subject != "" {
+	if skillTools == nil && state.ActiveSkillID != "" && in.Caller.Subject != "" {
 		var resolved *activities.SkillTools
 		err := workflow.ExecuteActivity(actx, activities.ResolveSkillToolsActivityName, activities.ResolveSkillToolsInput{
 			Caller:  in.Caller,

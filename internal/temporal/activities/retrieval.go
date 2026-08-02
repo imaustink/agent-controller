@@ -13,6 +13,7 @@ const (
 	RetrieveSkillsActivityName    = "RetrieveSkills"
 	RetrieveAgentsActivityName    = "RetrieveAgents"
 	ResolveSkillToolsActivityName = "ResolveSkillTools"
+	ResolveAgentActivityName      = "ResolveAgent"
 )
 
 // Caller is the resolved identity a retrieval runs as. Every activity fails
@@ -34,6 +35,11 @@ const defaultTopK = 3
 type ResolveSkillToolsInput struct {
 	Caller  Caller `json:"caller"`
 	SkillID string `json:"skillId"`
+}
+
+type ResolveAgentInput struct {
+	Caller  Caller `json:"caller"`
+	AgentID string `json:"agentId"`
 }
 
 // SkillTools is a selected skill plus its resolved, role-visible tools and
@@ -113,6 +119,31 @@ func (a *RetrievalActivities) ResolveSkillTools(ctx context.Context, in ResolveS
 		}
 	}
 	return result, nil
+}
+
+// ResolveAgent fetches one agent by id under the caller's CURRENT roles,
+// returning nil when it is gone or no longer visible — never an error.
+//
+// Used by the IntegrationRoute bypass (upstream ADR 0024), which names an
+// agent directly instead of retrieving one. The RBAC re-check is the point:
+// a route is operator config, and config saying "dispatch to this agent"
+// must not become a way around the roles that gate reaching it normally.
+func (a *RetrievalActivities) ResolveAgent(ctx context.Context, in ResolveAgentInput) (*catalog.AgentDescriptor, error) {
+	if in.Caller.Subject == "" || in.AgentID == "" {
+		return nil, nil
+	}
+	hits, err := a.Collections.Agents.GetByIDs(ctx, []string{in.AgentID}, in.Caller.Roles)
+	if err != nil {
+		return nil, err
+	}
+	if len(hits) == 0 {
+		return nil, nil
+	}
+	agents, err := decodeHits[catalog.AgentDescriptor](hits)
+	if err != nil {
+		return nil, err
+	}
+	return &agents[0], nil
 }
 
 func topK(k int) int {

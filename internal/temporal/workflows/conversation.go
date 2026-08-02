@@ -69,6 +69,19 @@ type TurnInput struct {
 	// this workflow has no durable history yet (e.g. the previous
 	// conversation workflow idled out and completed).
 	SeedHistory []ChatMessage `json:"seedHistory,omitempty"`
+
+	// ForcedSkillID / ForcedAgentID name a target chosen deterministically
+	// from an inbound event descriptor rather than inferred by retrieval
+	// (upstream ADR 0024). The gateway sets one of these when the event
+	// matched an IntegrationRoute CR; Message already carries that route's
+	// rendered promptTemplate.
+	//
+	// These are a ROUTING hint, never an authorization one: the workflow
+	// re-resolves the named target under the caller's current roles and
+	// falls through to ordinary retrieval on a miss. An unmatched or
+	// role-invisible target is not an error.
+	ForcedSkillID string `json:"forcedSkillId,omitempty"`
+	ForcedAgentID string `json:"forcedAgentId,omitempty"`
 }
 
 type TurnResult struct {

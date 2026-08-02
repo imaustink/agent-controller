@@ -26,10 +26,12 @@ type loopEnv struct {
 	launched *activities.LaunchToolRunInput
 	launches []activities.LaunchToolRunInput
 
-	retrieveCalls      int
-	retrieveAgentCalls int
-	fitCalls           int
-	planCalls          int
+	retrieveCalls       int
+	retrieveAgentCalls  int
+	fitCalls            int
+	planCalls           int
+	resolveAgentCalls   int
+	selectDelegateCalls int
 
 	// knobs
 	needsCapability bool
@@ -38,6 +40,17 @@ type loopEnv struct {
 	selected        string
 	delegate        activities.DelegateChoice
 	skillTools      *activities.SkillTools
+	// skillToolsByID, when set, resolves per skill id instead of returning
+	// skillTools for anything — needed to distinguish a route naming a skill
+	// the caller cannot see from one they can.
+	skillToolsByID map[string]*activities.SkillTools
+	// resolvedAgent is what ResolveAgent returns for a forced agent id; nil
+	// means "gone, or not visible to this caller".
+	resolvedAgent *catalog.AgentDescriptor
+	// forcedSkillID/forcedAgentID ride every sendTurn, as if an
+	// IntegrationRoute had matched this turn's event descriptor.
+	forcedSkillID   string
+	forcedAgentID   string
 	fits            bool
 	plans           []activities.PlannedAction      // returned in order
 	agentPlans      []activities.PlannedAgentAction // returned in order
@@ -73,6 +86,7 @@ func newLoopEnv(t *testing.T) *loopEnv {
 		return le.agents, nil
 	})
 	reg(activities.SelectDelegateActivityName, func(context.Context, activities.SelectDelegateInput) (activities.DelegateChoice, error) {
+		le.selectDelegateCalls++
 		return le.delegate, nil
 	})
 	reg(activities.PlanAgentActionActivityName, func(_ context.Context, in activities.PlanAgentActionInput) (activities.PlannedAgentAction, error) {
@@ -84,8 +98,15 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	reg(activities.SelectSkillActivityName, func(context.Context, activities.SelectSkillInput) (string, error) {
 		return le.selected, nil
 	})
-	reg(activities.ResolveSkillToolsActivityName, func(context.Context, activities.ResolveSkillToolsInput) (*activities.SkillTools, error) {
+	reg(activities.ResolveSkillToolsActivityName, func(_ context.Context, in activities.ResolveSkillToolsInput) (*activities.SkillTools, error) {
+		if le.skillToolsByID != nil {
+			return le.skillToolsByID[in.SkillID], nil
+		}
 		return le.skillTools, nil
+	})
+	reg(activities.ResolveAgentActivityName, func(context.Context, activities.ResolveAgentInput) (*catalog.AgentDescriptor, error) {
+		le.resolveAgentCalls++
+		return le.resolvedAgent, nil
 	})
 	reg(activities.CheckSkillFitActivityName, func(context.Context, activities.CheckSkillFitInput) (bool, error) {
 		le.fitCalls++
@@ -125,8 +146,10 @@ func (le *loopEnv) sendTurn(t *testing.T, updateID, message string, result *work
 				}
 			},
 		}, workflows.TurnInput{
-			Message: message,
-			Caller:  activities.Caller{Subject: "user:1", Roles: []string{"cook"}},
+			Message:       message,
+			Caller:        activities.Caller{Subject: "user:1", Roles: []string{"cook"}},
+			ForcedSkillID: le.forcedSkillID,
+			ForcedAgentID: le.forcedAgentID,
 		})
 	}, at)
 }
@@ -308,6 +331,110 @@ func TestAgentDelegationHITLAcrossTurns(t *testing.T) {
 	require.Len(t, le.agentPlanInputs, 2)
 	require.Equal(t, "ask_user", le.agentPlanInputs[1].History[0].ToolID)
 	require.Equal(t, "five days", le.agentPlanInputs[1].History[0].Result)
+}
+
+// An IntegrationRoute names its target outright (upstream ADR 0024), so a
+// routed turn must not pay for retrieval it cannot use.
+func TestIntegrationRouteForcedAgentBypassesRetrieval(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := mealPlannerAgent()
+	le.forcedAgentID = agent.ID
+	le.resolvedAgent = &agent
+	le.skillTools = recipesSkillTools() // the child resolves its skillRefs
+	le.agentPlans = []activities.PlannedAgentAction{
+		{Action: activities.AgentActionFinish, Message: "Triaged."},
+	}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "Triage acme/widgets#7", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "Triaged.", result.Reply)
+	require.Equal(t, "agent-routed", result.Meta.Path)
+	require.Equal(t, agent.ID, result.Meta.AgentID)
+	require.Zero(t, le.retrieveCalls, "a routed turn must skip skill retrieval")
+	// Not retrieveAgentCalls: the child runs its own agent retrieval for
+	// sub-delegation, which has nothing to do with the parent's bypass.
+	// SelectDelegate is the parent-only signal that retrieval-based selection
+	// ran at all.
+	require.Zero(t, le.selectDelegateCalls, "a routed turn must skip delegate selection")
+}
+
+func TestIntegrationRouteForcedSkillBypassesRetrieval(t *testing.T) {
+	le := newLoopEnv(t)
+	le.forcedSkillID = "recipes"
+	le.skillTools = recipesSkillTools()
+	le.plans = []activities.PlannedAction{{Action: activities.ActionRespond, Response: "routed reply"}}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "Publish the recipe at example.com", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "routed reply", result.Reply)
+	require.Equal(t, "skill-routed", result.Meta.Path)
+	require.Equal(t, "recipes", result.Meta.SkillID)
+	require.Zero(t, le.retrieveCalls)
+	require.Zero(t, le.fitCalls, "deterministic dispatch needs no fit check")
+}
+
+// A route is operator config, not an authorization decision: the named target
+// is re-resolved under the caller's current roles, and a target they cannot
+// see is a miss rather than a bypass or an error.
+func TestIntegrationRouteInvisibleTargetFallsThroughToRetrieval(t *testing.T) {
+	le := newLoopEnv(t)
+	le.forcedAgentID = "claude-code-swe-agent"
+	le.resolvedAgent = nil // roles revoked, or the CR is gone
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.selected = "recipes"
+	le.skillTools = recipesSkillTools()
+	le.plans = []activities.PlannedAction{{Action: activities.ActionRespond, Response: "retrieved reply"}}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "Triage acme/widgets#7", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, 1, le.resolveAgentCalls)
+	require.Equal(t, "skill", result.Meta.Path, "a route miss falls through to ordinary retrieval")
+	require.Equal(t, 1, le.retrieveCalls)
+}
+
+// Re-applying a trigger label while an episode is still in flight must feed
+// the running agent, not start a second one — on a real coding agent that
+// would mean a second branch and a second PR (upstream ADR 0033's reasoning,
+// and why the route check sits after the active-episode check).
+func TestIntegrationRouteYieldsToAnActiveEpisode(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := mealPlannerAgent()
+	le.forcedAgentID = agent.ID
+	le.resolvedAgent = &agent
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+	le.skillTools = recipesSkillTools()
+	le.agentPlans = []activities.PlannedAgentAction{
+		{Action: activities.AgentActionAskUser, Question: "Which branch?"},
+		{Action: activities.AgentActionFinish, Message: "Done on main."},
+	}
+
+	var first, second workflows.TurnResult
+	le.sendTurn(t, "turn-1", "Triage acme/widgets#7", &first, time.Millisecond)
+	le.sendTurn(t, "turn-2", "Triage acme/widgets#7", &second, 2*time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "agent-routed", first.Meta.Path)
+	require.Equal(t, "agent-continued", second.Meta.Path, "the re-applied label fed the running episode")
+	require.Equal(t, "Done on main.", second.Reply)
+	require.Equal(t, 1, le.resolveAgentCalls, "the second turn must not re-resolve or re-dispatch the route")
 }
 
 func TestAgentWorkflowDepthCapDisablesDelegation(t *testing.T) {
