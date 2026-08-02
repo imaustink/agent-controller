@@ -456,6 +456,17 @@ sshTool:
   # Fallback user when a target supplies none and no sshConfig Host block
   # sets one either. Optional -- resolution fails closed without a user.
   defaultUser: ""
+  # Which top-level remote commands are accepted. Empty/unset here means
+  # "use the tool's own built-in default" -- a curated read-only diagnostic
+  # set (df/ps/systemctl status/docker ps/journalctl/...), with the
+  # allowedRoles/description below adjusted to match. Set to "*" to disable
+  # the command allowlist entirely for this deployment -- this Tool can then
+  # write, delete, and restart services on any target it can reach, gated
+  # only by target resolution (allowedHosts/sshConfig above) and the
+  # remote-shell-injection charset check (tools/ssh/src/allowlist.ts), which
+  # always applies regardless of this setting. Only use "*" against
+  # infrastructure you're comfortable an agent could break.
+  allowedCommands: ""
   # Secret (must already exist) supplying the shared private key and pinned
   # known_hosts content:
   #   kubectl create secret generic ssh-tool-secrets -n <ns> \

@@ -32,6 +32,7 @@ ENV_ARGS=()
 [ -n "${SSH_ALLOWED_HOSTS:-}" ] && ENV_ARGS+=(--env "SSH_ALLOWED_HOSTS=${SSH_ALLOWED_HOSTS}")
 [ -n "${SSH_CONFIG:-}" ] && ENV_ARGS+=(--env "SSH_CONFIG=${SSH_CONFIG}")
 [ -n "${SSH_DEFAULT_USER:-}" ] && ENV_ARGS+=(--env "SSH_DEFAULT_USER=${SSH_DEFAULT_USER}")
+[ -n "${SSH_ALLOWED_COMMANDS:-}" ] && ENV_ARGS+=(--env "SSH_ALLOWED_COMMANDS=${SSH_ALLOWED_COMMANDS}")
 
 exec docker run --rm \
   --name ssh-tool \

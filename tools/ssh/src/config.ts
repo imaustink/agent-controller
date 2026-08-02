@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { DEFAULT_ALLOWED_COMMANDS, type AllowedCommands } from "./allowlist.js";
 import { parseSshConfig, type SshConfigEntry } from "./sshconfig.js";
 import type { Target } from "./target.js";
 
@@ -59,6 +60,16 @@ export interface AppConfig {
   /** Fallback user when a target supplies none and no SSH_CONFIG Host block
    * sets one either. Optional -- resolution fails closed without a user. */
   defaultUser: string | undefined;
+  /**
+   * Which top-level remote commands (and their subcommand rules) are
+   * accepted -- from `SSH_ALLOWED_COMMANDS`. Defaults to
+   * {@link DEFAULT_ALLOWED_COMMANDS} (curated read-only diagnostics) when
+   * unset; a comma-separated custom list; or `"*"` to skip the
+   * command-name/subcommand allowlist entirely for this deployment (the
+   * remote-shell-injection charset check in allowlist.ts still always
+   * applies regardless of this setting -- see its file header).
+   */
+  allowedCommands: AllowedCommands;
   /** PEM-encoded private key content (secretEnv-injected, never baked into the image). */
   privateKey: string;
   /** `known_hosts`-format content pinning the allowed hosts' host keys. Not
@@ -127,6 +138,25 @@ function parseAllowedHosts(raw: string | undefined): Target[] | null {
   });
 }
 
+/** Parses SSH_ALLOWED_COMMANDS: unset -> the curated default; "*" -> wide
+ * open (skips the command-name/subcommand allowlist, see allowlist.ts);
+ * otherwise a comma-separated custom set of top-level command names. */
+function parseAllowedCommands(raw: string | undefined): AllowedCommands {
+  if (raw === undefined) return DEFAULT_ALLOWED_COMMANDS;
+  const trimmed = raw.trim();
+  if (trimmed === "*") return "*";
+  const list = trimmed
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (list.length === 0) {
+    throw new Error(
+      'SSH_ALLOWED_COMMANDS is set but empty -- unset it entirely for the default set, or use "*" for no restriction.',
+    );
+  }
+  return new Set(list);
+}
+
 const sshConfigRaw = process.env.SSH_CONFIG ?? "";
 
 export const config: AppConfig = {
@@ -143,6 +173,7 @@ export const config: AppConfig = {
   sshConfig: sshConfigRaw,
   sshConfigEntries: parseSshConfig(sshConfigRaw),
   defaultUser: process.env.SSH_DEFAULT_USER,
+  allowedCommands: parseAllowedCommands(process.env.SSH_ALLOWED_COMMANDS),
   privateKey: process.env.SSH_PRIVATE_KEY ?? "",
   knownHosts: process.env.SSH_KNOWN_HOSTS ?? "",
   sshTimeoutMs: num(process.env.SSH_TIMEOUT_MS, 15_000),

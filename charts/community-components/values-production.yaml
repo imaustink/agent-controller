@@ -190,10 +190,21 @@ githubTool:
     providers:
       - github
 
-# ssh: read-only diagnostic command over SSH, resolved via a copy of the
-# operator's own ~/.ssh/config Host aliases (kube0-8, home/bastion, db1-3,
-# printcam/airvinyl/airbuddy -- deliberately excludes the Verizon/client
-# boxes, "console", and "parents" also in that file).
+# ssh: command execution over SSH, resolved via a copy of the operator's own
+# ~/.ssh/config Host aliases (kube0-8, home/bastion, db1-3, printcam/
+# airvinyl/airbuddy -- deliberately excludes the Verizon/client boxes,
+# "console", and "parents" also in that file).
+#
+# allowedCommands is "*" -- WIDE OPEN, no command allowlist at all beyond
+# the remote-shell-injection charset check (tools/ssh/src/allowlist.ts).
+# This deliberately trades the tool's default read-only-diagnostics posture
+# for read/write capability (restart services, edit/delete files, ...) on
+# every host below, per explicit operator request: accepted as tolerable
+# risk against homelab boxes the operator doesn't mind breaking for now.
+# Don't copy "*" into a values file for infrastructure that matters more --
+# use a custom comma-separated command list instead. The only remaining
+# boundaries here are allowedHosts below and whatever the operator's own
+# id_rsa can already do on each target.
 #
 # allowedHosts is set below, DERIVED from the sshConfig block's own Host
 # list -- it is NOT a redundant second allowlist. resolveTarget
@@ -230,6 +241,7 @@ sshTool:
   image: registry.kurpuis.com:5000/ssh:latest
   serviceAccountName: ssh-tool
   allowedHosts: "austinkurpuis@166.113.38.187,austinkurpuis@192.168.1.43,ubuntu@192.168.1.129,ubuntu@192.168.1.149,ubuntu@192.168.1.236,ubuntu@192.168.1.59,ubuntu@192.168.1.48,ubuntu@192.168.1.15,ubuntu@192.168.1.94,ubuntu@192.168.1.229,ubuntu@192.168.1.192,ubuntu@192.168.1.167,ubuntu@192.168.1.27,ubuntu@192.168.1.170,pi@192.168.1.235,pi@airvinyl.local,pi@192.168.1.218"
+  allowedCommands: "*"
   sshConfig: |
     Host home
       HostName 166.113.38.187

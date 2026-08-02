@@ -1,7 +1,9 @@
 # ssh
 
-A self-contained subagent container: a single allowlisted remote diagnostic
-command in, that host's stdout out, run over SSH.
+A self-contained subagent container: a single allowlisted remote command
+in, that host's stdout out, run over SSH. Read-only diagnostics by default;
+read/write is an explicit per-deployment opt-in (see `SSH_ALLOWED_COMMANDS`
+below).
 
 ## Contract
 
@@ -43,6 +45,39 @@ at all. They compose freely:
   `user@host:port` must *also* be on `SSH_ALLOWED_HOSTS` -- config for
   convenience, allowlist for the actual boundary.
 
+## Command allowlist: read-only default, or wide open
+
+`SSH_ALLOWED_COMMANDS` governs which top-level remote commands are accepted
+(`src/allowlist.ts`), independent of target resolution above:
+
+- **Unset (default)**: the built-in curated read-only diagnostic set (`df`,
+  `ps`, `journalctl`, `systemctl status`, `docker ps`/`logs`/`inspect`,
+  `ip addr show`, ...). `systemctl`/`docker` are further restricted to a
+  read-only subcommand set, and `ip`/`find` reject their write/exec forms
+  specifically. Nothing in this mode writes, deletes, restarts a service, or
+  opens an interactive shell.
+- **A comma-separated custom list**: only those top-level commands are
+  accepted; the `systemctl`/`docker`/`ip`/`find` restrictions above still
+  apply if you include them.
+- **`"*"` (wide open)**: no command-name or subcommand restriction at all.
+  This is a deliberate escape hatch for a deployment that has decided the
+  read-only posture isn't worth maintaining a list for -- e.g. a homelab the
+  operator is fine with an agent breaking, not infrastructure that matters.
+  Choosing this is a real, per-deployment risk decision; see
+  `charts/community-components/values-production.yaml`'s `sshTool` block for
+  how it's documented there.
+
+**The plain-argument charset check always applies, in every mode,
+including `"*"`.** Every token -- including the command name -- must match
+`^[A-Za-z0-9._\-/:=@,]+$`. This matters more here than in the other tools:
+`ssh user@host cmd args...` never runs a local shell, but OpenSSH
+concatenates the remote argv with spaces and hands that string to the
+**remote** login shell unless the target forces a fixed command. A
+caller-supplied `;`, `|`, `` ` ``, or `$(...)` would otherwise be a real
+remote shell injection primitive regardless of which command was allowed --
+so "wide open" means "any command, no shell injection", not "no restriction
+at all".
+
 ## Safety model (defense in depth)
 
 Unlike `tools/kubectl-readonly` (RBAC-backed) or `tools/github` (the calling
@@ -52,18 +87,9 @@ layer below is this codebase's own responsibility:
 
 1. **Target resolution/restriction** (`src/target.ts`) -- see "Resolving a
    target" above.
-2. **In-process command allowlist** (`src/allowlist.ts`) -- only a fixed set
-   of read-only diagnostic binaries may run at all (`df`, `ps`, `journalctl`,
-   `systemctl status`, `docker ps`/`logs`/`inspect`, ...); `systemctl` and
-   `docker` are further restricted to a read-only subcommand set. Nothing
-   here writes, deletes, restarts a service, or opens an interactive shell.
-3. **Plain-argument charset** -- every argument after the command itself must
-   match `^[A-Za-z0-9._\-/:=@,]+$`. This matters more here than in the other
-   tools: `ssh user@host cmd args...` never runs a local shell, but OpenSSH
-   concatenates the remote argv with spaces and hands that string to the
-   **remote** login shell unless the target forces a fixed command. A
-   caller-supplied `;`, `|`, `` ` ``, or `$(...)` would otherwise be a real
-   remote shell injection primitive.
+2. **In-process command allowlist** (`src/allowlist.ts`) -- see "Command
+   allowlist" above; can be relaxed to `"*"` per deployment.
+3. **Plain-argument charset** -- unconditional in every mode; see above.
 4. **No shell locally** -- the validated argv is passed straight to
    `child_process.spawn("ssh", ...)`, never interpolated into a local shell
    string.

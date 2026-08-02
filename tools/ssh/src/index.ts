@@ -48,7 +48,7 @@ async function run(emitter: JobEmitter, commandLine: string): Promise<void> {
 
   let argv: string[];
   try {
-    argv = validateCommand(commandTokens);
+    argv = validateCommand(commandTokens, config.allowedCommands);
   } catch (err) {
     if (err instanceof BlockedCommandError) {
       fail("blocked_command", EXIT.blockedCommand, err.message);
