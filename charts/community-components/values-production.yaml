@@ -217,7 +217,7 @@ githubTool:
 # (tools/ssh/src/target.ts) falls back to any literal "user@host" when a
 # caller's target string doesn't match an sshConfig alias, so with
 # allowedHosts empty sshConfig's Host list restricts nothing at all: a
-# caller could dial "root@192.168.1.83" directly (a different user than the
+# caller could dial "root@192.168.1.71" directly (a different user than the
 # admin this file maps console to) or any other host reachable with this key.
 # Populating allowedHosts with exactly the resolved user@host:port pairs
 # below is what actually turns "the aliases we curated" into "the only
@@ -233,24 +233,23 @@ githubTool:
 # below in the meantime -- id_rsa is already authorized on all of them for
 # the operator's own interactive access.
 #
-# console (192.168.1.83) was unreachable (ssh-keyscan timed out) when this
-# was last generated -- its host key is NOT in SSH_KNOWN_HOSTS below yet.
-# Add it once it's back on the network:
-#   ssh-keyscan -t ed25519 192.168.1.83
-# and append that line to the Secret's SSH_KNOWN_HOSTS value (StrictHostKeyChecking
-# will otherwise fail closed on every connection to it, per tools/ssh/README.md).
+# console's IP changed from 192.168.1.83 to 192.168.1.71 (DHCP lease churn --
+# same box, confirmed by keyscanning both the ed25519, rsa, and ecdsa host
+# keys at the new address and matching them against the ones already on file
+# for it under its console.local mDNS name). Its host key is now included in
+# the keyscan below.
 #
 # Prerequisite:
 #   kubectl create secret generic ssh-tool-secrets -n controller-agent \
 #     --from-file=SSH_PRIVATE_KEY=~/.ssh/id_rsa \
 #     --from-literal=SSH_KNOWN_HOSTS="$(ssh-keyscan -t ed25519 \
-#       166.113.38.187 192.168.1.43 \
+#       166.113.38.187 192.168.1.43 192.168.1.71 \
 #       192.168.1.235 airvinyl.local 192.168.1.218)"
 sshTool:
   enabled: true
   image: registry.kurpuis.com:5000/ssh:latest
   serviceAccountName: ssh-tool
-  allowedHosts: "austinkurpuis@166.113.38.187,austinkurpuis@192.168.1.43,admin@192.168.1.83,pi@192.168.1.235,pi@airvinyl.local,pi@192.168.1.218"
+  allowedHosts: "austinkurpuis@166.113.38.187,austinkurpuis@192.168.1.43,admin@192.168.1.71,pi@192.168.1.235,pi@airvinyl.local,pi@192.168.1.218"
   allowedCommands: "*"
   sshConfig: |
     Host home
@@ -260,7 +259,7 @@ sshTool:
       HostName 192.168.1.43
       User austinkurpuis
     Host console
-      HostName 192.168.1.83
+      HostName 192.168.1.71
       User admin
     Host printcam
       HostName 192.168.1.235
