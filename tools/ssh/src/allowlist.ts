@@ -65,6 +65,54 @@ const READONLY_SUBCOMMANDS: Record<string, Set<string>> = {
   docker: new Set(["ps", "logs", "inspect", "images", "stats", "top", "version", "info"]),
 };
 
+/** `ip` objects this tool ever queries, and the read-only actions allowed on
+ * them -- `ip`'s own default action (when none is given) is already "list",
+ * so e.g. "ip addr" alone is read-only too. Every mutating action
+ * (add/del/set/change/replace/flush/...) is rejected by omission: this is an
+ * ALLOWLIST of actions, not a blocklist of dangerous ones. */
+const IP_READONLY_OBJECTS = new Set(["addr", "address", "route", "link", "neigh", "neighbour", "rule", "tunnel", "maddr", "mroute", "netns"]);
+const IP_READONLY_ACTIONS = new Set(["show", "list", "get"]);
+
+/**
+ * `find`'s action primaries -- `-delete`, `-exec[dir]`, `-ok[dir]`, and the
+ * `-f{print,printf,ls}` family all write to the filesystem (or run arbitrary
+ * commands, in `-exec`'s case), so they're rejected wherever they appear in
+ * argv -- `find`'s own grammar allows them anywhere after the starting
+ * path(s), not just at a fixed position.
+ */
+const FIND_DANGEROUS_PRIMARIES = new Set(["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"]);
+
+function validateIp(rest: string[]): void {
+  let i = 0;
+  while (i < rest.length && rest[i]?.startsWith("-")) i++; // skip leading global flags, e.g. "-s", "-4", "-br"
+  const object = rest[i];
+  if (!object || !IP_READONLY_OBJECTS.has(object)) {
+    throw new BlockedCommandError(
+      `"ip ${rest.join(" ")}" is not allowed. Allowed ip objects: ${[...IP_READONLY_OBJECTS].join(", ")} (read-only actions only).`,
+    );
+  }
+  i++;
+  while (i < rest.length && rest[i]?.startsWith("-")) i++; // skip flags between object and action
+  const action = rest[i];
+  if (action !== undefined && !IP_READONLY_ACTIONS.has(action)) {
+    throw new BlockedCommandError(
+      `"ip ${object} ${action}" is not allowed. Allowed ip actions: ${[...IP_READONLY_ACTIONS].join(
+        ", ",
+      )} (or omit the action for ip's own default list behavior).`,
+    );
+  }
+}
+
+function validateFind(rest: string[]): void {
+  for (const token of rest) {
+    if (FIND_DANGEROUS_PRIMARIES.has(token)) {
+      throw new BlockedCommandError(
+        `"find ... ${token}" is not allowed -- find is restricted to read-only searches (no -delete/-exec/-execdir/-ok/-okdir/-fprint/-fprintf/-fls).`,
+      );
+    }
+  }
+}
+
 /**
  * Every token (after the command itself) must match this charset: no shell
  * metacharacters, no quotes, no whitespace-adjacent escapes -- nothing that
@@ -111,6 +159,9 @@ export function validateCommand(tokens: string[]): string[] {
       );
     }
   }
+
+  if (command === "ip") validateIp(rest);
+  if (command === "find") validateFind(rest);
 
   for (const token of rest) {
     if (!SAFE_TOKEN.test(token)) {

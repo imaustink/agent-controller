@@ -195,12 +195,16 @@ githubTool:
 # printcam/airvinyl/airbuddy -- deliberately excludes the Verizon/client
 # boxes, "console", and "parents" also in that file).
 #
-# allowedHosts is intentionally EMPTY -- the allowlist feature is disabled
-# for now; sshConfig's own Host list is the only boundary on what this tool
-# can dial (see tools/ssh/README.md's "Resolving a target" for the tradeoff
-# that implies: safe only as long as this Host list itself stays closed to
-# trusted hosts). Set allowedHosts to re-enable the allowlist as a second,
-# independent restriction on top of the aliases below.
+# allowedHosts is set below, DERIVED from the sshConfig block's own Host
+# list -- it is NOT a redundant second allowlist. resolveTarget
+# (tools/ssh/src/target.ts) falls back to any literal "user@host" when a
+# caller's target string doesn't match an sshConfig alias, so with
+# allowedHosts empty sshConfig's Host list restricts nothing at all: a
+# caller could dial "root@192.168.1.59" directly (a different user than the
+# ubuntu this file maps kube0 to) or any other host reachable with this key.
+# Populating allowedHosts with exactly the resolved user@host:port pairs
+# below is what actually turns "the aliases we curated" into "the only
+# targets this tool can reach."
 #
 # TEMPORARY CREDENTIAL: this tool's SSH_PRIVATE_KEY is currently the
 # operator's own personal id_rsa (full interactive/admin access to every
@@ -225,7 +229,7 @@ sshTool:
   enabled: true
   image: registry.kurpuis.com:5000/ssh:latest
   serviceAccountName: ssh-tool
-  allowedHosts: ""
+  allowedHosts: "austinkurpuis@166.113.38.187,austinkurpuis@192.168.1.43,ubuntu@192.168.1.129,ubuntu@192.168.1.149,ubuntu@192.168.1.236,ubuntu@192.168.1.59,ubuntu@192.168.1.48,ubuntu@192.168.1.15,ubuntu@192.168.1.94,ubuntu@192.168.1.229,ubuntu@192.168.1.192,ubuntu@192.168.1.167,ubuntu@192.168.1.27,ubuntu@192.168.1.170,pi@192.168.1.235,pi@airvinyl.local,pi@192.168.1.218"
   sshConfig: |
     Host home
       HostName 166.113.38.187
