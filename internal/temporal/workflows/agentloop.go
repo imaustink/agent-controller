@@ -17,7 +17,9 @@ const maxToolSteps = 4
 // TurnMeta reports what the agent loop did, for TurnResult/debugging.
 type TurnMeta struct {
 	// Path is how this turn reached its target:
-	//   bare             — no capability needed, or nothing matched
+	//   bare             — no capability needed (ADR 0019), or no identity
+	//   fallback-tool    — no skill or agent matched; one catalog tool did
+	//   fallback-bare    — no skill, agent, or tool matched
 	//   skill            — selected by retrieval
 	//   skill-continued  — the conversation's active skill still fits
 	//   skill-routed     — named by an IntegrationRoute (ADR 0024)
@@ -118,9 +120,17 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 				Request: in.Message,
 				Skill:   resolved.Skill,
 			}).Get(ctx, &fits); err == nil && fits {
-				skillTools = resolved
-				meta.Path = "skill-continued"
-				note("Continuing with skill " + resolved.Skill.ID)
+				// "Yes, still the same task" can still be the wrong answer if
+				// this turn names a capability the active skill's own tools
+				// could never satisfy — see hasOutOfScopeToolMatch.
+				if hasOutOfScopeToolMatch(ctx, actx, in, resolved) {
+					logger.Info("active skill fits but the turn names an out-of-scope tool; re-retrieving",
+						"skillId", resolved.Skill.ID)
+				} else {
+					skillTools = resolved
+					meta.Path = "skill-continued"
+					note("Continuing with skill " + resolved.Skill.ID)
+				}
 			}
 		}
 		if skillTools == nil {
@@ -158,8 +168,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			logger.Warn("agent retrieval failed", "error", err)
 		}
 		if len(skills) == 0 && len(agents) == 0 {
-			reply, err := bareAnswer(ctx, actx, state)
-			return reply, meta, err
+			return noMatchFallback(ctx, actx, state, in, &meta, note)
 		}
 
 		// 4. Selection: skill vs agent when both kinds are on the table,
@@ -192,8 +201,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			}
 		}
 		if skillID == "" {
-			reply, err := bareAnswer(ctx, actx, state)
-			return reply, meta, err
+			return noMatchFallback(ctx, actx, state, in, &meta, note)
 		}
 
 		// 5. Resolve the skill's declared tools directly (no re-ranking),
@@ -202,8 +210,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			Caller:  in.Caller,
 			SkillID: skillID,
 		}).Get(ctx, &skillTools); err != nil || skillTools == nil {
-			reply, err := bareAnswer(ctx, actx, state)
-			return reply, meta, err
+			return noMatchFallback(ctx, actx, state, in, &meta, note)
 		}
 		meta.Path = "skill"
 		note("Using skill " + skillTools.Skill.ID)
@@ -248,43 +255,15 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			break
 		}
 
-		// Re-inject the tool's stored continuation token (ADR 0017): opaque,
-		// server-side only, prepended to the SAME tool's next input.
-		toolInput := plan.ToolInput
-		if token := state.ToolContinuations[plan.ToolID]; token != "" {
-			toolInput = continuation.Prepend(token, toolInput)
-		}
-
 		note("Running " + plan.ToolID + "…")
-		outcome, err := runTool(ctx, RunToolParams{
-			ToolRef: plan.ToolID,
-			Args:    []string{toolInput},
-			OnProgress: func(e messaging.Event) {
-				line := e.Message
-				if e.Stage != "" {
-					line = e.Stage + ": " + line
-				}
-				note(line)
-			},
-		})
+		outcome, err := runToolWithContinuation(ctx, state, plan.ToolID, plan.ToolInput, note)
 		if err != nil {
 			return "", meta, err
 		}
 		meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
 		record := activities.ActionRecord{ToolID: plan.ToolID, Input: plan.ToolInput, Succeeded: outcome.Succeeded}
 		if outcome.Succeeded {
-			// Strip a leading continuation marker BEFORE the result reaches
-			// planner history, compose, or the reply — the transcript never
-			// carries resume state.
-			token, stripped := continuation.Extract(outcome.Result)
-			if token != "" {
-				if state.ToolContinuations == nil {
-					state.ToolContinuations = map[string]string{}
-				}
-				state.ToolContinuations[plan.ToolID] = token
-			}
-			outcome.Result = stripped
-			record.Result = stripped
+			record.Result = outcome.Result
 			lastSuccess = &outcome
 			note(plan.ToolID + " finished")
 		} else {
@@ -313,6 +292,50 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		return fmt.Sprintf("I couldn't complete that: %s failed (%s).", last.ToolID, last.Error), meta, nil
 	}
 	return bareAnswerWithMeta(ctx, actx, state, meta)
+}
+
+// runToolWithContinuation is one tool call with ADR 0017's resume token
+// handling folded in: the tool's own stored token is prepended to its input,
+// and any token the tool returns is banked and stripped off the result.
+//
+// Stripping happens BEFORE the result reaches planner history, composition,
+// or the reply, so resume state never enters the transcript or a prompt. Both
+// the skill loop and the no-match fallback go through here, because a tool
+// does not change its contract based on how it was selected.
+func runToolWithContinuation(
+	ctx workflow.Context,
+	state *ConversationState,
+	toolID, toolInput string,
+	note func(string),
+) (ToolOutcome, error) {
+	if token := state.ToolContinuations[toolID]; token != "" {
+		toolInput = continuation.Prepend(token, toolInput)
+	}
+
+	outcome, err := runTool(ctx, RunToolParams{
+		ToolRef: toolID,
+		Args:    []string{toolInput},
+		OnProgress: func(e messaging.Event) {
+			line := e.Message
+			if e.Stage != "" {
+				line = e.Stage + ": " + line
+			}
+			note(line)
+		},
+	})
+	if err != nil || !outcome.Succeeded {
+		return outcome, err
+	}
+
+	token, stripped := continuation.Extract(outcome.Result)
+	if token != "" {
+		if state.ToolContinuations == nil {
+			state.ToolContinuations = map[string]string{}
+		}
+		state.ToolContinuations[toolID] = token
+	}
+	outcome.Result = stripped
+	return outcome, nil
 }
 
 func bareAnswer(ctx workflow.Context, actx workflow.Context, state *ConversationState) (string, error) {

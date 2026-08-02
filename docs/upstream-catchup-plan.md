@@ -114,6 +114,11 @@ graph under the caller's *current* roles. Keep that split:
   `POST /identity-link/:provider/poll`, and claude-auth's
   `/claude-auth/api/{start,token,wait,invalidate,rekey,writeback-token}`.
   Today's `IDENTITY_LINKS` env store demotes to a fake.
+- **Container-tool identity gate** (ADR 0032 §5, moved here from A7):
+  `runTool`'s job-template branch gates on `tool.identityProviders` via the
+  same helper as the agent-backed branch, and injects the token through
+  `ToolRunSpec.secretEnv` (A1). Same v1 scope cut — this path never *starts* a
+  link flow, because a paused tool call has no resume slot.
 - `internal/authz`: port `AuthorizationService` as a **total** discriminated
   union — `Authorized{SecretName, ActorLogin, Principal, OwnedSecretNames}` |
   `LinkRequired{Message, Pending}` | `Misconfigured{Error}`. Batch pre-flight
@@ -194,11 +199,12 @@ method. A child workflow just calls the existing `runTool` helper directly.
   inside `skill-web-search` passes the fit check and gets absorbed. Query the
   top-K catalog under the caller's roles, filter to candidates outside the
   skill's `toolIds`, and force full retrieval on a hit.
-- **Container-tool identity gate** (ADR 0032 §5): `runTool`'s job-template branch
-  gates on `tool.identityProviders` via the same shared helper as the
-  agent-backed branch, and injects the token through `ToolRunSpec.secretEnv`
-  (A1). Same v1 scope cut — this path never *starts* a link flow, because a
-  paused tool call has no resume slot.
+- ~~**Container-tool identity gate** (ADR 0032 §5)~~ — **moved to A4.** The gate
+  itself is small, but it needs a resolved token turned into a Secret
+  reference, which is precisely the credential plumbing A4 builds (and which
+  A4 shapes deliberately so a value never enters workflow state). Today's
+  `GetIdentityLink` activity returns no tokens at all and says so in its own
+  comment. Doing a half-version here would be work A4 deletes.
 
 ### A8. Docs
 

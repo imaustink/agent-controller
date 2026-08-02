@@ -60,6 +60,7 @@ func main() {
 	agentLoop := &activities.AgentLoopActivities{LLM: llmClient}
 	w.RegisterActivityWithOptions(agentLoop.CheckNeedsCapability, activity.RegisterOptions{Name: activities.CheckNeedsCapabilityActivityName})
 	w.RegisterActivityWithOptions(agentLoop.CheckSkillFit, activity.RegisterOptions{Name: activities.CheckSkillFitActivityName})
+	w.RegisterActivityWithOptions(agentLoop.CheckToolFit, activity.RegisterOptions{Name: activities.CheckToolFitActivityName})
 	w.RegisterActivityWithOptions(agentLoop.SelectSkill, activity.RegisterOptions{Name: activities.SelectSkillActivityName})
 	w.RegisterActivityWithOptions(agentLoop.PlanAction, activity.RegisterOptions{Name: activities.PlanActionActivityName})
 	w.RegisterActivityWithOptions(agentLoop.ComposeResponse, activity.RegisterOptions{Name: activities.ComposeResponseActivityName})
@@ -94,6 +95,7 @@ func main() {
 		retrieval := &activities.RetrievalActivities{Collections: collections}
 		w.RegisterActivityWithOptions(retrieval.RetrieveSkills, activity.RegisterOptions{Name: activities.RetrieveSkillsActivityName})
 		w.RegisterActivityWithOptions(retrieval.RetrieveAgents, activity.RegisterOptions{Name: activities.RetrieveAgentsActivityName})
+		w.RegisterActivityWithOptions(retrieval.RetrieveTools, activity.RegisterOptions{Name: activities.RetrieveToolsActivityName})
 		w.RegisterActivityWithOptions(retrieval.ResolveSkillTools, activity.RegisterOptions{Name: activities.ResolveSkillToolsActivityName})
 		w.RegisterActivityWithOptions(retrieval.ResolveAgent, activity.RegisterOptions{Name: activities.ResolveAgentActivityName})
 		log.Printf("retrieval activities enabled: qdrant=%s:%d", qdrantHost, qdrantPort)

@@ -32,6 +32,10 @@ type loopEnv struct {
 	planCalls           int
 	resolveAgentCalls   int
 	selectDelegateCalls int
+	retrieveToolCalls   int
+	toolFitCalls        int
+	toolFitInputs       []activities.CheckToolFitInput
+	completeTurnInputs  []activities.CompleteTurnInput
 
 	// knobs
 	needsCapability bool
@@ -49,8 +53,13 @@ type loopEnv struct {
 	resolvedAgent *catalog.AgentDescriptor
 	// forcedSkillID/forcedAgentID ride every sendTurn, as if an
 	// IntegrationRoute had matched this turn's event descriptor.
-	forcedSkillID   string
-	forcedAgentID   string
+	forcedSkillID string
+	forcedAgentID string
+	// catalogTools is what a full-catalog sweep returns (the no-match
+	// fallback and the out-of-scope guard); toolFits is the relevance gate's
+	// verdict on each, defaulting to "no fit" like the real checker.
+	catalogTools    []catalog.ToolDescriptor
+	toolFits        bool
 	fits            bool
 	plans           []activities.PlannedAction      // returned in order
 	agentPlans      []activities.PlannedAgentAction // returned in order
@@ -74,8 +83,18 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	reg(activities.CheckNeedsCapabilityActivityName, func(context.Context, string) (bool, error) {
 		return le.needsCapability, nil
 	})
-	reg(activities.CompleteTurnActivityName, func(context.Context, activities.CompleteTurnInput) (string, error) {
+	reg(activities.CompleteTurnActivityName, func(_ context.Context, in activities.CompleteTurnInput) (string, error) {
+		le.completeTurnInputs = append(le.completeTurnInputs, in)
 		return "bare answer", nil
+	})
+	reg(activities.RetrieveToolsActivityName, func(context.Context, activities.RetrieveInput) ([]catalog.ToolDescriptor, error) {
+		le.retrieveToolCalls++
+		return le.catalogTools, nil
+	})
+	reg(activities.CheckToolFitActivityName, func(_ context.Context, in activities.CheckToolFitInput) (bool, error) {
+		le.toolFitCalls++
+		le.toolFitInputs = append(le.toolFitInputs, in)
+		return le.toolFits, nil
 	})
 	reg(activities.RetrieveSkillsActivityName, func(_ context.Context, in activities.RetrieveInput) ([]catalog.SkillDescriptor, error) {
 		le.retrieveCalls++
@@ -173,7 +192,14 @@ func (le *loopEnv) signalToolSuccess(launchIndex int, resultJSON string) {
 
 func recipesSkillTools() *activities.SkillTools {
 	return &activities.SkillTools{
-		Skill: catalog.SkillDescriptor{ID: "recipes", Description: "recipe workflows", Markdown: "# Recipes\nScrape then present."},
+		// ToolIDs mirrors what DecodeSkill reads off spec.toolRefs and what
+		// ResolveSkillTools then resolves Tools from — a descriptor with
+		// Tools but no ToolIDs cannot occur in production.
+		Skill: catalog.SkillDescriptor{
+			ID: "recipes", Description: "recipe workflows",
+			Markdown: "# Recipes\nScrape then present.",
+			ToolIDs:  []string{"recipe-scraper"},
+		},
 		Tools: []catalog.ToolDescriptor{{ID: "recipe-scraper", Description: "scrape recipe from url", AllowedRoles: []string{"cook"}}},
 	}
 }
@@ -462,10 +488,14 @@ func TestAgentWorkflowDepthCapDisablesDelegation(t *testing.T) {
 	require.Empty(t, le.agentPlanInputs[0].Agents, "no delegable agents offered at the cap")
 }
 
+// Nothing in the catalog covers the request, so the turn still gets answered
+// — and says so, since the point of the footer is that a skill could be
+// authored for next time.
 func TestAgentLoopNoMatchFallsBackToBare(t *testing.T) {
 	le := newLoopEnv(t)
 	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
 	le.selected = "" // selector: nothing genuinely fits
+	le.catalogTools = nil
 
 	var result workflows.TurnResult
 	le.sendTurn(t, "turn-1", "write me a poem about kubernetes", &result, time.Millisecond)
@@ -473,6 +503,159 @@ func TestAgentLoopNoMatchFallsBackToBare(t *testing.T) {
 	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
 	require.True(t, le.env.IsWorkflowCompleted())
 	require.NoError(t, le.env.GetWorkflowError())
+	require.Equal(t, "bare answer"+workflows.SelfImprovementFooter, result.Reply)
+	require.Equal(t, "fallback-bare", result.Meta.Path)
+}
+
+// The capability gate (ADR 0019) is a different "bare" from the fallback's:
+// a greeting was never a catalog miss, so it gets no footer and never sweeps
+// the catalog.
+func TestCapabilityGateBareAnswerCarriesNoFooter(t *testing.T) {
+	le := newLoopEnv(t)
+	le.needsCapability = false
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "hey there", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
 	require.Equal(t, "bare answer", result.Reply)
 	require.Equal(t, "bare", result.Meta.Path)
+	require.Zero(t, le.retrieveToolCalls)
+}
+
+func kubectlTool() catalog.ToolDescriptor {
+	return catalog.ToolDescriptor{
+		ID: "kubectl-readonly", Description: "read-only kubectl against the cluster",
+		AllowedRoles: []string{"cook"},
+	}
+}
+
+// No skill matched, but one catalog tool is an unambiguous fit — call it
+// rather than answering from general knowledge.
+func TestNoMatchFallbackRunsAFittingCatalogTool(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = "" // no skill fits
+	le.catalogTools = []catalog.ToolDescriptor{kubectlTool()}
+	le.toolFits = true
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kubectl-readonly", ToolInput: "get pods -n default"},
+	}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "what pods are running?", &result, time.Millisecond)
+	le.env.RegisterDelayedCallback(func() { le.signalToolSuccess(0, `"pod-a  Running"`) }, time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "fallback-tool", result.Meta.Path)
+	require.Equal(t, []string{"kubectl-readonly"}, result.Meta.ToolCalls)
+	require.Equal(t, "Here you go:\npod-a  Running\nEnjoy!"+workflows.SelfImprovementFooter, result.Reply)
+	require.Equal(t, 1, le.toolFitCalls)
+}
+
+// The gate that makes the fallback safe: similarity search matches on word
+// overlap, so "create a recipe" surfaces a tool that creates repositories.
+// A candidate that fails the fit check must never reach the planner.
+func TestNoMatchFallbackRejectsALooseKeywordMatch(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = ""
+	le.catalogTools = []catalog.ToolDescriptor{
+		{ID: "github-repo-create", Description: "create or clone a repository", AllowedRoles: []string{"cook"}},
+	}
+	le.toolFits = false // the checker's default, and the whole point
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "create a recipe for carbonara", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, 1, le.toolFitCalls)
+	require.Zero(t, le.planCalls, "a rejected candidate must never reach the planner")
+	require.Equal(t, "fallback-bare", result.Meta.Path)
+	require.Equal(t, "bare answer"+workflows.SelfImprovementFooter, result.Reply)
+	require.Empty(t, le.launches, "nothing should have been launched")
+}
+
+// The footer is a UI hint, not content. Left in the transcript it re-enters
+// every later turn's prompt and biases selection toward repeating "no match".
+func TestSelfImprovementFooterNeverEntersTheTranscript(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = ""
+	le.needsCapability = true
+
+	var first, second workflows.TurnResult
+	le.sendTurn(t, "turn-1", "write me a poem about kubernetes", &first, time.Millisecond)
+	le.sendTurn(t, "turn-2", "and another", &second, 2*time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Contains(t, first.Reply, workflows.SelfImprovementFooter, "the user does see it")
+	require.NotEmpty(t, le.completeTurnInputs)
+	for _, in := range le.completeTurnInputs {
+		for _, m := range in.Messages {
+			require.NotContains(t, m.Content, "No existing skill or agent matched",
+				"the footer must not reach a later turn's prompt")
+		}
+	}
+}
+
+// Active-skill continuity judges topic ("is this still the same task?"), which
+// cannot see that the turn names a capability the skill's own tools could
+// never satisfy. Without this guard the user gets "I can't do that" from a
+// system that can.
+func TestOutOfScopeToolRequestBreaksActiveSkillContinuity(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skillToolsByID = map[string]*activities.SkillTools{"recipes": recipesSkillTools()}
+	le.fits = true // topic-wise, the fit checker says "still the same task"
+	le.catalogTools = []catalog.ToolDescriptor{kubectlTool()}
+	le.toolFits = true // ...but a tool outside the skill genuinely fits
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.selected = ""
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "use your kubectl access to debug this", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName,
+		&workflows.ConversationState{ActiveSkillID: "recipes"})
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.NotEqual(t, "skill-continued", result.Meta.Path,
+		"the active skill must not absorb a request for a capability it lacks")
+	require.Equal(t, 1, le.retrieveCalls, "the turn reached full retrieval")
+	require.NotEmpty(t, le.toolFitInputs)
+	require.Equal(t, "kubectl-readonly", le.toolFitInputs[0].Tool.ID)
+}
+
+// The guard must not fire on the ordinary case: a turn genuinely continuing
+// its skill, where the only nearby tools are the skill's own.
+func TestActiveSkillContinuesWhenNothingOutOfScopeFits(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skillToolsByID = map[string]*activities.SkillTools{"recipes": recipesSkillTools()}
+	le.fits = true
+	// The sweep only surfaces the skill's own tool, so there is nothing
+	// out-of-scope to even fit-check.
+	le.catalogTools = []catalog.ToolDescriptor{{ID: "recipe-scraper", Description: "scrape recipe from url"}}
+	le.toolFits = true
+	le.plans = []activities.PlannedAction{{Action: activities.ActionRespond, Response: "continued reply"}}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "now publish it", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName,
+		&workflows.ConversationState{ActiveSkillID: "recipes"})
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "skill-continued", result.Meta.Path)
+	require.Zero(t, le.toolFitCalls, "the skill's own tools are never fit-checked as out-of-scope")
+	require.Zero(t, le.retrieveCalls, "continuity still skips retrieval")
 }

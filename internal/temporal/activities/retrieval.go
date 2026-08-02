@@ -12,6 +12,7 @@ import (
 const (
 	RetrieveSkillsActivityName    = "RetrieveSkills"
 	RetrieveAgentsActivityName    = "RetrieveAgents"
+	RetrieveToolsActivityName     = "RetrieveTools"
 	ResolveSkillToolsActivityName = "ResolveSkillTools"
 	ResolveAgentActivityName      = "ResolveAgent"
 )
@@ -119,6 +120,25 @@ func (a *RetrievalActivities) ResolveSkillTools(ctx context.Context, in ResolveS
 		}
 	}
 	return result, nil
+}
+
+// RetrieveTools returns the top-k role-visible tools for the request from the
+// WHOLE catalog, unmediated by any skill.
+//
+// Deliberately separate from ResolveSkillTools, which resolves a skill's own
+// declared refs. This one backs the two places that ask "is there any tool
+// out there for this?" — the no-match fallback, and the out-of-scope guard on
+// active-skill continuity. Its results are candidates, not selections: every
+// caller runs them past CheckToolFit before the planner sees them.
+func (a *RetrievalActivities) RetrieveTools(ctx context.Context, in RetrieveInput) ([]catalog.ToolDescriptor, error) {
+	if in.Caller.Subject == "" {
+		return nil, nil
+	}
+	hits, err := a.Collections.Tools.Query(ctx, in.Request, in.Caller.Roles, topK(in.TopK))
+	if err != nil {
+		return nil, err
+	}
+	return decodeHits[catalog.ToolDescriptor](hits)
 }
 
 // ResolveAgent fetches one agent by id under the caller's CURRENT roles,

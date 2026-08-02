@@ -184,7 +184,13 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 		}
 		meta.Narration = progress.Lines
 
-		state.History = trimHistory(append(state.History, ChatMessage{Role: "assistant", Content: reply}), maxHistoryMessages)
+		// The self-improvement footer is a hint for the human, not content.
+		// Left in the transcript it re-enters every later turn's prompt, and
+		// its "no existing skill or agent matched" wording biases the next
+		// turn's selection toward repeating "no match" even for a request
+		// that plainly fits a real skill.
+		state.History = trimHistory(append(state.History,
+			ChatMessage{Role: "assistant", Content: stripSelfImprovementFooter(reply)}), maxHistoryMessages)
 		state.Turns++
 		return TurnResult{Reply: reply, Turn: state.Turns, Meta: meta}, nil
 	}); err != nil {
