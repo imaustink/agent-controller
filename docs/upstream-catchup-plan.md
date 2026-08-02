@@ -76,11 +76,17 @@ graph under the caller's *current* roles. Keep that split:
   `action`+`labelName` > `action` > `labelName` > neither), renders
   `promptTemplate` with dependency-free `{{field}}` substitution, and passes
   `ForcedSkillID`/`ForcedAgentID` on `TurnInput`.
-- Workflow gains a `checkIntegrationRoute` step after identity and before the
-  active-skill/pending-link chain, calling a `ResolveForcedTarget` activity
-  that re-resolves under RBAC. A miss is never an error — fall through.
-- Route table is fed by an informer alongside catalog-sync. Routes are *matched*,
-  not embedded, so they do **not** go into Qdrant.
+- Workflow gains a route step, placed after the active-episode check and
+  before the active-skill/pending-link chain, re-resolving the named target
+  under RBAC. A miss is never an error — fall through.
+- Route table is fed by an informer in whichever process terminates inbound
+  events. Routes are *matched*, not embedded, so they do **not** go into
+  Qdrant.
+
+> **Split as built:** A2 landed the routing engine (registry, matcher,
+> renderer, informer, workflow bypass, `ResolveAgent`). Starting the watch and
+> reading the registry belongs to the `/invoke` handler, so it ships with A3 —
+> until then nothing populates `ForcedSkillID`/`ForcedAgentID` in production.
 
 ### A3. `/invoke` + event descriptor + sender assertion · contracts
 
