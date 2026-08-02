@@ -1,6 +1,6 @@
 {{- if .Values.sshTool.enabled }}
-{{- if not .Values.sshTool.allowedHosts }}
-{{- fail "sshTool.allowedHosts must be set to a non-empty \"user@host[:port]\" list before enabling sshTool -- there is no wildcard default" }}
+{{- if and (not .Values.sshTool.allowedHosts) (not .Values.sshTool.sshConfig) }}
+{{- fail "sshTool requires at least one of allowedHosts or sshConfig -- with neither set this tool would have no boundary on which target it dials" }}
 {{- end }}
 apiVersion: {{ .Values.crdApiVersion }}
 kind: Tool
@@ -11,17 +11,18 @@ metadata:
 spec:
   description: >-
     Runs a single read-only diagnostic command (df, ps, uptime, systemctl
-    status, docker ps/logs/inspect, journalctl, ...) over SSH against one of
-    a fixed set of allowlisted hosts, for debugging infrastructure outside
+    status, docker ps/logs/inspect, journalctl, ...) over SSH against a
+    target resolved via an optional ssh_config-style Host list and/or
+    restricted to a fixed allowlist, for debugging infrastructure outside
     the cluster. Strictly read-only: an in-tool command allowlist blocks any
-    write/restart/delete action or interactive shell, and the target host
-    itself must match a fixed allowlist -- there is no wildcard.
+    write/restart/delete action or interactive shell.
   input: >-
-    A single "<target> <command> [args...]" line (e.g. "nas.kurpuis.internal
-    df -h", "monitor@bastion.kurpuis.internal:2222 systemctl status
-    docker"). Only allowlisted hosts and a fixed set of read-only diagnostic
-    commands are accepted; anything else is rejected before it reaches the
-    target.
+    A single "<target> <command> [args...]" line, where <target> is either
+    "user@host[:port]" or an alias resolved via the configured ssh_config
+    Host list (e.g. "nas.kurpuis.internal df -h", "kube0 systemctl status
+    docker"). Only a fixed set of read-only diagnostic commands are
+    accepted, and if an allowlist is configured the resolved target must
+    match it; anything else is rejected before it reaches the target.
   output: >-
     The remote command's own stdout, wrapped in a fenced code block.
   allowedRoles:
@@ -30,8 +31,18 @@ spec:
   image: {{ .Values.sshTool.image | quote }}
   serviceAccountName: {{ .Values.sshTool.serviceAccountName | quote }}
   env:
+    {{- if .Values.sshTool.allowedHosts }}
     - name: SSH_ALLOWED_HOSTS
       value: {{ .Values.sshTool.allowedHosts | quote }}
+    {{- end }}
+    {{- if .Values.sshTool.sshConfig }}
+    - name: SSH_CONFIG
+      value: {{ .Values.sshTool.sshConfig | quote }}
+    {{- end }}
+    {{- if .Values.sshTool.defaultUser }}
+    - name: SSH_DEFAULT_USER
+      value: {{ .Values.sshTool.defaultUser | quote }}
+    {{- end }}
   secretEnv:
     - name: SSH_PRIVATE_KEY
       secretRef:

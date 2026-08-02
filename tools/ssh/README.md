@@ -1,15 +1,47 @@
 # ssh
 
 A self-contained subagent container: a single allowlisted remote diagnostic
-command in, that host's stdout out, run over SSH against a fixed set of
-allowlisted hosts.
+command in, that host's stdout out, run over SSH.
 
 ## Contract
 
-- **Input** (`argv[2]`): `"<target> <command> [args...]"`, e.g.
-  `"nas.kurpuis.internal df -h"` or `"monitor@bastion.kurpuis.internal:2222 systemctl status docker"`.
+- **Input** (`argv[2]`): `"<target> <command> [args...]"`, where `<target>`
+  is either a literal `user@host[:port]` or an alias resolved via
+  `SSH_CONFIG` (see "Resolving a target" below), e.g.
+  `"nas.kurpuis.internal df -h"`, `"monitor@bastion.kurpuis.internal:2222 systemctl status docker"`,
+  or `"kube0 uptime"`.
 - **Output**: the remote command's own stdout, wrapped in a fenced code
   block, delivered via the event contract in `docs/messaging.md`.
+
+## Resolving a target
+
+Two independent, each individually optional inputs govern what a caller's
+`<target>` string actually dials (`src/target.ts`):
+
+- **`SSH_ALLOWED_HOSTS`** -- the authorization boundary. A comma-separated
+  `user@host[:port]` list with no wildcard; when set, the *resolved* target
+  (after `SSH_CONFIG` alias resolution, if any) must match one of these
+  entries exactly.
+- **`SSH_CONFIG`** -- ssh_config(5)-shaped content (`src/sshconfig.ts`) for
+  resolving an alias like `kube0` to its `HostName`/`User`/`Port`, the same
+  way the operator's own `~/.ssh/config` already does. Only `Host`/
+  `HostName`/`User`/`Port` are understood; every other directive
+  (`IdentityFile`, `ProxyJump`, ...) is silently ignored -- this tool's
+  identity is always `SSH_PRIVATE_KEY`, never something a config file
+  should be able to redirect.
+
+At least one of the two must be set (enforced at startup) -- with neither,
+this tool would dial whatever `user@host` a caller supplied with no boundary
+at all. They compose freely:
+
+- **Allowlist only**: callers must spell out `user@host[:port]` literally;
+  `SSH_ALLOWED_HOSTS` is the sole boundary.
+- **`SSH_CONFIG` only**: callers use short aliases; the config file's own
+  Host list is the boundary (only safe if that list is itself closed and
+  trusted -- there's no wildcard `Host *` restriction check here).
+- **Both**: aliases resolve via `SSH_CONFIG`, and the resolved
+  `user@host:port` must *also* be on `SSH_ALLOWED_HOSTS` -- config for
+  convenience, allowlist for the actual boundary.
 
 ## Safety model (defense in depth)
 
@@ -18,10 +50,8 @@ user's own GitHub permissions), there is no cluster- or API-level backstop
 here -- the target boxes are outside this cluster's control plane, so every
 layer below is this codebase's own responsibility:
 
-1. **Fixed host allowlist** (`SSH_ALLOWED_HOSTS`, `src/config.ts`) -- the
-   authoritative boundary. A comma-separated `user@host[:port]` list with no
-   wildcard; a caller-supplied target must match one of these entries
-   exactly (host, user, and port).
+1. **Target resolution/restriction** (`src/target.ts`) -- see "Resolving a
+   target" above.
 2. **In-process command allowlist** (`src/allowlist.ts`) -- only a fixed set
    of read-only diagnostic binaries may run at all (`df`, `ps`, `journalctl`,
    `systemctl status`, `docker ps`/`logs`/`inspect`, ...); `systemctl` and
@@ -85,6 +115,12 @@ SSH_ALLOWED_HOSTS="monitor@nas.kurpuis.internal" \
   SSH_PRIVATE_KEY="$(cat ~/.ssh/id_ed25519_monitor)" \
   SSH_KNOWN_HOSTS="$(ssh-keyscan nas.kurpuis.internal)" \
   ./tools/ssh/run.sh "nas.kurpuis.internal df -h"
+
+# Or, using SSH_CONFIG aliases instead of (or alongside) SSH_ALLOWED_HOSTS:
+SSH_CONFIG=$'Host nas\n  HostName nas.kurpuis.internal\n  User monitor' \
+  SSH_PRIVATE_KEY="$(cat ~/.ssh/id_ed25519_monitor)" \
+  SSH_KNOWN_HOSTS="$(ssh-keyscan nas.kurpuis.internal)" \
+  ./tools/ssh/run.sh "nas df -h"
 ```
 
 To test the actual in-cluster path, create the `ssh-tool-secrets` Secret

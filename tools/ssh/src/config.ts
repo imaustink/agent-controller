@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { Target } from "./allowlist.js";
+import { parseSshConfig, type SshConfigEntry } from "./sshconfig.js";
+import type { Target } from "./target.js";
 
 /**
  * Central configuration. Kept deliberately narrow: this container's only job
  * is to run one allowlisted read-only remote command over SSH against one
- * allowlisted host and report the result (see tools/kubectl-readonly's
+ * resolved host and report the result (see tools/kubectl-readonly's
  * config.ts for the sibling comment on scope).
  *
  * The `RECIPE_*` names below are NOT a copy/paste mistake -- they are the
@@ -38,12 +39,26 @@ export interface AppConfig {
   /** NATS subject to publish tool events to for the `nats` transport. */
   natsSubject: string | undefined;
   /**
-   * The authoritative authorization boundary: the fixed set of
-   * user@host:port targets this tool's shared key may ever dial. Populated
-   * from `SSH_ALLOWED_HOSTS` -- a comma-separated list of "user@host[:port]"
-   * entries. Required and non-empty; there is no wildcard.
+   * Optional restriction on which resolved user@host:port targets may be
+   * dialed at all -- from `SSH_ALLOWED_HOSTS`, a comma-separated
+   * "user@host[:port]" list. `null` when unset, meaning NO restriction is
+   * applied beyond what SSH_CONFIG's own Host list happens to resolve --
+   * see target.ts's file header for why this and SSH_CONFIG are independent
+   * features, and index.ts's startup check for why at least one of the two
+   * must be configured.
    */
-  allowedHosts: Target[];
+  allowedHosts: Target[] | null;
+  /**
+   * Optional ssh_config(5)-shaped content (see sshconfig.ts) for resolving
+   * a caller-supplied alias (e.g. "kube0") to HostName/User/Port, the same
+   * way the operator's own ~/.ssh/config already does. Independent of
+   * allowedHosts above.
+   */
+  sshConfig: string;
+  sshConfigEntries: SshConfigEntry[];
+  /** Fallback user when a target supplies none and no SSH_CONFIG Host block
+   * sets one either. Optional -- resolution fails closed without a user. */
+  defaultUser: string | undefined;
   /** PEM-encoded private key content (secretEnv-injected, never baked into the image). */
   privateKey: string;
   /** `known_hosts`-format content pinning the allowed hosts' host keys. Not
@@ -82,12 +97,19 @@ function transport(raw: string | undefined): AppConfig["transport"] {
 }
 
 /** Parses "user@host[:port]" allowlist entries; malformed entries are a
- * startup-time config error, not a runtime one -- fail loud, not open. */
-function parseAllowedHosts(raw: string | undefined): Target[] {
-  const entries = (raw ?? "")
+ * startup-time config error, not a runtime one -- fail loud, not open.
+ * Returns `null` when SSH_ALLOWED_HOSTS is unset entirely (as opposed to
+ * set-but-empty, which is still a config error), meaning the allowlist
+ * feature is simply off -- see the AppConfig.allowedHosts doc comment. */
+function parseAllowedHosts(raw: string | undefined): Target[] | null {
+  if (raw === undefined) return null;
+  const entries = raw
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  if (entries.length === 0) {
+    throw new Error("SSH_ALLOWED_HOSTS is set but empty -- unset it entirely to disable the allowlist.");
+  }
   return entries.map((entry) => {
     const atIdx = entry.indexOf("@");
     if (atIdx === -1) {
@@ -105,6 +127,8 @@ function parseAllowedHosts(raw: string | undefined): Target[] {
   });
 }
 
+const sshConfigRaw = process.env.SSH_CONFIG ?? "";
+
 export const config: AppConfig = {
   transport: transport(process.env.RECIPE_TRANSPORT),
   jobId: process.env.RECIPE_JOB_ID ?? randomUUID(),
@@ -116,6 +140,9 @@ export const config: AppConfig = {
   natsUrl: process.env.RECIPE_NATS_URL,
   natsSubject: process.env.RECIPE_NATS_SUBJECT,
   allowedHosts: parseAllowedHosts(process.env.SSH_ALLOWED_HOSTS),
+  sshConfig: sshConfigRaw,
+  sshConfigEntries: parseSshConfig(sshConfigRaw),
+  defaultUser: process.env.SSH_DEFAULT_USER,
   privateKey: process.env.SSH_PRIVATE_KEY ?? "",
   knownHosts: process.env.SSH_KNOWN_HOSTS ?? "",
   sshTimeoutMs: num(process.env.SSH_TIMEOUT_MS, 15_000),

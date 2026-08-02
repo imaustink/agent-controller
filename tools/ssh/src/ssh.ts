@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
-import type { Target } from "./allowlist.js";
 import type { AppConfig } from "./config.js";
+import type { Target } from "./target.js";
 
 export class SshExecError extends Error {
   constructor(

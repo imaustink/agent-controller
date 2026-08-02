@@ -1,9 +1,10 @@
-import { BlockedCommandError, BlockedTargetError, tokenize, validateCommand, validateTarget } from "./allowlist.js";
+import { BlockedCommandError, tokenize, validateCommand } from "./allowlist.js";
 import { config } from "./config.js";
 import { createSink, JobEmitter } from "./messaging/index.js";
 import type { ErrorCode } from "./schema.js";
 import { clip } from "./security/redact.js";
 import { runSsh, SshExecError } from "./ssh.js";
+import { BlockedTargetError, resolveTarget } from "./target.js";
 
 /** Process exit codes, so the parent agent can branch on failure class. */
 const EXIT = {
@@ -35,9 +36,9 @@ async function run(emitter: JobEmitter, commandLine: string): Promise<void> {
     fail("usage", EXIT.usage, 'Usage: ssh-tool "<target> <command> [args...]" (e.g. "nas.kurpuis.internal df -h")');
   }
 
-  let target: ReturnType<typeof validateTarget>;
+  let target: ReturnType<typeof resolveTarget>;
   try {
-    target = validateTarget(rawTarget, config.allowedHosts);
+    target = resolveTarget(rawTarget, config);
   } catch (err) {
     if (err instanceof BlockedTargetError) {
       fail("blocked_target", EXIT.blockedTarget, err.message);
@@ -79,8 +80,12 @@ async function main(): Promise<void> {
     if (!commandLine) {
       fail("usage", EXIT.usage, 'Usage: ssh-tool "<target> <command> [args...]" (e.g. "nas.kurpuis.internal df -h")');
     }
-    if (config.allowedHosts.length === 0) {
-      fail("usage", EXIT.usage, "SSH_ALLOWED_HOSTS is not set -- this tool has no allowlisted targets to connect to.");
+    if (config.allowedHosts === null && config.sshConfigEntries.length === 0) {
+      fail(
+        "usage",
+        EXIT.usage,
+        "Neither SSH_ALLOWED_HOSTS nor SSH_CONFIG is set -- this tool would have no boundary on which target it dials. Configure at least one.",
+      );
     }
     await emitter.accepted(commandLine);
     await run(emitter, commandLine);
