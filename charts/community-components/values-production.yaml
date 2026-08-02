@@ -191,9 +191,15 @@ githubTool:
       - github
 
 # ssh: command execution over SSH, resolved via a copy of the operator's own
-# ~/.ssh/config Host aliases (kube0-8, home/bastion, db1-3, printcam/
-# airvinyl/airbuddy -- deliberately excludes the Verizon/client boxes,
-# "console", and "parents" also in that file).
+# ~/.ssh/config Host aliases (home/bastion/console, printcam/airvinyl/
+# airbuddy -- deliberately excludes the Verizon/client boxes and "parents"
+# also in that file). kube0-8 and db1-3 were deliberately dropped even
+# though they're read-only-safe candidates: allowedCommands: "*" below
+# means this tool can now WRITE on anything it reaches, and those are the
+# actual cluster/database nodes this repo runs on -- too much blast radius
+# for "*" for now. Re-add them (and their allowedHosts entries) once a
+# dedicated, less-privileged key backs this tool instead of the operator's
+# own id_rsa, or if allowedCommands is narrowed back down from "*".
 #
 # allowedCommands is "*" -- WIDE OPEN, no command allowlist at all beyond
 # the remote-shell-injection charset check (tools/ssh/src/allowlist.ts).
@@ -211,8 +217,8 @@ githubTool:
 # (tools/ssh/src/target.ts) falls back to any literal "user@host" when a
 # caller's target string doesn't match an sshConfig alias, so with
 # allowedHosts empty sshConfig's Host list restricts nothing at all: a
-# caller could dial "root@192.168.1.59" directly (a different user than the
-# ubuntu this file maps kube0 to) or any other host reachable with this key.
+# caller could dial "root@192.168.1.83" directly (a different user than the
+# admin this file maps console to) or any other host reachable with this key.
 # Populating allowedHosts with exactly the resolved user@host:port pairs
 # below is what actually turns "the aliases we curated" into "the only
 # targets this tool can reach."
@@ -227,20 +233,24 @@ githubTool:
 # below in the meantime -- id_rsa is already authorized on all of them for
 # the operator's own interactive access.
 #
+# console (192.168.1.83) was unreachable (ssh-keyscan timed out) when this
+# was last generated -- its host key is NOT in SSH_KNOWN_HOSTS below yet.
+# Add it once it's back on the network:
+#   ssh-keyscan -t ed25519 192.168.1.83
+# and append that line to the Secret's SSH_KNOWN_HOSTS value (StrictHostKeyChecking
+# will otherwise fail closed on every connection to it, per tools/ssh/README.md).
+#
 # Prerequisite:
 #   kubectl create secret generic ssh-tool-secrets -n controller-agent \
 #     --from-file=SSH_PRIVATE_KEY=~/.ssh/id_rsa \
 #     --from-literal=SSH_KNOWN_HOSTS="$(ssh-keyscan -t ed25519 \
-#       192.168.1.59 192.168.1.48 192.168.1.15 192.168.1.94 192.168.1.229 \
-#       192.168.1.192 192.168.1.167 192.168.1.27 192.168.1.170 \
 #       166.113.38.187 192.168.1.43 \
-#       192.168.1.129 192.168.1.149 192.168.1.236 \
 #       192.168.1.235 airvinyl.local 192.168.1.218)"
 sshTool:
   enabled: true
   image: registry.kurpuis.com:5000/ssh:latest
   serviceAccountName: ssh-tool
-  allowedHosts: "austinkurpuis@166.113.38.187,austinkurpuis@192.168.1.43,ubuntu@192.168.1.129,ubuntu@192.168.1.149,ubuntu@192.168.1.236,ubuntu@192.168.1.59,ubuntu@192.168.1.48,ubuntu@192.168.1.15,ubuntu@192.168.1.94,ubuntu@192.168.1.229,ubuntu@192.168.1.192,ubuntu@192.168.1.167,ubuntu@192.168.1.27,ubuntu@192.168.1.170,pi@192.168.1.235,pi@airvinyl.local,pi@192.168.1.218"
+  allowedHosts: "austinkurpuis@166.113.38.187,austinkurpuis@192.168.1.43,admin@192.168.1.83,pi@192.168.1.235,pi@airvinyl.local,pi@192.168.1.218"
   allowedCommands: "*"
   sshConfig: |
     Host home
@@ -249,42 +259,9 @@ sshTool:
     Host bastion
       HostName 192.168.1.43
       User austinkurpuis
-    Host db1
-      HostName 192.168.1.129
-      User ubuntu
-    Host db2
-      HostName 192.168.1.149
-      User ubuntu
-    Host db3
-      HostName 192.168.1.236
-      User ubuntu
-    Host kube0
-      HostName 192.168.1.59
-      User ubuntu
-    Host kube1
-      HostName 192.168.1.48
-      User ubuntu
-    Host kube2
-      HostName 192.168.1.15
-      User ubuntu
-    Host kube3
-      HostName 192.168.1.94
-      User ubuntu
-    Host kube4
-      HostName 192.168.1.229
-      User ubuntu
-    Host kube5
-      HostName 192.168.1.192
-      User ubuntu
-    Host kube6
-      HostName 192.168.1.167
-      User ubuntu
-    Host kube7
-      HostName 192.168.1.27
-      User ubuntu
-    Host kube8
-      HostName 192.168.1.170
-      User ubuntu
+    Host console
+      HostName 192.168.1.83
+      User admin
     Host printcam
       HostName 192.168.1.235
       User pi
