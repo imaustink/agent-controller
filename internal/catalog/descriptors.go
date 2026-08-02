@@ -26,6 +26,13 @@ type ToolDescriptor struct {
 	AllowedRoles []string `json:"allowedRoles"`
 	Tier         string   `json:"tier,omitempty"`
 	AgentRef     string   `json:"agentRef,omitempty"` // set = agent-backed tool
+
+	// IdentityProviders names the external identities the caller must have
+	// linked before this Tool may be launched (upstream ADR 0032 §2). Only
+	// meaningful for a container Tool — an agent-backed Tool carries it on
+	// the wrapped Agent CR instead. The resolved token rides the launch as
+	// ToolRunSpec.secretEnv rather than being baked into the Tool template.
+	IdentityProviders []string `json:"identityProviders,omitempty"`
 }
 
 // StepToolAnnotation on an Agent CR marks it as a checkpoint-resume pod
@@ -48,6 +55,15 @@ type AgentDescriptor struct {
 	MaxIterations      int32    `json:"maxIterations,omitempty"`
 	IdentityProviders  []string `json:"identityProviders,omitempty"`
 
+	// ToolRefs names the Tool CRs this agent's OWN loop may call (upstream
+	// ADR 0028), as opposed to SkillRefs, which is prompt material. Resolved
+	// by id against the whole catalog rather than through RBAC-filtered
+	// retrieval: the question is which tools the OPERATOR declared this agent
+	// may call, not which tools the walk-in caller may reach. Re-validated at
+	// call time — the CRD-level check upstream performs is a static-config
+	// sanity check, not the authorization boundary.
+	ToolRefs []string `json:"toolRefs,omitempty"`
+
 	// StepToolRef (from StepToolAnnotation) switches execution from the
 	// declarative agent loop to checkpoint-resume Jobs of the named tool.
 	StepToolRef string `json:"stepToolRef,omitempty"`
@@ -61,6 +77,16 @@ type SkillDescriptor struct {
 	Markdown    string   `json:"markdown"`
 	ToolIDs     []string `json:"toolIds,omitempty"`
 	AgentIDs    []string `json:"agentIds,omitempty"`
+
+	// AllowCallerTools controls whether tools the CONSUMER supplied in the
+	// request body (upstream ADR 0035) may be offered to the planner
+	// alongside this skill's own tools. A pointer because **nil means
+	// allowed** — the default that matches the OpenAI wire contract is "the
+	// tools I sent are usable", and a plain bool's zero value would silently
+	// mean "refuse" on every existing Skill CR. Not an authorization
+	// boundary: it keeps an authored skill's tool loop predictable, nothing
+	// more (the caller both supplies and executes a caller tool).
+	AllowCallerTools *bool `json:"allowCallerTools,omitempty"`
 
 	// Derived at index time (ADR 0011): the intersection of every referenced
 	// tool's/agent's allowedRoles. Unrestricted=true (no refs) means visible

@@ -11,12 +11,13 @@ import (
 // fields like image/env/resources are ignored — the controller owns those).
 
 type toolSpec struct {
-	Description  string   `json:"description"`
-	Input        string   `json:"input"`
-	Output       string   `json:"output"`
-	AllowedRoles []string `json:"allowedRoles"`
-	Tier         string   `json:"tier,omitempty"`
-	AgentRef     string   `json:"agentRef,omitempty"`
+	Description       string   `json:"description"`
+	Input             string   `json:"input"`
+	Output            string   `json:"output"`
+	AllowedRoles      []string `json:"allowedRoles"`
+	Tier              string   `json:"tier,omitempty"`
+	AgentRef          string   `json:"agentRef,omitempty"`
+	IdentityProviders []string `json:"identityProviders,omitempty"`
 }
 
 type agentSpec struct {
@@ -31,15 +32,17 @@ type agentSpec struct {
 	Model              string   `json:"model,omitempty"`
 	MaxIterations      int32    `json:"maxIterations,omitempty"`
 	IdentityProviders  []string `json:"identityProviders,omitempty"`
+	ToolRefs           []string `json:"toolRefs,omitempty"`
 }
 
 type skillSpec struct {
-	Description string   `json:"description"`
-	Input       string   `json:"input,omitempty"`
-	Output      string   `json:"output,omitempty"`
-	Markdown    string   `json:"markdown"`
-	ToolRefs    []string `json:"toolRefs,omitempty"`
-	AgentRefs   []string `json:"agentRefs,omitempty"`
+	Description      string   `json:"description"`
+	Input            string   `json:"input,omitempty"`
+	Output           string   `json:"output,omitempty"`
+	Markdown         string   `json:"markdown"`
+	ToolRefs         []string `json:"toolRefs,omitempty"`
+	AgentRefs        []string `json:"agentRefs,omitempty"`
+	AllowCallerTools *bool    `json:"allowCallerTools,omitempty"`
 }
 
 func decodeSpec(obj *unstructured.Unstructured, into any) error {
@@ -56,13 +59,14 @@ func DecodeTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 		return ToolDescriptor{}, err
 	}
 	return ToolDescriptor{
-		ID:           obj.GetName(),
-		Description:  spec.Description,
-		Input:        spec.Input,
-		Output:       spec.Output,
-		AllowedRoles: spec.AllowedRoles,
-		Tier:         spec.Tier,
-		AgentRef:     spec.AgentRef,
+		ID:                obj.GetName(),
+		Description:       spec.Description,
+		Input:             spec.Input,
+		Output:            spec.Output,
+		AllowedRoles:      spec.AllowedRoles,
+		Tier:              spec.Tier,
+		AgentRef:          spec.AgentRef,
+		IdentityProviders: spec.IdentityProviders,
 	}, nil
 }
 
@@ -85,6 +89,7 @@ func DecodeAgent(obj *unstructured.Unstructured) (AgentDescriptor, error) {
 		Model:              spec.Model,
 		MaxIterations:      spec.MaxIterations,
 		IdentityProviders:  spec.IdentityProviders,
+		ToolRefs:           spec.ToolRefs,
 	}, nil
 }
 
@@ -96,12 +101,13 @@ func DecodeSkill(obj *unstructured.Unstructured) (SkillDescriptor, error) {
 		return SkillDescriptor{}, err
 	}
 	return SkillDescriptor{
-		ID:          obj.GetName(),
-		Description: spec.Description,
-		Input:       spec.Input,
-		Output:      spec.Output,
-		Markdown:    spec.Markdown,
-		ToolIDs:     spec.ToolRefs,
-		AgentIDs:    spec.AgentRefs,
+		ID:               obj.GetName(),
+		Description:      spec.Description,
+		Input:            spec.Input,
+		Output:           spec.Output,
+		Markdown:         spec.Markdown,
+		ToolIDs:          spec.ToolRefs,
+		AgentIDs:         spec.AgentRefs,
+		AllowCallerTools: spec.AllowCallerTools,
 	}, nil
 }

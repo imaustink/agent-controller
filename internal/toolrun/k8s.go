@@ -62,6 +62,22 @@ func (l *K8sLauncher) Launch(ctx context.Context, spec LaunchSpec) error {
 	if spec.TimeoutSeconds > 0 {
 		crSpec["timeoutSeconds"] = int64(spec.TimeoutSeconds)
 	}
+	if len(spec.SecretEnv) > 0 {
+		entries := make([]any, len(spec.SecretEnv))
+		for i, e := range spec.SecretEnv {
+			if e.Name == "" || e.SecretRef.Name == "" || e.SecretRef.Key == "" {
+				return fmt.Errorf("launch %s: secretEnv[%d] requires name and secretRef.name/key", spec.Name, i)
+			}
+			entries[i] = map[string]any{
+				"name": e.Name,
+				"secretRef": map[string]any{
+					"name": e.SecretRef.Name,
+					"key":  e.SecretRef.Key,
+				},
+			}
+		}
+		crSpec["secretEnv"] = entries
+	}
 
 	toolRun := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": catalog.Group + "/" + catalog.Version,

@@ -75,12 +75,17 @@ adapter change: replace `runAgent(handler)` with the tool contract —
 the existing `@controller-agent/messaging` CallbackSink instead of a NATS
 reply. `session.ask()` becomes "return a question envelope and exit."
 
-Known upstream gaps, deliberately not worked around here:
+Known upstream gaps:
 
-1. **Per-user token injection**: upstream `AgentRunSpec.secretEnv` injected
-   the caller's GitHub token per run. `ToolRunSpec` has no `secretEnv`, so
-   per-user credentials can't ride the step Job yet — the identity gate
-   works, injection needs a small upstream `ToolRunSpec.secretEnv` addition
-   (mirroring AgentRun's) plus a launcher field.
+1. ~~**Per-user token injection**~~ — **closed upstream.** `ToolRunSpec.secretEnv`
+   landed with agent-controller's ADR 0032 §1, mirroring `AgentRunSpec`'s, and
+   the reconciler merges it over the Tool's static `secretEnv` at Job-build
+   time. `LaunchSpec.SecretEnv` carries it here, so a caller-scoped credential
+   can ride a step Job without being baked into the Tool template. What
+   remains is resolving the token in the first place — see the authorization
+   pre-flight in [upstream-catchup-plan.md](upstream-catchup-plan.md) A4.
 2. **opencode image adaptation** as described above — TypeScript changes in
-   the agent-controller repo.
+   the agent-controller repo. Note that this is no longer on the critical
+   path: the catch-up plan's D2 keeps the NATS `AgentRun` channel alongside
+   checkpoint-resume, so `opencode-swe-agent` and `claude-code-swe-agent` run
+   unchanged and adapting them becomes optional rather than a precondition.
