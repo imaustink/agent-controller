@@ -82,6 +82,15 @@ type TurnInput struct {
 	// role-invisible target is not an error.
 	ForcedSkillID string `json:"forcedSkillId,omitempty"`
 	ForcedAgentID string `json:"forcedAgentId,omitempty"`
+
+	// SenderLogin is the human an adapter vouched for, taken from a verified
+	// sender assertion (upstream ADR 0030 §6) — the gateway authenticates as
+	// itself, so the caller's own subject says nothing about who triggered
+	// the turn. It selects the principal that credentials are keyed by, which
+	// is why the gateway will only accept it signed once a secret is
+	// configured. Consumed by the authorization pre-flight in A4; carried
+	// through the loop unread until then.
+	SenderLogin string `json:"senderLogin,omitempty"`
 }
 
 type TurnResult struct {

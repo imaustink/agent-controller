@@ -19,6 +19,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 
+	"durable-agents/internal/catalog"
 	"durable-agents/internal/rbac"
 	"durable-agents/internal/temporal/activities"
 	"durable-agents/internal/temporal/workflows"
@@ -38,10 +39,37 @@ type Server struct {
 	temporal  client.Client
 	taskQueue string
 	identity  rbac.Resolver
+
+	// routes is the live IntegrationRoute table (ADR 0024). Nil disables
+	// deterministic dispatch entirely: /invoke still works, and every turn
+	// goes through ordinary retrieval, exactly as before the feature existed.
+	routes *catalog.RouteRegistry
+
+	// senderAssertionSecret is shared with integration-gateway. Empty means
+	// /invoke falls back to trusting an unsigned event.senderLogin — see
+	// rbac.WarnIfSenderAssertionUnset.
+	senderAssertionSecret string
 }
 
-func NewServer(temporal client.Client, taskQueue string, identity rbac.Resolver) *Server {
-	return &Server{temporal: temporal, taskQueue: taskQueue, identity: identity}
+// Option configures a Server. Both of these are genuinely optional: a
+// deployment that only serves chat needs neither a route table nor a shared
+// secret with an adapter it does not run.
+type Option func(*Server)
+
+func WithRoutes(routes *catalog.RouteRegistry) Option {
+	return func(s *Server) { s.routes = routes }
+}
+
+func WithSenderAssertionSecret(secret string) Option {
+	return func(s *Server) { s.senderAssertionSecret = secret }
+}
+
+func NewServer(temporal client.Client, taskQueue string, identity rbac.Resolver, opts ...Option) *Server {
+	s := &Server{temporal: temporal, taskQueue: taskQueue, identity: identity}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *Server) Handler() http.Handler {
@@ -53,6 +81,8 @@ func (s *Server) Handler() http.Handler {
 	})
 	router.GET("/v1/models", s.handleModels)
 	router.POST("/v1/chat/completions", s.handleChatCompletions)
+	router.POST("/invoke", s.handleInvoke)
+	router.GET("/invoke/:id", s.handleInvokeStatus)
 	return router
 }
 

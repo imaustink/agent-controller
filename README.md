@@ -16,7 +16,7 @@ design and milestone plan.
 
 | Path | What it is |
 | ---- | ---------- |
-| `cmd/gateway` | Stateless HTTP front door: OpenAI Chat Completions-compatible facade → per-session conversation workflow via update-with-start. Later also hosts the HMAC callback→signal bridge for tool Jobs. |
+| `cmd/gateway` | Stateless HTTP front door: OpenAI Chat Completions-compatible facade and the `/invoke` accept/poll pair, both → per-session conversation workflow via update-with-start. Also hosts the HMAC callback→signal bridge for tool Jobs, and watches `IntegrationRoute` CRs for deterministic event dispatch. |
 | `cmd/worker` | Temporal worker hosting workflows and activities. |
 | `cmd/catalog-sync` | Watches agent-controller's Tool/Skill/Agent CRs (dynamic informers) and mirrors them into Qdrant with derived skill access roles. |
 | `internal/catalog` | CR decoding, skill-access derivation (ADR 0011 port), indexer. |
@@ -48,7 +48,43 @@ design and milestone plan.
    continues-as-new after 40 turns to bound event history.
 
 No session store, no Redis, no in-memory pending state — the workflow *is*
-the session, including the active skill and (soon) continuation tokens.
+the session, including the active skill and continuation tokens.
+
+## Event-driven turns (`/invoke`)
+
+An adapter (agent-controller's integration-gateway) posts
+`{request, sessionId, event}` and polls:
+
+```bash
+curl -s -XPOST localhost:8080/invoke -H 'Content-Type: application/json' -d '{
+  "request": "an issue was labeled",
+  "sessionId": "github:acme/widgets#7",
+  "event": {"source":"github","event":"issues","action":"labeled",
+            "labelName":"ai-triage","owner":"acme","repo":"widgets",
+            "issueNumber":7,"title":"Crash on save"}
+}'
+# {"id":"conversation-github-acme-widgets-7.<uuid>","status":"pending"}
+
+curl -s localhost:8080/invoke/<id>
+# {"id":"...","status":"succeeded","result":"..."}
+```
+
+When the `event` matches an `IntegrationRoute` CR, its `promptTemplate` is
+rendered and the named Skill/Agent is dispatched directly — no RAG retrieval
+(upstream ADR 0024). No match behaves exactly as before the field existed.
+
+The invocation id names a workflow update, so a poll is answered from
+Temporal rather than from process memory: any replica can serve it, and a
+gateway that dies mid-turn costs the caller nothing. This is upstream's
+ADR 0006 restart/scale-out gap, and the "durable invocation records, which
+this does not attempt" that ADR 0033 closes on.
+
+`event.senderLogin` says which human triggered the turn, and therefore which
+stored credentials the run may receive. Set
+`GATEWAY_SENDER_ASSERTION_SECRET` on both this gateway and
+integration-gateway to require it signed (`x-gateway-user-assertion`,
+wire-compatible with upstream); unset, the unsigned body field is trusted and
+both processes warn at startup.
 
 For cluster-less development: `go run ./cmd/dev-seed` populates Qdrant with
 a sample catalog, `TOOLRUN_MODE=fake` logs tool launches instead of creating
