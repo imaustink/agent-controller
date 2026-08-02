@@ -1167,7 +1167,7 @@ async function selectFallbackTool(
   // No skill matched, so there is no `allowCallerTools` gate to consult — a
   // consumer-supplied tool (docs/adr/0035) is simply a candidate here.
   const callerTools = state.callerTools;
-  const candidates = await deps.vectorStore.query(state.request, { callerRoles: state.identity.roles }, deps.fallbackToolTopK ?? 3);
+  const candidates = await deps.vectorStore.query(state.request, callerFilter(state.identity), deps.fallbackToolTopK ?? 3);
   if (candidates.length === 0 && callerTools.length === 0) return undefined;
   const fitFlags = await Promise.all(candidates.map((c) => deps.toolFitChecker.fits(state.request, c.tool)));
   // Caller tools skip the fit check on purpose. That gate exists because a
@@ -1211,7 +1211,7 @@ async function selectFallbackTool(
  */
 async function hasOutOfScopeToolMatch(state: AgentState, skill: SkillDescriptor, deps: AgentGraphDeps): Promise<boolean> {
   if (!state.identity) return false;
-  const candidates = await deps.vectorStore.query(state.request, { callerRoles: state.identity.roles }, deps.fallbackToolTopK ?? 3);
+  const candidates = await deps.vectorStore.query(state.request, callerFilter(state.identity), deps.fallbackToolTopK ?? 3);
   const outOfScope = candidates.filter((c) => !skill.toolIds.includes(c.tool.id));
   if (outOfScope.length === 0) return false;
   const fitFlags = await Promise.all(outOfScope.map((c) => deps.toolFitChecker.fits(state.request, c.tool)));
@@ -1261,6 +1261,19 @@ async function noMatchFallback(state: AgentState, deps: AgentGraphDeps): Promise
   return { result, wasFallback: true };
 }
 
+/**
+ * The RBAC+ABAC retrieval filter for a resolved caller, shared by every
+ * tool/agent/skill store query and id-lookup in the graph so both access
+ * dimensions are enforced identically everywhere. `callerRoles` gates RBAC
+ * (ADR 0004); `callerPrincipal` gates ABAC private-scoping (docs/adr/0036) and
+ * is the caller's resolved principal (docs/adr/0030 §6), falling back to the
+ * entry-point subject — the same value `resolveIdentity` already computes and
+ * pins onto `identity.principal`.
+ */
+function callerFilter(identity: Identity): { callerRoles: string[]; callerPrincipal: string } {
+  return { callerRoles: identity.roles, callerPrincipal: identity.principal ?? identity.subject };
+}
+
 /** Builds and compiles the LangGraph.js agent graph (docs/adr/0008, superseding the earlier flat tool-RAG flow). */
 export function buildAgentGraph(deps: AgentGraphDeps) {
   // The single owner of the authorization decision (docs/adr/0030 §1).
@@ -1302,15 +1315,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // it just falls through to ordinary skill-continuity/retrieval.
       if (!state.identity) return {};
       if (state.forcedSkillId) {
-        const [skill] = await deps.skillStore.getByIds([state.forcedSkillId], {
-          callerRoles: state.identity.roles,
-        });
+        const [skill] = await deps.skillStore.getByIds([state.forcedSkillId], callerFilter(state.identity));
         if (skill) return { selectedSkill: skill };
       }
       if (state.forcedAgentId && deps.agentStore) {
-        const [found] = await deps.agentStore.getByIds([state.forcedAgentId], {
-          callerRoles: state.identity.roles,
-        });
+        const [found] = await deps.agentStore.getByIds([state.forcedAgentId], callerFilter(state.identity));
         if (found) return { selectedAgent: found.agent };
       }
       return {};
@@ -1324,9 +1333,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // selection -- a miss is never an error.
       if (!state.activeSkillId || !state.identity) return {};
       if (state.sessionSubject !== state.identity.subject) return {};
-      const [skill] = await deps.skillStore.getByIds([state.activeSkillId], {
-        callerRoles: state.identity.roles,
-      });
+      const [skill] = await deps.skillStore.getByIds([state.activeSkillId], callerFilter(state.identity));
       if (!skill) return {};
       const fits = await deps.skillFitChecker.fits(state.request, skill);
       if (!fits) return {};
@@ -1392,7 +1399,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // status === "complete": re-fetch the agent (RBAC re-check, same
       // discipline as checkActiveAgentRun) and resume straight into
       // delegation with it.
-      const [found] = await deps.agentStore.getByIds([pending.agentId], { callerRoles: state.identity.roles });
+      const [found] = await deps.agentStore.getByIds([pending.agentId], callerFilter(state.identity));
       if (!found) return { pendingIdentityLink: undefined }; // agent gone/revoked -- fall through to fresh selection
       return {
         selectedAgent: found.agent,
@@ -1420,9 +1427,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (!deps.agentStore || !deps.agentChannel) return {};
       if (!state.activeAgentRunId || !state.activeAgentId || !state.identity) return {};
       if (state.sessionSubject !== state.identity.subject) return {};
-      const [found] = await deps.agentStore.getByIds([state.activeAgentId], {
-        callerRoles: state.identity.roles,
-      });
+      const [found] = await deps.agentStore.getByIds([state.activeAgentId], callerFilter(state.identity));
       if (!found) return {};
 
       try {
@@ -1520,7 +1525,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (!state.identity) return { skillCandidates: [] };
       const skillCandidates = await deps.skillStore.query(
         state.request,
-        { callerRoles: state.identity.roles },
+        callerFilter(state.identity),
         deps.skillTopK ?? 3,
       );
       return { skillCandidates };
@@ -1529,7 +1534,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (!deps.agentStore || !state.identity) return { agentCandidates: [] };
       const agentCandidates = await deps.agentStore.query(
         state.request,
-        { callerRoles: state.identity.roles },
+        callerFilter(state.identity),
         deps.agentTopK ?? 3,
       );
       return { agentCandidates };
@@ -1725,9 +1730,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       }
 
       const [toolResults, agentResults] = await Promise.all([
-        toolIds.length > 0 ? deps.vectorStore.getByIds(toolIds, { callerRoles: state.identity.roles }) : [],
+        toolIds.length > 0 ? deps.vectorStore.getByIds(toolIds, callerFilter(state.identity)) : [],
         agentIds.length > 0 && deps.agentStore
-          ? deps.agentStore.getByIds(agentIds, { callerRoles: state.identity.roles })
+          ? deps.agentStore.getByIds(agentIds, callerFilter(state.identity))
           : [],
       ]);
       // Adapt each resolved Agent into the same ToolDescriptor shape an
@@ -1743,6 +1748,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           name: r.agent.name,
           description: r.agent.description,
           allowedRoles: r.agent.allowedRoles,
+          allowedPrincipals: r.agent.allowedPrincipals,
           tier: r.agent.tier,
           agentRunTemplate: r.agent.agentRunTemplate,
           identityProviders: r.agent.identityProviders,

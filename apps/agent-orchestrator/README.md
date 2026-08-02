@@ -28,7 +28,12 @@ things called out as open questions in the design doc.
    *derived* audience includes that identity — a skill carries no roles of
    its own; its audience is the intersection of its tools' `allowedRoles`,
    computed at startup (ADR 0011). An unresolved identity always yields
-   zero candidates (ADR 0008).
+   zero candidates (ADR 0008). The same filter also enforces **ABAC
+   private-scoping** (ADR 0036): a `Tool`/`Agent`/`Skill` with a non-empty
+   `allowedPrincipals` is a candidate only for a caller whose resolved
+   principal (ADR 0030 §6) is listed — layered on top of the role check, so
+   an owner can mark a resource private to specific users without a
+   one-person role.
 5. Asks an LLM (Structured Outputs, no tool-calling ability) to pick one
    candidate skill for the request, then resolves that skill's declared tool
    ids directly (`VectorStore.getByIds`, RBAC re-checked as a
@@ -132,6 +137,9 @@ spec:
   input: "A URL on stdin."
   output: "An envelope { status, body }."
   allowedRoles: ["reader"]
+  # Optional ABAC private-scoping (ADR 0036): if set, only these principals
+  # (on top of allowedRoles) may retrieve/use the tool. Omit for a public tool.
+  # allowedPrincipals: ["github:owner"]
   runtime: node
   package: "@controller-agent/http-get"
   version: "0.1.0"     # exact pin required

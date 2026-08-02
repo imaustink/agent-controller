@@ -17,6 +17,8 @@ export interface LocalToolCustomResource {
     input: string;
     output: string;
     allowedRoles: string[];
+    /** ABAC private-scoping (docs/adr/0036 — `LocalTool.spec.allowedPrincipals`). */
+    allowedPrincipals?: string[];
     tier?: string;
     runtime: LocalToolSpec["runtime"];
     package?: string;
@@ -144,6 +146,7 @@ export function toLocalToolDescriptor(cr: LocalToolCustomResource): ToolDescript
     name,
     description: `${spec.description}\n\nInput: ${spec.input}\nOutput: ${spec.output}`,
     allowedRoles: spec.allowedRoles ?? [],
+    allowedPrincipals: spec.allowedPrincipals,
     tier: spec.tier,
     localExec,
   };

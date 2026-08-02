@@ -707,7 +707,7 @@ describe("buildAgentGraph session-scoped active skill (ADR 0012)", () => {
 
     expect(final.error).toBeUndefined();
     expect(final.selectedSkill?.id).toBe(skill.id);
-    expect(deps.skillStore.getByIds).toHaveBeenCalledWith([skill.id], { callerRoles: ["reader"] });
+    expect(deps.skillStore.getByIds).toHaveBeenCalledWith([skill.id], { callerRoles: ["reader"], callerPrincipal: "alice" });
     expect(deps.skillFitChecker.fits).toHaveBeenCalledWith("yes, publish it", skill);
     // The whole point: no RAG retrieval, no selection LLM call.
     expect(deps.skillStore.query).not.toHaveBeenCalled();
@@ -1123,7 +1123,7 @@ describe("buildAgentGraph checkIntegrationRoute (IntegrationRoute-forced dispatc
     // resolved selectedSkill directly via skillStore.getByIds, routing
     // straight to loadSkillTools.
     expect(deps.skillStore.query).not.toHaveBeenCalled();
-    expect(deps.skillStore.getByIds).toHaveBeenCalledWith(["recipe-publisher-skill"], { callerRoles: ["reader"] });
+    expect(deps.skillStore.getByIds).toHaveBeenCalledWith(["recipe-publisher-skill"], { callerRoles: ["reader"], callerPrincipal: "alice" });
   });
 
   it("resolves a forcedAgentId directly, bypassing RAG retrieval, and delegates to that agent", async () => {
@@ -1615,7 +1615,7 @@ describe("buildAgentGraph Skill.agentRefs (ADR 0021, no Tool wrapper)", () => {
     expect(final.selectedTool?.id).toBe("opencode-swe-agent");
     expect(final.selectedTool?.agentRunTemplate).toEqual(opencodeAgent.agentRunTemplate);
     expect(final.result).toBe("Opened https://github.com/imaustink/agent-controller/pull/42");
-    expect(deps.agentStore!.getByIds).toHaveBeenCalledWith(["opencode-swe-agent"], { callerRoles: ["reader"] });
+    expect(deps.agentStore!.getByIds).toHaveBeenCalledWith(["opencode-swe-agent"], { callerRoles: ["reader"], callerPrincipal: "alice" });
     expect(deps.agentRunLauncher!.launch).toHaveBeenCalledWith(
       opencodeAgent.agentRunTemplate,
       expect.any(String),

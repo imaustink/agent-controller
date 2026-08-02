@@ -4,28 +4,38 @@ import type { SkillDescriptor } from "./types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { AgentDescriptor } from "../agents/types.js";
 
-function tool(id: string, allowedRoles: string[]): ToolDescriptor {
+function tool(id: string, allowedRoles: string[], allowedPrincipals?: string[]): ToolDescriptor {
   return {
     id,
     name: id,
     description: `Tool ${id}`,
     allowedRoles,
+    ...(allowedPrincipals ? { allowedPrincipals } : {}),
     jobTemplate: { image: `example.com/${id}:latest`, namespace: "default", serviceAccountName: "sa" },
   };
 }
 
-function agent(id: string, allowedRoles: string[]): AgentDescriptor {
+function agent(id: string, allowedRoles: string[], allowedPrincipals?: string[]): AgentDescriptor {
   return {
     id,
     name: id,
     description: `Agent ${id}`,
     allowedRoles,
+    ...(allowedPrincipals ? { allowedPrincipals } : {}),
     agentRunTemplate: { namespace: "default", agentRef: id },
   };
 }
 
-function skill(id: string, toolIds: string[], agentIds: string[] = []): SkillDescriptor {
-  return { id, name: id, description: `Skill ${id}`, markdown: "# instructions", toolIds, agentIds };
+function skill(id: string, toolIds: string[], agentIds: string[] = [], allowedPrincipals?: string[]): SkillDescriptor {
+  return {
+    id,
+    name: id,
+    description: `Skill ${id}`,
+    markdown: "# instructions",
+    toolIds,
+    agentIds,
+    ...(allowedPrincipals ? { allowedPrincipals } : {}),
+  };
 }
 
 describe("deriveSkillAccess (ADR 0011, extended to agents by ADR 0021)", () => {
@@ -37,7 +47,7 @@ describe("deriveSkillAccess (ADR 0011, extended to agents by ADR 0021)", () => {
     );
 
     expect(access).toEqual([
-      { skill: skill("recipe-skill", ["scraper", "publisher"]), effectiveRoles: ["reader"] },
+      { skill: skill("recipe-skill", ["scraper", "publisher"]), effectiveRoles: ["reader"], effectivePrincipals: null },
     ]);
   });
 
@@ -115,5 +125,69 @@ describe("deriveSkillAccess (ADR 0011, extended to agents by ADR 0021)", () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  // ── ABAC private-scoping (docs/adr/0036) ──────────────────────────────────
+
+  it("leaves effectivePrincipals null when neither the skill nor any tool/agent is private", () => {
+    const access = deriveSkillAccess([skill("s", ["scraper"])], [tool("scraper", ["reader"])], []);
+    expect(access[0].effectivePrincipals).toBeNull();
+  });
+
+  it("inherits a private tool's allowedPrincipals so a skill never widens its audience", () => {
+    const access = deriveSkillAccess(
+      [skill("s", ["scraper"])],
+      [tool("scraper", ["reader"], ["github:owner"])],
+      [],
+    );
+    expect(access[0].effectivePrincipals).toEqual(["github:owner"]);
+  });
+
+  it("intersects the skill's own allowedPrincipals with a referenced private tool's", () => {
+    const access = deriveSkillAccess(
+      [skill("s", ["scraper"], [], ["github:owner", "github:teammate"])],
+      [tool("scraper", ["reader"], ["github:owner"])],
+      [],
+    );
+    expect(access[0].effectivePrincipals).toEqual(["github:owner"]);
+  });
+
+  it("ignores public tools/agents when deriving principals (they add no constraint)", () => {
+    const access = deriveSkillAccess(
+      [skill("s", ["scraper", "publisher"])],
+      [tool("scraper", ["reader"], ["github:owner"]), tool("publisher", ["reader"])],
+      [],
+    );
+    expect(access[0].effectivePrincipals).toEqual(["github:owner"]);
+  });
+
+  it("scopes a respond-only skill to its OWN allowedPrincipals even with no tools/agents", () => {
+    const access = deriveSkillAccess([skill("private-faq", [], [], ["github:owner"])], [], []);
+    expect(access[0].effectiveRoles).toBeNull(); // RBAC-unrestricted
+    expect(access[0].effectivePrincipals).toEqual(["github:owner"]); // ABAC-private
+  });
+
+  it("yields an empty (unreachable) principal set and warns when private sets are disjoint", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const access = deriveSkillAccess(
+        [skill("s", ["a", "b"])],
+        [tool("a", ["reader"], ["github:alice"]), tool("b", ["reader"], ["github:bob"])],
+        [],
+      );
+      expect(access[0].effectivePrincipals).toEqual([]);
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("privately scoped to no one"));
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("intersects private-scoping across both a tool and an agent", () => {
+    const access = deriveSkillAccess(
+      [skill("s", ["scraper"], ["swe"])],
+      [tool("scraper", ["reader", "writer"], ["github:owner", "github:teammate"])],
+      [agent("swe", ["writer"], ["github:owner"])],
+    );
+    expect(access[0].effectivePrincipals).toEqual(["github:owner"]);
   });
 });

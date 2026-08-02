@@ -76,6 +76,16 @@ describe("CrdLocalToolRegistry", () => {
     expect(tools[0].description).toContain("Fetches a URL");
   });
 
+  it("carries LocalTool.spec.allowedPrincipals through for ABAC private-scoping (docs/adr/0036)", () => {
+    const privateLocalTool: LocalToolCustomResource = {
+      ...nodeTool,
+      spec: { ...nodeTool.spec, allowedPrincipals: ["github:owner"] },
+    };
+    expect(toLocalToolDescriptor(privateLocalTool)?.allowedPrincipals).toEqual(["github:owner"]);
+    // Absent on a plain LocalTool (public).
+    expect(toLocalToolDescriptor(nodeTool)?.allowedPrincipals).toBeUndefined();
+  });
+
   it("maps a shell LocalTool (sourceURL + checksum, no package)", () => {
     const descriptor = toLocalToolDescriptor(shellTool);
     expect(descriptor?.localExec).toMatchObject({

@@ -12,6 +12,13 @@ export interface ToolCustomResource {
     input: string;
     output: string;
     allowedRoles: string[];
+    /**
+     * ABAC private-scoping (docs/adr/0036 — `Tool.spec.allowedPrincipals`).
+     * Non-empty makes the Tool private to callers whose resolved principal is
+     * listed, on top of the allowedRoles RBAC filter. Read straight onto the
+     * resulting `ToolDescriptor.allowedPrincipals`.
+     */
+    allowedPrincipals?: string[];
     tier?: string;
     /** Names an Agent CR this Tool wraps — mutually exclusive with image/serviceAccountName. */
     agentRef?: string;
@@ -135,6 +142,7 @@ export function toToolDescriptor(cr: ToolCustomResource, namespace: string): Too
       name,
       description: `${spec.description}\n\nInput: ${spec.input}\nOutput: ${spec.output}`,
       allowedRoles: spec.allowedRoles ?? [],
+      allowedPrincipals: spec.allowedPrincipals,
       tier: spec.tier,
       agentRunTemplate: { namespace, agentRef: spec.agentRef },
     };
@@ -146,6 +154,7 @@ export function toToolDescriptor(cr: ToolCustomResource, namespace: string): Too
     name,
     description: `${spec.description}\n\nInput: ${spec.input}\nOutput: ${spec.output}`,
     allowedRoles: spec.allowedRoles ?? [],
+    allowedPrincipals: spec.allowedPrincipals,
     tier: spec.tier,
     jobTemplate: {
       image: spec.image,

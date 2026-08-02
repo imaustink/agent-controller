@@ -126,6 +126,38 @@ describe("CrdToolRegistry", () => {
     expect(tools[0]!.identityProviders).toBeUndefined();
   });
 
+  it("carries Tool.spec.allowedPrincipals through to the ToolDescriptor for ABAC private-scoping (docs/adr/0036)", async () => {
+    const privateTool: ToolCustomResource = {
+      metadata: { name: "private-scraper" },
+      spec: {
+        description: "A privately-scoped scraper",
+        input: "a URL",
+        output: "a recipe",
+        allowedRoles: ["reader"],
+        allowedPrincipals: ["github:owner"],
+        image: "example.com/scraper:latest",
+        serviceAccountName: "scraper",
+      },
+    };
+    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [privateTool] });
+    const api: CustomObjectsApiLike = { listNamespacedCustomObject };
+    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+
+    const tools = await registry.listAll();
+
+    expect(tools[0]!.allowedPrincipals).toEqual(["github:owner"]);
+  });
+
+  it("omits allowedPrincipals when the Tool CR does not declare any (public tool)", async () => {
+    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [validTool] });
+    const api: CustomObjectsApiLike = { listNamespacedCustomObject };
+    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+
+    const tools = await registry.listAll();
+
+    expect(tools[0]!.allowedPrincipals).toBeUndefined();
+  });
+
   it("returns an empty catalog when there are zero Tool resources", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };

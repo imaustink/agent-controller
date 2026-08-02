@@ -46,6 +46,18 @@ spec:
                   the agent's persona, method, and constraints. Optional: absent -> the
                   agent image's built-in default prompt applies.
                 type: string
+              allowedPrincipals:
+                description: |-
+                  allowedPrincipals privately scopes this Agent to a specific set of users
+                  (ABAC, docs/adr/0036), layered ON TOP of the allowedRoles RBAC filter —
+                  same semantics as Tool.spec.allowedPrincipals. Empty (default) means
+                  only allowedRoles gates retrieval; non-empty makes the Agent PRIVATE to
+                  callers whose resolved principal (docs/adr/0030 §6) appears here, in
+                  addition to the RBAC check. Enforced by the orchestrator at query time,
+                  not by this controller.
+                items:
+                  type: string
+                type: array
               allowedRoles:
                 description: allowedRoles gates RAG retrieval (RBAC filter), same
                   semantics as Tool.

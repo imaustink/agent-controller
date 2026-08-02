@@ -57,6 +57,21 @@ describe("CrdSkillRegistry", () => {
     expect(skills[0].agentIds).toEqual(["opencode-swe-agent"]);
   });
 
+  it("carries Skill.spec.allowedPrincipals through for ABAC private-scoping (docs/adr/0036), and omits it when absent", async () => {
+    const privateSkill: SkillCustomResource = {
+      metadata: { name: "private-skill" },
+      spec: { description: "Owner-only", markdown: "# private", allowedPrincipals: ["github:owner"] },
+    };
+    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [privateSkill, validSkill] });
+    const api: CustomObjectsApiLike = { listNamespacedCustomObject };
+    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+
+    const skills = await registry.listAll();
+
+    expect(skills[0].allowedPrincipals).toEqual(["github:owner"]);
+    expect(skills[1].allowedPrincipals).toBeUndefined();
+  });
+
   it("maps a respond-only Skill (no toolRefs, ADR 0011) with empty toolIds instead of skipping it", async () => {
     const respondOnly: SkillCustomResource = {
       metadata: { name: "faq-skill" },

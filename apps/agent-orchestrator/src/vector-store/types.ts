@@ -8,6 +8,15 @@ import type { ToolDescriptor } from "../tool-descriptor.js";
 export interface ToolQueryFilter {
   /** Only tools whose `allowedRoles` intersects this set are returned. */
   callerRoles: string[];
+  /**
+   * The caller's resolved principal (docs/adr/0030 §6 — `identity.principal`,
+   * falling back to `identity.subject`), used to enforce ABAC private-scoping
+   * (docs/adr/0036): a tool with a non-empty `allowedPrincipals` is returned
+   * only when this value is one of them, layered on top of the `callerRoles`
+   * check. Always supplied by the graph (a subject is always present), so a
+   * private tool fails closed when it doesn't match.
+   */
+  callerPrincipal: string;
 }
 
 export interface ToolSearchResult {
