@@ -229,15 +229,23 @@ githubTool:
 # "Choosing a credential" section for why that's a real blast-radius
 # tradeoff. Rotate to a dedicated keypair + restricted authorized_keys entry
 # per tools/ssh/README.md, then update SSH_PRIVATE_KEY in the Secret below
-# and delete this note. No new public key needs installing on the targets
-# below in the meantime -- id_rsa is already authorized on all of them for
-# the operator's own interactive access.
+# and delete this note. id_rsa is already authorized on home/bastion/
+# printcam/airvinyl/airbuddy for the operator's own interactive access, so
+# no new key install is needed for those.
 #
-# console's IP changed from 192.168.1.83 to 192.168.1.71 (DHCP lease churn --
-# same box, confirmed by keyscanning both the ed25519, rsa, and ecdsa host
-# keys at the new address and matching them against the ones already on file
-# for it under its console.local mDNS name). Its host key is now included in
-# the keyscan below.
+# console is the EXCEPTION: `ssh -i ~/.ssh/id_rsa admin@192.168.1.71`
+# returns "Permission denied (publickey)" -- id_rsa is NOT in admin's
+# authorized_keys on this box the way it is on the others. Until that's
+# fixed (e.g. `ssh-copy-id -i ~/.ssh/id_rsa.pub admin@192.168.1.71`, using
+# whatever credential admin@console does currently accept), every ssh tool
+# call against the "console" alias will fail at the auth step, not the
+# allowlist -- this is a real gap, not a formality.
+#
+# console's IP also changed from 192.168.1.83 to 192.168.1.71 (DHCP lease
+# churn -- same box, confirmed by keyscanning both the ed25519, rsa, and
+# ecdsa host keys at the new address and matching them against the ones
+# already on file for it under its console.local mDNS name). Its host key
+# is now included in the keyscan below.
 #
 # Prerequisite:
 #   kubectl create secret generic ssh-tool-secrets -n controller-agent \
