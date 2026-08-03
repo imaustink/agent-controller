@@ -338,3 +338,35 @@ func TestToolCallsPayloadShape(t *testing.T) {
 	require.Equal(t, 0, payload[0].Index)
 	require.Equal(t, 1, payload[1].Index)
 }
+
+// A caller that already matched a route names the target directly, and that
+// wins over re-matching here. This is how the TypeScript orchestrator drives
+// the engine: it owns the route registry, so re-deciding here could only
+// disagree with a decision already made.
+func TestShapeInvokeTurnPrefersAnExplicitlyNamedTarget(t *testing.T) {
+	turn, err := shapeInvokeTurn(
+		invokeRequest{
+			Request:       "Triage acme/widgets#7",
+			ForcedAgentID: "some-other-agent",
+			// An event that WOULD match the triage route if it were consulted.
+			Event: issueEvent(),
+		},
+		"", "", triageRoutes(t), testCaller, time.Now(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, "some-other-agent", turn.ForcedAgentID)
+	require.Equal(t, "Triage acme/widgets#7", turn.Message,
+		"the route's promptTemplate must not overwrite a request the caller already shaped")
+}
+
+// With no explicit target, the event descriptor is still matched here — which
+// is what a caller driving the engine directly relies on.
+func TestShapeInvokeTurnStillMatchesWhenNoTargetIsNamed(t *testing.T) {
+	turn, err := shapeInvokeTurn(
+		invokeRequest{Request: "an issue was labeled", Event: issueEvent()},
+		"", "", triageRoutes(t), testCaller, time.Now(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, "claude-code-swe-agent", turn.ForcedAgentID)
+	require.Equal(t, "Triage acme/widgets#7: Crash on save", turn.Message)
+}
