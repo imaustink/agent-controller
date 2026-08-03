@@ -263,9 +263,11 @@ into the workflow. One authorization owner, and no credentials in Temporal
 event history.
 
 ### B3. Chart
-New `charts/agent-controller/charts/temporal-engine` subchart (worker + gateway,
-optional Temporal server dependency), `condition: temporal-engine.enabled`,
-default off. Add it to `values-ci-all.yaml` so `validate-crds` renders it.
+New `charts/agent-controller/charts/temporal-engine` subchart (worker + gateway),
+`condition: temporal-engine.enabled`, default off. It takes a Temporal
+**address** — the platform already runs a cluster, so no server is bundled and
+no new stateful component appears. Add it to `values-ci-all.yaml` so
+`validate-crds` renders it.
 
 ### B4. CRDs and RBAC
 No new CRDs — `ToolRunSpec.secretEnv` and `Tool.identityProviders` already
@@ -303,10 +305,10 @@ Not one PR:
 
 ## Open questions for the maintainer
 
-1. **Temporal as a dependency.** Does the platform already run a Temporal
-   cluster, or does this add one? The subchart can pull `temporalio/temporal`,
-   but that is a real operational addition and is the strongest argument
-   *against* the whole change.
+1. ~~**Temporal as a dependency.**~~ **Answered 2026-08-02: the platform already
+   runs Temporal.** The subchart takes an address; no server is bundled and no
+   new stateful component is introduced. This was the strongest argument against
+   the change and it does not apply.
 2. **Does the reply-ack hold get retired, or kept as belt-and-braces?** A9 argues
    it can be acked on receipt under Temporal. Keeping it costs nothing but keeps
    a mechanism alive that no longer has a failure to prevent.

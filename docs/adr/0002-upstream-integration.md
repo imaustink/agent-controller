@@ -109,9 +109,11 @@ authorization each time.
 - **Two agent loops exist for a while.** That is the cost of a reversible
   merge. The LangGraph graph is deletable once the flag has been flipped long
   enough to trust.
-- **Temporal becomes a deployment dependency** when the engine is enabled. This
-  is the strongest argument against the whole change and belongs in front of the
-  maintainer as a question, not an assumption.
+- **Temporal is already deployed** on the target platform (confirmed with the
+  maintainer, 2026-08-02). This was the strongest argument against the whole
+  change and it does not apply: the subchart takes an address rather than
+  bundling a server, and no new stateful component is introduced. A deployment
+  without Temporal simply leaves the engine disabled, which is the default.
 - **A credential must never enter workflow state.** Upstream keeps credentials
   out of graph state via node-local variables; the equivalent here is not
   enough, because anything a workflow holds is written to Temporal event
