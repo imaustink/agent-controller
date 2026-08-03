@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"durable-agents/internal/messaging"
+	"github.com/controller-agent/temporal-engine/internal/messaging"
 )
 
 func TestSignVerifyRoundTrip(t *testing.T) {

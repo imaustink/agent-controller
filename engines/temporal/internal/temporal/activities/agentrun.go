@@ -7,8 +7,8 @@ import (
 
 	"go.temporal.io/sdk/activity"
 
-	"durable-agents/internal/agentrun"
-	"durable-agents/internal/toolrun"
+	"github.com/controller-agent/temporal-engine/internal/agentrun"
+	"github.com/controller-agent/temporal-engine/internal/toolrun"
 )
 
 const (

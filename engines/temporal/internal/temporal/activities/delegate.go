@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/llm"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/llm"
 )
 
 const (

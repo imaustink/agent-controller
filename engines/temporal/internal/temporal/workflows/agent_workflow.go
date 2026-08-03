@@ -8,10 +8,10 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/continuation"
-	"durable-agents/internal/messaging"
-	"durable-agents/internal/temporal/activities"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/continuation"
+	"github.com/controller-agent/temporal-engine/internal/messaging"
+	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 )
 
 // AgentWorkflow replaces agent-controller's AgentRun pod + bidirectional

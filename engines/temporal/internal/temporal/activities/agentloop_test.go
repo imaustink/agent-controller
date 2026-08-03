@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/llm"
-	"durable-agents/internal/temporal/activities"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/llm"
+	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 )
 
 // fakeLLM returns a canned JSON payload and records the last prompt.

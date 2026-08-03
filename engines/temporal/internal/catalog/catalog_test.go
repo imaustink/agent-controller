@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"durable-agents/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
 )
 
 func toolCR(name string, spec map[string]any) *unstructured.Unstructured {

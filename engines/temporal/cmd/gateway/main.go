@@ -16,13 +16,13 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 	"k8s.io/client-go/dynamic"
 
-	"durable-agents/internal/callertools"
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/gateway"
-	"durable-agents/internal/kubeconfig"
-	"durable-agents/internal/llm"
-	"durable-agents/internal/rbac"
-	"durable-agents/internal/temporal"
+	"github.com/controller-agent/temporal-engine/internal/callertools"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/gateway"
+	"github.com/controller-agent/temporal-engine/internal/kubeconfig"
+	"github.com/controller-agent/temporal-engine/internal/llm"
+	"github.com/controller-agent/temporal-engine/internal/rbac"
+	"github.com/controller-agent/temporal-engine/internal/temporal"
 )
 
 func main() {

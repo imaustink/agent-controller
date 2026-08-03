@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"durable-agents/internal/continuation"
+	"github.com/controller-agent/temporal-engine/internal/continuation"
 )
 
 func TestExtract(t *testing.T) {

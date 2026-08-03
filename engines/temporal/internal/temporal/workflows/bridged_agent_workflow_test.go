@@ -7,10 +7,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"durable-agents/internal/agentrun"
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/temporal/activities"
-	"durable-agents/internal/temporal/workflows"
+	"github.com/controller-agent/temporal-engine/internal/agentrun"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
+	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
 )
 
 func bridgedAgent() catalog.AgentDescriptor {

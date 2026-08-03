@@ -10,9 +10,9 @@ import (
 	"os"
 	"strconv"
 
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/llm"
-	"durable-agents/internal/vectorstore"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/llm"
+	"github.com/controller-agent/temporal-engine/internal/vectorstore"
 )
 
 func main() {

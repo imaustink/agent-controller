@@ -5,9 +5,9 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
-	"durable-agents/internal/authz"
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/continuation"
+	"github.com/controller-agent/temporal-engine/internal/authz"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/continuation"
 )
 
 // delegateToAgent starts a fresh agent episode as a child workflow and

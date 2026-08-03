@@ -10,8 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.temporal.io/api/serviceerror"
 
-	"durable-agents/internal/messaging"
-	"durable-agents/internal/temporal/workflows"
+	"github.com/controller-agent/temporal-engine/internal/messaging"
+	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
 )
 
 // maxCallbackBody bounds event payloads well under Temporal's ~2MB payload

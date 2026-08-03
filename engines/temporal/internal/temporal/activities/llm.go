@@ -6,7 +6,7 @@ package activities
 import (
 	"context"
 
-	"durable-agents/internal/llm"
+	"github.com/controller-agent/temporal-engine/internal/llm"
 )
 
 const CompleteTurnActivityName = "CompleteTurn"

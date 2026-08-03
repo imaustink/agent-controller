@@ -3,7 +3,7 @@ package workflows
 import (
 	"go.temporal.io/sdk/workflow"
 
-	"durable-agents/internal/messaging"
+	"github.com/controller-agent/temporal-engine/internal/messaging"
 )
 
 const (

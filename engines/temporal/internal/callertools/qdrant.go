@@ -63,7 +63,7 @@ func (s *QdrantStore) EnsureCollection(ctx context.Context) error {
 // pointID derives a stable UUID from the content hash. Qdrant point ids must
 // be UUIDs or integers; the hash itself also rides the payload.
 func (s *QdrantStore) pointID(hash string) string {
-	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("durable-agents/callertools/"+hash)).String()
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("github.com/controller-agent/temporal-engine/callertools/"+hash)).String()
 }
 
 // embeddingText is what gets vectorized. Name and description only: a JSON

@@ -8,10 +8,10 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"durable-agents/internal/authz"
-	"durable-agents/internal/callertools"
-	"durable-agents/internal/llm"
-	"durable-agents/internal/temporal/activities"
+	"github.com/controller-agent/temporal-engine/internal/authz"
+	"github.com/controller-agent/temporal-engine/internal/callertools"
+	"github.com/controller-agent/temporal-engine/internal/llm"
+	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 )
 
 const (

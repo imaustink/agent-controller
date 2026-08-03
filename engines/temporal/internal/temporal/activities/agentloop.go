@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"durable-agents/internal/callertools"
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/llm"
+	"github.com/controller-agent/temporal-engine/internal/callertools"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/llm"
 )
 
 // Activity names for the agent loop's LLM decision nodes — ports of

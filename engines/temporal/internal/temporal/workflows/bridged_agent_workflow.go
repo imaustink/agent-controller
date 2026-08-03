@@ -8,9 +8,9 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"durable-agents/internal/agentrun"
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/temporal/activities"
+	"github.com/controller-agent/temporal-engine/internal/agentrun"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 )
 
 // BridgedAgentWorkflow drives an UNMODIFIED agent-controller pod agent

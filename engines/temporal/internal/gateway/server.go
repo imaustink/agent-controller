@@ -20,11 +20,11 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 
-	"durable-agents/internal/callertools"
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/rbac"
-	"durable-agents/internal/temporal/activities"
-	"durable-agents/internal/temporal/workflows"
+	"github.com/controller-agent/temporal-engine/internal/callertools"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/rbac"
+	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
+	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
 )
 
 // ModelID is the single model this facade advertises.

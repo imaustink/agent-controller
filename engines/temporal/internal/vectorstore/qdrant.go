@@ -48,7 +48,7 @@ func (s *Qdrant) EnsureCollection(ctx context.Context) error {
 // pointID derives a stable UUID for a record id (Qdrant point ids must be
 // UUIDs or integers; the real id lives in the payload).
 func (s *Qdrant) pointID(id string) string {
-	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("durable-agents/"+s.collection+"/"+id)).String()
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("github.com/controller-agent/temporal-engine/"+s.collection+"/"+id)).String()
 }
 
 func (s *Qdrant) Upsert(ctx context.Context, records []Record) error {

@@ -13,16 +13,16 @@ import (
 
 	"k8s.io/client-go/dynamic"
 
-	"durable-agents/internal/agentrun"
-	"durable-agents/internal/authz"
-	"durable-agents/internal/identitylink"
-	"durable-agents/internal/kubeconfig"
-	"durable-agents/internal/llm"
-	"durable-agents/internal/temporal"
-	"durable-agents/internal/temporal/activities"
-	"durable-agents/internal/temporal/workflows"
-	"durable-agents/internal/toolrun"
-	"durable-agents/internal/vectorstore"
+	"github.com/controller-agent/temporal-engine/internal/agentrun"
+	"github.com/controller-agent/temporal-engine/internal/authz"
+	"github.com/controller-agent/temporal-engine/internal/identitylink"
+	"github.com/controller-agent/temporal-engine/internal/kubeconfig"
+	"github.com/controller-agent/temporal-engine/internal/llm"
+	"github.com/controller-agent/temporal-engine/internal/temporal"
+	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
+	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
+	"github.com/controller-agent/temporal-engine/internal/toolrun"
+	"github.com/controller-agent/temporal-engine/internal/vectorstore"
 )
 
 func main() {

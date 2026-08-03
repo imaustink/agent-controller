@@ -1,4 +1,4 @@
-module durable-agents
+module github.com/controller-agent/temporal-engine
 
 go 1.26.0
 

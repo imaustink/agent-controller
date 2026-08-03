@@ -7,11 +7,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"durable-agents/internal/authz"
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/messaging"
-	"durable-agents/internal/temporal/activities"
-	"durable-agents/internal/temporal/workflows"
+	"github.com/controller-agent/temporal-engine/internal/authz"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/messaging"
+	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
+	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
 )
 
 func sweAgent() catalog.AgentDescriptor {

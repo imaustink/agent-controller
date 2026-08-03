@@ -14,10 +14,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"durable-agents/internal/callertools"
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/rbac"
-	"durable-agents/internal/temporal/activities"
+	"github.com/controller-agent/temporal-engine/internal/callertools"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/rbac"
+	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 )
 
 const assertionSecret = "shared-with-integration-gateway"

@@ -14,13 +14,13 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
-	"durable-agents/internal/authz"
-	"durable-agents/internal/callertools"
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/messaging"
-	"durable-agents/internal/temporal/activities"
-	"durable-agents/internal/temporal/workflows"
-	"durable-agents/internal/toolrun"
+	"github.com/controller-agent/temporal-engine/internal/authz"
+	"github.com/controller-agent/temporal-engine/internal/callertools"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/messaging"
+	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
+	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
+	"github.com/controller-agent/temporal-engine/internal/toolrun"
 )
 
 // registerOpts names an activity registration.

@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/api/serviceerror"
 
-	"durable-agents/internal/gateway"
-	"durable-agents/internal/messaging"
+	"github.com/controller-agent/temporal-engine/internal/gateway"
+	"github.com/controller-agent/temporal-engine/internal/messaging"
 )
 
 type fakeSignaler struct {

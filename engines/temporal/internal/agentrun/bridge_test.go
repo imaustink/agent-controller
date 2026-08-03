@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"durable-agents/internal/agentrun"
+	"github.com/controller-agent/temporal-engine/internal/agentrun"
 )
 
 // fakeConn is an in-memory NATS: handlers per subject, published messages

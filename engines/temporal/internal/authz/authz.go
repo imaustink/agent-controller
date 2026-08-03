@@ -39,7 +39,7 @@ import (
 	"strings"
 	"time"
 
-	"durable-agents/internal/identitylink"
+	"github.com/controller-agent/temporal-engine/internal/identitylink"
 )
 
 // CrossEntryPointProviders are keyed by PRINCIPAL rather than by the entry

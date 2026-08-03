@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
-	"durable-agents/internal/toolrun"
+	"github.com/controller-agent/temporal-engine/internal/toolrun"
 )
 
 func newFakeDynamic() *dynamicfake.FakeDynamicClient {

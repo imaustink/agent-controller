@@ -10,8 +10,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"durable-agents/internal/authz"
-	"durable-agents/internal/identitylink"
+	"github.com/controller-agent/temporal-engine/internal/authz"
+	"github.com/controller-agent/temporal-engine/internal/identitylink"
 )
 
 // fakeSecrets records what would be written to a Kubernetes Secret. It hands

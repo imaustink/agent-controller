@@ -5,11 +5,11 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
-	"durable-agents/internal/callertools"
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/continuation"
-	"durable-agents/internal/messaging"
-	"durable-agents/internal/temporal/activities"
+	"github.com/controller-agent/temporal-engine/internal/callertools"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/continuation"
+	"github.com/controller-agent/temporal-engine/internal/messaging"
+	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 )
 
 // maxToolSteps bounds the plan⇄runTool loop per turn (upstream MAX_TOOL_STEPS).

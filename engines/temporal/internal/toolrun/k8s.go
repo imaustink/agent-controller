@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	"durable-agents/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
 )
 
 var ToolRunGVR = schema.GroupVersionResource{

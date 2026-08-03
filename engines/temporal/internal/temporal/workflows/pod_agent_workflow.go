@@ -5,8 +5,8 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
-	"durable-agents/internal/continuation"
-	"durable-agents/internal/messaging"
+	"github.com/controller-agent/temporal-engine/internal/continuation"
+	"github.com/controller-agent/temporal-engine/internal/messaging"
 )
 
 // PodAgentWorkflow is the checkpoint-resume adapter for heavyweight pod

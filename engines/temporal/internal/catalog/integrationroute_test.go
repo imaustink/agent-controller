@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
-	"durable-agents/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
 )
 
 func route(id, source, event, action, labelName, agentRef string) catalog.IntegrationRouteDescriptor {

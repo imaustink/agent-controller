@@ -14,10 +14,10 @@ import (
 
 	"k8s.io/client-go/dynamic"
 
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/kubeconfig"
-	"durable-agents/internal/llm"
-	"durable-agents/internal/vectorstore"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/kubeconfig"
+	"github.com/controller-agent/temporal-engine/internal/llm"
+	"github.com/controller-agent/temporal-engine/internal/vectorstore"
 )
 
 func main() {

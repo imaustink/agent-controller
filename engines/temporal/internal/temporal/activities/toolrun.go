@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"durable-agents/internal/toolrun"
+	"github.com/controller-agent/temporal-engine/internal/toolrun"
 )
 
 const (

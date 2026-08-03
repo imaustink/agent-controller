@@ -3,8 +3,8 @@ package activities
 import (
 	"context"
 
-	"durable-agents/internal/authz"
-	"durable-agents/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/authz"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
 )
 
 const (

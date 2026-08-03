@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"durable-agents/internal/catalog"
-	"durable-agents/internal/vectorstore"
+	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/vectorstore"
 )
 
 const (
