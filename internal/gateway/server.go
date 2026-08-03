@@ -7,6 +7,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -19,6 +20,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 
+	"durable-agents/internal/callertools"
 	"durable-agents/internal/catalog"
 	"durable-agents/internal/rbac"
 	"durable-agents/internal/temporal/activities"
@@ -49,7 +51,28 @@ type Server struct {
 	// /invoke falls back to trusting an unsigned event.senderLogin — see
 	// rbac.WarnIfSenderAssertionUnset.
 	senderAssertionSecret string
+
+	// callerTools ranks a consumer's own tool array (ADR 0035). Nil degrades to
+	// truncation rather than dropping the feature: the caller still gets tool
+	// calling, just without relevance ranking.
+	callerTools    callertools.Store
+	callerToolTopK int
+
+	// taskCompleter answers a chat UI's housekeeping requests. Nil returns
+	// empty text, which is what those requests get today.
+	taskCompleter TaskCompleter
 }
+
+// TaskCompleter answers a chat UI's internal housekeeping completions (title,
+// tags, search query) without touching the agent loop.
+type TaskCompleter interface {
+	Complete(ctx context.Context, prompt string) (string, error)
+}
+
+// defaultCallerToolTopK matches upstream: only this many caller tools ever
+// reach the planner prompt, the same discipline ADR 0008 applies to the
+// catalog and for the same reason.
+const defaultCallerToolTopK = 5
 
 // Option configures a Server. Both of these are genuinely optional: a
 // deployment that only serves chat needs neither a route table nor a shared
@@ -64,8 +87,24 @@ func WithSenderAssertionSecret(secret string) Option {
 	return func(s *Server) { s.senderAssertionSecret = secret }
 }
 
+func WithCallerTools(store callertools.Store, topK int) Option {
+	return func(s *Server) {
+		s.callerTools = store
+		if topK > 0 {
+			s.callerToolTopK = topK
+		}
+	}
+}
+
+func WithTaskCompleter(completer TaskCompleter) Option {
+	return func(s *Server) { s.taskCompleter = completer }
+}
+
 func NewServer(temporal client.Client, taskQueue string, identity rbac.Resolver, opts ...Option) *Server {
-	s := &Server{temporal: temporal, taskQueue: taskQueue, identity: identity}
+	s := &Server{
+		temporal: temporal, taskQueue: taskQueue, identity: identity,
+		callerToolTopK: defaultCallerToolTopK,
+	}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -91,12 +130,30 @@ func (s *Server) Handler() http.Handler {
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// ToolCalls is set only when a turn ends by asking the client to run its
+	// own functions. Content is then null, per OpenAI's format.
+	ToolCalls []toolCallPayload `json:"tool_calls,omitempty"`
 }
 
 type chatCompletionRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Model    string                    `json:"model"`
+	Messages []callertools.WireMessage `json:"messages"`
+	Stream   bool                      `json:"stream"`
+	// Tools / ToolChoice are the consumer's own functions (ADR 0035). Every
+	// standard OpenAI client sends these; ignoring them silently is the
+	// behaviour that ADR exists to fix.
+	Tools      []callertools.RawTool `json:"tools"`
+	ToolChoice json.RawMessage       `json:"tool_choice"`
+}
+
+type toolCallPayload struct {
+	Index    int    `json:"index,omitempty"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
 type chatCompletionChoice struct {
@@ -142,8 +199,32 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		return
 	}
 
-	userMessage, seedHistory, err := splitMessages(req.Messages)
+	userMessage, seedHistory, lastUserIndex, err := splitMessages(req.Messages)
 	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Open WebUI's own housekeeping completions — chat title, tags, search
+	// query, follow-up suggestions — arrive at this same endpoint. They are
+	// short-circuited BEFORE any workflow is started or touched.
+	//
+	// That ordering is load-bearing now that caller tools exist: a
+	// title-generation request that happens to carry the client's tool array
+	// must return prose, never a tool call the client would then execute as a
+	// side effect of rendering a chat title. It also keeps a housekeeping call
+	// from ever reaching skill/agent delegation, where its embedded history
+	// could match a privileged agent.
+	if callertools.IsInternalUITask(userMessage) {
+		s.completeInternalTask(c, req, userMessage)
+		return
+	}
+
+	callerTools, choice, err := callertools.Parse(callertools.Request{Tools: req.Tools, ToolChoice: req.ToolChoice})
+	if err != nil {
+		// An OpenAI-shaped 400 rather than a silent drop: a client that offers
+		// tools and gets prose back cannot tell whether the agent chose not to
+		// call them or never saw them.
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -154,9 +235,14 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 	// pre-flight may surface a link prompt and wait. A blocking request gets
 	// its answer in one shot, same as a fire-and-forget caller.
 	turnInput := workflows.TurnInput{
-		Message: userMessage,
-		Caller:  resolveCaller(c, s.identity),
-		Live:    req.Stream,
+		Message:            userMessage,
+		Caller:             resolveCaller(c, s.identity),
+		Live:               req.Stream,
+		CallerTools:        s.resolveCallerTools(c, userMessage, callerTools, choice),
+		CallerToolRequired: choice.Required,
+		// Read off the wire, not from a session: there is no server-side
+		// conversation store to have put a caller's tool result in.
+		PriorCallerToolCalls: callertools.CollectPriorCalls(req.Messages, lastUserIndex),
 	}
 	if len(seedHistory) > 0 {
 		turnInput.SeedHistory = seedHistory
@@ -205,6 +291,21 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		writeError(c, http.StatusBadGateway, "turn failed: "+err.Error())
 		return
 	}
+
+	if len(result.PendingToolCalls) > 0 {
+		reason := "tool_calls"
+		c.JSON(http.StatusOK, chatCompletionResponse{
+			ID:     completionID,
+			Object: "chat.completion",
+			Model:  ModelID,
+			Choices: []chatCompletionChoice{{
+				Message:      &chatMessage{Role: "assistant", ToolCalls: toolCallsPayload(result.PendingToolCalls)},
+				FinishReason: &reason,
+			}},
+		})
+		return
+	}
+
 	stop := "stop"
 	c.JSON(http.StatusOK, chatCompletionResponse{
 		ID:     completionID,
@@ -216,25 +317,152 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 	})
 }
 
-// splitMessages returns the trailing user message as the turn, and every
-// prior user/assistant message as seed history (bounded, system dropped).
-func splitMessages(messages []chatMessage) (string, []workflows.ChatMessage, error) {
-	last := len(messages) - 1
-	if last < 0 || messages[last].Role != "user" || strings.TrimSpace(messages[last].Content) == "" {
-		return "", nil, fmt.Errorf("last message must be a non-empty user message")
+// toolCallsPayload renders pending calls in OpenAI's wire shape. Index is
+// required on each entry: it is how a streaming client assembles more than one.
+func toolCallsPayload(calls []callertools.PendingCall) []toolCallPayload {
+	out := make([]toolCallPayload, len(calls))
+	for i, call := range calls {
+		out[i].Index = i
+		out[i].ID = call.ID
+		out[i].Type = "function"
+		out[i].Function.Name = call.Name
+		out[i].Function.Arguments = call.Arguments
+	}
+	return out
+}
+
+// resolveCallerTools ranks the caller's tools down to what the planner will see.
+//
+// Runs in the GATEWAY, not the workflow: it embeds and queries Qdrant, which is
+// I/O, and the result is a small, already-decided list. Passing the decision in
+// also keeps the untrusted definitions out of any workflow that never uses them.
+func (s *Server) resolveCallerTools(
+	c *gin.Context,
+	request string,
+	tools []callertools.Descriptor,
+	choice callertools.Choice,
+) []callertools.Descriptor {
+	if len(tools) == 0 {
+		return nil
+	}
+	return callertools.Resolve(c.Request.Context(), request, tools, choice, s.callerToolTopK, s.callerTools)
+}
+
+// completeInternalTask answers a chat UI's housekeeping request directly.
+//
+// Deliberately a plain completion with no tools, no catalog, and no
+// conversation workflow: this is not a user turn, and everything the agent loop
+// does would be both wasted and dangerous here.
+func (s *Server) completeInternalTask(c *gin.Context, req chatCompletionRequest, userMessage string) {
+	completionID := "chatcmpl-" + uuid.NewString()
+	stop := "stop"
+
+	reply := ""
+	if s.taskCompleter != nil {
+		var err error
+		if reply, err = s.taskCompleter.Complete(c.Request.Context(), userMessage); err != nil {
+			log.Printf("internal UI task completion failed: %v", err)
+			reply = ""
+		}
+	}
+
+	if req.Stream {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Status(http.StatusOK)
+		writeSSEChunk(c, chatCompletionResponse{
+			ID: completionID, Object: "chat.completion.chunk", Model: ModelID,
+			Choices: []chatCompletionChoice{{Delta: &chatMessage{Role: "assistant", Content: reply}}},
+		})
+		writeSSEChunk(c, chatCompletionResponse{
+			ID: completionID, Object: "chat.completion.chunk", Model: ModelID,
+			Choices: []chatCompletionChoice{{Delta: &chatMessage{}, FinishReason: &stop}},
+		})
+		fmt.Fprint(c.Writer, "data: [DONE]\n\n")
+		c.Writer.Flush()
+		return
+	}
+
+	c.JSON(http.StatusOK, chatCompletionResponse{
+		ID: completionID, Object: "chat.completion", Model: ModelID,
+		Choices: []chatCompletionChoice{
+			{Message: &chatMessage{Role: "assistant", Content: reply}, FinishReason: &stop},
+		},
+	})
+}
+
+func writeSSEChunk(c *gin.Context, chunk chatCompletionResponse) {
+	payload, _ := json.Marshal(chunk)
+	fmt.Fprintf(c.Writer, "data: %s\n\n", payload)
+	c.Writer.Flush()
+}
+
+// splitMessages returns the LAST user message as the turn, every prior
+// user/assistant message as seed history (bounded, system dropped), and the
+// index of that user message.
+//
+// The last user message is found by scanning backwards rather than taking the
+// final element, because a client resuming a tool call sends
+// user → assistant(tool_calls) → tool(result) — the user turn is no longer last.
+// The index is what lets prior tool calls be collected from exactly the
+// messages that belong to the exchange in flight.
+func splitMessages(messages []callertools.WireMessage) (string, []workflows.ChatMessage, int, error) {
+	lastUser := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			lastUser = i
+			break
+		}
+	}
+	userContent := ""
+	if lastUser >= 0 {
+		userContent = messageContent(messages[lastUser].Content)
+	}
+	if lastUser < 0 || strings.TrimSpace(userContent) == "" {
+		return "", nil, -1, fmt.Errorf("messages must contain a non-empty user message")
 	}
 
 	var history []workflows.ChatMessage
-	for _, m := range messages[:last] {
+	for _, m := range messages[:lastUser] {
 		if m.Role != "user" && m.Role != "assistant" {
 			continue
 		}
-		history = append(history, workflows.ChatMessage{Role: m.Role, Content: m.Content})
+		content := messageContent(m.Content)
+		if strings.TrimSpace(content) == "" {
+			continue // an assistant message carrying only tool_calls has none
+		}
+		history = append(history, workflows.ChatMessage{Role: m.Role, Content: content})
 	}
 	if len(history) > maxSeedHistoryMessages {
 		history = history[len(history)-maxSeedHistoryMessages:]
 	}
-	return messages[last].Content, history, nil
+	return userContent, history, lastUser, nil
+}
+
+// messageContent reads a message's content, tolerating the multi-part array
+// form some clients send instead of a plain string.
+func messageContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		var b strings.Builder
+		for _, p := range parts {
+			if p.Text != "" {
+				b.WriteString(p.Text)
+			}
+		}
+		return b.String()
+	}
+	return ""
 }
 
 // resolveCaller maps the bearer token to an identity. Unresolved callers get
@@ -335,6 +563,19 @@ func (s *Server) streamTurn(c *gin.Context, workflowID, completionID string, upd
 					writeStatus(line)
 				}
 				writeStatus("done")
+				if len(d.result.PendingToolCalls) > 0 {
+					// One delta carrying the whole array: the planner produces
+					// arguments in one shot, so there is nothing to stream
+					// incrementally.
+					reason := "tool_calls"
+					writeChunk(chatCompletionResponse{Choices: []chatCompletionChoice{{
+						Delta: &chatMessage{Role: "assistant", ToolCalls: toolCallsPayload(d.result.PendingToolCalls)},
+					}}})
+					writeChunk(chatCompletionResponse{Choices: []chatCompletionChoice{{Delta: &chatMessage{}, FinishReason: &reason}}})
+					fmt.Fprint(c.Writer, "data: [DONE]\n\n")
+					c.Writer.Flush()
+					return
+				}
 				writeChunk(chatCompletionResponse{Choices: []chatCompletionChoice{{Delta: &chatMessage{Content: d.result.Reply}}}})
 			}
 			stop := "stop"

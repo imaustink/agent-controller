@@ -50,6 +50,21 @@ design and milestone plan.
 No session store, no Redis, no in-memory pending state — the workflow *is*
 the session, including the active skill and continuation tokens.
 
+## Caller-supplied tools
+
+Any OpenAI-compatible client can offer its own functions in the request body
+and have them selected alongside the in-cluster catalog (upstream ADR 0035).
+The client executes them; this system only decides one fits, returns
+`finish_reason: "tool_calls"`, and picks the conversation back up when the
+client resends with `role: "tool"` results.
+
+Costs nothing when unused: definitions are keyed by content hash, so identical
+tools embed once ever, and a caller sending at most `AGENT_CALLER_TOOL_TOP_K`
+(default 5) tools never touches the store at all. Their own `caller_tools`
+collection, never the catalog's — one caller's ephemeral definitions must not
+enter another's candidate set. A skill can refuse them with
+`allowCallerTools: false`.
+
 ## Event-driven turns (`/invoke`)
 
 An adapter (agent-controller's integration-gateway) posts

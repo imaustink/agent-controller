@@ -5,6 +5,7 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
+	"durable-agents/internal/callertools"
 	"durable-agents/internal/catalog"
 	"durable-agents/internal/continuation"
 	"durable-agents/internal/messaging"
@@ -39,7 +40,7 @@ type TurnMeta struct {
 // active-skill fit check → capability gate → retrieve → select → resolve
 // tools → plan⇄runTool → compose. It returns the reply plus which skill (if
 // any) stays active. Mirrors agent-controller's graph nodes.
-func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput, note func(string)) (string, TurnMeta, error) {
+func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput, note func(string)) (string, TurnMeta, []callertools.PendingCall, error) {
 	logger := workflow.GetLogger(ctx)
 	meta := TurnMeta{Path: "bare"}
 	if note == nil {
@@ -55,7 +56,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			meta.Path = "agent-continued"
 			meta.AgentID = state.ActiveAgentID
 			reply := handleAgentUp(ctx, state, state.ActiveAgentID, state.ActiveAgentWorkflowID, note)
-			return reply, meta, nil
+			return reply, meta, nil, nil
 		}
 		// Child gone (terminated or already closed) — clear and fall through.
 		logger.Warn("active agent unreachable; falling back", "workflowId", state.ActiveAgentWorkflowID, "error", err)
@@ -85,7 +86,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 				if m.Path == "agent" {
 					m.Path = "agent-routed"
 				}
-				return reply, m, err
+				return reply, m, nil, err
 			} else {
 				logger.Info("forced agent not visible to caller; falling through", "agentId", in.ForcedAgentID)
 			}
@@ -113,7 +114,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	// never the user saying it did.
 	if skillTools == nil && state.PendingIdentityLink != nil && in.Caller.Subject != "" {
 		if reply, m, handled, err := resumePendingLink(ctx, actx, state, in, &meta, note); handled {
-			return reply, m, err
+			return reply, m, nil, err
 		}
 	}
 
@@ -160,7 +161,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		}
 		if !needsCapability || in.Caller.Subject == "" {
 			reply, err := bareAnswer(ctx, actx, state)
-			return reply, meta, err
+			return reply, meta, nil, err
 		}
 
 		// 3. Retrieval (RBAC-filtered), skills and agents in parallel-ish.
@@ -180,7 +181,8 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			logger.Warn("agent retrieval failed", "error", err)
 		}
 		if len(skills) == 0 && len(agents) == 0 {
-			return noMatchFallback(ctx, actx, state, in, &meta, note)
+			reply, m, err := noMatchFallback(ctx, actx, state, in, &meta, note)
+			return reply, m, nil, err
 		}
 
 		// 4. Selection: skill vs agent when both kinds are on the table,
@@ -197,7 +199,8 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			}
 			if choice.Kind == activities.DelegateAgent {
 				if agent := findAgent(choice.ID, agents); agent != nil {
-					return delegateToAgent(ctx, actx, state, in, *agent, &meta, note)
+					reply, m, err := delegateToAgent(ctx, actx, state, in, *agent, &meta, note)
+					return reply, m, nil, err
 				}
 			}
 			skillID = ""
@@ -213,7 +216,8 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			}
 		}
 		if skillID == "" {
-			return noMatchFallback(ctx, actx, state, in, &meta, note)
+			reply, m, err := noMatchFallback(ctx, actx, state, in, &meta, note)
+			return reply, m, nil, err
 		}
 
 		// 5. Resolve the skill's declared tools directly (no re-ranking),
@@ -222,7 +226,8 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			Caller:  in.Caller,
 			SkillID: skillID,
 		}).Get(ctx, &skillTools); err != nil || skillTools == nil {
-			return noMatchFallback(ctx, actx, state, in, &meta, note)
+			reply, m, err := noMatchFallback(ctx, actx, state, in, &meta, note)
+			return reply, m, nil, err
 		}
 		meta.Path = "skill"
 		note("Using skill " + skillTools.Skill.ID)
@@ -231,25 +236,79 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	state.ActiveSkillID = skillTools.Skill.ID
 	meta.SkillID = skillTools.Skill.ID
 
+	// Caller-supplied tools are APPENDED to whatever the skill declared, so an
+	// authored procedure can use one (a skill that writes a document calling
+	// the client's own save_file). A skill may refuse them — nil means allowed
+	// (ADR 0035 §4). The gate keeps an authored skill's loop predictable; it is
+	// not an authorization boundary, and is not treated as one.
+	callerTools := in.CallerTools
+	if skillTools.Skill.AllowCallerTools != nil && !*skillTools.Skill.AllowCallerTools {
+		callerTools = nil
+	}
+
 	// 6. plan ⇄ runTool loop.
-	var history []activities.ActionRecord
+	//
+	// History is SEEDED from calls the client already executed (ADR 0035 §1).
+	// That is both how a resumed turn sees its own prior results and how the
+	// resumed loop stays bounded: maxToolSteps counts history length, so a
+	// client cannot drive an unbounded planner loop by resending.
+	history := seedHistory(in.PriorCallerToolCalls)
 	var lastSuccess *ToolOutcome
-	for step := 0; step < maxToolSteps; step++ {
+	for step := len(history); step < maxToolSteps; step++ {
 		var plan activities.PlannedAction
 		if err := workflow.ExecuteActivity(actx, activities.PlanActionActivityName, activities.PlanActionInput{
-			Request:       in.Message,
-			SkillMarkdown: skillTools.Skill.Markdown,
-			Tools:         skillTools.Tools,
-			History:       history,
+			Request:            in.Message,
+			SkillMarkdown:      skillTools.Skill.Markdown,
+			Tools:              skillTools.Tools,
+			History:            history,
+			CallerTools:        callerTools,
+			CallerToolRequired: in.CallerToolRequired,
 		}).Get(ctx, &plan); err != nil {
-			return "", meta, fmt.Errorf("action planner: %w", err)
+			return "", meta, nil, fmt.Errorf("action planner: %w", err)
 		}
 
 		if plan.Action == activities.ActionRespond {
-			return plan.Response, meta, nil
+			return plan.Response, meta, nil, nil
 		}
 		if plan.Action == activities.ActionFinish {
 			break
+		}
+
+		// Guard a stuck loop re-issuing an identical call, BEFORE either
+		// dispatch branch: this is about the planner repeating itself, which is
+		// independent of whose tool it chose. Ordering matters — a caller tool
+		// checked after its own branch would be re-offered to the client
+		// forever on a resumed turn.
+		if repeatsLastCall(history, plan) {
+			logger.Warn("planner repeated identical call; finishing", "toolId", plan.ToolID)
+			// Carry the last result through, the same way the explicit finish
+			// branches do. On a RESUMED caller-tool turn no tool ran in this
+			// invocation, so the answer lives only in the seeded history — and
+			// tool_choice "required", re-applied on the resend, is exactly what
+			// pushes the planner to re-issue the byte-identical call that lands
+			// here. Without this the facade renders an empty result.
+			if lastSuccess == nil {
+				if seeded := lastHistoryResult(history); seeded != "" {
+					return seeded, meta, nil, nil
+				}
+			}
+			break
+		}
+
+		// The one branch that executes nothing: a caller tool ends the turn by
+		// asking the client to run it (ADR 0035 §1).
+		if callertools.IsID(plan.ToolID) {
+			if call, ok := pendingCallerCall(ctx, callerTools, plan); ok {
+				meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
+				note("Asking your client to run " + callertools.NameFromID(plan.ToolID))
+				return "", meta, []callertools.PendingCall{call}, nil
+			}
+			logger.Warn("planner chose an unoffered caller tool", "toolId", plan.ToolID)
+			history = append(history, activities.ActionRecord{
+				ToolID: plan.ToolID, Input: plan.ToolInput,
+				Error: "tool not available to this skill/caller",
+			})
+			continue
 		}
 
 		// Re-validate the planner's tool choice against the skill's
@@ -262,23 +321,19 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			})
 			continue
 		}
-		if repeatsLastCall(history, plan) {
-			logger.Warn("planner repeated identical call; finishing", "toolId", plan.ToolID)
-			break
-		}
 
 		// Identity gate for a container Tool acting as the calling human
 		// (ADR 0032 §5). Before this, only an agent-backed Tool had one.
 		creds, refusal := toolCredentials(ctx, actx, in, *findTool(plan.ToolID, skillTools))
 		if refusal != "" {
 			note(plan.ToolID + " needs a linked account")
-			return refusal, meta, nil
+			return refusal, meta, nil, nil
 		}
 
 		note("Running " + plan.ToolID + "…")
 		outcome, err := runToolWithContinuation(ctx, state, plan.ToolID, plan.ToolInput, creds, note)
 		if err != nil {
-			return "", meta, err
+			return "", meta, nil, err
 		}
 		meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
 		record := activities.ActionRecord{ToolID: plan.ToolID, Input: plan.ToolInput, Succeeded: outcome.Succeeded}
@@ -305,13 +360,14 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		}).Get(ctx, &framed); err != nil {
 			logger.Warn("compose failed; returning bare result", "error", err)
 		}
-		return framed.Prefix + lastSuccess.Result + framed.Suffix, meta, nil
+		return framed.Prefix + lastSuccess.Result + framed.Suffix, meta, nil, nil
 	}
 	if len(history) > 0 {
 		last := history[len(history)-1]
-		return fmt.Sprintf("I couldn't complete that: %s failed (%s).", last.ToolID, last.Error), meta, nil
+		return fmt.Sprintf("I couldn't complete that: %s failed (%s).", last.ToolID, last.Error), meta, nil, nil
 	}
-	return bareAnswerWithMeta(ctx, actx, state, meta)
+	reply, m, err := bareAnswerWithMeta(ctx, actx, state, meta)
+	return reply, m, nil, err
 }
 
 // runToolWithContinuation is one tool call with ADR 0017's resume token

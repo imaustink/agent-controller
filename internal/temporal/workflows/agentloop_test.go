@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"durable-agents/internal/authz"
+	"durable-agents/internal/callertools"
 	"durable-agents/internal/catalog"
 	"durable-agents/internal/messaging"
 	"durable-agents/internal/temporal/activities"
@@ -37,6 +38,12 @@ type loopEnv struct {
 	toolFitCalls        int
 	toolFitInputs       []activities.CheckToolFitInput
 	completeTurnInputs  []activities.CompleteTurnInput
+
+	planInputs []activities.PlanActionInput
+	// callerTools / priorCallerCalls ride every sendTurn, as if the consumer
+	// had supplied them in the request body (ADR 0035).
+	callerTools      []callertools.Descriptor
+	priorCallerCalls []callertools.PriorCall
 
 	// Authorization knobs. Nil means "authorized with no credentials", which
 	// is what an Agent or Tool declaring no identityProviders gets anyway.
@@ -158,6 +165,7 @@ func newLoopEnv(t *testing.T) *loopEnv {
 		return le.fits, nil
 	})
 	reg(activities.PlanActionActivityName, func(_ context.Context, in activities.PlanActionInput) (activities.PlannedAction, error) {
+		le.planInputs = append(le.planInputs, in)
 		plan := le.plans[min(le.planCalls, len(le.plans)-1)]
 		le.planCalls++
 		return plan, nil
@@ -191,10 +199,12 @@ func (le *loopEnv) sendTurn(t *testing.T, updateID, message string, result *work
 				}
 			},
 		}, workflows.TurnInput{
-			Message:       message,
-			Caller:        activities.Caller{Subject: "user:1", Roles: []string{"cook"}},
-			ForcedSkillID: le.forcedSkillID,
-			ForcedAgentID: le.forcedAgentID,
+			Message:              message,
+			Caller:               activities.Caller{Subject: "user:1", Roles: []string{"cook"}},
+			ForcedSkillID:        le.forcedSkillID,
+			ForcedAgentID:        le.forcedAgentID,
+			CallerTools:          le.callerTools,
+			PriorCallerToolCalls: le.priorCallerCalls,
 		})
 	}, at)
 }
@@ -684,4 +694,158 @@ func TestActiveSkillContinuesWhenNothingOutOfScopeFits(t *testing.T) {
 	require.Equal(t, "skill-continued", result.Meta.Path)
 	require.Zero(t, le.toolFitCalls, "the skill's own tools are never fit-checked as out-of-scope")
 	require.Zero(t, le.retrieveCalls, "continuity still skips retrieval")
+}
+
+// --- caller-supplied tools (ADR 0035) ---
+
+func webSearchCallerTool(t *testing.T) callertools.Descriptor {
+	t.Helper()
+	tool, err := callertools.New("web_search", "Search the web",
+		json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}}}`))
+	require.NoError(t, err)
+	return tool
+}
+
+// The second non-error terminal shape: the turn ends by asking the CLIENT to
+// run its own function. Nothing is launched here — this is the only tool branch
+// that executes nothing.
+func TestCallerToolEndsTheTurnWithoutExecutingAnything(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = "recipes"
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.skillTools = recipesSkillTools()
+	le.plans = []activities.PlannedAction{{
+		Action:    activities.ActionCallTool,
+		ToolID:    "caller:web_search",
+		ToolInput: `{"query":"carbonara"}`,
+	}}
+	le.callerTools = []callertools.Descriptor{webSearchCallerTool(t)}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "look up a carbonara recipe", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Len(t, result.PendingToolCalls, 1)
+	require.Equal(t, "web_search", result.PendingToolCalls[0].Name)
+	require.JSONEq(t, `{"query":"carbonara"}`, result.PendingToolCalls[0].Arguments)
+	require.NotEmpty(t, result.PendingToolCalls[0].ID, "the client echoes this back as tool_call_id")
+	require.Empty(t, result.Reply, "there is no answer yet — the client has to run the function")
+	require.Empty(t, le.launches, "a caller tool is never launched by this system")
+}
+
+// The planner may not invent a name here any more than in the catalog branch.
+func TestAnUnofferedCallerToolIsRejected(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = "recipes"
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.skillTools = recipesSkillTools()
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "caller:exfiltrate", ToolInput: "{}"},
+		{Action: activities.ActionRespond, Response: "I can't do that."},
+	}
+	le.callerTools = []callertools.Descriptor{webSearchCallerTool(t)}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "do the thing", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Empty(t, result.PendingToolCalls)
+	require.Equal(t, "I can't do that.", result.Reply)
+}
+
+// nil means ALLOWED; an authored skill can opt out. Not an authorization
+// boundary — it keeps a skill's tool loop predictable, nothing more.
+func TestSkillCanRefuseCallerTools(t *testing.T) {
+	refuse := false
+	skillTools := recipesSkillTools()
+	skillTools.Skill.AllowCallerTools = &refuse
+
+	le := newLoopEnv(t)
+	le.selected = "recipes"
+	le.skills = []catalog.SkillDescriptor{skillTools.Skill}
+	le.skillTools = skillTools
+	le.plans = []activities.PlannedAction{{Action: activities.ActionRespond, Response: "no tools for you"}}
+	le.callerTools = []callertools.Descriptor{webSearchCallerTool(t)}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "search for something", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.NotEmpty(t, le.planInputs)
+	require.Empty(t, le.planInputs[0].CallerTools, "a refusing skill offers the planner none")
+}
+
+// A resumed turn's prior result lives ONLY in the seeded history — no runTool
+// ran this invocation. tool_choice "required", re-applied on the resend, is
+// exactly what pushes the planner to re-issue the byte-identical call that hits
+// the duplicate guard; without carrying the seeded result the facade renders
+// nothing.
+func TestResumedCallerToolTurnCarriesTheSeededResult(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = "recipes"
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.skillTools = recipesSkillTools()
+	le.callerTools = []callertools.Descriptor{webSearchCallerTool(t)}
+	// The planner re-issues the call it already made.
+	le.plans = []activities.PlannedAction{{
+		Action:    activities.ActionCallTool,
+		ToolID:    "caller:web_search",
+		ToolInput: `{"query":"carbonara"}`,
+	}}
+	le.priorCallerCalls = []callertools.PriorCall{{
+		ID: "call_1", Name: "web_search",
+		Arguments: `{"query":"carbonara"}`,
+		Result:    "Classic carbonara: eggs, pecorino, guanciale.",
+	}}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "look up a carbonara recipe", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "Classic carbonara: eggs, pecorino, guanciale.", result.Reply)
+	require.Empty(t, result.PendingToolCalls, "the identical re-issue must not ask the client again")
+}
+
+// Seeding history also bounds the loop: the step cap counts history length, so
+// a client cannot drive an unbounded planner loop by resending a longer
+// conversation.
+func TestSeededHistoryBoundsTheResumedLoop(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = "recipes"
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.skillTools = recipesSkillTools()
+	le.callerTools = []callertools.Descriptor{webSearchCallerTool(t)}
+
+	// Already at the step cap.
+	for i := 0; i < 4; i++ {
+		le.priorCallerCalls = append(le.priorCallerCalls, callertools.PriorCall{
+			ID: "c" + string(rune('1'+i)), Name: "web_search",
+			Arguments: `{"query":"q"}`, Result: "result " + string(rune('1'+i)),
+		})
+	}
+	le.plans = []activities.PlannedAction{{
+		Action: activities.ActionCallTool, ToolID: "caller:web_search", ToolInput: `{"query":"again"}`,
+	}}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "keep going", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Zero(t, le.planCalls, "at the cap the planner is not consulted at all")
+	require.Empty(t, result.PendingToolCalls)
 }

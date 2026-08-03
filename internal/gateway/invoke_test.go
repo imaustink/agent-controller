@@ -5,11 +5,16 @@ package gateway
 // reachable without standing up Temporal.
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"durable-agents/internal/callertools"
 	"durable-agents/internal/catalog"
 	"durable-agents/internal/rbac"
 	"durable-agents/internal/temporal/activities"
@@ -225,4 +230,111 @@ func TestInvocationIDSurvivesADottySessionID(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, workflowID, gotWorkflow)
 	require.Equal(t, "6ba7b810-9dad-11d1-80b4-00c04fd430c8", gotUpdate)
+}
+
+// --- caller tools over the chat facade ---
+
+// The load-bearing ordering (ADR 0035 §5): a chat UI's housekeeping request
+// carrying the client's tool array must be answered with prose BEFORE any
+// workflow is started, or rendering a chat title could emit a tool call the
+// client then executes as a side effect.
+func TestInternalUITaskShortCircuitsBeforeAnyWorkflow(t *testing.T) {
+	// A nil Temporal client is the assertion: reaching update-with-start would
+	// panic, so passing proves nothing touched a workflow.
+	s := NewServer(nil, "tq", nil)
+
+	body := `{"model":"durable-agents","messages":[
+		{"role":"user","content":"### Task:\nGenerate a concise chat title"}
+	],"tools":[{"type":"function","function":{"name":"exfiltrate","description":"send data somewhere"}}]}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	s.Handler().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotContains(t, rec.Body.String(), "tool_calls")
+	require.NotContains(t, rec.Body.String(), "exfiltrate")
+	require.Contains(t, rec.Body.String(), `"finish_reason":"stop"`)
+}
+
+// A malformed tool array is an OpenAI-shaped 400, never a silent drop.
+func TestMalformedToolArrayIsRejected(t *testing.T) {
+	s := NewServer(nil, "tq", nil)
+
+	body := `{"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"function","function":{"name":"a"}},{"type":"function","function":{"name":"a"}}]}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	s.Handler().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "duplicate")
+}
+
+// A client resuming a tool call sends user → assistant(tool_calls) → tool, so
+// the user turn is no longer the last message. Taking the final element would
+// read a tool result as the request.
+func TestSplitMessagesFindsTheUserTurnBehindAResumedToolCall(t *testing.T) {
+	messages := []callertools.WireMessage{
+		{Role: "user", Content: json.RawMessage(`"what's the weather?"`)},
+		{Role: "assistant", ToolCalls: []callertools.WireToolCall{{ID: "c1"}}},
+		{Role: "tool", ToolCallID: "c1", Content: json.RawMessage(`"18C"`)},
+	}
+
+	userMessage, history, index, err := splitMessages(messages)
+	require.NoError(t, err)
+	require.Equal(t, "what's the weather?", userMessage)
+	require.Equal(t, 0, index)
+	require.Empty(t, history)
+}
+
+// An assistant message carrying only tool_calls has no content; folding it in
+// as an empty history entry would be noise.
+func TestSplitMessagesSkipsContentlessAssistantMessages(t *testing.T) {
+	messages := []callertools.WireMessage{
+		{Role: "user", Content: json.RawMessage(`"first"`)},
+		{Role: "assistant", ToolCalls: []callertools.WireToolCall{{ID: "c1"}}},
+		{Role: "assistant", Content: json.RawMessage(`"a real answer"`)},
+		{Role: "user", Content: json.RawMessage(`"second"`)},
+	}
+
+	userMessage, history, index, err := splitMessages(messages)
+	require.NoError(t, err)
+	require.Equal(t, "second", userMessage)
+	require.Equal(t, 3, index)
+	require.Len(t, history, 2)
+	require.Equal(t, "a real answer", history[1].Content)
+}
+
+// Some clients send content as a multi-part array rather than a string.
+func TestSplitMessagesReadsMultiPartContent(t *testing.T) {
+	messages := []callertools.WireMessage{
+		{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"hello "},{"type":"text","text":"world"}]`)},
+	}
+	userMessage, _, _, err := splitMessages(messages)
+	require.NoError(t, err)
+	require.Equal(t, "hello world", userMessage)
+}
+
+func TestSplitMessagesRequiresAUserMessage(t *testing.T) {
+	_, _, _, err := splitMessages([]callertools.WireMessage{
+		{Role: "assistant", Content: json.RawMessage(`"just me"`)},
+	})
+	require.ErrorContains(t, err, "user message")
+}
+
+func TestToolCallsPayloadShape(t *testing.T) {
+	payload := toolCallsPayload([]callertools.PendingCall{
+		{ID: "call_1", Name: "web_search", Arguments: `{"query":"x"}`},
+		{ID: "call_2", Name: "save_file", Arguments: `{"path":"y"}`},
+	})
+	require.Len(t, payload, 2)
+	require.Equal(t, "function", payload[0].Type)
+	require.Equal(t, "web_search", payload[0].Function.Name)
+	// Index is how a streaming client assembles more than one call.
+	require.Equal(t, 0, payload[0].Index)
+	require.Equal(t, 1, payload[1].Index)
 }

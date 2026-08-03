@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 
+	"durable-agents/internal/callertools"
 	"durable-agents/internal/catalog"
 	"durable-agents/internal/rbac"
 	"durable-agents/internal/temporal/activities"
@@ -57,6 +58,12 @@ type invokeRecord struct {
 	Status string `json:"status"` // pending | succeeded | failed
 	Result string `json:"result,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// ToolCalls renders the second terminal shape (ADR 0035) for a polling
+	// adapter. Offering caller tools over /invoke works, but the round-trip
+	// resume does not: /invoke takes a single request string, not a message
+	// array, so a caller has nowhere to put the result. Reported so an adapter
+	// sees a real outcome rather than an empty success.
+	ToolCalls []callertools.PendingCall `json:"toolCalls,omitempty"`
 }
 
 const (
@@ -207,7 +214,11 @@ func (s *Server) handleInvokeStatus(c *gin.Context) {
 	var result workflows.TurnResult
 	switch err := handle.Get(ctx, &result); {
 	case err == nil:
-		c.JSON(http.StatusOK, invokeRecord{ID: id, Status: invokeStatusSucceeded, Result: result.Reply})
+		c.JSON(http.StatusOK, invokeRecord{
+			ID: id, Status: invokeStatusSucceeded,
+			Result:    result.Reply,
+			ToolCalls: result.PendingToolCalls,
+		})
 
 	case ctx.Err() != nil && c.Request.Context().Err() == nil:
 		// Our own deadline, not the client's: the turn is simply still running.

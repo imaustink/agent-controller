@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"durable-agents/internal/authz"
+	"durable-agents/internal/callertools"
 	"durable-agents/internal/llm"
 	"durable-agents/internal/temporal/activities"
 )
@@ -93,6 +94,19 @@ type TurnInput struct {
 	// through the loop unread until then.
 	SenderLogin string `json:"senderLogin,omitempty"`
 
+	// CallerTools are tools the consumer supplied in this request and will run
+	// in their own client (ADR 0035), already parsed, validated and ranked by
+	// the gateway. Untrusted text — see internal/callertools.
+	CallerTools []callertools.Descriptor `json:"callerTools,omitempty"`
+	// CallerToolRequired carries tool_choice: "required" as a directive.
+	CallerToolRequired bool `json:"callerToolRequired,omitempty"`
+	// PriorCallerToolCalls are calls the client already executed for this
+	// exchange, read off the wire (there is no server-side conversation store
+	// to read them from). They seed the planner's history, which also bounds a
+	// resumed loop for free: the step cap counts history length, so a client
+	// cannot drive an unbounded planner loop by resending.
+	PriorCallerToolCalls []callertools.PriorCall `json:"priorCallerToolCalls,omitempty"`
+
 	// Live says the caller is watching this turn as it runs (a streaming chat
 	// request), as opposed to a fire-and-forget caller that will only ever see
 	// the final result.
@@ -110,6 +124,14 @@ type TurnResult struct {
 	Reply string   `json:"reply"`
 	Turn  int      `json:"turn"`
 	Meta  TurnMeta `json:"meta"`
+
+	// PendingToolCalls is the turn's SECOND non-error terminal shape (ADR
+	// 0035): the planner chose a tool the CALLER supplied and must execute
+	// themselves, so the turn ends by asking for it. Reply is empty here.
+	//
+	// Both consumer-facing protocols have to render it — the chat facade in
+	// streaming and blocking modes, and /invoke's polled record.
+	PendingToolCalls []callertools.PendingCall `json:"pendingToolCalls,omitempty"`
 }
 
 // ConversationState is the workflow's durable state, passed through
@@ -196,13 +218,23 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 		defer func() { progress.Active = false }()
 		note := func(line string) { progress.Lines = append(progress.Lines, line) }
 
-		reply, meta, err := runAgentTurn(ctx, actx, state, in, note)
+		reply, meta, pending, err := runAgentTurn(ctx, actx, state, in, note)
 		if err != nil {
 			// Drop the failed turn's user message so a retry re-sends it cleanly.
 			state.History = state.History[:len(state.History)-1]
 			return TurnResult{}, err
 		}
 		meta.Narration = progress.Lines
+
+		// A turn ending in caller tool calls is a real terminal state, but not a
+		// completed exchange: the client runs the function and resends. The
+		// user's message stays in history (they said it) and no assistant reply
+		// is folded in, because there is no answer yet — the resend arrives as
+		// the next turn carrying its own results.
+		if len(pending) > 0 {
+			state.Turns++
+			return TurnResult{Turn: state.Turns, Meta: meta, PendingToolCalls: pending}, nil
+		}
 
 		// The self-improvement footer is a hint for the human, not content.
 		// Left in the transcript it re-enters every later turn's prompt, and
