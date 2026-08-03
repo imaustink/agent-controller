@@ -1,0 +1,75 @@
+{{- if .Values.gateway.image.tag }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-gateway
+  labels:
+    {{- include "durable-agents.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      labels:
+        {{- include "durable-agents.labels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            {{- include "durable-agents.temporalEnv" . | nindent 12 }}
+            - name: GATEWAY_ADDR
+              value: ":8080"
+            {{- with .Values.gateway.identity.staticIdentities }}
+            - name: STATIC_IDENTITIES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.gateway.identity.defaultSubject }}
+            - name: AGENT_DEFAULT_SUBJECT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.gateway.identity.defaultRoles }}
+            - name: AGENT_DEFAULT_ROLES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.toolrun.enabled }}
+            - name: CALLBACK_ADDR
+              value: ":8081"
+            - name: AGENT_CALLBACK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.callback.secretName }}
+                  key: {{ .Values.callback.secretKey }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+            {{- if .Values.toolrun.enabled }}
+            - name: callback
+              containerPort: 8081
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+{{- end }}
