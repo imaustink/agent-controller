@@ -36,12 +36,13 @@ import { OpenAiResponseComposer } from "./agent/response-composer.js";
 import { OpenAiSkillFitChecker } from "./agent/skill-fit-checker.js";
 import { OpenAiSkillSelector } from "./agent/skill-selector.js";
 import { buildAgentGraph } from "./agent/graph.js";
+import { TemporalEngine } from "./engine/temporal-engine.js";
 import { OpenAiTaskCompleter } from "./openai/task-completer.js";
 import { InMemorySessionStore } from "./session/in-memory-session-store.js";
 import { RedisSessionStore } from "./session/redis-session-store.js";
 import type { SessionStore } from "./session/types.js";
 import { clearAgentRunAwaitingReply, markAgentRunAwaitingReply } from "./session/inflight-agent-run.js";
-import { InvokeServer } from "./server.js";
+import { InvokeServer, type AgentGraphLike } from "./server.js";
 import { retryWithBackoff } from "./retry.js";
 import type { ToolDescriptor } from "./tool-descriptor.js";
 import type { SkillDescriptor } from "./skills/types.js";
@@ -589,8 +590,33 @@ async function main(): Promise<void> {
   );
   callerToolPruneTimer.unref();
 
+  // Which agent loop runs a turn (docs/adr/0036). `langgraph` is the default,
+  // so enabling the engine is always an explicit act and this whole block is
+  // inert until someone sets AGENT_ENGINE=temporal.
+  //
+  // Everything else about this process is shared either way: the OpenAI facade,
+  // /invoke, identity resolution, RBAC, the credential store, the
+  // authorization pre-flight, and both launchers. Only the loop moves.
+  let engine: AgentGraphLike = graph;
+  if (config.agentEngine === "temporal") {
+    if (!config.temporalEngineUrl) {
+      throw new Error("AGENT_ENGINE=temporal requires AGENT_TEMPORAL_ENGINE_URL");
+    }
+    engine = new TemporalEngine({
+      baseUrl: config.temporalEngineUrl,
+      ...(config.temporalEngineToken ? { token: config.temporalEngineToken } : {}),
+      // Reuses the assertion contract rather than trusting a login on an
+      // internal hop -- see TemporalEngine's own note.
+      ...(config.senderAssertionSecret ? { senderAssertionSecret: config.senderAssertionSecret } : {}),
+      timeoutMs: config.agentRunTimeoutSeconds * 1_000,
+    });
+    console.log(`agent engine: temporal (${config.temporalEngineUrl})`);
+  } else {
+    console.log("agent engine: langgraph (in-process)");
+  }
+
   const invokeServer = new InvokeServer(
-    graph,
+    engine,
     sessionStore,
     taskCompleter,
     integrationRouteRegistry,
