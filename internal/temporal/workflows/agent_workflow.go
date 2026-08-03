@@ -120,6 +120,35 @@ func AgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 		}
 	}
 
+	// The agent's OWN declared tools (upstream ADR 0028). Additive to whatever
+	// its skillRefs contributed, and resolved by id without a role filter:
+	// skillRefs is prompt material the caller must be able to see, while
+	// toolRefs is what the operator declared this agent may call.
+	//
+	// Cheaper here than upstream by construction. There it needs a
+	// tool_call/tool_result NATS message pair, a callId-keyed pending map, an
+	// SDK method, and a dispatch path duplicated from the parent's runTool —
+	// because the sub-agent is a separate process. A child workflow simply
+	// calls runTool, so "let an agent call a tool" is a lookup plus a merge.
+	if len(in.Agent.ToolRefs) > 0 {
+		var declared []catalog.ToolDescriptor
+		if err := workflow.ExecuteActivity(actx, activities.ResolveAgentToolsActivityName, activities.ResolveAgentToolsInput{
+			AgentID:  in.Agent.ID,
+			ToolRefs: in.Agent.ToolRefs,
+		}).Get(ctx, &declared); err != nil {
+			// Not fatal: the agent keeps whatever its skills gave it, and the
+			// planner simply has fewer options. Failing the episode over a
+			// catalog read would be worse than a narrower toolset.
+			logger.Warn("could not resolve the agent's declared toolRefs", "agentId", in.Agent.ID, "error", err)
+		}
+		for _, t := range declared {
+			if !seenTools[t.ID] {
+				seenTools[t.ID] = true
+				tools = append(tools, t)
+			}
+		}
+	}
+
 	// Delegable agents for recursion, gated by depth.
 	var delegable []catalog.AgentDescriptor
 	if in.Depth < maxAgentDepth {
@@ -176,21 +205,38 @@ func AgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 			})
 
 		case activities.AgentActionCallTool:
-			if !toolIDInScope(plan.ToolID, tools) {
+			tool := findToolByID(plan.ToolID, tools)
+			if tool == nil {
 				history = append(history, activities.ActionRecord{
 					ToolID: plan.ToolID, Input: plan.ToolInput,
 					Error: "tool not available to this agent",
 				})
 				continue
 			}
+
+			// A container Tool that declares identityProviders must not run
+			// credential-less here either (ADR 0032 §5). Upstream's sub-agent
+			// dispatch path skips this check; a Tool meant to act as a specific
+			// human would then run with whatever static token its template
+			// carries, which is the gap that ADR closed on the parent's path.
+			creds, refusal := toolCredentials(ctx, actx, TurnInput{Caller: in.Caller}, *tool)
+			if refusal != "" {
+				history = append(history, activities.ActionRecord{
+					ToolID: plan.ToolID, Input: plan.ToolInput, Error: refusal,
+				})
+				continue
+			}
+
 			toolInput := plan.ToolInput
 			if token := toolContinuations[plan.ToolID]; token != "" {
 				toolInput = continuation.Prepend(token, toolInput)
 			}
 			up(AgentUp{Progress: true, Message: "Running " + plan.ToolID + "…"})
 			outcome, err := runTool(ctx, RunToolParams{
-				ToolRef: plan.ToolID,
-				Args:    []string{toolInput},
+				ToolRef:              plan.ToolID,
+				Args:                 []string{toolInput},
+				CredentialSecretName: creds.SecretName,
+				CredentialEnvVars:    creds.EnvVars,
 				OnProgress: func(e messaging.Event) {
 					line := e.Message
 					if e.Stage != "" {
@@ -342,13 +388,15 @@ func newChildAgentID(ctx workflow.Context, agentID string) (string, error) {
 	return id, err
 }
 
-func toolIDInScope(toolID string, tools []catalog.ToolDescriptor) bool {
-	for _, t := range tools {
-		if t.ID == toolID {
-			return true
+// findToolByID resolves the planner's chosen id against the agent's own
+// working set. Nil means the planner named something it was not offered.
+func findToolByID(toolID string, tools []catalog.ToolDescriptor) *catalog.ToolDescriptor {
+	for i := range tools {
+		if tools[i].ID == toolID {
+			return &tools[i]
 		}
 	}
-	return false
+	return nil
 }
 
 func findAgent(id string, agents []catalog.AgentDescriptor) *catalog.AgentDescriptor {

@@ -138,6 +138,7 @@ func main() {
 		w.RegisterActivityWithOptions(retrieval.RetrieveTools, activity.RegisterOptions{Name: activities.RetrieveToolsActivityName})
 		w.RegisterActivityWithOptions(retrieval.ResolveSkillTools, activity.RegisterOptions{Name: activities.ResolveSkillToolsActivityName})
 		w.RegisterActivityWithOptions(retrieval.ResolveAgent, activity.RegisterOptions{Name: activities.ResolveAgentActivityName})
+		w.RegisterActivityWithOptions(retrieval.ResolveAgentTools, activity.RegisterOptions{Name: activities.ResolveAgentToolsActivityName})
 		log.Printf("retrieval activities enabled: qdrant=%s:%d", qdrantHost, qdrantPort)
 	} else {
 		log.Printf("QDRANT_HOST not set; retrieval activities disabled")

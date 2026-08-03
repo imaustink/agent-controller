@@ -15,6 +15,7 @@ const (
 	RetrieveToolsActivityName     = "RetrieveTools"
 	ResolveSkillToolsActivityName = "ResolveSkillTools"
 	ResolveAgentActivityName      = "ResolveAgent"
+	ResolveAgentToolsActivityName = "ResolveAgentTools"
 )
 
 // Caller is the resolved identity a retrieval runs as. Every activity fails
@@ -174,6 +175,48 @@ func (a *RetrievalActivities) ResolveAgent(ctx context.Context, in ResolveAgentI
 		return nil, err
 	}
 	return &agents[0], nil
+}
+
+// ResolveAgentToolsInput names the Tool CRs an Agent declared for its own loop.
+type ResolveAgentToolsInput struct {
+	AgentID  string   `json:"agentId"`
+	ToolRefs []string `json:"toolRefs"`
+}
+
+// ResolveAgentTools resolves an Agent's own declared toolRefs (upstream ADR
+// 0028) by id, deliberately WITHOUT a role filter.
+//
+// This asks which tools the OPERATOR declared this agent may call — not which
+// tools the walk-in caller may reach. Those are different questions, and the
+// launching caller's roles are not the answer to this one: an agent's callable
+// set is deployed configuration, and the same check the upstream reconciler
+// performs against these refs is likewise not caller-scoped.
+//
+// v1 scope cut, matching upstream: an agent-backed Tool named here is dropped
+// rather than recursively launching another agent. Chaining sub-agent → tool →
+// agent-backed tool → another sub-agent raises depth, cost and cycle questions
+// that the declared-tools feature does not need to answer.
+func (a *RetrievalActivities) ResolveAgentTools(ctx context.Context, in ResolveAgentToolsInput) ([]catalog.ToolDescriptor, error) {
+	if len(in.ToolRefs) == 0 {
+		return nil, nil
+	}
+	hits, err := a.Collections.Tools.GetByIDsUnfiltered(ctx, in.ToolRefs)
+	if err != nil {
+		return nil, err
+	}
+	tools, err := decodeHits[catalog.ToolDescriptor](hits)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]catalog.ToolDescriptor, 0, len(tools))
+	for _, tool := range tools {
+		if tool.AgentRef != "" {
+			continue // agent-backed: see the scope cut above
+		}
+		out = append(out, tool)
+	}
+	return out, nil
 }
 
 func topK(k int) int {

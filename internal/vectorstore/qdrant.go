@@ -193,6 +193,35 @@ func (s *Qdrant) GetByIDs(ctx context.Context, ids []string, callerRoles []strin
 	return hits, nil
 }
 
+// GetByIDsUnfiltered resolves records by id with no role check. See the Store
+// interface for why this exists and the one question it may answer.
+func (s *Qdrant) GetByIDsUnfiltered(ctx context.Context, ids []string) ([]Hit, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	pointIDs := make([]*qdrant.PointId, len(ids))
+	for i, id := range ids {
+		pointIDs[i] = qdrant.NewIDUUID(s.pointID(id))
+	}
+	points, err := s.client.Get(ctx, &qdrant.GetPoints{
+		CollectionName: s.collection,
+		Ids:            pointIDs,
+		WithPayload:    qdrant.NewWithPayload(true),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get %d points from %s: %w", len(ids), s.collection, err)
+	}
+	hits := make([]Hit, 0, len(points))
+	for _, p := range points {
+		hit, err := hitFromPayload(p.GetPayload())
+		if err != nil {
+			return nil, err
+		}
+		hits = append(hits, hit)
+	}
+	return hits, nil
+}
+
 func recordVisible(payload map[string]*qdrant.Value, callerRoles map[string]bool) bool {
 	if payload["unrestricted"].GetBoolValue() {
 		return true

@@ -47,4 +47,22 @@ type Store interface {
 	// GetByIDs resolves records directly (no ranking), re-applying the same
 	// role visibility check. Missing ids are silently absent from the result.
 	GetByIDs(ctx context.Context, ids []string, callerRoles []string) ([]Hit, error)
+
+	// GetByIDsUnfiltered resolves records by id with NO role check.
+	//
+	// The one deliberate exception to this package's RBAC discipline, and it
+	// answers a different question. Every other read here asks "which records
+	// may this CALLER reach?", because the system is deciding on that caller's
+	// behalf. An Agent's own `toolRefs` (upstream ADR 0028) asks "which tools
+	// did the OPERATOR declare this agent may call?" — a property of deployed
+	// configuration, independent of whoever's turn happened to launch the
+	// agent, and the same question the upstream reconciler's own validation
+	// asks.
+	//
+	// Routing that through the role-filtered read would need a synthetic
+	// caller-roles filter that either coincidentally works or requires
+	// threading the launching caller's roles across the whole life of a
+	// possibly long-running agent, for no benefit. Callers MUST NOT use this
+	// to answer a caller-scoped question.
+	GetByIDsUnfiltered(ctx context.Context, ids []string) ([]Hit, error)
 }

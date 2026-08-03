@@ -40,6 +40,9 @@ type loopEnv struct {
 	completeTurnInputs  []activities.CompleteTurnInput
 
 	planInputs []activities.PlanActionInput
+	// agentTools is what ResolveAgentTools returns for a child agent's own
+	// declared toolRefs (ADR 0028).
+	agentTools []catalog.ToolDescriptor
 	// callerTools / priorCallerCalls ride every sendTurn, as if the consumer
 	// had supplied them in the request body (ADR 0035).
 	callerTools      []callertools.Descriptor
@@ -138,6 +141,9 @@ func newLoopEnv(t *testing.T) *loopEnv {
 		}
 		return le.skillTools, nil
 	})
+	reg(activities.ResolveAgentToolsActivityName, func(context.Context, activities.ResolveAgentToolsInput) ([]catalog.ToolDescriptor, error) {
+		return le.agentTools, nil
+	})
 	reg(activities.ResolveAgentActivityName, func(context.Context, activities.ResolveAgentInput) (*catalog.AgentDescriptor, error) {
 		le.resolveAgentCalls++
 		return le.resolvedAgent, nil
@@ -211,6 +217,11 @@ func (le *loopEnv) sendTurn(t *testing.T, updateID, message string, result *work
 
 // signalToolSuccess delivers a succeeded event for launch #launchIndex once
 // that launch exists, rescheduling in virtual time until it does.
+//
+// Routed by the workflow id carried in the launch input, exactly as the
+// gateway's callback bridge routes by the id baked into the callback URL. That
+// matters because a tool call can belong to the conversation OR to a child
+// agent workflow, and only the launch itself knows which.
 func (le *loopEnv) signalToolSuccess(launchIndex int, resultJSON string) {
 	var attempt func()
 	attempt = func() {
@@ -218,10 +229,11 @@ func (le *loopEnv) signalToolSuccess(launchIndex int, resultJSON string) {
 			le.env.RegisterDelayedCallback(attempt, 100*time.Millisecond)
 			return
 		}
-		jobID := le.launches[launchIndex].JobID
-		le.env.SignalWorkflow(workflows.ToolEventSignalPrefix+jobID, messaging.Event{
-			JobID: jobID, Seq: 1, TS: "t", Type: "succeeded", Result: json.RawMessage(resultJSON),
-		})
+		launch := le.launches[launchIndex]
+		_ = le.env.SignalWorkflowByID(launch.WorkflowID,
+			workflows.ToolEventSignalPrefix+launch.JobID, messaging.Event{
+				JobID: launch.JobID, Seq: 1, TS: "t", Type: "succeeded", Result: json.RawMessage(resultJSON),
+			})
 	}
 	attempt()
 }
@@ -848,4 +860,107 @@ func TestSeededHistoryBoundsTheResumedLoop(t *testing.T) {
 
 	require.Zero(t, le.planCalls, "at the cap the planner is not consulted at all")
 	require.Empty(t, result.PendingToolCalls)
+}
+
+// --- an agent's own declared tools (ADR 0028) ---
+
+// Cheap here by construction: upstream needs a tool_call/tool_result NATS pair,
+// a callId-keyed pending map, an SDK method and a duplicated dispatch path,
+// because its sub-agent is a separate process. A child workflow just calls
+// runTool.
+func TestAgentCallsItsOwnDeclaredTool(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := mealPlannerAgent()
+	agent.SkillRefs = nil // nothing from skills — the toolRef is the only source
+	agent.ToolRefs = []string{"kubectl-readonly"}
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+	le.agentTools = []catalog.ToolDescriptor{kubectlTool()}
+	le.agentPlans = []activities.PlannedAgentAction{
+		{Action: activities.AgentActionCallTool, ToolID: "kubectl-readonly", ToolInput: "get pods"},
+		{Action: activities.AgentActionFinish, Message: "Three pods, all Running."},
+	}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "what's running in the cluster?", &result, time.Millisecond)
+	le.env.RegisterDelayedCallback(func() { le.signalToolSuccess(0, `"pod-a Running"`) }, time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "Three pods, all Running.", result.Reply)
+	require.Len(t, le.launches, 1)
+	require.Equal(t, "kubectl-readonly", le.launches[0].ToolRef)
+
+	// The declared tool was offered to the agent's planner.
+	require.NotEmpty(t, le.agentPlanInputs)
+	require.Len(t, le.agentPlanInputs[0].Tools, 1)
+	require.Equal(t, "kubectl-readonly", le.agentPlanInputs[0].Tools[0].ID)
+
+	// And its result reached the agent's own history.
+	require.Len(t, le.agentPlanInputs[1].History, 1)
+	require.Equal(t, "pod-a Running", le.agentPlanInputs[1].History[0].Result)
+}
+
+// A tool the agent was never offered must not run, exactly as in the parent's
+// loop — an id from the planner is never trusted on its own.
+func TestAgentCannotCallAnUndeclaredTool(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := mealPlannerAgent()
+	agent.SkillRefs = nil
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+	le.agentTools = nil // declares nothing
+	le.agentPlans = []activities.PlannedAgentAction{
+		{Action: activities.AgentActionCallTool, ToolID: "kubectl-readonly", ToolInput: "delete everything"},
+		{Action: activities.AgentActionFinish, Message: "I can't do that."},
+	}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "wipe the cluster", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Empty(t, le.launches, "an undeclared tool is never launched")
+	require.Equal(t, "I can't do that.", result.Reply)
+}
+
+// A declared tool that requires a linked identity must not run credential-less
+// from a sub-agent either. Upstream's sub-agent dispatch path skips this check,
+// so a Tool meant to act as a specific human would fall back to whatever static
+// token its template carries.
+func TestAgentDeclaredToolStillPassesTheIdentityGate(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := mealPlannerAgent()
+	agent.SkillRefs = nil
+	agent.ToolRefs = []string{"github"}
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+	le.agentTools = []catalog.ToolDescriptor{{
+		ID: "github", Description: "run a gh command", IdentityProviders: []string{"github"},
+	}}
+	le.toolCredentialVerdict = func() authz.Verdict {
+		return authz.Verdict{Kind: authz.KindLinkRequired, Message: "please link your GitHub account"}
+	}
+	le.agentPlans = []activities.PlannedAgentAction{
+		{Action: activities.AgentActionCallTool, ToolID: "github", ToolInput: "pr list"},
+		{Action: activities.AgentActionFinish, Message: "I need your GitHub account linked."},
+	}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "list my PRs", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Empty(t, le.launches, "fail closed: no credential, no launch")
+	require.Len(t, le.toolCredentialInputs, 1)
+	require.Equal(t, "github", le.toolCredentialInputs[0].Tool.ID)
+	// The refusal reached the agent's planner as a failed step, so it can react.
+	require.Len(t, le.agentPlanInputs[1].History, 1)
+	require.Contains(t, le.agentPlanInputs[1].History[0].Error, "link your GitHub")
 }
