@@ -370,14 +370,25 @@ func superviseChildAgent(
 	}
 }
 
-// agentWorkflowNameFor routes by execution style: a step-tool annotation
-// makes the agent a checkpoint-resume pod agent, otherwise it runs the
-// declarative loop. Callers of either speak the same up/down protocol.
+// agentWorkflowNameFor routes by execution style. All three speak the same
+// parent-facing up/down signal protocol, so a conversation cannot tell them
+// apart:
+//
+//   - step-tool annotation → checkpoint-resume Jobs (docs/pod-agents.md)
+//   - bridged annotation   → an unmodified upstream AgentRun over NATS
+//   - neither              → the declarative agent loop
+//
+// StepToolRef wins a conflict: it is a concrete statement about how the image
+// behaves, where Bridged only says which transport to use.
 func agentWorkflowNameFor(agent catalog.AgentDescriptor) string {
-	if agent.StepToolRef != "" {
+	switch {
+	case agent.StepToolRef != "":
 		return PodAgentWorkflowName
+	case agent.Bridged:
+		return BridgedAgentWorkflowName
+	default:
+		return AgentWorkflowName
 	}
-	return AgentWorkflowName
 }
 
 func newChildAgentID(ctx workflow.Context, agentID string) (string, error) {

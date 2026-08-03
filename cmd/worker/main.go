@@ -13,6 +13,7 @@ import (
 
 	"k8s.io/client-go/dynamic"
 
+	"durable-agents/internal/agentrun"
 	"durable-agents/internal/authz"
 	"durable-agents/internal/identitylink"
 	"durable-agents/internal/kubeconfig"
@@ -55,6 +56,9 @@ func main() {
 	})
 	w.RegisterWorkflowWithOptions(workflows.PodAgentWorkflow, workflow.RegisterOptions{
 		Name: workflows.PodAgentWorkflowName,
+	})
+	w.RegisterWorkflowWithOptions(workflows.BridgedAgentWorkflow, workflow.RegisterOptions{
+		Name: workflows.BridgedAgentWorkflowName,
 	})
 	w.RegisterActivityWithOptions((&activities.LLMActivities{Client: llmClient}).CompleteTurn, activity.RegisterOptions{
 		Name: activities.CompleteTurnActivityName,
@@ -142,6 +146,51 @@ func main() {
 		log.Printf("retrieval activities enabled: qdrant=%s:%d", qdrantHost, qdrantPort)
 	} else {
 		log.Printf("QDRANT_HOST not set; retrieval activities disabled")
+	}
+
+	// Bridged pod agents (D2): an unmodified upstream AgentRun driven over the
+	// existing NATS protocol, with this workflow holding the durable half.
+	// Optional — without NATS, only the declarative loop and checkpoint-resume
+	// step tools are available.
+	if natsURL := os.Getenv("AGENT_NATS_URL"); natsURL != "" {
+		conn, closeConn, err := agentrun.Dial(natsURL)
+		if err != nil {
+			log.Fatalf("connect to nats: %v", err)
+		}
+		defer closeConn()
+
+		kubeCfg, err := kubeconfig.Load()
+		if err != nil {
+			log.Fatalf("load kube config for AgentRun launches: %v", err)
+		}
+		dynamicClient, err := dynamic.NewForConfig(kubeCfg)
+		if err != nil {
+			log.Fatalf("build dynamic client for AgentRun launches: %v", err)
+		}
+		callbackBaseURL := os.Getenv("CALLBACK_BASE_URL")
+		if callbackBaseURL == "" {
+			log.Fatal("CALLBACK_BASE_URL is required when AGENT_NATS_URL is set (the AgentRun CRD requires a callback)")
+		}
+
+		agentRuns := &activities.AgentRunActivities{
+			Launcher: agentrun.NewK8sLauncher(
+				dynamicClient,
+				getenv("TOOLRUN_NAMESPACE", "controller-agent"),
+				toolrun.SecretRef{
+					Name: getenv("CALLBACK_SECRET_NAME", "durable-agents-callback"),
+					Key:  getenv("CALLBACK_SECRET_KEY", "AGENT_CALLBACK_SECRET"),
+				},
+			),
+			Bridge:          agentrun.NewBridge(conn, c, os.Getenv("AGENT_NATS_SUBJECT_PREFIX")),
+			CallbackBaseURL: callbackBaseURL,
+		}
+		w.RegisterActivityWithOptions(agentRuns.LaunchAgentRun, activity.RegisterOptions{Name: activities.LaunchAgentRunActivityName})
+		w.RegisterActivityWithOptions(agentRuns.GetAgentRunPhase, activity.RegisterOptions{Name: activities.GetAgentRunPhaseActivityName})
+		w.RegisterActivityWithOptions(agentRuns.SendAgentDown, activity.RegisterOptions{Name: activities.SendAgentDownActivityName})
+		w.RegisterActivityWithOptions(agentRuns.DetachAgentRun, activity.RegisterOptions{Name: activities.DetachAgentRunActivityName})
+		log.Printf("bridged pod agents enabled: nats=%s", natsURL)
+	} else {
+		log.Printf("AGENT_NATS_URL not set; bridged pod agents disabled")
 	}
 
 	// Tool execution: TOOLRUN_MODE=k8s creates real ToolRun CRs;

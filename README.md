@@ -24,7 +24,11 @@ design and milestone plan.
 | `internal/messaging` | Go port of the tool event stream + HMAC callback contract — tool containers are unchanged. |
 | `internal/toolrun` | ToolRun CR launcher (k8s dynamic client) + fake mode for cluster-less dev. |
 | `internal/temporal` | Shared Temporal client/config for gateway + worker. |
-| `internal/temporal/workflows` | Deterministic workflow code only (`ConversationWorkflow`). |
+| `internal/temporal/workflows` | Deterministic workflow code only: `ConversationWorkflow` plus three agent execution styles (declarative, checkpoint-resume, and NATS-bridged upstream pod agents). |
+| `internal/agentrun` | Launches upstream `AgentRun` CRs and bridges their bidirectional NATS protocol into workflow signals, so `claude-code-swe-agent` and `opencode-swe-agent` run unmodified. See [docs/pod-agents.md](docs/pod-agents.md). |
+| `internal/authz` | The authorization pre-flight: one owner, plain control flow, credentials written to a Secret so a value never enters workflow state. |
+| `internal/identitylink` | Client for agent-controller's integration-gateway credential API. |
+| `internal/callertools` | Consumer-supplied tools over the OpenAI facade (upstream ADR 0035). |
 | `internal/temporal/activities` | All non-deterministic work (LLM calls; later: Qdrant, ToolRun CRs, identity). |
 | `internal/llm` | Minimal OpenAI-compatible chat client (base URL overridable). |
 | `charts/durable-agents` | Helm chart: gateway + worker. Assumes Temporal is already installed. |

@@ -38,8 +38,18 @@ type ToolDescriptor struct {
 // StepToolAnnotation on an Agent CR marks it as a checkpoint-resume pod
 // agent: each work step runs the named Tool as a one-shot Job speaking the
 // messaging.AgentStepResult envelope. This is a durable-agents extension —
-// upstream's Agent.spec.image/AgentRun launch path is unused here.
+// upstream's Agent.spec.image/AgentRun launch path is unused for these.
 const StepToolAnnotation = "durable-agents.dev/step-tool"
+
+// BridgedAnnotation on an Agent CR marks it as an UNMODIFIED upstream pod
+// agent: launched as an ordinary AgentRun and driven over the existing
+// bidirectional NATS protocol, with a workflow holding the durable half of the
+// conversation.
+//
+// This is how claude-code-swe-agent and opencode-swe-agent run here without
+// being rewritten. Their images, their protocol, their CR — only the thing
+// waiting on them changes.
+const BridgedAnnotation = "durable-agents.dev/bridged"
 
 type AgentDescriptor struct {
 	ID                 string   `json:"id"`
@@ -67,6 +77,13 @@ type AgentDescriptor struct {
 	// StepToolRef (from StepToolAnnotation) switches execution from the
 	// declarative agent loop to checkpoint-resume Jobs of the named tool.
 	StepToolRef string `json:"stepToolRef,omitempty"`
+
+	// Bridged (from BridgedAnnotation) runs this agent as an unmodified
+	// upstream AgentRun over the NATS protocol. Mutually exclusive with
+	// StepToolRef; if both are set, StepToolRef wins, because a step tool is a
+	// concrete statement about how the image behaves while Bridged is a
+	// statement about which transport to use.
+	Bridged bool `json:"bridged,omitempty"`
 }
 
 type SkillDescriptor struct {

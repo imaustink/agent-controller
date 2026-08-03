@@ -3,6 +3,7 @@ package workflows_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -22,6 +23,11 @@ import (
 	"durable-agents/internal/toolrun"
 )
 
+// registerOpts names an activity registration.
+func registerOpts(name string) activity.RegisterOptions {
+	return activity.RegisterOptions{Name: name}
+}
+
 // loopEnv fakes every activity the agent loop touches and counts calls.
 type loopEnv struct {
 	env      *testsuite.TestWorkflowEnvironment
@@ -40,6 +46,10 @@ type loopEnv struct {
 	completeTurnInputs  []activities.CompleteTurnInput
 
 	planInputs []activities.PlanActionInput
+	// agentRunLaunches / agentDownMessages record the bridged pod-agent
+	// activity surface (A9).
+	agentRunLaunches  []activities.LaunchAgentRunInput
+	agentDownMessages []activities.AgentDownInput
 	// agentTools is what ResolveAgentTools returns for a child agent's own
 	// declared toolRefs (ADR 0028).
 	agentTools []catalog.ToolDescriptor
@@ -94,9 +104,10 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	env.RegisterWorkflowWithOptions(workflows.ConversationWorkflow, workflow.RegisterOptions{Name: workflows.ConversationWorkflowName})
 	env.RegisterWorkflowWithOptions(workflows.AgentWorkflow, workflow.RegisterOptions{Name: workflows.AgentWorkflowName})
 	env.RegisterWorkflowWithOptions(workflows.PodAgentWorkflow, workflow.RegisterOptions{Name: workflows.PodAgentWorkflowName})
+	env.RegisterWorkflowWithOptions(workflows.BridgedAgentWorkflow, workflow.RegisterOptions{Name: workflows.BridgedAgentWorkflowName})
 
 	reg := func(name string, fn any) {
-		env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
+		env.RegisterActivityWithOptions(fn, registerOpts(name))
 	}
 	reg(activities.CheckNeedsCapabilityActivityName, func(context.Context, string) (bool, error) {
 		return le.needsCapability, nil
@@ -128,6 +139,9 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	})
 	reg(activities.PlanAgentActionActivityName, func(_ context.Context, in activities.PlanAgentActionInput) (activities.PlannedAgentAction, error) {
 		le.agentPlanInputs = append(le.agentPlanInputs, in)
+		if len(le.agentPlans) == 0 {
+			return activities.PlannedAgentAction{}, fmt.Errorf("test setup: the agent planner was called but le.agentPlans is empty")
+		}
 		plan := le.agentPlans[min(le.agentPlanCalls, len(le.agentPlans)-1)]
 		le.agentPlanCalls++
 		return plan, nil
@@ -172,6 +186,11 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	})
 	reg(activities.PlanActionActivityName, func(_ context.Context, in activities.PlanActionInput) (activities.PlannedAction, error) {
 		le.planInputs = append(le.planInputs, in)
+		if len(le.plans) == 0 {
+			// An empty list used to index [-1] and surface as an opaque
+			// activity panic three retries deep. Say what is actually missing.
+			return activities.PlannedAction{}, fmt.Errorf("test setup: the planner was called but le.plans is empty")
+		}
 		plan := le.plans[min(le.planCalls, len(le.plans)-1)]
 		le.planCalls++
 		return plan, nil
@@ -187,6 +206,7 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	reg(activities.GetToolRunPhaseActivityName, func(context.Context, string) (toolrun.Status, error) {
 		return toolrun.Status{}, nil
 	})
+	registerAgentRunActivities(le)
 	return le
 }
 

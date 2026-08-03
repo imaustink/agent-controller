@@ -69,6 +69,15 @@ Rebuild the agent half on Temporal; keep the tool half as-is.
 6. **NATS is dropped.** The bidirectional agent channel is replaced by
    workflow signals/updates; tool events arrive over the HMAC HTTP callback.
 
+   > **Amended by [ADR 0002](0002-upstream-integration.md) D2.** This holds for
+   > agents we write, and not for the ones already running. Upstream has since
+   > built the live opencode tunnel (its ADR 0026), sub-agent tool calls (0028)
+   > and the reply-ack hold (0033) on that channel, and `claude-code-swe-agent`
+   > — which speaks it — became the production triage agent. A third execution
+   > style, `BridgedAgentWorkflow`, drives an unmodified `AgentRun` over NATS
+   > with a workflow holding the durable half of the conversation. Tool events
+   > still arrive over the HMAC callback as stated.
+
 ## Consequences
 
 - Durable execution replaces four ad-hoc state stores (pending-promise maps,
@@ -110,3 +119,10 @@ Rebuild the agent half on Temporal; keep the tool half as-is.
    the two upstream follow-ups: the opencode TS adapter and
    ToolRunSpec.secretEnv for per-user token injection.)
 8. Hardening: payload-size guardrails, observability, chart polish.
+
+## Upstreaming
+
+The maintainer has agreed to take this upstream. See
+[ADR 0002](0002-upstream-integration.md) for the four decisions that shapes,
+and [upstream-catchup-plan.md](../upstream-catchup-plan.md) for the catch-up
+against the 237 commits upstream moved after this ADR's fork point.
