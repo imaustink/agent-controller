@@ -137,6 +137,43 @@ jobs:
       - name: Test
         run: go test ./...
 
+  temporal-engine-chart:
+    name: Helm temporal-engine (lint, render)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: charts/agent-controller/charts/temporal-engine
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+
+      # Rendered standalone rather than through the umbrella chart: the parent
+      # pulls open-webui and nats from remote repos, so templating it needs a
+      # `helm dependency build` and a network round trip to validate a subchart
+      # that has neither.
+      - name: Lint
+        run: helm lint . --set qdrant.host=q --set nats.url=nats://n:4222
+
+      # Both shapes matter. Defaults must render the minimum (no catalog-sync
+      # without Qdrant, no AgentRun grant without the NATS bridge), and
+      # everything-on must render at all -- an optional block that only breaks
+      # when enabled is the one nobody notices.
+      - name: Render with defaults
+        run: helm template t . | python3 -c "import sys,yaml; list(yaml.safe_load_all(sys.stdin))"
+
+      - name: Render with every option enabled
+        run: |
+          helm template t . \
+            --set qdrant.host=qdrant \
+            --set nats.url=nats://nats:4222 \
+            --set gateway.senderAssertion.secretName=sa \
+            --set identityLink.gatewayUrl=http://integration-gateway:8080 \
+            --set identityLink.tokenSecretName=ig-token \
+            | python3 -c "import sys,yaml; list(yaml.safe_load_all(sys.stdin))"
+
   core-controller:
     name: Go core-controller (lint, test, build)
     runs-on: ubuntu-latest

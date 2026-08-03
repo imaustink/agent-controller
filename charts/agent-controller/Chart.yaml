@@ -38,6 +38,15 @@ dependencies:
     version: "0.1.0"
     repository: "file://charts/core-controller"
     condition: core-controller.enabled
+  # The Temporal-workflow agent engine (engines/temporal), docs/adr/0036. OFF
+  # by default: agent-orchestrator runs its in-process LangGraph loop unless
+  # AGENT_ENGINE=temporal selects this instead, so enabling the subchart alone
+  # changes no behaviour. Takes a Temporal address rather than bundling a
+  # server, so it adds no stateful component.
+  - name: temporal-engine
+    version: "0.1.0"
+    repository: "file://charts/temporal-engine"
+    condition: temporal-engine.enabled
   # GitHub Issues adapter (apps/integration-gateway) -- phase 1 of
   # docs/integrations-gateway.md's conversational path. Off by default;
   # calls the agent-orchestrator subchart's invoke Service, so enable that

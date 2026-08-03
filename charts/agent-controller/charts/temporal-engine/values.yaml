@@ -1,0 +1,124 @@
+# The Temporal agent engine (engines/temporal), off by default.
+#
+# agent-orchestrator runs its in-process LangGraph loop unless
+# AGENT_ENGINE=temporal selects this instead (docs/adr/0036). Enabling this
+# subchart alone changes nothing: the orchestrator has to be told to use it.
+
+# A Temporal cluster is assumed to exist — this takes its address rather than
+# bundling a server, so enabling the engine adds no stateful component.
+temporal:
+  # Matches the temporalio/temporal chart's frontend Service.
+  address: temporal-frontend.temporal.svc:7233
+  namespace: default
+
+taskQueue: agent-controller
+
+llm:
+  baseURL: https://api.openai.com/v1
+  model: gpt-4o-2024-08-06
+  embedModel: text-embedding-3-small
+  # Secret holding OPENAI_API_KEY. Defaults to the orchestrator's own secret so
+  # one key serves both engines rather than being duplicated per engine.
+  secretName: agent-controller-agent-orchestrator
+
+# Qdrant backs the catalog RAG index. Leave host empty to disable retrieval
+# (plain-conversation mode).
+qdrant:
+  host: ""
+  port: 6334
+  # REQUIRED when sharing a Qdrant instance with agent-orchestrator. Both index
+  # tools/skills/agents, and their payload schemas differ — sharing a collection
+  # would have each engine reading records it cannot decode. A prefix keeps them
+  # side by side in one instance instead.
+  collectionPrefix: te-
+
+# Where the Tool/Skill/Agent CRs live, and where ToolRun/AgentRun CRs are
+# created so tool Jobs run next to their definitions.
+catalog:
+  namespace: ""  # empty -> the release namespace
+
+toolrun:
+  enabled: true
+
+callback:
+  # Secret holding the HMAC key. Two copies of the same value are needed when
+  # catalog.namespace differs from the release namespace: the gateway verifies
+  # signatures, and the controller injects the key into tool Jobs, which sign.
+  secretName: agent-controller-callback
+  secretKey: AGENT_CALLBACK_SECRET
+  # Empty derives the in-cluster Service URL for this release.
+  baseURL: ""
+
+# Bridged pod agents (docs/pod-agents.md): drives an UNMODIFIED AgentRun over
+# the existing bidirectional NATS protocol, so claude-code-swe-agent and
+# opencode-swe-agent run without image changes. Empty disables it, leaving the
+# declarative loop and checkpoint-resume step tools.
+#
+# Point this at the same NATS the orchestrator uses — the agents publish to
+# subjects keyed by AgentRun id, so both engines speak to the same place.
+nats:
+  url: ""
+
+# Per-user credentials (docs/adr/0022/0027/0030). Empty falls back to an
+# in-memory dev fake, which is announced at startup and must not be relied on.
+identityLink:
+  gatewayUrl: ""
+  # Secret + key holding the bearer token for that gateway.
+  tokenSecretName: ""
+  tokenSecretKey: GATEWAY_IDENTITY_LINK_TOKEN
+
+catalogSync:
+  enabled: true
+  image:
+    repository: temporal-engine-catalog-sync
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 25m
+      memory: 48Mi
+    limits:
+      memory: 192Mi
+
+worker:
+  replicas: 1
+  image:
+    repository: temporal-engine-worker
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+gateway:
+  replicas: 1
+  image:
+    repository: temporal-engine-gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8080
+  # Shared secret with integration-gateway for the signed sender assertion
+  # (docs/adr/0030 §6). Also used by agent-orchestrator when it forwards a turn
+  # here, so an internal hop does not have to trust an unsigned login. Unset is
+  # a supported, loudly-announced weaker mode.
+  senderAssertion:
+    secretName: ""
+    secretKey: GATEWAY_SENDER_ASSERTION_SECRET
+  # Dev-grade identity (engines/temporal/internal/rbac): a bearer-token map plus
+  # an optional fallback. All empty fails closed to zero capabilities.
+  identity:
+    # JSON: {"<token>": {"subject": "user:x", "roles": ["reader"]}}
+    staticIdentities: ""
+    defaultSubject: ""
+    defaultRoles: ""
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 128Mi

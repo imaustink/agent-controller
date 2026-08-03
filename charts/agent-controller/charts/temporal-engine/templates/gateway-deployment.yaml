@@ -2,9 +2,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-gateway
+  name: {{ .Release.Name }}-temporal-engine-gateway
   labels:
-    {{- include "durable-agents.labels" . | nindent 4 }}
+    {{- include "temporal-engine.labels" . | nindent 4 }}
     app.kubernetes.io/component: gateway
 spec:
   replicas: {{ .Values.gateway.replicas }}
@@ -16,9 +16,10 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "durable-agents.labels" . | nindent 8 }}
+        {{- include "temporal-engine.labels" . | nindent 8 }}
         app.kubernetes.io/component: gateway
     spec:
+      serviceAccountName: {{ .Release.Name }}-temporal-engine-gateway
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -35,7 +36,7 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
-            {{- include "durable-agents.temporalEnv" . | nindent 12 }}
+            {{- include "temporal-engine.temporalEnv" . | nindent 12 }}
             - name: GATEWAY_ADDR
               value: ":8080"
             {{- with .Values.gateway.identity.staticIdentities }}
@@ -58,6 +59,37 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.callback.secretName }}
                   key: {{ .Values.callback.secretKey }}
+            {{- end }}
+            {{- with .Values.gateway.senderAssertion.secretName }}
+            # Signed sender assertion (docs/adr/0030 §6). With this set, a sender
+            # login is accepted ONLY from a verified assertion and the unsigned
+            # body field is ignored entirely — which is also how
+            # agent-orchestrator vouches for a login when it forwards a turn
+            # here, rather than the hop being trusted for being internal. Unset
+            # is a supported weaker mode that both ends announce at startup.
+            - name: GATEWAY_SENDER_ASSERTION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.gateway.senderAssertion.secretKey }}
+            {{- end }}
+            # The gateway watches IntegrationRoute CRs for deterministic
+            # dispatch, so it needs to know where the catalog lives.
+            - name: CATALOG_NAMESPACE
+              value: {{ .Values.catalog.namespace | default .Release.Namespace | quote }}
+            {{- if .Values.qdrant.host }}
+            # Caller-supplied tools (docs/adr/0035) are ranked here, in their own
+            # collection.
+            {{- include "temporal-engine.qdrantEnv" . | nindent 12 }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.llm.secretName }}
+                  key: OPENAI_API_KEY
+            - name: OPENAI_BASE_URL
+              value: {{ .Values.llm.baseURL | quote }}
+            - name: OPENAI_EMBED_MODEL
+              value: {{ .Values.llm.embedModel | quote }}
             {{- end }}
           ports:
             - name: http

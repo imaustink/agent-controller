@@ -1,4 +1,4 @@
-# durable-agents
+# temporal-engine
 
 > Setup: [setup-instructions.md](setup-instructions.md) — local dev with
 > zero cluster, and the full k3s deployment checklist.
@@ -31,7 +31,7 @@ design and milestone plan.
 | `internal/callertools` | Consumer-supplied tools over the OpenAI facade (upstream ADR 0035). |
 | `internal/temporal/activities` | All non-deterministic work (LLM calls; later: Qdrant, ToolRun CRs, identity). |
 | `internal/llm` | Minimal OpenAI-compatible chat client (base URL overridable). |
-| `charts/durable-agents` | Helm chart: gateway + worker. Assumes Temporal is already installed. |
+| `charts/agent-controller/charts/temporal-engine` | Helm subchart (repo root): worker, gateway, catalog-sync. Off by default; takes a Temporal address rather than bundling a server. |
 
 ## How a turn flows
 
@@ -140,23 +140,30 @@ make build test vet   # checks
 make docker           # build both images
 ```
 
-## Deploying (k3s)
+## Deploying
 
-Assumes a Temporal cluster (e.g. the `temporalio/temporal` chart) is
-installed and reachable at `temporal.address`.
+Ships as a subchart of the umbrella `agent-controller` chart, off by default.
+Enabling it is deliberately two steps, so the engine can be deployed and
+watched before any turn depends on it:
 
-```bash
-kubectl create namespace durable-agents
-kubectl -n durable-agents create secret generic durable-agents-secrets \
-  --from-literal=OPENAI_API_KEY=<key>
+```yaml
+# charts/agent-controller/values.yaml (or your overlay)
+temporal-engine:
+  enabled: true                                   # 1. deploy worker + gateway
+  temporal: { address: temporal-frontend.temporal.svc:7233 }
+  qdrant: { host: agent-controller-qdrant, collectionPrefix: te- }
 
-helm install durable-agents charts/durable-agents -n durable-agents \
-  --set temporal.address=temporal-frontend.temporal.svc:7233
+agent-orchestrator:
+  config:
+    agentEngine: temporal                         # 2. route turns to it
 ```
 
-Point an OpenAI-compatible client (e.g. Open WebUI, with
-`ENABLE_FORWARD_USER_INFO_HEADERS=true` for session continuity) at the
-gateway service.
+Step 1 alone changes no behaviour. Assumes a reachable Temporal cluster; no
+server is bundled, so enabling this adds no stateful component.
+
+Consumers keep talking to agent-orchestrator either way — its OpenAI facade,
+`/invoke`, identity resolution, RBAC and credential store are shared by both
+engines. See [docs/adr/0002](docs/adr/0002-upstream-integration.md).
 
 ## Roadmap
 
