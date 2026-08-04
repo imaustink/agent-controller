@@ -110,6 +110,8 @@ jobs:
               - 'tools/ssh/**'
             core-controller:
               - 'controllers/core-controller/**'
+            temporal-engine:
+              - 'engines/temporal/**'
             localtool-executor:
               - 'sidecars/localtool-executor/**'
             charts:
@@ -132,6 +134,7 @@ jobs:
           GITHUB_TOOL: ${{ steps.filter.outputs.github-tool }}
           SSH_TOOL: ${{ steps.filter.outputs.ssh-tool }}
           CORE_CONTROLLER: ${{ steps.filter.outputs.core-controller }}
+          TEMPORAL_ENGINE: ${{ steps.filter.outputs.temporal-engine }}
           LOCALTOOL_EXECUTOR: ${{ steps.filter.outputs.localtool-executor }}
         run: |
           cat <<'EOF' > all.json
@@ -149,6 +152,9 @@ jobs:
             {"image":"github","changed_key":"GITHUB_TOOL","dockerfile":"tools/github/Dockerfile","context":"."},
             {"image":"ssh","changed_key":"SSH_TOOL","dockerfile":"tools/ssh/Dockerfile","context":"."},
             {"image":"core-controller","changed_key":"CORE_CONTROLLER","dockerfile":"controllers/core-controller/Dockerfile","context":"controllers/core-controller"},
+            {"image":"temporal-engine-worker","changed_key":"TEMPORAL_ENGINE","dockerfile":"engines/temporal/Dockerfile.worker","context":"engines/temporal"},
+            {"image":"temporal-engine-gateway","changed_key":"TEMPORAL_ENGINE","dockerfile":"engines/temporal/Dockerfile.gateway","context":"engines/temporal"},
+            {"image":"temporal-engine-catalog-sync","changed_key":"TEMPORAL_ENGINE","dockerfile":"engines/temporal/Dockerfile.catalog-sync","context":"engines/temporal"},
             {"image":"localtool-executor-node","changed_key":"LOCALTOOL_EXECUTOR","dockerfile":"sidecars/localtool-executor/Dockerfile","context":"sidecars/localtool-executor","build_args":"BASE_IMAGE=node:24-bookworm-slim\nRUNTIME=node"},
             {"image":"localtool-executor-python","changed_key":"LOCALTOOL_EXECUTOR","dockerfile":"sidecars/localtool-executor/Dockerfile","context":"sidecars/localtool-executor","build_args":"BASE_IMAGE=python:3.12-slim-bookworm\nRUNTIME=python"},
             {"image":"localtool-executor-go","changed_key":"LOCALTOOL_EXECUTOR","dockerfile":"sidecars/localtool-executor/Dockerfile","context":"sidecars/localtool-executor","build_args":"BASE_IMAGE=golang:1.24-bookworm\nRUNTIME=go"},
@@ -176,8 +182,9 @@ jobs:
               --arg GITHUB_TOOL "$GITHUB_TOOL" \
               --arg SSH_TOOL "$SSH_TOOL" \
               --arg CORE_CONTROLLER "$CORE_CONTROLLER" \
+              --arg TEMPORAL_ENGINE "$TEMPORAL_ENGINE" \
               --arg LOCALTOOL_EXECUTOR "$LOCALTOOL_EXECUTOR" \
-              '{AGENT_ORCHESTRATOR:$AGENT_ORCHESTRATOR,OPENCODE_SWE_AGENT:$OPENCODE_SWE_AGENT,CLAUDE_CODE_SWE_AGENT:$CLAUDE_CODE_SWE_AGENT,INTEGRATION_GATEWAY:$INTEGRATION_GATEWAY,RECIPE_SCRAPER:$RECIPE_SCRAPER,RECIPE_PUBLISHER:$RECIPE_PUBLISHER,WEB_SEARCH:$WEB_SEARCH,WEB_FETCH:$WEB_FETCH,KUBECTL_READONLY:$KUBECTL_READONLY,SIGNOZ_QUERY:$SIGNOZ_QUERY,GITHUB_TOOL:$GITHUB_TOOL,SSH_TOOL:$SSH_TOOL,CORE_CONTROLLER:$CORE_CONTROLLER,LOCALTOOL_EXECUTOR:$LOCALTOOL_EXECUTOR}')
+              '{AGENT_ORCHESTRATOR:$AGENT_ORCHESTRATOR,OPENCODE_SWE_AGENT:$OPENCODE_SWE_AGENT,CLAUDE_CODE_SWE_AGENT:$CLAUDE_CODE_SWE_AGENT,INTEGRATION_GATEWAY:$INTEGRATION_GATEWAY,RECIPE_SCRAPER:$RECIPE_SCRAPER,RECIPE_PUBLISHER:$RECIPE_PUBLISHER,WEB_SEARCH:$WEB_SEARCH,WEB_FETCH:$WEB_FETCH,KUBECTL_READONLY:$KUBECTL_READONLY,SIGNOZ_QUERY:$SIGNOZ_QUERY,GITHUB_TOOL:$GITHUB_TOOL,SSH_TOOL:$SSH_TOOL,CORE_CONTROLLER:$CORE_CONTROLLER,TEMPORAL_ENGINE:$TEMPORAL_ENGINE,LOCALTOOL_EXECUTOR:$LOCALTOOL_EXECUTOR}')
             MATRIX=$(jq -c --argjson flags "$FLAGS" 'map(select($flags[.changed_key] == "true"))' all.json)
           fi
 

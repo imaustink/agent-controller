@@ -1,0 +1,85 @@
+# DRAFT — copy to bitovi-platform-services/gitops/durable-agents/values.yaml.
+# Platform-specific values for the vendored charts/durable-agents.
+
+temporal:
+  # The platform's Temporal (gitops/apps/temporal.yaml). durable-agents
+  # registers this namespace itself on startup (72h retention).
+  address: temporal-frontend.temporal.svc:7233
+  namespace: agent-controller
+
+taskQueue: durable-agents
+
+llm:
+  baseURL: https://api.openai.com/v1
+  model: gpt-4o-2024-08-06
+  embedModel: text-embedding-3-small
+  # Reuse the orchestrator's existing 1Password-synced secret — it already
+  # carries OPENAI_API_KEY and lives in this namespace.
+  secretName: agent-orchestrator-secrets
+
+qdrant:
+  # agent-deps' Qdrant (wave 41). 6334 = gRPC (the qdrant-helm service
+  # exposes it alongside HTTP 6333; verify with `kubectl -n agent-controller
+  # get svc agent-qdrant`).
+  host: agent-qdrant
+  port: 6334
+  # CRITICAL: the upstream orchestrator owns tools/skills/agents in this
+  # instance with a different payload schema. Never share collections.
+  collectionPrefix: "da-"
+
+# CRs live in the same namespace we deploy into on this platform.
+catalog:
+  namespace: agent-controller
+
+toolrun:
+  enabled: true
+
+callback:
+  # One secret serves both sides here (gateway verify + Job signing) since
+  # everything is in the agent-controller namespace. Synced from 1Password
+  # via onePasswordItems below — create the item first (single field
+  # AGENT_CALLBACK_SECRET, e.g. `openssl rand -hex 32`).
+  secretName: durable-agents-callback
+  secretKey: AGENT_CALLBACK_SECRET
+  baseURL: "" # derives http://durable-agents-gateway-callback.agent-controller.svc:8081
+
+onePasswordItems:
+  - name: durable-agents-callback
+    itemPath: vaults/bitovi-platform/items/durable-agents-callback
+
+gateway:
+  replicas: 1
+  image:
+    repository: 486491621059.dkr.ecr.us-east-1.amazonaws.com/durable-agents-gateway
+    tag: "" # SET ME — pushed image tag
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8080
+  identity:
+    # Same shared bearer token Open WebUI already sends to the upstream
+    # orchestrator; roles match the catalog CRs' allowedRoles
+    # (reader/writer). Cluster-internal only — same posture as upstream.
+    staticIdentities: '{"bitovi-openwebui-internal":{"subject":"open-webui","roles":["reader","writer"]}}'
+    defaultSubject: ""
+    defaultRoles: ""
+
+worker:
+  replicas: 1
+  image:
+    repository: 486491621059.dkr.ecr.us-east-1.amazonaws.com/durable-agents-worker
+    tag: "" # SET ME
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+catalogSync:
+  enabled: true
+  image:
+    repository: 486491621059.dkr.ecr.us-east-1.amazonaws.com/durable-agents-catalog-sync
+    tag: "" # SET ME
+    pullPolicy: IfNotPresent
