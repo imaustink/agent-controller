@@ -414,6 +414,68 @@ githubTool:
     providers:
       - github
 
+# ssh: runs a single allowlisted read-only diagnostic command (df/ps/
+# systemctl status/docker ps/journalctl/...) over SSH against a fixed set of
+# allowlisted hosts, authenticated with one shared, operator-provisioned key
+# -- there is no per-user SSH identity model in this repo (contrast
+# githubTool's identityLink above). See tools/ssh/README.md for the full
+# defense-in-depth model (host allowlist, command allowlist, plain-argument
+# charset, pinned host keys) before enabling this against real
+# infrastructure.
+sshTool:
+  enabled: false
+  image: ssh:latest
+  serviceAccountName: ssh-tool
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+  # Two INDEPENDENT, individually optional features for resolving/restricting
+  # a caller-supplied target -- at least one must be set or the Tool render
+  # fails (see templates/tool-ssh.yaml's `fail` guard):
+  #
+  #   allowedHosts: the authorization boundary -- comma-separated
+  #     "user@host[:port]" entries with no wildcard. A resolved target must
+  #     match this list when it's set; when it's empty/unset, ANY target
+  #     that resolves (via sshConfig below, or a caller's own literal
+  #     "user@host") is permitted -- only safe if sshConfig's own Host list
+  #     is itself a closed, trusted set.
+  #   sshConfig: ssh_config(5)-shaped content (Host/HostName/User/Port
+  #     blocks only -- every other directive is ignored, see
+  #     tools/ssh/src/sshconfig.ts) for resolving an alias like "kube0" the
+  #     same way the operator's own ~/.ssh/config already does. Independent
+  #     of allowedHosts -- can be used alone (trusting this file's own
+  #     curated Host list as the boundary) or together with it (aliases
+  #     resolve here, then the resolved user@host:port must still match
+  #     allowedHosts).
+  allowedHosts: ""
+  sshConfig: ""
+  # Fallback user when a target supplies none and no sshConfig Host block
+  # sets one either. Optional -- resolution fails closed without a user.
+  defaultUser: ""
+  # Which top-level remote commands are accepted. Empty/unset here means
+  # "use the tool's own built-in default" -- a curated read-only diagnostic
+  # set (df/ps/systemctl status/docker ps/journalctl/...), with the
+  # allowedRoles/description below adjusted to match. Set to "*" to disable
+  # the command allowlist entirely for this deployment -- this Tool can then
+  # write, delete, and restart services on any target it can reach, gated
+  # only by target resolution (allowedHosts/sshConfig above) and the
+  # remote-shell-injection charset check (tools/ssh/src/allowlist.ts), which
+  # always applies regardless of this setting. Only use "*" against
+  # infrastructure you're comfortable an agent could break.
+  allowedCommands: ""
+  # Secret (must already exist) supplying the shared private key and pinned
+  # known_hosts content:
+  #   kubectl create secret generic ssh-tool-secrets -n <ns> \
+  #     --from-file=SSH_PRIVATE_KEY=./id_ed25519_monitor \
+  #     --from-literal=SSH_KNOWN_HOSTS="$(ssh-keyscan nas.kurpuis.internal)"
+  secretName: ssh-tool-secrets
+  privateKeySecretKey: SSH_PRIVATE_KEY
+  knownHostsSecretKey: SSH_KNOWN_HOSTS
+
 skills:
   # recipe-refining: extract -> confirm -> publish -> refine (recipe-scraper +
   # recipe-publisher). Enable both those tools above for its derived audience
