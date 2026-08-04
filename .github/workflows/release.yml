@@ -103,6 +103,11 @@ jobs:
               - 'packages/messaging/**'
               - 'packages/github-app-auth/**'
               - 'tools/github/**'
+            ssh-tool:
+              - 'package.json'
+              - 'package-lock.json'
+              - 'packages/messaging/**'
+              - 'tools/ssh/**'
             core-controller:
               - 'controllers/core-controller/**'
             temporal-engine:
@@ -127,6 +132,7 @@ jobs:
           KUBECTL_READONLY: ${{ steps.filter.outputs.kubectl-readonly }}
           SIGNOZ_QUERY: ${{ steps.filter.outputs.signoz-query }}
           GITHUB_TOOL: ${{ steps.filter.outputs.github-tool }}
+          SSH_TOOL: ${{ steps.filter.outputs.ssh-tool }}
           CORE_CONTROLLER: ${{ steps.filter.outputs.core-controller }}
           TEMPORAL_ENGINE: ${{ steps.filter.outputs.temporal-engine }}
           LOCALTOOL_EXECUTOR: ${{ steps.filter.outputs.localtool-executor }}
@@ -144,6 +150,7 @@ jobs:
             {"image":"kubectl-readonly","changed_key":"KUBECTL_READONLY","dockerfile":"tools/kubectl-readonly/Dockerfile","context":"."},
             {"image":"signoz-query","changed_key":"SIGNOZ_QUERY","dockerfile":"tools/signoz-query/Dockerfile","context":"."},
             {"image":"github","changed_key":"GITHUB_TOOL","dockerfile":"tools/github/Dockerfile","context":"."},
+            {"image":"ssh","changed_key":"SSH_TOOL","dockerfile":"tools/ssh/Dockerfile","context":"."},
             {"image":"core-controller","changed_key":"CORE_CONTROLLER","dockerfile":"controllers/core-controller/Dockerfile","context":"controllers/core-controller"},
             {"image":"temporal-engine-worker","changed_key":"TEMPORAL_ENGINE","dockerfile":"engines/temporal/Dockerfile.worker","context":"engines/temporal"},
             {"image":"temporal-engine-gateway","changed_key":"TEMPORAL_ENGINE","dockerfile":"engines/temporal/Dockerfile.gateway","context":"engines/temporal"},
@@ -173,10 +180,11 @@ jobs:
               --arg KUBECTL_READONLY "$KUBECTL_READONLY" \
               --arg SIGNOZ_QUERY "$SIGNOZ_QUERY" \
               --arg GITHUB_TOOL "$GITHUB_TOOL" \
+              --arg SSH_TOOL "$SSH_TOOL" \
               --arg CORE_CONTROLLER "$CORE_CONTROLLER" \
               --arg TEMPORAL_ENGINE "$TEMPORAL_ENGINE" \
               --arg LOCALTOOL_EXECUTOR "$LOCALTOOL_EXECUTOR" \
-              '{AGENT_ORCHESTRATOR:$AGENT_ORCHESTRATOR,OPENCODE_SWE_AGENT:$OPENCODE_SWE_AGENT,CLAUDE_CODE_SWE_AGENT:$CLAUDE_CODE_SWE_AGENT,INTEGRATION_GATEWAY:$INTEGRATION_GATEWAY,RECIPE_SCRAPER:$RECIPE_SCRAPER,RECIPE_PUBLISHER:$RECIPE_PUBLISHER,WEB_SEARCH:$WEB_SEARCH,WEB_FETCH:$WEB_FETCH,KUBECTL_READONLY:$KUBECTL_READONLY,SIGNOZ_QUERY:$SIGNOZ_QUERY,GITHUB_TOOL:$GITHUB_TOOL,CORE_CONTROLLER:$CORE_CONTROLLER,TEMPORAL_ENGINE:$TEMPORAL_ENGINE,LOCALTOOL_EXECUTOR:$LOCALTOOL_EXECUTOR}')
+              '{AGENT_ORCHESTRATOR:$AGENT_ORCHESTRATOR,OPENCODE_SWE_AGENT:$OPENCODE_SWE_AGENT,CLAUDE_CODE_SWE_AGENT:$CLAUDE_CODE_SWE_AGENT,INTEGRATION_GATEWAY:$INTEGRATION_GATEWAY,RECIPE_SCRAPER:$RECIPE_SCRAPER,RECIPE_PUBLISHER:$RECIPE_PUBLISHER,WEB_SEARCH:$WEB_SEARCH,WEB_FETCH:$WEB_FETCH,KUBECTL_READONLY:$KUBECTL_READONLY,SIGNOZ_QUERY:$SIGNOZ_QUERY,GITHUB_TOOL:$GITHUB_TOOL,SSH_TOOL:$SSH_TOOL,CORE_CONTROLLER:$CORE_CONTROLLER,TEMPORAL_ENGINE:$TEMPORAL_ENGINE,LOCALTOOL_EXECUTOR:$LOCALTOOL_EXECUTOR}')
             MATRIX=$(jq -c --argjson flags "$FLAGS" 'map(select($flags[.changed_key] == "true"))' all.json)
           fi
 
