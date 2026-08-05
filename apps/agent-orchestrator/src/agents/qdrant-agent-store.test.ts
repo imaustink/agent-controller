@@ -50,6 +50,8 @@ describe("QdrantAgentStore", () => {
             name: "software-engineering-agent",
             description: agent.description,
             allowedRoles: ["writer"],
+            allowedPrincipals: [],
+            private: false,
             tier: "privileged",
             orchestratorPrompt: "Delegate the whole request verbatim as the goal.",
             identityProviders: null,
@@ -139,12 +141,24 @@ describe("QdrantAgentStore", () => {
     } as unknown as QdrantClient;
     const store = new QdrantAgentStore({ url: "http://q", collection: "agents", vectorSize: 3 }, fakeEmbedder(), client);
 
-    const results = await store.query("build a feature", { callerRoles: ["writer"] });
+    const results = await store.query("build a feature", { callerRoles: ["writer"], callerPrincipal: "github:octocat" });
 
+    // RBAC (allowedRoles) AND ABAC (public OR names the caller's principal,
+    // docs/adr/0037) — both under `must`.
     expect(client.search).toHaveBeenCalledWith("agents", {
       vector: [0.1, 0.2, 0.3],
       limit: 5,
-      filter: { must: [{ key: "allowedRoles", match: { any: ["writer"] } }] },
+      filter: {
+        must: [
+          { key: "allowedRoles", match: { any: ["writer"] } },
+          {
+            should: [
+              { key: "private", match: { value: false } },
+              { key: "allowedPrincipals", match: { any: ["github:octocat"] } },
+            ],
+          },
+        ],
+      },
     });
     expect(results).toEqual([{ agent, score: 0.9 }]);
   });
@@ -178,6 +192,34 @@ describe("QdrantAgentStore", () => {
     const store = new QdrantAgentStore({ url: "http://q", collection: "agents", vectorSize: 3 }, fakeEmbedder(), client);
 
     expect(await store.getByIds(["software-engineering-agent"], { callerRoles: ["writer"] })).toEqual([]);
+  });
+
+  it("getByIds enforces ABAC private-scoping on top of roles (docs/adr/0037)", async () => {
+    const client = {
+      retrieve: vi.fn().mockResolvedValue([
+        {
+          payload: {
+            id: "software-engineering-agent",
+            name: "software-engineering-agent",
+            description: agent.description,
+            allowedRoles: ["writer"],
+            allowedPrincipals: ["github:owner"],
+            private: true,
+            tier: null,
+            orchestratorPrompt: null,
+            namespace: "default",
+            agentRef: "software-engineering-agent",
+          },
+        },
+      ]),
+    } as unknown as QdrantClient;
+    const store = new QdrantAgentStore({ url: "http://q", collection: "agents", vectorSize: 3 }, fakeEmbedder(), client);
+
+    // Right role, wrong principal -> denied.
+    expect(await store.getByIds(["software-engineering-agent"], { callerRoles: ["writer"], callerPrincipal: "github:intruder" })).toEqual([]);
+    // Right role AND listed principal -> allowed.
+    const ok = await store.getByIds(["software-engineering-agent"], { callerRoles: ["writer"], callerPrincipal: "github:owner" });
+    expect(ok[0]?.agent.allowedPrincipals).toEqual(["github:owner"]);
   });
 
   it("delete maps domain ids to Qdrant point ids", async () => {

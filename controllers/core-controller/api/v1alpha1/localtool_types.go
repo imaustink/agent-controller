@@ -55,6 +55,16 @@ type LocalToolSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	AllowedRoles []string `json:"allowedRoles"`
 
+	// allowedPrincipals privately scopes this LocalTool to a specific set of
+	// users (ABAC, docs/adr/0037), layered ON TOP of the allowedRoles RBAC
+	// filter — same semantics as Tool.spec.allowedPrincipals. Empty (default)
+	// means only allowedRoles gates retrieval; non-empty makes the LocalTool
+	// PRIVATE to callers whose resolved principal (docs/adr/0030 §6) appears
+	// here, in addition to the RBAC check. Enforced by the orchestrator at
+	// query time, not by this controller.
+	// +optional
+	AllowedPrincipals []string `json:"allowedPrincipals,omitempty"`
+
 	// tier is an operator-defined cost/trust classification (e.g. "standard", "privileged").
 	// +optional
 	Tier string `json:"tier,omitempty"`

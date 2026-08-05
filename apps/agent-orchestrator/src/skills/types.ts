@@ -33,6 +33,16 @@ export interface SkillDescriptor {
    */
   agentIds: string[];
   /**
+   * ABAC private-scoping this skill declares of its OWN (docs/adr/0037 —
+   * `Skill.spec.allowedPrincipals`). Distinct from the private-scoping INHERITED
+   * from referenced tools/agents: derive-access.ts intersects this explicit
+   * list with the referenced resources' `allowedPrincipals` to compute
+   * {@link SkillAccess.effectivePrincipals}. Absent/empty means "no explicit
+   * skill-level restriction" — the skill is still bound by whatever its
+   * tools/agents are private to.
+   */
+  allowedPrincipals?: string[];
+  /**
    * Whether consumer-supplied tools (docs/adr/0035 — the request body's `tools`
    * array, executed by the caller's own client) may be offered to the action
    * planner alongside this skill's own `toolIds`/`agentIds`.
@@ -58,6 +68,20 @@ export interface SkillDescriptor {
 export interface SkillAccess {
   skill: SkillDescriptor;
   effectiveRoles: string[] | null;
+  /**
+   * Derived ABAC audience (docs/adr/0037): the intersection of the
+   * `allowedPrincipals` of the skill itself AND every referenced tool/agent
+   * that is itself private. `null` means unrestricted by ABAC (neither the
+   * skill nor any referenced tool/agent is private — today's behavior); a
+   * non-empty array means the skill is private to exactly those principals; an
+   * empty array means the private sets are disjoint, so the skill is
+   * authorable but unreachable (surfaced via console.error, mirrors the
+   * disjoint-`effectiveRoles` case).
+   *
+   * Optional so a `SkillAccess` built before this field existed (or by a test)
+   * still type-checks; consumers treat `undefined` as `null` (unrestricted).
+   */
+  effectivePrincipals?: string[] | null;
 }
 
 /**
@@ -70,6 +94,15 @@ export interface SkillQueryFilter {
    * unrestricted skills (`effectiveRoles: null`) — are returned.
    */
   callerRoles: string[];
+  /**
+   * The caller's resolved principal (docs/adr/0030 §6 — `identity.principal`,
+   * falling back to `identity.subject`), used to enforce ABAC private-scoping
+   * (docs/adr/0037): a skill with a non-empty derived `effectivePrincipals` is
+   * returned only when this value is one of them. Always supplied by the graph
+   * (a subject is always present), so a private skill fails closed when it
+   * doesn't match.
+   */
+  callerPrincipal: string;
 }
 
 export interface SkillSearchResult {

@@ -18,6 +18,14 @@ export interface AgentDescriptor {
   description: string;
   /** Roles/scopes allowed to select this agent; enforced as a retrieval filter (same discipline as Tool). */
   allowedRoles: string[];
+  /**
+   * ABAC private-scoping (docs/adr/0037): when non-empty, this agent is
+   * PRIVATE — only a caller whose resolved principal is in this list may
+   * retrieve/select it, layered ON TOP of {@link allowedRoles}. Absent/empty
+   * means no ABAC restriction (RBAC-only). Mirrors
+   * `Agent.spec.allowedPrincipals` and {@link ToolDescriptor.allowedPrincipals}.
+   */
+  allowedPrincipals?: string[];
   /** Optional coarse risk/cost tier, mirrors ToolDescriptor.tier. */
   tier?: string;
   /**
@@ -59,6 +67,15 @@ export interface AgentRunTemplate {
 export interface AgentQueryFilter {
   /** Only agents whose `allowedRoles` intersects this set are returned. */
   callerRoles: string[];
+  /**
+   * The caller's resolved principal (docs/adr/0030 §6 — `identity.principal`,
+   * falling back to `identity.subject`), used to enforce ABAC private-scoping
+   * (docs/adr/0037): an agent with a non-empty `allowedPrincipals` is returned
+   * only when this value is one of them, layered on top of the `callerRoles`
+   * check. Always supplied by the graph (a subject is always present), so a
+   * private agent fails closed when it doesn't match.
+   */
+  callerPrincipal: string;
 }
 
 export interface AgentSearchResult {

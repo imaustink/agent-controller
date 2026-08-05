@@ -1,4 +1,5 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
+import { abacMustClause } from "../vector-store/qdrant-abac.js";
 import { toQdrantPointId } from "../vector-store/qdrant-id.js";
 import type { Embedder } from "../vector-store/types.js";
 import type { SkillAccess, SkillDescriptor, SkillQueryFilter, SkillSearchResult, SkillStore } from "./types.js";
@@ -34,6 +35,15 @@ interface SkillPayload {
   effectiveRoles: string[];
   /** True for skills with no toolIds/agentIds — retrievable by any resolved identity. */
   unrestricted: boolean;
+  /**
+   * Derived ABAC audience (docs/adr/0037): the intersection of the skill's own
+   * `allowedPrincipals` and every referenced tool/agent that is itself private.
+   * Empty when {@link privateScope} is false (public); the exact private set
+   * otherwise (an empty list with `privateScope: true` means disjoint/unreachable).
+   */
+  allowedPrincipals: string[];
+  /** True when the skill is ABAC-private (derived `effectivePrincipals` is a non-null array). */
+  private: boolean;
   /**
    * Whether consumer-supplied tools may be offered alongside this skill's own
    * (docs/adr/0035 §4). `null` encodes "unset", which means ALLOWED — and is
@@ -77,7 +87,7 @@ export class QdrantSkillStore implements SkillStore {
     // array is a 400, not a no-op, on Qdrant's side -- guard it here.
     if (skills.length === 0) return;
     const points = await Promise.all(
-      skills.map(async ({ skill, effectiveRoles }) => ({
+      skills.map(async ({ skill, effectiveRoles, effectivePrincipals }) => ({
         // Qdrant's native point id must be an unsigned integer or a UUID --
         // arbitrary strings (e.g. "recipe-publisher-skill") are rejected
         // with a 400. Derive a stable UUID and keep the real id in payload.
@@ -92,6 +102,13 @@ export class QdrantSkillStore implements SkillStore {
           agentIds: skill.agentIds,
           effectiveRoles: effectiveRoles ?? [],
           unrestricted: effectiveRoles === null,
+          // ABAC (docs/adr/0037): `null`/absent -> public; an array (even empty)
+          // -> private. An empty array is a disjoint/unreachable skill, which
+          // must match NO principal — the mirror of the empty-`effectiveRoles`
+          // (disjoint-roles) case, so it maps to `private: true` with an empty
+          // list rather than to `private: false`.
+          allowedPrincipals: effectivePrincipals ?? [],
+          private: effectivePrincipals != null,
           allowCallerTools: skill.allowCallerTools ?? null,
         } satisfies SkillPayload,
       })),
@@ -108,13 +125,22 @@ export class QdrantSkillStore implements SkillStore {
     const results = await this.client.search(this.cfg.collection, {
       vector,
       limit: k,
-      // `should` clauses are OR'd (≥1 must match): a skill is a candidate if
-      // it is unrestricted (no toolIds) OR its derived effectiveRoles
-      // intersect the caller's roles (docs/adr/0011).
+      // Two independent gates, AND-combined under `must` — a skill is a
+      // candidate only if it passes BOTH:
+      //   RBAC (docs/adr/0011): unrestricted (no toolIds/agentIds) OR its
+      //     derived effectiveRoles intersect the caller's roles.
+      //   ABAC (docs/adr/0037): public OR its derived effectivePrincipals
+      //     name the caller's principal.
+      // Each gate is itself a nested `should` (OR) filter.
       filter: {
-        should: [
-          { key: "unrestricted", match: { value: true } },
-          { key: "effectiveRoles", match: { any: filter.callerRoles } },
+        must: [
+          {
+            should: [
+              { key: "unrestricted", match: { value: true } },
+              { key: "effectiveRoles", match: { any: filter.callerRoles } },
+            ],
+          },
+          abacMustClause(filter.callerPrincipal),
         ],
       },
     });
@@ -151,9 +177,18 @@ export class QdrantSkillStore implements SkillStore {
     for (const point of points) {
       const payload = point.payload as unknown as SkillPayload | undefined;
       if (!payload) continue;
-      // Same audience rule as `query`'s filter: unrestricted OR derived
-      // effectiveRoles intersect the caller's roles.
+      // Same two-gate audience rule as `query`'s filter. RBAC: unrestricted OR
+      // derived effectiveRoles intersect the caller's roles.
       if (!payload.unrestricted && !payload.effectiveRoles.some((role) => filter.callerRoles.includes(role))) {
+        continue;
+      }
+      // ABAC (docs/adr/0037): a private skill is only resolvable by a principal
+      // it names. `payload.private` distinguishes a genuinely public skill
+      // (empty list, allowed) from a disjoint/unreachable one (empty list,
+      // denied) — so for a private skill the empty list must deny, which a
+      // plain `.includes` does but `principalAllowed`'s "empty == public"
+      // shortcut would not.
+      if (payload.private && !payload.allowedPrincipals.includes(filter.callerPrincipal)) {
         continue;
       }
       skills.push({

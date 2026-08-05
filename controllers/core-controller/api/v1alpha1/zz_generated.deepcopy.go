@@ -202,6 +202,11 @@ func (in *AgentSpec) DeepCopyInto(out *AgentSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.AllowedPrincipals != nil {
+		in, out := &in.AllowedPrincipals, &out.AllowedPrincipals
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Env != nil {
 		in, out := &in.Env, &out.Env
 		*out = make([]EnvVar, len(*in))
@@ -498,6 +503,11 @@ func (in *LocalToolSpec) DeepCopyInto(out *LocalToolSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.AllowedPrincipals != nil {
+		in, out := &in.AllowedPrincipals, &out.AllowedPrincipals
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Env != nil {
 		in, out := &in.Env, &out.Env
 		*out = make([]EnvVar, len(*in))
@@ -672,6 +682,11 @@ func (in *SkillSpec) DeepCopyInto(out *SkillSpec) {
 	}
 	if in.AgentRefs != nil {
 		in, out := &in.AgentRefs, &out.AgentRefs
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.AllowedPrincipals != nil {
+		in, out := &in.AllowedPrincipals, &out.AllowedPrincipals
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
@@ -909,6 +924,11 @@ func (in *ToolSpec) DeepCopyInto(out *ToolSpec) {
 	*out = *in
 	if in.AllowedRoles != nil {
 		in, out := &in.AllowedRoles, &out.AllowedRoles
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.AllowedPrincipals != nil {
+		in, out := &in.AllowedPrincipals, &out.AllowedPrincipals
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}

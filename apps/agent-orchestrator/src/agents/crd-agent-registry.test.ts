@@ -55,6 +55,21 @@ describe("CrdAgentRegistry", () => {
     expect(agents[0]?.id).toBe("software-engineering-agent");
   });
 
+  it("carries Agent.spec.allowedPrincipals through for ABAC private-scoping (docs/adr/0037), and omits it when absent", async () => {
+    const privateAgent: AgentCustomResource = {
+      metadata: { name: "private-agent" },
+      spec: { ...validAgent.spec, allowedPrincipals: ["github:owner"] },
+    };
+    const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [privateAgent, validAgent] });
+    const api: CustomObjectsApiLike = { listNamespacedCustomObject };
+    const registry = new CrdAgentRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+
+    const agents = await registry.listAll();
+
+    expect(agents[0]?.allowedPrincipals).toEqual(["github:owner"]);
+    expect(agents[1]?.allowedPrincipals).toBeUndefined();
+  });
+
   it("returns an empty catalog when there are zero Agent resources", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };

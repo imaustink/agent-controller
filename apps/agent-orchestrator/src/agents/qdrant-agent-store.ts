@@ -1,4 +1,5 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
+import { abacMustClause, abacPayload, principalAllowed } from "../vector-store/qdrant-abac.js";
 import { toQdrantPointId } from "../vector-store/qdrant-id.js";
 import type { Embedder } from "../vector-store/types.js";
 import type { AgentDescriptor, AgentQueryFilter, AgentSearchResult, AgentStore } from "./types.js";
@@ -22,6 +23,10 @@ interface AgentPayload {
   name: string;
   description: string;
   allowedRoles: string[];
+  /** ABAC private-scope list (docs/adr/0037); empty when the agent is public. */
+  allowedPrincipals: string[];
+  /** Denormalized `allowedPrincipals.length > 0`, matched by the query filter. */
+  private: boolean;
   tier: string | null;
   orchestratorPrompt: string | null;
   identityProviders: string[] | null;
@@ -72,6 +77,7 @@ export class QdrantAgentStore implements AgentStore {
           name: agent.name,
           description: agent.description,
           allowedRoles: agent.allowedRoles,
+          ...abacPayload(agent.allowedPrincipals),
           tier: agent.tier ?? null,
           orchestratorPrompt: agent.orchestratorPrompt ?? null,
           identityProviders: agent.identityProviders ?? null,
@@ -92,8 +98,13 @@ export class QdrantAgentStore implements AgentStore {
     const results = await this.client.search(this.cfg.collection, {
       vector,
       limit: k,
+      // RBAC (allowedRoles intersect) AND ABAC (public OR names the caller's
+      // principal, docs/adr/0037) — both required, both under `must`.
       filter: {
-        must: [{ key: "allowedRoles", match: { any: filter.callerRoles } }],
+        must: [
+          { key: "allowedRoles", match: { any: filter.callerRoles } },
+          abacMustClause(filter.callerPrincipal),
+        ],
       },
     });
     return results.map((point) => ({ agent: toAgentDescriptor(point.payload as unknown as AgentPayload), score: point.score }));
@@ -113,6 +124,9 @@ export class QdrantAgentStore implements AgentStore {
       const payload = point.payload as unknown as AgentPayload | undefined;
       if (!payload) continue;
       if (!payload.allowedRoles.some((role) => filter.callerRoles.includes(role))) continue;
+      // ABAC (docs/adr/0037): a private agent is only resolvable by a caller it
+      // names, same fail-closed discipline as the RBAC check above.
+      if (!principalAllowed(payload.allowedPrincipals, filter.callerPrincipal)) continue;
       results.push({ agent: toAgentDescriptor(payload), score: 1 });
     }
     return results;
@@ -129,6 +143,7 @@ function toAgentDescriptor(payload: AgentPayload): AgentDescriptor {
     name: payload.name,
     description: payload.description,
     allowedRoles: payload.allowedRoles,
+    allowedPrincipals: payload.allowedPrincipals ?? undefined,
     tier: payload.tier ?? undefined,
     orchestratorPrompt: payload.orchestratorPrompt ?? undefined,
     identityProviders: payload.identityProviders ?? undefined,

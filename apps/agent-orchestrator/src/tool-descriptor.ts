@@ -83,6 +83,14 @@ export interface ToolDescriptor {
   /** Roles/scopes allowed to invoke this tool; enforced as a retrieval filter (ADR 0004). */
   allowedRoles: string[];
   /**
+   * ABAC private-scoping (docs/adr/0037): when non-empty, this tool is PRIVATE
+   * — only a caller whose resolved principal is in this list may retrieve/use
+   * it, layered ON TOP of {@link allowedRoles}. Absent/empty means no ABAC
+   * restriction (RBAC-only, today's behavior). Mirrors
+   * `Tool.spec.allowedPrincipals` / `LocalTool.spec.allowedPrincipals`.
+   */
+  allowedPrincipals?: string[];
+  /**
    * Job launch template (container tools, ADR 0010). Set for tools launched
    * as k8s Jobs; absent for LocalTools/agent-backed tools.
    */

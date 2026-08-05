@@ -60,6 +60,8 @@ describe("QdrantToolStore", () => {
             name: "recipe-scraper",
             description: tool.description,
             allowedRoles: ["reader"],
+            allowedPrincipals: [],
+            private: false,
             jobTemplate: tool.jobTemplate,
             localExec: null,
             agentRunTemplate: null,
@@ -69,6 +71,24 @@ describe("QdrantToolStore", () => {
       ],
       wait: true,
     });
+  });
+
+  it("upserts a privately-scoped tool with allowedPrincipals + private:true (docs/adr/0037)", async () => {
+    const client = { upsert: vi.fn().mockResolvedValue(true) } as unknown as QdrantClient;
+    const store = new QdrantToolStore({ url: "http://q", collection: "tools", vectorSize: 3 }, fakeEmbedder([1, 2, 3]), client);
+
+    await store.upsert([{ ...tool, allowedPrincipals: ["github:octocat"] }]);
+
+    expect(client.upsert).toHaveBeenCalledWith(
+      "tools",
+      expect.objectContaining({
+        points: [
+          expect.objectContaining({
+            payload: expect.objectContaining({ allowedPrincipals: ["github:octocat"], private: true }),
+          }),
+        ],
+      }),
+    );
   });
 
   it("round-trips an agent-backed tool's agentRunTemplate through upsert and query (regression: this field was silently dropped before)", async () => {
@@ -142,12 +162,24 @@ describe("QdrantToolStore", () => {
     } as unknown as QdrantClient;
     const store = new QdrantToolStore({ url: "http://q", collection: "tools", vectorSize: 3 }, fakeEmbedder(), client);
 
-    const results = await store.query("find a recipe tool", { callerRoles: ["reader"] }, 3);
+    const results = await store.query("find a recipe tool", { callerRoles: ["reader"], callerPrincipal: "github:octocat" }, 3);
 
+    // RBAC (allowedRoles) AND ABAC (public OR names the caller's principal,
+    // docs/adr/0037) — both under `must`.
     expect(client.search).toHaveBeenCalledWith("tools", {
       vector: [0.1, 0.2, 0.3],
       limit: 3,
-      filter: { must: [{ key: "allowedRoles", match: { any: ["reader"] } }] },
+      filter: {
+        must: [
+          { key: "allowedRoles", match: { any: ["reader"] } },
+          {
+            should: [
+              { key: "private", match: { value: false } },
+              { key: "allowedPrincipals", match: { any: ["github:octocat"] } },
+            ],
+          },
+        ],
+      },
     });
     expect(results).toEqual([{ tool, score: 0.9 }]);
   });
@@ -220,5 +252,55 @@ describe("QdrantToolStore", () => {
     const results = await store.getByIds(["recipe-scraper"], { callerRoles: ["reader"] });
 
     expect(results).toEqual([]);
+  });
+
+  it("getByIds excludes a privately-scoped tool when the caller's principal is not listed (docs/adr/0037)", async () => {
+    const client = {
+      retrieve: vi.fn().mockResolvedValue([
+        {
+          id: toQdrantPointId("recipe-scraper"),
+          payload: {
+            id: "recipe-scraper",
+            name: "recipe-scraper",
+            description: tool.description,
+            allowedRoles: ["reader"],
+            allowedPrincipals: ["github:owner"],
+            private: true,
+            jobTemplate: tool.jobTemplate,
+            tier: null,
+          },
+        },
+      ]),
+    } as unknown as QdrantClient;
+    const store = new QdrantToolStore({ url: "http://q", collection: "tools", vectorSize: 3 }, fakeEmbedder(), client);
+
+    const results = await store.getByIds(["recipe-scraper"], { callerRoles: ["reader"], callerPrincipal: "github:someone-else" });
+
+    expect(results).toEqual([]);
+  });
+
+  it("getByIds resolves a privately-scoped tool for a caller whose principal is listed (docs/adr/0037)", async () => {
+    const client = {
+      retrieve: vi.fn().mockResolvedValue([
+        {
+          id: toQdrantPointId("recipe-scraper"),
+          payload: {
+            id: "recipe-scraper",
+            name: "recipe-scraper",
+            description: tool.description,
+            allowedRoles: ["reader"],
+            allowedPrincipals: ["github:owner"],
+            private: true,
+            jobTemplate: tool.jobTemplate,
+            tier: null,
+          },
+        },
+      ]),
+    } as unknown as QdrantClient;
+    const store = new QdrantToolStore({ url: "http://q", collection: "tools", vectorSize: 3 }, fakeEmbedder(), client);
+
+    const results = await store.getByIds(["recipe-scraper"], { callerRoles: ["reader"], callerPrincipal: "github:owner" });
+
+    expect(results).toEqual([{ tool: { ...tool, allowedPrincipals: ["github:owner"] }, score: 1 }]);
   });
 });

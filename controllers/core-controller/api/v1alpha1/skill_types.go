@@ -72,6 +72,24 @@ type SkillSpec struct {
 	// +optional
 	AgentRefs []string `json:"agentRefs,omitempty"`
 
+	// allowedPrincipals privately scopes this Skill to a specific set of users
+	// (ABAC, docs/adr/0037). Unlike Tool/Agent, a Skill carries no allowedRoles
+	// of its own (ADR 0011) — its RBAC audience is DERIVED from the tools/agents
+	// it references. ABAC private-scoping is the one access marker a Skill may
+	// carry directly, because it is an explicit owner intent ("only these
+	// users") rather than a capability grant.
+	//
+	// When empty (the default) the Skill inherits any private-scoping of the
+	// tools/agents it references: the orchestrator intersects the
+	// allowedPrincipals of every referenced tool/agent that is itself private,
+	// so a Skill can never widen a private tool's audience. When non-empty it
+	// is additionally intersected with that inherited set, restricting the
+	// Skill to callers whose resolved principal (docs/adr/0030 §6) appears in
+	// the result. Enforced by the orchestrator at index/query time
+	// (derive-access.ts), never by this controller.
+	// +optional
+	AllowedPrincipals []string `json:"allowedPrincipals,omitempty"`
+
 	// allowCallerTools controls whether tools supplied by the CONSUMER in the
 	// request body (docs/adr/0035 — `/v1/chat/completions`'s `tools` array,
 	// executed by the caller's own client rather than by this cluster) may be

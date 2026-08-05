@@ -12,6 +12,8 @@ export interface AgentCustomResource {
     input: string;
     output: string;
     allowedRoles: string[];
+    /** ABAC private-scoping (docs/adr/0037 — `Agent.spec.allowedPrincipals`). */
+    allowedPrincipals?: string[];
     tier?: string;
     orchestratorPrompt?: string;
     /** Mirrors AgentDescriptor.identityProviders — see that field's doc comment. */
@@ -108,6 +110,7 @@ export function toAgentDescriptor(cr: AgentCustomResource, namespace: string): A
     name,
     description: `${spec.description}\n\nInput: ${spec.input}\nOutput: ${spec.output}`,
     allowedRoles: spec.allowedRoles ?? [],
+    allowedPrincipals: spec.allowedPrincipals,
     tier: spec.tier,
     orchestratorPrompt: spec.orchestratorPrompt,
     identityProviders: spec.identityProviders,

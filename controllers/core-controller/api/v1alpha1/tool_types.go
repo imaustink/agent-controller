@@ -93,6 +93,20 @@ type ToolSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	AllowedRoles []string `json:"allowedRoles"`
 
+	// allowedPrincipals privately scopes this Tool to a specific set of users
+	// (ABAC, docs/adr/0037), layered ON TOP of the allowedRoles RBAC filter.
+	// When empty (the default) only allowedRoles gates retrieval — today's
+	// behavior, unchanged. When non-empty the Tool is PRIVATE: a caller is a
+	// retrieval candidate only if they satisfy allowedRoles AND their resolved
+	// principal (docs/adr/0030 §6 — a stable per-human id such as
+	// `github:<login>`, falling back to the entry-point subject) appears in
+	// this list. The orchestrator enforces it as an additional query-time
+	// filter, fail-closed in the same way as allowedRoles (ADR 0004). This
+	// controller does not consume the field — it belongs on the CRD as the
+	// source of truth the operator (or the resource's owner) deploys.
+	// +optional
+	AllowedPrincipals []string `json:"allowedPrincipals,omitempty"`
+
 	// tier is an operator-defined cost/trust classification (e.g. "standard", "privileged").
 	// +optional
 	Tier string `json:"tier,omitempty"`

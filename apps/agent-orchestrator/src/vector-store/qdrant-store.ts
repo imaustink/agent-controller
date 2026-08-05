@@ -1,6 +1,7 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
 import type { JobTemplate, LocalToolSpec, ToolDescriptor } from "../tool-descriptor.js";
 import type { AgentRunTemplate } from "../agents/types.js";
+import { abacMustClause, abacPayload, principalAllowed } from "./qdrant-abac.js";
 import { toQdrantPointId } from "./qdrant-id.js";
 import type { Embedder, ToolQueryFilter, ToolSearchResult, VectorStore } from "./types.js";
 
@@ -23,6 +24,10 @@ interface ToolPayload {
   name: string;
   description: string;
   allowedRoles: string[];
+  /** ABAC private-scope list (docs/adr/0037); empty when the tool is public. */
+  allowedPrincipals: string[];
+  /** Denormalized `allowedPrincipals.length > 0`, matched by the query filter. */
+  private: boolean;
   /** Job launch template for container tools; null for LocalTools/agent-backed tools (ADR 0014). */
   jobTemplate: JobTemplate | null;
   /** Local execution spec for LocalTools; null otherwise (ADR 0014). */
@@ -77,6 +82,7 @@ export class QdrantToolStore implements VectorStore {
           name: tool.name,
           description: tool.description,
           allowedRoles: tool.allowedRoles,
+          ...abacPayload(tool.allowedPrincipals),
           jobTemplate: tool.jobTemplate ?? null,
           localExec: tool.localExec ?? null,
           agentRunTemplate: tool.agentRunTemplate ?? null,
@@ -96,8 +102,13 @@ export class QdrantToolStore implements VectorStore {
     const results = await this.client.search(this.cfg.collection, {
       vector,
       limit: k,
+      // RBAC (allowedRoles intersect) AND ABAC (public OR names the caller's
+      // principal, docs/adr/0037) — both required, so both live under `must`.
       filter: {
-        must: [{ key: "allowedRoles", match: { any: filter.callerRoles } }],
+        must: [
+          { key: "allowedRoles", match: { any: filter.callerRoles } },
+          abacMustClause(filter.callerPrincipal),
+        ],
       },
     });
     return results.map((point) => {
@@ -107,6 +118,7 @@ export class QdrantToolStore implements VectorStore {
         name: payload.name,
         description: payload.description,
         allowedRoles: payload.allowedRoles,
+        allowedPrincipals: payload.allowedPrincipals ?? undefined,
         jobTemplate: payload.jobTemplate ?? undefined,
         localExec: payload.localExec ?? undefined,
         agentRunTemplate: payload.agentRunTemplate ?? undefined,
@@ -130,11 +142,15 @@ export class QdrantToolStore implements VectorStore {
       const payload = point.payload as unknown as ToolPayload | undefined;
       if (!payload) continue;
       if (!payload.allowedRoles.some((role) => filter.callerRoles.includes(role))) continue;
+      // ABAC (docs/adr/0037): a private tool is only resolvable by a caller it
+      // names, same fail-closed discipline as the RBAC check above.
+      if (!principalAllowed(payload.allowedPrincipals, filter.callerPrincipal)) continue;
       const tool: ToolDescriptor = {
         id: payload.id,
         name: payload.name,
         description: payload.description,
         allowedRoles: payload.allowedRoles,
+        allowedPrincipals: payload.allowedPrincipals ?? undefined,
         jobTemplate: payload.jobTemplate ?? undefined,
         localExec: payload.localExec ?? undefined,
         agentRunTemplate: payload.agentRunTemplate ?? undefined,
