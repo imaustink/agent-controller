@@ -13,7 +13,7 @@ export interface ToolCustomResource {
     output: string;
     allowedRoles: string[];
     /**
-     * ABAC private-scoping (docs/adr/0036 — `Tool.spec.allowedPrincipals`).
+     * ABAC private-scoping (docs/adr/0037 — `Tool.spec.allowedPrincipals`).
      * Non-empty makes the Tool private to callers whose resolved principal is
      * listed, on top of the allowedRoles RBAC filter. Read straight onto the
      * resulting `ToolDescriptor.allowedPrincipals`.

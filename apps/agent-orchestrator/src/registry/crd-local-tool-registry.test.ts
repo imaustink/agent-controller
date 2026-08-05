@@ -76,7 +76,7 @@ describe("CrdLocalToolRegistry", () => {
     expect(tools[0].description).toContain("Fetches a URL");
   });
 
-  it("carries LocalTool.spec.allowedPrincipals through for ABAC private-scoping (docs/adr/0036)", () => {
+  it("carries LocalTool.spec.allowedPrincipals through for ABAC private-scoping (docs/adr/0037)", () => {
     const privateLocalTool: LocalToolCustomResource = {
       ...nodeTool,
       spec: { ...nodeTool.spec, allowedPrincipals: ["github:owner"] },

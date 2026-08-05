@@ -28,7 +28,7 @@ export interface SkillCustomResource {
      */
     agentRefs?: string[];
     /**
-     * ABAC private-scoping this skill declares of its own (docs/adr/0036 —
+     * ABAC private-scoping this skill declares of its own (docs/adr/0037 —
      * `Skill.spec.allowedPrincipals`). Intersected with the private-scoping of
      * referenced tools/agents by derive-access.ts to compute the skill's
      * effective ABAC audience.

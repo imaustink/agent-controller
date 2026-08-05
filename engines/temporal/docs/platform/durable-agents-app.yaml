@@ -1,0 +1,64 @@
+# DRAFT — copy to bitovi-platform-services/gitops/apps/durable-agents.yaml
+# after vendoring the chart (see docs/platform/README.md). Follows the
+# agent-orchestrator pattern: workload band of the agent-controller stack.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: durable-agents
+  namespace: argocd
+  annotations:
+    # Wave 43 — alongside agent-orchestrator: needs the CRDs (40), Qdrant
+    # (41), and catalog CRs (42). Runs BESIDE the upstream orchestrator, not
+    # instead of it: separate Qdrant collections (da- prefix), HTTP-callback
+    # ToolRuns coexist with its NATS-mode ones under the same controller.
+    argocd.argoproj.io/sync-wave: "43"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  sources:
+    - repoURL: https://github.com/bitovi/bitovi-platform-services.git
+      targetRevision: main
+      ref: values
+    - repoURL: https://github.com/bitovi/bitovi-platform-services.git
+      targetRevision: main
+      path: charts/durable-agents
+      helm:
+        releaseName: durable-agents
+        valueFiles:
+          - $values/gitops/durable-agents/values.yaml
+    # AWS footprint: the three ECR repos, platform-managed (Crossplane).
+    # Deployments are gated on image.tag, so first sync creates the repos
+    # with the workloads dormant; images are built/pushed locally (the
+    # source repo is private — no CI), then image.tag in
+    # gitops/durable-agents/values.yaml activates them. eso off: nothing to
+    # push to a GitHub repo. The conventional OIDC push role is unused.
+    - repoURL: https://github.com/bitovi/bitovi-platform-services.git
+      targetRevision: main
+      path: charts/platform-app-resources
+      helm:
+        releaseName: durable-agents-aws
+        valuesObject:
+          app:
+            name: durable-agents-gateway
+            repo: bitovi/bitovi-platform-services
+          kind: container
+          crossplane:
+            enabled: true
+            awsXR: true
+            deletionProtection: true
+          eso:
+            enabled: false
+          ecr:
+            additionalRepositories:
+              - durable-agents-worker
+              - durable-agents-catalog-sync
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agent-controller
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

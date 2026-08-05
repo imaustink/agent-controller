@@ -1,6 +1,6 @@
 /**
  * Shared ABAC (attribute-based access control) private-scoping helpers for the
- * Qdrant-backed stores (docs/adr/0036). Kept next to `qdrant-id.ts` so the
+ * Qdrant-backed stores (docs/adr/0037). Kept next to `qdrant-id.ts` so the
  * three stores (tool, agent, skill) enforce the SAME rule the same way, and so
  * the vector-store adapters remain the only modules that know the Qdrant
  * payload/filter shape.

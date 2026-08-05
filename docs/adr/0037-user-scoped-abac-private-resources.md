@@ -1,4 +1,4 @@
-# 0036. User-scoped ABAC: `allowedPrincipals` privately scopes a Tool/Agent/Skill on top of RBAC
+# 0037. User-scoped ABAC: `allowedPrincipals` privately scopes a Tool/Agent/Skill on top of RBAC
 
 Date: 2026-08-02
 

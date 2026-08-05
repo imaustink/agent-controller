@@ -29,7 +29,7 @@ things called out as open questions in the design doc.
    its own; its audience is the intersection of its tools' `allowedRoles`,
    computed at startup (ADR 0011). An unresolved identity always yields
    zero candidates (ADR 0008). The same filter also enforces **ABAC
-   private-scoping** (ADR 0036): a `Tool`/`Agent`/`Skill` with a non-empty
+   private-scoping** (ADR 0037): a `Tool`/`Agent`/`Skill` with a non-empty
    `allowedPrincipals` is a candidate only for a caller whose resolved
    principal (ADR 0030 §6) is listed — layered on top of the role check, so
    an owner can mark a resource private to specific users without a
@@ -137,7 +137,7 @@ spec:
   input: "A URL on stdin."
   output: "An envelope { status, body }."
   allowedRoles: ["reader"]
-  # Optional ABAC private-scoping (ADR 0036): if set, only these principals
+  # Optional ABAC private-scoping (ADR 0037): if set, only these principals
   # (on top of allowedRoles) may retrieve/use the tool. Omit for a public tool.
   # allowedPrincipals: ["github:owner"]
   runtime: node

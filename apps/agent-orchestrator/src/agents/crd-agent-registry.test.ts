@@ -55,7 +55,7 @@ describe("CrdAgentRegistry", () => {
     expect(agents[0]?.id).toBe("software-engineering-agent");
   });
 
-  it("carries Agent.spec.allowedPrincipals through for ABAC private-scoping (docs/adr/0036), and omits it when absent", async () => {
+  it("carries Agent.spec.allowedPrincipals through for ABAC private-scoping (docs/adr/0037), and omits it when absent", async () => {
     const privateAgent: AgentCustomResource = {
       metadata: { name: "private-agent" },
       spec: { ...validAgent.spec, allowedPrincipals: ["github:owner"] },

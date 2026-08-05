@@ -24,7 +24,7 @@ interface ToolPayload {
   name: string;
   description: string;
   allowedRoles: string[];
-  /** ABAC private-scope list (docs/adr/0036); empty when the tool is public. */
+  /** ABAC private-scope list (docs/adr/0037); empty when the tool is public. */
   allowedPrincipals: string[];
   /** Denormalized `allowedPrincipals.length > 0`, matched by the query filter. */
   private: boolean;
@@ -103,7 +103,7 @@ export class QdrantToolStore implements VectorStore {
       vector,
       limit: k,
       // RBAC (allowedRoles intersect) AND ABAC (public OR names the caller's
-      // principal, docs/adr/0036) — both required, so both live under `must`.
+      // principal, docs/adr/0037) — both required, so both live under `must`.
       filter: {
         must: [
           { key: "allowedRoles", match: { any: filter.callerRoles } },
@@ -142,7 +142,7 @@ export class QdrantToolStore implements VectorStore {
       const payload = point.payload as unknown as ToolPayload | undefined;
       if (!payload) continue;
       if (!payload.allowedRoles.some((role) => filter.callerRoles.includes(role))) continue;
-      // ABAC (docs/adr/0036): a private tool is only resolvable by a caller it
+      // ABAC (docs/adr/0037): a private tool is only resolvable by a caller it
       // names, same fail-closed discipline as the RBAC check above.
       if (!principalAllowed(payload.allowedPrincipals, filter.callerPrincipal)) continue;
       const tool: ToolDescriptor = {

@@ -23,7 +23,7 @@ interface AgentPayload {
   name: string;
   description: string;
   allowedRoles: string[];
-  /** ABAC private-scope list (docs/adr/0036); empty when the agent is public. */
+  /** ABAC private-scope list (docs/adr/0037); empty when the agent is public. */
   allowedPrincipals: string[];
   /** Denormalized `allowedPrincipals.length > 0`, matched by the query filter. */
   private: boolean;
@@ -99,7 +99,7 @@ export class QdrantAgentStore implements AgentStore {
       vector,
       limit: k,
       // RBAC (allowedRoles intersect) AND ABAC (public OR names the caller's
-      // principal, docs/adr/0036) — both required, both under `must`.
+      // principal, docs/adr/0037) — both required, both under `must`.
       filter: {
         must: [
           { key: "allowedRoles", match: { any: filter.callerRoles } },
@@ -124,7 +124,7 @@ export class QdrantAgentStore implements AgentStore {
       const payload = point.payload as unknown as AgentPayload | undefined;
       if (!payload) continue;
       if (!payload.allowedRoles.some((role) => filter.callerRoles.includes(role))) continue;
-      // ABAC (docs/adr/0036): a private agent is only resolvable by a caller it
+      // ABAC (docs/adr/0037): a private agent is only resolvable by a caller it
       // names, same fail-closed discipline as the RBAC check above.
       if (!principalAllowed(payload.allowedPrincipals, filter.callerPrincipal)) continue;
       results.push({ agent: toAgentDescriptor(payload), score: 1 });

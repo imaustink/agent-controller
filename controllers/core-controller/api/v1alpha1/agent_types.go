@@ -67,7 +67,7 @@ type AgentSpec struct {
 	AllowedRoles []string `json:"allowedRoles"`
 
 	// allowedPrincipals privately scopes this Agent to a specific set of users
-	// (ABAC, docs/adr/0036), layered ON TOP of the allowedRoles RBAC filter —
+	// (ABAC, docs/adr/0037), layered ON TOP of the allowedRoles RBAC filter —
 	// same semantics as Tool.spec.allowedPrincipals. Empty (default) means
 	// only allowedRoles gates retrieval; non-empty makes the Agent PRIVATE to
 	// callers whose resolved principal (docs/adr/0030 §6) appears here, in

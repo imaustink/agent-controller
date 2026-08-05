@@ -33,7 +33,7 @@ export interface SkillDescriptor {
    */
   agentIds: string[];
   /**
-   * ABAC private-scoping this skill declares of its OWN (docs/adr/0036 —
+   * ABAC private-scoping this skill declares of its OWN (docs/adr/0037 —
    * `Skill.spec.allowedPrincipals`). Distinct from the private-scoping INHERITED
    * from referenced tools/agents: derive-access.ts intersects this explicit
    * list with the referenced resources' `allowedPrincipals` to compute
@@ -69,7 +69,7 @@ export interface SkillAccess {
   skill: SkillDescriptor;
   effectiveRoles: string[] | null;
   /**
-   * Derived ABAC audience (docs/adr/0036): the intersection of the
+   * Derived ABAC audience (docs/adr/0037): the intersection of the
    * `allowedPrincipals` of the skill itself AND every referenced tool/agent
    * that is itself private. `null` means unrestricted by ABAC (neither the
    * skill nor any referenced tool/agent is private — today's behavior); a
@@ -97,7 +97,7 @@ export interface SkillQueryFilter {
   /**
    * The caller's resolved principal (docs/adr/0030 §6 — `identity.principal`,
    * falling back to `identity.subject`), used to enforce ABAC private-scoping
-   * (docs/adr/0036): a skill with a non-empty derived `effectivePrincipals` is
+   * (docs/adr/0037): a skill with a non-empty derived `effectivePrincipals` is
    * returned only when this value is one of them. Always supplied by the graph
    * (a subject is always present), so a private skill fails closed when it
    * doesn't match.

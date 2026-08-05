@@ -36,7 +36,7 @@ interface SkillPayload {
   /** True for skills with no toolIds/agentIds — retrievable by any resolved identity. */
   unrestricted: boolean;
   /**
-   * Derived ABAC audience (docs/adr/0036): the intersection of the skill's own
+   * Derived ABAC audience (docs/adr/0037): the intersection of the skill's own
    * `allowedPrincipals` and every referenced tool/agent that is itself private.
    * Empty when {@link privateScope} is false (public); the exact private set
    * otherwise (an empty list with `privateScope: true` means disjoint/unreachable).
@@ -102,7 +102,7 @@ export class QdrantSkillStore implements SkillStore {
           agentIds: skill.agentIds,
           effectiveRoles: effectiveRoles ?? [],
           unrestricted: effectiveRoles === null,
-          // ABAC (docs/adr/0036): `null`/absent -> public; an array (even empty)
+          // ABAC (docs/adr/0037): `null`/absent -> public; an array (even empty)
           // -> private. An empty array is a disjoint/unreachable skill, which
           // must match NO principal — the mirror of the empty-`effectiveRoles`
           // (disjoint-roles) case, so it maps to `private: true` with an empty
@@ -129,7 +129,7 @@ export class QdrantSkillStore implements SkillStore {
       // candidate only if it passes BOTH:
       //   RBAC (docs/adr/0011): unrestricted (no toolIds/agentIds) OR its
       //     derived effectiveRoles intersect the caller's roles.
-      //   ABAC (docs/adr/0036): public OR its derived effectivePrincipals
+      //   ABAC (docs/adr/0037): public OR its derived effectivePrincipals
       //     name the caller's principal.
       // Each gate is itself a nested `should` (OR) filter.
       filter: {
@@ -182,7 +182,7 @@ export class QdrantSkillStore implements SkillStore {
       if (!payload.unrestricted && !payload.effectiveRoles.some((role) => filter.callerRoles.includes(role))) {
         continue;
       }
-      // ABAC (docs/adr/0036): a private skill is only resolvable by a principal
+      // ABAC (docs/adr/0037): a private skill is only resolvable by a principal
       // it names. `payload.private` distinguishes a genuinely public skill
       // (empty list, allowed) from a disjoint/unreachable one (empty list,
       // denied) — so for a private skill the empty list must deny, which a

@@ -102,6 +102,41 @@ jobs:
       - name: Test
         run: go test ./...
 
+  temporal-engine:
+    name: Go temporal-engine (build, vet, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: engines/temporal
+    steps:
+      - uses: actions/checkout@v5
+
+      # Its own job rather than a row in the `go` matrix above: that matrix is
+      # for modules with no external dependencies and deliberately disables
+      # setup-go's cache, while this module has a go.sum worth caching.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: engines/temporal/go.mod
+          cache-dependency-path: engines/temporal/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-clean; run 'gofmt -w .':"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
   core-controller:
     name: Go core-controller (lint, test, build)
     runs-on: ubuntu-latest

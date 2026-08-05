@@ -127,7 +127,7 @@ describe("deriveSkillAccess (ADR 0011, extended to agents by ADR 0021)", () => {
     }
   });
 
-  // ── ABAC private-scoping (docs/adr/0036) ──────────────────────────────────
+  // ── ABAC private-scoping (docs/adr/0037) ──────────────────────────────────
 
   it("leaves effectivePrincipals null when neither the skill nor any tool/agent is private", () => {
     const access = deriveSkillAccess([skill("s", ["scraper"])], [tool("scraper", ["reader"])], []);

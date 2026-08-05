@@ -29,7 +29,7 @@ function intersect(running: string[] | undefined, next: string[]): string[] {
  * - a disjoint intersection also yields `[]` — the skill is authorable but
  *   unreachable, surfaced via console.error instead of a runtime dead-end.
  *
- * ABAC private-scoping (docs/adr/0036) is derived on the SAME principle, in a
+ * ABAC private-scoping (docs/adr/0037) is derived on the SAME principle, in a
  * second, independent axis — `effectivePrincipals`:
  *
  * - the skill's OWN `allowedPrincipals`, intersected with the
@@ -65,7 +65,7 @@ export function deriveSkillAccess(
   const principalsByAgentId = new Map(agents.map((agent) => [agent.id, agent.allowedPrincipals ?? []]));
 
   return skills.map((skill) => {
-    // ── ABAC axis (docs/adr/0036): independent of roles, so it is derived
+    // ── ABAC axis (docs/adr/0037): independent of roles, so it is derived
     // even for a respond-only skill (which may still be privately scoped to
     // its owner). A referenced tool/agent constrains only when it is itself
     // private (non-empty allowedPrincipals). A missing ref is handled by the

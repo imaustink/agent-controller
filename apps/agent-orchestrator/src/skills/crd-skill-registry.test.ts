@@ -57,7 +57,7 @@ describe("CrdSkillRegistry", () => {
     expect(skills[0].agentIds).toEqual(["opencode-swe-agent"]);
   });
 
-  it("carries Skill.spec.allowedPrincipals through for ABAC private-scoping (docs/adr/0036), and omits it when absent", async () => {
+  it("carries Skill.spec.allowedPrincipals through for ABAC private-scoping (docs/adr/0037), and omits it when absent", async () => {
     const privateSkill: SkillCustomResource = {
       metadata: { name: "private-skill" },
       spec: { description: "Owner-only", markdown: "# private", allowedPrincipals: ["github:owner"] },

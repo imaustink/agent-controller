@@ -13,7 +13,7 @@ const skill: SkillDescriptor = {
   toolIds: ["recipe-scraper", "recipe-publisher"],
 };
 
-/** Derived audience as computed by derive-access.ts (ADR 0011/0036). */
+/** Derived audience as computed by derive-access.ts (ADR 0011/0037). */
 const skillAccess: SkillAccess = { skill, effectiveRoles: ["reader"], effectivePrincipals: null };
 
 function fakeEmbedder(vector = [0.1, 0.2, 0.3]): Embedder {
@@ -66,7 +66,7 @@ describe("QdrantSkillStore", () => {
             toolIds: skill.toolIds,
             effectiveRoles: ["reader"],
             unrestricted: false,
-            // ABAC (docs/adr/0036): effectivePrincipals null -> public.
+            // ABAC (docs/adr/0037): effectivePrincipals null -> public.
             allowedPrincipals: [],
             private: false,
             // null encodes "unset", which means caller tools are ALLOWED
@@ -102,7 +102,7 @@ describe("QdrantSkillStore", () => {
     });
   });
 
-  it("marks a privately-scoped skill (effectivePrincipals set) as private in the payload (docs/adr/0036)", async () => {
+  it("marks a privately-scoped skill (effectivePrincipals set) as private in the payload (docs/adr/0037)", async () => {
     const client = { upsert: vi.fn().mockResolvedValue(true) } as unknown as QdrantClient;
     const store = new QdrantSkillStore({ url: "http://q", collection: "skills", vectorSize: 3 }, fakeEmbedder([1, 2, 3]), client);
 
@@ -114,7 +114,7 @@ describe("QdrantSkillStore", () => {
     });
   });
 
-  it("marks a disjoint (unreachable) skill as private with an empty list, so it matches no principal (docs/adr/0036)", async () => {
+  it("marks a disjoint (unreachable) skill as private with an empty list, so it matches no principal (docs/adr/0037)", async () => {
     const client = { upsert: vi.fn().mockResolvedValue(true) } as unknown as QdrantClient;
     const store = new QdrantSkillStore({ url: "http://q", collection: "skills", vectorSize: 3 }, fakeEmbedder([1, 2, 3]), client);
 
@@ -159,7 +159,7 @@ describe("QdrantSkillStore", () => {
     const results = await store.query("extract a recipe", { callerRoles: ["reader"], callerPrincipal: "github:octocat" }, 3);
 
     // Two AND-combined gates under `must`: RBAC (unrestricted OR roles
-    // intersect) and ABAC (public OR names the caller's principal, ADR 0036).
+    // intersect) and ABAC (public OR names the caller's principal, ADR 0037).
     expect(client.search).toHaveBeenCalledWith("skills", {
       vector: [0.1, 0.2, 0.3],
       limit: 3,
@@ -249,7 +249,7 @@ describe("QdrantSkillStore", () => {
       expect(results.map((s) => s.id)).toEqual(["faq-skill"]);
     });
 
-    it("enforces ABAC private-scoping: a private skill resolves only for a listed principal (docs/adr/0036)", async () => {
+    it("enforces ABAC private-scoping: a private skill resolves only for a listed principal (docs/adr/0037)", async () => {
       const privatePayload = { ...payload, private: true, allowedPrincipals: ["github:owner"] };
       const client = {
         retrieve: vi.fn().mockResolvedValue([{ id: toQdrantPointId("recipe-publisher-skill"), payload: privatePayload }]),
@@ -263,7 +263,7 @@ describe("QdrantSkillStore", () => {
       expect(ok.map((s) => s.id)).toEqual(["recipe-publisher-skill"]);
     });
 
-    it("never resolves a disjoint (private, empty-list) skill, for any principal (docs/adr/0036)", async () => {
+    it("never resolves a disjoint (private, empty-list) skill, for any principal (docs/adr/0037)", async () => {
       const unreachable = { ...payload, private: true, allowedPrincipals: [] };
       const client = {
         retrieve: vi.fn().mockResolvedValue([{ id: toQdrantPointId("recipe-publisher-skill"), payload: unreachable }]),

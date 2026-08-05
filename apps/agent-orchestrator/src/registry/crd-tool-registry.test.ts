@@ -126,7 +126,7 @@ describe("CrdToolRegistry", () => {
     expect(tools[0]!.identityProviders).toBeUndefined();
   });
 
-  it("carries Tool.spec.allowedPrincipals through to the ToolDescriptor for ABAC private-scoping (docs/adr/0036)", async () => {
+  it("carries Tool.spec.allowedPrincipals through to the ToolDescriptor for ABAC private-scoping (docs/adr/0037)", async () => {
     const privateTool: ToolCustomResource = {
       metadata: { name: "private-scraper" },
       spec: {

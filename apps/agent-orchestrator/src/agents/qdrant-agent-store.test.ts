@@ -144,7 +144,7 @@ describe("QdrantAgentStore", () => {
     const results = await store.query("build a feature", { callerRoles: ["writer"], callerPrincipal: "github:octocat" });
 
     // RBAC (allowedRoles) AND ABAC (public OR names the caller's principal,
-    // docs/adr/0036) — both under `must`.
+    // docs/adr/0037) — both under `must`.
     expect(client.search).toHaveBeenCalledWith("agents", {
       vector: [0.1, 0.2, 0.3],
       limit: 5,
@@ -194,7 +194,7 @@ describe("QdrantAgentStore", () => {
     expect(await store.getByIds(["software-engineering-agent"], { callerRoles: ["writer"] })).toEqual([]);
   });
 
-  it("getByIds enforces ABAC private-scoping on top of roles (docs/adr/0036)", async () => {
+  it("getByIds enforces ABAC private-scoping on top of roles (docs/adr/0037)", async () => {
     const client = {
       retrieve: vi.fn().mockResolvedValue([
         {

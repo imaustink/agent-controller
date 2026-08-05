@@ -42,7 +42,7 @@ spec:
               allowedPrincipals:
                 description: |-
                   allowedPrincipals privately scopes this LocalTool to a specific set of
-                  users (ABAC, docs/adr/0036), layered ON TOP of the allowedRoles RBAC
+                  users (ABAC, docs/adr/0037), layered ON TOP of the allowedRoles RBAC
                   filter — same semantics as Tool.spec.allowedPrincipals. Empty (default)
                   means only allowedRoles gates retrieval; non-empty makes the LocalTool
                   PRIVATE to callers whose resolved principal (docs/adr/0030 §6) appears

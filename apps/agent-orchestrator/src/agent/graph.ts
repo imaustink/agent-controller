@@ -1265,7 +1265,7 @@ async function noMatchFallback(state: AgentState, deps: AgentGraphDeps): Promise
  * The RBAC+ABAC retrieval filter for a resolved caller, shared by every
  * tool/agent/skill store query and id-lookup in the graph so both access
  * dimensions are enforced identically everywhere. `callerRoles` gates RBAC
- * (ADR 0004); `callerPrincipal` gates ABAC private-scoping (docs/adr/0036) and
+ * (ADR 0004); `callerPrincipal` gates ABAC private-scoping (docs/adr/0037) and
  * is the caller's resolved principal (docs/adr/0030 §6), falling back to the
  * entry-point subject — the same value `resolveIdentity` already computes and
  * pins onto `identity.principal`.

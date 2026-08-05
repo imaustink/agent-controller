@@ -73,7 +73,7 @@ describe("QdrantToolStore", () => {
     });
   });
 
-  it("upserts a privately-scoped tool with allowedPrincipals + private:true (docs/adr/0036)", async () => {
+  it("upserts a privately-scoped tool with allowedPrincipals + private:true (docs/adr/0037)", async () => {
     const client = { upsert: vi.fn().mockResolvedValue(true) } as unknown as QdrantClient;
     const store = new QdrantToolStore({ url: "http://q", collection: "tools", vectorSize: 3 }, fakeEmbedder([1, 2, 3]), client);
 
@@ -165,7 +165,7 @@ describe("QdrantToolStore", () => {
     const results = await store.query("find a recipe tool", { callerRoles: ["reader"], callerPrincipal: "github:octocat" }, 3);
 
     // RBAC (allowedRoles) AND ABAC (public OR names the caller's principal,
-    // docs/adr/0036) — both under `must`.
+    // docs/adr/0037) — both under `must`.
     expect(client.search).toHaveBeenCalledWith("tools", {
       vector: [0.1, 0.2, 0.3],
       limit: 3,
@@ -254,7 +254,7 @@ describe("QdrantToolStore", () => {
     expect(results).toEqual([]);
   });
 
-  it("getByIds excludes a privately-scoped tool when the caller's principal is not listed (docs/adr/0036)", async () => {
+  it("getByIds excludes a privately-scoped tool when the caller's principal is not listed (docs/adr/0037)", async () => {
     const client = {
       retrieve: vi.fn().mockResolvedValue([
         {
@@ -279,7 +279,7 @@ describe("QdrantToolStore", () => {
     expect(results).toEqual([]);
   });
 
-  it("getByIds resolves a privately-scoped tool for a caller whose principal is listed (docs/adr/0036)", async () => {
+  it("getByIds resolves a privately-scoped tool for a caller whose principal is listed (docs/adr/0037)", async () => {
     const client = {
       retrieve: vi.fn().mockResolvedValue([
         {

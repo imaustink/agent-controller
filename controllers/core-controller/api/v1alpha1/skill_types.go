@@ -73,7 +73,7 @@ type SkillSpec struct {
 	AgentRefs []string `json:"agentRefs,omitempty"`
 
 	// allowedPrincipals privately scopes this Skill to a specific set of users
-	// (ABAC, docs/adr/0036). Unlike Tool/Agent, a Skill carries no allowedRoles
+	// (ABAC, docs/adr/0037). Unlike Tool/Agent, a Skill carries no allowedRoles
 	// of its own (ADR 0011) — its RBAC audience is DERIVED from the tools/agents
 	// it references. ABAC private-scoping is the one access marker a Skill may
 	// carry directly, because it is an explicit owner intent ("only these

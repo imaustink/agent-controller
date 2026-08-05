@@ -12,7 +12,7 @@ export interface AgentCustomResource {
     input: string;
     output: string;
     allowedRoles: string[];
-    /** ABAC private-scoping (docs/adr/0036 — `Agent.spec.allowedPrincipals`). */
+    /** ABAC private-scoping (docs/adr/0037 — `Agent.spec.allowedPrincipals`). */
     allowedPrincipals?: string[];
     tier?: string;
     orchestratorPrompt?: string;
