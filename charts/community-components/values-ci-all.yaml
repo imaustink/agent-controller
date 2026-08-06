@@ -38,6 +38,15 @@ kubectlReadonly:
 signozQuery:
   enabled: true
 
+# Enabled with a throwaway sshConfig so the fail guard (at least one of
+# allowedHosts/sshConfig required) passes and both templates render.
+sshTool:
+  enabled: true
+  sshConfig: |
+    Host ci-host
+      HostName ci-host.example.invalid
+      User ci
+
 recipePublisher:
   enabled: true
   # Required by the template when enabled; never reached, the render is discarded.

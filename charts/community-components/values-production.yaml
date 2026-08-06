@@ -190,6 +190,98 @@ githubTool:
     providers:
       - github
 
+# ssh: command execution over SSH, resolved via a copy of the operator's own
+# ~/.ssh/config Host aliases (home/bastion/console, printcam/airvinyl/
+# airbuddy -- deliberately excludes the Verizon/client boxes and "parents"
+# also in that file). kube0-8 and db1-3 were deliberately dropped even
+# though they're read-only-safe candidates: allowedCommands: "*" below
+# means this tool can now WRITE on anything it reaches, and those are the
+# actual cluster/database nodes this repo runs on -- too much blast radius
+# for "*" for now. Re-add them (and their allowedHosts entries) once a
+# dedicated, less-privileged key backs this tool instead of the operator's
+# own id_rsa, or if allowedCommands is narrowed back down from "*".
+#
+# allowedCommands is "*" -- WIDE OPEN, no command allowlist at all beyond
+# the remote-shell-injection charset check (tools/ssh/src/allowlist.ts).
+# This deliberately trades the tool's default read-only-diagnostics posture
+# for read/write capability (restart services, edit/delete files, ...) on
+# every host below, per explicit operator request: accepted as tolerable
+# risk against homelab boxes the operator doesn't mind breaking for now.
+# Don't copy "*" into a values file for infrastructure that matters more --
+# use a custom comma-separated command list instead. The only remaining
+# boundaries here are allowedHosts below and whatever the operator's own
+# id_rsa can already do on each target.
+#
+# allowedHosts is set below, DERIVED from the sshConfig block's own Host
+# list -- it is NOT a redundant second allowlist. resolveTarget
+# (tools/ssh/src/target.ts) falls back to any literal "user@host" when a
+# caller's target string doesn't match an sshConfig alias, so with
+# allowedHosts empty sshConfig's Host list restricts nothing at all: a
+# caller could dial "root@192.168.1.71" directly (a different user than the
+# admin this file maps console to) or any other host reachable with this key.
+# Populating allowedHosts with exactly the resolved user@host:port pairs
+# below is what actually turns "the aliases we curated" into "the only
+# targets this tool can reach."
+#
+# TEMPORARY CREDENTIAL: this tool's SSH_PRIVATE_KEY is currently the
+# operator's own personal id_rsa (full interactive/admin access to every
+# host below), not a dedicated scoped key -- see tools/ssh/README.md's
+# "Choosing a credential" section for why that's a real blast-radius
+# tradeoff. Rotate to a dedicated keypair + restricted authorized_keys entry
+# per tools/ssh/README.md, then update SSH_PRIVATE_KEY in the Secret below
+# and delete this note. id_rsa is already authorized on home/bastion/
+# printcam/airvinyl/airbuddy for the operator's own interactive access, so
+# no new key install is needed for those.
+#
+# console is the EXCEPTION: `ssh -i ~/.ssh/id_rsa admin@192.168.1.71`
+# returns "Permission denied (publickey)" -- id_rsa is NOT in admin's
+# authorized_keys on this box the way it is on the others. Until that's
+# fixed (e.g. `ssh-copy-id -i ~/.ssh/id_rsa.pub admin@192.168.1.71`, using
+# whatever credential admin@console does currently accept), every ssh tool
+# call against the "console" alias will fail at the auth step, not the
+# allowlist -- this is a real gap, not a formality.
+#
+# console's IP also changed from 192.168.1.83 to 192.168.1.71 (DHCP lease
+# churn -- same box, confirmed by keyscanning both the ed25519, rsa, and
+# ecdsa host keys at the new address and matching them against the ones
+# already on file for it under its console.local mDNS name). Its host key
+# is now included in the keyscan below.
+#
+# Prerequisite:
+#   kubectl create secret generic ssh-tool-secrets -n controller-agent \
+#     --from-file=SSH_PRIVATE_KEY=~/.ssh/id_rsa \
+#     --from-literal=SSH_KNOWN_HOSTS="$(ssh-keyscan -t ed25519 \
+#       166.113.38.187 192.168.1.43 192.168.1.71 \
+#       192.168.1.235 airvinyl.local 192.168.1.218)"
+sshTool:
+  enabled: true
+  image: registry.kurpuis.com:5000/ssh:latest
+  serviceAccountName: ssh-tool
+  allowedHosts: "austinkurpuis@166.113.38.187,austinkurpuis@192.168.1.43,admin@192.168.1.71,pi@192.168.1.235,pi@airvinyl.local,pi@192.168.1.218"
+  allowedCommands: "*"
+  sshConfig: |
+    Host home
+      HostName 166.113.38.187
+      User austinkurpuis
+    Host bastion
+      HostName 192.168.1.43
+      User austinkurpuis
+    Host console
+      HostName 192.168.1.71
+      User admin
+    Host printcam
+      HostName 192.168.1.235
+      User pi
+    Host airvinyl
+      HostName airvinyl.local
+      User pi
+    Host airbuddy
+      HostName 192.168.1.218
+      User pi
+  secretName: ssh-tool-secrets
+  privateKeySecretKey: SSH_PRIVATE_KEY
+  knownHostsSecretKey: SSH_KNOWN_HOSTS
+
 skills:
   recipeRefining:
     enabled: true
