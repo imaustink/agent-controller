@@ -32,6 +32,25 @@ export interface AppConfig {
    */
   callerToolTopK: number;
   /**
+   * Which agent loop runs a turn (docs/adr/0036).
+   *
+   * `"langgraph"` is the in-process graph this app has always used and is the
+   * default, so enabling the Temporal engine is always an explicit act.
+   * `"temporal"` forwards the turn to `engines/temporal` over HTTP; everything
+   * else about this process — the facade, identity resolution, RBAC, the
+   * credential store, both launchers — is unchanged either way.
+   *
+   * Process-wide rather than per-request on purpose: the two engines keep
+   * conversation state in different places (a Redis session record vs. workflow
+   * state), so alternating between them mid-conversation would lose whichever
+   * one it left.
+   */
+  agentEngine: "langgraph" | "temporal";
+  /** Base URL of the Temporal engine's gateway Service. Required when agentEngine is "temporal". */
+  temporalEngineUrl: string | undefined;
+  /** Bearer token presented to that gateway. */
+  temporalEngineToken: string | undefined;
+  /**
    * How long an unused caller-tool definition survives before being swept
    * (Qdrant has no native TTL, so this is a periodic `prune`). Any turn that
    * references a definition refreshes it, so this only ages out tool sets that
@@ -218,6 +237,9 @@ export const config: AppConfig = {
   agentsQdrantCollection: process.env.AGENT_QDRANT_AGENTS_COLLECTION ?? "agents",
   callerToolsQdrantCollection: process.env.AGENT_QDRANT_CALLER_TOOLS_COLLECTION ?? "caller_tools",
   callerToolTopK: num(process.env.AGENT_CALLER_TOOL_TOP_K, 5),
+  agentEngine: process.env.AGENT_ENGINE === "temporal" ? "temporal" : "langgraph",
+  temporalEngineUrl: process.env.AGENT_TEMPORAL_ENGINE_URL,
+  temporalEngineToken: process.env.AGENT_TEMPORAL_ENGINE_TOKEN,
   callerToolTtlSeconds: num(process.env.AGENT_CALLER_TOOL_TTL_SECONDS, 604_800), // 7 days
   callerToolPruneIntervalSeconds: num(process.env.AGENT_CALLER_TOOL_PRUNE_INTERVAL_SECONDS, 3_600),
   embeddingModel: process.env.AGENT_EMBEDDING_MODEL ?? "text-embedding-3-small",

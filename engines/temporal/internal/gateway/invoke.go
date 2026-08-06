@@ -46,6 +46,18 @@ type invokeRequest struct {
 	Request   string         `json:"request"`
 	SessionID string         `json:"sessionId"`
 	Event     map[string]any `json:"event"`
+
+	// ForcedSkillID / ForcedAgentID let a caller that has ALREADY matched a
+	// route name the target directly, instead of sending the event descriptor
+	// and having it matched here again.
+	//
+	// This is how the TypeScript orchestrator drives this engine: it owns the
+	// IntegrationRoute registry, so re-matching here would put routing policy in
+	// two places — the duplication ADR 0024 rejected when it declined to let the
+	// gateway launch AgentRuns directly. They are still only a routing hint: the
+	// workflow re-resolves whatever is named under the caller's own roles.
+	ForcedSkillID string `json:"forcedSkillId,omitempty"`
+	ForcedAgentID string `json:"forcedAgentId,omitempty"`
 }
 
 type invokeAccepted struct {
@@ -114,8 +126,10 @@ func shapeInvokeTurn(
 		senderLogin = strings.TrimSpace(raw)
 	}
 
-	var forcedSkillID, forcedAgentID string
-	if routes != nil && len(req.Event) > 0 {
+	// An explicitly named target wins: the caller already did the matching, and
+	// re-deciding it here could only disagree.
+	forcedSkillID, forcedAgentID := req.ForcedSkillID, req.ForcedAgentID
+	if forcedSkillID == "" && forcedAgentID == "" && routes != nil && len(req.Event) > 0 {
 		fields := catalog.EventFields(req.Event)
 		if source, event := fields["source"], fields["event"]; source != "" && event != "" {
 			if route, ok := routes.Match(source, event, fields["action"], fields["labelName"]); ok {
