@@ -919,6 +919,57 @@ describe("InvokeServer OpenAI-compatible chat completions (ADR 0007)", () => {
     await server.close();
   });
 
+  it("POST /v1/chat/completions (streaming) surfaces a terminal result from an engine that is not the LangGraph graph (docs/adr/0036)", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn(),
+      stream: vi.fn().mockResolvedValue(
+        // The Temporal engine yields ONE terminal update under its own key. It
+        // has no LangGraph nodes, so it matches none of the node-name branches
+        // -- before the result-based fallback a succeeded turn ended as
+        // "agent stream ended unexpectedly".
+        toStream([{ temporalEngine: { result: "Argentina won the 2022 World Cup." } }]),
+      ),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ stream: true, messages: [{ role: "user", content: "who won the world cup?" }] }),
+    });
+
+    expect(res.status).toBe(200);
+    const chunks = (await readSse(res)) as { choices?: { delta: { content?: string }; finish_reason: string | null }[] }[];
+    const allContent = chunks.filter((c) => c.choices).map((c) => c.choices![0]?.delta.content ?? "").join("");
+    expect(allContent).toContain("Argentina won the 2022 World Cup.");
+    expect(allContent).not.toContain("agent stream ended unexpectedly");
+    expect(chunks.filter((c) => c.choices).at(-1)?.choices![0]?.finish_reason).toBe("stop");
+
+    await server.close();
+  });
+
+  it("POST /v1/chat/completions (streaming) still reports a stream that ends with no terminal node AND no result", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn(),
+      stream: vi.fn().mockResolvedValue(toStream([{ retrieveSkills: { skillCandidates: [] } }])),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ stream: true, messages: [{ role: "user", content: "hi" }] }),
+    });
+
+    const chunks = (await readSse(res)) as { choices?: { delta: { content?: string }; finish_reason: string | null }[] }[];
+    const allContent = chunks.filter((c) => c.choices).map((c) => c.choices![0]?.delta.content ?? "").join("");
+    expect(allContent).toContain("agent stream ended unexpectedly");
+
+    await server.close();
+  });
+
   it("POST /v1/chat/completions (streaming) surfaces a bareAnswer (capability-need gate, docs/adr/0019) instead of hanging until 'agent stream ended unexpectedly'", async () => {
     const graph: AgentGraphLike = {
       invoke: vi.fn(),
