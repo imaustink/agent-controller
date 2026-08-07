@@ -67,6 +67,17 @@ spec:
             - name: AGENT_CALLER_TOOL_TOP_K
               value: {{ .Values.config.callerToolTopK | quote }}
             {{- end }}
+            {{- if .Values.config.agentEngine }}
+            # Which agent loop runs a turn (docs/adr/0036). Unset or
+            # "langgraph" keeps the in-process graph; "temporal" forwards to
+            # the temporal-engine subchart, which must also be enabled.
+            - name: AGENT_ENGINE
+              value: {{ .Values.config.agentEngine | quote }}
+            {{- end }}
+            {{- if .Values.config.temporalEngineUrl }}
+            - name: AGENT_TEMPORAL_ENGINE_URL
+              value: {{ .Values.config.temporalEngineUrl | quote }}
+            {{- end }}
             {{- if .Values.config.callerToolTtlSeconds }}
             - name: AGENT_CALLER_TOOL_TTL_SECONDS
               value: {{ .Values.config.callerToolTtlSeconds | quote }}

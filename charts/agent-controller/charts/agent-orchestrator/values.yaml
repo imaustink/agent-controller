@@ -58,6 +58,20 @@ config:
   callerToolTopK: ""
   callerToolTtlSeconds: ""
   callerToolPruneIntervalSeconds: ""
+  # Which agent loop runs a turn (docs/adr/0036). Empty or "langgraph" keeps
+  # the in-process graph, which is the default and the behaviour this app has
+  # always had. "temporal" forwards each turn to the temporal-engine subchart
+  # instead — which must also be enabled, and which needs a reachable Temporal
+  # cluster.
+  #
+  # Process-wide rather than per-request: the two engines keep conversation
+  # state in different places (a Redis session record vs. workflow state), so
+  # alternating between them mid-conversation would lose whichever one it left.
+  agentEngine: ""
+  # Base URL of the temporal-engine gateway Service. Required when
+  # agentEngine is "temporal"; the app refuses to start without it rather
+  # than silently falling back to the other engine.
+  temporalEngineUrl: ""
   # Base URL Job pods use to reach the callback receiver. Leave empty to
   # default to the in-cluster callback Service DNS name (ADR 0006).
   callbackBaseUrl: ""

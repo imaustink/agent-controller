@@ -19,6 +19,21 @@ agent-orchestrator:
   # openwebui.openaiBaseApiUrl below and the in-cluster callback URL both
   # depend on `agent-orchestrator-invoke` / `agent-orchestrator-callback`.
   fullnameOverride: agent-orchestrator
+  config:
+    # Route turns to the Temporal engine (docs/adr/0036).
+    #
+    # BOTH halves are required and neither does anything alone: the
+    # `temporal-engine` subchart below deploys the worker and gateway, and this
+    # tells the orchestrator to use them. Setting only one is a no-op in either
+    # direction — which is deliberate, so the engine can be deployed and watched
+    # before any turn depends on it.
+    agentEngine: temporal
+    # NOTE: this Service name is `<release>-temporal-engine-gateway`, so it is
+    # coupled to the release being named `agent-controller`. The
+    # agent-orchestrator subchart avoids that with `fullnameOverride` (see
+    # above) for exactly this reason; temporal-engine should get the same
+    # treatment as a follow-up, at which point this becomes a stable name.
+    temporalEngineUrl: http://agent-controller-temporal-engine-gateway:8080
   # Common overrides live under here, e.g.:
   #   image: { tag: latest }
   #   qdrant: { enabled: true }
@@ -40,10 +55,11 @@ core-controller:
 # ---------------------------------------------------------------------------
 # The Temporal-workflow agent engine (charts/temporal-engine, docs/adr/0036).
 #
-# OFF by default, and enabling it is TWO steps on purpose:
+# ON as of docs/adr/0036's rollout. Enabling is TWO independent steps, and
+# this is the first:
 #   1. temporal-engine.enabled=true            -- deploy worker + gateway
 #   2. agent-orchestrator.config.agentEngine=temporal
-#                                              -- route turns to it
+#                                              -- route turns to it (above)
 #
 # Step 1 alone changes no behaviour, which is what makes the rollout
 # reversible: the engine can be deployed, watched, and rolled back before any
@@ -51,10 +67,15 @@ core-controller:
 # /invoke, identity, RBAC, credentials, both launchers) stays in
 # agent-orchestrator either way.
 #
+# TO ROLL BACK: clear agent-orchestrator.config.agentEngine above. That alone
+# returns every turn to the in-process LangGraph loop; leaving this subchart
+# enabled costs two idle pods and nothing else. Rolling back the subchart too
+# is the slower, optional second step.
+#
 # Assumes a reachable Temporal cluster; no server is bundled.
 # ---------------------------------------------------------------------------
 temporal-engine:
-  enabled: false
+  enabled: true
   # Common overrides live under here, e.g.:
   #   temporal: { address: temporal-frontend.temporal.svc:7233 }
   #   qdrant: { host: agent-controller-qdrant, collectionPrefix: te- }
