@@ -39,9 +39,22 @@ spec:
             {{- include "temporal-engine.temporalEnv" . | nindent 12 }}
             - name: GATEWAY_ADDR
               value: ":8080"
-            {{- with .Values.gateway.identity.staticIdentities }}
+            {{/*
+            The identity map is keyed BY the bearer token, so a values file is
+            the wrong home for it: anything that carries values into version
+            control publishes every token in it. The Secret form holds the same
+            JSON under a key, and takes precedence — the same shape
+            agent-orchestrator already uses for its own identity map.
+            */}}
+            {{- if .Values.gateway.identity.staticIdentitiesExistingSecret }}
             - name: STATIC_IDENTITIES
-              value: {{ . | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gateway.identity.staticIdentitiesExistingSecret }}
+                  key: {{ .Values.gateway.identity.staticIdentitiesExistingSecretKey }}
+            {{- else if .Values.gateway.identity.staticIdentities }}
+            - name: STATIC_IDENTITIES
+              value: {{ .Values.gateway.identity.staticIdentities | quote }}
             {{- end }}
             {{- with .Values.gateway.identity.defaultSubject }}
             - name: AGENT_DEFAULT_SUBJECT

@@ -113,7 +113,19 @@ gateway:
   # an optional fallback. All empty fails closed to zero capabilities.
   identity:
     # JSON: {"<token>": {"subject": "user:x", "roles": ["reader"]}}
+    #
+    # This map is keyed BY the bearer token, so setting it here puts live
+    # credentials in a values file. Prefer staticIdentitiesExistingSecret below
+    # for anything beyond a local experiment.
     staticIdentities: ""
+    # The same JSON, read from a Secret key instead. Takes precedence over
+    # staticIdentities above, and lets the tokens stay out of version control
+    # while the rest of the release config stays in it.
+    staticIdentitiesExistingSecret: ""
+    staticIdentitiesExistingSecretKey: AGENT_STATIC_IDENTITIES
+    # Identity for callers that present no token at all. A fallback, not a
+    # default for unknown tokens: an unrecognised token lands here too, so
+    # setting this means the gateway never denies on identity alone.
     defaultSubject: ""
     defaultRoles: ""
   resources:

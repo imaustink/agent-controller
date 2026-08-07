@@ -9,7 +9,7 @@ description: >-
   one release. Install the community-components chart afterward to populate
   the catalog with Tool/Skill/Agent CRs.
 type: application
-version: 0.4.0
+version: 0.5.0
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:
@@ -44,7 +44,7 @@ dependencies:
   # picks its loop independently. Takes a Temporal address rather than bundling
   # a server, so it adds no stateful component.
   - name: temporal-engine
-    version: "0.1.1"
+    version: "0.2.0"
     repository: "file://charts/temporal-engine"
     condition: temporal-engine.enabled
   # GitHub Issues adapter (apps/integration-gateway) -- phase 1 of
