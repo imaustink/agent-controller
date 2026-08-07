@@ -22,6 +22,11 @@ metadata:
   name: opencode-swe-agent
   labels:
     {{- include "tools.labels" . | nindent 4 }}
+  annotations:
+    # Tells the Temporal engine's agentWorkflowNameFor (engines/temporal/internal/temporal/workflows/agent_workflow.go)
+    # to drive this Agent via BridgedAgentWorkflow -- it's a pod running the
+    # opencode CLI headless, not a declarative Tool-calling planner loop.
+    durable-agents.dev/bridged: "true"
 spec:
   description: >-
     Performs software-engineering work on GitHub end-to-end. Runs the

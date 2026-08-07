@@ -15,6 +15,14 @@ metadata:
   labels:
     {{- include "tools.labels" . | nindent 4 }}
     e2e: "true"
+  annotations:
+    # Mirrors claude-code-swe-agent/opencode-swe-agent (the pod/NATS-protocol
+    # agents this stands in for): without this, the Temporal engine's
+    # agentWorkflowNameFor (engines/temporal/internal/temporal/workflows/agent_workflow.go)
+    # would route this Agent to the declarative planner loop instead of
+    # BridgedAgentWorkflow, making the stub an unfaithful stand-in once a
+    # cluster routes turns through the Temporal engine.
+    durable-agents.dev/bridged: "true"
 spec:
   description: >-
     E2E test double. Speaks the real NATS agent protocol and returns a canned
