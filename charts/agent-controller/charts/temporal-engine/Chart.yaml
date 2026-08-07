@@ -2,12 +2,12 @@ apiVersion: v2
 name: temporal-engine
 description: >-
   The Temporal-workflow agent engine (engines/temporal) — worker, gateway and
-  catalog-sync. Off by default: agent-orchestrator runs its in-process
-  LangGraph loop unless AGENT_ENGINE=temporal selects this instead
-  (docs/adr/0036). Assumes a Temporal cluster is already reachable and takes
-  its address, so enabling this adds no stateful component.
+  catalog-sync. Runs a turn only when agent-orchestrator is also told to use it
+  with AGENT_ENGINE=temporal (docs/adr/0036); deploying this alone leaves the
+  in-process LangGraph loop serving every turn. Assumes a Temporal cluster is
+  already reachable and takes its address, so this adds no stateful component.
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:

@@ -205,6 +205,14 @@ secrets:
   # absent from the Secret the orchestrator falls back to trusting the
   # unsigned request-body login and warns at startup.
   senderAssertionSecretKey: AGENT_SENDER_ASSERTION_SECRET
+  # Only used when config.agentEngine is set above. The engine gateway maps
+  # this token to a subject and ROLES, and re-resolves every skill/agent target
+  # under them, so an unrecognised or absent token leaves a turn with no
+  # capabilities. Must match an entry in that gateway's
+  # identity.staticIdentities — or be left out in favour of its
+  # defaultSubject/defaultRoles, which is the other way to give the hop an
+  # identity.
+  temporalEngineTokenKey: AGENT_TEMPORAL_ENGINE_TOKEN
   # Only read when secrets.create=true.
   openaiApiKey: ""
   callbackSecret: ""

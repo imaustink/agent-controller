@@ -78,6 +78,23 @@ spec:
             - name: AGENT_TEMPORAL_ENGINE_URL
               value: {{ .Values.config.temporalEngineUrl | quote }}
             {{- end }}
+            {{- if and .Values.config.agentEngine .Values.secrets.temporalEngineTokenKey }}
+            # Bearer token presented to the engine gateway, which resolves it
+            # to a subject and ROLES against its own static identity map. The
+            # engine re-resolves every skill/agent target under those roles, so
+            # without a token that the gateway recognises it falls closed to
+            # zero capabilities and every turn is denied.
+            #
+            # Optional, because the alternative to a token is the gateway's
+            # defaultSubject/defaultRoles rather than a broken pod — but one of
+            # the two has to be configured for a turn to resolve anything.
+            - name: AGENT_TEMPORAL_ENGINE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "agent-orchestrator.fullname" .) }}
+                  key: {{ .Values.secrets.temporalEngineTokenKey }}
+                  optional: true
+            {{- end }}
             {{- if .Values.config.callerToolTtlSeconds }}
             - name: AGENT_CALLER_TOOL_TTL_SECONDS
               value: {{ .Values.config.callerToolTtlSeconds | quote }}
