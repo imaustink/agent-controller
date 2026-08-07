@@ -1,10 +1,10 @@
-{{- define "durable-agents.labels" -}}
+{{- define "temporal-engine.labels" -}}
 app.kubernetes.io/name: {{ .Chart.Name }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
-{{- define "durable-agents.temporalEnv" -}}
+{{- define "temporal-engine.temporalEnv" -}}
 - name: TEMPORAL_ADDRESS
   value: {{ .Values.temporal.address | quote }}
 - name: TEMPORAL_NAMESPACE
@@ -13,7 +13,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
   value: {{ .Values.taskQueue | quote }}
 {{- end }}
 
-{{- define "durable-agents.qdrantEnv" -}}
+{{- define "temporal-engine.qdrantEnv" -}}
 - name: QDRANT_HOST
   value: {{ .Values.qdrant.host | quote }}
 - name: QDRANT_PORT
@@ -24,10 +24,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 {{- end }}
 
-{{- define "durable-agents.callbackBaseURL" -}}
+{{- define "temporal-engine.callbackBaseURL" -}}
 {{- if .Values.callback.baseURL -}}
 {{ .Values.callback.baseURL }}
 {{- else -}}
-http://{{ .Release.Name }}-gateway-callback.{{ .Release.Namespace }}.svc:8081
+http://{{ .Release.Name }}-temporal-engine-gateway-callback.{{ .Release.Namespace }}.svc:8081
 {{- end -}}
 {{- end }}

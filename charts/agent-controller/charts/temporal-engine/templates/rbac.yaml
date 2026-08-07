@@ -1,0 +1,114 @@
+{{- $catalogNs := .Values.catalog.namespace | default .Release.Namespace }}
+{{- if .Values.toolrun.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-temporal-engine-worker
+  labels:
+    {{- include "temporal-engine.labels" . | nindent 4 }}
+---
+# The worker creates ToolRun and AgentRun CRs and reads their mirrored status —
+# never Jobs directly, which the core-controller owns. Same shape as
+# agent-orchestrator's own grants, so enabling this engine does not widen the
+# release's blast radius; it moves an equivalent one to a second workload.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-temporal-engine-runner
+  namespace: {{ $catalogNs }}
+  labels:
+    {{- include "temporal-engine.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["toolruns"]
+    verbs: ["create", "get"]
+  {{- if .Values.nats.url }}
+  # Bridged pod agents (docs/pod-agents.md) launch the ordinary AgentRun an
+  # unmodified upstream agent expects. Only granted when the bridge is enabled.
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["agentruns"]
+    verbs: ["create", "get"]
+  {{- end }}
+  # Per-run credential Secrets (docs/adr/0030 §3, engines/temporal internal/authz).
+  #
+  # This grant is what keeps a credential out of Temporal's event history: the
+  # authorization pre-flight writes resolved values here and returns only the
+  # object's NAME, so nothing a workflow can see holds credential material. The
+  # launcher references the Secret and the kubelet is the only reader.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-temporal-engine-runner
+  namespace: {{ $catalogNs }}
+  labels:
+    {{- include "temporal-engine.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-temporal-engine-runner
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-temporal-engine-worker
+    namespace: {{ .Release.Namespace }}
+---
+# Cluster-internal service for the callback listener; tool Jobs post here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-temporal-engine-gateway-callback
+  labels:
+    {{- include "temporal-engine.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: gateway
+  ports:
+    - name: callback
+      port: 8081
+      targetPort: callback
+{{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-temporal-engine-gateway
+  labels:
+    {{- include "temporal-engine.labels" . | nindent 4 }}
+---
+# The gateway watches IntegrationRoute CRs for deterministic event dispatch
+# (docs/adr/0024). Read-only, and the same shape agent-orchestrator already has
+# for the same resource.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-temporal-engine-route-reader
+  namespace: {{ $catalogNs }}
+  labels:
+    {{- include "temporal-engine.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["integrationroutes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-temporal-engine-route-reader
+  namespace: {{ $catalogNs }}
+  labels:
+    {{- include "temporal-engine.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-temporal-engine-route-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-temporal-engine-gateway
+    namespace: {{ .Release.Namespace }}

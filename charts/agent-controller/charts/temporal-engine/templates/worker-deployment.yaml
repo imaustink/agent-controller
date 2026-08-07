@@ -2,9 +2,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-worker
+  name: {{ .Release.Name }}-temporal-engine-worker
   labels:
-    {{- include "durable-agents.labels" . | nindent 4 }}
+    {{- include "temporal-engine.labels" . | nindent 4 }}
     app.kubernetes.io/component: worker
 spec:
   replicas: {{ .Values.worker.replicas }}
@@ -16,11 +16,11 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "durable-agents.labels" . | nindent 8 }}
+        {{- include "temporal-engine.labels" . | nindent 8 }}
         app.kubernetes.io/component: worker
     spec:
       {{- if .Values.toolrun.enabled }}
-      serviceAccountName: {{ .Release.Name }}-worker
+      serviceAccountName: {{ .Release.Name }}-temporal-engine-worker
       {{- end }}
       securityContext:
         runAsNonRoot: true
@@ -38,7 +38,7 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
-            {{- include "durable-agents.temporalEnv" . | nindent 12 }}
+            {{- include "temporal-engine.temporalEnv" . | nindent 12 }}
             - name: OPENAI_BASE_URL
               value: {{ .Values.llm.baseURL | quote }}
             - name: OPENAI_MODEL
@@ -46,19 +46,39 @@ spec:
             - name: OPENAI_EMBED_MODEL
               value: {{ .Values.llm.embedModel | quote }}
             {{- if .Values.qdrant.host }}
-            {{- include "durable-agents.qdrantEnv" . | nindent 12 }}
+            {{- include "temporal-engine.qdrantEnv" . | nindent 12 }}
             {{- end }}
             {{- if .Values.toolrun.enabled }}
             - name: TOOLRUN_MODE
               value: "k8s"
             - name: TOOLRUN_NAMESPACE
-              value: {{ .Values.catalog.namespace | quote }}
+              value: {{ .Values.catalog.namespace | default .Release.Namespace | quote }}
+            - name: CATALOG_NAMESPACE
+              value: {{ .Values.catalog.namespace | default .Release.Namespace | quote }}
             - name: CALLBACK_BASE_URL
-              value: {{ include "durable-agents.callbackBaseURL" . | quote }}
+              value: {{ include "temporal-engine.callbackBaseURL" . | quote }}
             - name: CALLBACK_SECRET_NAME
               value: {{ .Values.callback.secretName | quote }}
             - name: CALLBACK_SECRET_KEY
               value: {{ .Values.callback.secretKey | quote }}
+            {{- end }}
+            {{- with .Values.nats.url }}
+            # Bridged pod agents: an unmodified AgentRun over the existing
+            # protocol (docs/pod-agents.md). Absent leaves the declarative loop
+            # and checkpoint-resume step tools.
+            - name: AGENT_NATS_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.identityLink.gatewayUrl }}
+            - name: IDENTITY_LINK_GATEWAY_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.identityLink.tokenSecretName }}
+            - name: IDENTITY_LINK_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.identityLink.tokenSecretKey }}
             {{- end }}
             - name: OPENAI_API_KEY
               valueFrom:

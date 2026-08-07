@@ -38,6 +38,29 @@ core-controller:
   fullnameOverride: core-controller
 
 # ---------------------------------------------------------------------------
+# The Temporal-workflow agent engine (charts/temporal-engine, docs/adr/0036).
+#
+# OFF by default, and enabling it is TWO steps on purpose:
+#   1. temporal-engine.enabled=true            -- deploy worker + gateway
+#   2. agent-orchestrator.config.agentEngine=temporal
+#                                              -- route turns to it
+#
+# Step 1 alone changes no behaviour, which is what makes the rollout
+# reversible: the engine can be deployed, watched, and rolled back before any
+# turn depends on it. Everything outside the agent loop (the OpenAI facade,
+# /invoke, identity, RBAC, credentials, both launchers) stays in
+# agent-orchestrator either way.
+#
+# Assumes a reachable Temporal cluster; no server is bundled.
+# ---------------------------------------------------------------------------
+temporal-engine:
+  enabled: false
+  # Common overrides live under here, e.g.:
+  #   temporal: { address: temporal-frontend.temporal.svc:7233 }
+  #   qdrant: { host: agent-controller-qdrant, collectionPrefix: te- }
+  #   nats: { url: nats://agent-controller-nats:4222 }
+
+# ---------------------------------------------------------------------------
 # GitHub Issues adapter (charts/integration-gateway) -- phase 1 of
 # docs/integrations-gateway.md's conversational path. Off by default: enable
 # alongside agent-orchestrator (its default config.orchestratorUrl above
