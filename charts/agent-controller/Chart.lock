@@ -5,6 +5,9 @@ dependencies:
 - name: core-controller
   repository: file://charts/core-controller
   version: 0.1.0
+- name: temporal-engine
+  repository: file://charts/temporal-engine
+  version: 0.1.0
 - name: integration-gateway
   repository: file://charts/integration-gateway
   version: 0.1.0
@@ -14,5 +17,5 @@ dependencies:
 - name: nats
   repository: https://nats-io.github.io/k8s/helm/charts/
   version: 2.14.2
-digest: sha256:328c0678a640e98589cf6f96b28bc82931dffab1dbe78185e078d686dd2dbfc5
-generated: "2026-07-20T06:08:05.149497-07:00"
+digest: sha256:628de373e18cf10bf40463382177caf0e15065dec610caf3748f030c2ce1c8f9
+generated: "2026-08-06T17:58:00.790709-07:00"
