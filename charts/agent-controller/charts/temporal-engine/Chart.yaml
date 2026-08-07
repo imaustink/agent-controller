@@ -7,7 +7,7 @@ description: >-
   in-process LangGraph loop serving every turn. Assumes a Temporal cluster is
   already reachable and takes its address, so this adds no stateful component.
 type: application
-version: 0.1.1
+version: 0.2.0
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:
