@@ -1355,8 +1355,26 @@ export class InvokeServer {
         const text = nodeStatusText(nodeName, update, { skillContinuation });
         if (text) writeSseStatus(res, text);
       }
-      // Stream ended without a terminal node update — shouldn't normally
-      // happen, but close the SSE stream gracefully rather than hanging.
+      // The stream ended without matching a terminal branch above, but it did
+      // carry a result — render it, because the turn succeeded.
+      //
+      // Every branch above keys off a LangGraph NODE NAME, which makes them
+      // unreachable for any other AgentGraphLike implementation: the Temporal
+      // engine (docs/adr/0036) yields one terminal update under its own key, so
+      // a completed turn fell through to the error below and every streaming
+      // answer surfaced as "stream ended unexpectedly". Keying the fallback on
+      // the presence of a result rather than on a node name keeps the check at
+      // the level the interface actually guarantees.
+      //
+      // Unreachable for the graph itself, which always hits a branch above
+      // first, so this changes nothing for AGENT_ENGINE=langgraph.
+      if (result !== undefined) {
+        await persist();
+        finish(renderResult(result));
+        return;
+      }
+      // Ended with neither a terminal node nor a result — close the SSE stream
+      // gracefully rather than hanging.
       finish("❌ agent stream ended unexpectedly");
     } catch (err) {
       finish(`❌ ${err instanceof Error ? err.message : String(err)}`);
