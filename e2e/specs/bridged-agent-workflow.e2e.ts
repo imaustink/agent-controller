@@ -84,7 +84,8 @@ const execFileAsync = promisify(execFile);
 
 requireMinikubeContext();
 
-const GATEWAY_PORT = 18092;
+// 18090/18091/18092 belong to happy-path/resilience/identity-keying respectively.
+const GATEWAY_PORT = 18093;
 const TEMPORAL_PORT = 17234;
 // Must be one of values-e2e.yaml's `integration-gateway.config.githubIdentities`
 // entries -- an unlisted sender resolves no identity and the turn is dropped
