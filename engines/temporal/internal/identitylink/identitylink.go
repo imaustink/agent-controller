@@ -58,6 +58,14 @@ type Token struct {
 	// or returned into workflow state; see authz.Service for the discipline.
 	Value       string `json:"token"`
 	GitHubLogin string `json:"githubLogin,omitempty"`
+	// CredentialsJSON is `/claude-auth/api/token?mode=login`'s own field name
+	// for the same credential material `Value` holds for every other
+	// provider/mode -- a full Claude Code login blob, not a bearer token, so
+	// the gateway's response shape differs from `token`. Never populated for
+	// anything except claude-remote; folded into Value below rather than
+	// exposed here, since every caller of Token() reads Value regardless of
+	// provider.
+	CredentialsJSON string `json:"credentialsJson,omitempty"`
 }
 
 // Poll statuses for a device flow.
@@ -278,6 +286,9 @@ func (c *Client) Token(ctx context.Context, provider, subject string) (*Token, e
 	status, err := c.do(ctx, http.MethodGet, path, nil, &out)
 	if err != nil {
 		return nil, err
+	}
+	if out.Value == "" {
+		out.Value = out.CredentialsJSON
 	}
 	if status == http.StatusNotFound || out.Value == "" {
 		return nil, nil

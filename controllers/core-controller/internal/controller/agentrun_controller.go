@@ -150,7 +150,16 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 	}
 
 	job, err := buildRunJob(runJobParams{
-		jobName:     fmt.Sprintf("agentrun-%s", run.Name),
+		// run.Name IS the Job name directly, not "agentrun-"+run.Name: the
+		// Temporal engine (engines/temporal's BridgedAgentWorkflow) names
+		// AgentRun CRs "agentrun-<agentId>-<uuid>" itself, so prepending this
+		// prefix again produced a Job name (and therefore the API server's
+		// auto-added spec.template.labels["job-name"], which reuses the Job's
+		// own name verbatim with no truncation) exceeding the 63-byte label
+		// limit -- the exact failure mode this fixes. Job lookup is by owner
+		// reference (`.Owns(&batchv1.Job{})` below), never by reconstructing
+		// this name, so dropping the prefix changes nothing else.
+		jobName:     run.Name,
 		namespace:   run.Namespace,
 		annotations: sessionIDAnnotations(run.Annotations),
 		labels: map[string]string{
