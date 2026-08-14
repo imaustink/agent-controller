@@ -417,6 +417,25 @@ describe("buildAgentGraph", () => {
     expect(final.error).toMatch(/tool failed \(extraction\)/);
   });
 
+  it("surfaces a launch failure (e.g. the k8s API call itself failing) as a labeled graph error instead of an uncaught, contextless exception", async () => {
+    // Regression test: `containerToolLauncher.launch()` throwing (rather than
+    // resolving and the Job later reporting a `failed` Event) used to escape
+    // every catch in the graph and reach the SSE layer as a bare
+    // `err.message` -- e.g. "fetch failed" from the Kubernetes client, with
+    // no indication which tool was being launched or that launch itself (not
+    // the tool) was what failed.
+    const deps = baseDeps({
+      containerToolLauncher: {
+        launch: vi.fn().mockRejectedValue(new TypeError("fetch failed")),
+      } as unknown as ContainerToolLauncher,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "do a thing", authToken: "tok" });
+
+    expect(final.error).toMatch(/tool recipe-scraper failed to launch: fetch failed/);
+  });
+
   it("runs a LocalTool via the executor sidecar instead of launching a Job (ADR 0014)", async () => {
     const localTool: ToolDescriptor = {
       id: "http-get-node",

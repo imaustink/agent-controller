@@ -81,6 +81,16 @@ agent-orchestrator:
     gatewayUrl: "http://agent-controller-integration-gateway:8090"
 
   config:
+    # This cluster has no Temporal deployment at all (see temporal-engine.enabled
+    # below) -- clear the umbrella chart's own default of "temporal"
+    # (charts/agent-controller/values.yaml, docs/adr/0036's rollout default) so
+    # every turn runs the in-process LangGraph loop instead of being forwarded
+    # to a gateway Service backed by pods that were never buildable here.
+    # Helm deep-merges this `config` map key-by-key against that default, so
+    # omitting this key (rather than setting it) would silently inherit
+    # "temporal" -- which is exactly what had been happening.
+    agentEngine: ""
+    temporalEngineUrl: ""
     # oidc against Pocket ID (kubernetes/manifests/services/pocket-id in
     # imaustink/homelab), not Google -- the 2026-07-19 outage was caused by
     # Google id_tokens: neither caller could present one (Open WebUI has no
@@ -193,6 +203,18 @@ agent-orchestrator:
   # Do not move durable state back into it without giving it persistence first.
   redis:
     enabled: true
+
+# No Temporal cluster exists in this environment (docs/adr/0036 "Assumes a
+# reachable Temporal cluster; no server is bundled") -- override the umbrella
+# chart's own default of enabled: true (charts/agent-controller/values.yaml)
+# so this release stops deploying the gateway/worker Deployments here. Without
+# this they run permanently in ImagePullBackOff (their image names have no
+# registry prefix, so containerd resolves them against Docker Hub, which has
+# never had them) while agent-orchestrator.config.agentEngine above still
+# forwarded every turn to the (nonexistent) gateway -- the underlying cause of
+# turns failing with a bare "fetch failed".
+temporal-engine:
+  enabled: false
 
 core-controller:
   enabled: true

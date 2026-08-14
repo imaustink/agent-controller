@@ -1982,6 +1982,21 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           }
 
           event = await awaitResult;
+        } catch (err) {
+          // Unlike the agent-backed branch above, nothing here has yet
+          // produced a structured `failed` Event -- `launch()` can throw
+          // before the Job/ToolRun even exists (e.g. the k8s API call itself
+          // failing), and `awaitResult` can reject for reasons outside the
+          // tool's own control. Both used to propagate uncaught out of this
+          // node, past every catch in the graph, and surface at the SSE layer
+          // as a bare `err.message` -- e.g. "fetch failed" from the
+          // Kubernetes client with no indication which tool, which call, or
+          // that a ToolRun was never even created. Catching and labeling here
+          // keeps that context.
+          return {
+            jobId,
+            error: `tool ${tool.id} failed to launch: ${err instanceof Error ? err.message : String(err)}`,
+          };
         } finally {
           unsubscribeProgress();
         }
