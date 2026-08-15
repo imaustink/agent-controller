@@ -68,7 +68,12 @@ func TestBridgedAgentRunsToAFinalReply(t *testing.T) {
 	require.Len(t, le.agentRunLaunches, 1)
 	require.Equal(t, "claude-code-swe-agent", le.agentRunLaunches[0].AgentRef)
 	require.Equal(t, "add retry logic to the fetcher", le.agentRunLaunches[0].Goal)
-	require.Contains(t, le.agentRunLaunches[0].RunID, "claude-code-swe-agent")
+	// A prefix, not the full id: newAgentRunName truncates it to keep
+	// "agentrun-<agentId>-<uuid>" within Kubernetes' 63-byte label limit, and
+	// "claude-code-swe-agent" is already long enough that the full form (67
+	// bytes) doesn't fit — see agentrun_name_test.go for the exact bound.
+	require.Contains(t, le.agentRunLaunches[0].RunID, "claude-code-swe")
+	require.LessOrEqual(t, len(le.agentRunLaunches[0].RunID), 63)
 
 	// Narration reached the user.
 	require.Contains(t, result.Meta.Narration, "clone: cloning the repo")
