@@ -131,8 +131,12 @@ describe("TemporalEngine", () => {
     await expect(engine.invoke(input())).rejects.toThrow(/502/);
   });
 
-  // Streaming yields the answer but no per-node narration: those lines describe
-  // LangGraph node transitions, which do not exist on this engine.
+  // The returned AsyncIterable itself still only ever yields one terminal
+  // update -- there are no LangGraph node transitions on this engine to
+  // report as separate updates. Live narration during the wait rides a
+  // different channel: progressListener, called as a side effect from
+  // poll() below, which is what a streaming caller's SSE writer actually
+  // listens to (see handleChatCompletionsStreaming).
   it("streams a single terminal update", async () => {
     const { impl } = scriptedFetch([{ id: "x", status: "succeeded", result: "done" }]);
     const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
@@ -143,5 +147,39 @@ describe("TemporalEngine", () => {
     }
     expect(updates).toHaveLength(1);
     expect(Object.values(updates[0]!)[0]).toMatchObject({ result: "done" });
+  });
+
+  // Without this, a streaming chat caller on this engine saw nothing at all
+  // until the whole turn completed -- poll() ran silently, even though the
+  // engine's own gateway already narrates in-flight turns
+  // (workflows.TurnProgressQuery) for its native SSE endpoint. This is that
+  // same narration relayed through the accept/poll /invoke contract instead.
+  it("relays in-flight progress lines to progressListener as they arrive, without repeating them", async () => {
+    const { impl } = scriptedFetch([
+      { id: "x", status: "pending", progress: ["clone: cloning the repo"] },
+      { id: "x", status: "pending", progress: ["clone: cloning the repo", "edit: adding the README"] },
+      { id: "x", status: "succeeded", result: "Opened PR #1" },
+    ]);
+    const progressListener = vi.fn();
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+
+    const state = await engine.invoke(input({ progressListener }));
+
+    expect(state.result).toBe("Opened PR #1");
+    expect(progressListener).toHaveBeenCalledTimes(2);
+    expect(progressListener).toHaveBeenNthCalledWith(1, "", "clone: cloning the repo");
+    expect(progressListener).toHaveBeenNthCalledWith(2, "", "edit: adding the README");
+  });
+
+  it("never calls progressListener when the caller has no live channel", async () => {
+    const { impl } = scriptedFetch([
+      { id: "x", status: "pending", progress: ["clone: cloning the repo"] },
+      { id: "x", status: "succeeded", result: "Opened PR #1" },
+    ]);
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+
+    // input() sets no progressListener -- this must not throw reading it,
+    // and there is nothing to assert a call against.
+    await expect(engine.invoke(input())).resolves.toMatchObject({ result: "Opened PR #1" });
   });
 });
