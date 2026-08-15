@@ -68,6 +68,17 @@ temporal-engine:
     port: 6334
     collectionPrefix: te-
   gateway:
+    senderAssertion:
+      # Without this, `GATEWAY_SENDER_ASSERTION_SECRET` is unset on the
+      # Temporal engine gateway, so it can never verify the signed assertion
+      # header agent-orchestrator's TemporalEngine sends (temporal-engine.ts:
+      # "the sender login travels as a SIGNED assertion, not a body field" --
+      # it never falls back to an unsigned body field for this hop). The
+      # gateway silently resolves an empty sender login instead, which is why
+      # `AGENT_ACTOR_LOGIN` never appears in a launched AgentRun's secretEnv
+      # for any webhook-driven turn. Same secret/value integration-gateway and
+      # agent-orchestrator already share for this exact purpose.
+      secretName: e2e-integration-gateway-secrets
     identity:
       # The Go gateway resolves ITS OWN caller identity from a bearer token --
       # entirely separate from agent-orchestrator's own `config.staticIdentities`

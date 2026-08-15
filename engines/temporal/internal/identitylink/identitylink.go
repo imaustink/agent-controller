@@ -372,13 +372,19 @@ func (c *Client) Rekey(ctx context.Context, provider, fromSubject, toSubject str
 	if mode != "" {
 		body["mode"] = mode
 	}
+	// The route's response is `{status: "moved"|"not-found"|"occupied"}`
+	// (integration-gateway's ClaudeAuthStore.rekey union), NOT a boolean
+	// `moved` field -- that field never existed on the wire, so a client
+	// reading it silently decoded false for every response including a real
+	// "moved", making adopt() believe every rekey failed and fall through to
+	// re-prompting the caller instead of ever moving their credential.
 	var out struct {
-		Moved bool `json:"moved"`
+		Status string `json:"status"`
 	}
 	if _, err := c.do(ctx, http.MethodPost, "/claude-auth/api/rekey", body, &out); err != nil {
 		return false, err
 	}
-	return out.Moved, nil
+	return out.Status == "moved", nil
 }
 
 func (c *Client) WritebackGrant(ctx context.Context, provider, subject string, ttl time.Duration) (*WritebackGrant, error) {

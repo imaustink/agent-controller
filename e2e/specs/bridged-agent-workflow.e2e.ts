@@ -96,13 +96,15 @@ const REPO = "e2e-bridged-repo";
 const STUB_REPLY_MARKER = "stub-agent-reply";
 
 /**
- * The Temporal engine's Go gateway resolves every internal, tokenless call
- * from agent-orchestrator to this subject (`gateway.identity.defaultSubject`,
- * values-e2e.yaml) -- there is no per-end-user token on this hop regardless of
- * which GitHub user triggered the webhook, so this is the subject a credential
- * must be seeded under for the engine's own identity-link gate to resolve it.
+ * Cross-entry-point providers (claude, claude-remote) key by PRINCIPAL, not
+ * by `gateway.identity.defaultSubject` -- a webhook turn's signed sender
+ * assertion resolves `principal = github:<senderLogin>` regardless of which
+ * shared subject the tokenless internal hop itself defaults to (see
+ * identity-keying.e2e.ts's CANONICAL, which this mirrors). This is the
+ * subject a credential must be seeded under for the engine's identity-link
+ * gate to resolve it.
  */
-const ENGINE_CALLER_SUBJECT = "client-integration-gateway";
+const CANONICAL = `github:${SENDER}`;
 
 describe("Temporal engine: a bridged pod agent actually runs as BridgedAgentWorkflow", () => {
   let secret: string;
@@ -116,7 +118,7 @@ describe("Temporal engine: a bridged pod agent actually runs as BridgedAgentWork
     // claude-code-swe-agent's own identityProviders) -- see this suite's
     // credential-store.ts doc comment for why seeding is the only hermetic way
     // to get an authorized (not link-required) verdict.
-    await seedAllClaudeCredentials(ENGINE_CALLER_SUBJECT);
+    await seedAllClaudeCredentials(CANONICAL);
   });
 
   afterAll(async () => {
