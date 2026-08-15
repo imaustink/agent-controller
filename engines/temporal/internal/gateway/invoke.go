@@ -97,6 +97,13 @@ type invokeRecord struct {
 	// array, so a caller has nowhere to put the result. Reported so an adapter
 	// sees a real outcome rather than an empty success.
 	ToolCalls []callertools.PendingCall `json:"toolCalls,omitempty"`
+	// Progress carries the in-flight turn's narration lines (workflows.
+	// TurnProgressQuery), same source streamTurn already polls for the
+	// gateway's own native SSE endpoint -- surfaced here too so a caller
+	// using the accept/poll /invoke contract (agent-orchestrator's
+	// TemporalEngine) can render live status instead of going silent until
+	// the turn completes. Only ever set on a "pending" record.
+	Progress []string `json:"progress,omitempty"`
 }
 
 const (
@@ -289,7 +296,17 @@ func (s *Server) handleInvokeStatus(c *gin.Context) {
 
 	case ctx.Err() != nil && c.Request.Context().Err() == nil:
 		// Our own deadline, not the client's: the turn is simply still running.
-		c.JSON(http.StatusOK, invokeRecord{ID: id, Status: invokeStatusPending})
+		// Best-effort narration alongside it -- a query failure or an inactive
+		// turn (nothing narrated yet) just means an empty Progress, never an
+		// error response, since the pending status itself is still accurate.
+		record := invokeRecord{ID: id, Status: invokeStatusPending}
+		if resp, err := s.temporal.QueryWorkflow(c.Request.Context(), workflowID, "", workflows.TurnProgressQuery); err == nil {
+			var progress workflows.TurnProgress
+			if resp.Get(&progress) == nil && progress.Active {
+				record.Progress = progress.Lines
+			}
+		}
+		c.JSON(http.StatusOK, record)
 
 	case isUnknownUpdate(err):
 		writeError(c, http.StatusNotFound, "unknown invocation")

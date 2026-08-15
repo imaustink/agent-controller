@@ -87,6 +87,8 @@ interface InvokeRecord {
   result?: string;
   error?: string;
   toolCalls?: { id: string; name: string; arguments: string }[];
+  /** In-flight narration lines (only ever set on a "pending" record) -- see poll()'s use of it. */
+  progress?: string[];
 }
 
 export class TemporalEngine implements AgentGraphLike {
@@ -229,6 +231,12 @@ export class TemporalEngine implements AgentGraphLike {
 
   private async poll(id: string, input: AgentGraphInput): Promise<InvokeRecord> {
     const deadline = Date.now() + (this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    // Lines already relayed to progressListener -- the engine's /invoke/:id
+    // resends the WHOLE narration buffer each poll (same source the
+    // gateway's own native SSE endpoint streams from, workflows.
+    // TurnProgressQuery), not just what's new, so this is what keeps a
+    // streaming caller from seeing every line repeated on every poll tick.
+    let seen = 0;
     for (;;) {
       const res = await this.fetchImpl(`${this.baseUrl}/invoke/${encodeURIComponent(id)}`, {
         headers: this.headers(),
@@ -238,6 +246,17 @@ export class TemporalEngine implements AgentGraphLike {
       }
       const record = (await res.json()) as InvokeRecord;
       if (record.status !== "pending") return record;
+
+      // Surfaces as real SSE status events the moment they arrive, exactly
+      // like the engine's own native streaming endpoint -- without this, a
+      // streaming chat caller on this engine sees nothing until the whole
+      // turn completes (previously this whole poll loop ran silently).
+      if (input.progressListener && record.progress) {
+        for (const line of record.progress.slice(seen)) {
+          input.progressListener("", line);
+        }
+        seen = Math.max(seen, record.progress.length);
+      }
 
       if (Date.now() >= deadline) {
         // Deliberately not an engine error: the turn is still running and its
@@ -253,7 +272,6 @@ export class TemporalEngine implements AgentGraphLike {
         };
       }
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-      void input;
     }
   }
 
