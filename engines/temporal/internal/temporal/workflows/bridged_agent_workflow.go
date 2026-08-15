@@ -82,7 +82,7 @@ func BridgedAgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 	var runID string
 	if err := workflow.SideEffect(ctx, func(workflow.Context) any {
 		// Also the protocol's agent_run_id, and therefore the NATS subjects.
-		return "agentrun-" + in.Agent.ID + "-" + uuid.NewString()
+		return newAgentRunName(in.Agent.ID)
 	}).Get(&runID); err != nil {
 		return fail("id_error", err.Error())
 	}
@@ -222,6 +222,44 @@ func BridgedAgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 			logger.Debug("ignoring live-tunnel up-message", "type", msg.Type)
 		}
 	}
+}
+
+// k8sNameMaxBytes is the RFC 1123 label-value limit. This run name becomes a
+// k8s AgentRun/Job name AND, via core-controller's reconciler (which uses it
+// directly as the Job name), the API server's auto-added `job-name` label —
+// so it must fit the LABEL limit (63 bytes), the stricter of the two, even
+// though a bare resource name alone could run to 253.
+const k8sNameMaxBytes = 63
+
+// newAgentRunName builds this run's k8s-facing name (also the protocol's
+// agent_run_id, and therefore the NATS subjects), truncating the agent ID —
+// never the uuid — when the natural "agentrun-<agentId>-<uuid>" form would
+// exceed k8sNameMaxBytes.
+//
+// This is not a hypothetical: "agentrun-" (9) + "claude-code-swe-agent" (21)
+// + "-" (1) + a uuid.NewString() (36) is 67 bytes, already over the limit
+// with today's actual agent ID -- core-controller's reconciler then rejects
+// the Job it tries to create with "must be no more than 63 bytes" and the run
+// never progresses past a bare AgentRun CR, retrying forever. e2e coverage
+// missed this because its stand-in agent ("stub-agent", 10 chars) happens to
+// fit; nothing this short-sightedly assumes a length bound in production.
+func newAgentRunName(agentID string) string {
+	suffix := uuid.NewString()
+	name := "agentrun-" + agentID + "-" + suffix
+	if len(name) <= k8sNameMaxBytes {
+		return name
+	}
+	// Shorten the agent ID portion only -- the uuid is what makes this
+	// unique, and truncating IT would reintroduce the collision risk the
+	// full form exists to avoid.
+	budget := k8sNameMaxBytes - len("agentrun-") - len("-") - len(suffix)
+	if budget < 0 {
+		budget = 0
+	}
+	if budget > len(agentID) {
+		budget = len(agentID)
+	}
+	return "agentrun-" + agentID[:budget] + "-" + suffix
 }
 
 // handleBridgedToolCall runs a Tool on a sub-agent's behalf and answers the
