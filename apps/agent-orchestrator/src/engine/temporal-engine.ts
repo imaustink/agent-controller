@@ -1,6 +1,9 @@
 import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "../rbac/sender-assertion.js";
+import { CALLER_IDENTITY_HEADER, mintCallerIdentityAssertion } from "../rbac/caller-identity-assertion.js";
 import type { AgentGraphInput, AgentGraphLike } from "../server.js";
 import type { AgentState } from "../agent/graph.js";
+import type { IdentityResolver } from "../rbac/types.js";
+import { CALLER_TOOL_ID_PREFIX } from "../caller-tools/types.js";
 
 /**
  * Runs a turn on the Temporal engine (`engines/temporal`) instead of the
@@ -48,6 +51,21 @@ export interface TemporalEngineOptions {
    * sharing degrades — the same documented weaker mode as the gateway hop.
    */
   senderAssertionSecret?: string;
+  /**
+   * Resolves Open WebUI's per-request signed user JWT into a real per-user
+   * identity (the SAME resolver the LangGraph engine's `resolveIdentity` node
+   * uses for `state.forwardedUserToken`) -- needed because the gateway
+   * otherwise only ever sees ONE shared service identity for every internal
+   * hop, which would collapse every Open WebUI user onto that one subject.
+   * Deliberately NOT a general authToken-based resolver: every OTHER caller of
+   * this process's own /invoke (a webhook relay, a static-token programmatic
+   * caller) shares one token that says nothing about who is actually asking,
+   * and forwarding an identity resolved from it would override the subject a
+   * webhook turn's own senderLogin/sender-assertion channel already handles.
+   * Absent -> every chat turn on this engine resolves the gateway's own
+   * default/bearer identity, same as before this existed.
+   */
+  forwardedUserIdentityResolver?: IdentityResolver;
   /** How long to keep polling one turn before giving up. */
   timeoutMs?: number;
   /** Injectable for tests; defaults to the global fetch. */
@@ -137,6 +155,34 @@ export class TemporalEngine implements AgentGraphLike {
       headers[SENDER_ASSERTION_HEADER] = mintSenderAssertion(this.options.senderAssertionSecret, input.senderLogin);
     }
 
+    // This process's OWN per-request identity resolution (OIDC/static/
+    // forwarded-user-JWT), signed across the hop -- without this, every
+    // caller of /invoke resolves to the SAME gateway-default/bearer subject
+    // regardless of which human triggered the turn, which is exactly the
+    // collapsed-identity bug ADR 0030 fixed for webhooks. Mirrors graph.ts's
+    // resolveIdentity node: prefer the forwarded-user JWT over the shared
+    // static authToken when both are available.
+    // Scoped to the forwarded-user-JWT path ONLY, deliberately -- not a
+    // general "resolve identity somehow" fallback. `input.authToken` alone is
+    // ONE value every caller of this process's own /invoke shares (Open WebUI's
+    // shared bearer token, integration-gateway's static service token for a
+    // relayed webhook turn, etc.), so resolving it says nothing about who is
+    // actually asking and would override the correctly-defaulted gateway
+    // subject that a webhook turn's OWN senderLogin/sender-assertion channel
+    // already handles -- regressing every webhook-driven turn's credential
+    // resolution the moment this identity resolves to anything at all.
+    if (this.options.senderAssertionSecret && input.forwardedUserToken && this.options.forwardedUserIdentityResolver) {
+      const identity = await this.options.forwardedUserIdentityResolver.resolve(input.forwardedUserToken);
+      if (identity) {
+        headers[CALLER_IDENTITY_HEADER] = mintCallerIdentityAssertion(
+          this.options.senderAssertionSecret,
+          identity.subject,
+          identity.roles,
+          true,
+        );
+      }
+    }
+
     const res = await this.fetchImpl(`${this.baseUrl}/invoke`, {
       method: "POST",
       headers,
@@ -148,6 +194,31 @@ export class TemporalEngine implements AgentGraphLike {
         // still re-resolves it under the caller's own roles.
         ...(input.forcedSkillId ? { forcedSkillId: input.forcedSkillId } : {}),
         ...(input.forcedAgentId ? { forcedAgentId: input.forcedAgentId } : {}),
+        // Already resolved, validated and top-K-ranked by this process's own
+        // handleChat pipeline (ADR 0035) before invoke() is ever called --
+        // the engine's /invoke takes the resolved Descriptor shape (each
+        // ToolDescriptor's nested `callerTool`), not a raw OpenAI tools array,
+        // and re-ranks nothing. Omitting this silently drops every caller
+        // tool for any turn routed through this engine.
+        ...(input.callerTools?.length
+          ? { callerTools: input.callerTools.map((t) => t.callerTool).filter(Boolean) }
+          : {}),
+        ...(input.callerToolChoiceRequired ? { callerToolRequired: true } : {}),
+        // Prior client-executed calls (ADR 0035 resume), the same
+        // strip-the-namespace transform as everywhere else a caller-tool id
+        // crosses back out of the `caller:` namespace -- the engine's own
+        // callertools.ID re-adds it, so forwarding it prefixed would double it.
+        ...(input.actionHistory?.length
+          ? {
+              priorCallerToolCalls: input.actionHistory.map((call) => ({
+                name: call.toolId.startsWith(CALLER_TOOL_ID_PREFIX)
+                  ? call.toolId.slice(CALLER_TOOL_ID_PREFIX.length)
+                  : call.toolId,
+                arguments: call.toolArgs,
+                result: call.result,
+              })),
+            }
+          : {}),
       }),
     });
     if (!res.ok) {

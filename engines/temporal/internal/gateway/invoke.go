@@ -58,6 +58,27 @@ type invokeRequest struct {
 	// workflow re-resolves whatever is named under the caller's own roles.
 	ForcedSkillID string `json:"forcedSkillId,omitempty"`
 	ForcedAgentID string `json:"forcedAgentId,omitempty"`
+
+	// CallerTools / CallerToolRequired carry a chat turn's caller-supplied
+	// tools (ADR 0035) across this hop, already parsed, validated and ranked
+	// by agent-orchestrator's own handleChat before it ever calls
+	// TemporalEngine.invoke() -- so this is the resolved Descriptor shape, not
+	// the raw OpenAI `tools`/`tool_choice` request body callertools.Parse
+	// consumes. Re-parsing/re-ranking here would duplicate work already done
+	// (a second, redundant Qdrant rank against a fresh top-K) and there is no
+	// raw tool list left to re-parse by this point in agent-orchestrator's own
+	// pipeline. Omitting these silently drops every caller tool for any turn
+	// routed through /invoke, regardless of what the original chat request
+	// offered.
+	CallerTools        []callertools.Descriptor `json:"callerTools,omitempty"`
+	CallerToolRequired bool                     `json:"callerToolRequired,omitempty"`
+
+	// PriorCallerToolCalls are calls the client already executed and reported
+	// back (ADR 0035 resume), forwarded verbatim from agent-orchestrator's own
+	// `actionHistory` -- there is no raw message array at this hop for
+	// callertools.CollectPriorCalls to parse, unlike handleChat talking
+	// directly to a client.
+	PriorCallerToolCalls []callertools.PriorCall `json:"priorCallerToolCalls,omitempty"`
 }
 
 type invokeAccepted struct {
@@ -92,6 +113,27 @@ const invokePollTimeout = 2 * time.Second
 
 // errEmptyRequest is the one shaping failure a caller can fix.
 var errEmptyRequest = errors.New(`body must be JSON: {"request": "<non-empty string>"}`)
+
+// resolveInvokeCaller prefers a trusted, signed caller identity
+// (rbac.CallerIdentityHeader) over this gateway's own bearer-token
+// resolution, when present and valid.
+//
+// Every /invoke caller today is agent-orchestrator, authenticating with ONE
+// shared service token (or none). Bearer resolution alone therefore collapses
+// every Open WebUI user, and every webhook sender, onto the SAME subject --
+// agent-orchestrator has ALREADY resolved the real per-request identity
+// itself (OIDC/static/forwarded-user-JWT) before this hop, and this header is
+// how it proves that to the gateway instead of the gateway re-deriving it
+// from a token it was never given.
+func (s *Server) resolveInvokeCaller(c *gin.Context) activities.Caller {
+	caller := resolveCaller(c, s.identity)
+	if subject, roles, perUser := rbac.VerifyCallerIdentityAssertion(s.senderAssertionSecret, c.GetHeader(rbac.CallerIdentityHeader), time.Now()); subject != "" {
+		caller.Subject = subject
+		caller.Roles = roles
+		caller.PerUser = perUser
+	}
+	return caller
+}
 
 // shapeInvokeTurn turns an /invoke body into the turn the workflow runs:
 // resolves who the adapter is vouching for, matches the event against the
@@ -168,12 +210,23 @@ func (s *Server) handleInvoke(c *gin.Context) {
 		c.GetHeader(rbac.SenderAssertionHeader),
 		s.senderAssertionSecret,
 		s.routes,
-		resolveCaller(c, s.identity),
+		s.resolveInvokeCaller(c),
 		time.Now(),
 	)
 	if err != nil {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
+	}
+
+	// Already resolved by the caller (agent-orchestrator's handleChat, ADR
+	// 0035) -- passed straight through, not re-parsed/re-ranked. See
+	// invokeRequest.CallerTools's doc comment for why.
+	if len(req.CallerTools) > 0 {
+		turn.CallerTools = req.CallerTools
+		turn.CallerToolRequired = req.CallerToolRequired
+	}
+	if len(req.PriorCallerToolCalls) > 0 {
+		turn.PriorCallerToolCalls = req.PriorCallerToolCalls
 	}
 
 	sessionID := strings.TrimSpace(req.SessionID)

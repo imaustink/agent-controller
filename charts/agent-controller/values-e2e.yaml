@@ -17,6 +17,108 @@
 # genuinely real key the stack needs (OPENAI_API_KEY, for the orchestrator's
 # planner) is created out-of-band by a human — see that script.
 
+temporal-engine:
+  # Points the worker/gateway at `e2e/manifests/temporal-dev-server.yaml`
+  # (applied by `e2e/scripts/up.sh` before this release is deployed) instead of
+  # the production default (a real `temporalio/helm-charts` release's frontend
+  # Service, `temporal-frontend.temporal.svc:7233`) -- there is no such cluster
+  # here, and the chart's own default address is unreachable in a hermetic
+  # minikube profile.
+  temporal:
+    address: temporal-dev-server.controller-agent.svc:7233
+    namespace: default
+  llm:
+    # The subchart's own default (`agent-controller-agent-orchestrator`)
+    # assumes the `agent-orchestrator` subchart at its OWN release-name-derived
+    # secret name, but that subchart sets `fullnameOverride: agent-orchestrator`
+    # (`charts/agent-controller/values.yaml`), so its real Secret is
+    # `agent-orchestrator-secrets` -- the default name doesn't exist in ANY
+    # profile, e2e or otherwise, and the worker/gateway Pods CreateContainer-
+    # ConfigError on first boot without this override.
+    secretName: agent-orchestrator-secrets
+  callback:
+    # Same `fullnameOverride` gap as `llm.secretName` above, for the gateway's
+    # HMAC callback secret -- `agent-orchestrator-secrets` already carries
+    # `AGENT_CALLBACK_SECRET` (matching `callback.secretKey`'s default), since
+    # that's the same value agent-orchestrator's own tool-callback path signs
+    # with.
+    secretName: agent-orchestrator-secrets
+  nats:
+    # Empty by default -- `charts/agent-controller/charts/temporal-engine`'s own
+    # comment says this "disables bridged pod agents entirely, leaving the
+    # declarative loop and checkpoint-resume step tools", and the worker logs
+    # it plainly at startup ("AGENT_NATS_URL not set; bridged pod agents
+    # disabled"). This is the exact NATS the orchestrator itself is wired to
+    # (`agent-orchestrator.natsUrl` in values-minikube-demo.yaml derives the
+    # same Service) -- both engines have to speak to the same broker, since a
+    # bridged agent's Job publishes to AgentRun-id-keyed subjects regardless of
+    # which engine is driving the episode.
+    url: nats://agent-controller-nats.controller-agent.svc.cluster.local:4222
+  qdrant:
+    # Empty by default -- and every catalog-dependent activity (IntegrationRoute
+    # matching, Skill/Agent/Tool retrieval, delegation) needs it: without a
+    # Qdrant host, the worker logs "QDRANT_HOST not set; retrieval activities
+    # disabled" and every turn falls through the capability-need gate into a
+    # bare conversational answer, NEVER reaching delegateToAgent -- so no
+    # Agent, bridged or otherwise, is ever run. Reuses agent-orchestrator's own
+    # Qdrant instance (already deployed by this same release) rather than
+    # standing up a second one; `collectionPrefix` keeps its collections
+    # separate from the orchestrator's own (their payload schemas differ).
+    host: agent-controller-qdrant
+    port: 6334
+    collectionPrefix: te-
+  gateway:
+    senderAssertion:
+      # Without this, `GATEWAY_SENDER_ASSERTION_SECRET` is unset on the
+      # Temporal engine gateway, so it can never verify the signed assertion
+      # header agent-orchestrator's TemporalEngine sends (temporal-engine.ts:
+      # "the sender login travels as a SIGNED assertion, not a body field" --
+      # it never falls back to an unsigned body field for this hop). The
+      # gateway silently resolves an empty sender login instead, which is why
+      # `AGENT_ACTOR_LOGIN` never appears in a launched AgentRun's secretEnv
+      # for any webhook-driven turn. Same secret/value integration-gateway and
+      # agent-orchestrator already share for this exact purpose.
+      secretName: e2e-integration-gateway-secrets
+    identity:
+      # The Go gateway resolves ITS OWN caller identity from a bearer token --
+      # entirely separate from agent-orchestrator's own `config.staticIdentities`
+      # below, despite the identical JSON shape. But agent-orchestrator's
+      # internal hop to this gateway (`TemporalEngine`, apps/agent-orchestrator/
+      # src/engine/temporal-engine.ts) sends NO Authorization header at all
+      # unless `AGENT_TEMPORAL_ENGINE_TOKEN` is set, which nothing in this
+      # chart ever populates (its own secretKeyRef is `optional: true` against
+      # a key that doesn't exist). So EVERY call arrives tokenless, resolving
+      # to an EMPTY Caller.Subject -- and `runAgentTurn`
+      # (engines/temporal/internal/temporal/workflows/agentloop.go) treats an
+      # empty subject as "answer bare, skip the catalog entirely",
+      # unconditionally, regardless of the capability gate, retrieval, or a
+      # route's `forcedAgentId`. Without this, NOTHING ever delegates to any
+      # Agent under the Temporal engine -- not a bridged-agent-specific gap,
+      # a total one. `defaultSubject`/`defaultRoles` are exactly the
+      # documented lever for a tokenless caller (main.go: "give tokenless
+      # callers an identity — leave unset to fail closed to no
+      # capabilities"), matching the role agent-orchestrator's own shared
+      # `client-integration-gateway` subject plays for every webhook-driven
+      # turn today.
+      defaultSubject: client-integration-gateway
+      defaultRoles: reader,writer
+  identityLink:
+    # Without this the worker logs "IDENTITY_LINK_GATEWAY_URL not set; using
+    # the in-memory identity-link fake (dev only)" -- a completely separate,
+    # unseedable identity-link store from the one this e2e suite actually
+    # seeds into (e2e/support/credential-store.ts writes real Kubernetes
+    # Secrets that integration-gateway's identity-link API reads). Every
+    # Agent requiring `identityProviders` therefore parks on "link-required"
+    # forever under the fake, regardless of anything seeded. Mirrors
+    # agent-orchestrator's own `identityLink.gatewayUrl` above at the
+    # identical Service address, and reuses the same shared secret VALUE
+    # bootstrap-secrets.sh already wrote for the reverse direction (its own
+    # key name differs -- IDENTITY_LINK_GATEWAY_TOKEN vs
+    # GATEWAY_IDENTITY_LINK_TOKEN -- but both hold the one value both sides
+    # of this handshake must agree on).
+    gatewayUrl: "http://agent-controller-integration-gateway:8090"
+    tokenSecretName: e2e-integration-gateway-secrets
+
 integration-gateway:
   # The whole point of this overlay. Off in every other profile.
   enabled: true

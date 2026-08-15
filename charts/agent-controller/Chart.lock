@@ -7,7 +7,7 @@ dependencies:
   version: 0.1.0
 - name: temporal-engine
   repository: file://charts/temporal-engine
-  version: 0.1.1
+  version: 0.2.0
 - name: integration-gateway
   repository: file://charts/integration-gateway
   version: 0.1.0
@@ -17,5 +17,5 @@ dependencies:
 - name: nats
   repository: https://nats-io.github.io/k8s/helm/charts/
   version: 2.14.2
-digest: sha256:571058ff9cac13b57a9e36b07e9a866cca84904a0411bffde4b556f3ea1cea7b
-generated: "2026-08-06T18:08:32.066566-07:00"
+digest: sha256:5dd4996b45156a10e81616ca4293ed907d5404250dc5896c7ade4eb85014e5dd
+generated: "2026-08-14T16:05:33.799016-07:00"

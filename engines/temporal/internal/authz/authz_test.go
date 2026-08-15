@@ -129,7 +129,7 @@ func TestEveryMissingProviderIsReportedTogether(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, authz.KindLinkRequired, verdict.Kind)
 	require.Contains(t, verdict.Message, "GitHub")
-	require.Contains(t, verdict.Message, "Claude (Remote Control)")
+	require.Contains(t, verdict.Message, "Claude Remote Control")
 	require.NotNil(t, verdict.Pending)
 }
 

@@ -608,6 +608,12 @@ async function main(): Promise<void> {
       // Reuses the assertion contract rather than trusting a login on an
       // internal hop -- see TemporalEngine's own note.
       ...(config.senderAssertionSecret ? { senderAssertionSecret: config.senderAssertionSecret } : {}),
+      // Same forwarded-user resolver `graph`'s resolveIdentity node uses --
+      // without it, every CHAT turn on this engine collapses onto the
+      // gateway's shared default/bearer identity regardless of which human is
+      // chatting. Scoped to this one resolver deliberately -- see
+      // TemporalEngineOptions.forwardedUserIdentityResolver's doc comment.
+      ...(forwardedUserIdentityResolver ? { forwardedUserIdentityResolver } : {}),
       timeoutMs: config.agentRunTimeoutSeconds * 1_000,
     });
     console.log(`agent engine: temporal (${config.temporalEngineUrl})`);

@@ -202,7 +202,7 @@ export async function agentRunsSince(since: Date): Promise<{ name: string; phase
 export async function jobEnvNames(agentRunName: string): Promise<string[]> {
   const job = await kubectlJson<{
     spec: { template: { spec: { containers: { env?: { name: string }[] }[] } } };
-  }>(["get", "job", `agentrun-${agentRunName}`]);
+  }>(["get", "job", agentRunName]);
   return (job.spec.template.spec.containers[0]?.env ?? []).map((e) => e.name);
 }
 

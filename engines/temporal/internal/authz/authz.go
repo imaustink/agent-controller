@@ -274,7 +274,7 @@ func New(deps Deps) *Service { return &Service{deps: deps} }
 var providerLabel = map[string]string{
 	identitylink.ProviderGitHub:       "GitHub",
 	identitylink.ProviderClaude:       "Claude",
-	identitylink.ProviderClaudeRemote: "Claude (Remote Control)",
+	identitylink.ProviderClaudeRemote: "Claude Remote Control",
 }
 
 func label(provider string) string {
@@ -745,28 +745,43 @@ func linkPromptText(started identitylink.StartResult, label string) string {
 // composeLinkRequired states every outstanding link in one message. The batch
 // shape is the point: a caller authorizes once for everything the run needs
 // rather than discovering the next gap on the next trigger.
+//
+// Wording matches upstream's composeLinkRequiredMessage
+// (apps/agent-orchestrator/src/agent/authorization-service.ts) exactly,
+// including the "N accounts" count in the multi-link case — a caller-facing
+// string, not just an implementation detail, and one this port had drifted
+// from silently (no error, just different prose than upstream's).
 func composeLinkRequired(pending []pendingEntry, failedToStart []string) string {
-	var b strings.Builder
+	var parts []string
+
 	switch len(pending) {
 	case 0:
 	case 1:
-		fmt.Fprintf(&b, "To continue, please %s. This is a one-time step.", pending[0].linkText)
+		parts = append(parts, fmt.Sprintf(
+			"To continue, please %s. This is a one-time step -- send any message once you're done.",
+			pending[0].linkText))
 	default:
-		b.WriteString("To continue, please link the accounts this needs:")
-		for _, p := range pending {
-			fmt.Fprintf(&b, "\n- %s", p.linkText)
+		texts := make([]string, len(pending))
+		for i, p := range pending {
+			texts[i] = p.linkText
 		}
-		b.WriteString("\n\nThese are one-time steps.")
+		parts = append(parts, fmt.Sprintf(
+			"To continue, I need you to link %d accounts (one-time). Please %s. Send any message once you're done.",
+			len(pending), strings.Join(texts, ", and ")))
 	}
 
 	if len(failedToStart) > 0 {
-		if b.Len() > 0 {
-			b.WriteString("\n\n")
+		labels := strings.Join(failedToStart, " and ")
+		if len(parts) > 0 {
+			parts = append(parts, fmt.Sprintf(
+				"I also couldn't start the %s linking step just now -- try again in a moment and I'll retry that part.", labels))
+		} else {
+			parts = append(parts, fmt.Sprintf(
+				"I couldn't start the one-time %s account-linking step just now. Please try again in a moment -- re-apply the label or send any message and I'll retry.", labels))
 		}
-		fmt.Fprintf(&b, "I also couldn't start the %s linking step just now — please try again shortly.",
-			strings.Join(failedToStart, " and "))
 	}
-	return b.String()
+
+	return strings.Join(parts, " ")
 }
 
 func pendingKeys(pending []pendingEntry) []string {

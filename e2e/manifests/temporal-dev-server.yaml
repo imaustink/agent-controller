@@ -1,0 +1,85 @@
+# temporal-dev-server.yaml — a single-node Temporal server for the e2e stack.
+#
+# `charts/agent-controller/values.yaml` defaults `temporal-engine.enabled: true`
+# and `agent-orchestrator.config.agentEngine: temporal` (docs/adr/0036), so every
+# e2e run now routes agent turns through the Temporal engine's worker/gateway —
+# but neither the temporal-engine subchart nor `e2e/scripts/up.sh` ever bundled
+# an actual Temporal server ("Assumes a reachable Temporal cluster; no server is
+# bundled", `charts/agent-controller/values.yaml`). Without one, the engine's
+# worker/gateway crashloop trying to reach a frontend that doesn't exist, and
+# nothing in the suite ever proves an Agent actually took the
+# `BridgedAgentWorkflow` path.
+#
+# Uses the official `temporalio/admin-tools` image's bundled `temporal` CLI
+# (`temporal server start-dev`) rather than the full multi-service Helm chart
+# (Cassandra/Elasticsearch, etc.) — a single in-memory dev-mode server is all a
+# hermetic, throwaway e2e cluster needs, and it starts in seconds. `--ip
+# 0.0.0.0` is required: the CLI binds the frontend to `localhost` by default,
+# which is unreachable from any other Pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: temporal-dev-server
+  labels:
+    app: temporal-dev-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: temporal-dev-server
+  template:
+    metadata:
+      labels:
+        app: temporal-dev-server
+    spec:
+      containers:
+        - name: temporal
+          image: temporalio/admin-tools:latest
+          command:
+            - temporal
+            - server
+            - start-dev
+            - --ip=0.0.0.0
+            - --port=7233
+            - --http-port=7243
+            - --ui-port=8233
+          ports:
+            - name: grpc
+              containerPort: 7233
+            - name: http
+              containerPort: 7243
+            - name: ui
+              containerPort: 8233
+          readinessProbe:
+            tcpSocket:
+              port: 7233
+            initialDelaySeconds: 3
+            periodSeconds: 2
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: temporal-dev-server
+  labels:
+    app: temporal-dev-server
+spec:
+  selector:
+    app: temporal-dev-server
+  ports:
+    - name: grpc
+      port: 7233
+      targetPort: 7233
+    - name: http
+      port: 7243
+      targetPort: 7243
+    - name: ui
+      port: 8233
+      targetPort: 8233

@@ -60,6 +60,18 @@ echo "  ✓ $(ls "$REPO_ROOT"/controllers/core-controller/config/crd/bases/*.yam
 step "Creating throwaway secrets..."
 "$REPO_ROOT/e2e/scripts/bootstrap-secrets.sh"
 
+step "Deploying the Temporal dev server (e2e/manifests/temporal-dev-server.yaml)..."
+# The chart defaults `temporal-engine.enabled: true` +
+# `agent-orchestrator.config.agentEngine: temporal` (docs/adr/0036), so every
+# turn now routes through the Temporal engine's worker/gateway -- but no
+# subchart bundles an actual Temporal server. Without one reachable BEFORE the
+# release below, the worker/gateway Pods crashloop on their first connection
+# attempt and every agent turn in the suite hangs. Applied idempotently, same
+# as the CRDs above.
+kubectl apply -n "$NS" -f "$REPO_ROOT/e2e/manifests/temporal-dev-server.yaml" >/dev/null
+kubectl -n "$NS" wait --for=condition=Available --timeout=120s deploy/temporal-dev-server >/dev/null
+echo "  ✓ temporal-dev-server"
+
 step "Adopting hand-created objects into Helm..."
 # dev-up.sh creates these ServiceAccounts with `kubectl create serviceaccount`,
 # but community-components' templates also declare them. Helm refuses to adopt
