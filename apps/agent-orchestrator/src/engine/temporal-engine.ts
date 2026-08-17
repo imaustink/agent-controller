@@ -131,17 +131,40 @@ export class TemporalEngine implements AgentGraphLike {
    * streaming protocol for a status line. A streaming client on this engine
    * therefore sees the reply rather than the running commentary — a real
    * difference, recorded rather than papered over.
+   *
+   * Deliberately NOT `await this.invoke(input)` before returning: an earlier
+   * version awaited invoke() here, so this method's own returned Promise
+   * didn't settle until the whole (up to `timeoutMs`, default 30 min) turn
+   * had already finished. server.ts's streaming handler does
+   * `const source = await this.graph.stream(...)` before starting its
+   * `withHeartbeat(source, HEARTBEAT_MS)` loop -- so that wrapper, whose only
+   * job is emitting an SSE keep-alive comment whenever the source stalls for
+   * longer than HEARTBEAT_MS, never got a chance to run: it can't race
+   * against a source it doesn't have yet. A long-running turn's SSE
+   * connection then had no guaranteed byte cadence at all (progress
+   * narration is opportunistic, not periodic), so an idle-connection timeout
+   * upstream of this process (ingress, load balancer, browser) would cancel
+   * it (RST_STREAM) even though the turn itself kept running and completed
+   * fine server-side -- the underlying AgentRun Job is unaffected either way
+   * (docs/adr/0033), only the chat client watching it lost its stream.
+   *
+   * An async generator's body does not start running until its first
+   * `.next()` call (JS semantics), so returning the iterable synchronously
+   * and moving the `await this.invoke(input)` inside it defers that whole
+   * wait until `withHeartbeat` actually asks for the next item -- which is
+   * exactly when its race against HEARTBEAT_MS needs to start.
    */
-  async stream(
+  stream(
     input: AgentGraphInput,
     _options: { streamMode: "updates" },
   ): Promise<AsyncIterable<Record<string, Partial<AgentState>>>> {
-    const state = await this.invoke(input);
-    return {
+    const engine = this;
+    return Promise.resolve({
       async *[Symbol.asyncIterator]() {
+        const state = await engine.invoke(input);
         yield { temporalEngine: state };
       },
-    };
+    });
   }
 
   private async start(input: AgentGraphInput): Promise<string> {

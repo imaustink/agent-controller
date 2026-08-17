@@ -149,6 +149,48 @@ describe("TemporalEngine", () => {
     expect(Object.values(updates[0]!)[0]).toMatchObject({ result: "done" });
   });
 
+  // Regression: stream() used to `await this.invoke(input)` before returning
+  // the iterable, so its own Promise didn't settle until the whole turn had
+  // already finished. That left server.ts's withHeartbeat wrapper unable to
+  // do its job -- it can't race a source it doesn't have yet -- so a
+  // long-running turn's SSE connection had no keep-alive bytes at all and an
+  // idle-connection timeout upstream would cancel it even though the turn
+  // kept running server-side. stream() must resolve immediately; only
+  // iterating it should trigger the poll loop.
+  it("resolves the streamed iterable before the turn finishes polling", async () => {
+    let resolvePending!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      resolvePending = resolve;
+    });
+    let released = false;
+    const impl = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.endsWith("/invoke")) {
+        return new Response(JSON.stringify({ id: "x", status: "pending" }), { status: 202 });
+      }
+      await pending; // the turn "hangs" here until the test releases it
+      released = true;
+      return new Response(JSON.stringify({ id: "x", status: "succeeded", result: "done" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+
+    const streamPromise = engine.stream(input(), { streamMode: "updates" });
+    const source = await Promise.race([
+      streamPromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("stream() did not resolve promptly")), 50)),
+    ]);
+    expect(released).toBe(false); // the turn is still in-flight
+
+    const updates: Record<string, unknown>[] = [];
+    const drained = (async () => {
+      for await (const update of source as AsyncIterable<Record<string, unknown>>) updates.push(update);
+    })();
+    resolvePending();
+    await drained;
+    expect(updates).toHaveLength(1);
+    expect(Object.values(updates[0]!)[0]).toMatchObject({ result: "done" });
+  });
+
   // Without this, a streaming chat caller on this engine saw nothing at all
   // until the whole turn completed -- poll() ran silently, even though the
   // engine's own gateway already narrates in-flight turns
