@@ -489,10 +489,11 @@ describe("GatewayServer session pages", () => {
     await server.close();
   });
 
-  it("posts nothing upfront for a labeled-triage turn when no Remote Control URL ever arrives -- just the final result", async () => {
-    // Default `invoke` mock from beforeEach never calls onRemoteControlUrl.
-    // The old "Starting work... {session page link}" comment is gone for
-    // good -- silence is the correct fallback, not a placeholder link.
+  it("posts a deterministic 'starting work' ack as soon as the turn is running, even when no Remote Control URL ever arrives", async () => {
+    // Default `invoke` mock from beforeEach never calls onRemoteControlUrl,
+    // only onRunning -- the ack must not depend on the delegated agent
+    // successfully producing a Remote Control session; it fires purely off
+    // this gateway's own poll of the turn's status.
     await postWebhook(port, "issues", {
       action: "labeled",
       repository: { owner: { login: "acme" }, name: "widgets" },
@@ -502,8 +503,9 @@ describe("GatewayServer session pages", () => {
     });
     await flush();
 
-    expect(postIssueComment).toHaveBeenCalledTimes(1);
-    expect(postIssueComment).toHaveBeenNthCalledWith(1, "acme", "widgets", 7, "Working on it.");
+    expect(postIssueComment).toHaveBeenCalledTimes(2);
+    expect(postIssueComment).toHaveBeenNthCalledWith(1, "acme", "widgets", 7, "🤖 Starting work on this now.");
+    expect(postIssueComment).toHaveBeenNthCalledWith(2, "acme", "widgets", 7, "Working on it.");
 
     const entry = await sessionPageStore.getOrCreate(sessionIdFor("acme", "widgets", 7), {
       owner: "acme",
@@ -527,7 +529,10 @@ describe("GatewayServer session pages", () => {
     expect(postIssueComment).not.toHaveBeenCalled();
   });
 
-  it("posts a single comment linking the Remote Control URL as soon as it arrives, before the final result", async () => {
+  it("posts a separate follow-up comment linking the Remote Control URL as soon as it arrives, before the final result", async () => {
+    // This override skips onRunning entirely (unlike the default mock), so
+    // the deterministic ack from the previous test does NOT fire here --
+    // isolates the onRemoteControlUrl follow-up comment on its own.
     invoke.mockImplementation(async (..._args: unknown[]) => {
       const onRemoteControlUrl = _args[5] as ((url: string) => Promise<void> | void) | undefined;
       await onRemoteControlUrl?.("https://claude.ai/code/session_abc123");
@@ -549,7 +554,7 @@ describe("GatewayServer session pages", () => {
       "acme",
       "widgets",
       7,
-      "🤖 Starting work on this now. Watch live or take over the session here: https://claude.ai/code/session_abc123",
+      "🤖 Watch live or take over the session here: https://claude.ai/code/session_abc123",
     );
     expect(postIssueComment).toHaveBeenNthCalledWith(2, "acme", "widgets", 7, "Working on it.");
   });
@@ -684,12 +689,14 @@ describe("GatewayServer unauthenticated triage: deferred ack + auto-resume", () 
     });
     await flush();
 
-    // The very first comment is the auth prompt. No "starting work"
-    // placeholder comment exists anymore -- the second comment is the real
-    // result, posted once the link lands and the turn resumes.
+    // The very first comment is the auth prompt. The resumed invoke fires
+    // onRunning (it's genuinely running now, past the link pre-flight), so
+    // the deterministic "starting work" ack posts next, then the real result
+    // once the turn completes.
     expect(postIssueComment.mock.calls[0]?.[3]).toMatch(/link your Claude account/i);
-    expect(postIssueComment.mock.calls[1]?.[3]).toBe("Opened PR #42.");
-    expect(postIssueComment).toHaveBeenCalledTimes(2);
+    expect(postIssueComment.mock.calls[1]?.[3]).toBe("🤖 Starting work on this now.");
+    expect(postIssueComment.mock.calls[2]?.[3]).toBe("Opened PR #42.");
+    expect(postIssueComment).toHaveBeenCalledTimes(3);
 
     // Waited on the gateway-owned claude token store for the gateway subject,
     // and re-invoked the SAME triage request once it landed. The window is the
@@ -767,8 +774,9 @@ describe("GatewayServer unauthenticated triage: deferred ack + auto-resume", () 
     await flush();
 
     expect(postIssueComment.mock.calls[0]?.[3]).toMatch(/link your Claude account/i);
-    expect(postIssueComment.mock.calls[1]?.[3]).toBe("Opened PR #42.");
-    expect(postIssueComment).toHaveBeenCalledTimes(2);
+    expect(postIssueComment.mock.calls[1]?.[3]).toBe("🤖 Starting work on this now.");
+    expect(postIssueComment.mock.calls[2]?.[3]).toBe("Opened PR #42.");
+    expect(postIssueComment).toHaveBeenCalledTimes(3);
     expect(waitForCompletion).toHaveBeenCalledWith("client-integration-gateway", 10 * 60 * 1000, "login");
     expect(invoke).toHaveBeenCalledTimes(2);
   });
