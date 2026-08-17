@@ -403,35 +403,53 @@ export class GatewayServer {
     // Ordinary conversational opened/comment replies are meant to feel like
     // near-instant chat, so an extra comment there would just be noise.
     //
-    // The gateway's own session page (ADR 0025/0026) is still created and
-    // tracked here for debugging, but its URL is deliberately NEVER posted
-    // to the issue -- the only thing posted up front is a real Claude Code
-    // Remote Control link (`onRemoteControlUrl`, fired by a
-    // `remote-control-url` progress event from the delegated agent), and
-    // only once one genuinely exists. If Remote Control never activates for
-    // this run (not configured for the Agent, or the CLI never hands back a
-    // session), no upfront comment is posted at all -- silence, not a
-    // placeholder link nobody asked to see, is the fallback. This was a
-    // deliberate, explicit product decision after the old "Starting work...
-    // {session page link}" comment kept appearing instead of the intended
-    // Remote Control link.
+    // TWO separate signals post TWO separate comments here, deliberately not
+    // collapsed into one:
+    //
+    // `announce` (wired to `runTurn`'s `onRunning`) is posted by THIS
+    // gateway the moment `orchestratorClient.invoke`'s own poll loop first
+    // sees the turn genuinely running (past any identity-link pre-flight) --
+    // it depends on nothing the delegated agent does, so it fires whether or
+    // not Remote Control ever comes up for this run. This used to be the
+    // ONLY upfront comment (issue #81), then got removed entirely in favor
+    // of `onRemoteControlUrl` below because it linked the session page,
+    // which was never meant to be user-facing (c49a533) -- but removing it
+    // also removed the one deterministic "your triage request was received
+    // and is running" acknowledgement, so a run whose delegated agent never
+    // gets around to emitting `remote-control-url` (not configured for the
+    // Agent, the CLI never hands back a session, or the agent fails before
+    // that point) posts no comment at all even though it visibly launched a
+    // Job. Restored here with no link -- just the ack -- so it no longer
+    // depends on anything downstream succeeding.
+    //
+    // `onRemoteControlUrl`, fired by a `remote-control-url` progress event
+    // from the delegated agent IF one ever arrives, posts a second, separate
+    // follow-up comment with the live session link. Independent of
+    // `announce` -- may land before, after, or never.
+    let announce: (() => Promise<void>) | undefined;
     let onRemoteControlUrl: ((url: string) => Promise<void>) | undefined;
     if (event && this.options.sessionPageStore && this.options.publicBaseUrl) {
       await this.options.sessionPageStore.getOrCreate(sessionId, { owner, repo, issueNumber });
-      let posted = false;
+      let announced = false;
+      announce = async () => {
+        if (announced) return;
+        announced = true;
+        await this.options.githubReplyClient.postIssueComment(owner, repo, issueNumber, "🤖 Starting work on this now.");
+      };
+      let postedRemoteControlUrl = false;
       onRemoteControlUrl = async (url) => {
-        if (posted) return;
-        posted = true;
+        if (postedRemoteControlUrl) return;
+        postedRemoteControlUrl = true;
         await this.options.githubReplyClient.postIssueComment(
           owner,
           repo,
           issueNumber,
-          `🤖 Starting work on this now. Watch live or take over the session here: ${url}`,
+          `🤖 Watch live or take over the session here: ${url}`,
         );
       };
     }
     try {
-      await this.runTurn(owner, repo, issueNumber, sessionId, request, event, undefined, onRemoteControlUrl);
+      await this.runTurn(owner, repo, issueNumber, sessionId, request, event, announce, onRemoteControlUrl);
     } finally {
       // `finally`, not the happy path only: a failed or blocked run is
       // exactly when someone wants to re-trigger, so the label must come off
@@ -487,13 +505,14 @@ export class GatewayServer {
     // This relay has no browser -- always force device flow explicitly rather
     // than relying on agent-orchestrator's own default ("authcode", intended
     // for browser-based callers). `announce` fires once the turn is genuinely
-    // running past any auth pre-flight -- `relayAndReply` no longer uses it
-    // (it posts nothing until a real Remote Control URL exists), but
-    // `orchestratorClient.invoke` still accepts it for any other caller that
-    // wants an "actually running now" signal. `onRemoteControlUrl` (when set)
-    // is only ever passed on the triage path (alongside `event`), see
-    // `relayAndReply`. Only pass an `event` when there is one -- keeps the
-    // call shape identical for the ordinary opened/comment paths.
+    // running past any auth pre-flight -- `relayAndReply` passes it on the
+    // triage path (alongside `event`) as the deterministic "starting work"
+    // ack; unset for the ordinary conversational paths, which want no extra
+    // comment at all. `onRemoteControlUrl` (when set) is likewise only ever
+    // passed on the triage path, and posts an independent follow-up comment
+    // if a live session link shows up. Only pass an `event` when there is
+    // one -- keeps the call shape identical for the ordinary opened/comment
+    // paths.
     const invokeOnce = (): Promise<OrchestratorInvokeResult> =>
       event
         ? this.options.orchestratorClient.invoke(request, sessionId, "device", event, announce, onRemoteControlUrl)
