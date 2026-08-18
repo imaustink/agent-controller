@@ -38,12 +38,22 @@ FROM node:20-bookworm-slim AS runtime
 # Pinned kubectl binary, verified against the official checksum published
 # alongside the same release (fetched at build time rather than hardcoded,
 # so the check stays correct if this ARG is bumped without also updating a
-# stale hash). Bump KUBECTL_VERSION to upgrade.
+# stale hash). Bump KUBECTL_VERSION to upgrade. TARGETARCH is set
+# automatically by BuildKit (amd64/arm64) -- hardcoding amd64 here previously
+# meant an arm64 host (e.g. Apple Silicon minikube) downloaded a binary that
+# can't exec; the kernel's ENOEXEC fallback then re-runs the raw ELF bytes as
+# a shell script, surfacing as "Syntax error: ")" unexpected".
 ARG KUBECTL_VERSION=v1.31.2
+ARG TARGETARCH
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl \
-  && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" -o /usr/local/bin/kubectl \
-  && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256" -o /tmp/kubectl.sha256 \
+  && case "${TARGETARCH:-amd64}" in \
+       amd64) KUBECTL_ARCH=amd64 ;; \
+       arm64) KUBECTL_ARCH=arm64 ;; \
+       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+     esac \
+  && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KUBECTL_ARCH}/kubectl" -o /usr/local/bin/kubectl \
+  && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KUBECTL_ARCH}/kubectl.sha256" -o /tmp/kubectl.sha256 \
   && echo "$(cat /tmp/kubectl.sha256)  /usr/local/bin/kubectl" | sha256sum -c - \
   && chmod a+rx /usr/local/bin/kubectl \
   && apt-get purge -y curl \
