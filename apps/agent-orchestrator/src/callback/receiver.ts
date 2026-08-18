@@ -4,6 +4,21 @@ import { EventSchema, type Event } from "@controller-agent/messaging";
 
 export class CallbackAuthError extends Error {}
 
+/** Thrown by `awaitJob` when no terminal event arrives within its timeout — see {@link DEFAULT_JOB_TIMEOUT_MS}. */
+export class JobTimeoutError extends Error {}
+
+/**
+ * How long `awaitJob` waits for a terminal (`succeeded`/`failed`) callback
+ * before giving up. Without this, a Job/ToolRun that never reports back
+ * (stuck in `ImagePullBackOff`, crash-looping, never scheduled, etc.) left
+ * `awaitJob`'s Promise pending forever — the only backstops were the
+ * TemporalEngine's 30-minute whole-turn poll deadline (which just returns a
+ * "still running" placeholder, not an error) and the SSE heartbeat (a
+ * transport keep-alive that never terminates a stuck turn). That hang is
+ * what surfaced as the chat UI appearing to hang after a tool failed to launch.
+ */
+export const DEFAULT_JOB_TIMEOUT_MS = 10 * 60 * 1000;
+
 /** Handler called for each `progress` or `warning` event received for a specific job. */
 export type ProgressHandler = (stage: string, message: string | undefined) => void;
 
@@ -13,8 +28,12 @@ export type ProgressHandler = (stage: string, message: string | undefined) => vo
  * transport can be swapped without touching graph logic.
  */
 export interface JobResultReceiver {
-  /** Returns a Promise that resolves once a terminal (`succeeded`/`failed`) event arrives. */
-  awaitJob(jobId: string): Promise<Event>;
+  /**
+   * Returns a Promise that resolves once a terminal (`succeeded`/`failed`)
+   * event arrives, or rejects with {@link JobTimeoutError} after
+   * `opts.timeoutMs` (default {@link DEFAULT_JOB_TIMEOUT_MS}) of silence.
+   */
+  awaitJob(jobId: string, opts?: { timeoutMs?: number }): Promise<Event>;
   /**
    * Registers a handler to receive `progress`/`warning` events for `jobId`.
    * Returns an unsubscribe function — always call it when the job is done.
@@ -46,6 +65,7 @@ export function verifyAndParseCallback(rawBody: string, signatureHeader: string 
 type PendingJob = {
   resolve: (event: Event) => void;
   reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
 };
 
 /**
@@ -64,9 +84,15 @@ export class CallbackReceiver {
 
   constructor(private readonly secret: string) {}
 
-  awaitJob(jobId: string): Promise<Event> {
+  awaitJob(jobId: string, opts: { timeoutMs?: number } = {}): Promise<Event> {
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
     return new Promise((resolve, reject) => {
-      this.pending.set(jobId, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(jobId);
+        this.progressHandlers.delete(jobId);
+        reject(new JobTimeoutError(`tool run ${jobId} did not report back within ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.pending.set(jobId, { resolve, reject, timer });
     });
   }
 
@@ -130,6 +156,7 @@ export class CallbackReceiver {
     if (jobId && (event.type === "succeeded" || event.type === "failed")) {
       const pending = this.pending.get(jobId);
       if (pending) {
+        clearTimeout(pending.timer);
         this.pending.delete(jobId);
         this.progressHandlers.delete(jobId);
         pending.resolve(event);
