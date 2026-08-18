@@ -9,6 +9,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -286,7 +287,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 	}
 
 	var result workflows.TurnResult
-	if err := updateHandle.Get(c.Request.Context(), &result); err != nil {
+	if err := awaitTurnResult(c.Request.Context(), updateHandle, &result); err != nil {
 		log.Printf("turn failed: workflow=%s err=%v", workflowID, err)
 		writeError(c, http.StatusBadGateway, "turn failed: "+err.Error())
 		return
@@ -512,6 +513,45 @@ const (
 // keep-alive comments while quiet, then the reply as a content delta once
 // the update completes. Mid-turn lines come from polling TurnProgressQuery;
 // the final flush uses the authoritative narration in the turn result.
+// awaitTurnResult waits for a user-turn update to finish, re-polling across the
+// SDK's client-side poll window.
+//
+// updateHandle.Get issues a long poll bounded by the SDK's own pollUpdateTimeout
+// (60s in v1.46). When that window closes the gRPC call returns Canceled or
+// DeadlineExceeded and the SDK surfaces WorkflowUpdateServiceTimeoutOrCanceledError
+// WITHOUT retrying, even though the caller's context is still live. That error is
+// explicitly about the client call and not the update -- the SDK documents it as
+// "not related to any general concept of timing out or cancelling a running
+// update" -- so the workflow is still running and the result is still coming.
+//
+// Left unhandled, every turn longer than the poll window reports failure while
+// the work quietly succeeds. That is not an edge case for agent turns: a bridged
+// coding agent routinely runs for minutes, so the user sees
+// "Timeout or cancellation waiting for update" on a turn that then completes
+// normally and writes its result.
+//
+// Re-polling is the whole fix. The loop is bounded by ctx: once the caller goes
+// away, ctx.Err() is set and the same error is returned rather than spinning.
+func awaitTurnResult(ctx context.Context, handle client.WorkflowUpdateHandle, result *workflows.TurnResult) error {
+	for {
+		err := handle.Get(ctx, result)
+		if err == nil {
+			return nil
+		}
+
+		var pollErr *client.WorkflowUpdateServiceTimeoutOrCanceledError
+		if !errors.As(err, &pollErr) {
+			return err
+		}
+
+		// Distinguishes "the poll window closed" from "the caller hung up":
+		// the SDK returns this same error for both.
+		if ctx.Err() != nil {
+			return err
+		}
+	}
+}
+
 func (s *Server) streamTurn(c *gin.Context, workflowID, completionID string, updateHandle client.WorkflowUpdateHandle) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -541,7 +581,7 @@ func (s *Server) streamTurn(c *gin.Context, workflowID, completionID string, upd
 	done := make(chan turnDone, 1)
 	go func() {
 		var result workflows.TurnResult
-		err := updateHandle.Get(c.Request.Context(), &result)
+		err := awaitTurnResult(c.Request.Context(), updateHandle, &result)
 		done <- turnDone{result, err}
 	}()
 
