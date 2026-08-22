@@ -1,5 +1,5 @@
 import { ArtifactRefSchema, type ArtifactRef } from "./artifact.js";
-import { EventSchema, type Event } from "./event.js";
+import { EventSchema, type Event, type Disposition } from "./event.js";
 import type { Sink } from "./sink.js";
 
 /** Default free-text guard: bounds length only. Tools should inject a
@@ -23,14 +23,17 @@ export interface JobEmitterOptions {
  * - `TResult` — the shape of a successful `result` (a tool's own envelope type).
  * - `TStage` — the string-literal union of pipeline stages a tool reports.
  * - `TCode` — the string-literal union of failure codes a tool reports.
+ * - `TDisposition` — the vocabulary a tool uses on `reflection` events
+ *   (defaults to the suggested {@link Disposition} union).
  *
  * These generics only narrow the TypeScript surface; the wire format always
- * stores `stage`/`code` as plain strings (see {@link EventSchema}).
+ * stores `stage`/`code`/`disposition` as plain strings (see {@link EventSchema}).
  */
 export class JobEmitter<
   TResult = unknown,
   TStage extends string = string,
   TCode extends string = string,
+  TDisposition extends string = Disposition,
 > {
   private seq = 0;
   private readonly sanitize: (input: string, max?: number) => string;
@@ -70,6 +73,29 @@ export class JobEmitter<
 
   async warning(message: string): Promise<void> {
     await this.emit({ ...this.nextBase(), type: "warning", message: this.sanitize(message, 500) });
+  }
+
+  /**
+   * Emit an interstitial self-report of the job's current internal state: a
+   * `disposition` (see {@link Disposition}), an optional `confidence` in
+   * `[0, 1]`, and an optional free-text `note`. Non-terminal — a job may emit
+   * as many as it likes between `accepted` and its terminal event, or none.
+   *
+   * This is observability, not sentience: it surfaces the reasoning state a
+   * consumer would otherwise have to infer from logs, so uncertainty and being
+   * stuck become first-class, alertable signals rather than silence.
+   */
+  async reflection(
+    disposition: TDisposition,
+    opts: { confidence?: number; note?: string } = {},
+  ): Promise<void> {
+    await this.emit({
+      ...this.nextBase(),
+      type: "reflection",
+      disposition,
+      confidence: opts.confidence,
+      note: opts.note === undefined ? undefined : this.sanitize(opts.note, 500),
+    });
   }
 
   async succeeded(result: TResult, artifacts?: ArtifactRef[]): Promise<void> {
