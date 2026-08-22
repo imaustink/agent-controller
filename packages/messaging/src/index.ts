@@ -1,5 +1,5 @@
 export { ArtifactRefSchema, type ArtifactRef } from "./artifact.js";
-export { EventSchema, type Event } from "./event.js";
+export { EventSchema, DISPOSITIONS, type Event, type Disposition } from "./event.js";
 export {
   AgentUpMessageSchema,
   AgentDownMessageSchema,

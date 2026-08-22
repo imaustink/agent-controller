@@ -3,17 +3,44 @@ import { ArtifactRefSchema, type ArtifactRef } from "./artifact.js";
 
 /**
  * The wire contract for message passing. A single tool call emits an ordered
- * stream: `accepted` → `progress`* / `warning`* → (`succeeded` | `failed`).
- * The same JSON shape is used on every transport (broker message, NDJSON
- * line, or HTTP callback body).
+ * stream: `accepted` → (`progress` | `warning` | `reflection`)* →
+ * (`succeeded` | `failed`). The same JSON shape is used on every transport
+ * (broker message, NDJSON line, or HTTP callback body).
  *
  * This library is deliberately generic: `result` (on `succeeded`) is whatever
- * shape a specific tool produces, and `stage` / `code` are free-form strings
- * a tool defines for its own pipeline and failure taxonomy. Runtime
- * validation here only enforces the envelope *shape* — a tool is expected to
- * validate its own `result` payload (e.g. with its own zod schema) before
- * calling `succeeded()`.
+ * shape a specific tool produces, and `stage` / `code` / `disposition` are
+ * free-form strings a tool defines for its own pipeline, failure taxonomy, and
+ * self-report vocabulary. Runtime validation here only enforces the envelope
+ * *shape* — a tool is expected to validate its own `result` payload (e.g. with
+ * its own zod schema) before calling `succeeded()`.
  */
+
+/**
+ * A suggested, non-exhaustive vocabulary for the `reflection` event's
+ * `disposition` field: a running agent's own read on its internal state.
+ *
+ * These are self-reports of processing state, not claims of sentience — the
+ * same way `progress.pct` reports position without the job "knowing" where it
+ * is. Surfacing them makes an agent's confidence and struggle observable
+ * (and alertable) instead of hidden inside a black box. Like `stage`/`code`,
+ * the wire type stays a plain string; this union is guidance and convenience,
+ * not a hard enum.
+ */
+export const DISPOSITIONS = [
+  /** Actively exploring / gathering context; the path is not yet fixed. */
+  "curious",
+  /** High certainty in the current approach. */
+  "confident",
+  /** Ambiguity or low confidence; proceeding, but tentatively. */
+  "uncertain",
+  /** Repeatedly blocked or retrying without progress. */
+  "frustrated",
+  /** The goal is converging and the work feels sound. */
+  "satisfied",
+] as const;
+
+/** Convenience union of the suggested {@link DISPOSITIONS} vocabulary. */
+export type Disposition = (typeof DISPOSITIONS)[number];
 
 /** Fields present on every event, regardless of `type`. */
 const EventBaseSchema = z.object({
@@ -43,6 +70,12 @@ export const EventSchema = z.discriminatedUnion("type", [
     message: z.string(),
   }),
   EventBaseSchema.extend({
+    type: z.literal("reflection"),
+    disposition: z.string(),
+    confidence: z.number().min(0).max(1).optional(),
+    note: z.string().optional(),
+  }),
+  EventBaseSchema.extend({
     type: z.literal("succeeded"),
     result: z.unknown(),
     artifacts: z.array(ArtifactRefSchema).optional(),
@@ -56,12 +89,13 @@ export const EventSchema = z.discriminatedUnion("type", [
 
 /**
  * Statically-typed event, parameterized by a tool's `succeeded.result` shape.
- * `stage`/`code` stay plain strings at runtime; tools narrow them with their
- * own string-literal unions via {@link JobEmitter}'s type parameters.
+ * `stage`/`code`/`disposition` stay plain strings at runtime; tools narrow them
+ * with their own string-literal unions via {@link JobEmitter}'s type parameters.
  */
 export type Event<TResult = unknown> =
   | (EventBase & { type: "accepted"; url: string })
   | (EventBase & { type: "progress"; stage: string; pct?: number; message?: string })
   | (EventBase & { type: "warning"; message: string })
+  | (EventBase & { type: "reflection"; disposition: string; confidence?: number; note?: string })
   | (EventBase & { type: "succeeded"; result: TResult; artifacts?: ArtifactRef[] })
   | (EventBase & { type: "failed"; code: string; message: string });
