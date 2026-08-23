@@ -302,8 +302,15 @@ func (s *Server) handleInvokeStatus(c *gin.Context) {
 			RemoteControlUrl: result.Meta.RemoteControlUrl,
 		})
 
-	case ctx.Err() != nil && c.Request.Context().Err() == nil:
-		// Our own deadline, not the client's: the turn is simply still running.
+	case ctx.Err() != nil && c.Request.Context().Err() == nil, isTransportTimeoutOrCancel(err):
+		// Either our own invokePollTimeout lapsed, or the SDK's long-poll gRPC
+		// call was itself cancelled/timed out (WorkflowUpdateServiceTimeoutOr
+		// CanceledError -- e.g. "stream terminated by RST_STREAM with error
+		// code: CANCEL"). The SDK documents that error as being about the
+		// client call, NOT the update: the workflow is still running either
+		// way. Reporting it as "failed" here made agent-orchestrator surface
+		// a bridged coding agent's routine multi-minute turn as an outright
+		// failure while the AgentRun kept working in the background.
 		// Best-effort narration alongside it -- a query failure or an inactive
 		// turn (nothing narrated yet) just means an empty Progress, never an
 		// error response, since the pending status itself is still accurate.
@@ -333,6 +340,19 @@ func (s *Server) handleInvokeStatus(c *gin.Context) {
 func isUnknownUpdate(err error) bool {
 	var notFound *serviceerror.NotFound
 	return errors.As(err, &notFound)
+}
+
+// isTransportTimeoutOrCancel reports whether err is the SDK's
+// WorkflowUpdateServiceTimeoutOrCanceledError (e.g. wrapping "stream
+// terminated by RST_STREAM with error code: CANCEL") -- a gRPC long-poll call
+// that got cancelled or timed out on its own terms, independent of our
+// invokePollTimeout ever firing. The SDK's own doc comment on the type is
+// explicit that this is "not related to any general concept of timing out or
+// cancelling a running update": the workflow update itself is unaffected.
+// See awaitTurnResult in server.go for the streaming endpoint's analogous fix.
+func isTransportTimeoutOrCancel(err error) bool {
+	var pollErr *client.WorkflowUpdateServiceTimeoutOrCanceledError
+	return errors.As(err, &pollErr)
 }
 
 // Invocation ids join the two halves Temporal needs to reconstruct an update
