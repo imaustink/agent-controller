@@ -1590,7 +1590,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // once skills/agents both come up empty (the old shape): a broad Agent
       // (or Skill) that loosely overlaps a request otherwise pre-empts a
       // bare Tool that never gets a chance to be considered at all, even
-      // when the tool is actually the better fit -- see docs/adr/0036.
+      // when the tool is actually the better fit -- see docs/adr/0037.
       if (deps.delegateSelector) {
         const nothingRetrieved =
           state.skillCandidates.length === 0 &&

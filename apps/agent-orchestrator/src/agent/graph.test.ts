@@ -1875,7 +1875,7 @@ describe("buildAgentGraph fallback tool-fit (tried before the best-effort LLM an
   });
 });
 
-describe("buildAgentGraph bare tools compete directly with skill/agent candidates (docs/adr/0036)", () => {
+describe("buildAgentGraph bare tools compete directly with skill/agent candidates (docs/adr/0037)", () => {
   const realAgent: AgentDescriptor = {
     id: "opencode-swe-agent",
     name: "opencode-swe-agent",

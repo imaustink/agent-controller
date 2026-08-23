@@ -1,4 +1,4 @@
-# 0036. Bare Tool candidates compete directly in `selectDelegate`, not only as a last-resort fallback
+# 0037. Bare Tool candidates compete directly in `selectDelegate`, not only as a last-resort fallback
 
 Status: accepted
 

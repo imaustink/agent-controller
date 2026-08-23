@@ -10,7 +10,7 @@ export type DelegateChoice =
 
 /**
  * Picks ONE delegation target — a Skill, an Agent, or a bare Tool — from
- * THREE candidate lists at once (docs/adr/0036). Tools were previously only
+ * THREE candidate lists at once (docs/adr/0037). Tools were previously only
  * ever considered as a fallback once skills/agents both came up empty
  * (graph.ts's selectFallbackTool via noMatchFallback) — meaning a broad
  * Agent that loosely matched a request (via embedding similarity alone)
