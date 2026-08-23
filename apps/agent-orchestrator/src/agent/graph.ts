@@ -1620,11 +1620,16 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           if (!planned) {
             return noMatchFallback(state, deps);
           }
+          // NOT a fallback: this tool was picked by delegateSelector as the
+          // best fit in the three-way comparison -- a first-class match, like
+          // the agent/skill branches. Setting wasFallback here would wrongly
+          // append the SELF_IMPROVEMENT_FOOTER ("nothing matched...") to every
+          // request this branch successfully routes. Genuine no-matches still
+          // fall through to noMatchFallback (above), which sets it correctly.
           return {
             selectedTool: planned.tool,
             toolArgs: planned.toolArgs,
             ...(planned.toolInstanceKey ? { toolInstanceKey: planned.toolInstanceKey } : {}),
-            wasFallback: true,
           };
         }
         return { selectedSkill: choice.skill };

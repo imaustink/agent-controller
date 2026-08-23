@@ -1942,6 +1942,9 @@ describe("buildAgentGraph bare tools compete directly with skill/agent candidate
     expect(final.selectedTool?.id).toBe("recipe-scraper");
     expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
     expect(deps.containerToolLauncher.launch).toHaveBeenCalled();
+    // A deliberately selected tool is a first-class match, not a fallback:
+    // it must NOT append the self-improvement ("nothing matched") footer.
+    expect(final.wasFallback).toBe(false);
   });
 
   it("excludes a tool that fails toolFitChecker from the candidates offered to the delegate selector", async () => {
