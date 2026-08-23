@@ -34,19 +34,20 @@ type loopEnv struct {
 	launched *activities.LaunchToolRunInput
 	launches []activities.LaunchToolRunInput
 
-	retrieveCalls       int
-	retrieveAgentCalls  int
-	fitCalls            int
-	planCalls           int
-	composeCalls        int
-	runLocalToolInputs  []activities.RunLocalToolInput
-	runLocalToolResult  *messaging.Event
-	resolveAgentCalls   int
-	selectDelegateCalls int
-	retrieveToolCalls   int
-	toolFitCalls        int
-	toolFitInputs       []activities.CheckToolFitInput
-	completeTurnInputs  []activities.CompleteTurnInput
+	retrieveCalls        int
+	retrieveAgentCalls   int
+	fitCalls             int
+	planCalls            int
+	composeCalls         int
+	runLocalToolInputs   []activities.RunLocalToolInput
+	runLocalToolResult   *messaging.Event
+	resolveAgentCalls    int
+	selectDelegateCalls  int
+	selectDelegateInputs []activities.SelectDelegateInput
+	retrieveToolCalls    int
+	toolFitCalls         int
+	toolFitInputs        []activities.CheckToolFitInput
+	completeTurnInputs   []activities.CompleteTurnInput
 
 	planInputs []activities.PlanActionInput
 	// agentRunLaunches / agentDownMessages record the bridged pod-agent
@@ -136,8 +137,9 @@ func newLoopEnv(t *testing.T) *loopEnv {
 		le.retrieveAgentCalls++
 		return le.agents, nil
 	})
-	reg(activities.SelectDelegateActivityName, func(context.Context, activities.SelectDelegateInput) (activities.DelegateChoice, error) {
+	reg(activities.SelectDelegateActivityName, func(_ context.Context, in activities.SelectDelegateInput) (activities.DelegateChoice, error) {
 		le.selectDelegateCalls++
+		le.selectDelegateInputs = append(le.selectDelegateInputs, in)
 		return le.delegate, nil
 	})
 	reg(activities.PlanAgentActionActivityName, func(_ context.Context, in activities.PlanAgentActionInput) (activities.PlannedAgentAction, error) {
@@ -908,7 +910,10 @@ func TestNoMatchFallbackRunsAFittingCatalogTool(t *testing.T) {
 	// path never sets (graph.ts:2058) — no narration prefix/suffix, ever.
 	require.Equal(t, "pod-a  Running"+workflows.SelfImprovementFooter, result.Reply)
 	require.Zero(t, le.composeCalls, "the fallback-tool path must never compose narration around a raw result")
-	require.Equal(t, 1, le.toolFitCalls)
+	// Two fit checks now: once when the tool is offered to the combined
+	// delegate selector (ADR 0037), and once more in noMatchFallback's own
+	// independent selectFallbackTool safety net after the selector picks none.
+	require.Equal(t, 2, le.toolFitCalls)
 }
 
 // TS's selectFallbackTool (graph.ts:1162-1196) appends state.callerTools to
@@ -958,11 +963,81 @@ func TestNoMatchFallbackRejectsALooseKeywordMatch(t *testing.T) {
 	require.True(t, le.env.IsWorkflowCompleted())
 	require.NoError(t, le.env.GetWorkflowError())
 
-	require.Equal(t, 1, le.toolFitCalls)
+	// Fit-checked once when offered to the combined selector and once again in
+	// the fallback safety net — a loose keyword match is rejected at both.
+	require.Equal(t, 2, le.toolFitCalls)
+	require.Zero(t, le.selectDelegateCalls, "no fitting tool and no agent — the combined selector is never consulted")
 	require.Zero(t, le.planCalls, "a rejected candidate must never reach the planner")
 	require.Equal(t, "fallback-bare", result.Meta.Path)
 	require.Equal(t, "bare answer"+workflows.SelfImprovementFooter, result.Reply)
 	require.Empty(t, le.launches, "nothing should have been launched")
+}
+
+// ADR 0037: a bare tool that the combined selector picks over a competing
+// agent is a FIRST-CLASS match — it runs directly (meta.Path "tool"), the
+// agent is never launched, and the reply carries NO self-improvement footer
+// (nothing "went unmatched" — the tool was the deliberate choice).
+func TestBareToolWinsCombinedDelegateSelectionOverAnAgent(t *testing.T) {
+	le := newLoopEnv(t)
+	le.agents = []catalog.AgentDescriptor{mealPlannerAgent()} // a broad agent also on the table
+	le.catalogTools = []catalog.ToolDescriptor{kubectlTool()}
+	le.toolFits = true
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateTool, ID: "kubectl-readonly"}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kubectl-readonly", ToolInput: "get pods -n default"},
+	}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "what pods are running?", &result, time.Millisecond)
+	le.env.RegisterDelayedCallback(func() { le.signalToolSuccess(0, `"pod-a  Running"`) }, time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "tool", result.Meta.Path)
+	require.Equal(t, []string{"kubectl-readonly"}, result.Meta.ToolCalls)
+	// TS's composeResponse no-ops without a selectedSkill, which a first-class
+	// tool selection never sets (graph.ts:2058) — no narration prefix/suffix.
+	require.Equal(t, "pod-a  Running", result.Reply)
+	require.Zero(t, le.composeCalls, "a first-class tool selection must never compose narration around a raw result")
+	require.NotContains(t, result.Reply, workflows.SelfImprovementFooter,
+		"a deliberately selected tool is not an ad-hoc no-match fallback")
+	require.Zero(t, le.agentPlanCalls, "the competing agent's episode must never start")
+	// The tool was offered to the selector alongside the agent — not starved
+	// out to the fallback path the way it was before ADR 0037.
+	require.Len(t, le.selectDelegateInputs, 1)
+	require.Len(t, le.selectDelegateInputs[0].Tools, 1)
+	require.Equal(t, "kubectl-readonly", le.selectDelegateInputs[0].Tools[0].ID)
+}
+
+// A retrieved tool that fails the CheckToolFit relevance gate must not be
+// among the candidates offered to the combined selector (ADR 0037) — the gate
+// is what keeps a loose embedding match from competing at all.
+func TestToolFailingFitCheckIsNotOfferedToDelegateSelector(t *testing.T) {
+	le := newLoopEnv(t)
+	le.agents = []catalog.AgentDescriptor{mealPlannerAgent()}
+	le.catalogTools = []catalog.ToolDescriptor{
+		{ID: "github-repo-create", Description: "create or clone a repository", AllowedRoles: []string{"cook"}},
+	}
+	le.toolFits = false // the gate's default, and the whole point
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: "meal-planner"}
+	le.skillTools = recipesSkillTools() // the child resolves its skillRefs
+	le.agentPlans = []activities.PlannedAgentAction{
+		{Action: activities.AgentActionFinish, Message: "planned"},
+	}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "plan meals for the week", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Len(t, le.selectDelegateInputs, 1)
+	require.Empty(t, le.selectDelegateInputs[0].Tools,
+		"a tool that failed the fit gate must not reach the selector")
+	require.Equal(t, "agent", result.Meta.Path)
 }
 
 // The footer is a UI hint, not content. Left in the transcript it re-enters

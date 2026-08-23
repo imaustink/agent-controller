@@ -56,6 +56,29 @@ func TestSelectSkillValidatesCandidateID(t *testing.T) {
 	require.Equal(t, "recipes", id)
 }
 
+// ADR 0037: SelectDelegate weighs bare tools alongside skills and agents, and
+// (like SelectSkill) validates the chosen id against the offered candidates.
+func TestSelectDelegatePicksAndValidatesAToolCandidate(t *testing.T) {
+	fake := &fakeLLM{payload: `{"kind":"tool","id":"ssh"}`}
+	a := &activities.AgentLoopActivities{LLM: fake}
+	in := activities.SelectDelegateInput{
+		Request: "ssh into airvinyl and run uptime",
+		Agents:  []catalog.AgentDescriptor{{ID: "swe-agent", Description: "does software engineering end-to-end"}},
+		Tools:   []catalog.ToolDescriptor{{ID: "ssh", Description: "run one command over ssh against a host"}},
+	}
+
+	choice, err := a.SelectDelegate(context.Background(), in)
+	require.NoError(t, err)
+	require.Equal(t, activities.DelegateChoice{Kind: activities.DelegateTool, ID: "ssh"}, choice)
+	require.Contains(t, fake.lastUser, "kind: tool, id: ssh", "tool candidates must be in the prompt")
+
+	// A hallucinated tool id is not among the candidates — no-match, never a call.
+	fake.payload = `{"kind":"tool","id":"rm-rf"}`
+	choice, err = a.SelectDelegate(context.Background(), in)
+	require.NoError(t, err)
+	require.Empty(t, choice.Kind, "a tool id not in the candidate set must become no-match")
+}
+
 func TestCheckNeedsCapabilityDefaultsTrueOnGarbage(t *testing.T) {
 	a := &activities.AgentLoopActivities{LLM: &fakeLLM{payload: `not json`}}
 	needs, err := a.CheckNeedsCapability(context.Background(), "hi")

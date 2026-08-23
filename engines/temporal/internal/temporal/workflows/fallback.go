@@ -126,9 +126,13 @@ func hasOutOfScopeToolMatch(ctx workflow.Context, actx workflow.Context, in Turn
 	return len(fitCandidates(ctx, actx, in.Message, outOfScope)) > 0
 }
 
-// selectFallbackTool looks for one tool that unambiguously fits a request no
-// skill or agent matched. Returns false when nothing passes, which is the
-// common and expected outcome.
+// planToolCall runs the planner over a specific, non-empty set of tools using
+// the fallback markdown and returns the one tool call it chose (with the input
+// it constructed), if any. Shared by selectFallbackTool (over the whole
+// fit-checked catalog, plus any caller-supplied tools) and the delegate
+// selector's tool branch (over the single tool it deliberately picked, with
+// no caller tools on offer there) — both need the planner to turn a bare tool
+// + request into a concrete call, and neither may trust a hallucinated id.
 //
 // Caller-supplied tools (ADR 0035) are appended to the candidate list
 // UNFILTERED by the fit check (upstream's selectFallbackTool, graph.ts:
@@ -136,9 +140,15 @@ func hasOutOfScopeToolMatch(ctx workflow.Context, actx workflow.Context, in Turn
 // surfaces loose keyword overlap the caller never asked about, whereas a
 // caller tool was explicitly supplied for this very conversation and was
 // already relevance-ranked by the caller offering it.
-func selectFallbackTool(ctx workflow.Context, actx workflow.Context, in TurnInput) (catalog.ToolDescriptor, string, bool, *callertools.PendingCall) {
-	fitted := fitCandidates(ctx, actx, in.Message, retrieveCatalogTools(ctx, actx, in))
-	if len(fitted) == 0 && len(in.CallerTools) == 0 {
+func planToolCall(
+	ctx workflow.Context,
+	actx workflow.Context,
+	in TurnInput,
+	tools []catalog.ToolDescriptor,
+	offeredCallerTools []callertools.Descriptor,
+	callerToolRequired bool,
+) (catalog.ToolDescriptor, string, bool, *callertools.PendingCall) {
+	if len(tools) == 0 && len(offeredCallerTools) == 0 {
 		return catalog.ToolDescriptor{}, "", false, nil
 	}
 
@@ -146,9 +156,9 @@ func selectFallbackTool(ctx workflow.Context, actx workflow.Context, in TurnInpu
 	if err := workflow.ExecuteActivity(actx, activities.PlanActionActivityName, activities.PlanActionInput{
 		Request:            in.Message,
 		SkillMarkdown:      fallbackToolMarkdown,
-		Tools:              fitted,
-		CallerTools:        in.CallerTools,
-		CallerToolRequired: in.CallerToolRequired,
+		Tools:              tools,
+		CallerTools:        offeredCallerTools,
+		CallerToolRequired: callerToolRequired,
 	}).Get(ctx, &plan); err != nil {
 		workflow.GetLogger(ctx).Warn("fallback planner failed; answering bare", "error", err)
 		return catalog.ToolDescriptor{}, "", false, nil
@@ -158,20 +168,28 @@ func selectFallbackTool(ctx workflow.Context, actx workflow.Context, in TurnInpu
 	}
 
 	if callertools.IsID(plan.ToolID) {
-		if call, ok, err := pendingCallerCall(ctx, in.CallerTools, plan); err == nil && ok {
+		if call, ok, err := pendingCallerCall(ctx, offeredCallerTools, plan); err == nil && ok {
 			return catalog.ToolDescriptor{}, "", false, &call
 		}
 		return catalog.ToolDescriptor{}, "", false, nil
 	}
 
-	// Re-validate against the fitted set, exactly as the skill loop does: a
+	// Re-validate against the offered set, exactly as the skill loop does: a
 	// planner may not invent a tool id.
-	for _, tool := range fitted {
+	for _, tool := range tools {
 		if tool.ID == plan.ToolID {
 			return tool, plan.ToolInput, true, nil
 		}
 	}
 	return catalog.ToolDescriptor{}, "", false, nil
+}
+
+// selectFallbackTool looks for one tool that unambiguously fits a request no
+// skill or agent matched. Returns false when nothing passes, which is the
+// common and expected outcome.
+func selectFallbackTool(ctx workflow.Context, actx workflow.Context, in TurnInput) (catalog.ToolDescriptor, string, bool, *callertools.PendingCall) {
+	fitted := fitCandidates(ctx, actx, in.Message, retrieveCatalogTools(ctx, actx, in))
+	return planToolCall(ctx, actx, in, fitted, in.CallerTools, in.CallerToolRequired)
 }
 
 // noMatchFallback is the whole cascade for a turn that matched no skill and
@@ -211,6 +229,10 @@ func noMatchFallback(
 	return reply + SelfImprovementFooter, *meta, nil, nil
 }
 
+// runFallbackTool runs a tool reached ad-hoc because no skill or agent matched
+// (meta.Path "fallback-tool"). The self-improvement footer is appended: the
+// point of this path is that the request worked, but nothing in the catalog
+// covers it yet.
 func runFallbackTool(
 	ctx workflow.Context,
 	actx workflow.Context,
@@ -222,8 +244,47 @@ func runFallbackTool(
 	note func(string),
 ) (string, TurnMeta, error) {
 	meta.Path = "fallback-tool"
+	return runToolCall(ctx, actx, state, in, tool, toolInput, "No skill matched; trying "+tool.ID+"…", SelfImprovementFooter, meta, note)
+}
 
-	// The identity gate applies here too: a Tool reached ad-hoc must not skip
+// runSelectedTool runs a bare tool the delegate selector chose as the best fit
+// for the request (ADR 0037) — a first-class match, NOT the ad-hoc no-match
+// fallback. It uses meta.Path "tool" and appends NO self-improvement footer:
+// telling the user nothing matched would contradict the fact that this tool
+// was deliberately selected over the skill/agent candidates.
+func runSelectedTool(
+	ctx workflow.Context,
+	actx workflow.Context,
+	state *ConversationState,
+	in TurnInput,
+	tool catalog.ToolDescriptor,
+	toolInput string,
+	meta *TurnMeta,
+	note func(string),
+) (string, TurnMeta, error) {
+	meta.Path = "tool"
+	return runToolCall(ctx, actx, state, in, tool, toolInput, "Using tool "+tool.ID+"…", "", meta, note)
+}
+
+// runToolCall executes one already-chosen tool and composes the reply, shared
+// by the ad-hoc fallback and the first-class delegate-selected paths. footer
+// is appended to every reply shape when non-empty; the caller sets meta.Path
+// before calling. The two paths differ only in that footer and their opening
+// progress note — the tool's own contract does not change with how it was
+// selected.
+func runToolCall(
+	ctx workflow.Context,
+	actx workflow.Context,
+	state *ConversationState,
+	in TurnInput,
+	tool catalog.ToolDescriptor,
+	toolInput string,
+	startNote string,
+	footer string,
+	meta *TurnMeta,
+	note func(string),
+) (string, TurnMeta, error) {
+	// The identity gate applies here too: a Tool reached this way must not skip
 	// a check a Tool reached through a skill has to pass.
 	creds, refusal := toolCredentials(ctx, actx, in, tool)
 	if refusal != "" {
@@ -231,7 +292,7 @@ func runFallbackTool(
 	}
 
 	meta.ToolCalls = append(meta.ToolCalls, tool.ID)
-	note("No skill matched; trying " + tool.ID + "…")
+	note(startNote)
 
 	outcome, err := runToolWithContinuation(ctx, actx, state, in, tool, toolInput, "", creds, note)
 	if err != nil {
@@ -239,12 +300,14 @@ func runFallbackTool(
 	}
 	if !outcome.Succeeded {
 		note(tool.ID + " failed: " + outcome.ErrorCode)
-		return "I couldn't complete that: " + tool.ID + " failed (" + outcome.ErrorCode + ": " + outcome.ErrorMessage + ")." + SelfImprovementFooter, *meta, nil
+		return "I couldn't complete that: " + tool.ID + " failed (" + outcome.ErrorCode + ": " + outcome.ErrorMessage + ")." + footer, *meta, nil
 	}
 
 	// No compose step here: upstream's composeResponse no-ops without a
-	// selectedSkill (graph.ts:2058), which the fallback-tool path never sets —
-	// so TS never lets an LLM add prefix/suffix narration around this result.
-	// Only the raw result plus the self-improvement suffix.
-	return outcome.Result + SelfImprovementFooter, *meta, nil
+	// selectedSkill (graph.ts:2058), which neither the fallback-tool nor the
+	// first-class tool path ever sets — so TS never lets an LLM add
+	// prefix/suffix narration around this result. Only the raw result plus
+	// whichever footer the caller chose (SelfImprovementFooter for the
+	// fallback path, none for the first-class one).
+	return outcome.Result + footer, *meta, nil
 }

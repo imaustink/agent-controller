@@ -78,6 +78,34 @@ used: the former as the safety net just described (and as the sole tool path
 in non-NATS deployments), the latter for active-skill-continuity's
 out-of-scope-tool detection, an orthogonal concern.
 
+## Temporal engine
+
+The Temporal execution engine (ADR 0036, `engines/temporal`) is a second
+implementation of the same agent loop and had the identical asymmetry:
+`runAgentTurn` (`internal/temporal/workflows/agentloop.go`) retrieved only
+skills and agents, `SelectDelegate` chose skill-vs-agent, and a bare Tool was
+reachable solely through `noMatchFallback`'s `selectFallbackTool` — so a broad
+Agent pre-empted a better-fitting Tool there too. The same decision is applied
+in Go, mirroring the langgraph nodes:
+
+- `runAgentTurn` now fit-checks catalog tools (reusing `fitCandidates` +
+  `retrieveCatalogTools`, the exact gate `selectFallbackTool` uses) between
+  agent retrieval and selection, and offers the survivors to `SelectDelegate`
+  alongside skills and agents. The combined selector is consulted whenever
+  agents **or** fitted tools exist; a skills-only turn keeps the plain
+  `SelectSkill` path.
+- `SelectDelegate` (`internal/temporal/activities/delegate.go`) gains a
+  `Tools` input and a `"tool"` `DelegateChoice`, with the same skill > tool >
+  agent preference order in its prompt, and validates a chosen tool id against
+  the offered set (hallucinated ids fail to no-match, like `SelectSkill`).
+- A `"tool"` choice runs as a **first-class** path: `runSelectedTool`
+  (meta.Path `tool`) plans the concrete call via the shared `planToolCall`
+  (extracted from `selectFallbackTool`'s tail) and appends **no**
+  `SelfImprovementFooter` — the tool was the deliberate choice, not an ad-hoc
+  no-match. A planner decline, or a combined choice of none, still falls
+  through to `noMatchFallback`'s independent safety net (which re-runs the
+  fit-check — the same accepted redundancy as the langgraph path).
+
 ## Consequences
 
 - A bare Tool can now win the combined choice on its own merits against a
