@@ -202,6 +202,69 @@ func TestBridgedAgentToolCallRefusesAnUndeclaredTool(t *testing.T) {
 	require.True(t, refused, "the agent gets a clean refusal, not silence")
 }
 
+// The Remote Control URL claude-code-swe-agent reports mid-episode (a
+// `Stage: "remote-control-url"` progress message) must reach the caller as a
+// first-class field, not just as buried narration text -- see
+// TurnMeta.RemoteControlUrl.
+func TestBridgedAgentSurfacesRemoteControlUrl(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := bridgedAgent()
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "add retry logic to the fetcher", &result, time.Millisecond)
+
+	le.deliverUp(agentrun.UpMessage{Seq: 1, Type: agentrun.UpReady}, time.Second)
+	le.deliverUp(agentrun.UpMessage{
+		Seq: 2, Type: agentrun.UpProgress, Stage: "remote-control-url",
+		Message: "https://claude.ai/code/session_01YB",
+	}, 2*time.Second)
+	le.deliverUp(agentrun.UpMessage{
+		Seq: 3, Type: agentrun.UpReply, Final: true, Message: "Opened PR #42 with exponential backoff.",
+	}, 3*time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "https://claude.ai/code/session_01YB", result.Meta.RemoteControlUrl)
+}
+
+// A follow-up prompt to an already-registered episode doesn't re-emit the URL
+// (the bridge only reports it once), so the conversation must carry the
+// earlier turn's value forward rather than losing it on turn 2.
+func TestBridgedAgentCarriesRemoteControlUrlAcrossTurns(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := bridgedAgent()
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+
+	var first, second workflows.TurnResult
+	le.sendTurn(t, "turn-1", "fix the flaky test", &first, time.Millisecond)
+
+	le.deliverUp(agentrun.UpMessage{Seq: 1, Type: agentrun.UpReady}, time.Second)
+	le.deliverUp(agentrun.UpMessage{
+		Seq: 2, Type: agentrun.UpProgress, Stage: "remote-control-url",
+		Message: "https://claude.ai/code/session_01YB",
+	}, 2*time.Second)
+	le.deliverUp(agentrun.UpMessage{
+		Seq: 3, Type: agentrun.UpReply, Final: false, Message: "Should I skip it or fix the race?",
+	}, 3*time.Second)
+
+	le.sendTurn(t, "turn-2", "fix the race", &second, 4*time.Second)
+	le.deliverUp(agentrun.UpMessage{
+		Seq: 4, Type: agentrun.UpReply, Final: true, Message: "Fixed the race; PR #43.",
+	}, 6*time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "https://claude.ai/code/session_01YB", first.Meta.RemoteControlUrl)
+	require.Equal(t, "https://claude.ai/code/session_01YB", second.Meta.RemoteControlUrl)
+}
+
 // A pod that never becomes ready is an infrastructure problem — an image pull
 // failure, a crash loop — and must surface in minutes rather than waiting out
 // the full idle window.

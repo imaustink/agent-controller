@@ -3,6 +3,7 @@
 package workflows
 
 import (
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -13,6 +14,14 @@ import (
 	"github.com/controller-agent/temporal-engine/internal/llm"
 	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 )
+
+// remoteControlUrlNarrationPrefix is the exact narration line shape
+// bridged_agent_workflow.go produces for a `Stage: "remote-control-url"`
+// up-message (`msg.Stage + ": " + msg.Message`, agentrun.UpProgress case).
+// Recognizing it here lets the conversation workflow lift the URL out of the
+// plain narration transcript into a first-class field, instead of it being
+// visible only as buried text a caller happens to grep for.
+const remoteControlUrlNarrationPrefix = "remote-control-url: "
 
 const (
 	ConversationWorkflowName = "ConversationWorkflow"
@@ -34,6 +43,10 @@ type TurnProgress struct {
 	Turn   int      `json:"turn"`
 	Active bool     `json:"active"`
 	Lines  []string `json:"lines,omitempty"`
+	// RemoteControlUrl is lifted out of Lines the moment a
+	// remoteControlUrlNarrationPrefix line appears, so a polling caller can
+	// link a live Remote Control session without parsing narration text.
+	RemoteControlUrl string `json:"remoteControlUrl,omitempty"`
 }
 
 const (
@@ -155,6 +168,12 @@ type ConversationState struct {
 	ActiveAgentID         string `json:"activeAgentId,omitempty"`
 	ActiveAgentWorkflowID string `json:"activeAgentWorkflowId,omitempty"`
 
+	// RemoteControlUrl is the active episode's Remote Control session URL
+	// (see TurnProgress.RemoteControlUrl), carried forward across turns of
+	// the SAME episode since a follow-up prompt's turn never re-emits it.
+	// Cleared whenever ActiveAgentWorkflowID is (handleAgentUp's clearActive).
+	RemoteControlUrl string `json:"remoteControlUrl,omitempty"`
+
 	// AgentContinuations holds per-agent opaque episode tokens, prepended to
 	// the same agent's next goal (never shown to the transcript).
 	AgentContinuations map[string]string `json:"agentContinuations,omitempty"`
@@ -214,9 +233,21 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 		}
 		state.History = append(state.History, ChatMessage{Role: "user", Content: in.Message})
 
+		// Whether an episode was ALREADY running before this turn -- decides
+		// whether a stale state.RemoteControlUrl belongs to the conversation
+		// this turn is continuing (carry it forward) or to some earlier,
+		// now-unrelated episode (drop it). Read before runAgentTurn mutates
+		// ActiveAgentWorkflowID.
+		episodeWasActive := state.ActiveAgentWorkflowID != ""
+
 		progress = TurnProgress{Turn: state.Turns + 1, Active: true}
 		defer func() { progress.Active = false }()
-		note := func(line string) { progress.Lines = append(progress.Lines, line) }
+		note := func(line string) {
+			progress.Lines = append(progress.Lines, line)
+			if url, ok := strings.CutPrefix(line, remoteControlUrlNarrationPrefix); ok {
+				progress.RemoteControlUrl = url
+			}
+		}
 
 		reply, meta, pending, err := runAgentTurn(ctx, actx, state, in, note)
 		if err != nil {
@@ -225,6 +256,24 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 			return TurnResult{}, err
 		}
 		meta.Narration = progress.Lines
+		switch {
+		case progress.RemoteControlUrl != "":
+			// This turn's own episode start/continuation reported it.
+			meta.RemoteControlUrl = progress.RemoteControlUrl
+			state.RemoteControlUrl = progress.RemoteControlUrl
+		case episodeWasActive && state.RemoteControlUrl != "":
+			// A follow-up prompt to an episode that reported its URL on an
+			// earlier turn — that turn's narration is gone, so carry it
+			// forward rather than losing it, including on the very turn the
+			// episode concludes (handleAgentUp has already cleared
+			// ActiveAgentWorkflowID by the time we get here).
+			meta.RemoteControlUrl = state.RemoteControlUrl
+			if state.ActiveAgentWorkflowID == "" {
+				state.RemoteControlUrl = "" // episode ended this turn
+			}
+		default:
+			state.RemoteControlUrl = ""
+		}
 
 		// A turn ending in caller tool calls is a real terminal state, but not a
 		// completed exchange: the client runs the function and resends. The

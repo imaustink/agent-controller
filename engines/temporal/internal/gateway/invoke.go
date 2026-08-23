@@ -104,6 +104,13 @@ type invokeRecord struct {
 	// TemporalEngine) can render live status instead of going silent until
 	// the turn completes. Only ever set on a "pending" record.
 	Progress []string `json:"progress,omitempty"`
+	// RemoteControlUrl mirrors workflows.TurnProgress.RemoteControlUrl /
+	// TurnMeta.RemoteControlUrl -- a live Remote Control session URL, set on
+	// BOTH a "pending" record (as soon as the episode reports one) and the
+	// terminal "succeeded" record (from TurnResult.Meta), so a caller does
+	// not have to catch it mid-poll before the turn completes. Only ever set
+	// when the delegated agent actually emits one (today: claude-code-swe-agent).
+	RemoteControlUrl string `json:"remoteControlUrl,omitempty"`
 }
 
 const (
@@ -290,8 +297,9 @@ func (s *Server) handleInvokeStatus(c *gin.Context) {
 	case err == nil:
 		c.JSON(http.StatusOK, invokeRecord{
 			ID: id, Status: invokeStatusSucceeded,
-			Result:    result.Reply,
-			ToolCalls: result.PendingToolCalls,
+			Result:           result.Reply,
+			ToolCalls:        result.PendingToolCalls,
+			RemoteControlUrl: result.Meta.RemoteControlUrl,
 		})
 
 	case ctx.Err() != nil && c.Request.Context().Err() == nil:
@@ -304,6 +312,7 @@ func (s *Server) handleInvokeStatus(c *gin.Context) {
 			var progress workflows.TurnProgress
 			if resp.Get(&progress) == nil && progress.Active {
 				record.Progress = progress.Lines
+				record.RemoteControlUrl = progress.RemoteControlUrl
 			}
 		}
 		c.JSON(http.StatusOK, record)
