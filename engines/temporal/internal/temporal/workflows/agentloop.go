@@ -34,6 +34,11 @@ type TurnMeta struct {
 	// Narration is the turn's full progress transcript — the authoritative
 	// version of what TurnProgressQuery exposed while the turn ran.
 	Narration []string `json:"narration,omitempty"`
+	// RemoteControlUrl is the delegated agent's live Remote Control session
+	// URL (https://claude.ai/code/session_...), when the turn's episode
+	// reported one (see TurnProgress.RemoteControlUrl / ConversationState.
+	// RemoteControlUrl). Empty for every run that never emits one.
+	RemoteControlUrl string `json:"remoteControlUrl,omitempty"`
 }
 
 // runAgentTurn is the ported agent loop: active agent → integration route →
