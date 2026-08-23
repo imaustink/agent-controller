@@ -7,7 +7,7 @@ import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-a
 import { AgentTurnFailedError, AgentTurnTimeoutError, AgentTurnTransportError } from "../agents/nats-agent-channel.js";
 import type { AgentDescriptor, AgentSearchResult, AgentStore } from "../agents/types.js";
 import type { PendingToolCall } from "../caller-tools/types.js";
-import type { JobResultReceiver } from "../callback/receiver.js";
+import { JobTimeoutError, type JobResultReceiver } from "../callback/receiver.js";
 import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
 import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { SecretKeySelector } from "../k8s/toolrun-launcher.js";
@@ -1995,7 +1995,10 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // keeps that context.
           return {
             jobId,
-            error: `tool ${tool.id} failed to launch: ${err instanceof Error ? err.message : String(err)}`,
+            error:
+              err instanceof JobTimeoutError
+                ? `tool ${tool.id} timed out: ${err.message}`
+                : `tool ${tool.id} failed to launch: ${err instanceof Error ? err.message : String(err)}`,
           };
         } finally {
           unsubscribeProgress();

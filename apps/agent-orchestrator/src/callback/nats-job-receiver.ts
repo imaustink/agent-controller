@@ -1,10 +1,11 @@
 import { connect, JSONCodec, type NatsConnection, type Subscription } from "nats";
 import { EventSchema, NATS_RECONNECT_OPTIONS, type Event } from "@controller-agent/messaging";
-import type { JobResultReceiver, ProgressHandler } from "./receiver.js";
+import { DEFAULT_JOB_TIMEOUT_MS, JobTimeoutError, type JobResultReceiver, type ProgressHandler } from "./receiver.js";
 
 type PendingJob = {
   resolve: (event: Event) => void;
   reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
 };
 
 /**
@@ -47,9 +48,15 @@ export class NatsJobReceiver implements JobResultReceiver {
     return receiver;
   }
 
-  awaitJob(jobId: string): Promise<Event> {
+  awaitJob(jobId: string, opts: { timeoutMs?: number } = {}): Promise<Event> {
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
     return new Promise((resolve, reject) => {
-      this.pending.set(jobId, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(jobId);
+        this.progressHandlers.delete(jobId);
+        reject(new JobTimeoutError(`tool run ${jobId} did not report back within ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.pending.set(jobId, { resolve, reject, timer });
     });
   }
 
@@ -85,6 +92,7 @@ export class NatsJobReceiver implements JobResultReceiver {
       if (event.type === "succeeded" || event.type === "failed") {
         const pending = this.pending.get(jobId);
         if (pending) {
+          clearTimeout(pending.timer);
           this.pending.delete(jobId);
           this.progressHandlers.delete(jobId);
           pending.resolve(event);

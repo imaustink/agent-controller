@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { CallbackAuthError, CallbackReceiver, verifyAndParseCallback } from "./receiver.js";
+import { CallbackAuthError, CallbackReceiver, JobTimeoutError, verifyAndParseCallback } from "./receiver.js";
 
 /**
  * Every request in this file goes over a fresh TCP connection — see the long
@@ -125,6 +125,15 @@ describe("CallbackReceiver", () => {
 
     const event = await pending;
     expect(event.type).toBe("succeeded");
+
+    await receiver.close();
+  });
+
+  it("rejects awaitJob with JobTimeoutError if no callback arrives within timeoutMs", async () => {
+    const receiver = new CallbackReceiver(SECRET);
+    await receiver.listen(0);
+
+    await expect(receiver.awaitJob("job-never-reports", { timeoutMs: 10 })).rejects.toThrow(JobTimeoutError);
 
     await receiver.close();
   });
