@@ -96,6 +96,25 @@ const AUTO_RESUME_MAX_MS = 10 * 60_000;
  */
 const AUTO_RESUME_INTERVAL_MS = 4_000;
 
+/**
+ * Stages the gateway flattens into a narration line as `${stage}: ${message}`
+ * (agentloop.go's `note()`, same shape as conversation.go's
+ * remoteControlUrlNarrationPrefix) that server.ts's SSE dispatcher treats as
+ * real chat content rather than a truncated status label. Un-flattening them
+ * here is what lets a delegated Claude Code agent's own `agent-text` narration
+ * (its actual streamed answer) reach the chat stream as content, chunk by
+ * chunk, instead of surfacing only once as the final lump result.
+ */
+const CONTENT_NARRATION_PREFIXES = ["agent-text", "identity-link", "remote-control-url"];
+
+function splitNarrationLine(line: string): [stage: string, message: string] {
+  for (const stage of CONTENT_NARRATION_PREFIXES) {
+    const prefix = `${stage}: `;
+    if (line.startsWith(prefix)) return [stage, line.slice(prefix.length)];
+  }
+  return ["", line];
+}
+
 interface InvokeAccepted {
   id: string;
   status: string;
@@ -368,7 +387,8 @@ export class TemporalEngine implements AgentGraphLike {
       // turn completes (previously this whole poll loop ran silently).
       if (input.progressListener && record.progress) {
         for (const line of record.progress.slice(seen)) {
-          input.progressListener("", line);
+          const [stage, message] = splitNarrationLine(line);
+          input.progressListener(stage, message);
         }
         seen = Math.max(seen, record.progress.length);
       }
