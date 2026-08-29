@@ -179,6 +179,99 @@ func TestStartIsRetriedOnce(t *testing.T) {
 	require.Len(t, links.Started, 1)
 }
 
+// A turn carrying a live anchor for a flow it already started must re-check
+// THAT flow rather than starting a second one. Before this, Authorize had no
+// way to know a flow was already outstanding, so every resume ("send any
+// message once you're done") called Start again and handed the caller a
+// brand-new code — orphaning whatever code they were still mid-way through
+// entering, forever.
+func TestALiveAnchorIsReCheckedNotStartedAgain(t *testing.T) {
+	svc, links, _ := newService(t, 0)
+
+	anchor := &authz.PendingLink{
+		AgentID:    "claude-code-swe-agent",
+		Provider:   "github",
+		Flow:       identitylink.FlowDevice,
+		DeviceCode: "device-github",
+		Subject:    "openwebui:1234",
+		ExpiresAt:  time.Now().Add(time.Hour).UnixMilli(),
+		LinkText:   "[link your GitHub account](https://example.invalid/link/github) and enter code `ABCD-1234`",
+	}
+
+	verdict, err := svc.Authorize(context.Background(), authz.Request{
+		AgentID:           "claude-code-swe-agent",
+		IdentityProviders: []string{"github"},
+		Identity:          chatCaller(),
+		Pending:           anchor,
+	})
+	require.NoError(t, err)
+	require.Equal(t, authz.KindLinkRequired, verdict.Kind)
+	require.Empty(t, links.Started, "the outstanding flow must be re-checked, not started a second time")
+	require.NotNil(t, verdict.Pending)
+	require.Equal(t, "device-github", verdict.Pending.DeviceCode, "the caller must be shown the SAME code, not a new one")
+	require.Contains(t, verdict.Message, "ABCD-1234")
+
+	// Once the human finishes on the ORIGINAL code, the next resume finds it.
+	links.Set(identitylink.ProviderGitHub, "openwebui:1234", identitylink.Token{Value: githubToken, GitHubLogin: "imaustink"})
+	verdict, err = svc.Authorize(context.Background(), authz.Request{
+		AgentID:           "claude-code-swe-agent",
+		IdentityProviders: []string{"github"},
+		Identity:          chatCaller(),
+		Pending:           anchor,
+	})
+	require.NoError(t, err)
+	require.Equal(t, authz.KindAuthorized, verdict.Kind)
+	require.Empty(t, links.Started, "still never started — the anchor's own code was the one that worked")
+}
+
+// An anchor for a DIFFERENT (provider, subject) than the one currently being
+// assessed must not suppress that provider's own Start — reuse is keyed on
+// an exact match, not "any pending anchor exists".
+func TestAnAnchorForAnotherProviderDoesNotSuppressStartingThisOne(t *testing.T) {
+	svc, links, _ := newService(t, 0)
+
+	anchor := &authz.PendingLink{
+		Provider:   "claude",
+		DeviceCode: "device-claude",
+		Subject:    "openwebui:1234",
+		ExpiresAt:  time.Now().Add(time.Hour).UnixMilli(),
+	}
+
+	_, err := svc.Authorize(context.Background(), authz.Request{
+		AgentID:           "claude-code-swe-agent",
+		IdentityProviders: []string{"github"},
+		Identity:          chatCaller(),
+		Pending:           anchor,
+	})
+	require.NoError(t, err)
+	require.Len(t, links.Started, 1, "github has its own outstanding flow, distinct from the claude anchor")
+	require.Equal(t, "github", links.Started[0].Provider)
+}
+
+// An expired anchor is stale, not reusable: Authorize must start a fresh flow
+// rather than waiting forever on a code GitHub has already discarded.
+func TestAnExpiredAnchorIsNotReused(t *testing.T) {
+	svc, links, _ := newService(t, 0)
+
+	anchor := &authz.PendingLink{
+		Provider:   "github",
+		DeviceCode: "device-expired",
+		Subject:    "openwebui:1234",
+		ExpiresAt:  time.Now().Add(-time.Minute).UnixMilli(),
+	}
+
+	verdict, err := svc.Authorize(context.Background(), authz.Request{
+		AgentID:           "claude-code-swe-agent",
+		IdentityProviders: []string{"github"},
+		Identity:          chatCaller(),
+		Pending:           anchor,
+	})
+	require.NoError(t, err)
+	require.Equal(t, authz.KindLinkRequired, verdict.Kind)
+	require.Len(t, links.Started, 1, "the expired anchor must not block a fresh flow from starting")
+	require.NotEqual(t, "device-expired", verdict.Pending.DeviceCode)
+}
+
 // ── principals (ADR 0031) ──────────────────────────────────────────────────
 
 // The security core. A shared subject must never have a login filed under it:

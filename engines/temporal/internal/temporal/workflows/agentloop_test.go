@@ -427,6 +427,69 @@ func TestAgentDelegationHITLAcrossTurns(t *testing.T) {
 	require.Equal(t, "five days", le.agentPlanInputs[1].History[0].Result)
 }
 
+// A turn that stopped for an account link must resume by re-checking the
+// EXACT flow it already started, not by starting a second one. Before the
+// fix, every resume ran Authorize fresh with no memory of the outstanding
+// anchor, so a still-pending flow looked identical to a never-started one and
+// got a brand-new device code each time — the caller's in-progress code was
+// silently orphaned on every "send any message once you're done".
+func TestPendingLinkResumeReChecksTheSameFlowInsteadOfStartingAnother(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := mealPlannerAgent()
+	agent.IdentityProviders = []string{"github"}
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+	le.skillTools = recipesSkillTools() // the child resolves its skillRefs
+	le.agentPlans = []activities.PlannedAgentAction{
+		{Action: activities.AgentActionFinish, Message: "Planned five days of meals."},
+	}
+	// resumePendingLink re-resolves the anchor's agent under current roles
+	// before retrying it.
+	le.resolvedAgent = &agent
+
+	firstAnchor := &authz.PendingLink{
+		AgentID:    agent.ID,
+		Provider:   "github",
+		Flow:       "device",
+		DeviceCode: "device-1",
+		Subject:    "user:1",
+		ExpiresAt:  time.Now().Add(time.Hour).UnixMilli(),
+		LinkText:   "[link your GitHub account](https://github.com/login/device) and enter code `ABCD-1234`",
+	}
+	calls := 0
+	le.authorizeVerdict = func() authz.Verdict {
+		calls++
+		if calls == 1 {
+			return authz.Verdict{
+				Kind: authz.KindLinkRequired,
+				Message: "To continue, please " + firstAnchor.LinkText +
+					". This is a one-time step -- send any message once you're done.",
+				Pending: firstAnchor,
+			}
+		}
+		return authz.Verdict{Kind: authz.KindAuthorized}
+	}
+
+	var first, second workflows.TurnResult
+	le.sendTurn(t, "turn-1", "help me plan meals for the week", &first, time.Millisecond)
+	le.sendTurn(t, "turn-2", "done", &second, time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "link-required", first.Meta.Path)
+	require.Contains(t, first.Reply, "ABCD-1234")
+
+	require.Len(t, le.authorizeInputs, 2)
+	require.NotNil(t, le.authorizeInputs[1].Pending,
+		"the resume must carry the first turn's anchor so Authorize can re-check it instead of starting a second flow")
+	require.Equal(t, "device-1", le.authorizeInputs[1].Pending.DeviceCode,
+		"the resume must re-check the SAME device code, not one from a fresh Start")
+
+	require.Equal(t, "Planned five days of meals.", second.Reply)
+}
+
 // An IntegrationRoute names its target outright (upstream ADR 0024), so a
 // routed turn must not pay for retrieval it cannot use.
 func TestIntegrationRouteForcedAgentBypassesRetrieval(t *testing.T) {

@@ -87,7 +87,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 				logger.Warn("forced agent lookup failed; falling through to retrieval", "agentId", in.ForcedAgentID, "error", err)
 			} else if agent != nil {
 				note("Routing to agent " + agent.ID)
-				reply, m, err := delegateToAgent(ctx, actx, state, in, *agent, &meta, note)
+				reply, m, err := delegateToAgent(ctx, actx, state, in, *agent, &meta, note, nil)
 				if m.Path == "agent" {
 					m.Path = "agent-routed"
 				}
@@ -204,7 +204,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			}
 			if choice.Kind == activities.DelegateAgent {
 				if agent := findAgent(choice.ID, agents); agent != nil {
-					reply, m, err := delegateToAgent(ctx, actx, state, in, *agent, &meta, note)
+					reply, m, err := delegateToAgent(ctx, actx, state, in, *agent, &meta, note, nil)
 					return reply, m, nil, err
 				}
 			}
