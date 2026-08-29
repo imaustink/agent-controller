@@ -377,8 +377,9 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 				// re-prompt — every resume raced a brand-new code against
 				// whichever one the caller was still mid-way through
 				// entering, and the caller could never win that race.
-				token = s.waitForLink(ctx, req, step.name, credentialSubject)
-				if token == nil {
+				var stillPending bool
+				token, stillPending = s.recheckPending(ctx, req, step.name, credentialSubject, anchor)
+				if token == nil && stillPending {
 					pending = append(pending, pendingEntry{
 						provider: step.name,
 						linkText: anchor.LinkText,
@@ -389,6 +390,10 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 					}
 					continue
 				}
+				// token == nil && !stillPending: the anchor is dead (expired,
+				// denied, or a poll error) — fall through to startLink below
+				// and offer the caller a FRESH flow instead of silently
+				// re-showing a code GitHub has already discarded.
 			}
 		}
 
@@ -678,6 +683,51 @@ func (s *Service) matchingPending(req Request, provider, subject string) *Pendin
 		return nil
 	}
 	return p
+}
+
+// recheckPending advances a still-outstanding link flow and reports whether
+// a credential landed. Mirrors upstream's checkPendingIdentityLink: a device
+// flow has something to actively poll, so it is polled directly rather than
+// waited on — waitForLink only ever watches the store, and nothing else in
+// this system ever polls GitHub on a non-live caller's behalf, so without
+// this a device code the caller correctly entered would sit unredeemed
+// forever and every resume would just re-show it as if nothing happened.
+// authcode/page flows have no poll analogue (the browser round trip
+// completes out-of-band via a callback route), so those fall back to
+// waitForLink exactly as before.
+//
+// stillPending distinguishes "not yet, but might still land" (keep the
+// anchor, park again) from "this flow is over" (expired, denied, or the
+// poll itself errored) — the caller must drop a dead anchor and offer a
+// fresh flow rather than silently re-showing a code GitHub has discarded.
+func (s *Service) recheckPending(ctx context.Context, req Request, provider, subject string, anchor *PendingLink) (token *identitylink.Token, stillPending bool) {
+	if anchor.Flow != identitylink.FlowDevice || anchor.DeviceCode == "" {
+		tok := s.waitForLink(ctx, req, provider, subject)
+		if tok != nil {
+			return tok, false
+		}
+		return nil, time.Now().UnixMilli() < anchor.ExpiresAt
+	}
+
+	status, err := s.deps.Links.Poll(ctx, provider, subject, anchor.DeviceCode)
+	if err != nil {
+		log.Printf("[authorization] poll failed for %s@%s (treating as still pending): %v", provider, subject, err)
+		return nil, time.Now().UnixMilli() < anchor.ExpiresAt
+	}
+
+	switch status {
+	case identitylink.PollComplete:
+		tok, err := s.deps.Links.Token(ctx, provider, subject)
+		if err != nil {
+			log.Printf("[authorization] token lookup after a complete poll failed for %s@%s: %v", provider, subject, err)
+			return nil, false
+		}
+		return tok, false
+	case identitylink.PollPending:
+		return nil, time.Now().UnixMilli() < anchor.ExpiresAt
+	default: // expired, denied
+		return nil, false
+	}
 }
 
 func (s *Service) startLink(ctx context.Context, provider, subject, flow string) (identitylink.StartResult, bool) {

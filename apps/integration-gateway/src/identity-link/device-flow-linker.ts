@@ -1,6 +1,7 @@
 import {
   buildAuthorizeUrl,
   exchangeCodeForToken,
+  fetchGithubUser,
   pollDeviceFlow,
   refreshUserToken,
   signState,
@@ -22,6 +23,8 @@ export interface GithubDeviceFlowLinkerOptions {
   scope: string | undefined;
   store: IdentityLinkStore;
   githubBaseUrl?: string;
+  /** The REST API host (`api.github.com` in production) -- distinct from `githubBaseUrl`, which is the OAuth/web host. Used only for the post-link `GET /user` login lookup. */
+  apiBaseUrl?: string;
   /** Injectable for tests; defaults to global `fetch`. Used only for the post-link `GET /user` login lookup. */
   fetchImpl?: typeof fetch;
   /** GitHub App client secret; only required by `startAuthCode`/`completeAuthCode`, not device flow. */
@@ -47,10 +50,6 @@ export interface DeviceFlowStartResult {
 }
 
 export type DeviceFlowPollResult = { status: "pending" | "complete" | "expired" | "denied" };
-
-interface GithubUserResponse {
-  login?: string;
-}
 
 /**
  * Orchestrates GitHub's OAuth Device Flow (via `packages/github-app-auth`'s
@@ -265,14 +264,14 @@ export class GithubDeviceFlowLinker {
   }
 
   private async fetchGithubLogin(token: string): Promise<string> {
-    const res = await this.fetchImpl("https://api.github.com/user", {
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
-    });
-    if (!res.ok) {
-      throw new Error(`Failed to look up linked GitHub user: ${res.status} ${await res.text()}`);
-    }
-    const body = (await res.json()) as GithubUserResponse;
-    if (!body.login) throw new Error("GitHub /user response was missing login");
-    return body.login;
+    // Was hardcoded to https://api.github.com, ignoring apiBaseUrl entirely --
+    // harmless in production (that IS the real API host) but it meant this
+    // path could never be exercised hermetically, and nothing had ever
+    // called it (poll() had no caller before the Temporal engine started
+    // resuming device flows), so the bug sat dormant. Reuses the same helper
+    // delegatedWrite's own GitHub /user lookup already uses rather than a
+    // second hand-copied version of the same call.
+    const { login } = await fetchGithubUser(token, this.options.apiBaseUrl ?? "https://api.github.com", this.fetchImpl);
+    return login;
   }
 }
