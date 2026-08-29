@@ -196,13 +196,13 @@ func (s *Server) handleModels(c *gin.Context) {
 func (s *Server) handleChatCompletions(c *gin.Context) {
 	var req chatCompletionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeError(c, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		writeInvalidRequestError(c, "invalid JSON body: "+err.Error())
 		return
 	}
 
 	userMessage, seedHistory, lastUserIndex, err := splitMessages(req.Messages)
 	if err != nil {
-		writeError(c, http.StatusBadRequest, err.Error())
+		writeInvalidRequestError(c, err.Error())
 		return
 	}
 
@@ -226,7 +226,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		// An OpenAI-shaped 400 rather than a silent drop: a client that offers
 		// tools and gets prose back cannot tell whether the agent chose not to
 		// call them or never saw them.
-		writeError(c, http.StatusBadRequest, err.Error())
+		writeInvalidRequestError(c, err.Error())
 		return
 	}
 
@@ -653,5 +653,15 @@ func (s *Server) streamTurn(c *gin.Context, workflowID, completionID string, upd
 func writeError(c *gin.Context, status int, message string) {
 	c.JSON(status, gin.H{
 		"error": gin.H{"message": message, "type": "durable_agents_error"},
+	})
+}
+
+// writeInvalidRequestError shapes a 400 the way TS's chat-completions.ts
+// openAiError does — {error:{message, type:"invalid_request_error",
+// code:"invalid_request"}} — so real OpenAI clients parsing errors (ADR 0035
+// §3) see the standard envelope rather than a non-standard type with no code.
+func writeInvalidRequestError(c *gin.Context, message string) {
+	c.JSON(http.StatusBadRequest, gin.H{
+		"error": gin.H{"message": message, "type": "invalid_request_error", "code": "invalid_request"},
 	})
 }

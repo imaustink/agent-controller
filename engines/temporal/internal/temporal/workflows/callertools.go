@@ -1,6 +1,10 @@
 package workflows
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/workflow"
 
@@ -53,11 +57,15 @@ func lastHistoryResult(history []activities.ActionRecord) string {
 // The re-validation matters as much here as for a catalog tool: the planner may
 // not invent a name. Because caller ids are namespaced, a planner cannot reach
 // a Tool CR through this branch either.
+//
+// A non-nil error means the tool WAS found but its arguments are malformed
+// (upstream's callerToolArguments, graph.ts:805-820) — that fails the whole
+// turn rather than forwarding a call the caller's own client can't parse.
 func pendingCallerCall(
 	ctx workflow.Context,
 	offered []callertools.Descriptor,
 	plan activities.PlannedAction,
-) (callertools.PendingCall, bool) {
+) (callertools.PendingCall, bool, error) {
 	name := callertools.NameFromID(plan.ToolID)
 	found := false
 	for _, tool := range offered {
@@ -67,7 +75,12 @@ func pendingCallerCall(
 		}
 	}
 	if !found {
-		return callertools.PendingCall{}, false
+		return callertools.PendingCall{}, false, nil
+	}
+
+	arguments, err := callerToolArguments(plan.ToolInput)
+	if err != nil {
+		return callertools.PendingCall{}, false, fmt.Errorf("tool %s needs JSON arguments: %w", plan.ToolID, err)
 	}
 
 	// SideEffect: a uuid is non-deterministic, and this id has to stay stable
@@ -76,16 +89,46 @@ func pendingCallerCall(
 	if err := workflow.SideEffect(ctx, func(workflow.Context) any {
 		return "call_" + uuid.NewString()
 	}).Get(&id); err != nil {
-		return callertools.PendingCall{}, false
+		return callertools.PendingCall{}, false, nil
 	}
 
-	// Arguments go out verbatim as the planner produced them. OpenAI's wire
-	// format is a JSON-encoded string, and the prompt tells the planner to emit
-	// an object literal for a caller tool; an empty input becomes "{}" rather
-	// than "", which no client can parse.
-	arguments := plan.ToolInput
-	if arguments == "" {
-		arguments = "{}"
+	return callertools.PendingCall{ID: id, Name: name, Arguments: arguments}, true, nil
+}
+
+// callerToolArguments validates the planner's tool_args as the JSON-object
+// arguments a caller tool needs (upstream ADR 0035, graph.ts's
+// callerToolArguments). Every other dispatch kind takes a plain string
+// argument; this is the one place the planner's output has a structural
+// contract beyond "a string".
+//
+// A malformed value is an error rather than a coerced "{}": sending the
+// caller's own client a call whose arguments silently don't match its schema
+// produces a confusing client-side failure, whereas this surfaces the actual
+// cause. Empty is fine and means "no arguments".
+func callerToolArguments(toolInput string) (string, error) {
+	raw := strings.TrimSpace(toolInput)
+	if raw == "" {
+		return "{}", nil
 	}
-	return callertools.PendingCall{ID: id, Name: name, Arguments: arguments}, true
+	var parsed any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return "", fmt.Errorf("expected a JSON object, got %q", truncate(raw, 120))
+	}
+	if _, ok := parsed.(map[string]any); !ok {
+		return "", fmt.Errorf("expected a JSON object, got a non-object JSON value")
+	}
+	// Re-serialize so what reaches the client is canonical JSON regardless of
+	// the planner's whitespace.
+	canonical, err := json.Marshal(parsed)
+	if err != nil {
+		return "", err
+	}
+	return string(canonical), nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }

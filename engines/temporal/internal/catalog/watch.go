@@ -46,6 +46,19 @@ func RunWatch(ctx context.Context, client dynamic.Interface, namespace string, i
 			},
 			ix.DeleteAgent,
 		},
+		// LocalTool CRs (ADR 0014) union into the SAME Tools collection as
+		// container Tools — a skill's toolRefs reference either kind
+		// transparently, distinguished only by ToolDescriptor.LocalExec.
+		{LocalToolGVR,
+			func(ctx context.Context, obj *unstructured.Unstructured) error {
+				tool, err := DecodeLocalTool(obj)
+				if err != nil {
+					return err
+				}
+				return ix.UpsertTool(ctx, tool)
+			},
+			ix.DeleteTool,
+		},
 		{SkillGVR,
 			func(ctx context.Context, obj *unstructured.Unstructured) error {
 				skill, err := DecodeSkill(obj)
@@ -69,7 +82,7 @@ func RunWatch(ctx context.Context, client dynamic.Interface, namespace string, i
 	if err := waitForCacheSync(ctx, factory.WaitForCacheSync(ctx.Done())); err != nil {
 		return err
 	}
-	log.Printf("catalog watch established: namespace=%s resources=tools,skills,agents", namespace)
+	log.Printf("catalog watch established: namespace=%s resources=tools,skills,agents,localtools", namespace)
 
 	<-ctx.Done()
 	return nil

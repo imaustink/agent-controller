@@ -13,9 +13,10 @@ const (
 )
 
 var (
-	ToolGVR  = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "tools"}
-	SkillGVR = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "skills"}
-	AgentGVR = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "agents"}
+	ToolGVR      = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "tools"}
+	SkillGVR     = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "skills"}
+	AgentGVR     = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "agents"}
+	LocalToolGVR = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "localtools"}
 )
 
 type ToolDescriptor struct {
@@ -33,6 +34,37 @@ type ToolDescriptor struct {
 	// the wrapped Agent CR instead. The resolved token rides the launch as
 	// ToolRunSpec.secretEnv rather than being baked into the Tool template.
 	IdentityProviders []string `json:"identityProviders,omitempty"`
+
+	// LocalExec, when set, means this descriptor came from a LocalTool CR
+	// (ADR 0014) rather than a Tool CR: it is never launched as a k8s Job,
+	// but dispatched in-pod to the matching per-language executor sidecar.
+	LocalExec *LocalExecSpec `json:"localExec,omitempty"`
+}
+
+// SecretEnvRef names a tool process environment variable whose value comes
+// from a Secret key, resolved by the engine (which holds the k8s identity)
+// before the request ever reaches a sidecar (which deliberately has none).
+type SecretEnvRef struct {
+	Name       string `json:"name"`
+	SecretName string `json:"secretName"`
+	SecretKey  string `json:"secretKey"`
+}
+
+// LocalExecSpec mirrors LocalToolSpec (controllers/core-controller/api/
+// v1alpha1/localtool_types.go, ADR 0014): packaged code fetched by and run
+// inside a per-language executor sidecar, over a pod-local unix socket,
+// instead of a k8s Job.
+type LocalExecSpec struct {
+	Runtime        string            `json:"runtime"`
+	Package        string            `json:"package,omitempty"`
+	Version        string            `json:"version,omitempty"`
+	Entry          string            `json:"entry,omitempty"`
+	SourceURL      string            `json:"sourceUrl,omitempty"`
+	Checksum       string            `json:"checksum,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	SecretEnv      []SecretEnvRef    `json:"secretEnv,omitempty"`
+	Network        bool              `json:"network,omitempty"`
+	TimeoutSeconds int32             `json:"timeoutSeconds,omitempty"`
 }
 
 // StepToolAnnotation on an Agent CR marks it as a checkpoint-resume pod

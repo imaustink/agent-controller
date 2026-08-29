@@ -5,6 +5,7 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/controller-agent/temporal-engine/internal/callertools"
 	"github.com/controller-agent/temporal-engine/internal/catalog"
 	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 )
@@ -128,32 +129,49 @@ func hasOutOfScopeToolMatch(ctx workflow.Context, actx workflow.Context, in Turn
 // selectFallbackTool looks for one tool that unambiguously fits a request no
 // skill or agent matched. Returns false when nothing passes, which is the
 // common and expected outcome.
-func selectFallbackTool(ctx workflow.Context, actx workflow.Context, in TurnInput) (catalog.ToolDescriptor, string, bool) {
+//
+// Caller-supplied tools (ADR 0035) are appended to the candidate list
+// UNFILTERED by the fit check (upstream's selectFallbackTool, graph.ts:
+// 1162-1196): that gate exists because a catalog-wide embedding search
+// surfaces loose keyword overlap the caller never asked about, whereas a
+// caller tool was explicitly supplied for this very conversation and was
+// already relevance-ranked by the caller offering it.
+func selectFallbackTool(ctx workflow.Context, actx workflow.Context, in TurnInput) (catalog.ToolDescriptor, string, bool, *callertools.PendingCall) {
 	fitted := fitCandidates(ctx, actx, in.Message, retrieveCatalogTools(ctx, actx, in))
-	if len(fitted) == 0 {
-		return catalog.ToolDescriptor{}, "", false
+	if len(fitted) == 0 && len(in.CallerTools) == 0 {
+		return catalog.ToolDescriptor{}, "", false, nil
 	}
 
 	var plan activities.PlannedAction
 	if err := workflow.ExecuteActivity(actx, activities.PlanActionActivityName, activities.PlanActionInput{
-		Request:       in.Message,
-		SkillMarkdown: fallbackToolMarkdown,
-		Tools:         fitted,
+		Request:            in.Message,
+		SkillMarkdown:      fallbackToolMarkdown,
+		Tools:              fitted,
+		CallerTools:        in.CallerTools,
+		CallerToolRequired: in.CallerToolRequired,
 	}).Get(ctx, &plan); err != nil {
 		workflow.GetLogger(ctx).Warn("fallback planner failed; answering bare", "error", err)
-		return catalog.ToolDescriptor{}, "", false
+		return catalog.ToolDescriptor{}, "", false, nil
 	}
 	if plan.Action != activities.ActionCallTool {
-		return catalog.ToolDescriptor{}, "", false
+		return catalog.ToolDescriptor{}, "", false, nil
 	}
+
+	if callertools.IsID(plan.ToolID) {
+		if call, ok, err := pendingCallerCall(ctx, in.CallerTools, plan); err == nil && ok {
+			return catalog.ToolDescriptor{}, "", false, &call
+		}
+		return catalog.ToolDescriptor{}, "", false, nil
+	}
+
 	// Re-validate against the fitted set, exactly as the skill loop does: a
 	// planner may not invent a tool id.
 	for _, tool := range fitted {
 		if tool.ID == plan.ToolID {
-			return tool, plan.ToolInput, true
+			return tool, plan.ToolInput, true, nil
 		}
 	}
-	return catalog.ToolDescriptor{}, "", false
+	return catalog.ToolDescriptor{}, "", false, nil
 }
 
 // noMatchFallback is the whole cascade for a turn that matched no skill and
@@ -170,19 +188,27 @@ func noMatchFallback(
 	in TurnInput,
 	meta *TurnMeta,
 	note func(string),
-) (string, TurnMeta, error) {
+) (string, TurnMeta, []callertools.PendingCall, error) {
 	if in.Caller.Subject != "" {
-		if tool, toolInput, ok := selectFallbackTool(ctx, actx, in); ok {
-			return runFallbackTool(ctx, actx, state, in, tool, toolInput, meta, note)
+		tool, toolInput, ok, pendingCall := selectFallbackTool(ctx, actx, in)
+		if pendingCall != nil {
+			meta.Path = "fallback-tool"
+			meta.ToolCalls = append(meta.ToolCalls, callertools.ID(pendingCall.Name))
+			note("Asking your client to run " + pendingCall.Name)
+			return "", *meta, []callertools.PendingCall{*pendingCall}, nil
+		}
+		if ok {
+			reply, m, err := runFallbackTool(ctx, actx, state, in, tool, toolInput, meta, note)
+			return reply, m, nil, err
 		}
 	}
 
 	meta.Path = "fallback-bare"
-	reply, err := bareAnswer(ctx, actx, state)
+	reply, err := bareAnswer(ctx, actx, in.Message)
 	if err != nil {
-		return "", *meta, err
+		return "", *meta, nil, err
 	}
-	return reply + SelfImprovementFooter, *meta, nil
+	return reply + SelfImprovementFooter, *meta, nil, nil
 }
 
 func runFallbackTool(
@@ -207,7 +233,7 @@ func runFallbackTool(
 	meta.ToolCalls = append(meta.ToolCalls, tool.ID)
 	note("No skill matched; trying " + tool.ID + "…")
 
-	outcome, err := runToolWithContinuation(ctx, state, tool.ID, toolInput, creds, note)
+	outcome, err := runToolWithContinuation(ctx, actx, state, in, tool, toolInput, "", creds, note)
 	if err != nil {
 		return "", *meta, err
 	}
@@ -216,14 +242,9 @@ func runFallbackTool(
 		return "I couldn't complete that: " + tool.ID + " failed (" + outcome.ErrorCode + ": " + outcome.ErrorMessage + ")." + SelfImprovementFooter, *meta, nil
 	}
 
-	note("Composing reply…")
-	var framed activities.ComposedResponse
-	if err := workflow.ExecuteActivity(actx, activities.ComposeResponseActivityName, activities.ComposeResponseInput{
-		Request:       in.Message,
-		SkillMarkdown: fallbackToolMarkdown,
-		Result:        outcome.Result,
-	}).Get(ctx, &framed); err != nil {
-		workflow.GetLogger(ctx).Warn("compose failed; returning bare result", "error", err)
-	}
-	return framed.Prefix + outcome.Result + framed.Suffix + SelfImprovementFooter, *meta, nil
+	// No compose step here: upstream's composeResponse no-ops without a
+	// selectedSkill (graph.ts:2058), which the fallback-tool path never sets —
+	// so TS never lets an LLM add prefix/suffix narration around this result.
+	// Only the raw result plus the self-improvement suffix.
+	return outcome.Result + SelfImprovementFooter, *meta, nil
 }

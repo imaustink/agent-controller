@@ -18,6 +18,7 @@ import (
 	"github.com/controller-agent/temporal-engine/internal/identitylink"
 	"github.com/controller-agent/temporal-engine/internal/kubeconfig"
 	"github.com/controller-agent/temporal-engine/internal/llm"
+	"github.com/controller-agent/temporal-engine/internal/localtool"
 	"github.com/controller-agent/temporal-engine/internal/temporal"
 	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
@@ -231,6 +232,37 @@ func main() {
 		log.Printf("tool execution enabled: mode=%s callbacks=%s", mode, callbackBaseURL)
 	default:
 		log.Fatalf("unknown TOOLRUN_MODE %q (want k8s, fake, or unset)", mode)
+	}
+
+	// LocalTool execution (ADR 0014): opt-in, defaulting to disabled — only
+	// set LOCALTOOL_SOCKET_DIR when this pod actually has the per-language
+	// executor sidecars mounted on a shared emptyDir.
+	if socketDir := os.Getenv("LOCALTOOL_SOCKET_DIR"); socketDir != "" {
+		kubeCfg, err := kubeconfig.Load()
+		if err != nil {
+			log.Fatalf("load kube config: %v", err)
+		}
+		dynamicClient, err := dynamic.NewForConfig(kubeCfg)
+		if err != nil {
+			log.Fatalf("build dynamic client: %v", err)
+		}
+		defaultTimeoutSeconds := int32(30)
+		if raw := os.Getenv("LOCALTOOL_DEFAULT_TIMEOUT_SECONDS"); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil {
+				defaultTimeoutSeconds = int32(n)
+			}
+		}
+		executor := localtool.NewExecutor(localtool.Options{
+			SocketDir:             socketDir,
+			DefaultTimeoutSeconds: defaultTimeoutSeconds,
+			SecretReader: &localtool.K8sSecretReader{
+				Client:    dynamicClient,
+				Namespace: getenv("CATALOG_NAMESPACE", "controller-agent"),
+			},
+		})
+		localToolActivities := &activities.LocalToolActivities{Executor: executor}
+		w.RegisterActivityWithOptions(localToolActivities.RunLocalTool, activity.RegisterOptions{Name: activities.RunLocalToolActivityName})
+		log.Printf("local tool execution enabled: socketDir=%s", socketDir)
 	}
 
 	log.Printf("worker starting: temporal=%s namespace=%s taskQueue=%s model=%s",

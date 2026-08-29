@@ -79,6 +79,13 @@ type invokeRequest struct {
 	// callertools.CollectPriorCalls to parse, unlike handleChat talking
 	// directly to a client.
 	PriorCallerToolCalls []callertools.PriorCall `json:"priorCallerToolCalls,omitempty"`
+
+	// IdentityLinkFlow lets a headless caller (e.g. integration-gateway's own
+	// GitHub-issue relay, which has no browser to redirect) request the
+	// device OAuth flow instead of the default authcode one. An absent or
+	// invalid value is silently ignored — the workflow's own "authcode"
+	// default applies — rather than 400ing the whole request.
+	IdentityLinkFlow string `json:"identityLinkFlow,omitempty"`
 }
 
 type invokeAccepted struct {
@@ -203,12 +210,21 @@ func shapeInvokeTurn(
 		return workflows.TurnInput{}, errEmptyRequest
 	}
 
+	// Power-user/headless-caller convenience field, not required — an
+	// absent or invalid value is silently ignored (the workflow's own
+	// "authcode" default applies) rather than 400ing the whole request.
+	var identityLinkFlow string
+	if req.IdentityLinkFlow == "device" || req.IdentityLinkFlow == "authcode" {
+		identityLinkFlow = req.IdentityLinkFlow
+	}
+
 	return workflows.TurnInput{
-		Message:       request,
-		Caller:        caller,
-		SenderLogin:   senderLogin,
-		ForcedSkillID: forcedSkillID,
-		ForcedAgentID: forcedAgentID,
+		Message:          request,
+		Caller:           caller,
+		SenderLogin:      senderLogin,
+		ForcedSkillID:    forcedSkillID,
+		ForcedAgentID:    forcedAgentID,
+		IdentityLinkFlow: identityLinkFlow,
 	}, nil
 }
 

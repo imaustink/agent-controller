@@ -75,10 +75,12 @@ func TestConversationWorkflow_TurnThenIdleCompletion(t *testing.T) {
 	require.Equal(t, "hello back", result.Reply)
 	require.Equal(t, 1, result.Turn)
 
-	// The fake LLM saw system prompt + seeded history + the new user turn.
+	// bareAnswer (upstream's callBestEffort) sends only the CURRENT request,
+	// never the accumulated transcript — matching best-effort-responder.ts's
+	// respond(), which takes one string, not a message history.
 	require.NotEmpty(t, seen.SystemPrompt)
-	require.Len(t, seen.Messages, 3)
-	require.Equal(t, "hi there", seen.Messages[2].Content)
+	require.Len(t, seen.Messages, 1)
+	require.Equal(t, "hi there", seen.Messages[0].Content)
 }
 
 func TestConversationWorkflow_ContinueAsNewAfterMaxTurns(t *testing.T) {

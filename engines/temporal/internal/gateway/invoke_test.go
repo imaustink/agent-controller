@@ -111,6 +111,28 @@ func TestShapeInvokeTurnWithoutARouteTable(t *testing.T) {
 	require.Empty(t, turn.ForcedAgentID)
 }
 
+// TS always defaults link flow to "authcode", overridable per-request so a
+// headless caller (integration-gateway's own GitHub-issue relay) with no
+// browser to redirect can request "device" instead — a request property, not
+// something inferred from Live/streaming.
+func TestShapeInvokeTurnCarriesTheIdentityLinkFlowOverride(t *testing.T) {
+	turn, err := shapeInvokeTurn(
+		invokeRequest{Request: "triage this", IdentityLinkFlow: "device"},
+		"", "", nil, testCaller, time.Now(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, "device", turn.IdentityLinkFlow)
+}
+
+func TestShapeInvokeTurnDefaultsIdentityLinkFlowToEmpty(t *testing.T) {
+	turn, err := shapeInvokeTurn(
+		invokeRequest{Request: "triage this"},
+		"", "", nil, testCaller, time.Now(),
+	)
+	require.NoError(t, err)
+	require.Empty(t, turn.IdentityLinkFlow, "the workflow itself defaults an empty flow to authcode")
+}
+
 // The security core of ADR 0030 §6. The sender login selects the principal
 // that credentials are keyed by, so with a secret configured it must come
 // ONLY from a verified assertion — anything holding this endpoint's token
@@ -272,6 +294,53 @@ func TestMalformedToolArrayIsRejected(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.Contains(t, rec.Body.String(), "duplicate")
+}
+
+// TS's chat-completions.ts openAiError shapes every 400 as
+// {error:{message, type:"invalid_request_error", code:"invalid_request"}} so
+// real OpenAI clients (ADR 0035 §3) can parse it; Go must match, not send
+// {message, type:"durable_agents_error"} with no code.
+func TestMalformedToolArrayErrorEnvelopeMatchesOpenAIShape(t *testing.T) {
+	s := NewServer(nil, "tq", nil)
+
+	body := `{"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"function","function":{"name":"a"}},{"type":"function","function":{"name":"a"}}]}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	s.Handler().ServeHTTP(rec, req)
+
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &parsed))
+	require.Equal(t, "invalid_request_error", parsed.Error.Type)
+	require.Equal(t, "invalid_request", parsed.Error.Code)
+	require.Contains(t, parsed.Error.Message, "duplicate")
+}
+
+func TestInvalidJSONBodyErrorEnvelopeMatchesOpenAIShape(t *testing.T) {
+	s := NewServer(nil, "tq", nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	s.Handler().ServeHTTP(rec, req)
+
+	var parsed struct {
+		Error struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &parsed))
+	require.Equal(t, "invalid_request_error", parsed.Error.Type)
+	require.Equal(t, "invalid_request", parsed.Error.Code)
 }
 
 // A client resuming a tool call sends user → assistant(tool_calls) → tool, so
