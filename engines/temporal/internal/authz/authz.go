@@ -171,6 +171,13 @@ type Request struct {
 
 	// RunTimeoutSeconds sizes a write-back grant's lifetime.
 	RunTimeoutSeconds int32 `json:"runTimeoutSeconds,omitempty"`
+
+	// Pending is the anchor from a turn that previously stopped on this exact
+	// link, if this is a resume. Its purpose is narrow: let the provider loop
+	// recognize a flow it already started so it can re-check that ONE flow
+	// instead of starting a second one out from under a caller who is
+	// mid-way through the first.
+	Pending *PendingLink `json:"pending,omitempty"`
 }
 
 // Kind is the verdict's discriminator.
@@ -200,6 +207,13 @@ type PendingLink struct {
 	// Request is captured so the resume re-delegates THIS goal, not whatever
 	// text the turn that finally notices completion happens to carry.
 	Request string `json:"request,omitempty"`
+	// LinkText is the rendered prompt clause the caller was originally shown
+	// ("[link your GitHub account](...) and enter code `ABCD-1234`"). Stored
+	// so a resume that finds the flow still outstanding can repeat the EXACT
+	// same prompt rather than re-deriving it from a fresh Start call, which
+	// is what minted a second, different code for the same still-pending
+	// flow.
+	LinkText string `json:"linkText,omitempty"`
 }
 
 // Verdict is a TOTAL union: every case is an outcome the caller must handle.
@@ -355,6 +369,30 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 		}
 
 		if token == nil {
+			if anchor := s.matchingPending(req, step.name, credentialSubject); anchor != nil {
+				// A flow is already outstanding for this exact
+				// (provider, subject): re-check THAT ONE rather than
+				// starting a second one. Starting again here is what turned
+				// "send any message once you're done" into an endless
+				// re-prompt — every resume raced a brand-new code against
+				// whichever one the caller was still mid-way through
+				// entering, and the caller could never win that race.
+				token = s.waitForLink(ctx, req, step.name, credentialSubject)
+				if token == nil {
+					pending = append(pending, pendingEntry{
+						provider: step.name,
+						linkText: anchor.LinkText,
+						pending:  *anchor,
+					})
+					if step.principalOnly {
+						break
+					}
+					continue
+				}
+			}
+		}
+
+		if token == nil {
 			started, ok := s.startLink(ctx, step.name, credentialSubject, req.Flow)
 			if !ok {
 				// A principal link that will not start must DEGRADE, not
@@ -372,9 +410,10 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 
 			token = s.waitForLink(ctx, req, step.name, credentialSubject)
 			if token == nil {
+				linkText := linkPromptText(started, label(step.name))
 				pending = append(pending, pendingEntry{
 					provider: step.name,
-					linkText: linkPromptText(started, label(step.name)),
+					linkText: linkText,
 					pending: PendingLink{
 						AgentID:    req.AgentID,
 						Provider:   step.name,
@@ -382,6 +421,7 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 						DeviceCode: started.DeviceCode,
 						Subject:    credentialSubject,
 						ExpiresAt:  time.Now().Add(time.Duration(started.ExpiresInSeconds) * time.Second).UnixMilli(),
+						LinkText:   linkText,
 					},
 				})
 				// Assess nothing further when it is the PRINCIPAL that is
@@ -623,6 +663,21 @@ func (s *Service) adopt(ctx context.Context, req Request, provider, credentialSu
 	}
 	log.Printf("[authorization] adopted this caller's pre-principal %s credential onto their principal; no re-authorization needed", provider)
 	return token
+}
+
+// matchingPending finds a still-live anchor from a prior turn for this exact
+// (provider, subject), so a resume re-checks the SAME flow instead of
+// starting a new one out from under a caller who may still be mid-way
+// through it.
+func (s *Service) matchingPending(req Request, provider, subject string) *PendingLink {
+	p := req.Pending
+	if p == nil || p.Provider != provider || p.Subject != subject {
+		return nil
+	}
+	if time.Now().UnixMilli() >= p.ExpiresAt {
+		return nil
+	}
+	return p
 }
 
 func (s *Service) startLink(ctx context.Context, provider, subject, flow string) (identitylink.StartResult, bool) {

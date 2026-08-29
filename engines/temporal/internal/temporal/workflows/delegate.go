@@ -14,14 +14,14 @@ import (
 // relays its first non-progress up-signal into the turn: a question becomes
 // the reply with the episode left active for the next turn; a final message
 // closes the episode and banks the agent's continuation token.
-func delegateToAgent(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput, agent catalog.AgentDescriptor, meta *TurnMeta, note func(string)) (string, TurnMeta, error) {
+func delegateToAgent(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput, agent catalog.AgentDescriptor, meta *TurnMeta, note func(string), pending *authz.PendingLink) (string, TurnMeta, error) {
 	meta.Path = "agent"
 	meta.AgentID = agent.ID
 
 	// Authorization pre-flight, before anything is launched (upstream ADR
 	// 0030). Plain control flow: no model call reaches this decision, and
 	// nothing downstream can skip it.
-	verdict, err := authorizeAgent(ctx, actx, in, agent)
+	verdict, err := authorizeAgent(ctx, actx, in, agent, pending)
 	if err != nil {
 		return "", *meta, fmt.Errorf("authorize %s: %w", agent.ID, err)
 	}

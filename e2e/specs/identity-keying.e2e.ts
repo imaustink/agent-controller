@@ -325,6 +325,40 @@ describe("chat and triage converge on one credential (ADR 0031)", () => {
     await expectCredentialAgent(startedAt, "an AgentRun launched from a stale-link caller's principal");
   });
 
+  it("re-checks a still-pending device-flow link instead of starting a second one on every resume", async () => {
+    // The reported bug, reproduced: a caller with no live channel gets the
+    // DEVICE flow (a code to enter wherever they are), and "send any message
+    // once you're done" is what resumes it -- but before the fix, a resume
+    // re-ran Authorize with no memory of the flow it already started, so it
+    // called Start a SECOND time and handed the caller a brand-new code,
+    // orphaning whatever they were mid-way through entering on the first.
+    // fake-github's device code is a fixed string regardless of call count,
+    // so the only way to prove "not started twice" is counting the actual
+    // POSTs to its device-code endpoint across the whole exchange.
+    await seedAllClaudeCredentials(CANONICAL);
+    const startedAt = new Date();
+    const sessionId = `e2e-resume-anchor-${Date.now()}`;
+
+    const first = await chatTurn(CHAT_USER, REQUEST, { sessionId, allowPark: true, timeoutMs: 120_000 });
+    expect(first.text).toMatch(/link your GitHub account/i);
+    expect(first.text).toMatch(/enter code/i);
+
+    const second = await chatTurn(CHAT_USER, "done", { sessionId, allowPark: true, timeoutMs: 120_000 });
+    expect(second.text).toMatch(/link your GitHub account/i);
+
+    const deviceCodeStarts = (await fakeGithubRequests()).filter(
+      (r) => r.method === "POST" && r.path === "/login/device/code",
+    );
+    expect(deviceCodeStarts, "two resumes of the same outstanding flow must start it only once").toHaveLength(1);
+    expect(await agentRunsSince(startedAt)).toHaveLength(0);
+
+    // And once the human actually finishes -- on the ORIGINAL flow, since
+    // nothing else was ever started -- the next "any message" resume launches.
+    await seedGithubLink(CHAT_SUBJECT, SENDER);
+    await chatTurn(CHAT_USER, "done", { sessionId, allowPark: true, timeoutMs: 120_000 });
+    await expectCredentialAgent(startedAt, "a launch once the single outstanding flow completes");
+  });
+
   it("DOES prompt a caller who has no link at all, and launches nothing", async () => {
     // Two jobs. It is the control for the spec above -- without it, "no prompt in
     // the reply" would also pass if prompts stopped reaching the stream entirely

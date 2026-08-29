@@ -108,7 +108,7 @@ func resumePendingLink(
 	}
 	note("Checking whether your " + anchor.Provider + " link completed…")
 
-	reply, m, err = delegateToAgent(ctx, actx, state, resume, *agent, meta, note)
+	reply, m, err = delegateToAgent(ctx, actx, state, resume, *agent, meta, note, anchor)
 	return reply, m, true, err
 }
 
@@ -125,6 +125,7 @@ func authorizeAgent(
 	actx workflow.Context,
 	in TurnInput,
 	agent catalog.AgentDescriptor,
+	pending *authz.PendingLink,
 ) (authz.Verdict, error) {
 	if len(agent.IdentityProviders) == 0 {
 		return authz.Verdict{Kind: authz.KindAuthorized}, nil
@@ -148,6 +149,10 @@ func authorizeAgent(
 		// Sizes the write-back grant only: it must outlive the run that may
 		// refresh a credential mid-flight.
 		RunTimeoutSeconds: podStepTimeoutSeconds,
+		// Carried in only on a resume: it is what lets Authorize re-check the
+		// flow this conversation already started instead of starting a
+		// second one for the same (provider, subject).
+		Pending: pending,
 	}).Get(ctx, &verdict)
 	return verdict, err
 }

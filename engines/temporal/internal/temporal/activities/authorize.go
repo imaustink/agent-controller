@@ -26,6 +26,10 @@ type AuthorizeInput struct {
 	// human to finish is useful rather than merely hiding the prompt.
 	WaitForLink       bool  `json:"waitForLink,omitempty"`
 	RunTimeoutSeconds int32 `json:"runTimeoutSeconds,omitempty"`
+	// Pending is the anchor from a turn that previously stopped on this
+	// link, carried in on a resume so Authorize re-checks that outstanding
+	// flow instead of starting a second one.
+	Pending *authz.PendingLink `json:"pending,omitempty"`
 }
 
 // AuthorizeActivities is the workflow-facing side of the pre-flight.
@@ -54,6 +58,7 @@ func (in AuthorizeInput) request() authz.Request {
 		Flow:              in.Flow,
 		WaitForLink:       in.WaitForLink,
 		RunTimeoutSeconds: in.RunTimeoutSeconds,
+		Pending:           in.Pending,
 	}
 }
 

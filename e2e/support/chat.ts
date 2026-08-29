@@ -201,7 +201,12 @@ async function streamChat(
           // still has to authenticate, and this is the value values-e2e.yaml's
           // staticIdentities map registers.
           authorization: "Bearer e2e-gateway-token",
-          "x-chat-id": sessionId,
+          // Must match `CHAT_ID_HEADER` in agent-orchestrator's server.ts
+          // exactly ("x-chat-id" is not a header either engine reads): get
+          // this wrong and every turn silently falls back to a random
+          // ephemeral session, so two calls "in the same conversation" each
+          // land in their own workflow with no shared state whatsoever.
+          "x-openwebui-chat-id": sessionId,
           [FORWARDED_USER_JWT_HEADER]: jwt,
         },
         body: JSON.stringify({ model: "agent-orchestrator", stream: true, messages, ...extraBody }),
