@@ -213,6 +213,27 @@ describe("chat and triage converge on one credential (ADR 0031)", () => {
   let suiteStartedAt: Date;
 
   /**
+   * A fresh session id per CALL, distinct from CHAT_SUBJECT (the identity,
+   * which several tests deliberately share). Session state (including any
+   * PendingIdentityLink) keys off this, and every call in this describe
+   * block used to omit it, silently sharing ONE conversation for the whole
+   * file -- harmless before a resume could ever reuse an outstanding link,
+   * and a real cross-test leak the moment it could: a still-open device
+   * flow from an earlier test resolved instantly in a later one that never
+   * started its own.
+   *
+   * Must vary per CALL, not just per test: a `label` alone repeats
+   * identically across vitest's own automatic retry of a failed test, and a
+   * retry that reuses its failed attempt's session inherits that attempt's
+   * still-open device flow -- which now actually completes (fake-github
+   * completes any poll instantly), turning a flaky first attempt into a
+   * silently-different second one instead of a clean re-run.
+   */
+  function session(label: string): string {
+    return `e2e-identity-keying-${label}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  /**
    * Waits for a launch and asserts it was an agent that actually needs the
    * credentials under test, so a planner mis-pick names itself rather than
    * surfacing as a missing-env-var failure.
@@ -245,7 +266,7 @@ describe("chat and triage converge on one credential (ADR 0031)", () => {
     await seedAllClaudeCredentials(CANONICAL);
     const startedAt = new Date();
 
-    await chatTurn(CHAT_USER, REQUEST);
+    await chatTurn(CHAT_USER, REQUEST, { sessionId: session("principal-not-openwebui-subject") });
 
     const run = await expectCredentialAgent(startedAt, "a chat-driven AgentRun to launch using the canonically-keyed credentials");
     const envNames = await agentRunSecretEnvNames(run.name);
@@ -265,7 +286,7 @@ describe("chat and triage converge on one credential (ADR 0031)", () => {
     await seedAllClaudeCredentials(CHAT_SUBJECT);
     const startedAt = new Date();
 
-    await chatTurn(CHAT_USER, REQUEST);
+    await chatTurn(CHAT_USER, REQUEST, { sessionId: session("adopts-pre-principal") });
 
     await expectCredentialAgent(startedAt, "the adopted credential to carry a launch with no re-authorization");
 
@@ -296,7 +317,11 @@ describe("chat and triage converge on one credential (ADR 0031)", () => {
     //
     // `allowPark` therefore tolerates either shape, and the assertions below are
     // the actual property: nobody else's credential was used, and none was moved.
-    await chatTurn(CHAT_USER, REQUEST, { allowPark: true, timeoutMs: 90_000 });
+    await chatTurn(CHAT_USER, REQUEST, {
+      sessionId: session("no-cross-human-credential"),
+      allowPark: true,
+      timeoutMs: 90_000,
+    });
 
     expect(await agentRunsSince(startedAt)).toHaveLength(0);
     // And the other human's credential is untouched -- not moved, not deleted.
@@ -316,7 +341,7 @@ describe("chat and triage converge on one credential (ADR 0031)", () => {
     await seedAllClaudeCredentials(CANONICAL);
     const startedAt = new Date();
 
-    const turn = await chatTurn(CHAT_USER, REQUEST);
+    const turn = await chatTurn(CHAT_USER, REQUEST, { sessionId: session("expired-link-no-reprompt") });
 
     expect(turn.text).not.toMatch(/link your GitHub account/i);
     // And it still converged: an expired token does not unprove which account
@@ -325,16 +350,25 @@ describe("chat and triage converge on one credential (ADR 0031)", () => {
     await expectCredentialAgent(startedAt, "an AgentRun launched from a stale-link caller's principal");
   });
 
-  it("re-checks a still-pending device-flow link instead of starting a second one on every resume", async () => {
+  it("resumes a device-flow link by redeeming the SAME code instead of starting a new one", async () => {
     // The reported bug, reproduced: a caller with no live channel gets the
     // DEVICE flow (a code to enter wherever they are), and "send any message
-    // once you're done" is what resumes it -- but before the fix, a resume
-    // re-ran Authorize with no memory of the flow it already started, so it
-    // called Start a SECOND time and handed the caller a brand-new code,
-    // orphaning whatever they were mid-way through entering on the first.
-    // fake-github's device code is a fixed string regardless of call count,
-    // so the only way to prove "not started twice" is counting the actual
-    // POSTs to its device-code endpoint across the whole exchange.
+    // once you're done" is what resumes it. Two things had to be true for
+    // that resume to ever work, and both were broken:
+    //
+    //  1. Authorize must re-check the SAME outstanding flow, not start a
+    //     second one -- it had no memory of a flow it already started, so
+    //     every resume called Start again and handed the caller a brand-new
+    //     code, orphaning whatever they were mid-way through entering.
+    //  2. Something must actually POLL GitHub to redeem that code -- nothing
+    //     ever did (upstream's LangGraph orchestrator polls on resume;
+    //     the port to this engine dropped it), so even a caller who
+    //     correctly entered their code on GitHub's page would sit there
+    //     forever, re-shown the same dead prompt with no way to ever
+    //     progress.
+    //
+    // fake-github completes a device code on its very first poll, so a
+    // resume that reaches the poll at all should launch immediately.
     await seedAllClaudeCredentials(CANONICAL);
     const startedAt = new Date();
     const sessionId = `e2e-resume-anchor-${Date.now()}`;
@@ -343,20 +377,14 @@ describe("chat and triage converge on one credential (ADR 0031)", () => {
     expect(first.text).toMatch(/link your GitHub account/i);
     expect(first.text).toMatch(/enter code/i);
 
-    const second = await chatTurn(CHAT_USER, "done", { sessionId, allowPark: true, timeoutMs: 120_000 });
-    expect(second.text).toMatch(/link your GitHub account/i);
+    await chatTurn(CHAT_USER, "done", { sessionId, allowPark: true, timeoutMs: 120_000 });
 
     const deviceCodeStarts = (await fakeGithubRequests()).filter(
       (r) => r.method === "POST" && r.path === "/login/device/code",
     );
-    expect(deviceCodeStarts, "two resumes of the same outstanding flow must start it only once").toHaveLength(1);
-    expect(await agentRunsSince(startedAt)).toHaveLength(0);
+    expect(deviceCodeStarts, "the resume must re-check the SAME flow, never starting a second one").toHaveLength(1);
 
-    // And once the human actually finishes -- on the ORIGINAL flow, since
-    // nothing else was ever started -- the next "any message" resume launches.
-    await seedGithubLink(CHAT_SUBJECT, SENDER);
-    await chatTurn(CHAT_USER, "done", { sessionId, allowPark: true, timeoutMs: 120_000 });
-    await expectCredentialAgent(startedAt, "a launch once the single outstanding flow completes");
+    await expectCredentialAgent(startedAt, "a launch once the resume actually redeemed the device code");
   });
 
   it("DOES prompt a caller who has no link at all, and launches nothing", async () => {
@@ -377,7 +405,11 @@ describe("chat and triage converge on one credential (ADR 0031)", () => {
     await seedAllClaudeCredentials(CANONICAL);
     const startedAt = new Date();
 
-    const turn = await chatTurn(CHAT_USER, REQUEST, { allowPark: true, timeoutMs: 90_000 });
+    const turn = await chatTurn(CHAT_USER, REQUEST, {
+      sessionId: session("no-link-at-all"),
+      allowPark: true,
+      timeoutMs: 90_000,
+    });
 
     expect(turn.text).toMatch(/link your GitHub account/i);
     // Nothing launched: with no principal, the credentials at CANONICAL are not

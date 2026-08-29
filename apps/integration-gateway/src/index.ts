@@ -220,6 +220,11 @@ async function main(): Promise<void> {
       // github.com/login/device/code -- which 404s for a GHES-registered
       // App's client id.
       githubBaseUrl: config.githubBaseUrl,
+      // The REST API host, distinct from the OAuth host above -- the
+      // post-poll login lookup hits `/user`, which lives on api.github.com
+      // in production but must follow this same override wherever
+      // githubBaseUrl does (e2e's fake-github serves both from one address).
+      apiBaseUrl: config.githubApiUrl,
     });
   }
 

@@ -23,7 +23,10 @@ function makeFetchMock(login: string): ReturnType<typeof vi.fn> {
   return vi.fn().mockResolvedValue({
     ok: true,
     status: 200,
-    json: async () => ({ login }),
+    // fetchGithubUser (shared with delegatedWrite's own /user lookup) requires
+    // both fields -- it needs the numeric id to build a co-author trailer,
+    // even though this caller only ever reads .login.
+    json: async () => ({ login, id: 4242 }),
     text: async () => "",
   });
 }
