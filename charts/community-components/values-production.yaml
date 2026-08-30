@@ -247,17 +247,27 @@ githubTool:
 # already on file for it under its console.local mDNS name). Its host key
 # is now included in the keyscan below.
 #
+# airvinyl resolves via its mDNS name (airvinyl.local) on the operator's own
+# machine/network, but a cluster pod has no mDNS resolver at all -- unlike
+# console's DHCP churn above, this was never going to work from in-cluster,
+# regardless of IP stability. Pinned to its current DHCP lease
+# (192.168.1.184) instead, same as every other host here; confirmed by
+# keyscanning that address and matching all three host keys (ed25519, rsa,
+# ecdsa) against the ones already on file under airvinyl.local. If its lease
+# ever changes, re-keyscan and update HostName/allowedHosts/known_hosts
+# together, same as console's note above.
+#
 # Prerequisite:
 #   kubectl create secret generic ssh-tool-secrets -n controller-agent \
 #     --from-file=SSH_PRIVATE_KEY=~/.ssh/id_rsa \
 #     --from-literal=SSH_KNOWN_HOSTS="$(ssh-keyscan -t ed25519 \
 #       166.113.38.187 192.168.1.43 192.168.1.71 \
-#       192.168.1.235 airvinyl.local 192.168.1.218)"
+#       192.168.1.235 192.168.1.184 192.168.1.218)"
 sshTool:
   enabled: true
   image: registry.kurpuis.com:5000/ssh:latest
   serviceAccountName: ssh-tool
-  allowedHosts: "austinkurpuis@166.113.38.187,austinkurpuis@192.168.1.43,admin@192.168.1.71,pi@192.168.1.235,pi@airvinyl.local,pi@192.168.1.218"
+  allowedHosts: "austinkurpuis@166.113.38.187,austinkurpuis@192.168.1.43,admin@192.168.1.71,pi@192.168.1.235,pi@192.168.1.184,pi@192.168.1.218"
   allowedCommands: "*"
   sshConfig: |
     Host home
@@ -273,7 +283,7 @@ sshTool:
       HostName 192.168.1.235
       User pi
     Host airvinyl
-      HostName airvinyl.local
+      HostName 192.168.1.184
       User pi
     Host airbuddy
       HostName 192.168.1.218
