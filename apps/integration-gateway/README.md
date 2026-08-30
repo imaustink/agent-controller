@@ -215,3 +215,7 @@ Required env vars for this API:
   the URL -- no per-user identity check on `POST /sessions/:token/prompts`,
   unlike the webhook path's GitHub identity resolution. Anyone who obtains a
   page link can send it prompts.
+
+<!-- CI touch: forces the integration-gateway image rebuild after the recent
+     registry-secret/self-hosted-runner outage, whose backlog of merged
+     commits never got a successful image build. No functional change. -->
