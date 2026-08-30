@@ -22,6 +22,7 @@ const maxToolSteps = 4
 type TurnMeta struct {
 	// Path is how this turn reached its target:
 	//   bare             — no capability needed (ADR 0019), or no identity
+	//   tool             — a bare tool won the combined delegate selection (ADR 0037)
 	//   fallback-tool    — no skill or agent matched; one catalog tool did
 	//   fallback-bare    — no skill, agent, or tool matched
 	//   skill            — selected by retrieval
@@ -197,31 +198,57 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		}).Get(ctx, &agents); err != nil {
 			logger.Warn("agent retrieval failed", "error", err)
 		}
-		if len(skills) == 0 && len(agents) == 0 {
+
+		// Bare tools compete DIRECTLY in the selection below (ADR 0037), not
+		// only once skills and agents both come up empty. Retrieve and
+		// relevance-gate the catalog with the same CheckToolFit two-stage gate
+		// selectFallbackTool already uses, so a well-fitting Tool is offered to
+		// the combined selector rather than being starved out by a broad Agent
+		// that merely overlaps the request. Mirrors the langgraph engine's
+		// retrieveTools node.
+		fittedTools := fitCandidates(ctx, actx, in.Message, retrieveCatalogTools(ctx, actx, in))
+
+		if len(skills) == 0 && len(agents) == 0 && len(fittedTools) == 0 {
 			reply, m, pending, err := noMatchFallback(ctx, actx, state, in, &meta, note)
 			return reply, m, pending, err
 		}
 
-		// 4. Selection: skill vs agent when both kinds are on the table,
-		// plain skill selection otherwise.
+		// 4. Selection: one combined skill/agent/tool choice when agents or
+		// tools are on the table; plain skill selection when only skills
+		// matched (nothing to weigh a skill against).
 		var skillID string
-		if len(agents) > 0 {
+		if len(agents) > 0 || len(fittedTools) > 0 {
 			var choice activities.DelegateChoice
 			if err := workflow.ExecuteActivity(actx, activities.SelectDelegateActivityName, activities.SelectDelegateInput{
 				Request: in.Message,
 				Skills:  skills,
 				Agents:  agents,
+				Tools:   fittedTools,
 			}).Get(ctx, &choice); err != nil {
 				logger.Warn("delegate selection failed; answering bare", "error", err)
 			}
-			if choice.Kind == activities.DelegateAgent {
+			switch choice.Kind {
+			case activities.DelegateAgent:
 				if agent := findAgent(choice.ID, agents); agent != nil {
 					reply, m, err := delegateToAgent(ctx, actx, state, in, *agent, &meta, note, nil)
 					return reply, m, nil, err
 				}
-			}
-			skillID = ""
-			if choice.Kind == activities.DelegateSkill {
+			case activities.DelegateTool:
+				if tool := findToolDescriptor(choice.ID, fittedTools); tool != nil {
+					// Plan the concrete call, then run it as a first-class
+					// selection — never the noMatchFallback footer path. A
+					// planner that declines, or a decline that leaves no call,
+					// falls through to noMatchFallback's own safety net below.
+					// No caller tools offered here: the delegate selector already
+					// picked THIS one catalog tool specifically, and a caller
+					// tool is never among its candidates (SelectDelegateInput
+					// carries no CallerTools).
+					if planned, toolInput, ok, _ := planToolCall(ctx, actx, in, []catalog.ToolDescriptor{*tool}, nil, false); ok {
+						reply, m, err := runSelectedTool(ctx, actx, state, in, planned, toolInput, &meta, note)
+						return reply, m, nil, err
+					}
+				}
+			case activities.DelegateSkill:
 				skillID = choice.ID
 			}
 		} else {

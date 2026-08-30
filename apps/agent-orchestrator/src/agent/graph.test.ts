@@ -1875,6 +1875,110 @@ describe("buildAgentGraph fallback tool-fit (tried before the best-effort LLM an
   });
 });
 
+describe("buildAgentGraph bare tools compete directly with skill/agent candidates (docs/adr/0037)", () => {
+  const realAgent: AgentDescriptor = {
+    id: "opencode-swe-agent",
+    name: "opencode-swe-agent",
+    description: "General-purpose coding agent",
+    allowedRoles: ["reader"],
+    agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
+  };
+
+  function toolVsAgentDeps(overrides: Partial<AgentGraphDeps> = {}) {
+    const skillStore: SkillStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn(),
+    };
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ agent: realAgent, score: 0.9 }]),
+      getByIds: vi.fn(),
+    };
+    const vectorStore: VectorStore = {
+      upsert: vi.fn(),
+      delete: vi.fn(),
+      query: vi.fn().mockResolvedValue([{ tool: scraperTool, score: 0.8 }]),
+      getByIds: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = { launch: vi.fn() };
+    return baseDeps({
+      skillStore,
+      agentStore,
+      vectorStore,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      ...overrides,
+    });
+  }
+
+  it("retrieveTools filters candidates through toolFitChecker before selectDelegate ever sees them", async () => {
+    const delegateSelector: DelegateSelector = { select: vi.fn().mockResolvedValue({ type: "agent", agent: realAgent }) };
+    const deps = toolVsAgentDeps({ delegateSelector });
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "is airvinyl running okay", authToken: "tok" });
+
+    expect(deps.toolFitChecker.fits).toHaveBeenCalledWith("is airvinyl running okay", scraperTool);
+    expect(delegateSelector.select).toHaveBeenCalledWith(
+      "is airvinyl running okay",
+      [],
+      [{ agent: realAgent, score: 0.9 }],
+      [{ tool: scraperTool, score: 0.8 }],
+    );
+  });
+
+  it("picks a bare tool over an agent candidate when the delegate selector says so, never launching the agent", async () => {
+    const delegateSelector: DelegateSelector = { select: vi.fn().mockResolvedValue({ type: "tool", tool: scraperTool }) };
+    const deps = toolVsAgentDeps({ delegateSelector });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "scrape https://example.com/recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedAgent).toBeUndefined();
+    expect(final.selectedTool?.id).toBe("recipe-scraper");
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalled();
+    // A deliberately selected tool is a first-class match, not a fallback:
+    // it must NOT append the self-improvement ("nothing matched") footer.
+    expect(final.wasFallback).toBe(false);
+  });
+
+  it("excludes a tool that fails toolFitChecker from the candidates offered to the delegate selector", async () => {
+    const toolFitChecker: ToolFitChecker = { fits: vi.fn().mockResolvedValue(false) };
+    const delegateSelector: DelegateSelector = { select: vi.fn().mockResolvedValue({ type: "agent", agent: realAgent }) };
+    const deps = toolVsAgentDeps({ toolFitChecker, delegateSelector });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "scrape https://example.com/recipe", authToken: "tok" });
+
+    expect(delegateSelector.select).toHaveBeenCalledWith("scrape https://example.com/recipe", [], [{ agent: realAgent, score: 0.9 }], []);
+    expect(final.selectedAgent?.id).toBe("opencode-swe-agent");
+  });
+
+  it("falls back to the independent selectFallbackTool retrieval when the delegate selector picks nothing despite candidates existing", async () => {
+    const delegateSelector: DelegateSelector = { select: vi.fn().mockResolvedValue(undefined) };
+    const actionPlanner: ActionPlanner = {
+      plan: vi.fn().mockResolvedValue({
+        action: "call_tool",
+        toolId: "recipe-scraper",
+        toolArgs: "https://example.com/recipe",
+      } satisfies PlannedAction),
+    };
+    const deps = toolVsAgentDeps({ delegateSelector, actionPlanner });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "scrape https://example.com/recipe", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.selectedTool?.id).toBe("recipe-scraper");
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+});
+
 describe("buildAgentGraph capability-need gate (no search for conversational requests, ADR 0019)", () => {
   it("skips catalog retrieval and the self-improvement suggestion when no capability is needed", async () => {
     const capabilityNeedChecker: CapabilityNeedChecker = { needsCapability: vi.fn().mockResolvedValue(false) };

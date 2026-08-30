@@ -17,7 +17,7 @@ import { resolveActorLogin, resolvePrincipal } from "../identity-link/credential
 import type { IdentityResolver, Identity } from "../rbac/types.js";
 import type { SkillDescriptor, SkillSearchResult, SkillStore } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
-import type { VectorStore } from "../vector-store/types.js";
+import type { ToolSearchResult, VectorStore } from "../vector-store/types.js";
 import type { ActionPlanner, ToolCallRecord } from "./action-planner.js";
 import type { BestEffortResponder } from "./best-effort-responder.js";
 import type { CapabilityNeedChecker } from "./capability-need-checker.js";
@@ -189,6 +189,19 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => [],
   }),
   agentCandidates: Annotation<AgentSearchResult[]>({
+    reducer: (_current, update) => update,
+    default: () => [],
+  }),
+  /**
+   * Bare Tool candidates for `selectDelegate`'s combined choice (alongside
+   * skillCandidates/agentCandidates) — already relevance-filtered by
+   * `toolFitChecker` in `retrieveTools`, same as `selectFallbackTool`'s own
+   * candidates. Populated on every fresh-retrieval turn (not only when
+   * skills/agents come up empty) so a bare tool can win the combined choice
+   * on its own merits, rather than only ever being reachable once nothing
+   * else was even a candidate.
+   */
+  toolCandidates: Annotation<ToolSearchResult[]>({
     reducer: (_current, update) => update,
     default: () => [],
   }),
@@ -1159,6 +1172,37 @@ const FALLBACK_TOOL_MARKDOWN = [
  * this caller) — the caller falls through to noMatchFallback's bare LLM
  * response in that case.
  */
+/**
+ * Shared tail of both `selectFallbackTool` (below) and `selectDelegate`'s
+ * own tool branch: given a fixed, already-relevance-decided list of tools,
+ * asks the action planner to construct the actual call (toolId + args) or
+ * decline. Declining is legitimate here too — FALLBACK_TOOL_MARKDOWN's own
+ * guidance ("decline rather than force a guess" on an unclear or
+ * multi-step request) still applies regardless of how the tool got offered.
+ */
+async function planFallbackToolCall(
+  state: AgentState,
+  deps: AgentGraphDeps,
+  tools: ToolDescriptor[],
+): Promise<{ tool: ToolDescriptor; toolArgs: string; toolInstanceKey?: string } | undefined> {
+  if (tools.length === 0) return undefined;
+  const syntheticSkill: SkillDescriptor = {
+    id: "__fallback_tool__",
+    name: "Fallback tool selection",
+    description: "",
+    markdown: FALLBACK_TOOL_MARKDOWN,
+    toolIds: tools.map((t) => t.id),
+    agentIds: [],
+  };
+  const planned = await deps.actionPlanner.plan(state.request, syntheticSkill, tools, [], {
+    callerToolRequired: state.callerToolChoiceRequired,
+  });
+  if (planned.action !== "call_tool") return undefined;
+  const tool = tools.find((t) => t.id === planned.toolId);
+  if (!tool) return undefined;
+  return { tool, toolArgs: planned.toolArgs, ...(planned.toolInstanceKey ? { toolInstanceKey: planned.toolInstanceKey } : {}) };
+}
+
 async function selectFallbackTool(
   state: AgentState,
   deps: AgentGraphDeps,
@@ -1177,22 +1221,7 @@ async function selectFallbackTool(
   // relevance-ranked against the request, so re-litigating it would only add an
   // LLM call per tool for a judgment the caller already made.
   const tools = [...candidates.filter((_, i) => fitFlags[i]).map((c) => c.tool), ...callerTools];
-  if (tools.length === 0) return undefined;
-  const syntheticSkill: SkillDescriptor = {
-    id: "__fallback_tool__",
-    name: "Fallback tool selection",
-    description: "",
-    markdown: FALLBACK_TOOL_MARKDOWN,
-    toolIds: tools.map((t) => t.id),
-    agentIds: [],
-  };
-  const planned = await deps.actionPlanner.plan(state.request, syntheticSkill, tools, [], {
-    callerToolRequired: state.callerToolChoiceRequired,
-  });
-  if (planned.action !== "call_tool") return undefined;
-  const tool = tools.find((t) => t.id === planned.toolId);
-  if (!tool) return undefined;
-  return { tool, toolArgs: planned.toolArgs, ...(planned.toolInstanceKey ? { toolInstanceKey: planned.toolInstanceKey } : {}) };
+  return planFallbackToolCall(state, deps, tools);
 }
 
 /**
@@ -1534,20 +1563,74 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       );
       return { agentCandidates };
     })
+    .addNode("retrieveTools", async (state) => {
+      // Only meaningful once `deps.delegateSelector` is configured (NATS
+      // deployments) -- selectDelegate's non-NATS branch below still relies
+      // on noMatchFallback/selectFallbackTool for bare tools, unchanged, so
+      // skip the extra embedding query + fit-check LLM calls on every turn
+      // for a deployment that can't act on toolCandidates anyway.
+      if (!deps.delegateSelector || !state.identity) return { toolCandidates: [] };
+      const candidates = await deps.vectorStore.query(
+        state.request,
+        { callerRoles: state.identity.roles },
+        deps.fallbackToolTopK ?? 3,
+      );
+      if (candidates.length === 0) return { toolCandidates: [] };
+      const fitFlags = await Promise.all(candidates.map((c) => deps.toolFitChecker.fits(state.request, c.tool)));
+      return { toolCandidates: candidates.filter((_, i) => fitFlags[i]) };
+    })
     .addNode("selectDelegate", async (state) => {
-      // Full skill+agent delegate selection when agent delegation is
+      // Full skill+agent+tool delegate selection when agent delegation is
       // configured (NATS deployments); a plain skill-only selection
-      // otherwise, so the graph degrades gracefully without NATS.
+      // otherwise, so the graph degrades gracefully without NATS (in that
+      // branch, a bare tool remains reachable only via noMatchFallback's
+      // selectFallbackTool, as before).
+      //
+      // Tool candidates compete DIRECTLY here rather than only being tried
+      // once skills/agents both come up empty (the old shape): a broad Agent
+      // (or Skill) that loosely overlaps a request otherwise pre-empts a
+      // bare Tool that never gets a chance to be considered at all, even
+      // when the tool is actually the better fit -- see docs/adr/0037.
       if (deps.delegateSelector) {
-        if (state.skillCandidates.length === 0 && state.agentCandidates.length === 0) {
+        const nothingRetrieved =
+          state.skillCandidates.length === 0 &&
+          state.agentCandidates.length === 0 &&
+          state.toolCandidates.length === 0 &&
+          state.callerTools.length === 0;
+        if (nothingRetrieved) {
           return noMatchFallback(state, deps);
         }
-        const choice = await deps.delegateSelector.select(state.request, state.skillCandidates, state.agentCandidates);
+        const choice = await deps.delegateSelector.select(
+          state.request,
+          state.skillCandidates,
+          state.agentCandidates,
+          state.toolCandidates,
+        );
         if (!choice) {
+          // Safety net, not the primary path: re-tries via the older,
+          // independent embedding query + fit-check (selectFallbackTool)
+          // before giving up to a bare LLM answer.
           return noMatchFallback(state, deps);
         }
         if (choice.type === "agent") {
           return { selectedAgent: choice.agent };
+        }
+        if (choice.type === "tool") {
+          const planned = await planFallbackToolCall(state, deps, [choice.tool, ...state.callerTools]);
+          if (!planned) {
+            return noMatchFallback(state, deps);
+          }
+          // NOT a fallback: this tool was picked by delegateSelector as the
+          // best fit in the three-way comparison -- a first-class match, like
+          // the agent/skill branches. Setting wasFallback here would wrongly
+          // append the SELF_IMPROVEMENT_FOOTER ("nothing matched...") to every
+          // request this branch successfully routes. Genuine no-matches still
+          // fall through to noMatchFallback (above), which sets it correctly.
+          return {
+            selectedTool: planned.tool,
+            toolArgs: planned.toolArgs,
+            ...(planned.toolInstanceKey ? { toolInstanceKey: planned.toolInstanceKey } : {}),
+          };
         }
         return { selectedSkill: choice.skill };
       }
@@ -2128,7 +2211,8 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     )
     .addEdge("bareAnswer", END)
     .addConditionalEdges("retrieveSkills", afterOrEnd("retrieveAgents"))
-    .addConditionalEdges("retrieveAgents", afterOrEnd("selectDelegate"))
+    .addConditionalEdges("retrieveAgents", afterOrEnd("retrieveTools"))
+    .addConditionalEdges("retrieveTools", afterOrEnd("selectDelegate"))
     // selectDelegate branches five ways: error -> END, a skill was picked ->
     // loadSkillTools (existing flow, unchanged), an agent was picked (a real
     // DelegateSelector match — never a hardcoded fallback) -> delegateToAgent,

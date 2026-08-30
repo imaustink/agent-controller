@@ -3,6 +3,7 @@ import type OpenAI from "openai";
 import { OpenAiDelegateSelector } from "./delegate-selector.js";
 import type { AgentSearchResult } from "../agents/types.js";
 import type { SkillSearchResult } from "../skills/types.js";
+import type { ToolSearchResult } from "../vector-store/types.js";
 
 function skill(id: string): SkillSearchResult {
   return { skill: { id, name: id, description: `Skill ${id}`, markdown: "# instructions", toolIds: ["some-tool"] }, score: 0.5 };
@@ -21,7 +22,20 @@ function agent(id: string): AgentSearchResult {
   };
 }
 
-function fakeClient(selectedType: "skill" | "agent" | null, selectedId: string | null): OpenAI {
+function tool(id: string): ToolSearchResult {
+  return {
+    tool: {
+      id,
+      name: id,
+      description: `Tool ${id}`,
+      allowedRoles: ["reader"],
+      jobTemplate: { namespace: "default", image: "img", serviceAccountName: "sa", toolRef: id },
+    },
+    score: 0.5,
+  };
+}
+
+function fakeClient(selectedType: "skill" | "agent" | "tool" | null, selectedId: string | null): OpenAI {
   return {
     chat: {
       completions: {
@@ -37,42 +51,63 @@ describe("OpenAiDelegateSelector", () => {
   it("returns undefined immediately when there are no candidates at all", async () => {
     const client = fakeClient(null, null);
     const selector = new OpenAiDelegateSelector({ client });
-    await expect(selector.select("do a thing", [], [])).resolves.toBeUndefined();
+    await expect(selector.select("do a thing", [], [], [])).resolves.toBeUndefined();
     expect(client.chat.completions.create).not.toHaveBeenCalled();
   });
 
   it("returns the matching skill when the model picks a skill", async () => {
     const client = fakeClient("skill", "s1");
     const selector = new OpenAiDelegateSelector({ client });
-    const result = await selector.select("do a thing", [skill("s1"), skill("s2")], [agent("a1")]);
+    const result = await selector.select("do a thing", [skill("s1"), skill("s2")], [agent("a1")], [tool("t1")]);
     expect(result).toEqual({ type: "skill", skill: skill("s1").skill });
   });
 
   it("returns the matching agent when the model picks an agent", async () => {
     const client = fakeClient("agent", "a1");
     const selector = new OpenAiDelegateSelector({ client });
-    const result = await selector.select("do a thing", [skill("s1")], [agent("a1"), agent("a2")]);
+    const result = await selector.select("do a thing", [skill("s1")], [agent("a1"), agent("a2")], []);
     expect(result).toEqual({ type: "agent", agent: agent("a1").agent });
+  });
+
+  it("returns the matching tool when the model picks a bare tool", async () => {
+    const client = fakeClient("tool", "t1");
+    const selector = new OpenAiDelegateSelector({ client });
+    const result = await selector.select("do a thing", [], [agent("a1")], [tool("t1"), tool("t2")]);
+    expect(result).toEqual({ type: "tool", tool: tool("t1").tool });
   });
 
   it("returns undefined when the model selects null", async () => {
     const client = fakeClient(null, null);
     const selector = new OpenAiDelegateSelector({ client });
-    const result = await selector.select("do a thing", [skill("s1")], [agent("a1")]);
+    const result = await selector.select("do a thing", [skill("s1")], [agent("a1")], [tool("t1")]);
     expect(result).toBeUndefined();
   });
 
   it("returns undefined when the model selects an id outside the matching type's candidate list", async () => {
     const client = fakeClient("skill", "not-a-candidate");
     const selector = new OpenAiDelegateSelector({ client });
-    const result = await selector.select("do a thing", [skill("s1")], [agent("a1")]);
+    const result = await selector.select("do a thing", [skill("s1")], [agent("a1")], [tool("t1")]);
     expect(result).toBeUndefined();
   });
 
-  it("still calls the model when only agents (no skills) are candidates", async () => {
+  it("returns undefined when the model selects a tool id outside the tool candidate list", async () => {
+    const client = fakeClient("tool", "not-a-candidate");
+    const selector = new OpenAiDelegateSelector({ client });
+    const result = await selector.select("do a thing", [], [], [tool("t1")]);
+    expect(result).toBeUndefined();
+  });
+
+  it("still calls the model when only agents (no skills or tools) are candidates", async () => {
     const client = fakeClient("agent", "a1");
     const selector = new OpenAiDelegateSelector({ client });
-    const result = await selector.select("do a thing", [], [agent("a1")]);
+    const result = await selector.select("do a thing", [], [agent("a1")], []);
     expect(result).toEqual({ type: "agent", agent: agent("a1").agent });
+  });
+
+  it("still calls the model when only tools (no skills or agents) are candidates", async () => {
+    const client = fakeClient("tool", "t1");
+    const selector = new OpenAiDelegateSelector({ client });
+    const result = await selector.select("do a thing", [], [], [tool("t1")]);
+    expect(result).toEqual({ type: "tool", tool: tool("t1").tool });
   });
 });

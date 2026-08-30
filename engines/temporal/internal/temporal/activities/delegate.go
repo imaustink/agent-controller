@@ -15,11 +15,13 @@ const (
 	PlanAgentActionActivityName = "PlanAgentAction"
 )
 
-// --- delegate selection (skill vs agent, ADR 0021's DelegateSelector) ---
+// --- delegate selection (skill vs agent vs tool, ADR 0021's DelegateSelector,
+// extended per ADR 0037) ---
 
 const (
 	DelegateSkill = "skill"
 	DelegateAgent = "agent"
+	DelegateTool  = "tool"
 	DelegateNone  = ""
 )
 
@@ -28,7 +30,7 @@ var selectDelegateSchema = llm.ResponseSchema{
 	Schema: json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"kind": {"type": "string", "enum": ["skill", "agent", "none"]},
+			"kind": {"type": "string", "enum": ["skill", "agent", "tool", "none"]},
 			"id": {"type": "string"}
 		},
 		"required": ["kind", "id"],
@@ -40,15 +42,22 @@ type SelectDelegateInput struct {
 	Request string                    `json:"request"`
 	Skills  []catalog.SkillDescriptor `json:"skills"`
 	Agents  []catalog.AgentDescriptor `json:"agents"`
+	// Tools are bare Tool candidates, already relevance-gated by CheckToolFit
+	// before reaching here (see the workflow's fitCandidates). They compete
+	// DIRECTLY in this one combined choice rather than only being tried once
+	// skills and agents both come up empty — a broad Agent that merely
+	// overlaps a request no longer pre-empts a Tool that is the better fit
+	// (ADR 0037).
+	Tools []catalog.ToolDescriptor `json:"tools,omitempty"`
 }
 
 type DelegateChoice struct {
-	Kind string `json:"kind"` // skill | agent | ""
+	Kind string `json:"kind"` // skill | agent | tool | ""
 	ID   string `json:"id"`
 }
 
-// SelectDelegate picks one skill OR one agent (or none) from the retrieved
-// candidates. Hallucinated ids fail to "none", like SelectSkill.
+// SelectDelegate picks one skill OR one agent OR one bare tool (or none) from
+// the retrieved candidates. Hallucinated ids fail to "none", like SelectSkill.
 func (a *AgentLoopActivities) SelectDelegate(ctx context.Context, in SelectDelegateInput) (DelegateChoice, error) {
 	var list strings.Builder
 	for _, s := range in.Skills {
@@ -60,10 +69,16 @@ func (a *AgentLoopActivities) SelectDelegate(ctx context.Context, in SelectDeleg
 			fmt.Fprintf(&list, "  when to delegate: %s\n", ag.OrchestratorPrompt)
 		}
 	}
+	for _, t := range in.Tools {
+		fmt.Fprintf(&list, "- kind: tool, id: %s\n  description: %s\n", t.ID, t.Description)
+	}
 
 	raw, err := a.LLM.CompleteJSON(ctx, []llm.Message{
-		{Role: "system", Content: "Select the single skill or agent whose purpose genuinely covers the user's request, or kind \"none\" if nothing does. A skill is a guided workflow the assistant runs itself; an agent is an autonomous delegate for open-ended, multi-step work. Superficial word overlap is not a match. " +
-			"Prefer a skill over an agent when both genuinely apply and the request is a single well-defined action a skill's tools can complete directly. " +
+		{Role: "system", Content: "Select the single skill, agent, or bare tool whose purpose genuinely covers the user's request, or kind \"none\" if nothing does. " +
+			"A skill is a guided workflow (with authored procedural guidance) the assistant runs itself; a bare tool is one well-defined action described by its own description alone; an agent is an autonomous delegate for open-ended, multi-step work. " +
+			"Superficial word overlap is not a match; the candidate's actual domain must cover the request. " +
+			"When more than one candidate genuinely fits, prefer in this order: a skill over a bare tool over an agent. " +
+			"Prefer a skill over an agent when both genuinely apply and the request is a single well-defined action a skill's tools can complete directly — the same holds for a bare tool standing in for that skill, without its authored guidance. " +
 			"Prefer an agent when the request needs open-ended, multi-step work, iterative judgment, or is likely to need clarifying questions along the way — that's what an agent's own loop is for — but only once its domain already matches."},
 		{Role: "user", Content: fmt.Sprintf("Request:\n%s\n\nCandidates:\n%s", in.Request, list.String())},
 	}, selectDelegateSchema)
@@ -88,6 +103,12 @@ func (a *AgentLoopActivities) SelectDelegate(ctx context.Context, in SelectDeleg
 		for _, ag := range in.Agents {
 			if ag.ID == out.ID {
 				return DelegateChoice{Kind: DelegateAgent, ID: out.ID}, nil
+			}
+		}
+	case DelegateTool:
+		for _, t := range in.Tools {
+			if t.ID == out.ID {
+				return DelegateChoice{Kind: DelegateTool, ID: out.ID}, nil
 			}
 		}
 	}

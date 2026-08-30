@@ -105,6 +105,8 @@ skills:
     enabled: true
   clusterDebug:
     enabled: true
+  ssh:
+    enabled: true
 
 integrationRoutes:
   githubIssueLabeledReview:

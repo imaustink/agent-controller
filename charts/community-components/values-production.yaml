@@ -295,6 +295,13 @@ skills:
   # Requires webSearch.enabled=true above.
   webSearch:
     enabled: true
+  # ssh: routes "is airvinyl okay"/"restart docker on printcam"-shaped
+  # requests deterministically to the ssh tool. Without this, such a request
+  # matched claude-code-swe-agent instead (the only Agent in the catalog,
+  # description broad enough to loosely overlap on "runs bash") and hung on
+  # that agent's identity-link gate rather than ever reaching the ssh tool.
+  ssh:
+    enabled: true
 
 integrationRoutes:
   # github-issue-labeled-triage (ADR 0024): applying integration-gateway's

@@ -506,6 +506,15 @@ skills:
   # to be non-empty.
   clusterDebug:
     enabled: false
+  # ssh: check-on/manage-a-homelab-box skill wrapping the ssh tool. Enable
+  # sshTool above for its derived audience (ADR 0011) to be non-empty. Exists
+  # so requests like "is airvinyl running okay" route deterministically here
+  # instead of loosely matching an unrelated Agent via the ad-hoc tool
+  # fallback (selectFallbackTool's own ambiguity-decline guidance, and a
+  # broad Agent's embedding overlap, otherwise both work against this kind of
+  # open-ended request).
+  ssh:
+    enabled: false
 
 # stub-agent: an END-TO-END TEST DOUBLE, not a component of the catalog.
 #

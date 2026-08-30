@@ -419,6 +419,18 @@ func findAgent(id string, agents []catalog.AgentDescriptor) *catalog.AgentDescri
 	return nil
 }
 
+// findToolDescriptor resolves a bare-tool id the delegate selector chose
+// against the fit-checked candidates offered to it (ADR 0037); a nil return
+// means the selector named an id that wasn't among them.
+func findToolDescriptor(id string, tools []catalog.ToolDescriptor) *catalog.ToolDescriptor {
+	for i := range tools {
+		if tools[i].ID == id {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
 func bestEffortSummary(history []activities.ActionRecord) string {
 	for i := len(history) - 1; i >= 0; i-- {
 		if history[i].Succeeded && history[i].Result != "" {
