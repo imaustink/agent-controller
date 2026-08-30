@@ -1270,6 +1270,58 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     await server.close();
   });
 
+  it("closes an open status step as soon as real content starts streaming", async () => {
+    // A mechanical tool-status step ("agent: running Bash") sets
+    // `openStatusLabel` with done:false. If the agent's remaining work is
+    // mostly agent-text (no further tool-status callbacks), that step must
+    // not stay open until the very end of the turn -- Open WebUI's
+    // StatusHistory would otherwise show a stale "running Bash" spinner for
+    // the rest of the turn even while real narration is already well past
+    // it. The agent-text/identity-link/remote-control-url branches must
+    // close it out themselves, same as finish()/finishWithToolCalls() do.
+    const graph: AgentGraphLike = {
+      invoke: vi.fn(),
+      stream: vi.fn().mockImplementation((input: { progressListener?: (stage: string, message: string | undefined) => void }) => {
+        input.progressListener?.("agent", "running Bash");
+        input.progressListener?.("agent-text", "Empty directory, so I need to clone the repo fresh.");
+        return toStream([{ planAction: { identity, result: "Opened PR #42." } }]);
+      }),
+    };
+    const server = new InvokeServer(graph, sessionStore());
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer tok-1",
+        "x-openwebui-chat-id": "chat-status-close",
+      },
+      body: JSON.stringify({ stream: true, messages: [{ role: "user", content: "fix the bug" }] }),
+    });
+
+    const chunks = (await readSse(res)) as {
+      event?: { type?: string; data?: { description?: string; done?: boolean } };
+      choices?: { delta: { content?: string } }[];
+    }[];
+    const statuses = chunks.filter((c) => c.event?.type === "status").map((c) => c.event!.data!);
+
+    // The "running Bash" step must be closed (done:true) BEFORE the
+    // agent-text content chunk that follows it -- not left open until
+    // finish() at the very end of the turn.
+    const runningBashIndex = chunks.findIndex((c) => c.event?.data?.description === "agent: running Bash" && c.event.data.done === false);
+    const closedIndex = chunks.findIndex((c) => c.event?.data?.description === "agent: running Bash" && c.event.data.done === true);
+    const contentIndex = chunks.findIndex((c) => c.choices?.[0]?.delta.content?.includes("Empty directory"));
+    expect(runningBashIndex).toBeGreaterThanOrEqual(0);
+    expect(closedIndex).toBeGreaterThan(runningBashIndex);
+    expect(closedIndex).toBeLessThan(contentIndex);
+    // Exactly one close for that step -- not left dangling for finish() to
+    // close again at the end too.
+    expect(statuses.filter((s) => s.description === "agent: running Bash" && s.done === true)).toHaveLength(1);
+
+    await server.close();
+  });
+
   it("accepts an optional session_id on POST /invoke for non-chat callers", async () => {
     const graph: AgentGraphLike = {
       invoke: vi.fn().mockResolvedValue({

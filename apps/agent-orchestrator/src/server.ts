@@ -1212,7 +1212,19 @@ export class InvokeServer {
         // live Remote Control surface the GitHub triage path already posts
         // (integration-gateway's relayAndReply), replacing the deprecated
         // session-page link for Claude-backed sessions.
+        // Any of these three content branches means the agent has moved past
+        // whatever mechanical step last set `openStatusLabel` (e.g. "running
+        // Bash") into producing real prose -- close that step out now rather
+        // than leaving it open until `finish()`. Otherwise a long bridged
+        // agent run that does most of its remaining work as agent-text (no
+        // further tool-status callbacks) leaves Open WebUI's StatusHistory
+        // spinner showing a stale, superseded step for the rest of the turn,
+        // even once real content is visibly well past it.
         if (stage === "remote-control-url" && message) {
+          if (openStatusLabel !== undefined) {
+            writeSseStatus(res, openStatusLabel, true);
+            openStatusLabel = undefined;
+          }
           // Trailing blank line so this link stands as its own paragraph;
           // withSeparator supplies the leading one only if actually needed.
           writeSseChunk(
@@ -1222,6 +1234,10 @@ export class InvokeServer {
           return;
         }
         if ((stage === "agent-text" || stage === "identity-link") && message) {
+          if (openStatusLabel !== undefined) {
+            writeSseStatus(res, openStatusLabel, true);
+            openStatusLabel = undefined;
+          }
           writeSseChunk(res, chatCompletionChunk(id, model, { content: withSeparator(message) }, null));
           return;
         }
