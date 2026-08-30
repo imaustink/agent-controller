@@ -172,7 +172,3 @@ Milestone plan lives in
 catalog/RAG activities → ToolRun execution with callback→signal bridge →
 full agent-loop parity → child-workflow sub-agents with HITL signals →
 checkpoint-resume pod agents.
-
-<!-- CI touch: forces the temporal-engine image rebuild after the recent
-     registry-secret/self-hosted-runner outage, whose backlog of merged
-     commits never got a successful image build. No functional change. -->
