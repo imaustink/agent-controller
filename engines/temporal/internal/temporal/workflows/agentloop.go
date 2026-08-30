@@ -63,7 +63,16 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		if err == nil {
 			meta.Path = "agent-continued"
 			meta.AgentID = state.ActiveAgentID
-			reply := handleAgentUp(ctx, state, state.ActiveAgentID, state.ActiveAgentWorkflowID, note)
+			gen := state.beginAgentListen(ctx)
+			reply, preempted := handleAgentUp(ctx, state, state.ActiveAgentID, state.ActiveAgentWorkflowID, gen, note)
+			if preempted {
+				// A still-later turn took over listening for this episode's
+				// reply before (or while) this one was waiting — that turn
+				// owns finishing this exchange; this one must not answer on
+				// its behalf or touch ActiveAgentWorkflowID (see
+				// AgentListenGeneration's doc comment).
+				reply = "A newer message is already being processed for this conversation."
+			}
 			return reply, meta, nil, nil
 		}
 		// Child gone (terminated or already closed) — clear and fall through.

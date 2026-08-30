@@ -102,6 +102,13 @@ temporal-engine:
       # turn today.
       defaultSubject: client-integration-gateway
       defaultRoles: reader,writer
+  worker:
+    # Must match agent-orchestrator.config.agentIdleTimeoutSeconds below: a
+    # bridged agent's Job speaks the same NATS protocol regardless of which
+    # engine drives the episode, and resilience.e2e.ts asserts on the exact
+    # window in the posted comment ("went silent for <IDLE_WINDOW_MS>ms")
+    # without caring which engine served the turn.
+    idleTimeoutSeconds: 30
   identityLink:
     # Without this the worker logs "IDENTITY_LINK_GATEWAY_URL not set; using
     # the in-memory identity-link fake (dev only)" -- a completely separate,

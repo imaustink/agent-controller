@@ -45,6 +45,19 @@ func main() {
 	}
 	defer c.Close()
 
+	// Same env var name and meaning as agent-orchestrator's own
+	// AGENT_IDLE_TIMEOUT_SECONDS (config.ts): bounds silence from a bridged
+	// pod agent, not turn duration. Set once here, before the worker starts
+	// polling for tasks — see workflows.BridgedIdleTimeout's own doc comment
+	// for why that ordering is what keeps this deterministic.
+	if raw := os.Getenv("AGENT_IDLE_TIMEOUT_SECONDS"); raw != "" {
+		seconds, err := strconv.Atoi(raw)
+		if err != nil || seconds <= 0 {
+			log.Fatalf("AGENT_IDLE_TIMEOUT_SECONDS must be a positive integer, got %q", raw)
+		}
+		workflows.BridgedIdleTimeout = time.Duration(seconds) * time.Second
+	}
+
 	w := worker.New(c, cfg.TaskQueue, worker.Options{})
 	w.RegisterWorkflowWithOptions(workflows.ConversationWorkflow, workflow.RegisterOptions{
 		Name: workflows.ConversationWorkflowName,

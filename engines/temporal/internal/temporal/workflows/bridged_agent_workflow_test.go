@@ -121,6 +121,57 @@ func TestBridgedAgentQuestionSpansTurns(t *testing.T) {
 	})
 }
 
+// A second turn can arrive while the FIRST turn's own handleAgentUp call is
+// still parked waiting — e.g. turn 1's own client vanished mid-poll (a
+// rollout), but the durable workflow keeps running and stays blocked on the
+// episode's up-signal channel regardless. Turn 2 sees the episode still
+// active and re-attaches, calling handleAgentUp a SECOND time on the SAME
+// channel. Without ConversationState.AgentListenGeneration's mutual
+// exclusion, both calls compete for the episode's one and only final reply,
+// and there is no guarantee the later call (the only one anyone is still
+// listening to) is the one that wins — the earlier, effectively abandoned
+// call could just as easily grab it, permanently starving the newer one.
+func TestConcurrentReattachDoesNotLoseTheReplyToAStaleListener(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := bridgedAgent()
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+
+	var first, second workflows.TurnResult
+	le.sendTurn(t, "turn-1", "start the task", &first, time.Millisecond)
+	le.deliverUp(agentrun.UpMessage{Seq: 1, Type: agentrun.UpReady}, time.Second)
+	// Nothing else is ever delivered for turn 1's OWN handleAgentUp call —
+	// it stays parked, exactly as if its caller (an old orchestrator pod)
+	// were gone and nobody were reading its result anymore.
+
+	// Turn 2 arrives while turn 1 is still waiting: same episode, still
+	// active, so it re-attaches rather than starting a second run.
+	le.sendTurn(t, "turn-2", "any update?", &second, 2*time.Second)
+
+	// The episode's one and only final reply, delivered once BOTH calls are
+	// parked listening on it.
+	le.deliverUp(agentrun.UpMessage{
+		Seq: 2, Type: agentrun.UpReply, Final: true, Message: "Done: opened PR #7.",
+	}, 3*time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	// Turn 2 is the only turn anyone could still be listening to the result
+	// of — it must be the one that actually gets the reply.
+	require.Equal(t, "Done: opened PR #7.", second.Reply)
+	require.Equal(t, "agent-continued", second.Meta.Path)
+
+	// Turn 1 was superseded before the reply ever arrived; it must resolve
+	// to something else entirely, never the answer meant for turn 2.
+	require.Equal(t, "A newer message is already being processed for this conversation.", first.Reply)
+
+	// One AgentRun for the whole episode — turn 2 re-attached rather than
+	// starting a second one.
+	require.Len(t, le.agentRunLaunches, 1)
+}
+
 // A pod agent calling a Tool from its own toolRefs (ADR 0028) over the
 // tool_call/tool_result pair. The dispatch is the ordinary one.
 func TestBridgedAgentToolCall(t *testing.T) {
@@ -292,6 +343,36 @@ func TestBridgedAgentNeverReadyFailsFast(t *testing.T) {
 		}
 	}
 	require.True(t, cancelled)
+}
+
+// TS's nats-agent-channel.ts bounds silence from a bridged agent by
+// AGENT_IDLE_TIMEOUT_SECONDS (config.ts, overridable per deployment) and
+// reports "went silent for <N>ms" verbatim in that wording. Go hardcoded 30
+// minutes with no way to override it and reported a %s-formatted Duration
+// ("30m0s") instead of milliseconds — caught by e2e/specs/resilience.e2e.ts
+// asserting on that exact wording against a deliberately short configured
+// window.
+func TestBridgedAgentIdleTimeoutIsConfigurableAndReportsMilliseconds(t *testing.T) {
+	original := workflows.BridgedIdleTimeout
+	workflows.BridgedIdleTimeout = 30 * time.Second
+	t.Cleanup(func() { workflows.BridgedIdleTimeout = original })
+
+	le := newLoopEnv(t)
+	agent := bridgedAgent()
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "do some work", &result, time.Millisecond)
+	le.deliverUp(agentrun.UpMessage{Seq: 1, Type: agentrun.UpReady}, time.Second)
+	// Ready, then nothing — silence past the configured window, never a
+	// terminal reply.
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Contains(t, result.Reply, "went silent for 30000ms")
 }
 
 // registerAgentRunActivities fakes the bridge's activity surface.

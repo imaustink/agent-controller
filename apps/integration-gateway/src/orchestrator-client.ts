@@ -16,6 +16,13 @@
  */
 
 import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "./sender-assertion.js";
+
+// Bounds retrying invoke()'s initial POST past a transient connection
+// failure (a rolling orchestrator restart) -- a few seconds total, not a
+// general-purpose backoff policy.
+const ACCEPT_RETRY_ATTEMPTS = 3;
+const ACCEPT_RETRY_DELAY_MS = 1000;
+
 export interface OrchestratorInvokeResult {
   status: "succeeded" | "failed" | "timed_out";
   result?: string;
@@ -198,28 +205,59 @@ export class OrchestratorClient {
      */
     onRemoteControlUrl?: (url: string) => void | Promise<void>,
   ): Promise<OrchestratorInvokeResult> {
-    const acceptRes = await this.fetchImpl(`${this.baseUrl()}/invoke`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${await this.resolveToken()}`,
-        // Signed separately from the bearer token on purpose: the token
-        // authenticates THIS GATEWAY, and says nothing about which human
-        // triggered the event. The login selects the caller's principal, and
-        // therefore which stored credentials the run receives, so it has to
-        // be something the orchestrator can verify rather than a body field
-        // any holder of the token could set.
-        ...(this.options.senderAssertionSecret && typeof event?.senderLogin === "string"
-          ? { [SENDER_ASSERTION_HEADER]: mintSenderAssertion(this.options.senderAssertionSecret, event.senderLogin) }
-          : {}),
-      },
-      body: JSON.stringify({
-        request,
-        session_id: sessionId,
-        ...(identityLinkFlow !== undefined ? { identity_link_flow: identityLinkFlow } : {}),
-        ...(event !== undefined ? { event } : {}),
-      }),
-    });
+    const postAccept = async (): Promise<Response> =>
+      this.fetchImpl(`${this.baseUrl()}/invoke`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${await this.resolveToken()}`,
+          // Signed separately from the bearer token on purpose: the token
+          // authenticates THIS GATEWAY, and says nothing about which human
+          // triggered the event. The login selects the caller's principal, and
+          // therefore which stored credentials the run receives, so it has to
+          // be something the orchestrator can verify rather than a body field
+          // any holder of the token could set.
+          ...(this.options.senderAssertionSecret && typeof event?.senderLogin === "string"
+            ? { [SENDER_ASSERTION_HEADER]: mintSenderAssertion(this.options.senderAssertionSecret, event.senderLogin) }
+            : {}),
+        },
+        body: JSON.stringify({
+          request,
+          session_id: sessionId,
+          ...(identityLinkFlow !== undefined ? { identity_link_flow: identityLinkFlow } : {}),
+          ...(event !== undefined ? { event } : {}),
+        }),
+      });
+
+    // A REJECTED fetch (connection refused/reset) is a different failure mode
+    // than a non-ok response below: it means the request never reached the
+    // orchestrator at all, which is exactly what a rolling restart produces
+    // for the seconds between the old pod terminating and the new one
+    // becoming Ready. Every other failure path here degrades to
+    // {status:"failed"} rather than throwing (see checkLive); this one used
+    // to throw uncaught, and its only caller (integration-gateway's runTurn)
+    // has no catch around it either -- so a turn landing in that window was
+    // silently dropped entirely: no comment, no retry, nothing. Retried a
+    // few times over a few seconds, well inside a caller's own poll budget,
+    // since that window is normally that short-lived.
+    let acceptRes: Response | undefined;
+    let networkError: unknown;
+    for (let attempt = 1; attempt <= ACCEPT_RETRY_ATTEMPTS; attempt++) {
+      try {
+        acceptRes = await postAccept();
+        networkError = undefined;
+        break;
+      } catch (err) {
+        networkError = err;
+        if (attempt < ACCEPT_RETRY_ATTEMPTS) await this.sleep(ACCEPT_RETRY_DELAY_MS);
+      }
+    }
+    if (networkError !== undefined || !acceptRes) {
+      return {
+        status: "failed",
+        error: `/invoke unreachable: ${networkError instanceof Error ? networkError.message : String(networkError)}`,
+      };
+    }
     if (!acceptRes.ok) {
       return { status: "failed", error: `/invoke rejected the request: ${acceptRes.status} ${await acceptRes.text()}` };
     }

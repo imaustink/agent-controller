@@ -86,13 +86,30 @@ func delegateToAgent(ctx workflow.Context, actx workflow.Context, state *Convers
 	state.ActiveAgentID = agent.ID
 	state.ActiveAgentWorkflowID = childID
 
-	return handleAgentUp(ctx, state, agent.ID, childID, note), *meta, nil
+	gen := state.beginAgentListen(ctx)
+	reply, preempted := handleAgentUp(ctx, state, agent.ID, childID, gen, note)
+	if preempted {
+		// Vanishingly unlikely for the call that JUST started this episode
+		// (nothing else could have raced it in), but handled the same way
+		// as agentloop.go's re-attach call for the same reason: whichever
+		// call actually owns the current generation is responsible for
+		// finishing this exchange, never two at once.
+		reply = "A newer message is already being processed for this conversation."
+	}
+	return reply, *meta, nil
 }
 
 // handleAgentUp pumps the active child's up-signals until something ends
 // the turn: progress lines feed the narration; a question ends the turn
 // with the episode still active; final/failed/timeout close the episode.
-func handleAgentUp(ctx workflow.Context, state *ConversationState, agentID, childID string, note func(string)) string {
+//
+// myGeneration is this call's stake in ConversationState.AgentListenGeneration
+// (from beginAgentListen) — see its doc comment. preempted=true means a
+// LATER call took over this episode's up-signal channel before (or while)
+// this one was still waiting; the caller must not act on the empty message
+// (no clearActive, no reply content) since the newer call owns finishing
+// this exchange.
+func handleAgentUp(ctx workflow.Context, state *ConversationState, agentID, childID string, myGeneration int, note func(string)) (message string, preempted bool) {
 	upCh := workflow.GetSignalChannel(ctx, AgentUpSignalPrefix+childID)
 	timerCtx, cancelTimer := workflow.WithCancel(ctx)
 	defer cancelTimer()
@@ -103,10 +120,19 @@ func handleAgentUp(ctx workflow.Context, state *ConversationState, agentID, chil
 	}
 
 	for {
+		// Checked every pass, not just on a preempt-channel wake: a
+		// generation bump that raced ahead of this loop even starting (or
+		// ahead of the preempt channel delivering) must still be caught here
+		// before this call touches upCh again.
+		if state.AgentListenGeneration != myGeneration {
+			return "", true
+		}
+
 		var (
-			u        AgentUp
-			received bool
-			timedOut bool
+			u          AgentUp
+			received   bool
+			timedOut   bool
+			superseded bool
 		)
 		selector := workflow.NewSelector(ctx)
 		selector.AddReceive(upCh, func(c workflow.ReceiveChannel, _ bool) {
@@ -114,12 +140,24 @@ func handleAgentUp(ctx workflow.Context, state *ConversationState, agentID, chil
 			received = true
 		})
 		selector.AddFuture(timer, func(workflow.Future) { timedOut = true })
+		selector.AddReceive(state.agentListenPreempt, func(c workflow.ReceiveChannel, _ bool) {
+			var gen int
+			c.Receive(ctx, &gen)
+			superseded = true
+		})
 		selector.Select(ctx)
 
+		if superseded {
+			// Might be a notification meant for an even earlier call than
+			// this one; the generation check at the top of the loop is the
+			// actual authority, so just loop back to it rather than trusting
+			// this wake-up alone.
+			continue
+		}
 		if timedOut {
 			clearActive()
 			_ = workflow.RequestCancelExternalWorkflow(ctx, childID, "").Get(ctx, nil)
-			return fmt.Sprintf("Agent %s didn't respond within %s; I've cancelled it.", agentID, agentEpisodeTimeout)
+			return fmt.Sprintf("Agent %s didn't respond within %s; I've cancelled it.", agentID, agentEpisodeTimeout), false
 		}
 		if !received {
 			continue
@@ -129,7 +167,7 @@ func handleAgentUp(ctx workflow.Context, state *ConversationState, agentID, chil
 			note(u.Message)
 		case u.Failed:
 			clearActive()
-			return fmt.Sprintf("Agent %s failed (%s): %s", agentID, u.Code, u.Message)
+			return fmt.Sprintf("Agent %s failed (%s): %s", agentID, u.Code, u.Message), false
 		case u.Final:
 			clearActive()
 			if u.Result != "" {
@@ -138,10 +176,10 @@ func handleAgentUp(ctx workflow.Context, state *ConversationState, agentID, chil
 				}
 				state.AgentContinuations[agentID] = u.Result
 			}
-			return u.Message
+			return u.Message, false
 		default: // a question — the episode stays active across turns
 			note("Agent " + agentID + " needs input")
-			return u.Message
+			return u.Message, false
 		}
 	}
 }
