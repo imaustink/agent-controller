@@ -212,7 +212,7 @@ type ConversationState struct {
 	// notice on its own; unexported and never marshaled (nil after every
 	// continue-as-new/replay-from-input), so it's lazily (re)created the
 	// first time it's needed.
-	AgentListenGeneration int             `json:"agentListenGeneration,omitempty"`
+	AgentListenGeneration int              `json:"agentListenGeneration,omitempty"`
 	agentListenPreempt    workflow.Channel `json:"-"`
 
 	// RemoteControlUrl is the active episode's Remote Control session URL
