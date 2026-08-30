@@ -69,6 +69,15 @@ spec:
             - name: AGENT_NATS_URL
               value: {{ . | quote }}
             {{- end }}
+            {{- if .Values.worker.idleTimeoutSeconds }}
+            # Same env var name and meaning as agent-orchestrator's own
+            # AGENT_IDLE_TIMEOUT_SECONDS: bounds SILENCE from a bridged agent,
+            # not wall-clock turn duration. Both engines must honor the same
+            # window since a bridged agent's Job speaks the same NATS protocol
+            # regardless of which engine is driving the episode.
+            - name: AGENT_IDLE_TIMEOUT_SECONDS
+              value: {{ .Values.worker.idleTimeoutSeconds | quote }}
+            {{- end }}
             {{- with .Values.identityLink.gatewayUrl }}
             - name: IDENTITY_LINK_GATEWAY_URL
               value: {{ . | quote }}

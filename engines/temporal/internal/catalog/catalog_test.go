@@ -47,6 +47,47 @@ func TestDecodeToolIdentityProviders(t *testing.T) {
 	require.Equal(t, []string{"github"}, tool.IdentityProviders)
 }
 
+// A LocalTool CR (ADR 0014) decodes into the SAME ToolDescriptor shape as a
+// container Tool, marked by a populated LocalExec spec — so a skill's
+// toolRefs can reference either kind transparently, and the planner/dispatch
+// need only branch on LocalExec being set.
+func TestDecodeLocalTool(t *testing.T) {
+	tool, err := catalog.DecodeLocalTool(&unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "core.controller-agent.dev/v1alpha1",
+		"kind":       "LocalTool",
+		"metadata":   map[string]any{"name": "http-get-node"},
+		"spec": map[string]any{
+			"description":  "fetch a URL",
+			"input":        "a URL",
+			"output":       "the response body",
+			"allowedRoles": []any{"reader"},
+			"tier":         "standard",
+			"runtime":      "node",
+			"package":      "p",
+			"version":      "1.0.0",
+			"network":      false,
+			"env":          []any{map[string]any{"name": "FOO", "value": "bar"}},
+			"secretEnv": []any{map[string]any{
+				"name":      "TOKEN",
+				"secretRef": map[string]any{"name": "s", "key": "k"},
+			}},
+			"timeoutSeconds": int64(30),
+		},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, "http-get-node", tool.ID)
+	require.Equal(t, "fetch a URL", tool.Description)
+	require.Equal(t, []string{"reader"}, tool.AllowedRoles)
+	require.NotNil(t, tool.LocalExec)
+	require.Equal(t, "node", tool.LocalExec.Runtime)
+	require.Equal(t, "p", tool.LocalExec.Package)
+	require.Equal(t, "1.0.0", tool.LocalExec.Version)
+	require.Equal(t, map[string]string{"FOO": "bar"}, tool.LocalExec.Env)
+	require.Equal(t, []catalog.SecretEnvRef{{Name: "TOKEN", SecretName: "s", SecretKey: "k"}}, tool.LocalExec.SecretEnv)
+	require.EqualValues(t, 30, tool.LocalExec.TimeoutSeconds)
+	require.Empty(t, tool.AgentRef, "a LocalTool is never agent-backed")
+}
+
 // Agent.spec.toolRefs scopes what the sub-agent's OWN loop may call (upstream
 // ADR 0028), which is a different question from skillRefs' prompt material.
 func TestDecodeAgentToolRefs(t *testing.T) {

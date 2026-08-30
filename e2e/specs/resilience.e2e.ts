@@ -13,6 +13,10 @@ const SENDER = "e2e-user";
 const OWNER = "e2e-org";
 const REPO = "e2e-repo";
 const STUB_REPLY_MARKER = "stub-agent-reply";
+// server.ts's upfront "announce" comment (session pages, ADR ...), posted the
+// moment a run is seen genuinely running -- BEFORE any terminal outcome
+// exists. `commentOn` below must not mistake it for the terminal comment.
+const STARTING_WORK_ACK = "Starting work on this now.";
 
 /**
  * The idle window this environment runs with — `agentIdleTimeoutSeconds` in
@@ -190,10 +194,20 @@ describe("resilience: infrastructure moving under an in-flight agent turn", () =
 
   const commentOn = (issueNumber: number, timeoutMs = 180_000) =>
     waitFor(
-      `a comment on issue #${issueNumber}`,
+      `a terminal comment on issue #${issueNumber}`,
       async () => {
+        // Excludes the upfront "Starting work" ack (server.ts's `announce`,
+        // posted the moment the run is seen running, independent of and
+        // usually well before any outcome exists) -- without this, a probe
+        // landing between that ack and the real terminal comment returns the
+        // ack and stops waiting, which is wrong for any spec whose run is
+        // still legitimately in flight (e.g. deliberately never reaching
+        // Succeeded/Failed, like the idle-timeout negative control below).
         const posted = (await fakeGithubRequests()).filter(
-          (r) => r.method === "POST" && r.path === `/repos/${OWNER}/${REPO}/issues/${issueNumber}/comments`,
+          (r) =>
+            r.method === "POST" &&
+            r.path === `/repos/${OWNER}/${REPO}/issues/${issueNumber}/comments` &&
+            !(typeof r.body === "string" && r.body.includes(STARTING_WORK_ACK)),
         );
         return posted.length > 0 ? posted[posted.length - 1] : undefined;
       },

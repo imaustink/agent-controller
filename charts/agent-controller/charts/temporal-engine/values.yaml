@@ -86,6 +86,15 @@ worker:
     repository: temporal-engine-worker
     tag: latest
     pullPolicy: IfNotPresent
+  # Bounds SILENCE from a bridged pod agent (docs/pod-agents.md), not turn
+  # duration -- same meaning as agent-orchestrator's own
+  # AGENT_IDLE_TIMEOUT_SECONDS/agentIdleTimeoutSeconds, which this should
+  # normally be kept equal to: a bridged agent's Job speaks the same NATS
+  # protocol regardless of which engine is driving the episode, and the two
+  # engines silently disagreeing here reads as a hung turn under one engine
+  # and a correctly-cut-off one under the other. Empty uses the worker's own
+  # built-in default (10 minutes).
+  idleTimeoutSeconds: ""
   resources:
     requests:
       cpu: 50m

@@ -131,10 +131,14 @@ func authorizeAgent(
 		return authz.Verdict{Kind: authz.KindAuthorized}, nil
 	}
 
-	// A caller with no live channel has no browser to redirect, so offer the
-	// device flow: a code they can enter wherever they are.
-	flow := "device"
-	if in.Live {
+	// Flow and Live are independent questions: Flow is which OAuth flow to
+	// start, Live is whether this turn can wait for the human to finish.
+	// Upstream always defaults to "authcode" (a browser redirect),
+	// overridable per-request for a headless caller with no browser (e.g.
+	// integration-gateway's own GitHub-issue relay) to request "device"
+	// instead.
+	flow := in.IdentityLinkFlow
+	if flow == "" {
 		flow = "authcode"
 	}
 

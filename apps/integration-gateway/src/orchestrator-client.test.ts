@@ -132,6 +132,55 @@ describe("OrchestratorClient.invoke", () => {
     expect(result.error).toMatch(/401/);
   });
 
+  // resilience.e2e.ts's "recovers the reply on a follow-up turn after a
+  // rollout" spec: a re-trigger posted right after `rollOrchestrator()` can
+  // land in the brief window where the Service has no ready backend yet (old
+  // pod terminating, new pod not Ready), which surfaces as `fetch` REJECTING
+  // (ECONNREFUSED-style), not as a non-ok response. Every other failure path
+  // in this method degrades to `{status:"failed"}`; a raw network exception
+  // here instead propagated uncaught through runTurn's bare `try {} finally
+  // {}` (no catch), silently dropping the whole turn -- no comment, no retry.
+  // A transient connection failure this early should be retried, not treated
+  // as final: the window a restarting Service is unreachable is seconds, well
+  // inside a caller's own poll budget.
+  it("retries the initial POST when it hits a network-level error, then succeeds once the pod is back", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("connect ECONNREFUSED"))
+      .mockRejectedValueOnce(new Error("connect ECONNREFUSED"))
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "run-1" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "succeeded", result: "recovered reply" }) });
+
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+
+    const result = await client.invoke("do the thing", "session-1");
+    expect(result).toEqual({ status: "succeeded", result: "recovered reply" });
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
+  it("returns failed once the initial POST's network error outlasts the retry budget", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED"));
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+
+    const result = await client.invoke("do the thing", "session-1");
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/ECONNREFUSED/);
+  });
+
   it("fires onRunning once on the first non-identity-pending `pending` poll", async () => {
     const fetchImpl = vi
       .fn()

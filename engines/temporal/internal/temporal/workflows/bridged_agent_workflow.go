@@ -38,12 +38,27 @@ const (
 	// separately means those surface in a minute rather than an hour.
 	bridgedReadyTimeout = 5 * time.Minute
 
-	// bridgedIdleTimeout bounds silence from a READY agent. Upstream bounds a
-	// remote-control turn by silence rather than a stopwatch for the same
-	// reason: a working agent heartbeats, so quiet is diagnostic where elapsed
-	// time is not.
-	bridgedIdleTimeout = 30 * time.Minute
+	// defaultBridgedIdleTimeout is BridgedIdleTimeout's value until overridden.
+	// Matches agent-orchestrator's own AGENT_IDLE_TIMEOUT_SECONDS default
+	// (config.ts) — the two engines must agree, since a bridged agent's Job
+	// speaks the identical NATS protocol regardless of which is driving the
+	// episode.
+	defaultBridgedIdleTimeout = 10 * time.Minute
 )
+
+// BridgedIdleTimeout bounds silence from a READY bridged agent. Upstream
+// bounds a remote-control turn by silence rather than a stopwatch for the
+// same reason: a working agent heartbeats, so quiet is diagnostic where
+// elapsed time is not.
+//
+// A package-level var, not a const: cmd/worker/main.go overrides it from
+// AGENT_IDLE_TIMEOUT_SECONDS once at process startup, before the worker
+// starts polling for tasks. That single assignment happens-before any
+// workflow task this process ever executes, so it never varies within an
+// open workflow's history and introduces no non-determinism risk — the
+// same discipline every other configured (as opposed to hardcoded) engine
+// setting in cmd/worker/main.go already follows.
+var BridgedIdleTimeout = defaultBridgedIdleTimeout
 
 // BridgedAgentWorkflow runs one episode against a pod agent.
 func BridgedAgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
@@ -123,7 +138,7 @@ func BridgedAgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 	handledSeq := map[int]bool{}
 
 	for {
-		timeout := bridgedIdleTimeout
+		timeout := BridgedIdleTimeout
 		if !ready {
 			timeout = bridgedReadyTimeout
 		}
@@ -162,8 +177,13 @@ func BridgedAgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 				return fail("not_ready", fmt.Sprintf("agent %s never became ready within %s (AgentRun: %v)",
 					in.Agent.ID, bridgedReadyTimeout, status))
 			}
-			return fail("timeout", fmt.Sprintf("agent %s went silent for %s (AgentRun: %v)",
-				in.Agent.ID, bridgedIdleTimeout, status))
+			// Milliseconds, matching upstream's nats-agent-channel.ts wording
+			// exactly ("went silent for <N>ms") — the comment a human reads is
+			// the only place this is observable (the gateway renders whatever
+			// the workflow returns), so the wording is load-bearing, not
+			// cosmetic.
+			return fail("timeout", fmt.Sprintf("agent %s went silent for %dms (AgentRun: %v)",
+				in.Agent.ID, BridgedIdleTimeout.Milliseconds(), status))
 		}
 		if !received {
 			continue

@@ -264,6 +264,9 @@ func Parse(raw Request) ([]Descriptor, Choice, error) {
 		if len(fn.Description) > MaxDescriptionLength {
 			return nil, Choice{}, fmt.Errorf("tools[%d].function.description exceeds %d characters", i, MaxDescriptionLength)
 		}
+		if !isJSONSchemaObjectOrAbsent(fn.Parameters) {
+			return nil, Choice{}, fmt.Errorf("tools[%d].function.parameters must be a JSON Schema object", i)
+		}
 		tool, err := New(fn.Name, fn.Description, fn.Parameters)
 		if err != nil {
 			return nil, Choice{}, fmt.Errorf("tools[%d].function.parameters must be a JSON Schema object", i)
@@ -281,6 +284,26 @@ func Parse(raw Request) ([]Descriptor, Choice, error) {
 		return nil, Choice{}, fmt.Errorf("tool_choice names %q, which is not present in tools", choice.Name)
 	}
 	return tools, choice, nil
+}
+
+// isJSONSchemaObjectOrAbsent mirrors TS's `typeof fn.parameters !== "object"`
+// check (parse.ts:141-143): absent/null/object/array all pass (JS's typeof
+// gives "object" for both a plain object and an array), only a JSON
+// string/number/boolean is rejected.
+func isJSONSchemaObjectOrAbsent(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return true // unparseable is caught later when New() re-parses it
+	}
+	switch value.(type) {
+	case nil, map[string]any, []any:
+		return true
+	default:
+		return false
+	}
 }
 
 func parseChoice(raw json.RawMessage) (Choice, error) {

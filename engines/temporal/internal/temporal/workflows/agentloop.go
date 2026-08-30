@@ -2,12 +2,15 @@ package workflows
 
 import (
 	"fmt"
+	"time"
 
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/controller-agent/temporal-engine/internal/callertools"
 	"github.com/controller-agent/temporal-engine/internal/catalog"
 	"github.com/controller-agent/temporal-engine/internal/continuation"
+	"github.com/controller-agent/temporal-engine/internal/llm"
 	"github.com/controller-agent/temporal-engine/internal/messaging"
 	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 )
@@ -60,7 +63,16 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		if err == nil {
 			meta.Path = "agent-continued"
 			meta.AgentID = state.ActiveAgentID
-			reply := handleAgentUp(ctx, state, state.ActiveAgentID, state.ActiveAgentWorkflowID, note)
+			gen := state.beginAgentListen(ctx)
+			reply, preempted := handleAgentUp(ctx, state, state.ActiveAgentID, state.ActiveAgentWorkflowID, gen, note)
+			if preempted {
+				// A still-later turn took over listening for this episode's
+				// reply before (or while) this one was waiting — that turn
+				// owns finishing this exchange; this one must not answer on
+				// its behalf or touch ActiveAgentWorkflowID (see
+				// AgentListenGeneration's doc comment).
+				reply = "A newer message is already being processed for this conversation."
+			}
 			return reply, meta, nil, nil
 		}
 		// Child gone (terminated or already closed) — clear and fall through.
@@ -165,7 +177,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			needsCapability = true
 		}
 		if !needsCapability || in.Caller.Subject == "" {
-			reply, err := bareAnswer(ctx, actx, state)
+			reply, err := bareAnswer(ctx, actx, in.Message)
 			return reply, meta, nil, err
 		}
 
@@ -186,8 +198,8 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			logger.Warn("agent retrieval failed", "error", err)
 		}
 		if len(skills) == 0 && len(agents) == 0 {
-			reply, m, err := noMatchFallback(ctx, actx, state, in, &meta, note)
-			return reply, m, nil, err
+			reply, m, pending, err := noMatchFallback(ctx, actx, state, in, &meta, note)
+			return reply, m, pending, err
 		}
 
 		// 4. Selection: skill vs agent when both kinds are on the table,
@@ -221,8 +233,8 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			}
 		}
 		if skillID == "" {
-			reply, m, err := noMatchFallback(ctx, actx, state, in, &meta, note)
-			return reply, m, nil, err
+			reply, m, pending, err := noMatchFallback(ctx, actx, state, in, &meta, note)
+			return reply, m, pending, err
 		}
 
 		// 5. Resolve the skill's declared tools directly (no re-ranking),
@@ -231,8 +243,8 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			Caller:  in.Caller,
 			SkillID: skillID,
 		}).Get(ctx, &skillTools); err != nil || skillTools == nil {
-			reply, m, err := noMatchFallback(ctx, actx, state, in, &meta, note)
-			return reply, m, nil, err
+			reply, m, pending, err := noMatchFallback(ctx, actx, state, in, &meta, note)
+			return reply, m, pending, err
 		}
 		meta.Path = "skill"
 		note("Using skill " + skillTools.Skill.ID)
@@ -251,6 +263,16 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		callerTools = nil
 	}
 
+	// A skill's own agentRefs (ADR 0021) reach the planner as candidates too,
+	// adapted into the same ToolDescriptor shape an agent-backed Tool
+	// (Tool.spec.agentRef) already produces (upstream's loadSkillTools,
+	// graph.ts:1703-1758) — the planner and the dispatch below don't need to
+	// know whether AgentRef came from a Tool wrapper or a Skill's own refs.
+	planCandidates := skillTools.Tools
+	for _, agent := range skillTools.Agents {
+		planCandidates = append(planCandidates, adaptAgentAsTool(agent))
+	}
+
 	// 6. plan ⇄ runTool loop.
 	//
 	// History is SEEDED from calls the client already executed (ADR 0035 §1).
@@ -264,7 +286,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		if err := workflow.ExecuteActivity(actx, activities.PlanActionActivityName, activities.PlanActionInput{
 			Request:            in.Message,
 			SkillMarkdown:      skillTools.Skill.Markdown,
-			Tools:              skillTools.Tools,
+			Tools:              planCandidates,
 			History:            history,
 			CallerTools:        callerTools,
 			CallerToolRequired: in.CallerToolRequired,
@@ -303,7 +325,11 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		// The one branch that executes nothing: a caller tool ends the turn by
 		// asking the client to run it (ADR 0035 §1).
 		if callertools.IsID(plan.ToolID) {
-			if call, ok := pendingCallerCall(ctx, callerTools, plan); ok {
+			call, ok, err := pendingCallerCall(ctx, callerTools, plan)
+			if err != nil {
+				return "", meta, nil, err
+			}
+			if ok {
 				meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
 				note("Asking your client to run " + callertools.NameFromID(plan.ToolID))
 				return "", meta, []callertools.PendingCall{call}, nil
@@ -327,16 +353,20 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			continue
 		}
 
-		// Identity gate for a container Tool acting as the calling human
-		// (ADR 0032 §5). Before this, only an agent-backed Tool had one.
-		creds, refusal := toolCredentials(ctx, actx, in, *findTool(plan.ToolID, skillTools))
+		tool := *findTool(plan.ToolID, skillTools)
+
+		// Identity gate — shared by a container Tool and an agent-backed one
+		// (upstream's resolveToolIdentitySecretEnv, ADR 0032 §5/0022): read-only
+		// resolution of an already-linked credential, never starting a fresh
+		// link flow.
+		creds, refusal := toolCredentials(ctx, actx, in, tool)
 		if refusal != "" {
 			note(plan.ToolID + " needs a linked account")
 			return refusal, meta, nil, nil
 		}
 
 		note("Running " + plan.ToolID + "…")
-		outcome, err := runToolWithContinuation(ctx, state, plan.ToolID, plan.ToolInput, creds, note)
+		outcome, err := runToolWithContinuation(ctx, actx, state, in, tool, plan.ToolInput, plan.ToolInstanceKey, creds, note)
 		if err != nil {
 			return "", meta, nil, err
 		}
@@ -371,7 +401,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		last := history[len(history)-1]
 		return fmt.Sprintf("I couldn't complete that: %s failed (%s).", last.ToolID, last.Error), meta, nil, nil
 	}
-	reply, m, err := bareAnswerWithMeta(ctx, actx, state, meta)
+	reply, m, err := bareAnswerWithMeta(ctx, actx, in.Message, meta)
 	return reply, m, nil, err
 }
 
@@ -379,34 +409,61 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 // handling folded in: the tool's own stored token is prepended to its input,
 // and any token the tool returns is banked and stripped off the result.
 //
+// The continuation key is scoped to the planner's declared instanceKey
+// (`${tool.id}::${instanceKey}`, upstream's runTool) so two instances of the
+// same multi-instance tool in one conversation don't clobber each other's
+// saved state; an empty instanceKey is the bare tool id, unchanged from
+// before this scoping existed.
+//
 // Stripping happens BEFORE the result reaches planner history, composition,
 // or the reply, so resume state never enters the transcript or a prompt. Both
 // the skill loop and the no-match fallback go through here, because a tool
 // does not change its contract based on how it was selected.
+//
+// Dispatch branches on tool.AgentRef (ADR 0021/agentRunTemplate): an
+// agent-backed tool runs as an AgentRun over the same child-workflow bridge
+// peer-level delegation uses, instead of a ToolRun Job (upstream's runTool,
+// graph.ts:1845-1910).
 func runToolWithContinuation(
 	ctx workflow.Context,
+	actx workflow.Context,
 	state *ConversationState,
-	toolID, toolInput string,
+	in TurnInput,
+	tool catalog.ToolDescriptor,
+	toolInput, instanceKey string,
 	creds credentials,
 	note func(string),
 ) (ToolOutcome, error) {
-	if token := state.ToolContinuations[toolID]; token != "" {
+	continuationKey := tool.ID
+	if instanceKey != "" {
+		continuationKey = tool.ID + "::" + instanceKey
+	}
+	if token := state.ToolContinuations[continuationKey]; token != "" {
 		toolInput = continuation.Prepend(token, toolInput)
 	}
 
-	outcome, err := runTool(ctx, RunToolParams{
-		ToolRef:              toolID,
-		Args:                 []string{toolInput},
-		CredentialSecretName: creds.SecretName,
-		CredentialEnvVars:    creds.EnvVars,
-		OnProgress: func(e messaging.Event) {
-			line := e.Message
-			if e.Stage != "" {
-				line = e.Stage + ": " + line
-			}
-			note(line)
-		},
-	})
+	var outcome ToolOutcome
+	var err error
+	switch {
+	case tool.LocalExec != nil:
+		outcome, err = runLocalTool(ctx, tool, toolInput)
+	case tool.AgentRef != "":
+		outcome, err = runAgentBackedTool(ctx, actx, in, tool, toolInput, creds, note)
+	default:
+		outcome, err = runTool(ctx, RunToolParams{
+			ToolRef:              tool.ID,
+			Args:                 []string{toolInput},
+			CredentialSecretName: creds.SecretName,
+			CredentialEnvVars:    creds.EnvVars,
+			OnProgress: func(e messaging.Event) {
+				line := e.Message
+				if e.Stage != "" {
+					line = e.Stage + ": " + line
+				}
+				note(line)
+			},
+		})
+	}
 	if err != nil || !outcome.Succeeded {
 		return outcome, err
 	}
@@ -416,23 +473,167 @@ func runToolWithContinuation(
 		if state.ToolContinuations == nil {
 			state.ToolContinuations = map[string]string{}
 		}
-		state.ToolContinuations[toolID] = token
+		state.ToolContinuations[continuationKey] = token
 	}
 	outcome.Result = stripped
 	return outcome, nil
 }
 
-func bareAnswer(ctx workflow.Context, actx workflow.Context, state *ConversationState) (string, error) {
+// runAgentBackedTool dispatches an agent-backed Tool (ToolDescriptor.AgentRef,
+// whether from a Tool CR's own spec.agentRef or adapted from a Skill's
+// agentRefs — see adaptAgentAsTool) as a single-turn AgentRun over the same
+// child-workflow bridge peer-level delegation (delegateToAgent) uses.
+//
+// v1 scope cut, matching upstream: single-turn/final-reply only. There is no
+// session slot to resume a specific tool-launched episode the way
+// checkActiveAgentRun does for peer-level delegation, so a clarifying
+// (non-final) reply is a clean tool error rather than silently dropped.
+// localToolBackstopBufferSeconds mirrors the TS client's default: extra time
+// beyond the tool's own timeout before giving up on an unresponsive sidecar
+// (the sidecar's own SIGKILL + envelope should normally win the race).
+const localToolBackstopBufferSeconds = 5
+
+// runLocalTool dispatches a LocalTool (ADR 0014) to its executor sidecar via
+// RunLocalToolActivity — never a k8s Job. The activity call is given its own
+// timeout scoped to the tool's own declared timeoutSeconds (falling back to
+// the sidecar's own default when unset) plus a backstop buffer, since a
+// LocalTool run blocks synchronously for the activity's whole duration,
+// unlike a Job's launch-then-await-callback shape.
+func runLocalTool(ctx workflow.Context, tool catalog.ToolDescriptor, toolInput string) (ToolOutcome, error) {
+	timeoutSeconds := tool.LocalExec.TimeoutSeconds
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = defaultToolTimeoutSeconds
+	}
+	lactx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: time.Duration(timeoutSeconds)*time.Second + localToolBackstopBufferSeconds*time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1}, // never re-execute a tool that already ran
+	})
+
+	var event messaging.Event
+	if err := workflow.ExecuteActivity(lactx, activities.RunLocalToolActivityName, activities.RunLocalToolInput{
+		Tool:      tool,
+		Input:     toolInput,
+		SessionID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+	}).Get(ctx, &event); err != nil {
+		return ToolOutcome{}, fmt.Errorf("run local tool %s: %w", tool.ID, err)
+	}
+
+	outcome := ToolOutcome{JobID: event.JobID}
+	if event.Type == messaging.EventSucceeded {
+		outcome.Succeeded = true
+		outcome.Result = event.ResultText()
+		outcome.RawResult = event.Result
+	} else {
+		outcome.ErrorCode = event.Code
+		outcome.ErrorMessage = event.Message
+	}
+	return outcome, nil
+}
+
+func runAgentBackedTool(
+	ctx workflow.Context,
+	actx workflow.Context,
+	in TurnInput,
+	tool catalog.ToolDescriptor,
+	toolInput string,
+	creds credentials,
+	note func(string),
+) (ToolOutcome, error) {
+	var agent *catalog.AgentDescriptor
+	if err := workflow.ExecuteActivity(actx, activities.ResolveAgentActivityName, activities.ResolveAgentInput{
+		Caller:  in.Caller,
+		AgentID: tool.AgentRef,
+	}).Get(ctx, &agent); err != nil {
+		return ToolOutcome{}, fmt.Errorf("resolve agent-backed tool %s: %w", tool.ID, err)
+	}
+	if agent == nil {
+		return ToolOutcome{
+			ErrorCode:    "agent_unavailable",
+			ErrorMessage: fmt.Sprintf("tool %s's backing agent %s is not visible to this caller", tool.ID, tool.AgentRef),
+		}, nil
+	}
+
+	childID, err := newChildAgentID(ctx, agent.ID)
+	if err != nil {
+		return ToolOutcome{}, err
+	}
+	cctx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{WorkflowID: childID})
+	child := workflow.ExecuteChildWorkflow(cctx, agentWorkflowNameFor(*agent), AgentWorkflowInput{
+		Agent:            *agent,
+		Goal:             toolInput,
+		Caller:           in.Caller,
+		ParentWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		Depth:            1,
+		Credentials:      credentials{SecretName: creds.SecretName, EnvVars: creds.EnvVars},
+	})
+	if err := child.GetChildWorkflowExecution().Get(ctx, nil); err != nil {
+		return ToolOutcome{}, fmt.Errorf("start agent-backed tool %s: %w", tool.ID, err)
+	}
+
+	upCh := workflow.GetSignalChannel(ctx, AgentUpSignalPrefix+childID)
+	timerCtx, cancelTimer := workflow.WithCancel(ctx)
+	defer cancelTimer()
+	timer := workflow.NewTimer(timerCtx, agentEpisodeTimeout)
+
+	for {
+		var (
+			u        AgentUp
+			received bool
+			timedOut bool
+		)
+		selector := workflow.NewSelector(ctx)
+		selector.AddReceive(upCh, func(c workflow.ReceiveChannel, _ bool) {
+			c.Receive(ctx, &u)
+			received = true
+		})
+		selector.AddFuture(timer, func(workflow.Future) { timedOut = true })
+		selector.Select(ctx)
+
+		if timedOut {
+			_ = workflow.RequestCancelExternalWorkflow(ctx, childID, "").Get(ctx, nil)
+			return ToolOutcome{
+				ErrorCode:    "timeout",
+				ErrorMessage: fmt.Sprintf("agent-backed tool %s didn't respond within %s", tool.ID, agentEpisodeTimeout),
+			}, nil
+		}
+		if !received {
+			continue
+		}
+		switch {
+		case u.Progress:
+			note(u.Message)
+		case u.Failed:
+			return ToolOutcome{ErrorCode: u.Code, ErrorMessage: u.Message}, nil
+		case u.Final:
+			return ToolOutcome{Succeeded: true, Result: u.Message}, nil
+		default:
+			// A clarifying question: no session slot exists to resume this
+			// specific tool-launched episode, so it ends the call as an error
+			// rather than half-handling it (upstream's identical v1 scope cut).
+			_ = workflow.RequestCancelExternalWorkflow(ctx, childID, "").Get(ctx, nil)
+			return ToolOutcome{
+				ErrorCode:    "non_final_reply",
+				ErrorMessage: fmt.Sprintf("tool %s (agent-backed) requires a single-turn agent — got a non-final reply", tool.ID),
+			}, nil
+		}
+	}
+}
+
+// bareAnswer is the true last resort (upstream's callBestEffort): only the
+// CURRENT request reaches the model, never the accumulated transcript — the
+// same call best-effort-responder.ts's respond() makes with one string, not
+// a message history.
+func bareAnswer(ctx workflow.Context, actx workflow.Context, request string) (string, error) {
 	var reply string
 	err := workflow.ExecuteActivity(actx, activities.CompleteTurnActivityName, activities.CompleteTurnInput{
-		SystemPrompt: systemPrompt,
-		Messages:     toLLMMessages(state.History),
+		SystemPrompt: bareAnswerSystemPrompt,
+		Messages:     []llm.Message{{Role: "user", Content: request}},
 	}).Get(ctx, &reply)
 	return reply, err
 }
 
-func bareAnswerWithMeta(ctx workflow.Context, actx workflow.Context, state *ConversationState, meta TurnMeta) (string, TurnMeta, error) {
-	reply, err := bareAnswer(ctx, actx, state)
+func bareAnswerWithMeta(ctx workflow.Context, actx workflow.Context, request string, meta TurnMeta) (string, TurnMeta, error) {
+	reply, err := bareAnswer(ctx, actx, request)
 	return reply, meta, err
 }
 
@@ -441,15 +642,40 @@ func toolInScope(toolID string, st *activities.SkillTools) bool {
 }
 
 // findTool resolves an id the planner chose against the skill's own resolved,
-// role-visible tools. Only ever called after toolInScope, so a nil return
-// would mean the two disagree.
+// role-visible tools AND agentRefs (ADR 0021, adapted into the same
+// ToolDescriptor shape — see adaptAgentAsTool). Only ever called after
+// toolInScope, so a nil return would mean the two disagree.
 func findTool(toolID string, st *activities.SkillTools) *catalog.ToolDescriptor {
 	for i := range st.Tools {
 		if st.Tools[i].ID == toolID {
 			return &st.Tools[i]
 		}
 	}
+	for _, agent := range st.Agents {
+		if agent.ID == toolID {
+			tool := adaptAgentAsTool(agent)
+			return &tool
+		}
+	}
 	return nil
+}
+
+// adaptAgentAsTool adapts a resolved Agent into the same ToolDescriptor shape
+// an agent-backed Tool (Tool.spec.agentRef) already produces (upstream ADR
+// 0021, graph.ts:1703-1758's loadSkillTools): the planner and dispatch don't
+// need to know whether AgentRef came from a Tool wrapper or a Skill's own
+// agentRefs.
+func adaptAgentAsTool(agent catalog.AgentDescriptor) catalog.ToolDescriptor {
+	return catalog.ToolDescriptor{
+		ID:                agent.ID,
+		Description:       agent.Description,
+		Input:             agent.Input,
+		Output:            agent.Output,
+		AllowedRoles:      agent.AllowedRoles,
+		Tier:              agent.Tier,
+		AgentRef:          agent.ID,
+		IdentityProviders: agent.IdentityProviders,
+	}
 }
 
 func repeatsLastCall(history []activities.ActionRecord, plan activities.PlannedAction) bool {

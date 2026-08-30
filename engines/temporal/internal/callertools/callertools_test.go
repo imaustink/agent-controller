@@ -86,6 +86,9 @@ func TestParseRejectsRatherThanSilentlyDropping(t *testing.T) {
 		{"bad tool_choice string", `[{"function":{"name":"x"}}]`, `"whenever"`, `must be "auto"`},
 		{"bad tool_choice object", `[{"function":{"name":"x"}}]`, `{"type":"retrieval"}`, "must be of the form"},
 		{"tool_choice names an absent tool", `[{"function":{"name":"x"}}]`, `{"type":"function","function":{"name":"y"}}`, "not present in tools"},
+		{"string parameters", `[{"function":{"name":"x","parameters":"nope"}}]`, "", "must be a JSON Schema object"},
+		{"number parameters", `[{"function":{"name":"x","parameters":42}}]`, "", "must be a JSON Schema object"},
+		{"boolean parameters", `[{"function":{"name":"x","parameters":true}}]`, "", "must be a JSON Schema object"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -93,6 +96,16 @@ func TestParseRejectsRatherThanSilentlyDropping(t *testing.T) {
 			require.ErrorContains(t, err, c.want)
 		})
 	}
+}
+
+// TS's parse.ts:141-143 checks `typeof fn.parameters !== "object"` — which in
+// JS is true for an array (Array.isArray gives "object" too), so parity means
+// Go accepts an array schema exactly like TS does, even though it's a
+// semantically odd JSON Schema. Only string/number/boolean are rejected.
+func TestParseAcceptsArrayParametersMatchingTSsTypeofCheck(t *testing.T) {
+	tools, _, err := callertools.Parse(req(`[{"function":{"name":"x","parameters":[1,2,3]}}]`, ""))
+	require.NoError(t, err)
+	require.Len(t, tools, 1)
 }
 
 func TestParseEnforcesCaps(t *testing.T) {

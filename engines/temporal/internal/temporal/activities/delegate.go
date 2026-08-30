@@ -62,7 +62,9 @@ func (a *AgentLoopActivities) SelectDelegate(ctx context.Context, in SelectDeleg
 	}
 
 	raw, err := a.LLM.CompleteJSON(ctx, []llm.Message{
-		{Role: "system", Content: "Select the single skill or agent whose purpose genuinely covers the user's request, or kind \"none\" if nothing does. A skill is a guided workflow the assistant runs itself; an agent is an autonomous delegate for open-ended, multi-step work. Superficial word overlap is not a match."},
+		{Role: "system", Content: "Select the single skill or agent whose purpose genuinely covers the user's request, or kind \"none\" if nothing does. A skill is a guided workflow the assistant runs itself; an agent is an autonomous delegate for open-ended, multi-step work. Superficial word overlap is not a match. " +
+			"Prefer a skill over an agent when both genuinely apply and the request is a single well-defined action a skill's tools can complete directly. " +
+			"Prefer an agent when the request needs open-ended, multi-step work, iterative judgment, or is likely to need clarifying questions along the way — that's what an agent's own loop is for — but only once its domain already matches."},
 		{Role: "user", Content: fmt.Sprintf("Request:\n%s\n\nCandidates:\n%s", in.Request, list.String())},
 	}, selectDelegateSchema)
 	if err != nil {

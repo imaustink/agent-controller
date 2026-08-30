@@ -70,6 +70,45 @@ func TestCheckSkillFitDefaultsFalseOnGarbage(t *testing.T) {
 	require.False(t, fits, "ambiguity must fall back to full retrieval")
 }
 
+// TS's skill-fit-checker.ts sends only the skill's name+description — Go's
+// CheckSkillFit additionally fed a 500-char markdown excerpt, which can shift
+// a borderline yes/no judgment the fit checker isn't meant to see (the
+// markdown is authored procedure, not a description of scope).
+func TestCheckSkillFitSendsOnlyDescriptionNotMarkdown(t *testing.T) {
+	fake := &fakeLLM{payload: `{"fits":true}`}
+	a := &activities.AgentLoopActivities{LLM: fake}
+
+	_, err := a.CheckSkillFit(context.Background(), activities.CheckSkillFitInput{
+		Request: "publish it",
+		Skill: catalog.SkillDescriptor{
+			ID: "recipes", Description: "recipe workflows",
+			Markdown: "# UNIQUE_MARKDOWN_SENTINEL step-by-step instructions",
+		},
+	})
+	require.NoError(t, err)
+	require.NotContains(t, fake.lastUser, "UNIQUE_MARKDOWN_SENTINEL", "the skill's authored markdown must not reach the fit checker")
+	require.Contains(t, fake.lastUser, "recipe workflows")
+}
+
+// TS's tool-fit-checker.ts sends only the tool's name+description — Go's
+// CheckToolFit additionally fed Input/Output, which TS deliberately omits.
+func TestCheckToolFitSendsOnlyDescriptionNotInputOutput(t *testing.T) {
+	fake := &fakeLLM{payload: `{"fits":true}`}
+	a := &activities.AgentLoopActivities{LLM: fake}
+
+	_, err := a.CheckToolFit(context.Background(), activities.CheckToolFitInput{
+		Request: "create a repo",
+		Tool: catalog.ToolDescriptor{
+			ID: "github-repo-create", Description: "create or clone a repository",
+			Input: "UNIQUE_INPUT_SENTINEL", Output: "UNIQUE_OUTPUT_SENTINEL",
+		},
+	})
+	require.NoError(t, err)
+	require.NotContains(t, fake.lastUser, "UNIQUE_INPUT_SENTINEL")
+	require.NotContains(t, fake.lastUser, "UNIQUE_OUTPUT_SENTINEL")
+	require.Contains(t, fake.lastUser, "create or clone a repository")
+}
+
 func TestPlanActionRejectsUnknownAction(t *testing.T) {
 	a := &activities.AgentLoopActivities{LLM: &fakeLLM{payload: `{"action":"explode","tool_id":"","tool_input":"","response":""}`}}
 	_, err := a.PlanAction(context.Background(), activities.PlanActionInput{Request: "x"})
@@ -140,4 +179,23 @@ func TestCheckToolFitPromptFramesTheRequestAsData(t *testing.T) {
 	require.Contains(t, fake.lastSystem, "Default to false")
 	require.Contains(t, fake.lastUser, "<request>")
 	require.Contains(t, fake.lastUser, "id: kubectl-readonly")
+}
+
+// TS's delegate-selector.ts SYSTEM_PROMPT explicitly instructs preferring a
+// skill for a single well-defined action vs. an agent for open-ended
+// multi-step work — Go's SelectDelegate defined what each candidate kind IS
+// generically but gave no preference rule, so an ambiguous request (matching
+// both a skill and an agent) could resolve differently between engines.
+func TestSelectDelegatePromptHasTheSkillVsAgentTieBreakRule(t *testing.T) {
+	fake := &fakeLLM{payload: `{"kind":"none","id":""}`}
+	a := &activities.AgentLoopActivities{LLM: fake}
+
+	_, err := a.SelectDelegate(context.Background(), activities.SelectDelegateInput{
+		Request: "plan my meals",
+		Skills:  []catalog.SkillDescriptor{{ID: "recipes", Description: "recipe workflows"}},
+		Agents:  []catalog.AgentDescriptor{{ID: "meal-planner", Description: "plans meals"}},
+	})
+	require.NoError(t, err)
+	require.Contains(t, fake.lastSystem, "Prefer a skill over an agent")
+	require.Contains(t, fake.lastSystem, "Prefer an agent when the request needs open-ended")
 }
