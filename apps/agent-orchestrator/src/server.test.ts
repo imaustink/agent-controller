@@ -1230,6 +1230,46 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     await server.close();
   });
 
+  it("separates consecutive agent-text narration chunks instead of fusing them into a run-on sentence", async () => {
+    // Each "agent-text" progress call is one COMPLETE, independent text block
+    // straight from claude-runner.ts's own stream-json parsing -- neither
+    // engine ever joins successive blocks with a separator upstream of here,
+    // so writing them verbatim back-to-back used to fuse
+    // "...GitHub account." and "Found it..." into one run-on
+    // "...GitHub account.Found it...".
+    const graph: AgentGraphLike = {
+      invoke: vi.fn(),
+      stream: vi.fn().mockImplementation((input: { progressListener?: (stage: string, message: string | undefined) => void }) => {
+        input.progressListener?.("agent-text", "I'll start by checking whether the repo exists.");
+        input.progressListener?.("agent-text", "Found it — bitovi/ai-experiments is accessible.");
+        return toStream([{ planAction: { identity, result: "Opened PR #42." } }]);
+      }),
+    };
+    const server = new InvokeServer(graph, sessionStore());
+    const port = await listenOn(server);
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer tok-1",
+        "x-openwebui-chat-id": "chat-narration",
+      },
+      body: JSON.stringify({ stream: true, messages: [{ role: "user", content: "fix the bug" }] }),
+    });
+
+    const chunks = (await readSse(res)) as { choices?: { delta: { content?: string } }[] }[];
+    const allContent = chunks
+      .filter((c) => c.choices)
+      .map((c) => c.choices![0]?.delta.content ?? "")
+      .join("");
+
+    expect(allContent).not.toContain("repo exists.Found it");
+    expect(allContent).toMatch(/repo exists\.\s+Found it/);
+
+    await server.close();
+  });
+
   it("accepts an optional session_id on POST /invoke for non-chat callers", async () => {
     const graph: AgentGraphLike = {
       invoke: vi.fn().mockResolvedValue({

@@ -1148,12 +1148,28 @@ export class InvokeServer {
     // "done: false" event is never followed by a matching "done: true" one
     // for the same step once the agent turn completes.
     let openStatusLabel: string | undefined;
+    // Tracks whether the last piece of real content written to the stream
+    // ended in whitespace. Each "agent-text" progress call is one COMPLETE,
+    // independent text block straight from claude-runner.ts's stream-json
+    // parsing (one per Claude message content block) -- neither engine ever
+    // joins successive blocks with a separator anywhere upstream of here, so
+    // writing them verbatim back-to-back fuses "...account." and "Found it"
+    // into one run-on "...account.Found it" with nothing between. The
+    // remote-control-url branch below already guards against exactly this
+    // ("an earlier streamed chunk may not end in a newline"); this extends
+    // the same guard to agent-text/identity-link and the final result.
+    let lastContentEndedWithSpace = true; // nothing streamed yet -- no separator needed before the first chunk
+    const withSeparator = (content: string): string => {
+      const needsSeparator = !lastContentEndedWithSpace && !/^\s/.test(content);
+      lastContentEndedWithSpace = content === "" ? lastContentEndedWithSpace : /\s$/.test(content);
+      return needsSeparator ? `\n\n${content}` : content;
+    };
     const finish = (content: string): void => {
       if (openStatusLabel !== undefined) {
         writeSseStatus(res, openStatusLabel, true);
         openStatusLabel = undefined;
       }
-      writeSseChunk(res, chatCompletionChunk(id, model, { content }, null));
+      writeSseChunk(res, chatCompletionChunk(id, model, { content: withSeparator(content) }, null));
       writeSseChunk(res, chatCompletionChunk(id, model, {}, "stop"));
       writeSseDone(res);
       res.end();
@@ -1197,18 +1213,16 @@ export class InvokeServer {
         // (integration-gateway's relayAndReply), replacing the deprecated
         // session-page link for Claude-backed sessions.
         if (stage === "remote-control-url" && message) {
-          // Leading AND trailing blank lines so this link stands as its own
-          // paragraph -- an earlier streamed chunk (e.g. agent-text) may not
-          // end in a newline, and without the leading break the two run
-          // together into one mangled line in the chat client.
+          // Trailing blank line so this link stands as its own paragraph;
+          // withSeparator supplies the leading one only if actually needed.
           writeSseChunk(
             res,
-            chatCompletionChunk(id, model, { content: `\n\n🤖 Watch live or take over this session here: ${message}\n\n` }, null),
+            chatCompletionChunk(id, model, { content: withSeparator(`🤖 Watch live or take over this session here: ${message}\n\n`) }, null),
           );
           return;
         }
         if ((stage === "agent-text" || stage === "identity-link") && message) {
-          writeSseChunk(res, chatCompletionChunk(id, model, { content: message }, null));
+          writeSseChunk(res, chatCompletionChunk(id, model, { content: withSeparator(message) }, null));
           return;
         }
         // Everything else (tool invocations, warnings, pipeline stage
