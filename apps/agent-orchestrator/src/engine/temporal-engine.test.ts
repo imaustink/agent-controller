@@ -213,6 +213,33 @@ describe("TemporalEngine", () => {
     expect(progressListener).toHaveBeenNthCalledWith(2, "", "edit: adding the README");
   });
 
+  it("un-flattens agent-text/identity-link/remote-control-url narration lines back into their stage, so server.ts streams them as real content instead of a truncated status label", async () => {
+    const { impl } = scriptedFetch([
+      {
+        id: "x",
+        status: "pending",
+        progress: [
+          "agent-text: Sure, here's the ",
+          "agent-text: Sure, here's the fix",
+          "identity-link: https://example.com/link",
+          "remote-control-url: https://example.com/rc",
+          "clone: cloning the repo",
+        ],
+      },
+      { id: "x", status: "succeeded", result: "done" },
+    ]);
+    const progressListener = vi.fn();
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+
+    await engine.invoke(input({ progressListener }));
+
+    expect(progressListener).toHaveBeenNthCalledWith(1, "agent-text", "Sure, here's the ");
+    expect(progressListener).toHaveBeenNthCalledWith(2, "agent-text", "Sure, here's the fix");
+    expect(progressListener).toHaveBeenNthCalledWith(3, "identity-link", "https://example.com/link");
+    expect(progressListener).toHaveBeenNthCalledWith(4, "remote-control-url", "https://example.com/rc");
+    expect(progressListener).toHaveBeenNthCalledWith(5, "", "clone: cloning the repo");
+  });
+
   it("never calls progressListener when the caller has no live channel", async () => {
     const { impl } = scriptedFetch([
       { id: "x", status: "pending", progress: ["clone: cloning the repo"] },
