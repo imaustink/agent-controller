@@ -224,4 +224,83 @@ describe("TemporalEngine", () => {
     // and there is nothing to assert a call against.
     await expect(engine.invoke(input())).resolves.toMatchObject({ result: "Opened PR #1" });
   });
+
+  describe("auto-resuming a parked identity link", () => {
+    // Two /invoke POSTs total: the original turn, and ONE resume. Each
+    // scriptedFetch() call below only needs one GET record per turn because
+    // Authorize's own wait is short (a non-live poll settles immediately),
+    // so the SECOND turn's own poll() loop never sees "pending" either.
+    it("re-submits automatically and surfaces the eventual result, without repeating the prompt", async () => {
+      const { impl, calls } = scriptedFetch([
+        { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
+        { id: "x", status: "succeeded", result: "Opened PR #42." },
+      ]);
+      const progressListener = vi.fn();
+      const engine = new TemporalEngine({
+        baseUrl: BASE,
+        fetchImpl: impl,
+        autoResumeIntervalMs: 1,
+      });
+
+      const state = await engine.invoke(input({ progressListener, sessionId: "chat-1" }));
+
+      expect(state.result).toBe("Opened PR #42.");
+      // The prompt was shown exactly once, as real content -- not
+      // suppressed, and not repeated on every silent nudge.
+      expect(progressListener).toHaveBeenCalledTimes(1);
+      expect(progressListener).toHaveBeenCalledWith("identity-link", "To continue, please link your GitHub account...");
+      // One POST /invoke for the original turn, one for the single resume.
+      expect(calls.filter((c) => c.url === `${BASE}/invoke`)).toHaveLength(2);
+    });
+
+    it("does not auto-resume a caller with no live channel (a webhook/triage relay)", async () => {
+      const { impl, calls } = scriptedFetch([
+        { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
+      ]);
+      const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl, autoResumeIntervalMs: 1 });
+
+      // No progressListener -- input()'s default -- so this must return the
+      // link-required reply immediately: ADR 0006 requires a relayed turn
+      // to return right away rather than block waiting on a human.
+      const state = await engine.invoke(input({ sessionId: "chat-1" }));
+
+      expect(state.result).toBe("To continue, please link your GitHub account...");
+      expect(calls.filter((c) => c.url === `${BASE}/invoke`)).toHaveLength(1);
+    });
+
+    it("does not auto-resume without a stable session id to resume", async () => {
+      const { impl, calls } = scriptedFetch([
+        { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
+      ]);
+      const progressListener = vi.fn();
+      const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl, autoResumeIntervalMs: 1 });
+
+      // A live channel alone isn't enough -- resuming means re-submitting to
+      // the SAME conversation workflow, which requires a session id.
+      const state = await engine.invoke(input({ progressListener }));
+
+      expect(state.result).toBe("To continue, please link your GitHub account...");
+      expect(progressListener).not.toHaveBeenCalled();
+      expect(calls.filter((c) => c.url === `${BASE}/invoke`)).toHaveLength(1);
+    });
+
+    it("gives up after its own deadline without repeating the original prompt", async () => {
+      const { impl } = scriptedFetch([
+        { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
+      ]);
+      const progressListener = vi.fn();
+      const engine = new TemporalEngine({
+        baseUrl: BASE,
+        fetchImpl: impl,
+        autoResumeIntervalMs: 1,
+        autoResumeMaxMs: 1,
+      });
+
+      const state = await engine.invoke(input({ progressListener, sessionId: "chat-1" }));
+
+      expect(state.result).toContain("Still waiting for you to finish linking");
+      expect(state.result).not.toContain("please link your GitHub account");
+      expect(progressListener).toHaveBeenCalledTimes(1);
+    });
+  });
 });

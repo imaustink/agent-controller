@@ -98,6 +98,13 @@ type invokeRecord struct {
 	Status string `json:"status"` // pending | succeeded | failed
 	Result string `json:"result,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// Path mirrors workflows.TurnMeta.Path on a "succeeded" record — in
+	// particular, "link-required" is what distinguishes a turn that PARKED
+	// waiting on an account link from one that is genuinely done. Without
+	// this a polling caller (agent-orchestrator's TemporalEngine) cannot
+	// tell the two apart and has no way to keep a live caller's turn open
+	// across an automatic resume attempt.
+	Path string `json:"path,omitempty"`
 	// ToolCalls renders the second terminal shape (ADR 0035) for a polling
 	// adapter. Offering caller tools over /invoke works, but the round-trip
 	// resume does not: /invoke takes a single request string, not a message
@@ -314,6 +321,7 @@ func (s *Server) handleInvokeStatus(c *gin.Context) {
 		c.JSON(http.StatusOK, invokeRecord{
 			ID: id, Status: invokeStatusSucceeded,
 			Result:           result.Reply,
+			Path:             result.Meta.Path,
 			ToolCalls:        result.PendingToolCalls,
 			RemoteControlUrl: result.Meta.RemoteControlUrl,
 		})
