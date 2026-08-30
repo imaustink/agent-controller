@@ -68,6 +68,10 @@ export interface TemporalEngineOptions {
   forwardedUserIdentityResolver?: IdentityResolver;
   /** How long to keep polling one turn before giving up. */
   timeoutMs?: number;
+  /** How long a live caller auto-resumes a still-outstanding account link before giving up (see autoResumeLink's doc). */
+  autoResumeMaxMs?: number;
+  /** Gap between auto-resume attempts. Injectable so a test isn't stuck waiting out the real interval. */
+  autoResumeIntervalMs?: number;
   /** Injectable for tests; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -75,6 +79,22 @@ export interface TemporalEngineOptions {
 /** Poll interval. The engine's own poll route already waits ~2s server-side, so this is only the gap between waits. */
 const POLL_INTERVAL_MS = 500;
 const DEFAULT_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * How long a LIVE caller's turn keeps auto-resuming a still-outstanding
+ * account link before giving up (see invoke()'s use of this). Long enough to
+ * cover a human actually going and linking -- GitHub's own device code lasts
+ * 15 minutes -- short enough that a caller who abandoned the tab doesn't pin
+ * a resume loop forever.
+ */
+const AUTO_RESUME_MAX_MS = 10 * 60_000;
+/**
+ * How often to silently re-check a still-outstanding link. NOT the same
+ * concern as POLL_INTERVAL_MS, which polls a SINGLE in-flight turn -- this
+ * one starts a brand-new turn on the same session every tick, so it is
+ * spaced out rather than tight.
+ */
+const AUTO_RESUME_INTERVAL_MS = 4_000;
 
 interface InvokeAccepted {
   id: string;
@@ -89,6 +109,13 @@ interface InvokeRecord {
   toolCalls?: { id: string; name: string; arguments: string }[];
   /** In-flight narration lines (only ever set on a "pending" record) -- see poll()'s use of it. */
   progress?: string[];
+  /**
+   * Mirrors workflows.TurnMeta.Path on a "succeeded" record -- in
+   * particular, "link-required" distinguishes a turn that PARKED waiting on
+   * an account link from one that is genuinely done. See invoke()'s use of
+   * it for auto-resume.
+   */
+  path?: string;
 }
 
 export class TemporalEngine implements AgentGraphLike {
@@ -102,7 +129,11 @@ export class TemporalEngine implements AgentGraphLike {
 
   async invoke(input: AgentGraphInput): Promise<AgentState> {
     const id = await this.start(input);
-    const record = await this.poll(id, input);
+    let record = await this.poll(id, input);
+
+    if (record.status === "succeeded" && record.path === "link-required") {
+      record = await this.autoResumeLink(input, record);
+    }
 
     if (record.status === "failed") {
       return { ...input, error: record.error ?? "the turn failed" } as AgentState;
@@ -120,6 +151,67 @@ export class TemporalEngine implements AgentGraphLike {
       } as AgentState;
     }
     return { ...input, result: record.result } as AgentState;
+  }
+
+  /**
+   * Resumes a turn that parked on a still-outstanding account link, WITHOUT
+   * the caller sending a follow-up message -- LangGraph's own engine already
+   * does this for a live chat caller (authorization-service.ts: the SAME
+   * turn holds open and "resumes automatically once the user links, no
+   * follow-up message needed"). This engine's /invoke is accept-then-poll
+   * rather than one long-held request, and Authorize's own wait is
+   * deliberately short -- "the workflow's durable timer stays in charge of
+   * the overall wait rather than a held HTTP request" (authz.go) -- so the
+   * equivalent here is re-submitting a brand-new turn on the SAME session
+   * every few seconds instead of holding one open. resumePendingLink ignores
+   * a resume turn's own text and re-delegates the ORIGINAL request it
+   * captured, so what gets resent here never reaches the caller or matters
+   * beyond poking the workflow into re-checking.
+   *
+   * Gated on TWO things, both required:
+   *  - `progressListener` set: the established "this caller has somewhere to
+   *    wait" signal (see buildGraphInput's own doc on why setting it for a
+   *    fire-and-forget caller caused a real incident) -- a webhook/triage
+   *    relay must NOT get this, or one relayed turn would block for up to
+   *    AUTO_RESUME_MAX_MS instead of returning immediately as ADR 0006
+   *    documents.
+   *  - `sessionId` set: resuming means re-submitting to the SAME
+   *    conversation workflow, which only a stable session id can name.
+   *
+   * The initial link-required prompt is surfaced ONCE via the same
+   * "identity-link" progress stage LangGraph's own device-flow prompt uses
+   * (server.ts's streaming handler renders it as real chat content, not a
+   * status label) -- otherwise auto-resuming would silently swallow the
+   * one thing the human actually needs to see and act on.
+   */
+  private async autoResumeLink(input: AgentGraphInput, first: InvokeRecord): Promise<InvokeRecord> {
+    if (!input.progressListener || !input.sessionId) return first;
+
+    input.progressListener("identity-link", first.result);
+
+    let record = first;
+    const deadline = Date.now() + (this.options.autoResumeMaxMs ?? AUTO_RESUME_MAX_MS);
+    const intervalMs = this.options.autoResumeIntervalMs ?? AUTO_RESUME_INTERVAL_MS;
+    while (record.status === "succeeded" && record.path === "link-required" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      const resumeId = await this.start(input);
+      record = await this.poll(resumeId, input);
+    }
+
+    if (record.status === "succeeded" && record.path === "link-required") {
+      // Gave up waiting, not gave up entirely: the flow is likely still
+      // live server-side (a device code lasts 15 minutes), and the next
+      // "send any message" resumes it exactly as before this existed. The
+      // prompt itself was already shown above, so this deliberately does NOT
+      // repeat it.
+      return {
+        ...record,
+        result:
+          "Still waiting for you to finish linking your account. " +
+          "I'll pick this back up automatically once you have, or send any message to check now.",
+      };
+    }
+    return record;
   }
 
   /**

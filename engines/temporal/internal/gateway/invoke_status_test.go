@@ -105,3 +105,24 @@ func TestHandleInvokeStatusSucceededReportsTheReply(t *testing.T) {
 		"result":"Opened PR #42."
 	}`, rec.Body.String())
 }
+
+// A poller has no other way to tell "this turn parked on a still-outstanding
+// account link" apart from "this turn is genuinely done" -- both are a
+// "succeeded" record with a Reply. Path is that signal, and a caller that
+// can wait on it (agent-orchestrator's TemporalEngine, for a live chat
+// caller) reads it to decide whether to keep trying rather than surfacing
+// the link prompt as if it were the final answer.
+func TestHandleInvokeStatusSucceededSurfacesTheLinkRequiredPath(t *testing.T) {
+	handle := &fakeUpdateHandle{reply: "To continue, please link your GitHub account...", path: "link-required"}
+	s := NewServer(&fakeTemporalClient{handle: handle}, "task-queue", nil)
+
+	rec := invokeStatusRequest(t, s, encodeInvocationID("conversation-abc", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"))
+
+	require.Equal(t, 200, rec.Code)
+	require.JSONEq(t, `{
+		"id":"conversation-abc.6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+		"status":"succeeded",
+		"result":"To continue, please link your GitHub account...",
+		"path":"link-required"
+	}`, rec.Body.String())
+}
