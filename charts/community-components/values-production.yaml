@@ -49,9 +49,11 @@ webFetch:
 
 # image-gen: generate/edit images, store them in AWS S3, return presigned URLs.
 # The bucket + a bucket-scoped IAM user are provisioned in the homelab repo via
-# the ACK S3/IAM operators (kubernetes/manifests/agent-controller/image-gen-s3/).
-# Reuses OPENAI_API_KEY from agent-orchestrator-secrets; needs the image-gen-s3
-# secret (created out-of-band from the IAM user's access key, see that repo).
+# the ACK S3/IAM operators (kubernetes/manifests/agent-controller/image-gen-s3/),
+# which is also where the image-gen-s3 secret is created -- it carries the S3
+# TARGET (bucket/region/endpoint/forcePathStyle) as well as the credentials, so
+# nothing about the bucket is repeated here. Reuses OPENAI_API_KEY from
+# agent-orchestrator-secrets. s3.secretName defaults to image-gen-s3.
 imageGen:
   enabled: true
   image: registry.kurpuis.com:5000/image-gen:latest
@@ -59,11 +61,6 @@ imageGen:
   openai:
     secretName: agent-orchestrator-secrets
     secretKey: OPENAI_API_KEY
-  s3:
-    endpoint: ""            # AWS S3 default endpoint
-    region: us-east-1
-    bucket: recipe-agent-images
-    forcePathStyle: "false"
 
 # kubectl-readonly: cluster debugging tool. Grants its ServiceAccount a
 # cluster-wide read-only ClusterRole (see

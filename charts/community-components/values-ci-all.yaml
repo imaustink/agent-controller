@@ -32,12 +32,8 @@ webSearch:
 webFetch:
   enabled: true
 
-# Enabled with a throwaway bucket so the fail guard (imageGen.s3.bucket required
-# when enabled) passes and all three templates render; the render is discarded.
 imageGen:
   enabled: true
-  s3:
-    bucket: ci-image-gen.example.invalid
 
 kubectlReadonly:
   enabled: true

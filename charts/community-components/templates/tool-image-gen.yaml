@@ -28,9 +28,7 @@ spec:
   tier: standard
   image: {{ .Values.imageGen.image | quote }}
   serviceAccountName: {{ .Values.imageGen.serviceAccountName | quote }}
-  # Non-secret model + object-store settings. The bucket and credentials are
-  # bring-your-own (an operator provisions them), same discipline as the
-  # OPENAI_API_KEY secret below.
+  # App-level tuning only -- nothing environment-specific lives in this chart.
   env:
     - name: IMAGE_MODEL
       value: {{ .Values.imageGen.model | quote }}
@@ -38,29 +36,34 @@ spec:
       value: {{ .Values.imageGen.size | quote }}
     - name: IMAGE_QUALITY
       value: {{ .Values.imageGen.quality | quote }}
-    - name: IMAGE_S3_ENDPOINT
-      value: {{ .Values.imageGen.s3.endpoint | quote }}
-    - name: IMAGE_S3_REGION
-      value: {{ .Values.imageGen.s3.region | quote }}
-    - name: IMAGE_S3_BUCKET
-      value: {{ .Values.imageGen.s3.bucket | required "imageGen.s3.bucket is required when imageGen.enabled=true" | quote }}
     - name: IMAGE_S3_PREFIX
-      value: {{ .Values.imageGen.s3.prefix | quote }}
+      value: {{ .Values.imageGen.prefix | quote }}
     - name: IMAGE_S3_PRESIGN_TTL_SECONDS
-      value: {{ .Values.imageGen.s3.presignTtlSeconds | quote }}
-    - name: IMAGE_S3_FORCE_PATH_STYLE
-      value: {{ .Values.imageGen.s3.forcePathStyle | quote }}
+      value: {{ .Values.imageGen.presignTtlSeconds | quote }}
   secretEnv:
     - name: OPENAI_API_KEY
       secretRef:
         name: {{ .Values.imageGen.openai.secretName | quote }}
         key: {{ .Values.imageGen.openai.secretKey | quote }}
+    # The S3 target (bucket + how to reach it) AND its credentials all come from
+    # ONE operator-provided secret, created next to where the bucket is
+    # provisioned (e.g. the homelab ACK Bucket CR). The chart names only the
+    # secret -- never the bucket/region/endpoint -- so there is no
+    # environment-specific S3 value here to duplicate or keep in sync, and no
+    # render-time `required` guard (the tool validates the resolved config at
+    # runtime). The secret must carry every key below; IMAGE_S3_ENDPOINT may be
+    # empty for AWS's default endpoint.
+    {{- $s3 := .Values.imageGen.s3.secretName }}
     - name: IMAGE_S3_ACCESS_KEY_ID
-      secretRef:
-        name: {{ .Values.imageGen.s3.secretName | quote }}
-        key: {{ .Values.imageGen.s3.accessKeyIdKey | quote }}
+      secretRef: { name: {{ $s3 | quote }}, key: AWS_ACCESS_KEY_ID }
     - name: IMAGE_S3_SECRET_ACCESS_KEY
-      secretRef:
-        name: {{ .Values.imageGen.s3.secretName | quote }}
-        key: {{ .Values.imageGen.s3.secretAccessKeyKey | quote }}
+      secretRef: { name: {{ $s3 | quote }}, key: AWS_SECRET_ACCESS_KEY }
+    - name: IMAGE_S3_BUCKET
+      secretRef: { name: {{ $s3 | quote }}, key: IMAGE_S3_BUCKET }
+    - name: IMAGE_S3_REGION
+      secretRef: { name: {{ $s3 | quote }}, key: IMAGE_S3_REGION }
+    - name: IMAGE_S3_ENDPOINT
+      secretRef: { name: {{ $s3 | quote }}, key: IMAGE_S3_ENDPOINT }
+    - name: IMAGE_S3_FORCE_PATH_STYLE
+      secretRef: { name: {{ $s3 | quote }}, key: IMAGE_S3_FORCE_PATH_STYLE }
 {{- end }}

@@ -56,18 +56,28 @@ Failure classes map to exit codes: `usage` (2), `blocked_url` (3),
 | `IMAGE_SIZE` | Default size | `1024x1024` |
 | `IMAGE_QUALITY` | Default quality | `auto` |
 | `IMAGE_MAX_BYTES` | Cap on a downloaded source image | 15 MiB |
-| `IMAGE_S3_ENDPOINT` | S3-compatible endpoint URL | AWS default |
-| `IMAGE_S3_REGION` | Region | `us-east-1` |
-| `IMAGE_S3_BUCKET` | Target bucket | — |
 | `IMAGE_S3_PREFIX` | Key prefix | `images` |
 | `IMAGE_S3_PRESIGN_TTL_SECONDS` | Presigned-URL lifetime (max 7d) | 7 days |
-| `IMAGE_S3_FORCE_PATH_STYLE` | Path-style addressing (MinIO/Ceph) | `true` |
-| `IMAGE_S3_ACCESS_KEY_ID` / `IMAGE_S3_SECRET_ACCESS_KEY` | S3 credentials (secret) | — |
 
-The object store is **bring-your-own**: an operator provisions the bucket and
-credentials the same way `OPENAI_API_KEY` is provided. No object-store infra
-ships with this tool. The messaging-transport vars (`RECIPE_*`) are the shared
-wire protocol used by every tool in this repo.
+The **S3 target and its credentials** are supplied together, as one connection
+profile — the tool reads them from these env vars:
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `IMAGE_S3_BUCKET` | Target bucket | — (required) |
+| `IMAGE_S3_REGION` | Region | `us-east-1` |
+| `IMAGE_S3_ENDPOINT` | S3-compatible endpoint URL; empty ⇒ AWS default | AWS default |
+| `IMAGE_S3_FORCE_PATH_STYLE` | Path-style addressing (`true` for MinIO/Ceph) | `false` |
+| `IMAGE_S3_ACCESS_KEY_ID` / `IMAGE_S3_SECRET_ACCESS_KEY` | S3 credentials | — (required) |
+
+Empty strings are treated as unset (so `IMAGE_S3_ENDPOINT=""` means AWS's default
+endpoint). The object store is **bring-your-own**: an operator provisions the
+bucket and hands the tool this whole profile. In the Kubernetes deployment the
+community-components chart injects all of the S3 vars above from a single
+operator-provided secret (`imageGen.s3.secretName`, default `image-gen-s3`) —
+the chart itself carries no bucket/region/endpoint, so the target lives in one
+place next to where the bucket is provisioned. The messaging-transport vars
+(`RECIPE_*`) are the shared wire protocol used by every tool in this repo.
 
 ## Build
 

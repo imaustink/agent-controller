@@ -73,8 +73,14 @@ function num(raw: string | undefined, fallback: number): number {
 }
 
 function bool(raw: string | undefined, fallback: boolean): boolean {
-  if (raw === undefined) return fallback;
+  if (raw === undefined || raw === "") return fallback;
   return raw === "true" || raw === "1" || raw === "yes";
+}
+
+/** Empty strings behave as "unset" -- secretEnv keys are always present but may
+ * be empty (e.g. IMAGE_S3_ENDPOINT="" for AWS's default endpoint). */
+function str(raw: string | undefined): string | undefined {
+  return raw && raw.trim() !== "" ? raw : undefined;
 }
 
 function list(raw: string | undefined): string[] {
@@ -112,12 +118,16 @@ export const config: AppConfig = {
   maxRedirects: num(process.env.IMAGE_MAX_REDIRECTS, 5),
   userAgent: process.env.IMAGE_USER_AGENT ?? "image-gen/0.1 (+controller-agent)",
 
-  s3Endpoint: process.env.IMAGE_S3_ENDPOINT,
-  s3Region: process.env.IMAGE_S3_REGION ?? "us-east-1",
-  s3Bucket: process.env.IMAGE_S3_BUCKET,
-  s3Prefix: (process.env.IMAGE_S3_PREFIX ?? "images").replace(/^\/+|\/+$/g, ""),
+  // The whole S3 connection profile (bucket + how to reach it) plus its
+  // credentials arrive from one operator-provided secret (see the image-gen
+  // Tool CR's secretEnv). Empty strings are coerced to undefined so an unset
+  // endpoint means "AWS default endpoint", not a literal "" the SDK rejects.
+  s3Endpoint: str(process.env.IMAGE_S3_ENDPOINT),
+  s3Region: str(process.env.IMAGE_S3_REGION) ?? "us-east-1",
+  s3Bucket: str(process.env.IMAGE_S3_BUCKET),
+  s3Prefix: (str(process.env.IMAGE_S3_PREFIX) ?? "images").replace(/^\/+|\/+$/g, ""),
   s3PresignTtlSeconds: num(process.env.IMAGE_S3_PRESIGN_TTL_SECONDS, 7 * 24 * 60 * 60),
-  s3ForcePathStyle: bool(process.env.IMAGE_S3_FORCE_PATH_STYLE, true),
+  s3ForcePathStyle: bool(process.env.IMAGE_S3_FORCE_PATH_STYLE, false),
   s3AccessKeyId: process.env.IMAGE_S3_ACCESS_KEY_ID,
   s3SecretAccessKey: process.env.IMAGE_S3_SECRET_ACCESS_KEY,
 
