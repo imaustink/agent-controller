@@ -77,6 +77,46 @@ webFetch:
     annotations: {}
     automount: true
 
+# image-gen: generates an image from a prompt, or edits an existing image given
+# its URL. Uploads the result to a bring-your-own S3-compatible object store and
+# returns a time-limited presigned URL. Disabled by default -- it needs both an
+# OPENAI_API_KEY secret and an S3 bucket + credentials (see s3.* below) before
+# its derived audience (ADR 0011) is usable.
+imageGen:
+  enabled: false
+  image: image-gen:latest
+  serviceAccountName: image-gen
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA).
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+  # Non-secret model settings (see tools/image-gen/README.md).
+  model: gpt-image-1
+  size: "1024x1024"
+  quality: auto
+  # Secret (must already exist) supplying the tool's OPENAI_API_KEY.
+  openai:
+    secretName: agent-orchestrator-secrets
+    secretKey: OPENAI_API_KEY
+  # Bring-your-own S3-compatible object store. The bucket + credentials are
+  # provisioned out-of-band (this chart does not create them). The bucket stays
+  # private; the tool returns a presigned GET URL. Defaults target AWS S3; for a
+  # self-hosted S3-compatible store (MinIO/Ceph RGW) set endpoint and
+  # forcePathStyle=true.
+  s3:
+    endpoint: ""            # empty => AWS S3; else e.g. https://s3.example.com
+    region: us-east-1
+    bucket: ""              # REQUIRED once enabled
+    prefix: images
+    presignTtlSeconds: "604800"  # 7 days (SigV4 maximum)
+    forcePathStyle: "false"      # false for AWS S3; true for MinIO/Ceph RGW
+    # Secret (must already exist) supplying the S3 access key id / secret.
+    secretName: image-gen-s3
+    accessKeyIdKey: AWS_ACCESS_KEY_ID
+    secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+
 # kubectl-readonly: runs a single allowlisted read-only kubectl command
 # (get/describe/logs/events/top) for cluster debugging. Disabled by default:
 # unlike every other tool in this chart, enabling it grants its
@@ -482,6 +522,12 @@ skills:
   # (ADR 0011) to be non-empty.
   recipeRefining:
     enabled: true
+  # image-gen: generate an image from a prompt, then iteratively refine it
+  # (each edit re-touches the same picture). Enable imageGen above -- with its
+  # OPENAI_API_KEY secret and S3 bucket/credentials configured -- for this
+  # skill's derived audience (ADR 0011) to be non-empty.
+  imageGen:
+    enabled: false
   # self-improvement: drafts a new Skill/Tool CR from a successful fallback
   # turn (graph.ts's selectDelegate fallback) and opens a PR against
   # imaustink/agent-controller by delegating straight to a SWE Agent CR

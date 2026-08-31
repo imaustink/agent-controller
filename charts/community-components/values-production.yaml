@@ -47,6 +47,24 @@ webFetch:
   image: registry.kurpuis.com:5000/web-fetch:latest
   serviceAccountName: web-fetch
 
+# image-gen: generate/edit images, store them in AWS S3, return presigned URLs.
+# The bucket + a bucket-scoped IAM user are provisioned in the homelab repo via
+# the ACK S3/IAM operators (kubernetes/manifests/agent-controller/image-gen-s3/).
+# Reuses OPENAI_API_KEY from agent-orchestrator-secrets; needs the image-gen-s3
+# secret (created out-of-band from the IAM user's access key, see that repo).
+imageGen:
+  enabled: true
+  image: registry.kurpuis.com:5000/image-gen:latest
+  serviceAccountName: image-gen
+  openai:
+    secretName: agent-orchestrator-secrets
+    secretKey: OPENAI_API_KEY
+  s3:
+    endpoint: ""            # AWS S3 default endpoint
+    region: us-east-1
+    bucket: recipe-agent-images
+    forcePathStyle: "false"
+
 # kubectl-readonly: cluster debugging tool. Grants its ServiceAccount a
 # cluster-wide read-only ClusterRole (see
 # charts/community-components/templates/clusterrole-kubectl-readonly.yaml),
@@ -284,6 +302,10 @@ sshTool:
 
 skills:
   recipeRefining:
+    enabled: true
+  # image-gen: generate an image then iteratively refine it. Requires
+  # imageGen.enabled=true above (its OPENAI_API_KEY + image-gen-s3 secret).
+  imageGen:
     enabled: true
   # self-improvement: drafts a new Skill/Tool CR from a successful ad-hoc
   # turn and opens a PR, via claude-code-swe-agent (ADR 0021 -- Skill
