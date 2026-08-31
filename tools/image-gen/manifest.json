@@ -1,0 +1,11 @@
+{
+  "id": "image-gen",
+  "name": "image-gen",
+  "description": "Generates an image from a text prompt, or edits an existing image when given its URL. Uploads the result to a private S3-compatible object store and returns a time-limited presigned URL. One tool covers both create-from-scratch and iterative refinement: pass a prior image's URL back in to keep editing the same picture.",
+  "input": "A single string: either a JSON object {\"prompt\": string, \"image_url\"?: string, \"size\"?: string, \"quality\"?: string, \"background\"?: string}, or a bare prompt string. When image_url is present the tool edits that image; otherwise it generates a new one.",
+  "output": "Markdown embedding the produced image's presigned URL, plus an ArtifactRef (uri/sha256/bytes/content_type) for the PNG bytes; or a failed event if generation, editing, or upload failed.",
+  "allowedRoles": ["reader", "writer"],
+  "tier": "standard",
+  "image": "image-gen:latest",
+  "serviceAccountName": "image-gen"
+}

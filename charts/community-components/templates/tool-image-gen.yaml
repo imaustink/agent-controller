@@ -1,0 +1,69 @@
+{{- if .Values.imageGen.enabled }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: Tool
+metadata:
+  name: image-gen
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Generates an image from a text prompt, or edits an existing image when
+    given its URL. Uploads the result to a private S3-compatible object store
+    and returns a time-limited presigned URL. One tool covers both
+    create-from-scratch and iterative refinement: pass a prior image's URL back
+    in to keep editing the same picture.
+  input: >-
+    A single string: either a JSON object {"prompt": string, "image_url"?:
+    string, "size"?: string, "quality"?: string, "background"?: string}, or a
+    bare prompt string. When image_url is present the tool edits that image;
+    otherwise it generates a new one.
+  output: >-
+    Markdown embedding the produced image's presigned URL, plus an ArtifactRef
+    (uri/sha256/bytes/content_type) for the PNG bytes; or a failed event if
+    generation, editing, or upload failed.
+  # Image creation/editing -- offered to both roles (like recipe-scraper).
+  allowedRoles:
+    - reader
+    - writer
+  tier: standard
+  image: {{ .Values.imageGen.image | quote }}
+  serviceAccountName: {{ .Values.imageGen.serviceAccountName | quote }}
+  # App-level tuning only -- nothing environment-specific lives in this chart.
+  env:
+    - name: IMAGE_MODEL
+      value: {{ .Values.imageGen.model | quote }}
+    - name: IMAGE_SIZE
+      value: {{ .Values.imageGen.size | quote }}
+    - name: IMAGE_QUALITY
+      value: {{ .Values.imageGen.quality | quote }}
+    - name: IMAGE_S3_PREFIX
+      value: {{ .Values.imageGen.prefix | quote }}
+    - name: IMAGE_S3_PRESIGN_TTL_SECONDS
+      value: {{ .Values.imageGen.presignTtlSeconds | quote }}
+  secretEnv:
+    - name: OPENAI_API_KEY
+      secretRef:
+        name: {{ .Values.imageGen.openai.secretName | quote }}
+        key: {{ .Values.imageGen.openai.secretKey | quote }}
+    # The S3 target (bucket + how to reach it) AND its credentials all come from
+    # ONE operator-provided secret, created next to where the bucket is
+    # provisioned (e.g. the homelab ACK Bucket CR). The chart names only the
+    # secret -- never the bucket/region/endpoint -- so there is no
+    # environment-specific S3 value here to duplicate or keep in sync, and no
+    # render-time `required` guard (the tool validates the resolved config at
+    # runtime). The secret must carry every key below; IMAGE_S3_ENDPOINT may be
+    # empty for AWS's default endpoint.
+    {{- $s3 := .Values.imageGen.s3.secretName }}
+    - name: IMAGE_S3_ACCESS_KEY_ID
+      secretRef: { name: {{ $s3 | quote }}, key: AWS_ACCESS_KEY_ID }
+    - name: IMAGE_S3_SECRET_ACCESS_KEY
+      secretRef: { name: {{ $s3 | quote }}, key: AWS_SECRET_ACCESS_KEY }
+    - name: IMAGE_S3_BUCKET
+      secretRef: { name: {{ $s3 | quote }}, key: IMAGE_S3_BUCKET }
+    - name: IMAGE_S3_REGION
+      secretRef: { name: {{ $s3 | quote }}, key: IMAGE_S3_REGION }
+    - name: IMAGE_S3_ENDPOINT
+      secretRef: { name: {{ $s3 | quote }}, key: IMAGE_S3_ENDPOINT }
+    - name: IMAGE_S3_FORCE_PATH_STYLE
+      secretRef: { name: {{ $s3 | quote }}, key: IMAGE_S3_FORCE_PATH_STYLE }
+{{- end }}
