@@ -1,0 +1,55 @@
+#!/bin/sh
+# screenshot -- capture a PNG of a URL (or local file:// path) using the
+# bundled headless Chromium.
+#
+# This wrapper exists because the hardened Job this agent runs in (see
+# docs/security.md and charts/community-components/.../agent-claude-code-swe.yaml)
+# makes a bare `chromium --screenshot` fail: the container is non-root with no
+# user namespaces (Chromium's sandbox can't start -> needs --no-sandbox) and
+# has a tiny default /dev/shm (-> --disable-dev-shm-usage), and the root
+# filesystem is read-only with writable state only under /tmp (-> the profile /
+# crash-dumps dir must live there). Encoding those flags once here means the
+# agent gets a working screenshot instead of rediscovering them mid-task.
+#
+# Usage: screenshot <url> [output.png] [width] [height]
+#   url          http(s):// or file:// (or a local path, which is resolved)
+#   output.png   defaults to ./screenshot.png
+#   width/height viewport size in CSS px, defaults 1280x800
+#                (for the mobile audits this container is often used for, try
+#                 e.g. `screenshot <url> mobile.png 390 844`)
+set -eu
+
+if [ "$#" -lt 1 ]; then
+  echo "usage: screenshot <url> [output.png] [width] [height]" >&2
+  exit 2
+fi
+
+url="$1"
+out="${2:-screenshot.png}"
+width="${3:-1280}"
+height="${4:-800}"
+
+# Allow a bare local path as a convenience; turn it into a file:// URL.
+case "$url" in
+  http://*|https://*|file://*|about:*|data:*) : ;;
+  /*) url="file://$url" ;;
+  *)  url="file://$(pwd)/$url" ;;
+esac
+
+profile="$(mktemp -d "${TMPDIR:-/tmp}/chromium-profile.XXXXXX")"
+trap 'rm -rf "$profile"' EXIT INT TERM
+
+"${CHROME_BIN:-chromium}" \
+  --headless=new \
+  --no-sandbox \
+  --disable-dev-shm-usage \
+  --disable-gpu \
+  --hide-scrollbars \
+  --force-color-profile=srgb \
+  --user-data-dir="$profile" \
+  --crash-dumps-dir="$profile" \
+  --window-size="${width},${height}" \
+  --screenshot="$out" \
+  "$url"
+
+echo "wrote $out (${width}x${height})" >&2
