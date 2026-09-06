@@ -86,6 +86,16 @@ RUN apt-get update \
      # claude-runner.ts). Present in the base image already, but pinned
      # explicitly since the feature hard-depends on it.
      util-linux \
+     # Headless browser so the agent can screenshot the UI it changes (e.g.
+     # verifying a mobile-layout fix) instead of reasoning about geometry
+     # blind. Debian's `chromium` package pulls in the exact matching shared
+     # libraries (libnss3, libgbm1, libasound2, the X/GTK stack, ...), which
+     # is why a Playwright/Puppeteer-downloaded Chromium failed at runtime
+     # here -- those libs weren't present and the read-only rootfs + non-root
+     # uid leave no way to add them mid-task. fonts-liberation gives it a
+     # sane default font so rendered text isn't tofu. Drive it via the
+     # `screenshot` helper below (it sets the flags the hardened Job needs).
+     chromium fonts-liberation \
   # GitHub CLI -- installed from the official release tarball for a hermetic build.
   # curl retries transient network resets (common on flaky CI runners) instead
   # of failing the whole build on a single dropped connection. Arch is
@@ -118,6 +128,17 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PATH="/usr/local/go/bin:$PATH"
 ENV GOPATH="/tmp/go"
+
+# Point the common browser-automation libraries at the system Chromium and stop
+# them trying to download their own (which would fail on the read-only rootfs).
+ENV CHROME_BIN=/usr/bin/chromium
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+# `screenshot <url> [out.png] [w] [h]` -- headless-Chromium capture helper that
+# bakes in the flags this hardened Job requires (see the script header).
+COPY --chmod=755 apps/claude-code-swe-agent/bin/screenshot /usr/local/bin/screenshot
 
 COPY --from=build /repo/node_modules                        ./node_modules
 COPY --from=build /repo/apps/claude-code-swe-agent/dist      ./dist
