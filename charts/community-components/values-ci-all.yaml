@@ -32,6 +32,9 @@ webSearch:
 webFetch:
   enabled: true
 
+imageGen:
+  enabled: true
+
 kubectlReadonly:
   enabled: true
 
@@ -98,6 +101,8 @@ stubAgent:
 
 skills:
   recipeRefining:
+    enabled: true
+  imageGen:
     enabled: true
   selfImprovement:
     enabled: true

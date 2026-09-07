@@ -77,6 +77,40 @@ webFetch:
     annotations: {}
     automount: true
 
+# image-gen: generates an image from a prompt, or edits an existing image given
+# its URL. Uploads the result to an S3-compatible object store and returns a
+# time-limited presigned URL. Disabled by default -- it needs an OPENAI_API_KEY
+# secret and the S3 secret below before its derived audience (ADR 0011) is usable.
+imageGen:
+  enabled: false
+  image: image-gen:latest
+  serviceAccountName: image-gen
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA).
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+  # App-level tuning (see tools/image-gen/README.md).
+  model: gpt-image-1
+  size: "1024x1024"
+  quality: auto
+  prefix: images
+  presignTtlSeconds: "604800"  # presigned-URL lifetime; 7 days (SigV4 maximum)
+  # Secret (must already exist) supplying the tool's OPENAI_API_KEY.
+  openai:
+    secretName: agent-orchestrator-secrets
+    secretKey: OPENAI_API_KEY
+  # The S3 TARGET and its credentials are supplied entirely by one operator-
+  # provided secret -- created next to where the bucket is provisioned (e.g. the
+  # homelab ACK Bucket CR), so the bucket name lives in exactly one place and
+  # this chart carries no environment-specific S3 values. The secret must hold
+  # these keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, IMAGE_S3_BUCKET,
+  # IMAGE_S3_REGION, IMAGE_S3_ENDPOINT (empty => AWS default), and
+  # IMAGE_S3_FORCE_PATH_STYLE ("false" for AWS S3; "true" for MinIO/Ceph RGW).
+  s3:
+    secretName: image-gen-s3
+
 # kubectl-readonly: runs a single allowlisted read-only kubectl command
 # (get/describe/logs/events/top) for cluster debugging. Disabled by default:
 # unlike every other tool in this chart, enabling it grants its
@@ -482,6 +516,12 @@ skills:
   # (ADR 0011) to be non-empty.
   recipeRefining:
     enabled: true
+  # image-gen: generate an image from a prompt, then iteratively refine it
+  # (each edit re-touches the same picture). Enable imageGen above -- with its
+  # OPENAI_API_KEY secret and S3 bucket/credentials configured -- for this
+  # skill's derived audience (ADR 0011) to be non-empty.
+  imageGen:
+    enabled: false
   # self-improvement: drafts a new Skill/Tool CR from a successful fallback
   # turn (graph.ts's selectDelegate fallback) and opens a PR against
   # imaustink/agent-controller by delegating straight to a SWE Agent CR

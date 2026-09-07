@@ -87,6 +87,11 @@ jobs:
               - 'package-lock.json'
               - 'packages/messaging/**'
               - 'tools/web-fetch/**'
+            image-gen:
+              - 'package.json'
+              - 'package-lock.json'
+              - 'packages/messaging/**'
+              - 'tools/image-gen/**'
             kubectl-readonly:
               - 'package.json'
               - 'package-lock.json'
@@ -129,6 +134,7 @@ jobs:
           RECIPE_PUBLISHER: ${{ steps.filter.outputs.recipe-publisher }}
           WEB_SEARCH: ${{ steps.filter.outputs.web-search }}
           WEB_FETCH: ${{ steps.filter.outputs.web-fetch }}
+          IMAGE_GEN: ${{ steps.filter.outputs.image-gen }}
           KUBECTL_READONLY: ${{ steps.filter.outputs.kubectl-readonly }}
           SIGNOZ_QUERY: ${{ steps.filter.outputs.signoz-query }}
           GITHUB_TOOL: ${{ steps.filter.outputs.github-tool }}
@@ -147,6 +153,7 @@ jobs:
             {"image":"recipe-publisher","changed_key":"RECIPE_PUBLISHER","dockerfile":"tools/recipe-publisher/Dockerfile","context":"."},
             {"image":"web-search","changed_key":"WEB_SEARCH","dockerfile":"tools/web-search/Dockerfile","context":"."},
             {"image":"web-fetch","changed_key":"WEB_FETCH","dockerfile":"tools/web-fetch/Dockerfile","context":"."},
+            {"image":"image-gen","changed_key":"IMAGE_GEN","dockerfile":"tools/image-gen/Dockerfile","context":"."},
             {"image":"kubectl-readonly","changed_key":"KUBECTL_READONLY","dockerfile":"tools/kubectl-readonly/Dockerfile","context":"."},
             {"image":"signoz-query","changed_key":"SIGNOZ_QUERY","dockerfile":"tools/signoz-query/Dockerfile","context":"."},
             {"image":"github","changed_key":"GITHUB_TOOL","dockerfile":"tools/github/Dockerfile","context":"."},
@@ -177,6 +184,7 @@ jobs:
               --arg RECIPE_PUBLISHER "$RECIPE_PUBLISHER" \
               --arg WEB_SEARCH "$WEB_SEARCH" \
               --arg WEB_FETCH "$WEB_FETCH" \
+              --arg IMAGE_GEN "$IMAGE_GEN" \
               --arg KUBECTL_READONLY "$KUBECTL_READONLY" \
               --arg SIGNOZ_QUERY "$SIGNOZ_QUERY" \
               --arg GITHUB_TOOL "$GITHUB_TOOL" \
@@ -184,7 +192,7 @@ jobs:
               --arg CORE_CONTROLLER "$CORE_CONTROLLER" \
               --arg TEMPORAL_ENGINE "$TEMPORAL_ENGINE" \
               --arg LOCALTOOL_EXECUTOR "$LOCALTOOL_EXECUTOR" \
-              '{AGENT_ORCHESTRATOR:$AGENT_ORCHESTRATOR,OPENCODE_SWE_AGENT:$OPENCODE_SWE_AGENT,CLAUDE_CODE_SWE_AGENT:$CLAUDE_CODE_SWE_AGENT,INTEGRATION_GATEWAY:$INTEGRATION_GATEWAY,RECIPE_SCRAPER:$RECIPE_SCRAPER,RECIPE_PUBLISHER:$RECIPE_PUBLISHER,WEB_SEARCH:$WEB_SEARCH,WEB_FETCH:$WEB_FETCH,KUBECTL_READONLY:$KUBECTL_READONLY,SIGNOZ_QUERY:$SIGNOZ_QUERY,GITHUB_TOOL:$GITHUB_TOOL,SSH_TOOL:$SSH_TOOL,CORE_CONTROLLER:$CORE_CONTROLLER,TEMPORAL_ENGINE:$TEMPORAL_ENGINE,LOCALTOOL_EXECUTOR:$LOCALTOOL_EXECUTOR}')
+              '{AGENT_ORCHESTRATOR:$AGENT_ORCHESTRATOR,OPENCODE_SWE_AGENT:$OPENCODE_SWE_AGENT,CLAUDE_CODE_SWE_AGENT:$CLAUDE_CODE_SWE_AGENT,INTEGRATION_GATEWAY:$INTEGRATION_GATEWAY,RECIPE_SCRAPER:$RECIPE_SCRAPER,RECIPE_PUBLISHER:$RECIPE_PUBLISHER,WEB_SEARCH:$WEB_SEARCH,WEB_FETCH:$WEB_FETCH,IMAGE_GEN:$IMAGE_GEN,KUBECTL_READONLY:$KUBECTL_READONLY,SIGNOZ_QUERY:$SIGNOZ_QUERY,GITHUB_TOOL:$GITHUB_TOOL,SSH_TOOL:$SSH_TOOL,CORE_CONTROLLER:$CORE_CONTROLLER,TEMPORAL_ENGINE:$TEMPORAL_ENGINE,LOCALTOOL_EXECUTOR:$LOCALTOOL_EXECUTOR}')
             MATRIX=$(jq -c --argjson flags "$FLAGS" 'map(select($flags[.changed_key] == "true"))' all.json)
           fi
 
