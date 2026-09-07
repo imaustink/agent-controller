@@ -88,6 +88,7 @@ export function buildPrompt(instruction: string, marker: SweMarker | null): stri
     `## Environment`,
     `This container already has the following installed -- use them directly, do not apt-get/install/download them yourself:`,
     `git, gh (GitHub CLI, authenticated), curl, python3 + pip, node + npm, go, make, build-essential (gcc/g++), jq, unzip, zip, ripgrep (rg), less.`,
+    `A headless browser is also available for screenshots (e.g. to verify a UI change). Run \`screenshot <url> [out.png] [width] [height]\` -- it drives the bundled Chromium (also at \`$CHROME_BIN\` / \`/usr/bin/chromium\`, and used by Puppeteer/Playwright via \`executablePath\`) with the flags this sandboxed container needs, so prefer it over invoking Chromium yourself. Width/height are viewport CSS px (default 1280x800); pass a mobile size like \`390 844\` to audit mobile layouts.`,
     `If a task genuinely needs something outside this list, install it yourself, but check this list first.`,
     ``,
     `## Rules (must follow)`,
