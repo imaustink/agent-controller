@@ -1,5 +1,10 @@
 import type { IdentityLinkPort, IdentityLinkStartResult } from "../identity-link/gateway-client.js";
 import { canonicalSubjectForLogin, isCanonicalPrincipal, resolveActorLogin } from "../identity-link/credential-subject.js";
+import {
+  resolveIdentityGateway,
+  resolveIdentityProviderCatalog,
+  type IdentityProviderCatalog,
+} from "../identity-link/identity-provider-catalog.js";
 import type { Identity } from "../rbac/types.js";
 
 /**
@@ -36,13 +41,6 @@ import type { Identity } from "../rbac/types.js";
 export const ACTOR_LOGIN_ENV = "AGENT_ACTOR_LOGIN";
 
 /**
- * Providers whose credential is keyed by PRINCIPAL rather than by the
- * entry-point subject -- i.e. the ones a human re-authorizes by hand and
- * expects to only do once (docs/adr/0030 §6).
- */
-export const CROSS_ENTRY_POINT_PROVIDERS: ReadonlySet<string> = new Set(["claude", "claude-remote"]);
-
-/**
  * The provider whose link ESTABLISHES a principal (docs/adr/0031).
  *
  * GitHub, because it is the one identity both entry points can reach: a webhook
@@ -54,21 +52,6 @@ export const CROSS_ENTRY_POINT_PROVIDERS: ReadonlySet<string> = new Set(["claude
 export const PRINCIPAL_PROVIDER = "github";
 
 /**
- * Maps an identity-linked provider (Agent.identityProviders, e.g. "github") to
- * the env var name its linked token is injected as (AgentLaunchOptions'
- * secretEnv, agentrun-launcher.ts).
- */
-export const PROVIDER_ENV_VAR: Record<string, string> = {
-  github: "GITHUB_TOKEN",
-  claude: "CLAUDE_CODE_OAUTH_TOKEN",
-  "claude-remote": "CLAUDE_LOGIN_CREDENTIALS_JSON",
-  // Glyph's per-user OAuth delegation: the calling user's own delegated token
-  // is injected as GLYPH_TOKEN for the `glyph` container Tool (tools/glyph),
-  // exactly as `github` above injects GITHUB_TOKEN.
-  glyph: "GLYPH_TOKEN",
-};
-
-/**
  * The expiry of the `claude-remote` credentials blob about to be injected, for
  * the `authorized` log line -- or `null` when this run carries none, or the
  * blob has no readable `expiresAt`.
@@ -77,8 +60,13 @@ export const PROVIDER_ENV_VAR: Record<string, string> = {
  * resolved credential for a run, so it must never return anything derived from
  * a token's VALUE (see `logVerdict`'s own warning).
  */
-function claudeLoginExpiry(secretEnv: Array<{ name: string; value: string }> | undefined): string | null {
-  const blob = secretEnv?.find((e) => e.name === PROVIDER_ENV_VAR["claude-remote"])?.value;
+function claudeLoginExpiry(
+  secretEnv: Array<{ name: string; value: string }> | undefined,
+  /** The `claude-remote` provider's current envVar, off the catalog -- never assumed to be a fixed string. */
+  claudeRemoteEnvVar: string | undefined,
+): string | null {
+  if (!claudeRemoteEnvVar) return null;
+  const blob = secretEnv?.find((e) => e.name === claudeRemoteEnvVar)?.value;
   if (!blob) return null;
   try {
     const parsed = JSON.parse(blob) as Record<string, unknown>;
@@ -111,31 +99,6 @@ const CREDENTIALS_WRITEBACK_ENV = {
  * exists to capture.
  */
 const WRITEBACK_GRANT_MARGIN_SECONDS = 15 * 60;
-
-/**
- * Human-facing label for a provider, used in link prompts/messages.
- *
- * `claude` and `claude-remote` MUST NOT read the same. They are two different
- * credentials -- a `claude setup-token` for running Claude Code, and a full
- * `claude auth login` credentials file for Remote Control (docs/adr/0027) -- and
- * an Agent declaring both asks the user for both. While both said "Claude", the
- * two prompts were indistinguishable:
- *
- *   12:42 "please link your Claude account ... I also couldn't start the
- *          Claude linking step just now"
- *   12:45 "please link your Claude account"
- *
- * Same words, different credential, so completing the first and being asked
- * again reads as the system losing the authorization it was just given rather
- * than as a second, distinct step. It also made the batched two-link message
- * ("link X, and link Y") say the same thing twice.
- */
-export const PROVIDER_LABEL: Record<string, string> = {
-  github: "GitHub",
-  claude: "Claude",
-  "claude-remote": "Claude Remote Control",
-  glyph: "Glyph",
-};
 
 /**
  * How many times a provider's link flow may be started before the turn gives up
@@ -253,6 +216,15 @@ export interface AuthorizationServiceDeps {
   };
   /** The launched run's timeout, used to size a write-back grant's lifetime. */
   agentRunTimeoutSeconds?: number;
+  /**
+   * The live, `IdentityProvider`-CR-backed catalog of envVar/label/flow/
+   * crossEntryPoint per provider (docs/adr/0027, and the CRD's own doc
+   * comment) -- what this class consults instead of a hardcoded map. Absent
+   * in a test double or a deployment that hasn't wired one up falls back to
+   * {@link DEFAULT_IDENTITY_PROVIDER_CATALOG} (github/claude/claude-remote
+   * only), via {@link resolveIdentityProviderCatalog}.
+   */
+  identityProviderCatalog?: IdentityProviderCatalog;
 }
 
 /**
@@ -271,17 +243,18 @@ export function linkPromptText(started: IdentityLinkStartResult, label: string):
 export class AuthorizationService {
   constructor(private readonly deps: AuthorizationServiceDeps) {}
 
+  /** The effective identity-provider catalog for this instance (see {@link AuthorizationServiceDeps.identityProviderCatalog}). */
+  private catalog(): IdentityProviderCatalog {
+    return resolveIdentityProviderCatalog(this.deps.identityProviderCatalog);
+  }
+
   /**
    * Resolves which gateway backs a given identity provider (docs/adr/0027) --
-   * the one place that knows `"claude"` routes to `claudeAuthGateway` and
-   * `"claude-remote"` to `claudeRemoteGateway`, instead of the
-   * (GitHub-only-in-practice) `identityLinkGateway`, so the provider loop stays
-   * provider-agnostic.
+   * see {@link resolveIdentityGateway}, the single shared implementation this
+   * and `graph.ts`'s link-lifecycle call sites both use.
    */
   private gatewayFor(provider: string): IdentityLinkPort | undefined {
-    if (provider === "claude") return this.deps.claudeAuthGateway;
-    if (provider === "claude-remote") return this.deps.claudeRemoteGateway;
-    return this.deps.identityLinkGateway;
+    return resolveIdentityGateway(provider, this.catalog(), this.deps);
   }
 
   /**
@@ -297,6 +270,8 @@ export class AuthorizationService {
    */
   async authorize(req: AuthorizationRequest): Promise<AuthorizationOutcome> {
     const { agent, identity } = req;
+    const catalog = this.catalog();
+    const isCrossEntryPoint = (provider: string): boolean => catalog.get(provider)?.crossEntryPoint === true;
     let secretEnv: CredentialEnvEntry[] | undefined;
     /** See {@link AuthorizationOutcome}'s `ownedSecretNames`. */
     const ownedSecretNames: string[] = [];
@@ -356,7 +331,7 @@ export class AuthorizationService {
     // 0.3s later -- so the turn worked and the user was asked to link on every
     // single turn regardless.
     if (
-      providerPlan.some((p) => CROSS_ENTRY_POINT_PROVIDERS.has(p.name)) &&
+      providerPlan.some((p) => isCrossEntryPoint(p.name)) &&
       !isCanonicalPrincipal(principal) &&
       identity.perUser === true &&
       this.deps.identityLinkGateway?.getLinkedLogin
@@ -381,7 +356,7 @@ export class AuthorizationService {
       principalLookupFailed = existingLogin === null;
     }
     if (
-      providerPlan.some((p) => CROSS_ENTRY_POINT_PROVIDERS.has(p.name)) &&
+      providerPlan.some((p) => isCrossEntryPoint(p.name)) &&
       !isCanonicalPrincipal(principal) &&
       !principalLookupFailed &&
       this.deps.identityLinkGateway &&
@@ -421,7 +396,7 @@ export class AuthorizationService {
       // property of the specific account that established it, and it is the very
       // thing principal resolution reads, so keying it by principal would be
       // circular.
-      const credentialSubject = CROSS_ENTRY_POINT_PROVIDERS.has(provider) ? principal : identity.subject;
+      const credentialSubject = isCrossEntryPoint(provider) ? principal : identity.subject;
 
       let existing = await gateway.getToken(provider, credentialSubject);
 
@@ -444,7 +419,7 @@ export class AuthorizationService {
       // only what its own principal already has.
       if (
         !existing &&
-        CROSS_ENTRY_POINT_PROVIDERS.has(provider) &&
+        isCrossEntryPoint(provider) &&
         identity.perUser === true &&
         credentialSubject !== identity.subject &&
         (await gateway.rekey?.(provider, identity.subject, credentialSubject))
@@ -490,11 +465,11 @@ export class AuthorizationService {
             );
             continue;
           }
-          failedToStart.push(PROVIDER_LABEL[provider] ?? provider);
+          failedToStart.push(catalog.get(provider)?.label ?? provider);
           continue;
         }
 
-        const label = PROVIDER_LABEL[provider] ?? provider;
+        const label = catalog.get(provider)?.label ?? provider;
         const linkUrlText = linkPromptText(started, label);
 
         // How the link reaches the caller depends on whether this turn has a
@@ -593,7 +568,7 @@ export class AuthorizationService {
       // do NOT declare `github` at all (docs/adr/0030).
       if (provider === "github" && existing.githubLogin) actorLoginFromLoop = existing.githubLogin;
 
-      const envVarName = PROVIDER_ENV_VAR[provider];
+      const envVarName = catalog.get(provider)?.envVar;
       if (!envVarName) {
         this.logVerdict("misconfigured", agent.id, { provider, reason: "no env var mapping" });
         return { kind: "misconfigured", error: `agent ${agent.id} declares unsupported identity provider "${provider}"` };
@@ -683,7 +658,7 @@ export class AuthorizationService {
       // of whether it was already dead at launch or died during the turn --
       // which is the difference between a rotation that went unpersisted and a
       // credential resolved from the wrong record.
-      claudeLoginExpiresAt: claudeLoginExpiry(secretEnv),
+      claudeLoginExpiresAt: claudeLoginExpiry(secretEnv, catalog.get("claude-remote")?.envVar),
     });
     return {
       kind: "authorized",
@@ -794,6 +769,7 @@ export class AuthorizationService {
     | { kind: "not-linked"; provider: string }
     | { kind: "unsupported-provider"; provider: string }
   > {
+    const catalog = this.catalog();
     let secretEnv: CredentialEnvEntry[] | undefined;
     for (const provider of input.identityProviders ?? []) {
       const gateway = this.gatewayFor(provider);
@@ -801,12 +777,12 @@ export class AuthorizationService {
       // Same keying as authorize()'s gate -- deriving a different subject here
       // would report "not linked" for an account the user had in fact just
       // linked, which is the PR #144 re-auth loop.
-      const credentialSubject = CROSS_ENTRY_POINT_PROVIDERS.has(provider)
+      const credentialSubject = catalog.get(provider)?.crossEntryPoint === true
         ? (input.identity.principal ?? input.identity.subject)
         : input.identity.subject;
       const existing = await gateway.getToken(provider, credentialSubject);
       if (!existing) return { kind: "not-linked", provider };
-      const envVarName = PROVIDER_ENV_VAR[provider];
+      const envVarName = catalog.get(provider)?.envVar;
       if (!envVarName) return { kind: "unsupported-provider", provider };
       secretEnv = [...(secretEnv ?? []), { name: envVarName, value: existing.token }];
     }

@@ -63,4 +63,23 @@ spec:
         name: {{ .Values.glyphTool.secretName | quote }}
         key: {{ .Values.glyphTool.secretKey | quote }}
   {{- end }}
+{{- if .Values.glyphTool.identityLink.enabled }}
+---
+{{/*
+  The IdentityProvider CR agent-orchestrator's dynamic catalog resolves
+  "glyph" against (see identityprovider-defaults.yaml's header comment for
+  why this CRD exists at all). Only rendered when identityLink is actually in
+  use above -- the static-secret path never references a "glyph" provider by
+  name, so there is nothing for agent-orchestrator to look up.
+*/}}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: IdentityProvider
+metadata:
+  name: glyph
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  envVar: GLYPH_TOKEN
+  label: Glyph
+{{- end }}
 {{- end }}
