@@ -36,13 +36,6 @@ import type { Identity } from "../rbac/types.js";
 export const ACTOR_LOGIN_ENV = "AGENT_ACTOR_LOGIN";
 
 /**
- * Providers whose credential is keyed by PRINCIPAL rather than by the
- * entry-point subject -- i.e. the ones a human re-authorizes by hand and
- * expects to only do once (docs/adr/0030 §6).
- */
-export const CROSS_ENTRY_POINT_PROVIDERS: ReadonlySet<string> = new Set(["claude", "claude-remote"]);
-
-/**
  * The provider whose link ESTABLISHES a principal (docs/adr/0031).
  *
  * GitHub, because it is the one identity both entry points can reach: a webhook
@@ -54,19 +47,73 @@ export const CROSS_ENTRY_POINT_PROVIDERS: ReadonlySet<string> = new Set(["claude
 export const PRINCIPAL_PROVIDER = "github";
 
 /**
- * Maps an identity-linked provider (Agent.identityProviders, e.g. "github") to
- * the env var name its linked token is injected as (AgentLaunchOptions'
- * secretEnv, agentrun-launcher.ts).
+ * Everything the pre-flight (and the graph, which reads the derived exports
+ * below) needs to know about one identity provider, in one place.
+ *
+ * This replaces what used to be three parallel maps -- an env-var map, a
+ * label map, and a cross-entry-point set -- all keyed by the same provider
+ * strings, plus an `if/else` chain in {@link AuthorizationService.gatewayFor}
+ * naming the same strings again. Nothing enforced that a provider added to
+ * one was added to the others; the leak was structural, not a bug in any one
+ * map. Adding a provider is now one entry here.
  */
-export const PROVIDER_ENV_VAR: Record<string, string> = {
-  github: "GITHUB_TOKEN",
-  claude: "CLAUDE_CODE_OAUTH_TOKEN",
-  "claude-remote": "CLAUDE_LOGIN_CREDENTIALS_JSON",
+interface IdentityProviderConfig {
+  /**
+   * Env var name its linked token is injected as (AgentLaunchOptions'
+   * secretEnv, agentrun-launcher.ts).
+   */
+  envVar: string;
+  /** Human-facing label used in link prompts/messages (see {@link PROVIDER_LABEL}). */
+  label: string;
+  /**
+   * Set for providers whose credential is keyed by PRINCIPAL rather than by
+   * the entry-point subject -- i.e. the ones a human re-authorizes by hand
+   * and expects to only do once (docs/adr/0030 §6).
+   */
+  crossEntryPoint?: boolean;
+  /**
+   * Which gateway on {@link AuthorizationServiceDeps} backs this provider's
+   * link flow (docs/adr/0027). Omit for the GitHub-only-in-practice default,
+   * `identityLinkGateway`.
+   */
+  gatewayKey?: "claudeAuthGateway" | "claudeRemoteGateway";
+}
+
+const IDENTITY_PROVIDERS: Record<string, IdentityProviderConfig> = {
+  github: { envVar: "GITHUB_TOKEN", label: "GitHub" },
+  claude: { envVar: "CLAUDE_CODE_OAUTH_TOKEN", label: "Claude", crossEntryPoint: true, gatewayKey: "claudeAuthGateway" },
+  "claude-remote": {
+    envVar: "CLAUDE_LOGIN_CREDENTIALS_JSON",
+    label: "Claude Remote Control",
+    crossEntryPoint: true,
+    gatewayKey: "claudeRemoteGateway",
+  },
   // Glyph's per-user OAuth delegation: the calling user's own delegated token
   // is injected as GLYPH_TOKEN for the `glyph` container Tool (tools/glyph),
   // exactly as `github` above injects GITHUB_TOKEN.
-  glyph: "GLYPH_TOKEN",
+  glyph: { envVar: "GLYPH_TOKEN", label: "Glyph" },
 };
+
+/**
+ * Maps an identity-linked provider (Agent.identityProviders, e.g. "github") to
+ * the env var name its linked token is injected as (AgentLaunchOptions'
+ * secretEnv, agentrun-launcher.ts). Derived from {@link IDENTITY_PROVIDERS}.
+ */
+export const PROVIDER_ENV_VAR: Record<string, string> = Object.fromEntries(
+  Object.entries(IDENTITY_PROVIDERS).map(([provider, config]) => [provider, config.envVar]),
+);
+
+/**
+ * Providers whose credential is keyed by PRINCIPAL rather than by the
+ * entry-point subject -- i.e. the ones a human re-authorizes by hand and
+ * expects to only do once (docs/adr/0030 §6). Derived from
+ * {@link IDENTITY_PROVIDERS}.
+ */
+export const CROSS_ENTRY_POINT_PROVIDERS: ReadonlySet<string> = new Set(
+  Object.entries(IDENTITY_PROVIDERS)
+    .filter(([, config]) => config.crossEntryPoint)
+    .map(([provider]) => provider),
+);
 
 /**
  * The expiry of the `claude-remote` credentials blob about to be injected, for
@@ -129,13 +176,12 @@ const WRITEBACK_GRANT_MARGIN_SECONDS = 15 * 60;
  * again reads as the system losing the authorization it was just given rather
  * than as a second, distinct step. It also made the batched two-link message
  * ("link X, and link Y") say the same thing twice.
+ *
+ * Derived from {@link IDENTITY_PROVIDERS}.
  */
-export const PROVIDER_LABEL: Record<string, string> = {
-  github: "GitHub",
-  claude: "Claude",
-  "claude-remote": "Claude Remote Control",
-  glyph: "Glyph",
-};
+export const PROVIDER_LABEL: Record<string, string> = Object.fromEntries(
+  Object.entries(IDENTITY_PROVIDERS).map(([provider, config]) => [provider, config.label]),
+);
 
 /**
  * How many times a provider's link flow may be started before the turn gives up
@@ -272,16 +318,14 @@ export class AuthorizationService {
   constructor(private readonly deps: AuthorizationServiceDeps) {}
 
   /**
-   * Resolves which gateway backs a given identity provider (docs/adr/0027) --
-   * the one place that knows `"claude"` routes to `claudeAuthGateway` and
-   * `"claude-remote"` to `claudeRemoteGateway`, instead of the
-   * (GitHub-only-in-practice) `identityLinkGateway`, so the provider loop stays
-   * provider-agnostic.
+   * Resolves which gateway backs a given identity provider (docs/adr/0027),
+   * off {@link IDENTITY_PROVIDERS}' `gatewayKey` -- falling back to the
+   * (GitHub-only-in-practice) `identityLinkGateway` for a provider that
+   * declares none -- so the provider loop stays provider-agnostic.
    */
   private gatewayFor(provider: string): IdentityLinkPort | undefined {
-    if (provider === "claude") return this.deps.claudeAuthGateway;
-    if (provider === "claude-remote") return this.deps.claudeRemoteGateway;
-    return this.deps.identityLinkGateway;
+    const gatewayKey = IDENTITY_PROVIDERS[provider]?.gatewayKey;
+    return gatewayKey ? this.deps[gatewayKey] : this.deps.identityLinkGateway;
   }
 
   /**
