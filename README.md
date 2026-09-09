@@ -139,6 +139,7 @@ identity, selects a Skill via RAG, plans an action, and creates a `ToolRun` or
 | **recipe-scraper** | any recipe URL (web page, video, or image) | recipe Markdown | [tools/recipe-scraper/README.md](tools/recipe-scraper/README.md) |
 | **recipe-publisher** | recipe Markdown | published/updated recipe in a Mealie instance | [tools/recipe-publisher/README.md](tools/recipe-publisher/README.md) |
 | **github** | a single `gh` CLI command line | `gh`'s own output, authenticated as the calling user's own linked GitHub identity | [tools/github/README.md](tools/github/README.md) |
+| **glyph** | a JSON note/task command (create/read/update/search) | a Markdown summary of the result, authenticated as the calling user's own linked Glyph identity | [tools/glyph/README.md](tools/glyph/README.md) |
 
 ## Shared standards
 

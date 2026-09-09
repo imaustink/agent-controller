@@ -1,0 +1,66 @@
+{{- if .Values.glyphTool.enabled }}
+{{/*
+  Exactly one credential path is wired, and only one at a time:
+    - identityLink.enabled  -> agent-orchestrator injects the CALLING user's
+      own delegated Glyph token as GLYPH_TOKEN per-invocation (no static
+      secretEnv on the CR at all), OR
+    - a static, operator-provisioned GLYPH_TOKEN secret (glyphTool.secretKey).
+  A shared credential and the calling user's own token are never both present
+  in the Job -- the static secretEnv is emitted only when identityLink is off.
+*/}}
+{{- if and (not .Values.glyphTool.identityLink.enabled) (not .Values.glyphTool.secretKey) }}
+{{- fail "glyphTool requires a Glyph credential: set secretKey (a GLYPH_TOKEN) or identityLink.enabled" }}
+{{- end }}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: Tool
+metadata:
+  name: glyph
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Creates, reads, updates, and searches notes and tasks in Glyph
+    (a notes-and-tasks app) -- authenticated as the CALLING user's own linked
+    Glyph identity, not a shared bot credential. Notes are rich pages whose
+    body is authored as Markdown; tasks carry a status, priority, due date, and
+    tags. Use this to capture a note, jot or triage a task, look something up,
+    or update its state.
+  input: >-
+    A single JSON object naming a resource ("note" or "task") and an action
+    ("create", "get", "update", or "search"), plus that operation's fields.
+    Examples:
+    {"resource":"note","action":"create","title":"Launch plan","body":"# Launch\n\n- draft\n- ship"};
+    {"resource":"note","action":"search","query":"launch"};
+    {"resource":"task","action":"create","title":"Ship the PR","status":"in-progress","priority":"high","dueDate":"2026-09-15"};
+    {"resource":"task","action":"update","id":"<uuid>","status":"done"}.
+    See tools/glyph/README.md for the full field reference (status values:
+    todo/in-progress/done/cancelled; priority: urgent/high/medium/low/none).
+  output: >-
+    A Markdown summary of the result: a confirmation line for writes, the
+    rendered note/task for reads, or a bulleted list of matches for searches.
+  # Creates and updates notes/tasks, so this requires the writer role (a
+  # skill's audience is the intersection of its tools' roles, ADR 0011).
+  allowedRoles:
+    - writer
+  tier: standard
+  {{- if .Values.glyphTool.identityLink.enabled }}
+  identityProviders:
+    {{- range .Values.glyphTool.identityLink.providers }}
+    - {{ . }}
+    {{- end }}
+  {{- end }}
+  image: {{ .Values.glyphTool.image | quote }}
+  serviceAccountName: {{ .Values.glyphTool.serviceAccountName | quote }}
+  env:
+    # Fixed, trusted target -- the Glyph instance this tool talks to. Never
+    # derived from tool input. The tool appends `/api/v1`.
+    - name: GLYPH_BASE_URL
+      value: {{ .Values.glyphTool.glyphBaseUrl | required "glyphTool.glyphBaseUrl is required when glyphTool.enabled=true" | quote }}
+  {{- if not .Values.glyphTool.identityLink.enabled }}
+  secretEnv:
+    - name: GLYPH_TOKEN
+      secretRef:
+        name: {{ .Values.glyphTool.secretName | quote }}
+        key: {{ .Values.glyphTool.secretKey | quote }}
+  {{- end }}
+{{- end }}

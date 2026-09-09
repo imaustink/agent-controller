@@ -62,6 +62,10 @@ export const PROVIDER_ENV_VAR: Record<string, string> = {
   github: "GITHUB_TOKEN",
   claude: "CLAUDE_CODE_OAUTH_TOKEN",
   "claude-remote": "CLAUDE_LOGIN_CREDENTIALS_JSON",
+  // Glyph's per-user OAuth delegation: the calling user's own delegated token
+  // is injected as GLYPH_TOKEN for the `glyph` container Tool (tools/glyph),
+  // exactly as `github` above injects GITHUB_TOKEN.
+  glyph: "GLYPH_TOKEN",
 };
 
 /**
@@ -130,6 +134,7 @@ export const PROVIDER_LABEL: Record<string, string> = {
   github: "GitHub",
   claude: "Claude",
   "claude-remote": "Claude Remote Control",
+  glyph: "Glyph",
 };
 
 /**
