@@ -1,4 +1,5 @@
 import type { SweMarker } from "./marker.js";
+import { MAX_LISTED_REPOS, type AccessibleRepo } from "./repos.js";
 
 /**
  * Guardrails baked into every invocation, as `permissions.deny` rules in the
@@ -64,8 +65,18 @@ export function buildClaudeSettings(): object {
  * long-lived local session to `--resume` across separate AgentRun Jobs — see
  * marker.ts — so continuity comes entirely from this re-framing plus
  * re-cloning the repo).
+ *
+ * `accessibleRepos` is the list of repositories the container's GitHub
+ * credential can reach (see repos.ts). Passing it lets the model resolve a
+ * partial reference like "my lander-game repo" to a real `owner/name` from
+ * data instead of probing `gh` turn-by-turn to discover what it can see
+ * (issue #230). Best-effort: an empty list simply omits the section.
  */
-export function buildPrompt(instruction: string, marker: SweMarker | null): string {
+export function buildPrompt(
+  instruction: string,
+  marker: SweMarker | null,
+  accessibleRepos: AccessibleRepo[] = [],
+): string {
   const context = marker
     ? `You are CONTINUING work on an existing pull request.\n` +
       `- Repository: ${marker.repo}\n` +
@@ -84,6 +95,7 @@ export function buildPrompt(instruction: string, marker: SweMarker | null): stri
     ``,
     `## Repository context`,
     context,
+    ...buildAccessibleReposSection(accessibleRepos),
     ``,
     `## Environment`,
     `This container already has the following installed -- use them directly, do not apt-get/install/download them yourself:`,
@@ -103,4 +115,34 @@ export function buildPrompt(instruction: string, marker: SweMarker | null): stri
     `- You get exactly ONE turn to complete this task, and this process exits as soon as you reply -- there is no scheduler, cron, or webhook that will wake it back up later. You cannot pause partway through and wait for something external (a CI run, a build, a test job) to finish. Finish the task now with whatever information is available; if something is still pending, say so as a caveat in your final reply instead of deferring completion on it. Do NOT say you'll "resume automatically", "finalize later", or "when the check completes" -- that will never happen, and it leaves the task looking incomplete with no way for anyone to know a human needs to re-trigger you.`,
     `- When finished, print a short summary of what you changed and the pull request URL.`,
   ].join("\n");
+}
+
+/**
+ * Renders the "Repositories you can access" block appended to the Repository
+ * context section, or nothing when the list is empty. Kept out of the main
+ * template so the enumeration staying best-effort (an empty list) leaves the
+ * prompt byte-for-byte as it was before issue #230. One line per repo, capped
+ * at {@link MAX_LISTED_REPOS} with an explicit truncation note so the model is
+ * never misled into thinking a short list is exhaustive.
+ */
+function buildAccessibleReposSection(repos: AccessibleRepo[]): string[] {
+  if (repos.length === 0) return [];
+  const lines = repos.slice(0, MAX_LISTED_REPOS).map((repo) => {
+    const meta = [repo.visibility, repo.defaultBranch ? `default branch ${repo.defaultBranch}` : null]
+      .filter(Boolean)
+      .join(", ");
+    const suffix = repo.description ? ` — ${repo.description}` : ``;
+    return `- ${repo.fullName}${meta ? ` (${meta})` : ``}${suffix}`;
+  });
+  if (repos.length > MAX_LISTED_REPOS) {
+    lines.push(`- …and ${repos.length - MAX_LISTED_REPOS} more (list truncated).`);
+  }
+  return [
+    ``,
+    `The GitHub credential in this container can access the repositories below.`,
+    `When the task names a repository without a full \`owner/name\` (e.g. "my`,
+    `lander-game repo"), resolve it against this list instead of guessing or`,
+    `searching for it — you already know what you can reach:`,
+    ...lines,
+  ];
 }
