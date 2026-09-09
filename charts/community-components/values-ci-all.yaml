@@ -68,6 +68,18 @@ githubTool:
     providers:
       - github
 
+# Container Tool with per-user Glyph identity delegation. Enabled with
+# identityLink so the CR's identityProviders path renders and is validated; the
+# ServiceAccount template also requires enabled: true to render. glyphBaseUrl is
+# required by the template when enabled; never reached, the render is discarded.
+glyphTool:
+  enabled: true
+  glyphBaseUrl: http://glyph.example.invalid
+  identityLink:
+    enabled: true
+    providers:
+      - glyph
+
 # The Agent production runs, and previously the one the "full catalog"
 # validation never touched. Its template hard-`fail`s unless some model
 # credential is guaranteed at launch time, so identityLink must cover `claude`.

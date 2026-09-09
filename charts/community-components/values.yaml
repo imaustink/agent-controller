@@ -448,6 +448,43 @@ githubTool:
     providers:
       - github
 
+# glyph: create/read/update/search notes and tasks in a Glyph instance
+# (github.com/imaustink/glyph), authenticated as the CALLING user's own
+# delegated Glyph OAuth token (Glyph's per-user delegation) rather than a
+# shared bot -- see tools/glyph/README.md.
+glyphTool:
+  enabled: false
+  image: glyph:latest
+  serviceAccountName: glyph-tool
+  # Creates the ServiceAccount named above. Set to false and pre-create it
+  # yourself if you need annotations managed elsewhere (e.g. IRSA) that this
+  # chart doesn't own.
+  serviceAccount:
+    create: true
+    annotations: {}
+    automount: true
+  # Target Glyph instance (not a secret) -- fixed, trusted config the tool
+  # appends `/api/v1` to. No default on purpose: must be your own instance,
+  # never inherited from this repo's demo config.
+  glyphBaseUrl: ""
+  # Secret (must already exist) supplying the shared GLYPH_TOKEN. Ignored
+  # entirely when identityLink.enabled below -- in that case the calling user's
+  # own delegated token is injected per-invocation instead, and this Secret
+  # needs no GLYPH_TOKEN key (set secretKey to "").
+  secretName: glyph-tool-secrets
+  secretKey: GLYPH_TOKEN
+  # Per-user Glyph identity linking (docs/adr/0022, extended to container Tools
+  # by ADR 0032): when enabled, no static GLYPH_TOKEN secretEnv is set on the
+  # Tool CR at all -- agent-orchestrator resolves the calling user's own linked
+  # token per-invocation and injects it via ToolRunSpec.secretEnv instead.
+  # Requires agent-orchestrator's own identityLink.enabled=true and a
+  # configured integration-gateway `glyph` identity provider. Leave disabled
+  # (default) for the shared-credential (GLYPH_TOKEN) behavior.
+  identityLink:
+    enabled: false
+    providers:
+      - glyph
+
 # ssh: runs a single allowlisted read-only diagnostic command (df/ps/
 # systemctl status/docker ps/journalctl/...) over SSH against a fixed set of
 # allowlisted hosts, authenticated with one shared, operator-provisioned key
