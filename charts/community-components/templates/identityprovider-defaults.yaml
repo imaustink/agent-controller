@@ -1,0 +1,67 @@
+{{- if .Values.identityProviders.installDefaults }}
+{{/*
+  IdentityProvider CRs are the source of truth agent-orchestrator's dynamic
+  catalog resolves a Tool/Agent's `identityProviders: [<name>]` entries
+  against (docs/adr/0027, and the CRD's own doc comment in
+  controllers/core-controller/api/v1alpha1/identityprovider_types.go). Before
+  this CRD existed, this same envVar/label/flow/crossEntryPoint data was a
+  hardcoded TypeScript map in agent-orchestrator -- adding a provider meant an
+  agent-orchestrator source change and image rebuild. Now it is cluster
+  config: create an IdentityProvider CR and any Tool/Agent can reference it by
+  name, with no agent-orchestrator code change (a NEW oauth-flow provider,
+  that is -- github/claude/claude-remote below are the two Claude-specific
+  flows plus the provider that establishes cross-entry-point principals, none
+  of which an operator can introduce purely by writing a CR; see the CRD's
+  `flow` field doc comment).
+
+  These three are shipped here, always on (see `identityProviders.
+  installDefaults` above), rather than gated behind whichever Tool/Agent's
+  `identityLink.enabled` toggle happens to reference them -- several files
+  below (tool-github.yaml, agent-claude-code-swe.yaml, ...) can each
+  independently turn identityLink on for the SAME provider name, and gating
+  the CR itself behind any one of them would either duplicate it (a name
+  collision) or leave it missing when a different consumer is the one that's
+  enabled.
+
+  Unlike glyph's IdentityProvider CR (templates/tool-glyph.yaml), whose
+  envVar an operator genuinely chooses (it only needs to match what the glyph
+  tool container itself reads), GITHUB_TOKEN/CLAUDE_CODE_OAUTH_TOKEN/
+  CLAUDE_LOGIN_CREDENTIALS_JSON below are fixed: several other components
+  (the github Tool container, claude-code-swe-agent's config.ts) already
+  hardcode those exact env var names independent of this CRD, so they are
+  not meant to be edited via values here.
+*/}}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: IdentityProvider
+metadata:
+  name: github
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  envVar: GITHUB_TOKEN
+  label: GitHub
+---
+apiVersion: {{ .Values.crdApiVersion }}
+kind: IdentityProvider
+metadata:
+  name: claude
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  envVar: CLAUDE_CODE_OAUTH_TOKEN
+  label: Claude
+  flow: claude-cli-setup-token
+  crossEntryPoint: true
+---
+apiVersion: {{ .Values.crdApiVersion }}
+kind: IdentityProvider
+metadata:
+  name: claude-remote
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  envVar: CLAUDE_LOGIN_CREDENTIALS_JSON
+  label: Claude Remote Control
+  flow: claude-remote-login
+  crossEntryPoint: true
+{{- end }}

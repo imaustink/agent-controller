@@ -14,6 +14,11 @@ import type { SecretKeySelector } from "../k8s/toolrun-launcher.js";
 import type { LocalToolExecutor } from "../local/local-tool-executor.js";
 import type { IdentityLinkPort, IdentityLinkStartResult } from "../identity-link/gateway-client.js";
 import { resolveActorLogin, resolvePrincipal } from "../identity-link/credential-subject.js";
+import {
+  resolveIdentityGateway,
+  resolveIdentityProviderCatalog,
+  type IdentityProviderCatalog,
+} from "../identity-link/identity-provider-catalog.js";
 import type { IdentityResolver, Identity } from "../rbac/types.js";
 import type { SkillDescriptor, SkillSearchResult, SkillStore } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
@@ -31,9 +36,7 @@ import {
   ACTOR_LOGIN_ENV,
   AuthorizationService,
   type CredentialEnvEntry,
-  CROSS_ENTRY_POINT_PROVIDERS,
   linkPromptText,
-  PROVIDER_LABEL,
 } from "./authorization-service.js";
 
 // Re-exported: several tests and callers import ACTOR_LOGIN_ENV from this
@@ -681,8 +684,8 @@ export interface AgentGraphDeps {
    * kept as its own optional dep (not folded into `claudeAuthGateway`) since
    * the two flows resolve to differently-shaped credentials (a single OAuth
    * token vs. a whole `credentialsJson` blob) that get injected into a
-   * launched run under different env vars (`PROVIDER_ENV_VAR` below).
-   * Resolved via `identityGatewayFor`, never referenced directly by
+   * launched run under different env vars (per-provider `envVar`, off
+   * `identityProviderCatalog` below). Resolved via `identityGatewayFor`, never referenced directly by
    * provider-generic code.
    */
   claudeRemoteGateway?: IdentityLinkPort;
@@ -702,23 +705,33 @@ export interface AgentGraphDeps {
       ttlSeconds: number,
     ): Promise<{ url: string; token: string; secretName?: string } | undefined>;
   };
+  /**
+   * The live, `IdentityProvider`-CR-backed catalog of envVar/label/flow/
+   * crossEntryPoint per provider -- see {@link AuthorizationServiceDeps.identityProviderCatalog}
+   * (this bag is handed to `new AuthorizationService(deps)` directly, so the
+   * field name must match). Consulted by this module's own link-lifecycle
+   * helpers (`identityGatewayFor`, and the label/crossEntryPoint lookups in
+   * `handleAgentTurnFailure`/`checkPendingIdentityLink`) via the SAME shared
+   * resolution `AuthorizationService` uses, so there is one place that knows
+   * a provider's flow/label, not two kept in sync by inspection.
+   */
+  identityProviderCatalog?: IdentityProviderCatalog;
 }
 
 /**
- * Resolves which gateway client backs a given identity provider (docs/adr/0027)
- * -- the one place that knows `"claude"` routes to `deps.claudeAuthGateway`
- * and `"claude-remote"` routes to `deps.claudeRemoteGateway`, instead of the
- * (GitHub-only-in-practice) `deps.identityLinkGateway`.
+ * Resolves which gateway client backs a given identity provider (docs/adr/0027),
+ * off `deps.identityProviderCatalog`'s `flow` (falling back to
+ * {@link DEFAULT_IDENTITY_PROVIDER_CATALOG} when absent) via
+ * {@link resolveIdentityGateway} -- the single shared implementation this and
+ * {@link AuthorizationService} both use.
  *
- * Kept here as a thin adapter over the same resolution
- * {@link AuthorizationService} performs internally, for the two link-lifecycle
- * call sites (`startReplacementLink`, `checkPendingIdentityLink`) that operate
- * on an ALREADY-STARTED link rather than making an authorization decision.
+ * Kept here as a thin adapter over that same resolution, for the two
+ * link-lifecycle call sites (`startReplacementLink`, `checkPendingIdentityLink`)
+ * that operate on an ALREADY-STARTED link rather than making an authorization
+ * decision.
  */
 function identityGatewayFor(provider: string, deps: AgentGraphDeps): IdentityLinkPort | undefined {
-  if (provider === "claude") return deps.claudeAuthGateway;
-  if (provider === "claude-remote") return deps.claudeRemoteGateway;
-  return deps.identityLinkGateway;
+  return resolveIdentityGateway(provider, resolveIdentityProviderCatalog(deps.identityProviderCatalog), deps);
 }
 
 /**
@@ -906,6 +919,7 @@ async function startReplacementLink(
    * record that was cleared (see `pendingIdentityLink.subject`).
    */
   subject: string,
+  catalog: IdentityProviderCatalog,
 ): Promise<Partial<AgentState> | undefined> {
   if (!state.identity) return undefined;
   const flow = state.identityLinkFlow ?? "authcode";
@@ -924,7 +938,7 @@ async function startReplacementLink(
   if (!started) return undefined;
 
   state.reportIdentityLinkPending?.({ provider, subject });
-  const label = PROVIDER_LABEL[provider] ?? provider;
+  const label = catalog.get(provider)?.label ?? provider;
   return {
     result:
       `⚠️ Your linked ${label} account's credential expired, so this request couldn't complete. ` +
@@ -973,6 +987,7 @@ async function handleAgentTurnFailure(
 ): Promise<Partial<AgentState>> {
   const code = err instanceof AgentTurnFailedError ? err.code : undefined;
   if (code && AUTH_EXPIRED_CODE_PROVIDER[code] && state.identity) {
+    const catalog = resolveIdentityProviderCatalog(deps.identityProviderCatalog);
     const declaredProviders = agent?.identityProviders;
     const mapped = AUTH_EXPIRED_CODE_PROVIDER[code]!;
     const provider =
@@ -990,7 +1005,7 @@ async function handleAgentTurnFailure(
       // Must clear the record the gate actually READ, or the "expired
       // credential" the run just tripped over survives and every retry
       // re-reads it.
-      const staleSubject = CROSS_ENTRY_POINT_PROVIDERS.has(provider)
+      const staleSubject = catalog.get(provider)?.crossEntryPoint === true
         ? (state.identity.principal ?? state.identity.subject)
         : state.identity.subject;
       await gateway.invalidate?.(provider, staleSubject).catch((invalidateErr: unknown) => {
@@ -999,7 +1014,7 @@ async function handleAgentTurnFailure(
           `[identity-gate] invalidate failed for provider ${provider}; the stale credential is still stored: ${invalidateErr instanceof Error ? invalidateErr.message : String(invalidateErr)}`,
         );
       });
-      const label = PROVIDER_LABEL[provider] ?? provider;
+      const label = catalog.get(provider)?.label ?? provider;
       if (!invalidated) {
         return {
           result:
@@ -1016,7 +1031,9 @@ async function handleAgentTurnFailure(
       // Returning `identityLinkPending` also arms the caller's auto-resume
       // (integration-gateway's `waitAndResume`), so finishing the link re-runs
       // THIS request instead of requiring yet another trigger.
-      const relink = agent ? await startReplacementLink(gateway, state, provider, agent.id, staleSubject) : undefined;
+      const relink = agent
+        ? await startReplacementLink(gateway, state, provider, agent.id, staleSubject, catalog)
+        : undefined;
       if (relink) return relink;
 
       // start() failed (or there's no agent context to park a pending link
@@ -1401,7 +1418,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               : "expired";
 
       if (status === "pending" && Date.now() < pending.expiresAt) {
-        const label = PROVIDER_LABEL[pending.provider] ?? pending.provider;
+        const label = resolveIdentityProviderCatalog(deps.identityProviderCatalog).get(pending.provider)?.label ?? pending.provider;
         return {
           identityLinkPending: true,
           result:

@@ -8,10 +8,18 @@
 
 enabled: true
 
-# apiVersion of the Tool/Skill/Agent CRDs. Must match what the agent-controller
-# chart's core-controller subchart installs (config.crdGroup/crdVersion on the
-# orchestrator side too).
+# apiVersion of the Tool/Skill/Agent/IdentityProvider CRDs. Must match what the
+# agent-controller chart's core-controller subchart installs
+# (config.crdGroup/crdVersion on the orchestrator side too).
 crdApiVersion: core.controller-agent.dev/v1alpha1
+
+# The three IdentityProvider CRs (github, claude, claude-remote) agent-
+# orchestrator's dynamic catalog needs for every built-in identityLink path
+# below to resolve (see templates/identityprovider-defaults.yaml). On by
+# default -- set to false only if you manage these three CRs yourself
+# (e.g. via a separate GitOps source) instead of letting this chart own them.
+identityProviders:
+  installDefaults: true
 
 # Image pull secrets attached to every ServiceAccount this chart creates
 # (recipe-scraper, web-search, recipe-publisher, opencode-swe-agent), so Tool/

@@ -17,6 +17,7 @@ import { CrdSkillRegistry } from "./skills/crd-skill-registry.js";
 import { deriveSkillAccess } from "./skills/derive-access.js";
 import { QdrantSkillStore } from "./skills/qdrant-skill-store.js";
 import { CrdAgentRegistry } from "./agents/crd-agent-registry.js";
+import { CrdIdentityProviderRegistry, InMemoryIdentityProviderCatalog } from "./identity-link/identity-provider-catalog.js";
 import { CrdIntegrationRouteRegistry } from "./routing/crd-integration-route-registry.js";
 import { QdrantAgentStore } from "./agents/qdrant-agent-store.js";
 import { NatsAgentChannel } from "./agents/nats-agent-channel.js";
@@ -146,6 +147,26 @@ async function main(): Promise<void> {
     config.crdVersion,
     { name: config.callbackSecretRefName ?? "", key: config.callbackSecretRefKey },
     kubeConfig,
+  );
+  // Identity-provider catalog (envVar/label/flow/crossEntryPoint per
+  // provider, docs/adr/0027 and the CRD's own doc comment): discovered from
+  // `IdentityProvider` CRs, the same ADR 0020 listAll()-then-watch() pattern
+  // as every other catalog here -- what used to be a hardcoded TypeScript map
+  // in authorization-service.ts is now cluster config AuthorizationService
+  // and graph.ts's identity-gate helpers both read through this live view.
+  const identityProviderRegistry = CrdIdentityProviderRegistry.fromKubeConfig(
+    config.namespace,
+    config.crdGroup,
+    config.crdVersion,
+    kubeConfig,
+  );
+  const identityProviderCatalog = new InMemoryIdentityProviderCatalog(await identityProviderRegistry.listAll());
+  const identityProviderWatch = identityProviderRegistry.watch(
+    (event) => {
+      if (event.type === "delete") identityProviderCatalog.delete(event.id);
+      else identityProviderCatalog.upsert(event.descriptor.id, event.descriptor.config);
+    },
+    (err) => console.error("IdentityProvider watch error:", err),
   );
   const embedder = new OpenAiEmbedder({ model: config.embeddingModel });
   const vectorStore = new QdrantToolStore(
@@ -528,6 +549,7 @@ async function main(): Promise<void> {
     toolFitChecker,
     bestEffortResponder,
     capabilityNeedChecker,
+    identityProviderCatalog,
     ...(identityLinkGateway ? { identityLinkGateway } : {}),
     ...(claudeAuthGateway ? { claudeAuthGateway } : {}),
     ...(claudeRemoteGateway ? { claudeRemoteGateway } : {}),
@@ -661,6 +683,7 @@ async function main(): Promise<void> {
     skillWatch.stop();
     agentWatch?.stop();
     integrationRouteWatch.stop();
+    identityProviderWatch.stop();
     if (skillReindexTimer) clearTimeout(skillReindexTimer);
     clearInterval(callerToolPruneTimer);
 
