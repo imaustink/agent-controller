@@ -330,6 +330,15 @@ export class TemporalEngine implements AgentGraphLike {
         // still re-resolves it under the caller's own roles.
         ...(input.forcedSkillId ? { forcedSkillId: input.forcedSkillId } : {}),
         ...(input.forcedAgentId ? { forcedAgentId: input.forcedAgentId } : {}),
+        // Which OAuth flow an identity-link prompt starts. The engine reads
+        // `identityLinkFlow` (gateway/invoke.go, workflows/conversation.go)
+        // and defaults it to "authcode" -- so dropping it here meant NO caller
+        // on a Temporal-engine deployment could ever reach the device flow,
+        // whatever `/invoke`'s body or AGENT_DEFAULT_IDENTITY_LINK_FLOW said.
+        // That is not academic: authcode requires the GitHub App's registered
+        // Callback URL to match, and where it doesn't, device flow is the only
+        // one that works.
+        ...(input.identityLinkFlow ? { identityLinkFlow: input.identityLinkFlow } : {}),
         // Already resolved, validated and top-K-ranked by this process's own
         // handleChat pipeline (ADR 0035) before invoke() is ever called --
         // the engine's /invoke takes the resolved Descriptor shape (each

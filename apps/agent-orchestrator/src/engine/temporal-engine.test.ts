@@ -83,6 +83,29 @@ describe("TemporalEngine", () => {
     expect(body.event).toBeUndefined();
   });
 
+  // Without this the engine's own `identityLinkFlow` field is unreachable: it
+  // defaults to "authcode", so a Temporal-engine deployment whose GitHub App
+  // Callback URL doesn't match had no way to fall back to the device flow.
+  it("forwards the identity-link flow so the engine's authcode default can be overridden", async () => {
+    const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+
+    await engine.invoke(input({ identityLinkFlow: "device" }));
+
+    const body = JSON.parse(String(calls[0]!.init!.body));
+    expect(body.identityLinkFlow).toBe("device");
+  });
+
+  it("omits the identity-link flow entirely when the turn names none", async () => {
+    const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+
+    await engine.invoke(input({}));
+
+    const body = JSON.parse(String(calls[0]!.init!.body));
+    expect(body.identityLinkFlow).toBeUndefined();
+  });
+
   // The sender login selects which stored credentials a run receives, so an
   // internal hop is exactly as unsuited to trusting it unsigned as an external
   // one. Signed with the same contract integration-gateway uses.
