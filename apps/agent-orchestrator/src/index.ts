@@ -459,6 +459,23 @@ async function main(): Promise<void> {
         })
       : undefined;
 
+  // Said out loud at startup because the failure it guards against is
+  // otherwise SILENT: an authcode link dies at GitHub's own consent screen
+  // ("The redirect_uri is not associated with this application") before any
+  // request reaches this process, so nothing here ever logs it. Worse, every
+  // already-linked caller keeps working off a refreshed token and never
+  // re-enters the flow, so a mismatched Callback URL only surfaces for
+  // first-time linkers and can sit unnoticed indefinitely.
+  if (identityLinkGateway) {
+    console.log(
+      `identity-link default flow: ${config.defaultIdentityLinkFlow}` +
+        (config.defaultIdentityLinkFlow === "authcode"
+          ? " -- requires the GitHub App's registered Callback URL to exactly match integration-gateway's " +
+            "GITHUB_OAUTH_REDIRECT_URI; set AGENT_DEFAULT_IDENTITY_LINK_FLOW=device to use the redirect-free device flow instead"
+          : " -- user-code flow, no redirect URI involved"),
+    );
+  }
+
   // Per-caller Claude Code OAuth credential (docs/adr/0027) -- the `claude`
   // provider's counterpart to `identityLinkGateway` above, reusing the SAME
   // gateway host/bearer token (no separate config): whether integration-
@@ -652,6 +669,7 @@ async function main(): Promise<void> {
     config.senderAssertionSecret,
     callerToolStore,
     config.callerToolTopK,
+    config.defaultIdentityLinkFlow,
   );
   if (!config.senderAssertionSecret) {
     console.error(

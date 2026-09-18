@@ -197,6 +197,18 @@ export interface AppConfig {
   /** Bearer token this orchestrator authenticates to the identity-link API with. */
   identityLinkGatewayToken: string | undefined;
   /**
+   * Which identity-link flow a caller gets when it doesn't ask for one.
+   *
+   * Only `/invoke` can name a flow per request (`identity_link_flow`); the
+   * chat-completions facade has no such field, so every Open WebUI turn takes
+   * this default. `"authcode"` (the default) redirects the browser to GitHub
+   * and therefore requires the App's registered Callback URL to match
+   * integration-gateway's `GITHUB_OAUTH_REDIRECT_URI` exactly; `"device"`
+   * shows a user code instead and involves no redirect URI at all, which is
+   * the only flow that works when that Callback URL cannot be set.
+   */
+  defaultIdentityLinkFlow: "device" | "authcode";
+  /**
    * Shared HS256 secret matching Open WebUI's `FORWARD_USER_INFO_HEADER_JWT_SECRET`,
    * used to verify its per-request `X-OpenWebUI-User-Jwt` header
    * (`OpenWebUiForwardedUserResolver`). Open WebUI's `Authorization` bearer
@@ -271,6 +283,10 @@ export const config: AppConfig = {
   fallbackToolTopK: num(process.env.AGENT_FALLBACK_TOOL_TOP_K, 3),
   identityLinkGatewayUrl: process.env.IDENTITY_LINK_GATEWAY_URL,
   identityLinkGatewayToken: process.env.IDENTITY_LINK_GATEWAY_TOKEN,
+  // Anything other than an exact "device" keeps the pre-existing authcode
+  // behaviour -- a typo must not silently change which flow every chat user
+  // gets.
+  defaultIdentityLinkFlow: process.env.AGENT_DEFAULT_IDENTITY_LINK_FLOW === "device" ? "device" : "authcode",
   openWebUiUserJwtSecret: process.env.AGENT_OPENWEBUI_USER_JWT_SECRET,
   openWebUiUserRoles: (process.env.AGENT_OPENWEBUI_USER_ROLES ?? "reader,writer")
     .split(",")

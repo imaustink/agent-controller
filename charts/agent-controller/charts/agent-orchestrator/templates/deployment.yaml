@@ -191,6 +191,10 @@ spec:
             {{- if .Values.identityLink.enabled }}
             - name: IDENTITY_LINK_GATEWAY_URL
               value: {{ .Values.identityLink.gatewayUrl | quote }}
+            {{- if .Values.identityLink.defaultFlow }}
+            - name: AGENT_DEFAULT_IDENTITY_LINK_FLOW
+              value: {{ .Values.identityLink.defaultFlow | quote }}
+            {{- end }}
             {{- end }}
             - name: OPENAI_API_KEY
               valueFrom:

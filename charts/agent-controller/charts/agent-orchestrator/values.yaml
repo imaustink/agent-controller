@@ -176,6 +176,18 @@ identityLink:
   # templates/service.yaml), e.g.
   # "http://integration-gateway:8090" for the umbrella chart's pinned name.
   gatewayUrl: ""
+  # Which link flow a caller gets when it doesn't name one: "authcode" or
+  # "device". Empty -> the app's own default ("authcode").
+  #
+  # Only /invoke can choose per request (identity_link_flow); the
+  # chat-completions facade cannot, so every Open WebUI turn takes this.
+  #
+  # "authcode" redirects the browser to GitHub, so it REQUIRES the GitHub
+  # App's registered "Callback URL" to exactly match integration-gateway's
+  # identityLink.githubOauthRedirectUri. "device" shows a user code instead
+  # and has no redirect URI, so it is unaffected by that registration -- the
+  # flow to pick when the Callback URL can't be corrected.
+  defaultFlow: ""
   # Secrets: IDENTITY_LINK_GATEWAY_TOKEN (see secrets block below). Must
   # match the value configured as integration-gateway's
   # identityLink.secrets.identityLinkToken (GATEWAY_IDENTITY_LINK_TOKEN env

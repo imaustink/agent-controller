@@ -319,6 +319,17 @@ export class InvokeServer {
     private readonly callerToolStore?: CallerToolStore,
     /** Max consumer-supplied tools that may reach the action planner (docs/adr/0035 §3). */
     private readonly callerToolTopK: number = 5,
+    /**
+     * Identity-link flow used for any turn that doesn't name one
+     * (`AGENT_DEFAULT_IDENTITY_LINK_FLOW`).
+     *
+     * Applied in `buildGraphInput` rather than at the two `?? "authcode"`
+     * fallbacks downstream, so an explicit `/invoke` `identity_link_flow`
+     * still wins and there is exactly ONE place a deployment-wide default is
+     * decided. Defaults to `"authcode"`, matching the behaviour that existed
+     * before this was configurable.
+     */
+    private readonly defaultIdentityLinkFlow: "device" | "authcode" = "authcode",
   ) {}
 
   /** Builds the graph input for one turn, folding in any session-scoped active skill or agent run (docs/adr/0012). */
@@ -354,7 +365,18 @@ export class InvokeServer {
     if (callerTools && callerTools.actionHistory.length > 0) input.actionHistory = callerTools.actionHistory;
     if (progressListener) input.progressListener = progressListener;
     if (remoteControlUrlListener) input.remoteControlUrlListener = remoteControlUrlListener;
-    if (identityLinkFlow) input.identityLinkFlow = identityLinkFlow;
+    // The chat-completions facade never passes `identityLinkFlow` (it has no
+    // field for it), so without this it fell through to the hardcoded
+    // "authcode" default downstream and no deployment could choose otherwise.
+    //
+    // Injected ONLY when a deployment has opted into something other than
+    // "authcode": the graph's own `?? "authcode"` stays the single definition
+    // of the built-in default, so this adds an override rather than a second
+    // copy of it (and leaves every default-configured turn's graph input
+    // byte-for-byte as it was).
+    const resolvedFlow =
+      identityLinkFlow ?? (this.defaultIdentityLinkFlow === "authcode" ? undefined : this.defaultIdentityLinkFlow);
+    if (resolvedFlow) input.identityLinkFlow = resolvedFlow;
     if (forwardedUserToken) input.forwardedUserToken = forwardedUserToken;
     if (forcedSkillId) input.forcedSkillId = forcedSkillId;
     if (forcedAgentId) input.forcedAgentId = forcedAgentId;
