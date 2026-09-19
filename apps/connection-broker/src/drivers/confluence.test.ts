@@ -144,6 +144,27 @@ describe("probe", () => {
       driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "99999"),
     ).rejects.toBeInstanceOf(PermissionDeniedError);
   });
+
+  it("fails CLOSED when the response carries no space key", async () => {
+    // The absent-field case, which an earlier `page.space?.key && …` guard
+    // short-circuited straight past. Every call site asks for expand=…,space,
+    // so a response without it is a contract we no longer recognise — and
+    // continuing on a boundary check we could not evaluate is the one direction
+    // this must never fail in.
+    const http = vi.fn().mockResolvedValue(respond(200, page({ space: undefined })));
+
+    await expect(
+      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "99999"),
+    ).rejects.toBeInstanceOf(PermissionDeniedError);
+  });
+
+  it("fails closed when space is present but has no key", async () => {
+    const http = vi.fn().mockResolvedValue(respond(200, page({ space: {} })));
+
+    await expect(
+      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "99999"),
+    ).rejects.toBeInstanceOf(PermissionDeniedError);
+  });
 });
 
 describe("error classification", () => {
@@ -194,6 +215,13 @@ describe("fetch", () => {
 
   it("refuses a page outside the connection's scope", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, page({ space: { key: "OTHER" } })));
+    await expect(
+      driverWith(http).fetch({ space: "SNC" }, { service: "svc" }, "99999"),
+    ).rejects.toBeInstanceOf(PermissionDeniedError);
+  });
+
+  it("fails CLOSED when the response carries no space key", async () => {
+    const http = vi.fn().mockResolvedValue(respond(200, page({ space: undefined })));
     await expect(
       driverWith(http).fetch({ space: "SNC" }, { service: "svc" }, "99999"),
     ).rejects.toBeInstanceOf(PermissionDeniedError);

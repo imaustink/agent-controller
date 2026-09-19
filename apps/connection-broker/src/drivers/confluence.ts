@@ -109,13 +109,7 @@ export class ConfluenceDriver implements Driver {
       credentials.delegated ?? credentials.service,
     )) as ConfluencePage & { space?: { key?: string } };
 
-    // The scope assertion, not a formality: a page id alone would otherwise
-    // reach any space this credential can see.
-    if (page.space?.key && page.space.key !== scope.space) {
-      throw new PermissionDeniedError(
-        `page ${id} is in space ${page.space.key}, outside this connection's scope`,
-      );
-    }
+    assertInScope(page, scope, id);
 
     return {
       ...this.toRef(page),
@@ -140,11 +134,7 @@ export class ConfluenceDriver implements Driver {
       credentials.delegated,
     )) as ConfluencePage & { space?: { key?: string } };
 
-    if (page.space?.key && page.space.key !== scope.space) {
-      throw new PermissionDeniedError(
-        `page ${id} is in space ${page.space.key}, outside this connection's scope`,
-      );
-    }
+    assertInScope(page, scope, id);
 
     const ref = this.toRef(page);
     return { allowed: true, title: ref.title, url: ref.url, version: ref.version };
@@ -194,6 +184,32 @@ export class ConfluenceDriver implements Driver {
     }
     throw new TransientError(`confluence returned ${response.status}`);
   }
+}
+
+/**
+ * Asserts a page belongs to this connection's space.
+ *
+ * This is the only thing stopping a guessed or leaked page id from reaching
+ * another client's space, so it fails CLOSED: the space key must be present AND
+ * equal. An earlier version read `page.space?.key && page.space.key !== scope.space`,
+ * which short-circuits to falsy when the field is absent and serves the page —
+ * the one direction this check must never fail in.
+ *
+ * Every call site requests `expand=…,space`, so a response without it is a
+ * provider contract we no longer recognise, and continuing on a boundary check
+ * we could not evaluate is exactly the wrong response to that.
+ */
+function assertInScope(
+  page: { space?: { key?: string } },
+  scope: Scope,
+  id: string,
+): void {
+  if (page.space?.key === scope.space) return;
+  throw new PermissionDeniedError(
+    page.space?.key
+      ? `page ${id} is in space ${page.space.key}, outside this connection's scope`
+      : `page ${id} came back without a space key; cannot confirm it is inside this connection's scope`,
+  );
 }
 
 /**
