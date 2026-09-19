@@ -46,6 +46,15 @@ export interface OAuthProviderConfig {
    * length in `claude-auth/credential-refresher.ts`. Atlassian rotates.
    */
   rotatesRefreshToken: boolean;
+  /**
+   * Endpoint returning the linked account's own id, and the JSON field to read
+   * it from. Optional: a provider without one simply stores no `accountId`.
+   *
+   * Recorded for provenance, never for keying — subjects stay whatever the
+   * caller already resolved to (docs/adr/0029, and the `accountId` field's own
+   * doc comment in `store.ts`).
+   */
+  identity?: { url: string; field: string };
 }
 
 /** GitHub's Device Flow, unchanged — its endpoints and behaviour are what they were. */
@@ -90,6 +99,7 @@ function atlassianConfig(env: NodeJS.ProcessEnv): OAuthProviderConfig | undefine
     tokenUrl: "https://auth.atlassian.com/oauth/token",
     scopes: scopes.includes("offline_access") ? scopes : [...scopes, "offline_access"],
     rotatesRefreshToken: true,
+    identity: { url: "https://api.atlassian.com/me", field: "account_id" },
   };
 }
 
