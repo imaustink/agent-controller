@@ -1,0 +1,172 @@
+import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { runCommand } from "./git.js";
+
+/**
+ * A `gh` wrapper that decides WHICH credential each invocation runs with.
+ *
+ * Git needs no wrapper: `url.<base>.insteadOf` and `url.<base>.pushInsteadOf`
+ * are separate native knobs, so clone/fetch can carry the user's token while
+ * push carries the App's (see `setupGitAuth`). `gh` has no such split -- it
+ * reads one `GH_TOKEN` for every subcommand -- so the split has to happen
+ * before the process starts, which is what this shim does.
+ *
+ * Direction of failure is deliberate: anything NOT matched by
+ * {@link GH_WRITE_RULES} runs on the READ (user) token. A write that this
+ * table forgets therefore fails with a permissions error rather than silently
+ * executing with the App's broader credential. Adding a rule is a one-line
+ * fix; a silent privilege escalation is not.
+ */
+
+export interface GhWriteRule {
+  /** Top-level `gh` command, e.g. "pr". */
+  command: string;
+  /**
+   * Subcommands that mutate. Absent means EVERY subcommand of `command` is a
+   * write (e.g. `gh secret`, where even listing is privileged).
+   */
+  subcommands?: string[];
+}
+
+/**
+ * The single source of truth for "does this invocation write?", shared by
+ * {@link isWriteInvocation} and the generated shim, so the two can't drift on
+ * the part that actually matters.
+ */
+export const GH_WRITE_RULES: GhWriteRule[] = [
+  { command: "pr", subcommands: ["create", "edit", "close", "reopen", "merge", "ready", "comment", "review", "lock", "unlock"] },
+  { command: "issue", subcommands: ["create", "edit", "close", "reopen", "comment", "delete", "pin", "unpin", "lock", "unlock", "transfer"] },
+  { command: "repo", subcommands: ["create", "edit", "delete", "fork", "rename", "archive", "unarchive", "sync", "deploy-key"] },
+  { command: "release", subcommands: ["create", "edit", "delete", "upload", "delete-asset"] },
+  { command: "workflow", subcommands: ["run", "enable", "disable"] },
+  { command: "run", subcommands: ["rerun", "cancel", "delete"] },
+  { command: "label", subcommands: ["create", "edit", "delete", "clone"] },
+  { command: "gist", subcommands: ["create", "edit", "delete", "rename"] },
+  { command: "cache", subcommands: ["delete"] },
+  { command: "secret" },
+  { command: "variable" },
+  { command: "ruleset" },
+];
+
+/** `gh api` flags that make a request mutating even without an explicit `--method`. */
+const API_BODY_FLAGS = new Set(["-f", "-F", "--field", "--raw-field", "--input"]);
+
+/**
+ * Splits `gh`'s own leading flags (`--help`, `-R owner/repo`, ...) from the
+ * command path. Only the first two bare words matter: `gh pr create`.
+ */
+function commandPath(args: string[]): string[] {
+  const words: string[] = [];
+  for (let i = 0; i < args.length && words.length < 2; i++) {
+    const arg = args[i]!;
+    if (arg === "--") break;
+    if (arg.startsWith("-")) {
+      // `-R owner/repo` consumes its value; `--repo=x` does not. Skipping the
+      // value matters: without it "owner/repo" would be read as a subcommand.
+      if (!arg.includes("=") && i + 1 < args.length && !args[i + 1]!.startsWith("-")) i++;
+      continue;
+    }
+    words.push(arg);
+  }
+  return words;
+}
+
+/** Whether `gh api ...` mutates: an explicit non-GET method, or a body flag (which implies POST). */
+function isApiWrite(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "-X" || arg === "--method") {
+      const value = args[i + 1];
+      return value !== undefined && value.toUpperCase() !== "GET";
+    }
+    if (arg.startsWith("--method=")) return arg.slice("--method=".length).toUpperCase() !== "GET";
+    if (API_BODY_FLAGS.has(arg) || [...API_BODY_FLAGS].some((f) => f.startsWith("--") && arg.startsWith(`${f}=`))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** True when this `gh` invocation should run on the App (write) credential. */
+export function isWriteInvocation(args: string[], rules: GhWriteRule[] = GH_WRITE_RULES): boolean {
+  const [command, subcommand] = commandPath(args);
+  if (!command) return false;
+  // `gh api graphql` can't be classified by flags: every GraphQL call -- read
+  // or mutation -- passes the query as a body flag (`-f query=...`), which
+  // `isApiWrite` reads as a write. Routing GraphQL to the write token would run
+  // ordinary reads on the App credential that sees every installed repo, the
+  // exact over-privileged read this split closes. So it takes the same fail-safe
+  // as any unmatched command: the READ token, and a GraphQL mutation fails with
+  // a permissions error rather than silently escalating.
+  if (command === "api") return subcommand !== "graphql" && isApiWrite(args);
+
+  const rule = rules.find((r) => r.command === command);
+  if (!rule) return false;
+  if (!rule.subcommands) return true;
+  return subcommand !== undefined && rule.subcommands.includes(subcommand);
+}
+
+/** Env vars the shim reads. Set by the agent alongside the shim itself. */
+export const GH_READ_TOKEN_ENV = "SWE_GH_READ_TOKEN";
+export const GH_WRITE_TOKEN_ENV = "SWE_GH_WRITE_TOKEN";
+
+/**
+ * Source for the shim. It *imports* {@link isWriteInvocation} from this
+ * compiled module rather than restating the rules, so there is exactly one
+ * implementation and the shim cannot drift from what the tests cover.
+ *
+ * The shim ships as an extensionless `gh` (so it shadows the real `gh` on
+ * PATH) whose body is ESM (`import ...`). Node only treats an extensionless
+ * entry point as ESM via automatic syntax detection, which is on by default
+ * from Node 22.7 -- hence this package's `engines.node: ">=22.7"`. On earlier
+ * 22.x the shim would fail to load with "Cannot use import statement outside a
+ * module"; the `runs the shipped extensionless artifact` test guards the shape.
+ */
+export function renderGhShim(opts: { realGhPath: string; classifierUrl: string }): string {
+  return (
+    `#!/usr/bin/env node\n` +
+    `// Generated by claude-code-swe-agent (src/ghShim.ts). Picks the read or\n` +
+    `// write credential for this invocation, then execs the real gh.\n` +
+    `import { spawnSync } from "node:child_process";\n` +
+    `import { isWriteInvocation } from ${JSON.stringify(opts.classifierUrl)};\n` +
+    `const args = process.argv.slice(2);\n` +
+    `const write = isWriteInvocation(args);\n` +
+    `const token = write ? process.env[${JSON.stringify(GH_WRITE_TOKEN_ENV)}] : process.env[${JSON.stringify(GH_READ_TOKEN_ENV)}];\n` +
+    `const env = { ...process.env };\n` +
+    `if (token) { env.GH_TOKEN = token; env.GITHUB_TOKEN = token; }\n` +
+    `// The shim's own copies are removed so a subprocess can't trivially pick\n` +
+    `// the other credential out of its environment.\n` +
+    `delete env[${JSON.stringify(GH_READ_TOKEN_ENV)}];\n` +
+    `delete env[${JSON.stringify(GH_WRITE_TOKEN_ENV)}];\n` +
+    `const res = spawnSync(${JSON.stringify(opts.realGhPath)}, args, { stdio: "inherit", env });\n` +
+    `process.exit(res.status ?? 1);\n`
+  );
+}
+
+/**
+ * Writes the shim into `<homeDir>/bin` and returns that directory, for the
+ * caller to prepend to the child's PATH.
+ *
+ * Resolves the real `gh` FIRST and returns `undefined` if it can't be found,
+ * rather than writing a shim that would shadow `gh` with something broken.
+ * The lookup runs with a PATH that does not yet contain `binDir`, so it
+ * cannot resolve to the shim itself.
+ */
+export async function installGhShim(opts: { homeDir: string }): Promise<{ binDir: string } | undefined> {
+  const which = await runCommand("sh", ["-c", "command -v gh"]);
+  const realGhPath = which.code === 0 ? which.stdout.trim() : "";
+  if (!realGhPath) return undefined;
+
+  const binDir = join(opts.homeDir, "bin");
+  await mkdir(binDir, { recursive: true });
+  const shimPath = join(binDir, "gh");
+  // `import.meta.url` rather than a hardcoded "ghShim.js": this resolves to
+  // dist/ghShim.js when the agent runs compiled (the container's `node
+  // dist/index.js`) and to src/ghShim.ts under tsx, so the shim's import
+  // works either way. Naming the .js explicitly broke the dev path, where no
+  // such file sits next to the source.
+  const classifierUrl = import.meta.url;
+  await writeFile(shimPath, renderGhShim({ realGhPath, classifierUrl }), { mode: 0o700 });
+  await chmod(shimPath, 0o700);
+  return { binDir };
+}

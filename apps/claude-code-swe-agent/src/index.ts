@@ -21,6 +21,7 @@ import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./
 import { loadToolConfig } from "./config.js";
 import { createCredentialsWritebackWatcher, credentialExpiry } from "./credentialsWriteback.js";
 import { AuthorizationError, finalizeDelegatedWrite, isDelegating, resolveDelegatedToken } from "./identityDelegation.js";
+import { GH_READ_TOKEN_ENV, GH_WRITE_TOKEN_ENV, installGhShim } from "./ghShim.js";
 import { clip } from "./security/redact.js";
 
 const toolConfig = loadToolConfig();
@@ -108,12 +109,17 @@ async function handler(session: AgentSession): Promise<AgentReply> {
     new URL(toolConfig.githubApiUrl).host === "api.github.com" ? "github.com" : new URL(toolConfig.githubApiUrl).host;
 
   const delegating = isDelegating(toolConfig);
-  let token: string;
+  // Two credentials when delegating (docs/adr/0041): reads run as the human
+  // who asked, writes run as the App. They collapse to one token otherwise,
+  // which is exactly the pre-existing single-token behaviour.
+  let readToken: string;
+  let writeToken: string;
   let attribution: { githubLogin: string; githubId?: number } | null = null;
   if (delegating) {
     try {
       const resolved = await resolveDelegatedToken(toolConfig, marker?.repo ?? null, turnStartedAt);
-      token = resolved.token;
+      readToken = resolved.readToken;
+      writeToken = resolved.writeToken;
       attribution = resolved.attribution;
     } catch (err) {
       if (err instanceof AuthorizationError) {
@@ -122,16 +128,36 @@ async function handler(session: AgentSession): Promise<AgentReply> {
       throw err;
     }
   } else {
-    token = await resolveGithubToken(toolConfig);
+    readToken = writeToken = await resolveGithubToken(toolConfig);
   }
 
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: toolConfig.homeDir,
-    GH_TOKEN: token,
-    GITHUB_TOKEN: token,
+    // The read credential is the default for anything that reads GH_TOKEN
+    // directly. `gh` itself goes through the shim below, which overrides this
+    // per invocation; this value is what a non-delegating run always used.
+    GH_TOKEN: readToken,
+    GITHUB_TOKEN: readToken,
     GIT_TERMINAL_PROMPT: "0",
   };
+  if (delegating) {
+    const shim = await installGhShim({ homeDir: toolConfig.homeDir });
+    if (shim) {
+      childEnv.PATH = `${shim.binDir}:${childEnv.PATH ?? ""}`;
+      childEnv[GH_READ_TOKEN_ENV] = readToken;
+      childEnv[GH_WRITE_TOKEN_ENV] = writeToken;
+    } else {
+      // Not fatal, but it means every `gh` call -- including `pr create` --
+      // runs on the read credential, so PR creation will fail rather than
+      // quietly running with the App's wider access. Said out loud because
+      // the symptom (a permissions error on push/PR) points nowhere near it.
+      console.error(
+        "[identity-delegation] could not install the gh credential shim; gh will run entirely on the read token, " +
+          "so writes performed through gh (e.g. `gh pr create`) will fail",
+      );
+    }
+  }
   // Model-credential selection.
   //
   // Remote Control is the exception and MUST come first: it refuses to
@@ -169,7 +195,7 @@ async function handler(session: AgentSession): Promise<AgentReply> {
           name: "claude-code-swe",
           email: "claude-code-swe@users.noreply.github.com",
         });
-  await setupGitAuth({ homeDir: toolConfig.homeDir, token, apiHost, identity });
+  await setupGitAuth({ homeDir: toolConfig.homeDir, token: readToken, pushToken: writeToken, apiHost, identity });
 
   if (marker?.repo) {
     const repoName = marker.repo.split("/")[1];
@@ -287,7 +313,9 @@ async function handler(session: AgentSession): Promise<AgentReply> {
   if (delegating && attribution) {
     if (!marker?.repo) {
       const outcome2 = await finalizeDelegatedWrite({
-        token,
+        // The App credential: this step reads repo metadata and may GRANT the
+        // user access, neither of which the user's own token can do.
+        token: writeToken,
         attribution,
         repo: discovered.repo,
         githubApiUrl: toolConfig.githubApiUrl,

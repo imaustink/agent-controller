@@ -66,15 +66,31 @@ export async function setupGitAuth(opts: {
   token: string;
   apiHost: string;
   identity: GitIdentity;
+  /**
+   * Credential for pushes, when it differs from `token` (the delegated
+   * read/write split -- docs/adr/0041). Git resolves `pushInsteadOf` for push
+   * URLs and `insteadOf` for everything else, so declaring both gives clone
+   * and fetch the user's own token while the push that produces the PR runs
+   * on the App's. No wrapper needed: this is git's own mechanism.
+   *
+   * Absent -> a single `insteadOf` exactly as before, so a non-delegating run
+   * is byte-for-byte unchanged.
+   */
+  pushToken?: string;
 }): Promise<void> {
   const gitconfig = join(opts.homeDir, ".gitconfig");
   const host = opts.apiHost;
+  const pushRewrite =
+    opts.pushToken && opts.pushToken !== opts.token
+      ? `[url "https://x-access-token:${opts.pushToken}@${host}/"]\n` + `\tpushInsteadOf = https://${host}/\n`
+      : "";
   const content =
     `[user]\n` +
     `\tname = ${opts.identity.name}\n` +
     `\temail = ${opts.identity.email}\n` +
     `[url "https://x-access-token:${opts.token}@${host}/"]\n` +
     `\tinsteadOf = https://${host}/\n` +
+    pushRewrite +
     `[init]\n` +
     `\tdefaultBranch = main\n` +
     `[safe]\n` +
