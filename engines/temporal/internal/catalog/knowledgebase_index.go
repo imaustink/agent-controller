@@ -144,7 +144,16 @@ func (ix *Indexer) connectionsSnapshot() map[string]ConnectionDescriptor {
 }
 
 // knowledgeBaseTools is the tool records a knowledge base implies: its own
-// search and fetch, plus the GET face of every api-enabled member.
+// search, plus the GET face of every api-enabled member.
+//
+// A `/fetch` tool is deliberately NOT offered yet. The whole-document read it
+// would provide has no dispatch path — SearchKnowledgeBase is the only
+// execution route — and building the real one means a source reader against
+// Atlassian's actual API shapes, the adapter layer ADR 0040 defers. Offering
+// it before then would steer the planner into a call that silently degrades to
+// a similarity search over the source id. KnowledgeBaseExecSpec.Operation stays
+// as scaffolding for that deferred path, and dispatch fails closed on any
+// operation but "search".
 //
 // The member GET tools are (re)written here as well as by UpsertConnection
 // because a knowledge base may be indexed before its members are.
@@ -165,15 +174,6 @@ func knowledgeBaseTools(kb KnowledgeBaseDescriptor, connections map[string]Conne
 				"could not be checked.",
 			AllowedRoles:      roles,
 			KnowledgeBaseExec: exec("search"),
-		},
-		{
-			ID: KnowledgeBaseFetchToolID(kb.ID),
-			Description: fmt.Sprintf(
-				"Read a whole document from the %s knowledge base, live from its source.", kb.Label()),
-			Input:             "The id of a source returned by this knowledge base's search tool.",
-			Output:            "The current document, as the calling user is permitted to see it.",
-			AllowedRoles:      roles,
-			KnowledgeBaseExec: exec("fetch"),
 		},
 	}
 

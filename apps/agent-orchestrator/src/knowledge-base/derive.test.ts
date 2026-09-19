@@ -94,12 +94,13 @@ describe("deriveKnowledgeBaseSkill", () => {
     expect(effectiveRoles).not.toBeNull();
   });
 
-  it("generates search and fetch, and GET only for api-enabled members", () => {
+  it("generates search, and GET only for api-enabled members", () => {
     const { skill } = deriveKnowledgeBaseSkill(sncKb(), sncConnections());
 
+    // No `kb:snc/fetch`: whole-document fetch has no dispatch path yet, so the
+    // skill never steers the planner toward an unimplemented tool.
     expect(skill.toolIds).toEqual([
       "kb:snc/search",
-      "kb:snc/fetch",
       "conn:snc-confluence/get", // the only member with api.enabled
     ]);
   });

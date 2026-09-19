@@ -27,10 +27,15 @@ const (
 // KnowledgeBaseSkillID is the derived skill's id for a KnowledgeBase CR.
 func KnowledgeBaseSkillID(name string) string { return KnowledgeBaseIDPrefix + name }
 
-// KnowledgeBaseSearchToolID / KnowledgeBaseFetchToolID are the two tools a
-// KnowledgeBase generates (ADR 0039 §3).
+// KnowledgeBaseSearchToolID is the search tool a KnowledgeBase generates
+// (ADR 0039 §3).
 func KnowledgeBaseSearchToolID(name string) string { return KnowledgeBaseIDPrefix + name + "/search" }
-func KnowledgeBaseFetchToolID(name string) string  { return KnowledgeBaseIDPrefix + name + "/fetch" }
+
+// KnowledgeBaseFetchToolID is the id a whole-document fetch tool WOULD carry.
+// No such tool is generated while fetch has no dispatch path (see
+// knowledgeBaseTools); the id is retained only so DeleteKnowledgeBase can
+// remove any fetch record written by an earlier build.
+func KnowledgeBaseFetchToolID(name string) string { return KnowledgeBaseIDPrefix + name + "/fetch" }
 
 // ConnectionGetToolID is a Connection's scope-enforced GET face (ADR 0038 §5).
 func ConnectionGetToolID(name string) string { return ConnectionIDPrefix + name + "/get" }
@@ -211,7 +216,7 @@ func DeriveKnowledgeBaseSkill(kb KnowledgeBaseDescriptor, connections map[string
 	var (
 		resolved  []ConnectionDescriptor
 		roleSet   = map[string]struct{}{}
-		toolIDs   = []string{KnowledgeBaseSearchToolID(kb.ID), KnowledgeBaseFetchToolID(kb.ID)}
+		toolIDs   = []string{KnowledgeBaseSearchToolID(kb.ID)}
 		getToolID []string
 	)
 
@@ -362,20 +367,17 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []ConnectionDescr
 		"   question, say what is missing — never fill the gap from your own\n"+
 		"   knowledge, which is not this client's material and will read as though\n"+
 		"   it were.\n"+
-		"3. Use `%s` when a chunk is not enough to answer from and you need the\n"+
-		"   whole document. It reads the CURRENT copy from the source, so prefer it\n"+
-		"   whenever the question turns on detail or on what is true now.\n"+
-		"4. End every answer with a `Sources:` list, using each result's title and\n"+
+		"3. End every answer with a `Sources:` list, using each result's title and\n"+
 		"   URL **exactly as the search result gave them**. An uncited claim is not\n"+
 		"   an acceptable answer here.\n\n",
-		KnowledgeBaseSearchToolID(kb.ID), KnowledgeBaseFetchToolID(kb.ID))
+		KnowledgeBaseSearchToolID(kb.ID))
 
 	b.WriteString("Every result you get back was checked against your caller's own access\n" +
 		"to the source at the moment you searched, and its title and URL came back\n" +
 		"from that check. So: never build a citation out of anything else. Do not\n" +
 		"construct a URL, do not reuse a title or link you saw earlier in the\n" +
-		"conversation, and do not cite a document that search or fetch did not\n" +
-		"return to you on this turn. A link is content — citing one the caller may\n" +
+		"conversation, and do not cite a document that search did not return to\n" +
+		"you on this turn. A link is content — citing one the caller may\n" +
 		"not open discloses exactly what checking their access was meant to\n" +
 		"prevent.\n\n")
 
@@ -388,8 +390,9 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []ConnectionDescr
 			"  an incomplete one.\n")
 	}
 	b.WriteString("- A result marked **stale** is one the caller may read, but the source has\n" +
-		"  changed since it was indexed. Either say the passage may be out of date,\n" +
-		"  or fetch the live document and answer from that instead.\n" +
+		"  changed since it was indexed. Say the passage may be out of date; where\n" +
+		"  the member offers a `get` tool, read the live object with it and answer\n" +
+		"  from that instead.\n" +
 		"- When search reports sources it could not check, say so. Those are not\n" +
 		"  results that were withheld — they are results nobody could confirm\n" +
 		"  either way, so the answer may be missing evidence that exists.\n")

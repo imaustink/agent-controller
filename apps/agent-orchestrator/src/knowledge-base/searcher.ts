@@ -62,6 +62,18 @@ export class KnowledgeBaseSearcher {
     const exec = tool.knowledgeBaseExec;
     if (!exec) throw new Error(`tool ${tool.id} carries no knowledge-base execution spec`);
 
+    // This path only knows how to search. A `fetch` operation would need a
+    // whole-document read from the source, an adapter ADR 0040 defers — so no
+    // fetch tool is generated. Fail closed rather than let a mis-generated
+    // fetch spec silently run a similarity search over the source id, which
+    // would return ranked passages dressed up as a document fetch.
+    if (exec.operation !== "search") {
+      return {
+        result:
+          `I cannot ${exec.operation} ${exec.displayName}: only search is supported for this knowledge base.`,
+      };
+    }
+
     if (!caller.subject) {
       // Fail closed, as every retrieval here does.
       return { result: "I could not establish who is asking, so I cannot search this knowledge base." };

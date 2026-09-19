@@ -69,6 +69,18 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 	if exec == nil {
 		return SearchKnowledgeBaseOutput{}, fmt.Errorf("tool %s carries no knowledge-base execution spec", in.Tool.ID)
 	}
+	// This activity only knows how to search. A "fetch" operation would need a
+	// whole-document read from the source, an adapter ADR 0040 defers — so no
+	// fetch tool is generated. Fail closed rather than let a mis-generated
+	// fetch spec silently run a similarity search over the source id, which
+	// would return ranked passages dressed up as a document fetch.
+	if exec.Operation != "" && exec.Operation != "search" {
+		return SearchKnowledgeBaseOutput{
+			Result: fmt.Sprintf(
+				"I cannot %s %s: only search is supported for this knowledge base.",
+				exec.Operation, exec.DisplayName),
+		}, nil
+	}
 	if in.Caller.Subject == "" {
 		// Fail closed, as every retrieval in this engine does: no resolved
 		// identity means no corpus.

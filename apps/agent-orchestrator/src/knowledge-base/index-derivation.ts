@@ -5,7 +5,6 @@ import type { KnowledgeBaseExecMember, KnowledgeBaseExecSpec } from "./exec.js";
 import {
   connectionGetToolId,
   connectionLabel,
-  knowledgeBaseFetchToolId,
   knowledgeBaseLabel,
   knowledgeBaseSearchToolId,
   type ConnectionDescriptor,
@@ -60,8 +59,17 @@ export function deriveKnowledgeBaseIndex(
 }
 
 /**
- * The tools a knowledge base implies: its own search and fetch, plus the GET
- * face of every api-enabled member.
+ * The tools a knowledge base implies: its own search, plus the GET face of
+ * every api-enabled member.
+ *
+ * A `/fetch` tool is deliberately NOT offered yet. The whole-document read it
+ * would provide has no dispatch path — both engines route every
+ * `knowledgeBaseExec` to search — and building the real one means a source
+ * reader against Atlassian's actual API shapes, the same adapter layer ADR 0040
+ * defers. Offering it before then would steer the planner into a call that
+ * silently degrades to a similarity search over the source id. The
+ * `KnowledgeBaseExecSpec.operation` field stays as scaffolding for that
+ * deferred path, and dispatch fails closed on any operation but `search`.
  */
 export function knowledgeBaseTools(
   kb: KnowledgeBaseDescriptor,
@@ -91,17 +99,6 @@ export function knowledgeBaseTools(
       allowedRoles: roles,
       hidden: true,
       knowledgeBaseExec: exec("search"),
-    },
-    {
-      id: knowledgeBaseFetchToolId(kb.id),
-      name: `Fetch from ${label}`,
-      description:
-        `Read a whole document from the ${label} knowledge base, live from its source.` +
-        "\n\nInput: The id of a source returned by this knowledge base's search tool." +
-        "\nOutput: The current document, as the calling user is permitted to see it.",
-      allowedRoles: roles,
-      hidden: true,
-      knowledgeBaseExec: exec("fetch"),
     },
   ];
 

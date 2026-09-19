@@ -186,12 +186,13 @@ func TestDeriveKnowledgeBaseSkill(t *testing.T) {
 		require.False(t, skill.Unrestricted)
 	})
 
-	t.Run("generates search and fetch, and GET only for api-enabled members", func(t *testing.T) {
+	t.Run("generates search, and GET only for api-enabled members", func(t *testing.T) {
 		skill := catalog.DeriveKnowledgeBaseSkill(sncKB(), conns)
 
+		// No kb:snc/fetch: whole-document fetch has no dispatch path yet, so the
+		// skill never steers the planner toward an unimplemented tool.
 		require.Equal(t, []string{
 			"kb:snc/search",
-			"kb:snc/fetch",
 			"conn:snc-confluence/get", // the only member with api.enabled
 		}, skill.ToolIDs)
 	})

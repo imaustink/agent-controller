@@ -86,6 +86,23 @@ describe("KnowledgeBaseSearcher", () => {
     await expect(searcher.search(bare, "q", reader)).rejects.toThrow(/execution spec/);
   });
 
+  it("does not silently run a search for a non-search operation", async () => {
+    const credentials = resolver("t");
+    const { searcher, openCorpus } = searcherWith(credentials);
+    const tool = searchTool(member("c", ["reader"], "coll"));
+    tool.id = "kb:snc/fetch";
+    tool.knowledgeBaseExec!.operation = "fetch";
+
+    const out = await searcher.search(tool, "some-source-id", reader);
+
+    // A fetch would need a whole-document source read that is deferred; it must
+    // fail closed, never degrade into a similarity search over the source id.
+    expect(out.result).toContain("only search is supported");
+    expect(out.result).not.toContain("Sources:");
+    expect(openCorpus).not.toHaveBeenCalled();
+    expect(credentials.asked).toEqual([]);
+  });
+
   it("discloses withheld sources without querying anything", async () => {
     const credentials = resolver("t");
     const { searcher } = searcherWith(credentials);

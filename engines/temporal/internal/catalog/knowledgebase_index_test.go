@@ -130,8 +130,10 @@ func TestUpsertKnowledgeBaseIndexesASkillAndItsTools(t *testing.T) {
 	require.ElementsMatch(t, []string{"lead", "reader", "writer"}, skill.Roles)
 
 	require.ElementsMatch(t, []string{
-		"kb:snc/search", "kb:snc/fetch", "conn:snc-confluence/get",
+		"kb:snc/search", "conn:snc-confluence/get",
 	}, h.tools.ids())
+	require.NotContains(t, h.tools.ids(), "kb:snc/fetch",
+		"fetch has no dispatch path, so no fetch tool is generated")
 }
 
 func TestGeneratedToolsAreHiddenFromOpenRetrieval(t *testing.T) {
@@ -144,7 +146,7 @@ func TestGeneratedToolsAreHiddenFromOpenRetrieval(t *testing.T) {
 	// Referenceable by the skill that declares them, never returned by open
 	// retrieval — otherwise every client's scoped tooling competes in front of
 	// every caller (ADR 0039 §2).
-	for _, id := range []string{"kb:snc/search", "kb:snc/fetch", "conn:snc-confluence/get"} {
+	for _, id := range []string{"kb:snc/search", "conn:snc-confluence/get"} {
 		rec, ok := h.tools.get(id)
 		require.True(t, ok, id)
 		require.True(t, rec.Hidden, "%s must not be retrievable on its own", id)
@@ -281,8 +283,11 @@ func TestGeneratedToolsCarryTheirExecutionSpec(t *testing.T) {
 	require.Equal(t, "conn_default_snc-confluence", byID["snc-confluence"].Collection)
 	require.Equal(t, []string{"reader", "writer"}, byID["snc-confluence"].AllowedRoles)
 
-	fetch := decodeTool(t, mustGet(t, h.tools, "kb:snc/fetch"))
-	require.Equal(t, "fetch", fetch.KnowledgeBaseExec.Operation)
+	// No fetch tool is generated: its whole-document read has no dispatch path
+	// yet (ADR 0040 defers the source adapter), so the planner is never offered
+	// a call that would silently degrade into a similarity search.
+	_, ok := h.tools.get("kb:snc/fetch")
+	require.False(t, ok)
 }
 
 func TestExecutionSpecRecordsEachProvidersProbeUnit(t *testing.T) {

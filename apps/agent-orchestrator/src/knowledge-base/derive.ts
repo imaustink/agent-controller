@@ -2,7 +2,6 @@ import type { SkillAccess } from "../skills/types.js";
 import {
   connectionGetToolId,
   connectionLabel,
-  knowledgeBaseFetchToolId,
   knowledgeBaseLabel,
   knowledgeBaseSearchToolId,
   knowledgeBaseSkillId,
@@ -65,7 +64,6 @@ export function deriveKnowledgeBaseSkill(
       markdown: knowledgeBaseMarkdown(kb, resolved),
       toolIds: [
         knowledgeBaseSearchToolId(kb.id),
-        knowledgeBaseFetchToolId(kb.id),
         ...getToolIds,
       ],
       agentIds: [],
@@ -184,11 +182,7 @@ function knowledgeBaseMarkdown(
       "   question, say what is missing — never fill the gap from your own\n" +
       "   knowledge, which is not this client's material and will read as though\n" +
       "   it were.\n" +
-      `3. Use \`${knowledgeBaseFetchToolId(kb.id)}\` when a chunk is not enough to answer\n` +
-      "   from and you need the whole document. It reads the CURRENT copy from the\n" +
-      "   source, so prefer it whenever the question turns on detail or on what is\n" +
-      "   true now.\n" +
-      "4. End every answer with a `Sources:` list, using each result's title and\n" +
+      "3. End every answer with a `Sources:` list, using each result's title and\n" +
       "   URL **exactly as the search result gave them**. An uncited claim is not\n" +
       "   an acceptable answer here.\n",
   );
@@ -198,8 +192,8 @@ function knowledgeBaseMarkdown(
       "to the source at the moment you searched, and its title and URL came back\n" +
       "from that check. So: never build a citation out of anything else. Do not\n" +
       "construct a URL, do not reuse a title or link you saw earlier in the\n" +
-      "conversation, and do not cite a document that search or fetch did not\n" +
-      "return to you on this turn. A link is content — citing one the caller may\n" +
+      "conversation, and do not cite a document that search did not return to\n" +
+      "you on this turn. A link is content — citing one the caller may\n" +
       "not open discloses exactly what checking their access was meant to\n" +
       "prevent.\n",
   );
@@ -216,8 +210,9 @@ function knowledgeBaseMarkdown(
   }
   parts.push(
     "- A result marked **stale** is one the caller may read, but the source has\n" +
-      "  changed since it was indexed. Either say the passage may be out of date,\n" +
-      "  or fetch the live document and answer from that instead.\n" +
+      "  changed since it was indexed. Say the passage may be out of date; where\n" +
+      "  the member offers a `get` tool, read the live object with it and answer\n" +
+      "  from that instead.\n" +
       "- When search reports sources it could not check, say so. Those are not\n" +
       "  results that were withheld — they are results nobody could confirm\n" +
       "  either way, so the answer may be missing evidence that exists.",

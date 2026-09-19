@@ -78,6 +78,27 @@ func TestSearchRejectsAToolWithNoExecutionSpec(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestSearchDoesNotSilentlyRunASearchForANonSearchOperation(t *testing.T) {
+	resolver := &fakeResolver{token: "t"}
+	tool := searchTool(member("c", []string{"reader"}, "coll"))
+	tool.ID = "kb:snc/fetch"
+	tool.KnowledgeBaseExec.Operation = "fetch"
+
+	out, err := activitiesWith(resolver).SearchKnowledgeBase(context.Background(),
+		activities.SearchKnowledgeBaseInput{
+			Caller: activities.Caller{Subject: "s", Roles: []string{"reader"}},
+			Query:  "some-source-id",
+			Tool:   tool,
+		})
+
+	// A fetch would need a whole-document source read that is deferred; it must
+	// fail closed, never degrade into a similarity search over the source id.
+	require.NoError(t, err)
+	require.Contains(t, out.Result, "only search is supported")
+	require.NotContains(t, out.Result, "Sources:")
+	require.Zero(t, resolver.callCount, "no credential should be resolved for an unsupported operation")
+}
+
 func TestSearchDisclosesWithheldSourcesWithoutQueryingAnything(t *testing.T) {
 	resolver := &fakeResolver{token: "t"}
 

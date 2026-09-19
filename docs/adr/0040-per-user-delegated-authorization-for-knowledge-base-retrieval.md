@@ -162,10 +162,18 @@ correct but slower — this is an optimization, never a relaxation.
 
 **Full-document hydration is the model's decision, not the pipeline's.** The
 retrieval path probes and stops there. When a chunk is not enough to answer
-from, the planner calls `kb:<name>/fetch` or the connection's own GET face
-(ADR 0038 §5) and reads the live document — which is an ordinary tool call,
-authorized the same way, because it goes to the source with the same delegated
-token.
+from, the planner reads the live document with the connection's own GET face
+(ADR 0038 §5) — which is an ordinary tool call, authorized the same way,
+because it goes to the source with the same delegated token.
+
+> **Deferred:** a dedicated `kb:<name>/fetch` tool was intended to give this a
+> knowledge-base-scoped face, but its whole-document read has no dispatch path
+> yet — it would need a source reader against the provider's real API shapes,
+> the same adapter layer this ADR defers. Until that exists the tool is **not
+> generated**, so the planner is never steered toward a call that would
+> silently degrade into a similarity search; `KnowledgeBaseExecSpec.operation`
+> remains as scaffolding and dispatch fails closed on any operation but
+> `search`. The connection GET face already covers live reads in the meantime.
 
 This is why the split costs so little. There is no separate hydration-fetch
 machinery to build: the tools that fetch a whole document already exist for

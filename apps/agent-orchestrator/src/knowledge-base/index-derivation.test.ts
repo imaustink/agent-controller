@@ -54,9 +54,20 @@ describe("deriveKnowledgeBaseIndex", () => {
 
     expect(tools.map((t) => t.id).sort()).toEqual([
       "conn:snc-confluence/get",
-      "kb:snc/fetch",
       "kb:snc/search",
     ]);
+  });
+
+  it("does not generate a fetch tool while fetch has no dispatch path", () => {
+    const { tools } = deriveKnowledgeBaseIndex([sncKb()], connections());
+
+    // The `/fetch` whole-document read is deferred with its source adapter
+    // (ADR 0040); offering it would steer the planner into a call that
+    // silently degrades to a similarity search.
+    expect(tools.map((t) => t.id)).not.toContain("kb:snc/fetch");
+    for (const tool of tools) {
+      expect(tool.knowledgeBaseExec?.operation ?? "search").toBe("search");
+    }
   });
 
   it("marks every generated tool hidden", () => {
