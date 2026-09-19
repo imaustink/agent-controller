@@ -35,8 +35,10 @@ rules:
   resources:
   - agentruns
   - agents
+  - connections
   - identityproviders
   - integrationroutes
+  - knowledgebases
   - localtools
   - skills
   - toolruns
@@ -54,8 +56,10 @@ rules:
   resources:
   - agentruns/finalizers
   - agents/finalizers
+  - connections/finalizers
   - identityproviders/finalizers
   - integrationroutes/finalizers
+  - knowledgebases/finalizers
   - localtools/finalizers
   - skills/finalizers
   - toolruns/finalizers
@@ -67,8 +71,10 @@ rules:
   resources:
   - agentruns/status
   - agents/status
+  - connections/status
   - identityproviders/status
   - integrationroutes/status
+  - knowledgebases/status
   - localtools/status
   - skills/status
   - toolruns/status

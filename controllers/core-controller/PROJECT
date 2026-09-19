@@ -63,4 +63,22 @@ resources:
   kind: LocalTool
   path: github.com/controller-agent/core-controller/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: controller-agent.dev
+  group: core
+  kind: Connection
+  path: github.com/controller-agent/core-controller/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: controller-agent.dev
+  group: core
+  kind: KnowledgeBase
+  path: github.com/controller-agent/core-controller/api/v1alpha1
+  version: v1alpha1
 version: "3"

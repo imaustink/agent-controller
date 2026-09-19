@@ -22,6 +22,12 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the core-controller itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- knowledgebase_admin_role.yaml
+- knowledgebase_editor_role.yaml
+- knowledgebase_viewer_role.yaml
+- connection_admin_role.yaml
+- connection_editor_role.yaml
+- connection_viewer_role.yaml
 - agentrun_admin_role.yaml
 - agentrun_editor_role.yaml
 - agentrun_viewer_role.yaml

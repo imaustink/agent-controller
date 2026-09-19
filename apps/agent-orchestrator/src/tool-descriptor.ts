@@ -83,6 +83,18 @@ export interface ToolDescriptor {
   /** Roles/scopes allowed to invoke this tool; enforced as a retrieval filter (ADR 0004). */
   allowedRoles: string[];
   /**
+   * Keeps a tool REFERENCEABLE but not RETRIEVABLE: `getByIds` finds it,
+   * semantic `query` never returns it.
+   *
+   * For tools that exist only to be named by something else. A knowledge
+   * base's generated search tool, and a Connection's scoped GET tool, are
+   * reachable precisely because the knowledge base that declares them was
+   * selected (docs/adr/0039 §2). Letting them compete in open retrieval would
+   * put every client's scoped tooling in front of every caller, which is the
+   * outcome that design exists to prevent.
+   */
+  hidden?: boolean;
+  /**
    * Job launch template (container tools, ADR 0010). Set for tools launched
    * as k8s Jobs; absent for LocalTools/agent-backed tools.
    */

@@ -77,6 +77,7 @@ func (s *Qdrant) Upsert(ctx context.Context, records []Record) error {
 				"id":           r.ID,
 				"roles":        roles,
 				"unrestricted": r.Unrestricted,
+				"hidden":       r.Hidden,
 				"descriptor":   string(r.Descriptor),
 			}),
 		}
@@ -125,6 +126,19 @@ func visibilityFilter(callerRoles []string) *qdrant.Filter {
 	return &qdrant.Filter{Should: conditions}
 }
 
+// queryFilter is visibilityFilter plus the hidden exclusion, applied to
+// semantic search only — GetByIDs deliberately keeps using visibilityFilter, so
+// a hidden record stays reachable by the thing that declared it.
+//
+// Records written before `hidden` existed carry no such field, and a must-not
+// match against an absent field passes, so this is backward compatible with an
+// already-populated collection.
+func queryFilter(callerRoles []string) *qdrant.Filter {
+	filter := visibilityFilter(callerRoles)
+	filter.MustNot = []*qdrant.Condition{qdrant.NewMatchBool("hidden", true)}
+	return filter
+}
+
 func (s *Qdrant) Query(ctx context.Context, text string, callerRoles []string, limit int) ([]Hit, error) {
 	vectors, err := s.embedder.Embed(ctx, []string{text})
 	if err != nil {
@@ -135,7 +149,7 @@ func (s *Qdrant) Query(ctx context.Context, text string, callerRoles []string, l
 	points, err := s.client.Query(ctx, &qdrant.QueryPoints{
 		CollectionName: s.collection,
 		Query:          qdrant.NewQuery(vectors[0]...),
-		Filter:         visibilityFilter(callerRoles),
+		Filter:         queryFilter(callerRoles),
 		Limit:          &limit64,
 		WithPayload:    qdrant.NewWithPayload(true),
 	})

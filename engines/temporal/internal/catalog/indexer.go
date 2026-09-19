@@ -23,6 +23,13 @@ type Indexer struct {
 	agents map[string]AgentDescriptor
 	skills map[string]SkillDescriptor // as decoded, pre-derivation
 
+	// Connections and knowledge bases are mirrored the same way, and for the
+	// same reason: a KnowledgeBase's derived skill (ADR 0039 §2) is a function
+	// of BOTH, so either changing has to re-derive every knowledge base that
+	// references it.
+	connections    map[string]ConnectionDescriptor
+	knowledgeBases map[string]KnowledgeBaseDescriptor
+
 	reindexDelay time.Duration
 	reindexTimer *time.Timer
 }
@@ -31,11 +38,13 @@ const defaultReindexDelay = 500 * time.Millisecond
 
 func NewIndexer(stores vectorstore.Collections) *Indexer {
 	return &Indexer{
-		stores:       stores,
-		tools:        map[string]ToolDescriptor{},
-		agents:       map[string]AgentDescriptor{},
-		skills:       map[string]SkillDescriptor{},
-		reindexDelay: defaultReindexDelay,
+		stores:         stores,
+		tools:          map[string]ToolDescriptor{},
+		agents:         map[string]AgentDescriptor{},
+		skills:         map[string]SkillDescriptor{},
+		connections:    map[string]ConnectionDescriptor{},
+		knowledgeBases: map[string]KnowledgeBaseDescriptor{},
+		reindexDelay:   defaultReindexDelay,
 	}
 }
 
@@ -136,10 +145,17 @@ func (ix *Indexer) ReindexSkills(ctx context.Context) error {
 	}
 	ix.mu.Unlock()
 
-	if len(records) == 0 {
-		return nil
+	if len(records) > 0 {
+		if err := ix.stores.Skills.Upsert(ctx, records); err != nil {
+			return err
+		}
 	}
-	return ix.stores.Skills.Upsert(ctx, records)
+
+	// Knowledge bases derive skills too, and from the same trigger: a Tool,
+	// Agent or Connection change can alter either kind. Sharing one debounced
+	// pass keeps a burst of applies to one re-derivation rather than one per
+	// event, and keeps the two kinds from racing each other into the store.
+	return ix.reindexKnowledgeBases(ctx)
 }
 
 func record(id, text string, roles []string, unrestricted bool, descriptor any) (vectorstore.Record, error) {

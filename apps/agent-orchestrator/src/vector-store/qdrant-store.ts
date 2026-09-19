@@ -23,6 +23,11 @@ interface ToolPayload {
   name: string;
   description: string;
   allowedRoles: string[];
+  /**
+   * Referenceable but not retrievable (see ToolDescriptor.hidden). Excluded
+   * from `query`, still resolvable by `getByIds`.
+   */
+  hidden: boolean;
   /** Job launch template for container tools; null for LocalTools/agent-backed tools (ADR 0014). */
   jobTemplate: JobTemplate | null;
   /** Local execution spec for LocalTools; null otherwise (ADR 0014). */
@@ -77,6 +82,7 @@ export class QdrantToolStore implements VectorStore {
           name: tool.name,
           description: tool.description,
           allowedRoles: tool.allowedRoles,
+          hidden: tool.hidden ?? false,
           jobTemplate: tool.jobTemplate ?? null,
           localExec: tool.localExec ?? null,
           agentRunTemplate: tool.agentRunTemplate ?? null,
@@ -98,6 +104,11 @@ export class QdrantToolStore implements VectorStore {
       limit: k,
       filter: {
         must: [{ key: "allowedRoles", match: { any: filter.callerRoles } }],
+        // Hidden tools are declared by a skill, never discovered. Points
+        // written before `hidden` existed carry no such field, and a must_not
+        // against an absent field passes — so this stays backward compatible
+        // with an already-populated collection.
+        must_not: [{ key: "hidden", match: { value: true } }],
       },
     });
     return results.map((point) => {
@@ -107,6 +118,7 @@ export class QdrantToolStore implements VectorStore {
         name: payload.name,
         description: payload.description,
         allowedRoles: payload.allowedRoles,
+        hidden: payload.hidden ?? false,
         jobTemplate: payload.jobTemplate ?? undefined,
         localExec: payload.localExec ?? undefined,
         agentRunTemplate: payload.agentRunTemplate ?? undefined,
@@ -135,6 +147,7 @@ export class QdrantToolStore implements VectorStore {
         name: payload.name,
         description: payload.description,
         allowedRoles: payload.allowedRoles,
+        hidden: payload.hidden ?? false,
         jobTemplate: payload.jobTemplate ?? undefined,
         localExec: payload.localExec ?? undefined,
         agentRunTemplate: payload.agentRunTemplate ?? undefined,

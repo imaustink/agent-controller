@@ -60,6 +60,7 @@ describe("QdrantToolStore", () => {
             name: "recipe-scraper",
             description: tool.description,
             allowedRoles: ["reader"],
+            hidden: false,
             jobTemplate: tool.jobTemplate,
             localExec: null,
             agentRunTemplate: null,
@@ -109,7 +110,7 @@ describe("QdrantToolStore", () => {
     );
 
     const results = await store.query("delegate a coding task", { callerRoles: ["writer"] });
-    expect(results).toEqual([{ tool: agentBackedTool, score: 0.9 }]);
+    expect(results).toEqual([{ tool: { ...agentBackedTool, hidden: false }, score: 0.9 }]);
     expect(results[0]!.tool.agentRunTemplate).toEqual({ namespace: "default", agentRef: "opencode-swe-agent" });
   });
 
@@ -147,9 +148,12 @@ describe("QdrantToolStore", () => {
     expect(client.search).toHaveBeenCalledWith("tools", {
       vector: [0.1, 0.2, 0.3],
       limit: 3,
-      filter: { must: [{ key: "allowedRoles", match: { any: ["reader"] } }] },
+      filter: {
+        must: [{ key: "allowedRoles", match: { any: ["reader"] } }],
+        must_not: [{ key: "hidden", match: { value: true } }],
+      },
     });
-    expect(results).toEqual([{ tool, score: 0.9 }]);
+    expect(results).toEqual([{ tool: { ...tool, hidden: false }, score: 0.9 }]);
   });
 
   it("getByIds fails closed: returns no results when callerRoles is empty, without calling Qdrant", async () => {
@@ -170,6 +174,41 @@ describe("QdrantToolStore", () => {
 
     expect(results).toEqual([]);
     expect(client.retrieve).not.toHaveBeenCalled();
+  });
+
+  it("getByIds still resolves a HIDDEN tool, which query would never return", async () => {
+    // The point of `hidden` (ADR 0039 §2): a knowledge base's generated tools
+    // are reachable because the skill that owns them declared them by id, and
+    // are kept out of open retrieval so every client's scoped tooling does not
+    // compete in front of every caller. If getByIds filtered them too, a
+    // selected knowledge base would resolve none of its own tools.
+    const client = {
+      retrieve: vi.fn().mockResolvedValue([
+        {
+          id: toQdrantPointId("kb:snc/search"),
+          payload: {
+            id: "kb:snc/search",
+            name: "Search SNC",
+            description: "Search the SNC knowledge base.",
+            allowedRoles: ["reader"],
+            hidden: true,
+            jobTemplate: null,
+            tier: null,
+          },
+        },
+      ]),
+    } as unknown as QdrantClient;
+    const store = new QdrantToolStore({ url: "http://q", collection: "tools", vectorSize: 3 }, fakeEmbedder(), client);
+
+    const results = await store.getByIds(["kb:snc/search"], { callerRoles: ["reader"] });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].tool.hidden).toBe(true);
+    // No hidden exclusion on the retrieve path.
+    expect(client.retrieve).toHaveBeenCalledWith("tools", {
+      ids: [toQdrantPointId("kb:snc/search")],
+      with_payload: true,
+    });
   });
 
   it("getByIds resolves points directly by id and maps them back to ToolDescriptor", async () => {
@@ -196,7 +235,7 @@ describe("QdrantToolStore", () => {
       ids: [toQdrantPointId("recipe-scraper")],
       with_payload: true,
     });
-    expect(results).toEqual([{ tool, score: 1 }]);
+    expect(results).toEqual([{ tool: { ...tool, hidden: false }, score: 1 }]);
   });
 
   it("getByIds filters out points whose allowedRoles don't intersect the caller's roles", async () => {

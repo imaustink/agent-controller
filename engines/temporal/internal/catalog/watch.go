@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -15,17 +17,31 @@ import (
 
 const resyncPeriod = 10 * time.Minute
 
+// watchSpec is one CR kind the catalog mirrors.
+type watchSpec struct {
+	gvr    schema.GroupVersionResource
+	upsert func(context.Context, *unstructured.Unstructured) error
+	delete func(context.Context, string) error
+}
+
+// knowledgeBasesEnabled gates the Connection/KnowledgeBase watches, and is off
+// unless explicitly turned on.
+//
+// A derived kb:<name>/search descriptor carries no image, no agentRef and no
+// localExec, so indexing a knowledge base before the connection-broker and the
+// tool executors exist lets the planner select one and then fail at dispatch —
+// a confusing runtime error rather than a clean "not implemented".
+func knowledgeBasesEnabled() bool {
+	return os.Getenv("AGENT_KNOWLEDGE_BASES_ENABLED") == "true"
+}
+
 // RunWatch starts shared dynamic informers on the Tool/Skill/Agent CRs in
 // namespace and feeds every event into the indexer. The initial informer
 // list doubles as the startup full sync. Blocks until ctx is done.
 func RunWatch(ctx context.Context, client dynamic.Interface, namespace string, ix *Indexer) error {
 	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(client, resyncPeriod, namespace, nil)
 
-	watches := []struct {
-		gvr    schema.GroupVersionResource
-		upsert func(context.Context, *unstructured.Unstructured) error
-		delete func(context.Context, string) error
-	}{
+	watches := []watchSpec{
 		{ToolGVR,
 			func(ctx context.Context, obj *unstructured.Unstructured) error {
 				tool, err := DecodeTool(obj)
@@ -71,6 +87,34 @@ func RunWatch(ctx context.Context, client dynamic.Interface, namespace string, i
 		},
 	}
 
+	// Connections and KnowledgeBases (ADR 0038, 0039). Neither is retrievable in
+	// its own right: a Connection contributes a corpus and a scoped GET tool,
+	// and a KnowledgeBase derives the Skill that is actually selected.
+	if knowledgeBasesEnabled() {
+		watches = append(watches, []watchSpec{
+			{ConnectionGVR,
+				func(ctx context.Context, obj *unstructured.Unstructured) error {
+					conn, err := DecodeConnection(obj)
+					if err != nil {
+						return err
+					}
+					return ix.UpsertConnection(ctx, conn)
+				},
+				ix.DeleteConnection,
+			},
+			{KnowledgeBaseGVR,
+				func(ctx context.Context, obj *unstructured.Unstructured) error {
+					kb, err := DecodeKnowledgeBase(obj)
+					if err != nil {
+						return err
+					}
+					return ix.UpsertKnowledgeBase(ctx, kb)
+				},
+				ix.DeleteKnowledgeBase,
+			},
+		}...)
+	}
+
 	for _, w := range watches {
 		informer := factory.ForResource(w.gvr).Informer()
 		if _, err := informer.AddEventHandler(eventHandler(ctx, w.gvr, w.upsert, w.delete)); err != nil {
@@ -82,7 +126,11 @@ func RunWatch(ctx context.Context, client dynamic.Interface, namespace string, i
 	if err := waitForCacheSync(ctx, factory.WaitForCacheSync(ctx.Done())); err != nil {
 		return err
 	}
-	log.Printf("catalog watch established: namespace=%s resources=tools,skills,agents,localtools", namespace)
+	resources := make([]string, 0, len(watches))
+	for _, w := range watches {
+		resources = append(resources, w.gvr.Resource)
+	}
+	log.Printf("catalog watch established: namespace=%s resources=%s", namespace, strings.Join(resources, ","))
 
 	<-ctx.Done()
 	return nil

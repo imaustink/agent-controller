@@ -26,6 +26,17 @@ type Record struct {
 	Roles        []string
 	Unrestricted bool
 
+	// Hidden keeps a record REFERENCEABLE but not RETRIEVABLE: GetByIDs finds
+	// it, semantic Query never returns it.
+	//
+	// Needed by records that exist only to be named by something else. A
+	// knowledge base's generated search tool, and a Connection's scoped GET
+	// tool, are reachable precisely because the knowledge base that owns them
+	// was selected (agent-controller ADR 0039 §2). Letting them compete in open
+	// retrieval would put every client's scoped tooling in front of every
+	// caller, which is the outcome that design exists to prevent.
+	Hidden bool
+
 	// Descriptor is the full descriptor JSON, returned verbatim on hits.
 	Descriptor json.RawMessage
 }
