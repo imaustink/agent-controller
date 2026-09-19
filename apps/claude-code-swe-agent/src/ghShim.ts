@@ -1,6 +1,5 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import { runCommand } from "./git.js";
 
 /**
@@ -147,7 +146,12 @@ export async function installGhShim(opts: { homeDir: string }): Promise<{ binDir
   const binDir = join(opts.homeDir, "bin");
   await mkdir(binDir, { recursive: true });
   const shimPath = join(binDir, "gh");
-  const classifierUrl = pathToFileURL(fileURLToPath(new URL("ghShim.js", import.meta.url))).href;
+  // `import.meta.url` rather than a hardcoded "ghShim.js": this resolves to
+  // dist/ghShim.js when the agent runs compiled (the container's `node
+  // dist/index.js`) and to src/ghShim.ts under tsx, so the shim's import
+  // works either way. Naming the .js explicitly broke the dev path, where no
+  // such file sits next to the source.
+  const classifierUrl = import.meta.url;
   await writeFile(shimPath, renderGhShim({ realGhPath, classifierUrl }), { mode: 0o700 });
   await chmod(shimPath, 0o700);
   return { binDir };
