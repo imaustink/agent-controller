@@ -52,6 +52,13 @@ export interface ConnectionDescriptor {
   collection?: string;
   /** Whether this connection contributes a GET tool to knowledge bases including it. */
   apiEnabled: boolean;
+  /**
+   * The providers whose per-user delegated credential this connection needs to
+   * serve a retrieval (docs/adr/0040). Empty means it can be ingested but not
+   * probed, so it cannot answer for a caller whose access differs from the
+   * ingestion credential's.
+   */
+  identityProviders: string[];
 }
 
 /** Composes Connections into a queryable corpus (docs/adr/0039). */

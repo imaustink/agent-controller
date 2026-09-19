@@ -187,11 +187,30 @@ type ConnectionSpec struct {
 	// namespace (never literal values), resolved by the connection-broker.
 	// Two Connections over the same system share one Secret.
 	//
-	// Per-user delegated credentials (Tool.spec.identityProviders, ADR 0032)
-	// are deliberately absent in v1alpha1: a scheduled reconcile has no calling
-	// user, so a per-user sync is incoherent as stated (ADR 0038 §7).
+	// This is the INGESTION credential, and it stays a shared service one: a
+	// scheduled reconcile has no calling user, so a per-user sync is incoherent
+	// as stated (ADR 0038 §7). Retrieval is the opposite — see
+	// identityProviders.
 	// +optional
 	SecretEnv []SecretEnvVar `json:"secretEnv,omitempty"`
+
+	// identityProviders names the IdentityProvider CRs whose per-user delegated
+	// credential this connection needs for RETRIEVAL (ADR 0032's mechanism,
+	// required here by ADR 0040).
+	//
+	// The two credential paths coexist on one Connection by design rather than
+	// by accident. Ingestion runs with total visibility so the index can be
+	// built once and shared; retrieval must not, so every candidate is probed
+	// live against the source with the asking user's own token before it can be
+	// ranked, prompted or cited.
+	//
+	// A connection with no identityProviders can still be ingested, but it
+	// cannot serve a user whose access differs from the service credential's —
+	// there would be nothing to probe with, and probing with the ingestion
+	// credential would answer a different question, permissively.
+	// +optional
+	// +listType=set
+	IdentityProviders []string `json:"identityProviders,omitempty"`
 
 	// sync configures how this Connection is kept current. Omitted means no
 	// indexing at all — a live-face-only Connection.

@@ -57,6 +57,12 @@ type ConnectionDescriptor struct {
 	// APIEnabled means this connection contributes a GET tool to the knowledge
 	// bases that include it.
 	APIEnabled bool `json:"apiEnabled,omitempty"`
+
+	// IdentityProviders names the providers whose per-user delegated credential
+	// this connection needs to serve a retrieval (ADR 0040). Empty means it can
+	// be ingested but not probed, so it cannot answer for a caller whose access
+	// differs from the ingestion credential's.
+	IdentityProviders []string `json:"identityProviders,omitempty"`
 }
 
 // Label is what a citation renders for this connection.
@@ -91,11 +97,12 @@ func (kb KnowledgeBaseDescriptor) Label() string {
 }
 
 type connectionSpec struct {
-	Provider     string   `json:"provider"`
-	Description  string   `json:"description"`
-	DisplayName  string   `json:"displayName,omitempty"`
-	AllowedRoles []string `json:"allowedRoles"`
-	API          *struct {
+	Provider          string   `json:"provider"`
+	Description       string   `json:"description"`
+	DisplayName       string   `json:"displayName,omitempty"`
+	AllowedRoles      []string `json:"allowedRoles"`
+	IdentityProviders []string `json:"identityProviders,omitempty"`
+	API               *struct {
 		Enabled bool `json:"enabled,omitempty"`
 	} `json:"api,omitempty"`
 }
@@ -136,13 +143,14 @@ func DecodeConnection(obj *unstructured.Unstructured) (ConnectionDescriptor, err
 		return ConnectionDescriptor{}, err
 	}
 	return ConnectionDescriptor{
-		ID:           obj.GetName(),
-		Provider:     spec.Provider,
-		DisplayName:  spec.DisplayName,
-		Description:  spec.Description,
-		AllowedRoles: spec.AllowedRoles,
-		Collection:   status.Collection,
-		APIEnabled:   spec.API != nil && spec.API.Enabled,
+		ID:                obj.GetName(),
+		Provider:          spec.Provider,
+		DisplayName:       spec.DisplayName,
+		Description:       spec.Description,
+		AllowedRoles:      spec.AllowedRoles,
+		Collection:        status.Collection,
+		APIEnabled:        spec.API != nil && spec.API.Enabled,
+		IdentityProviders: spec.IdentityProviders,
 	}, nil
 }
 

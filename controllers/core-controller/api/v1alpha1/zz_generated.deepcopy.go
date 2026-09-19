@@ -396,6 +396,11 @@ func (in *ConnectionSpec) DeepCopyInto(out *ConnectionSpec) {
 		*out = make([]SecretEnvVar, len(*in))
 		copy(*out, *in)
 	}
+	if in.IdentityProviders != nil {
+		in, out := &in.IdentityProviders, &out.IdentityProviders
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Sync != nil {
 		in, out := &in.Sync, &out.Sync
 		*out = new(ConnectionSync)

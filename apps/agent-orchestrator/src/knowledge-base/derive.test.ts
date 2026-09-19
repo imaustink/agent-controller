@@ -19,6 +19,7 @@ function sncConnections(): Map<string, ConnectionDescriptor> {
         allowedRoles: ["reader", "writer"],
         collection: "conn_default_snc-confluence",
         apiEnabled: true,
+        identityProviders: ["atlassian"],
       },
     ],
     [
@@ -31,6 +32,7 @@ function sncConnections(): Map<string, ConnectionDescriptor> {
         allowedRoles: ["reader"],
         collection: "conn_default_snc-slack-eng",
         apiEnabled: false,
+        identityProviders: [],
       },
     ],
     [
@@ -43,6 +45,7 @@ function sncConnections(): Map<string, ConnectionDescriptor> {
         allowedRoles: ["lead"],
         collection: "conn_default_snc-slack-private",
         apiEnabled: false,
+        identityProviders: [],
       },
     ],
   ]);
