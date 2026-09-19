@@ -39,6 +39,51 @@ type ToolDescriptor struct {
 	// (ADR 0014) rather than a Tool CR: it is never launched as a k8s Job,
 	// but dispatched in-pod to the matching per-language executor sidecar.
 	LocalExec *LocalExecSpec `json:"localExec,omitempty"`
+
+	// KnowledgeBaseExec, when set, means this descriptor was DERIVED from a
+	// KnowledgeBase (ADR 0039) rather than authored as a CR. Like LocalExec it
+	// selects a dispatch path — here, retrieval in-process rather than any kind
+	// of launch — and carries what that path needs.
+	KnowledgeBaseExec *KnowledgeBaseExecSpec `json:"knowledgeBaseExec,omitempty"`
+}
+
+// KnowledgeBaseExecMember is one member connection, as the search path needs it.
+type KnowledgeBaseExecMember struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	// Collection this member's chunks live in; empty until its Connection has
+	// been reconciled, which makes it unsearchable rather than an error.
+	Collection string `json:"collection"`
+	// AllowedRoles decides whether this caller may consult the member at all —
+	// the source-level filter that runs before any query and produces the
+	// withheld count (ADR 0039 §4).
+	AllowedRoles []string `json:"allowedRoles"`
+	// Granularity is the unit this member's provider authorizes at, so probes
+	// can be deduplicated per connection where that is the real access unit
+	// (ADR 0040).
+	Granularity string `json:"granularity,omitempty"`
+	// IdentityProviders whose delegated credential a probe needs. Empty means
+	// this member cannot serve a caller whose access differs from the ingestion
+	// credential's.
+	IdentityProviders []string `json:"identityProviders,omitempty"`
+}
+
+// KnowledgeBaseExecSpec is everything the search/fetch path needs, carried on
+// the generated tool rather than looked up again at call time.
+//
+// The tool descriptor is already the contract between indexing and execution,
+// and it is already resolved by the selected skill's toolRefs — so putting the
+// membership here means the executing side needs no second source of truth that
+// could disagree with the one the planner was offered.
+type KnowledgeBaseExecSpec struct {
+	KnowledgeBaseID string `json:"knowledgeBaseId"`
+	DisplayName     string `json:"displayName,omitempty"`
+	// Operation is "search" or "fetch".
+	Operation string                    `json:"operation"`
+	Members   []KnowledgeBaseExecMember `json:"members"`
+	// DisclosePartialVisibility carries the knowledge base's own setting
+	// through to the renderer.
+	DisclosePartialVisibility bool `json:"disclosePartialVisibility"`
 }
 
 // SecretEnvRef names a tool process environment variable whose value comes

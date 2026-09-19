@@ -39,6 +39,8 @@ type loopEnv struct {
 	fitCalls             int
 	planCalls            int
 	composeCalls         int
+	kbSearchInputs       []activities.SearchKnowledgeBaseInput
+	kbSearchResult       activities.SearchKnowledgeBaseOutput
 	runLocalToolInputs   []activities.RunLocalToolInput
 	runLocalToolResult   *messaging.Event
 	resolveAgentCalls    int
@@ -199,6 +201,10 @@ func newLoopEnv(t *testing.T) *loopEnv {
 		plan := le.plans[min(le.planCalls, len(le.plans)-1)]
 		le.planCalls++
 		return plan, nil
+	})
+	reg(activities.SearchKnowledgeBaseActivityName, func(_ context.Context, in activities.SearchKnowledgeBaseInput) (activities.SearchKnowledgeBaseOutput, error) {
+		le.kbSearchInputs = append(le.kbSearchInputs, in)
+		return le.kbSearchResult, nil
 	})
 	reg(activities.ComposeResponseActivityName, func(context.Context, activities.ComposeResponseInput) (activities.ComposedResponse, error) {
 		le.composeCalls++
@@ -1572,4 +1578,84 @@ func TestResumedCallerToolTurnWithAnEmptyResultDoesNotReportFailure(t *testing.T
 
 	require.NotContains(t, result.Reply, "I couldn't complete that")
 	require.NotEmpty(t, le.completeTurnInputs, "falls through to a bare answer instead")
+}
+
+// knowledgeBaseSkillTools is a selected knowledge base: the derived skill plus
+// its generated search tool, which carries an execution spec rather than any
+// launch template.
+func knowledgeBaseSkillTools() *activities.SkillTools {
+	tool := catalog.ToolDescriptor{
+		ID:           "kb:snc/search",
+		Description:  "Search the SNC knowledge base.",
+		AllowedRoles: []string{"reader"},
+		KnowledgeBaseExec: &catalog.KnowledgeBaseExecSpec{
+			KnowledgeBaseID:           "snc",
+			DisplayName:               "SNC",
+			Operation:                 "search",
+			DisclosePartialVisibility: true,
+		},
+	}
+	return &activities.SkillTools{
+		Skill: catalog.SkillDescriptor{
+			ID:       "kb:snc",
+			Markdown: "# SNC knowledge base",
+			ToolIDs:  []string{tool.ID},
+		},
+		Tools: []catalog.ToolDescriptor{tool},
+	}
+}
+
+// A knowledge base's search runs as an activity rather than a ToolRun: there is
+// nothing to launch, and its credential must never leave the activity.
+func TestKnowledgeBaseSearchRunsAsAnActivityNotALaunch(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = "kb:snc"
+	le.skills = []catalog.SkillDescriptor{knowledgeBaseSkillTools().Skill}
+	le.skillTools = knowledgeBaseSkillTools()
+	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
+		Result: "Found 1 passage.\n\nSources:\n- [Auth](https://wiki/auth)\n",
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:snc/search", ToolInput: "how is auth configured"},
+		{Action: activities.ActionFinish},
+	}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how is auth configured for SNC?", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Len(t, le.kbSearchInputs, 1)
+	require.Equal(t, "how is auth configured", le.kbSearchInputs[0].Query)
+	require.Equal(t, "kb:snc/search", le.kbSearchInputs[0].Tool.ID)
+	require.Nil(t, le.launched, "a knowledge-base search must never create a ToolRun")
+	require.Contains(t, result.Reply, "Sources:")
+}
+
+// Without a linked credential nothing was consulted, so there is no partial
+// answer to give and the turn ends on the ask.
+func TestKnowledgeBaseSearchNeedingALinkEndsTheTurnOnTheAsk(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = "kb:snc"
+	le.skills = []catalog.SkillDescriptor{knowledgeBaseSkillTools().Skill}
+	le.skillTools = knowledgeBaseSkillTools()
+	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
+		NeedsLink: true,
+		Result:    "I need you to link the account behind SNC before I can search it.",
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:snc/search", ToolInput: "q"},
+	}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "what does SNC say about auth?", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Contains(t, result.Reply, "link the account")
+	require.Zero(t, le.composeCalls, "nothing was retrieved, so there is nothing to frame")
 }

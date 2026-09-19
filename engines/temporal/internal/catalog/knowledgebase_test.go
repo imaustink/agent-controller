@@ -85,6 +85,31 @@ func TestDecodeConnection(t *testing.T) {
 		require.Equal(t, "#snc-eng", conn.Label())
 	})
 
+	t.Run("carries declared identity providers through", func(t *testing.T) {
+		conn, err := catalog.DecodeConnection(connectionCR("snc-confluence",
+			map[string]any{
+				"provider":          "confluence",
+				"description":       "The SNC space.",
+				"allowedRoles":      []any{"reader"},
+				"identityProviders": []any{"atlassian"},
+			}, nil))
+		require.NoError(t, err)
+		require.Equal(t, []string{"atlassian"}, conn.IdentityProviders)
+	})
+
+	t.Run("a connection declaring none can be ingested but not probed", func(t *testing.T) {
+		conn, err := catalog.DecodeConnection(connectionCR("no-delegation",
+			map[string]any{
+				"provider":     "confluence",
+				"description":  "The SNC space.",
+				"allowedRoles": []any{"reader"},
+			}, nil))
+		require.NoError(t, err)
+		// Nothing to probe with, and probing on the ingestion credential would
+		// answer a different question, permissively (ADR 0040).
+		require.Empty(t, conn.IdentityProviders)
+	})
+
 	t.Run("an unreconciled connection decodes without a collection", func(t *testing.T) {
 		conn, err := catalog.DecodeConnection(connectionCR("fresh",
 			map[string]any{
@@ -161,12 +186,13 @@ func TestDeriveKnowledgeBaseSkill(t *testing.T) {
 		require.False(t, skill.Unrestricted)
 	})
 
-	t.Run("generates search and fetch, and GET only for api-enabled members", func(t *testing.T) {
+	t.Run("generates search, and GET only for api-enabled members", func(t *testing.T) {
 		skill := catalog.DeriveKnowledgeBaseSkill(sncKB(), conns)
 
+		// No kb:snc/fetch: whole-document fetch has no dispatch path yet, so the
+		// skill never steers the planner toward an unimplemented tool.
 		require.Equal(t, []string{
 			"kb:snc/search",
-			"kb:snc/fetch",
 			"conn:snc-confluence/get", // the only member with api.enabled
 		}, skill.ToolIDs)
 	})

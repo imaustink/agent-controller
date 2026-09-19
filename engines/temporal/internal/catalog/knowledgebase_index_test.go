@@ -130,8 +130,10 @@ func TestUpsertKnowledgeBaseIndexesASkillAndItsTools(t *testing.T) {
 	require.ElementsMatch(t, []string{"lead", "reader", "writer"}, skill.Roles)
 
 	require.ElementsMatch(t, []string{
-		"kb:snc/search", "kb:snc/fetch", "conn:snc-confluence/get",
+		"kb:snc/search", "conn:snc-confluence/get",
 	}, h.tools.ids())
+	require.NotContains(t, h.tools.ids(), "kb:snc/fetch",
+		"fetch has no dispatch path, so no fetch tool is generated")
 }
 
 func TestGeneratedToolsAreHiddenFromOpenRetrieval(t *testing.T) {
@@ -144,7 +146,7 @@ func TestGeneratedToolsAreHiddenFromOpenRetrieval(t *testing.T) {
 	// Referenceable by the skill that declares them, never returned by open
 	// retrieval — otherwise every client's scoped tooling competes in front of
 	// every caller (ADR 0039 §2).
-	for _, id := range []string{"kb:snc/search", "kb:snc/fetch", "conn:snc-confluence/get"} {
+	for _, id := range []string{"kb:snc/search", "conn:snc-confluence/get"} {
 		rec, ok := h.tools.get(id)
 		require.True(t, ok, id)
 		require.True(t, rec.Hidden, "%s must not be retrievable on its own", id)
@@ -256,6 +258,68 @@ func TestReindexRederivesKnowledgeBasesAgainstCurrentConnections(t *testing.T) {
 
 	after, _ := h.skills.get("kb:snc")
 	require.ElementsMatch(t, []string{"lead", "reader", "writer"}, after.Roles)
+}
+
+func TestGeneratedToolsCarryTheirExecutionSpec(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+
+	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
+	require.NotNil(t, search.KnowledgeBaseExec)
+	require.Equal(t, "search", search.KnowledgeBaseExec.Operation)
+	require.Equal(t, "snc", search.KnowledgeBaseExec.KnowledgeBaseID)
+
+	// Membership is snapshotted at index time, so the executing side works from
+	// exactly what the planner was offered.
+	require.Len(t, search.KnowledgeBaseExec.Members, 2)
+	byID := map[string]catalog.KnowledgeBaseExecMember{}
+	for _, m := range search.KnowledgeBaseExec.Members {
+		byID[m.ID] = m
+	}
+	require.Equal(t, "conn_default_snc-confluence", byID["snc-confluence"].Collection)
+	require.Equal(t, []string{"reader", "writer"}, byID["snc-confluence"].AllowedRoles)
+
+	// No fetch tool is generated: its whole-document read has no dispatch path
+	// yet (ADR 0040 defers the source adapter), so the planner is never offered
+	// a call that would silently degrade into a similarity search.
+	_, ok := h.tools.get("kb:snc/fetch")
+	require.False(t, ok)
+}
+
+func TestExecutionSpecRecordsEachProvidersProbeUnit(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+
+	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
+	byID := map[string]catalog.KnowledgeBaseExecMember{}
+	for _, m := range search.KnowledgeBaseExec.Members {
+		byID[m.ID] = m
+	}
+
+	// Slack authorizes a channel, so one probe settles every candidate from it.
+	require.Equal(t, "connection", byID["snc-slack-private"].Granularity)
+	// Confluence authorizes a page — the finer unit, and the safe default.
+	require.Equal(t, "resource", byID["snc-confluence"].Granularity)
+}
+
+func TestExecutionSpecOmitsADanglingMember(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+
+	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
+	require.Len(t, search.KnowledgeBaseExec.Members, 1,
+		"a member that does not resolve contributes nothing to search either")
 }
 
 func TestGeneratedToolDescriptorsDescribeThemselves(t *testing.T) {

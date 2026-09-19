@@ -1,8 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { GithubDeviceFlowLinker } from "./device-flow-linker.js";
+import type { OAuthAuthCodeLinker } from "./oauth-authcode-linker.js";
 
-/** Only `github` is supported today -- any other `:provider` segment is a 400, not a 404, since the route itself matched. */
-const SUPPORTED_PROVIDERS = new Set(["github"]);
+/**
+ * `github` is served by the device-flow linker; every other provider comes from
+ * the authcode linkers this API was constructed with (docs/adr/0040 needs
+ * Atlassian). An unknown `:provider` segment is still a 400 rather than a 404,
+ * since the route itself matched.
+ */
+const DEVICE_FLOW_PROVIDER = "github";
 
 /** Hard ceiling on `/wait`'s `timeoutMs`, matching the authcode `state` TTL -- a caller can't hold this route open longer than a link attempt could possibly still be valid for. */
 const MAX_WAIT_MS = 10 * 60 * 1000;
@@ -62,7 +68,22 @@ export class IdentityLinkApi {
   constructor(
     private readonly linker: GithubDeviceFlowLinker,
     private readonly identityLinkToken: string,
+    /**
+     * Authorization-code providers, keyed by name. Empty in a deployment that
+     * links only GitHub, which is why this is optional rather than required —
+     * the existing behaviour is exactly what it was.
+     */
+    private readonly authCodeLinkers: ReadonlyMap<string, OAuthAuthCodeLinker> = new Map(),
   ) {}
+
+  /** A provider this gateway can actually link. */
+  private supports(provider: string): boolean {
+    return provider === DEVICE_FLOW_PROVIDER || this.authCodeLinkers.has(provider);
+  }
+
+  private unsupported(res: ServerResponse, provider: string): void {
+    sendJson(res, 400, { error: `Unsupported identity provider: ${provider}` });
+  }
 
   /**
    * Routes the unauthenticated `GET /identity-link/:provider/callback`
@@ -80,7 +101,7 @@ export class IdentityLinkApi {
       return false;
     }
     const provider = segments[1]!;
-    if (!SUPPORTED_PROVIDERS.has(provider)) {
+    if (!this.supports(provider)) {
       res.writeHead(400, { "content-type": "text/plain" }).end(`Unsupported identity provider: ${provider}`);
       return true;
     }
@@ -117,7 +138,10 @@ export class IdentityLinkApi {
       return true;
     }
 
-    const completed = await this.linker.completeAuthCode(state, code);
+    const authCode = this.authCodeLinkers.get(provider);
+    const completed = authCode
+      ? await authCode.completeAuthCode(state, code)
+      : await this.linker.completeAuthCode(state, code);
     if (!completed) {
       sendHtml(
         res,
@@ -176,8 +200,8 @@ export class IdentityLinkApi {
   }
 
   private async handleStart(req: IncomingMessage, res: ServerResponse, provider: string): Promise<void> {
-    if (!SUPPORTED_PROVIDERS.has(provider)) {
-      sendJson(res, 400, { error: `Unsupported identity provider: ${provider}` });
+    if (!this.supports(provider)) {
+      this.unsupported(res, provider);
       return;
     }
     const body = await parseJsonBody(req);
@@ -197,6 +221,19 @@ export class IdentityLinkApi {
     // opinion about caller context.
     const flow = rawFlow ?? "device";
 
+    const authCode = this.authCodeLinkers.get(provider);
+    if (authCode) {
+      // An authcode provider has exactly one flow, so an explicit `device`
+      // request is a caller error rather than something to silently
+      // reinterpret as the flow it happens to support.
+      if (rawFlow === "device") {
+        sendJson(res, 400, { error: `${provider} supports the authcode flow only` });
+        return;
+      }
+      sendJson(res, 200, authCode.startAuthCode(subject));
+      return;
+    }
+
     if (flow === "authcode") {
       const started = await this.linker.startAuthCode(subject);
       sendJson(res, 200, started);
@@ -207,8 +244,8 @@ export class IdentityLinkApi {
   }
 
   private async handlePoll(req: IncomingMessage, res: ServerResponse, provider: string): Promise<void> {
-    if (!SUPPORTED_PROVIDERS.has(provider)) {
-      sendJson(res, 400, { error: `Unsupported identity provider: ${provider}` });
+    if (!this.supports(provider)) {
+      this.unsupported(res, provider);
       return;
     }
     const body = await parseJsonBody(req);
@@ -221,6 +258,12 @@ export class IdentityLinkApi {
       return;
     }
     const { subject, deviceCode } = body as { subject: string; deviceCode: string };
+    if (this.authCodeLinkers.has(provider)) {
+      // Polling is the device flow's mechanism. An authcode link completes at
+      // the callback and is awaited through `wait`.
+      sendJson(res, 400, { error: `${provider} does not use the device flow; poll does not apply` });
+      return;
+    }
     const polled = await this.linker.poll(subject, deviceCode);
     sendJson(res, 200, polled);
   }
@@ -232,8 +275,8 @@ export class IdentityLinkApi {
    * requiring the caller to send a follow-up chat message.
    */
   private async handleWait(req: IncomingMessage, res: ServerResponse, provider: string): Promise<void> {
-    if (!SUPPORTED_PROVIDERS.has(provider)) {
-      sendJson(res, 400, { error: `Unsupported identity provider: ${provider}` });
+    if (!this.supports(provider)) {
+      this.unsupported(res, provider);
       return;
     }
     const body = await parseJsonBody(req);
@@ -244,6 +287,13 @@ export class IdentityLinkApi {
     const { subject } = body as { subject: string };
     const rawTimeout = (body as { timeoutMs?: unknown }).timeoutMs;
     const timeoutMs = typeof rawTimeout === "number" && rawTimeout > 0 ? Math.min(rawTimeout, MAX_WAIT_MS) : MAX_WAIT_MS;
+
+    const authCode = this.authCodeLinkers.get(provider);
+    if (authCode) {
+      const landed = await authCode.waitForCompletion(subject, timeoutMs);
+      sendJson(res, 200, landed ? { status: "complete", token: { token: landed.token } } : { status: "timeout" });
+      return;
+    }
 
     const token = await this.linker.waitForCompletion(subject, timeoutMs);
     if (!token) {
@@ -268,8 +318,8 @@ export class IdentityLinkApi {
    * 404 means "nothing linked", the same shape `token` uses for it.
    */
   private async handleIdentity(res: ServerResponse, url: URL, provider: string): Promise<void> {
-    if (!SUPPORTED_PROVIDERS.has(provider)) {
-      sendJson(res, 400, { error: `Unsupported identity provider: ${provider}` });
+    if (!this.supports(provider)) {
+      this.unsupported(res, provider);
       return;
     }
     const subject = url.searchParams.get("subject");
@@ -277,6 +327,20 @@ export class IdentityLinkApi {
       sendJson(res, 400, { error: "Query parameter `subject` is required" });
       return;
     }
+    const authCode = this.authCodeLinkers.get(provider);
+    if (authCode) {
+      // A non-GitHub provider has no login to report; its own account id is
+      // the equivalent answer, and is provenance only — nothing keys on it
+      // (docs/adr/0029).
+      const accountId = await authCode.getLinkedAccountId(subject);
+      if (!accountId) {
+        res.writeHead(404).end();
+        return;
+      }
+      sendJson(res, 200, { accountId });
+      return;
+    }
+
     const githubLogin = await this.linker.getLinkedLogin(subject);
     if (!githubLogin) {
       res.writeHead(404).end();
@@ -286,8 +350,8 @@ export class IdentityLinkApi {
   }
 
   private async handleToken(res: ServerResponse, url: URL, provider: string): Promise<void> {
-    if (!SUPPORTED_PROVIDERS.has(provider)) {
-      sendJson(res, 400, { error: `Unsupported identity provider: ${provider}` });
+    if (!this.supports(provider)) {
+      this.unsupported(res, provider);
       return;
     }
     const subject = url.searchParams.get("subject");
@@ -295,7 +359,10 @@ export class IdentityLinkApi {
       sendJson(res, 400, { error: "Query parameter `subject` is required" });
       return;
     }
-    const token = await this.linker.getValidToken(subject);
+    const authCode = this.authCodeLinkers.get(provider);
+    const token = authCode
+      ? await authCode.getValidToken(subject)
+      : await this.linker.getValidToken(subject);
     if (!token) {
       res.writeHead(404).end();
       return;

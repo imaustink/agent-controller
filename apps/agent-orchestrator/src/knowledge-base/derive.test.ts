@@ -19,6 +19,7 @@ function sncConnections(): Map<string, ConnectionDescriptor> {
         allowedRoles: ["reader", "writer"],
         collection: "conn_default_snc-confluence",
         apiEnabled: true,
+        identityProviders: ["atlassian"],
       },
     ],
     [
@@ -31,6 +32,7 @@ function sncConnections(): Map<string, ConnectionDescriptor> {
         allowedRoles: ["reader"],
         collection: "conn_default_snc-slack-eng",
         apiEnabled: false,
+        identityProviders: [],
       },
     ],
     [
@@ -43,6 +45,7 @@ function sncConnections(): Map<string, ConnectionDescriptor> {
         allowedRoles: ["lead"],
         collection: "conn_default_snc-slack-private",
         apiEnabled: false,
+        identityProviders: [],
       },
     ],
   ]);
@@ -91,12 +94,13 @@ describe("deriveKnowledgeBaseSkill", () => {
     expect(effectiveRoles).not.toBeNull();
   });
 
-  it("generates search and fetch, and GET only for api-enabled members", () => {
+  it("generates search, and GET only for api-enabled members", () => {
     const { skill } = deriveKnowledgeBaseSkill(sncKb(), sncConnections());
 
+    // No `kb:snc/fetch`: whole-document fetch has no dispatch path yet, so the
+    // skill never steers the planner toward an unimplemented tool.
     expect(skill.toolIds).toEqual([
       "kb:snc/search",
-      "kb:snc/fetch",
       "conn:snc-confluence/get", // the only member with api.enabled
     ]);
   });

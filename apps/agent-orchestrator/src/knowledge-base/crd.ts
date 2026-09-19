@@ -19,6 +19,7 @@ export interface ConnectionCustomResource {
     description: string;
     displayName?: string;
     allowedRoles: string[];
+    identityProviders?: string[];
     api?: { enabled?: boolean };
   };
   status?: {
@@ -63,6 +64,7 @@ export function toConnectionDescriptor(
     allowedRoles: spec.allowedRoles,
     collection: cr.status?.collection,
     apiEnabled: spec.api?.enabled === true,
+    identityProviders: spec.identityProviders ?? [],
   };
 }
 

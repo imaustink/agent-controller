@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { GithubReplyClient } from "./github-client.js";
 import type { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
 import { IdentityLinkApi } from "./identity-link/api.js";
+import type { OAuthAuthCodeLinker } from "./identity-link/oauth-authcode-linker.js";
 import { ClaudeAuthApi } from "./claude-auth/api.js";
 import type { ClaudeSetupTokenFlows } from "./claude-auth/pty-setup-token.js";
 import type { ClaudeLoginFlows } from "./claude-auth/pty-login.js";
@@ -62,6 +63,12 @@ export interface GatewayServerOptions {
    */
   identityLinkLinker?: GithubDeviceFlowLinker;
   identityLinkToken?: string;
+  /**
+   * Authorization-code providers beyond GitHub, keyed by name (docs/adr/0040
+   * needs Atlassian). Absent in a deployment that links only GitHub, where
+   * behaviour is exactly what it was.
+   */
+  identityLinkAuthCodeLinkers?: ReadonlyMap<string, OAuthAuthCodeLinker>;
   /**
    * Per-user Claude Code OAuth `setup-token` flow (docs/adr/0027) -- a
    * sibling to identity-link above, but PTY-driven rather than an HTTP
@@ -146,7 +153,11 @@ export class GatewayServer {
   constructor(private readonly options: GatewayServerOptions) {
     this.identityLinkApi =
       options.identityLinkLinker && options.identityLinkToken
-        ? new IdentityLinkApi(options.identityLinkLinker, options.identityLinkToken)
+        ? new IdentityLinkApi(
+            options.identityLinkLinker,
+            options.identityLinkToken,
+            options.identityLinkAuthCodeLinkers,
+          )
         : undefined;
     const refresher = options.claudeAuthStore
       ? new ClaudeCredentialRefresher({

@@ -382,6 +382,45 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 
 		tool := *findTool(plan.ToolID, skillTools)
 
+		// A knowledge base's generated tool (ADR 0039 §3) has nothing to
+		// launch: its work is a vector query plus a per-user probe, both
+		// network calls, so it runs as an activity rather than a ToolRun.
+		//
+		// Deliberately BEFORE the identity gate below. That gate resolves a
+		// Tool CR's declared providers into secretEnv for a Job; this path
+		// resolves the caller's delegated credential INSIDE the activity and
+		// never lets it back out, because an activity result is persisted to
+		// event history (see AuthorizeActivities' doc comment).
+		if tool.KnowledgeBaseExec != nil {
+			note("Searching " + tool.KnowledgeBaseExec.DisplayName + "…")
+			var found activities.SearchKnowledgeBaseOutput
+			if err := workflow.ExecuteActivity(actx, activities.SearchKnowledgeBaseActivityName,
+				activities.SearchKnowledgeBaseInput{
+					Caller: in.Caller,
+					Tool:   tool,
+					Query:  plan.ToolInput,
+				}).Get(ctx, &found); err != nil {
+				return "", meta, nil, err
+			}
+			meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
+
+			if found.NeedsLink {
+				// Nothing was consulted, so there is no partial answer to give
+				// — ending the turn on the ask is the honest outcome.
+				note(plan.ToolID + " needs a linked account")
+				return found.Result, meta, nil, nil
+			}
+
+			outcome := ToolOutcome{Succeeded: true, Result: found.Result}
+			lastSuccess = &outcome
+			history = append(history, activities.ActionRecord{
+				ToolID: plan.ToolID, Input: plan.ToolInput,
+				Succeeded: true, Result: found.Result,
+			})
+			note(plan.ToolID + " finished")
+			continue
+		}
+
 		// Identity gate — shared by a container Tool and an agent-backed one
 		// (upstream's resolveToolIdentitySecretEnv, ADR 0032 §5/0022): read-only
 		// resolution of an already-linked credential, never starting a fresh
