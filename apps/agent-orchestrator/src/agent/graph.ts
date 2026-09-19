@@ -28,6 +28,7 @@ import type { BestEffortResponder } from "./best-effort-responder.js";
 import type { CapabilityNeedChecker } from "./capability-need-checker.js";
 import type { DelegateSelector } from "./delegate-selector.js";
 import type { ResponseComposer } from "./response-composer.js";
+import type { KnowledgeBaseSearcher } from "../knowledge-base/searcher.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
@@ -530,6 +531,12 @@ export type AgentState = typeof AgentStateAnnotation.State;
 
 export interface AgentGraphDeps {
   identityResolver: IdentityResolver;
+  /**
+   * Executes a knowledge base's generated search tool (docs/adr/0039).
+   * Optional: absent means no KnowledgeBase CR was indexed, so such a tool can
+   * never have been selected in the first place.
+   */
+  knowledgeBaseSearcher?: KnowledgeBaseSearcher;
   /**
    * Resolves identity from Open WebUI's per-request signed
    * `X-OpenWebUI-User-Jwt` header (`OpenWebUiForwardedUserResolver`) rather
@@ -2007,6 +2014,32 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         } catch (err) {
           return { jobId: runId, error: agentTurnErrorMessage(err) };
         }
+      }
+
+      // A knowledge base's generated search (docs/adr/0039 §3) has nothing to
+      // launch: its work is a vector query plus a per-user probe, so it runs
+      // in-process. Deliberately ahead of the launch branches below, and it
+      // never touches the continuation-token machinery — a search has no
+      // resumable state, only an answer.
+      if (tool.knowledgeBaseExec) {
+        if (!deps.knowledgeBaseSearcher) {
+          return { error: `tool ${tool.id} is a knowledge-base search but knowledge bases are not configured` };
+        }
+        if (!state.identity) {
+          // Fail closed: no resolved identity, no corpus. There is nobody to
+          // check the results against.
+          return { error: `tool ${tool.id} requires a resolved caller identity` };
+        }
+        const found = await deps.knowledgeBaseSearcher.search(tool, input, {
+          // Already resolved for this turn, and the same identity every other
+          // RBAC decision on it was made against.
+          subject: state.identity.subject,
+          roles: state.identity.roles,
+        });
+        return {
+          result: found.result,
+          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: found.result }],
+        };
       }
 
       let jobId: string;

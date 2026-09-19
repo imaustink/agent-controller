@@ -1,6 +1,7 @@
 import type { SkillAccess } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import { deriveKnowledgeBaseSkill } from "./derive.js";
+import type { KnowledgeBaseExecMember, KnowledgeBaseExecSpec } from "./exec.js";
 import {
   connectionGetToolId,
   connectionLabel,
@@ -68,6 +69,13 @@ export function knowledgeBaseTools(
   roles: string[],
 ): ToolDescriptor[] {
   const label = knowledgeBaseLabel(kb);
+  const exec = (operation: "search" | "fetch"): KnowledgeBaseExecSpec => ({
+    knowledgeBaseId: kb.id,
+    displayName: label,
+    operation,
+    members: execMembers(kb, connections),
+    disclosePartialVisibility: kb.disclosePartialVisibility,
+  });
 
   const tools: ToolDescriptor[] = [
     {
@@ -82,6 +90,7 @@ export function knowledgeBaseTools(
         "or could not be checked.",
       allowedRoles: roles,
       hidden: true,
+      knowledgeBaseExec: exec("search"),
     },
     {
       id: knowledgeBaseFetchToolId(kb.id),
@@ -92,6 +101,7 @@ export function knowledgeBaseTools(
         "\nOutput: The current document, as the calling user is permitted to see it.",
       allowedRoles: roles,
       hidden: true,
+      knowledgeBaseExec: exec("fetch"),
     },
   ];
 
@@ -124,4 +134,44 @@ export function connectionGetTool(connection: ConnectionDescriptor): ToolDescrip
     allowedRoles: connection.allowedRoles,
     hidden: true,
   };
+}
+
+/**
+ * Snapshots the member data the search path needs.
+ *
+ * Taken at index time so a search runs over exactly the membership the planner
+ * was offered, and so the executing side needs no second source of truth that
+ * could disagree with the first.
+ */
+function execMembers(
+  kb: KnowledgeBaseDescriptor,
+  connections: ReadonlyMap<string, ConnectionDescriptor>,
+): KnowledgeBaseExecMember[] {
+  const members: KnowledgeBaseExecMember[] = [];
+  for (const ref of kb.connectionRefs) {
+    const connection = connections.get(ref);
+    if (!connection) continue; // dangling; the controller reports it in status
+    members.push({
+      id: connection.id,
+      label: connectionLabel(connection),
+      collection: connection.collection ?? "",
+      allowedRoles: connection.allowedRoles,
+      granularity: providerGranularity(connection.provider),
+      identityProviders: connection.identityProviders,
+    });
+  }
+  return members;
+}
+
+/**
+ * The unit a provider authorizes at (docs/adr/0040).
+ *
+ * Slack authorizes a CHANNEL — membership is the access unit and there is no
+ * per-message permission — so one probe settles every candidate from that
+ * connection. Anything unrecognised is per RESOURCE: the finer unit is the safe
+ * default, since assuming per-connection would let one allowed resource vouch
+ * for every other candidate from that source.
+ */
+function providerGranularity(provider: string): "resource" | "connection" {
+  return provider === "slack" ? "connection" : "resource";
 }

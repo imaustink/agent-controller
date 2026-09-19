@@ -1,5 +1,6 @@
 import type { AgentRunTemplate } from "./agents/types.js";
 import type { CallerToolDescriptor } from "./caller-tools/types.js";
+import type { KnowledgeBaseExecSpec } from "./knowledge-base/exec.js";
 
 /**
  * k8s Job template needed to run a tool/sub-agent — everything the launcher
@@ -94,6 +95,13 @@ export interface ToolDescriptor {
    * outcome that design exists to prevent.
    */
   hidden?: boolean;
+  /**
+   * Set when this descriptor was DERIVED from a KnowledgeBase (docs/adr/0039)
+   * rather than authored as a CR. Like `localExec` it selects a dispatch path —
+   * here, retrieval in-process rather than any kind of launch — and carries
+   * what that path needs.
+   */
+  knowledgeBaseExec?: KnowledgeBaseExecSpec;
   /**
    * Job launch template (container tools, ADR 0010). Set for tools launched
    * as k8s Jobs; absent for LocalTools/agent-backed tools.
