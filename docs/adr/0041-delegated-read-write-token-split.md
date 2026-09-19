@@ -68,7 +68,11 @@ on the known-repo path.
    a subcommand eventually; when it does, the call must fail with a
    permissions error rather than silently execute with the App's wider
    credential. Adding a rule is a one-line fix; a silent privilege escalation
-   is not.
+   is not. `gh api graphql` is classified this way on purpose: every GraphQL
+   call carries its query as a body flag (`-f query=...`), so the `gh api`
+   method/body heuristic cannot tell a read from a mutation — it takes the read
+   token, and a GraphQL mutation fails with a permissions error rather than
+   running on the App credential.
 
 5. **`resolveDelegatedWriteToken` accepts `knownLogin`**, skipping the `/user`
    lookup when the orchestrator already resolved the caller

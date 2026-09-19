@@ -91,7 +91,14 @@ function isApiWrite(args: string[]): boolean {
 export function isWriteInvocation(args: string[], rules: GhWriteRule[] = GH_WRITE_RULES): boolean {
   const [command, subcommand] = commandPath(args);
   if (!command) return false;
-  if (command === "api") return isApiWrite(args);
+  // `gh api graphql` can't be classified by flags: every GraphQL call -- read
+  // or mutation -- passes the query as a body flag (`-f query=...`), which
+  // `isApiWrite` reads as a write. Routing GraphQL to the write token would run
+  // ordinary reads on the App credential that sees every installed repo, the
+  // exact over-privileged read this split closes. So it takes the same fail-safe
+  // as any unmatched command: the READ token, and a GraphQL mutation fails with
+  // a permissions error rather than silently escalating.
+  if (command === "api") return subcommand !== "graphql" && isApiWrite(args);
 
   const rule = rules.find((r) => r.command === command);
   if (!rule) return false;
@@ -107,6 +114,13 @@ export const GH_WRITE_TOKEN_ENV = "SWE_GH_WRITE_TOKEN";
  * Source for the shim. It *imports* {@link isWriteInvocation} from this
  * compiled module rather than restating the rules, so there is exactly one
  * implementation and the shim cannot drift from what the tests cover.
+ *
+ * The shim ships as an extensionless `gh` (so it shadows the real `gh` on
+ * PATH) whose body is ESM (`import ...`). Node only treats an extensionless
+ * entry point as ESM via automatic syntax detection, which is on by default
+ * from Node 22.7 -- hence this package's `engines.node: ">=22.7"`. On earlier
+ * 22.x the shim would fail to load with "Cannot use import statement outside a
+ * module"; the `runs the shipped extensionless artifact` test guards the shape.
  */
 export function renderGhShim(opts: { realGhPath: string; classifierUrl: string }): string {
   return (
