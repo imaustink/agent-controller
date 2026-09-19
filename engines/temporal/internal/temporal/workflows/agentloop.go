@@ -426,7 +426,22 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	}
 	if len(history) > 0 {
 		last := history[len(history)-1]
-		return fmt.Sprintf("I couldn't complete that: %s failed (%s).", last.ToolID, last.Error), meta, nil, nil
+		// Only a record that genuinely failed gets the failure message.
+		// lastSuccess records a tool THIS invocation executed, so a turn
+		// resumed after a caller-supplied tool (ADR 0035 §1) arrives here with
+		// nothing but seeded history — and a seeded record is Succeeded with an
+		// EMPTY Error, which this string would render as "failed ()".
+		if !last.Succeeded {
+			return fmt.Sprintf("I couldn't complete that: %s failed (%s).", last.ToolID, last.Error), meta, nil, nil
+		}
+		// Carry the seeded result through verbatim, exactly as the
+		// repeatsLastCall guard above does.
+		if seeded := lastHistoryResult(history); seeded != "" {
+			return seeded, meta, nil, nil
+		}
+		// Succeeded, but with nothing to say — a caller tool legitimately
+		// returning an empty result (an empty list, say). Fall through to a
+		// bare answer rather than accusing a tool that worked of failing.
 	}
 	reply, m, err := bareAnswerWithMeta(ctx, actx, in.Message, meta)
 	return reply, m, nil, err

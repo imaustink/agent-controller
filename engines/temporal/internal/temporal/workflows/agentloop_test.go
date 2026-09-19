@@ -271,6 +271,26 @@ func (le *loopEnv) signalToolSuccess(launchIndex int, resultJSON string) {
 	attempt()
 }
 
+// signalToolFailure is signalToolSuccess's counterpart: a terminal failed
+// event for launch #launchIndex, same virtual-time rescheduling and same
+// routing by the launch's own workflow id.
+func (le *loopEnv) signalToolFailure(launchIndex int, code, message string) {
+	var attempt func()
+	attempt = func() {
+		if len(le.launches) <= launchIndex {
+			le.env.RegisterDelayedCallback(attempt, 100*time.Millisecond)
+			return
+		}
+		launch := le.launches[launchIndex]
+		_ = le.env.SignalWorkflowByID(launch.WorkflowID,
+			workflows.ToolEventSignalPrefix+launch.JobID, messaging.Event{
+				JobID: launch.JobID, Seq: 1, TS: "t", Type: "failed",
+				Code: code, Message: message,
+			})
+	}
+	attempt()
+}
+
 func recipesSkillTools() *activities.SkillTools {
 	return &activities.SkillTools{
 		// ToolIDs mirrors what DecodeSkill reads off spec.toolRefs and what
@@ -1465,4 +1485,91 @@ func TestAgentDeclaredToolStillPassesTheIdentityGate(t *testing.T) {
 	// The refusal reached the agent's planner as a failed step, so it can react.
 	require.Len(t, le.agentPlanInputs[1].History, 1)
 	require.Contains(t, le.agentPlanInputs[1].History[0].Error, "link your GitHub")
+}
+
+// The seeded result has to survive the OTHER terminal shape too: the planner is
+// satisfied and answers ActionFinish instead of re-issuing the call. Before
+// this was handled the turn fell through to the failure string and reported
+// `caller:web_search failed ()` — empty parens, because a seeded record carries
+// a result and no Error.
+func TestResumedCallerToolTurnCarriesTheSeededResultOnFinish(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = "recipes"
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.skillTools = recipesSkillTools()
+	le.callerTools = []callertools.Descriptor{webSearchCallerTool(t)}
+	le.plans = []activities.PlannedAction{{Action: activities.ActionFinish}}
+	le.priorCallerCalls = []callertools.PriorCall{{
+		ID: "call_1", Name: "web_search",
+		Arguments: `{"query":"carbonara"}`,
+		Result:    "Classic carbonara: eggs, pecorino, guanciale.",
+	}}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "look up a carbonara recipe", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "Classic carbonara: eggs, pecorino, guanciale.", result.Reply)
+	require.Empty(t, result.PendingToolCalls)
+	require.Zero(t, le.composeCalls, "carried verbatim, exactly as the duplicate-call guard does")
+}
+
+// The correction above must not swallow a real failure: a tool that genuinely
+// failed still reports its own error text.
+func TestFailedToolStillReportsTheFailure(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = "recipes"
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.skillTools = recipesSkillTools()
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "recipe-scraper", ToolInput: "https://example.com/pasta"},
+		{Action: activities.ActionFinish},
+	}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "get me the pasta recipe from example.com", &result, time.Millisecond)
+
+	le.env.RegisterDelayedCallback(func() {
+		le.signalToolFailure(0, "scrape_failed", "site unreachable")
+	}, time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t,
+		"I couldn't complete that: recipe-scraper failed (scrape_failed: site unreachable).",
+		result.Reply)
+}
+
+// A caller tool may legitimately succeed with an EMPTY result — list_knowledge
+// on an account with no knowledge bases, say. That is not a failure, so it must
+// not reach the failure string either: with only the "is there a result?" guard
+// it landed right back on `caller:list_knowledge failed ()`, the same symptom
+// for a different reason.
+func TestResumedCallerToolTurnWithAnEmptyResultDoesNotReportFailure(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = "recipes"
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.skillTools = recipesSkillTools()
+	le.callerTools = []callertools.Descriptor{webSearchCallerTool(t)}
+	le.plans = []activities.PlannedAction{{Action: activities.ActionFinish}}
+	le.priorCallerCalls = []callertools.PriorCall{{
+		ID: "call_1", Name: "web_search",
+		Arguments: `{"query":"carbonara"}`,
+		Result:    "",
+	}}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "look up a carbonara recipe", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.NotContains(t, result.Reply, "I couldn't complete that")
+	require.NotEmpty(t, le.completeTurnInputs, "falls through to a bare answer instead")
 }
