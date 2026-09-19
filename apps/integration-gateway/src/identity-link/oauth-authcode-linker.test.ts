@@ -68,6 +68,14 @@ describe("startAuthCode", () => {
     // hour with no way to renew it.
     expect(url.searchParams.get("prompt")).toBe("consent");
   });
+
+  it("carries the provider's required audience, without which Atlassian rejects the request", () => {
+    const { linker } = linkerWith(vi.fn());
+    const url = new URL(linker.startAuthCode("s").authorizeUrl);
+    // auth.atlassian.com/authorize 400s without audience=api.atlassian.com,
+    // so the link this PR exists to enable could never complete.
+    expect(url.searchParams.get("audience")).toBe("api.atlassian.com");
+  });
 });
 
 describe("completeAuthCode", () => {

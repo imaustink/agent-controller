@@ -36,6 +36,15 @@ export interface OAuthProviderConfig {
   tokenUrl: string;
   scopes: string[];
   /**
+   * Extra query parameters the provider requires on the authorization URL,
+   * beyond the standard `client_id`/`redirect_uri`/`scope`/`state`/`response_type`.
+   *
+   * Atlassian 3LO needs `audience=api.atlassian.com` here: without it
+   * `auth.atlassian.com/authorize` rejects the request outright and the link
+   * never completes. Absent for providers that need nothing extra.
+   */
+  authorizeParams?: Record<string, string>;
+  /**
    * Whether this provider ROTATES its refresh token on every refresh.
    *
    * Load-bearing rather than informational. When it rotates, the instant the
@@ -98,6 +107,8 @@ function atlassianConfig(env: NodeJS.ProcessEnv): OAuthProviderConfig | undefine
     authorizeUrl: "https://auth.atlassian.com/authorize",
     tokenUrl: "https://auth.atlassian.com/oauth/token",
     scopes: scopes.includes("offline_access") ? scopes : [...scopes, "offline_access"],
+    // Required by Atlassian 3LO; the authorize endpoint 400s without it.
+    authorizeParams: { audience: "api.atlassian.com" },
     rotatesRefreshToken: true,
     identity: { url: "https://api.atlassian.com/me", field: "account_id" },
   };

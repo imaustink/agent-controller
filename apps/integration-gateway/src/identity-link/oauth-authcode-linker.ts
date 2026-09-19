@@ -76,6 +76,11 @@ export class OAuthAuthCodeLinker {
     // a re-link silently produces an access token that dies in an hour with no
     // way to renew it.
     url.searchParams.set("prompt", "consent");
+    // Provider-required extras, e.g. Atlassian's `audience=api.atlassian.com`,
+    // without which the authorize endpoint rejects the request outright.
+    for (const [key, value] of Object.entries(config.authorizeParams ?? {})) {
+      url.searchParams.set(key, value);
+    }
 
     return { authorizeUrl: url.toString(), expiresInSeconds: AUTH_CODE_STATE_TTL_SECONDS };
   }

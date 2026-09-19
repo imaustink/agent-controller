@@ -31,6 +31,11 @@ describe("loadOAuthProviders", () => {
     expect(atlassian?.rotatesRefreshToken).toBe(true);
   });
 
+  it("requires the audience Atlassian 3LO rejects the authorize request without", () => {
+    const atlassian = loadOAuthProviders(atlassianEnv).get("atlassian");
+    expect(atlassian?.authorizeParams).toEqual({ audience: "api.atlassian.com" });
+  });
+
   it("does not register atlassian with only half its credentials", () => {
     const partial = loadOAuthProviders({
       ATLASSIAN_OAUTH_CLIENT_ID: "atl-client",
