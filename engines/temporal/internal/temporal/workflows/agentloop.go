@@ -439,9 +439,11 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		if seeded := lastHistoryResult(history); seeded != "" {
 			return seeded, meta, nil, nil
 		}
-		// Succeeded, but with nothing to say — a caller tool legitimately
-		// returning an empty result (an empty list, say). Fall through to a
-		// bare answer rather than accusing a tool that worked of failing.
+		// Succeeded, but nothing to say: no successful record carried a
+		// non-empty result — a caller tool legitimately returning empty (an
+		// empty list, say). Fall through to a bare answer rather than accusing
+		// a tool that worked of failing. (When an earlier record did have a
+		// result, lastHistoryResult above already returned it verbatim.)
 	}
 	reply, m, err := bareAnswerWithMeta(ctx, actx, in.Message, meta)
 	return reply, m, nil, err
