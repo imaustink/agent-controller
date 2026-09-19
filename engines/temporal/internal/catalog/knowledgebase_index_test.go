@@ -258,6 +258,65 @@ func TestReindexRederivesKnowledgeBasesAgainstCurrentConnections(t *testing.T) {
 	require.ElementsMatch(t, []string{"lead", "reader", "writer"}, after.Roles)
 }
 
+func TestGeneratedToolsCarryTheirExecutionSpec(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+
+	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
+	require.NotNil(t, search.KnowledgeBaseExec)
+	require.Equal(t, "search", search.KnowledgeBaseExec.Operation)
+	require.Equal(t, "snc", search.KnowledgeBaseExec.KnowledgeBaseID)
+
+	// Membership is snapshotted at index time, so the executing side works from
+	// exactly what the planner was offered.
+	require.Len(t, search.KnowledgeBaseExec.Members, 2)
+	byID := map[string]catalog.KnowledgeBaseExecMember{}
+	for _, m := range search.KnowledgeBaseExec.Members {
+		byID[m.ID] = m
+	}
+	require.Equal(t, "conn_default_snc-confluence", byID["snc-confluence"].Collection)
+	require.Equal(t, []string{"reader", "writer"}, byID["snc-confluence"].AllowedRoles)
+
+	fetch := decodeTool(t, mustGet(t, h.tools, "kb:snc/fetch"))
+	require.Equal(t, "fetch", fetch.KnowledgeBaseExec.Operation)
+}
+
+func TestExecutionSpecRecordsEachProvidersProbeUnit(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+
+	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
+	byID := map[string]catalog.KnowledgeBaseExecMember{}
+	for _, m := range search.KnowledgeBaseExec.Members {
+		byID[m.ID] = m
+	}
+
+	// Slack authorizes a channel, so one probe settles every candidate from it.
+	require.Equal(t, "connection", byID["snc-slack-private"].Granularity)
+	// Confluence authorizes a page — the finer unit, and the safe default.
+	require.Equal(t, "resource", byID["snc-confluence"].Granularity)
+}
+
+func TestExecutionSpecOmitsADanglingMember(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+
+	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
+	require.Len(t, search.KnowledgeBaseExec.Members, 1,
+		"a member that does not resolve contributes nothing to search either")
+}
+
 func TestGeneratedToolDescriptorsDescribeThemselves(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()

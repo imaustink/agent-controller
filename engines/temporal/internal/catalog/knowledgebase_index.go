@@ -151,6 +151,7 @@ func (ix *Indexer) connectionsSnapshot() map[string]ConnectionDescriptor {
 func knowledgeBaseTools(kb KnowledgeBaseDescriptor, connections map[string]ConnectionDescriptor) []ToolDescriptor {
 	derived := DeriveKnowledgeBaseSkill(kb, connections)
 	roles := derived.EffectiveRoles
+	exec := knowledgeBaseExec(kb, connections)
 
 	tools := []ToolDescriptor{
 		{
@@ -162,15 +163,17 @@ func knowledgeBaseTools(kb KnowledgeBaseDescriptor, connections map[string]Conne
 			Output: "Ranked passages, each with the title and URL of its source as confirmed " +
 				"readable by the calling user, plus how many sources were withheld or " +
 				"could not be checked.",
-			AllowedRoles: roles,
+			AllowedRoles:      roles,
+			KnowledgeBaseExec: exec("search"),
 		},
 		{
 			ID: KnowledgeBaseFetchToolID(kb.ID),
 			Description: fmt.Sprintf(
 				"Read a whole document from the %s knowledge base, live from its source.", kb.Label()),
-			Input:        "The id of a source returned by this knowledge base's search tool.",
-			Output:       "The current document, as the calling user is permitted to see it.",
-			AllowedRoles: roles,
+			Input:             "The id of a source returned by this knowledge base's search tool.",
+			Output:            "The current document, as the calling user is permitted to see it.",
+			AllowedRoles:      roles,
+			KnowledgeBaseExec: exec("fetch"),
 		},
 	}
 
@@ -208,4 +211,55 @@ func upsertHidden(ctx context.Context, store vectorstore.Store, tool ToolDescrip
 	}
 	rec.Hidden = true
 	return store.Upsert(ctx, []vectorstore.Record{rec})
+}
+
+// knowledgeBaseExec builds the execution spec both generated tools carry.
+//
+// Members are snapshotted at index time rather than resolved at call time, so
+// the executing side works from exactly the membership the planner was offered
+// — a knowledge base that changed mid-turn cannot silently widen what a search
+// consults.
+func knowledgeBaseExec(
+	kb KnowledgeBaseDescriptor,
+	connections map[string]ConnectionDescriptor,
+) func(operation string) *KnowledgeBaseExecSpec {
+	members := make([]KnowledgeBaseExecMember, 0, len(kb.ConnectionRefs))
+	for _, ref := range kb.ConnectionRefs {
+		conn, ok := connections[ref]
+		if !ok {
+			continue // dangling; the controller reports it in status
+		}
+		members = append(members, KnowledgeBaseExecMember{
+			ID:                conn.ID,
+			Label:             conn.Label(),
+			Collection:        conn.Collection,
+			AllowedRoles:      conn.AllowedRoles,
+			Granularity:       providerGranularity(conn.Provider),
+			IdentityProviders: conn.IdentityProviders,
+		})
+	}
+
+	return func(operation string) *KnowledgeBaseExecSpec {
+		return &KnowledgeBaseExecSpec{
+			KnowledgeBaseID:           kb.ID,
+			DisplayName:               kb.Label(),
+			Operation:                 operation,
+			Members:                   members,
+			DisclosePartialVisibility: kb.DisclosePartialVisibility,
+		}
+	}
+}
+
+// providerGranularity is the unit a provider authorizes at (ADR 0040).
+//
+// Slack authorizes a CHANNEL — membership is the access unit and there is no
+// per-message permission — so one probe settles every candidate from that
+// connection. Anything unrecognised is probed per RESOURCE: the finer unit is
+// the safe default, since assuming per-connection would let one allowed
+// resource vouch for every other candidate from that source.
+func providerGranularity(provider string) string {
+	if provider == "slack" {
+		return "connection"
+	}
+	return "resource"
 }
