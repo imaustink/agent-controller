@@ -1,0 +1,259 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: knowledgebases.core.controller-agent.dev
+spec:
+  group: core.controller-agent.dev
+  names:
+    kind: KnowledgeBase
+    listKind: KnowledgeBaseList
+    plural: knowledgebases
+    shortNames:
+    - kb
+    singular: knowledgebase
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.documents
+      name: Documents
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.staleConnections
+      name: Stale
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: KnowledgeBase is the Schema for the knowledgebases API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of KnowledgeBase
+            properties:
+              aliases:
+                description: |-
+                  aliases are also embedded: the client's real name, project codenames,
+                  the systems involved — whatever someone might actually say instead of
+                  the knowledge base's name.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              chunk:
+                description: chunk sets default chunking. See KnowledgeBaseChunking.
+                properties:
+                  maxTokens:
+                    default: 800
+                    description: maxTokens is the target upper bound for one chunk.
+                    format: int32
+                    minimum: 64
+                    type: integer
+                  overlap:
+                    default: 100
+                    description: |-
+                      overlap is how many tokens adjacent chunks share, so a passage split
+                      across a boundary is still retrievable from either side.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
+              connectionRefs:
+                description: |-
+                  connectionRefs names the Connection CRs (same namespace) composing this
+                  knowledge base. Repeats of one provider are expected and supported; give
+                  them distinct Connection displayNames so citations can tell them apart.
+
+                  An explicit list rather than a label selector: which sources compose a
+                  client's knowledge base is worth reviewing in a diff, and a mistyped
+                  selector silently widening a client boundary is a bad failure mode.
+                items:
+                  type: string
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              description:
+                description: |-
+                  description is embedded for retrieval, and is SUBJECT MATTER rather than
+                  a tool contract: what this engagement is, which systems it spans, what
+                  people call it. This is how the planner tells twenty client knowledge
+                  bases apart, so near-identical descriptions defeat the whole design
+                  (ADR 0039 §5).
+                minLength: 1
+                type: string
+              disclosePartialVisibility:
+                default: true
+                description: |-
+                  disclosePartialVisibility makes a search report how many member
+                  Connections were withheld from this caller by role, so the agent can
+                  distinguish "nothing exists about this" from "nothing you may see exists
+                  about this".
+
+                  Default true. It is minor metadata disclosure and can be turned off, but
+                  silence is the worse default: a confidently wrong "there's nothing about
+                  that" is the failure a knowledge base exists to prevent (ADR 0039 §4).
+                type: boolean
+              displayName:
+                description: |-
+                  displayName is the human name for this knowledge base (e.g. "SNC").
+                  Defaults to metadata.name.
+                type: string
+            required:
+            - connectionRefs
+            - description
+            type: object
+            x-kubernetes-validations:
+            - message: chunk.overlap must be smaller than chunk.maxTokens
+              rule: '!has(self.chunk) || !has(self.chunk.overlap) || !has(self.chunk.maxTokens)
+                || self.chunk.overlap < self.chunk.maxTokens'
+          status:
+            description: status defines the observed state of KnowledgeBase
+            properties:
+              conditions:
+                description: |-
+                  conditions represent the current state of the KnowledgeBase resource.
+                  This controller uses "Ready" to report that every ref resolves.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              documents:
+                description: documents across every member Connection.
+                format: int64
+                type: integer
+              missingConnections:
+                description: |-
+                  missingConnections are connectionRefs with no matching Connection CR.
+                  Surfaced rather than ignored: a dangling ref means the knowledge base
+                  silently answers from less than it claims to cover.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              observedGeneration:
+                description: observedGeneration is the .metadata.generation this status
+                  reflects.
+                format: int64
+                type: integer
+              perConnection:
+                description: perConnection breaks that down by member.
+                items:
+                  description: KnowledgeBaseConnectionStatus is one member Connection's
+                    contribution.
+                  properties:
+                    documents:
+                      description: documents contributed by this Connection as of
+                        its last sync.
+                      format: int64
+                      type: integer
+                    lastSyncTime:
+                      description: |-
+                        lastSyncTime copied from the Connection, so one read of the knowledge
+                        base shows which member is lagging.
+                      format: date-time
+                      type: string
+                    name:
+                      description: name of the member Connection.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              staleConnections:
+                description: |-
+                  staleConnections are members whose last full reconcile is older than
+                  their own reconcileInterval allows — the corpus is answerable but some of
+                  it is out of date, which a cited answer should be able to admit.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

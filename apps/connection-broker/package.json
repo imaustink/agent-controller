@@ -1,0 +1,20 @@
+{
+  "name": "connection-broker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Holds credentials for and talks to the external systems a Connection CR names (docs/adr/0038 §3): runs the provider drivers, serves incremental listing and fetch to the sync worker, and answers per-user authorization probes (docs/adr/0040) for retrieval. Deliberately a separate Deployment from agent-orchestrator, so third-party credentials and outbound egress stay out of the pod holding cluster RBAC.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.5",
+    "typescript": "^5.6.2",
+    "vitest": "^4.0.0"
+  }
+}

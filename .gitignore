@@ -37,3 +37,7 @@ charts/**/charts/*.tgz
 # see charts/agent-controller/charts/core-controller/crds/README.md).
 charts/agent-controller/charts/core-controller/crds/*.yaml
 .claude/settings.local.json
+
+# Python bytecode from the helm-values-form tool test run
+__pycache__/
+*.pyc

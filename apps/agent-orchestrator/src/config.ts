@@ -25,6 +25,18 @@ export interface AppConfig {
    */
   callerToolsQdrantCollection: string;
   /**
+   * Whether Connection/KnowledgeBase CRs (docs/adr/0038, 0039) are indexed.
+   *
+   * Off by default, and deliberately so while the pieces that EXECUTE a
+   * knowledge base's tools do not exist yet. A derived `kb:<name>/search`
+   * descriptor carries no image, no agentRef and no localExec, so a knowledge
+   * base indexed today can be selected by the planner and then fail at
+   * dispatch — a confusing runtime error rather than a clean "not implemented".
+   *
+   * Turn it on once the connection-broker and the tool executors are deployed.
+   */
+  knowledgeBasesEnabled: boolean;
+  /**
    * Max consumer-supplied tools that may reach the action planner
    * (docs/adr/0035 §3). Doubles as the threshold below which the caller-tool
    * index is skipped ENTIRELY: with this many tools or fewer there is nothing to
@@ -248,6 +260,7 @@ export const config: AppConfig = {
   skillsQdrantCollection: process.env.AGENT_QDRANT_SKILLS_COLLECTION ?? "skills",
   agentsQdrantCollection: process.env.AGENT_QDRANT_AGENTS_COLLECTION ?? "agents",
   callerToolsQdrantCollection: process.env.AGENT_QDRANT_CALLER_TOOLS_COLLECTION ?? "caller_tools",
+  knowledgeBasesEnabled: process.env.AGENT_KNOWLEDGE_BASES_ENABLED === "true",
   callerToolTopK: num(process.env.AGENT_CALLER_TOOL_TOP_K, 5),
   agentEngine: process.env.AGENT_ENGINE === "temporal" ? "temporal" : "langgraph",
   temporalEngineUrl: process.env.AGENT_TEMPORAL_ENGINE_URL,

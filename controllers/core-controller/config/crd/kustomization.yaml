@@ -7,6 +7,8 @@ resources:
 - bases/core.controller-agent.dev_toolruns.yaml
 - bases/core.controller-agent.dev_agents.yaml
 - bases/core.controller-agent.dev_agentruns.yaml
+- bases/core.controller-agent.dev_connections.yaml
+- bases/core.controller-agent.dev_knowledgebases.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

@@ -15,6 +15,19 @@ import type { IdentityResolver } from "./rbac/types.js";
 import { createRemoteJWKSet } from "jose";
 import { CrdSkillRegistry } from "./skills/crd-skill-registry.js";
 import { deriveSkillAccess } from "./skills/derive-access.js";
+import {
+  CrdConnectionRegistry,
+  CrdKnowledgeBaseRegistry,
+} from "./knowledge-base/crd-registry.js";
+import { deriveKnowledgeBaseIndex } from "./knowledge-base/index-derivation.js";
+import {
+  knowledgeBaseFetchToolId,
+  knowledgeBaseSearchToolId,
+  knowledgeBaseSkillId,
+  connectionGetToolId,
+  type ConnectionDescriptor,
+  type KnowledgeBaseDescriptor,
+} from "./knowledge-base/types.js";
 import { QdrantSkillStore } from "./skills/qdrant-skill-store.js";
 import { CrdAgentRegistry } from "./agents/crd-agent-registry.js";
 import { CrdIdentityProviderRegistry, InMemoryIdentityProviderCatalog } from "./identity-link/identity-provider-catalog.js";
@@ -245,6 +258,46 @@ async function main(): Promise<void> {
   // declares neither) before indexing.
   await skillStore.upsert(deriveSkillAccess(skills, allTools, [...agentsById.values()]));
 
+  // Knowledge bases (ADR 0039) and the scoped Connections they compose
+  // (ADR 0038). Neither is retrievable in its own right: a KnowledgeBase
+  // DERIVES a Skill -- which is what makes its search/fetch and its members'
+  // GET tools reachable only once that knowledge base has been selected -- and
+  // those generated tools are indexed HIDDEN so they never compete in open
+  // retrieval.
+  // Gated (config.knowledgeBasesEnabled): a derived kb:<name>/search descriptor
+  // has no executor yet, so indexing one before the broker exists lets the
+  // planner select a knowledge base and then fail at dispatch.
+  const connectionRegistry = CrdConnectionRegistry.fromKubeConfig(
+    config.namespace,
+    config.crdGroup,
+    config.crdVersion,
+    kubeConfig,
+  );
+  const knowledgeBaseRegistry = CrdKnowledgeBaseRegistry.fromKubeConfig(
+    config.namespace,
+    config.crdGroup,
+    config.crdVersion,
+    kubeConfig,
+  );
+  const connectionsById = new Map<string, ConnectionDescriptor>(
+    config.knowledgeBasesEnabled
+      ? (await connectionRegistry.listAll()).map((connection) => [connection.id, connection])
+      : [],
+  );
+  const knowledgeBasesById = new Map<string, KnowledgeBaseDescriptor>(
+    config.knowledgeBasesEnabled
+      ? (await knowledgeBaseRegistry.listAll()).map((kb) => [kb.id, kb])
+      : [],
+  );
+
+  const indexKnowledgeBases = async (): Promise<void> => {
+    if (!config.knowledgeBasesEnabled) return;
+    const derived = deriveKnowledgeBaseIndex([...knowledgeBasesById.values()], connectionsById);
+    await vectorStore.upsert(derived.tools);
+    await skillStore.upsert(derived.skills);
+  };
+  await indexKnowledgeBases();
+
   // In-memory mirror of the skill catalog, same purpose as toolsById above.
   const skillsById = new Map<string, SkillDescriptor>(skills.map((skill) => [skill.id, skill]));
 
@@ -262,6 +315,12 @@ async function main(): Promise<void> {
       skillStore
         .upsert(deriveSkillAccess([...skillsById.values()], [...toolsById.values()], [...agentsById.values()]))
         .catch((err) => console.error("failed to re-index skills after a catalog change:", err));
+      // Knowledge bases derive skills too, off the same trigger and the same
+      // debounce: a Connection change can alter a knowledge base's audience,
+      // its tool list and its generated markdown at once.
+      void indexKnowledgeBases().catch((err) =>
+        console.error("failed to re-index knowledge bases after a catalog change:", err),
+      );
     }, SKILL_REINDEX_DEBOUNCE_MS);
   };
 
@@ -301,6 +360,45 @@ async function main(): Promise<void> {
       scheduleSkillReindex();
     },
     (err) => console.error("Skill watch error:", err),
+  );
+
+  const connectionWatch = !config.knowledgeBasesEnabled ? undefined : connectionRegistry.watch(
+    (event) => {
+      if (event.type === "delete") {
+        connectionsById.delete(event.id);
+        // A withdrawn source must not linger as a callable tool. The knowledge
+        // bases that referenced it keep working over their remaining members --
+        // a vanished connection is a dangling ref, which contributes nothing
+        // rather than failing the whole skill closed.
+        void vectorStore
+          .delete([connectionGetToolId(event.id)])
+          .catch((err) => console.error(`failed to remove connection tool "${event.id}":`, err));
+      } else {
+        connectionsById.set(event.descriptor.id, event.descriptor);
+      }
+      scheduleSkillReindex();
+    },
+    (err) => console.error("Connection watch error:", err),
+  );
+
+  const knowledgeBaseWatch = !config.knowledgeBasesEnabled ? undefined : knowledgeBaseRegistry.watch(
+    (event) => {
+      if (event.type === "delete") {
+        knowledgeBasesById.delete(event.id);
+        // Delete the DERIVED ids, not the CR name: deleting by CR name would
+        // leave the skill selectable, pointing at tools that no longer exist.
+        void skillStore
+          .delete([knowledgeBaseSkillId(event.id)])
+          .catch((err) => console.error(`failed to remove knowledge base "${event.id}":`, err));
+        void vectorStore
+          .delete([knowledgeBaseSearchToolId(event.id), knowledgeBaseFetchToolId(event.id)])
+          .catch((err) => console.error(`failed to remove knowledge base tools "${event.id}":`, err));
+      } else {
+        knowledgeBasesById.set(event.descriptor.id, event.descriptor);
+      }
+      scheduleSkillReindex();
+    },
+    (err) => console.error("KnowledgeBase watch error:", err),
   );
 
   // Agent catalog (Agent CRs, ADR 0010's pattern extended to agent
@@ -699,6 +797,8 @@ async function main(): Promise<void> {
     toolWatch.stop();
     localToolWatch.stop();
     skillWatch.stop();
+    connectionWatch?.stop();
+    knowledgeBaseWatch?.stop();
     agentWatch?.stop();
     integrationRouteWatch.stop();
     identityProviderWatch.stop();
