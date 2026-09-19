@@ -37,6 +37,43 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("add a health check");
   });
 
+  // Guards issue #230 ("Improve SWE agent context"): when the accessible-repo
+  // list is available, the prompt hands it to the model up front so it
+  // resolves a partial repo reference from data instead of probing `gh`.
+  describe("accessible repositories (issue #230)", () => {
+    it("lists accessible repositories with their metadata", () => {
+      const prompt = buildPrompt("what does my lander game say", null, [
+        { fullName: "octo/lander-game", description: "a game", visibility: "private", defaultBranch: "main" },
+        { fullName: "octo/site", description: null, visibility: "public", defaultBranch: null },
+      ]);
+      expect(prompt).toContain("The GitHub credential in this container can access the repositories below");
+      expect(prompt).toContain("- octo/lander-game (private, default branch main) — a game");
+      expect(prompt).toContain("- octo/site (public)");
+    });
+
+    it("omits the section entirely when no repositories are supplied", () => {
+      const withRepos = buildPrompt("do the thing", null, [
+        { fullName: "octo/only", description: null, visibility: null, defaultBranch: null },
+      ]);
+      const withoutRepos = buildPrompt("do the thing", null, []);
+      const defaultArg = buildPrompt("do the thing", null);
+      expect(withRepos).toContain("can access the repositories below");
+      expect(withoutRepos).not.toContain("can access the repositories below");
+      // The empty list must leave the prompt exactly as it was pre-#230.
+      expect(withoutRepos).toBe(defaultArg);
+    });
+
+    it("still lists accessible repositories on a continuation turn", () => {
+      const prompt = buildPrompt(
+        "keep going",
+        { repo: "octo/lander-game", branch: "feature/x", pr: "3", session: "ses_1" },
+        [{ fullName: "octo/lander-game", description: null, visibility: "private", defaultBranch: "main" }],
+      );
+      expect(prompt).toContain("CONTINUING work on an existing pull request");
+      expect(prompt).toContain("- octo/lander-game (private, default branch main)");
+    });
+  });
+
   // Guards the fix for issue #185 ("Claude Agent is Too Eager"): the fixed
   // policy must tell the headless agent to stay in scope and to STOP and
   // surface a blocker rather than improvise a workaround when it is blocked

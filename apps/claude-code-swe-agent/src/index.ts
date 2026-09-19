@@ -19,6 +19,7 @@ import {
 import { extractContinuationToken } from "./continuation.js";
 import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./marker.js";
 import { loadToolConfig } from "./config.js";
+import { listAccessibleRepos } from "./repos.js";
 import { createCredentialsWritebackWatcher, credentialExpiry } from "./credentialsWriteback.js";
 import { AuthorizationError, finalizeDelegatedWrite, isDelegating, resolveDelegatedToken } from "./identityDelegation.js";
 import { clip } from "./security/redact.js";
@@ -193,8 +194,18 @@ async function handler(session: AgentSession): Promise<AgentReply> {
     if (headRes.code === 0) priorHeadSha = headRes.stdout.trim();
   }
 
+  // Enumerate the repositories this run's GitHub credential can actually
+  // reach and hand them to Claude Code up front, so it resolves a partial
+  // reference ("my lander-game repo") from data instead of spending the turn
+  // probing `gh` to discover what it can see (issue #230). Best-effort: any
+  // failure yields an empty list and the prompt simply omits the section.
+  const accessibleRepos = await listAccessibleRepos(childEnv, session.signal);
+  if (accessibleRepos.length > 0) {
+    await session.progress(`Found ${accessibleRepos.length} accessible repositories.`, { stage: "authenticate" });
+  }
+
   await session.progress("Running Claude Code…", { stage: "agent" });
-  const prompt = buildPrompt(instruction, marker);
+  const prompt = buildPrompt(instruction, marker, accessibleRepos);
   const runOpts = {
     cwd: toolConfig.workdir,
     env: childEnv,
