@@ -31,6 +31,15 @@ export function isDelegating(config: AgentToolConfig): boolean {
   return Boolean(config.identityDelegationEnabled && appCredsFrom(config) && config.githubToken);
 }
 
+/** The two credentials a delegating turn runs with -- see {@link resolveDelegatedToken}. */
+export interface DelegatedTokens {
+  /** The initiating human's own token: clone, fetch, and read-only `gh`. */
+  readToken: string;
+  /** App installation token, repo-scoped when the target is known: push and PR. */
+  writeToken: string;
+  attribution: DelegatedAttribution;
+}
+
 export interface DelegatedAttribution {
   githubLogin: string;
   /**
@@ -48,8 +57,21 @@ export interface DelegatedAttribution {
 }
 
 /**
- * Resolves the token to use for this turn's git/gh operations, before
- * running Claude Code.
+ * Resolves the credentials for this turn's git/gh operations, before running
+ * Claude Code.
+ *
+ * Returns TWO tokens (docs/adr/0041), because they answer different
+ * questions:
+ *
+ * - `readToken` is the initiating human's own OAuth token. Clone, fetch and
+ *   every read-only `gh` call run on it, so a run can only see what that
+ *   person can see. This is the half ADR 0029 left as "a later, separate
+ *   choice" -- until now the user token was used ONLY for the authorization
+ *   check below, and reads ran on the App's installation token, which sees
+ *   every repo the App is installed on regardless of who asked.
+ * - `writeToken` is an App installation token, scoped to the single target
+ *   repo when one is known. The push and the PR run on it, so the resulting
+ *   commits and pull request carry the agent's identity, not the human's.
  *
  * - `repo` known (a continuation): verifies the user's own token actually
  *   grants write/maintain/admin on it, then mints a token scoped to just
@@ -66,7 +88,7 @@ export async function resolveDelegatedToken(
   config: AgentToolConfig,
   repo: string | null,
   now: number = Date.now(),
-): Promise<{ token: string; attribution: DelegatedAttribution }> {
+): Promise<DelegatedTokens> {
   const appCreds = appCredsFrom(config);
   if (!appCreds) throw new Error("resolveDelegatedToken requires a full GitHub App configuration");
 
@@ -76,9 +98,10 @@ export async function resolveDelegatedToken(
       repo,
       githubApiUrl: config.githubApiUrl,
       appCreds,
+      knownLogin: config.actorLogin || undefined,
       now,
     });
-    return { token, attribution: { githubLogin, githubId } };
+    return { readToken: config.githubToken, writeToken: token, attribution: { githubLogin, githubId } };
   }
 
   // Prefer the login the orchestrator already resolved (docs/adr/0030 §5).
@@ -90,12 +113,12 @@ export async function resolveDelegatedToken(
   // fetching it would reintroduce the round trip this avoids.
   if (config.actorLogin) {
     const { token } = await mintInstallationToken(appCreds, config.githubApiUrl, now);
-    return { token, attribution: { githubLogin: config.actorLogin } };
+    return { readToken: config.githubToken, writeToken: token, attribution: { githubLogin: config.actorLogin } };
   }
 
   const { login, id } = await fetchGithubUser(config.githubToken, config.githubApiUrl);
   const { token } = await mintInstallationToken(appCreds, config.githubApiUrl, now);
-  return { token, attribution: { githubLogin: login, githubId: id } };
+  return { readToken: config.githubToken, writeToken: token, attribution: { githubLogin: login, githubId: id } };
 }
 
 export type PostFlightOutcome =

@@ -42,7 +42,7 @@ interface TurnContext {
   apiHost: string;
   token: string;
   delegating: boolean;
-  attribution: { githubLogin: string; githubId: number } | null;
+  attribution: { githubLogin: string; githubId?: number } | null;
   turnStartedAt: number;
   signal: AbortSignal;
 }
@@ -290,7 +290,7 @@ async function main(): Promise<void> {
 
     const delegating = isDelegating(toolConfig);
     let token: string;
-    let attribution: { githubLogin: string; githubId: number } | null = null;
+    let attribution: { githubLogin: string; githubId?: number } | null = null;
     if (delegating) {
       try {
         const resolved = await resolveDelegatedToken(toolConfig, marker?.repo ?? null, turnStartedAt);

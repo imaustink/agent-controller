@@ -96,6 +96,19 @@ export interface ResolveDelegatedWriteTokenOptions {
   repo: string;
   githubApiUrl: string;
   appCreds: GithubAppCredentials;
+  /**
+   * The caller's GitHub login when it is already known (agent-orchestrator
+   * resolves it during the authorization pre-flight and passes it as
+   * `AGENT_ACTOR_LOGIN` -- docs/adr/0030 §5).
+   *
+   * Supplying it skips the `/user` round trip below. That call is not a
+   * nicety to drop: it is the one that returned "401 Bad credentials" in
+   * production when this agent first gained the `github` provider, and
+   * avoiding it is what lets the provider be declared at all
+   * (docs/adr/0029's stated reason for excluding it). `githubId` is then
+   * unavailable, which only costs the richer `id+login@` trailer form.
+   */
+  knownLogin?: string;
   now?: number;
   fetchImpl?: typeof fetch;
 }
@@ -111,12 +124,14 @@ export interface ResolveDelegatedWriteTokenOptions {
  */
 export async function resolveDelegatedWriteToken(
   opts: ResolveDelegatedWriteTokenOptions,
-): Promise<{ token: string; githubLogin: string; githubId: number }> {
+): Promise<{ token: string; githubLogin: string; githubId?: number }> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const now = opts.now ?? Date.now();
   const { owner, name } = splitRepo(opts.repo);
 
-  const { login, id } = await fetchGithubUser(opts.userToken, opts.githubApiUrl, fetchImpl);
+  const { login, id } = opts.knownLogin
+    ? { login: opts.knownLogin, id: undefined as number | undefined }
+    : await fetchGithubUser(opts.userToken, opts.githubApiUrl, fetchImpl);
   const permission = await fetchCollaboratorPermission(opts.userToken, owner, name, login, opts.githubApiUrl, fetchImpl);
   if (!isWritePermission(permission)) {
     throw new AuthorizationError(`${login} does not have write access to ${opts.repo} (permission: ${permission})`);
