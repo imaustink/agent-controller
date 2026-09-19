@@ -68,6 +68,47 @@ describe("JobEmitter", () => {
       emitter.succeeded({ ok: true }, [{ uri: "s3://x", sha256: "abc", bytes: -1, content_type: "x" } as never]),
     ).rejects.toThrow();
   });
+
+  it("emits an interstitial reflection between accepted and the terminal event", async () => {
+    const sink = new MemorySink();
+    const emitter = new JobEmitter<Result>("job-5", sink);
+
+    await emitter.accepted("https://example.com/x");
+    await emitter.reflection("uncertain", { confidence: 0.4, note: "two extractors disagree" });
+    await emitter.succeeded({ ok: true });
+
+    expect(sink.events.map((e) => e.type)).toEqual(["accepted", "reflection", "succeeded"]);
+    const reflection = sink.events[1];
+    expect(reflection?.type).toBe("reflection");
+    if (reflection?.type === "reflection") {
+      expect(reflection.disposition).toBe("uncertain");
+      expect(reflection.confidence).toBe(0.4);
+      expect(reflection.note).toBe("two extractors disagree");
+      expect(reflection.seq).toBe(1);
+    }
+  });
+
+  it("sanitizes a reflection note but leaves disposition untouched", async () => {
+    const sink = new MemorySink();
+    const sanitize = vi.fn((s: string) => s.replace(/secret/g, "[REDACTED]"));
+    const emitter = new JobEmitter<Result>("job-6", sink, { sanitize });
+
+    await emitter.reflection("frustrated", { note: "blocked on secret token" });
+
+    const event = sink.events[0];
+    expect(event?.type).toBe("reflection");
+    if (event?.type === "reflection") {
+      expect(event.disposition).toBe("frustrated");
+      expect(event.note).toBe("blocked on [REDACTED] token");
+    }
+  });
+
+  it("rejects a reflection confidence outside [0, 1]", async () => {
+    const sink = new MemorySink();
+    const emitter = new JobEmitter<Result>("job-7", sink);
+
+    await expect(emitter.reflection("confident", { confidence: 1.5 })).rejects.toThrow();
+  });
 });
 
 describe("CallbackSink", () => {
