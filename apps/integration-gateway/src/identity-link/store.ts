@@ -15,6 +15,20 @@ export interface LinkedCredential {
   expiresAt: string;
   refreshToken: string | undefined;
   refreshExpiresAt: string | undefined;
+
+  /**
+   * The provider's own id for this account, for providers that are not GitHub
+   * (an Atlassian account id, say).
+   *
+   * Added ALONGSIDE `githubLogin` rather than replacing it, deliberately.
+   * Claude credentials are keyed on a canonical `github:<login>` subject
+   * (docs/adr/0029), and re-keying that path is what produced the triage
+   * re-authorization loop in PR #144 — reverted by #145. So this field records
+   * a non-GitHub identity without touching how anything is keyed: the subject a
+   * credential is stored under is still whatever the caller already resolved
+   * to, and nothing reads this field to decide where to look.
+   */
+  accountId?: string;
 }
 
 /**

@@ -78,6 +78,20 @@ describe("toKnowledgeBaseDescriptor", () => {
     expect(kb?.disclosePartialVisibility).toBe(false);
   });
 
+  it("defaults identityProviders to empty rather than undefined", () => {
+    // Empty means ingestible but not probeable: there is nothing to probe with,
+    // and probing with the ingestion credential would answer a different
+    // question, permissively (docs/adr/0040).
+    expect(toConnectionDescriptor(connectionCr())?.identityProviders).toEqual([]);
+  });
+
+  it("carries declared identity providers through", () => {
+    const connection = toConnectionDescriptor(connectionCr({ identityProviders: ["atlassian"] }));
+    expect(connection?.identityProviders).toEqual(["atlassian"]);
+  });
+});
+
+describe("toKnowledgeBaseDescriptor", () => {
   it("defaults aliases to empty rather than undefined", () => {
     expect(toKnowledgeBaseDescriptor(knowledgeBaseCr())?.aliases).toEqual([]);
   });

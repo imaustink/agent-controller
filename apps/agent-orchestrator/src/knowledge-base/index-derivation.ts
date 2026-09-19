@@ -1,10 +1,10 @@
 import type { SkillAccess } from "../skills/types.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import { deriveKnowledgeBaseSkill } from "./derive.js";
+import type { KnowledgeBaseExecMember, KnowledgeBaseExecSpec } from "./exec.js";
 import {
   connectionGetToolId,
   connectionLabel,
-  knowledgeBaseFetchToolId,
   knowledgeBaseLabel,
   knowledgeBaseSearchToolId,
   type ConnectionDescriptor,
@@ -59,8 +59,17 @@ export function deriveKnowledgeBaseIndex(
 }
 
 /**
- * The tools a knowledge base implies: its own search and fetch, plus the GET
- * face of every api-enabled member.
+ * The tools a knowledge base implies: its own search, plus the GET face of
+ * every api-enabled member.
+ *
+ * A `/fetch` tool is deliberately NOT offered yet. The whole-document read it
+ * would provide has no dispatch path — both engines route every
+ * `knowledgeBaseExec` to search — and building the real one means a source
+ * reader against Atlassian's actual API shapes, the same adapter layer ADR 0040
+ * defers. Offering it before then would steer the planner into a call that
+ * silently degrades to a similarity search over the source id. The
+ * `KnowledgeBaseExecSpec.operation` field stays as scaffolding for that
+ * deferred path, and dispatch fails closed on any operation but `search`.
  */
 export function knowledgeBaseTools(
   kb: KnowledgeBaseDescriptor,
@@ -68,6 +77,13 @@ export function knowledgeBaseTools(
   roles: string[],
 ): ToolDescriptor[] {
   const label = knowledgeBaseLabel(kb);
+  const exec = (operation: "search" | "fetch"): KnowledgeBaseExecSpec => ({
+    knowledgeBaseId: kb.id,
+    displayName: label,
+    operation,
+    members: execMembers(kb, connections),
+    disclosePartialVisibility: kb.disclosePartialVisibility,
+  });
 
   const tools: ToolDescriptor[] = [
     {
@@ -82,16 +98,7 @@ export function knowledgeBaseTools(
         "or could not be checked.",
       allowedRoles: roles,
       hidden: true,
-    },
-    {
-      id: knowledgeBaseFetchToolId(kb.id),
-      name: `Fetch from ${label}`,
-      description:
-        `Read a whole document from the ${label} knowledge base, live from its source.` +
-        "\n\nInput: The id of a source returned by this knowledge base's search tool." +
-        "\nOutput: The current document, as the calling user is permitted to see it.",
-      allowedRoles: roles,
-      hidden: true,
+      knowledgeBaseExec: exec("search"),
     },
   ];
 
@@ -124,4 +131,44 @@ export function connectionGetTool(connection: ConnectionDescriptor): ToolDescrip
     allowedRoles: connection.allowedRoles,
     hidden: true,
   };
+}
+
+/**
+ * Snapshots the member data the search path needs.
+ *
+ * Taken at index time so a search runs over exactly the membership the planner
+ * was offered, and so the executing side needs no second source of truth that
+ * could disagree with the first.
+ */
+function execMembers(
+  kb: KnowledgeBaseDescriptor,
+  connections: ReadonlyMap<string, ConnectionDescriptor>,
+): KnowledgeBaseExecMember[] {
+  const members: KnowledgeBaseExecMember[] = [];
+  for (const ref of kb.connectionRefs) {
+    const connection = connections.get(ref);
+    if (!connection) continue; // dangling; the controller reports it in status
+    members.push({
+      id: connection.id,
+      label: connectionLabel(connection),
+      collection: connection.collection ?? "",
+      allowedRoles: connection.allowedRoles,
+      granularity: providerGranularity(connection.provider),
+      identityProviders: connection.identityProviders,
+    });
+  }
+  return members;
+}
+
+/**
+ * The unit a provider authorizes at (docs/adr/0040).
+ *
+ * Slack authorizes a CHANNEL — membership is the access unit and there is no
+ * per-message permission — so one probe settles every candidate from that
+ * connection. Anything unrecognised is per RESOURCE: the finer unit is the safe
+ * default, since assuming per-connection would let one allowed resource vouch
+ * for every other candidate from that source.
+ */
+function providerGranularity(provider: string): "resource" | "connection" {
+  return provider === "slack" ? "connection" : "resource";
 }
