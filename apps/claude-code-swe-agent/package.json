@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Claude Code CLI-powered software-engineering sub-agent (Anthropic Claude directly, via API key or a delegated Claude Code OAuth token): multi-turn coding tasks with HITL clarification, launched as a k8s Job via AgentRun and communicating with the orchestrator over NATS.",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.7"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

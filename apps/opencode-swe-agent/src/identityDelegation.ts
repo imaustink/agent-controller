@@ -33,7 +33,16 @@ export function isDelegating(config: AgentToolConfig): boolean {
 
 export interface DelegatedAttribution {
   githubLogin: string;
-  githubId: number;
+  /**
+   * Optional since `resolveDelegatedWriteToken` gained `knownLogin`: when the
+   * caller's login is already known the `/user` lookup is skipped, and the id
+   * comes only from that lookup. Absent just means the co-author trailer uses
+   * the `login@users.noreply.github.com` form instead of `id+login@`.
+   *
+   * This agent never passes `knownLogin`, so in practice it is still always
+   * populated here -- the type widens to match the shared helper.
+   */
+  githubId?: number;
 }
 
 /**
