@@ -143,6 +143,34 @@ export class OAuthAuthCodeLinker {
   }
 
   /**
+   * Blocks until a credential lands for `subject`, or resolves `undefined` once
+   * `timeoutMs` elapses — letting the orchestrator hold a chat turn open across
+   * the browser round trip instead of making the user send another message.
+   *
+   * Reads the store directly, with no refresh logic: this is only ever called
+   * moments after the callback wrote, so a token it just stored is fresh by
+   * construction.
+   */
+  async waitForCompletion(subject: string, timeoutMs: number): Promise<{ token: string } | undefined> {
+    const landed = await this.options.store.waitForCompletion(this.provider, subject, timeoutMs);
+    return landed ? { token: landed.token } : undefined;
+  }
+
+  /**
+   * WHO this subject linked, without requiring the access token to still be
+   * usable.
+   *
+   * A separate question from {@link getValidToken}, for the reason ADR 0031
+   * records: an access token that expired overnight does not unprove which
+   * account somebody controls, and answering the identity question with a
+   * token check made an expired link read as "nothing linked" and re-prompted
+   * on every turn.
+   */
+  async getLinkedAccountId(subject: string): Promise<string | undefined> {
+    return (await this.options.store.get(this.provider, subject))?.accountId;
+  }
+
+  /**
    * Exchanges a refresh token for a new credential.
    *
    * ONE INVARIANT DOMINATES THIS METHOD, and it is the same one
