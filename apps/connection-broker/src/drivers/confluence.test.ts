@@ -17,9 +17,95 @@ function page(overrides: Record<string, unknown> = {}) {
   };
 }
 
+const SITE = "https://example.atlassian.net/wiki";
+const GATEWAY = "https://gateway.test";
+const CLOUD_ID = "cloud-123";
+
+/**
+ * Routes the cloudId lookup the driver now performs before any API call, so
+ * each test only has to describe the response it actually cares about. A
+ * single-response mock would answer `accessible-resources` with a page, which
+ * is exactly the sort of thing that makes a fetch-mocked suite pass against a
+ * driver that cannot talk to the real API.
+ */
 function driverWith(fetchImpl: FetchLike) {
-  return new ConfluenceDriver({ baseUrl: "https://example.atlassian.net/wiki", fetch: fetchImpl });
+  const routed: FetchLike = async (url, init) => {
+    if (url.includes("accessible-resources")) {
+      return respond(200, [{ id: CLOUD_ID, url: "https://example.atlassian.net" }]);
+    }
+    return fetchImpl(url, init);
+  };
+  return new ConfluenceDriver({ siteBaseUrl: SITE, gatewayOrigin: GATEWAY, fetch: routed });
 }
+
+describe("the OAuth gateway", () => {
+  it("sends API calls to the gateway with the site's cloudId, not to the site", async () => {
+    const http = vi.fn().mockResolvedValue(respond(200, page()));
+
+    await driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "12345");
+
+    const [url] = http.mock.calls[0]!;
+    // A 3LO token is accepted only at the gateway; calling the site host
+    // returns 401 however valid the token is.
+    expect(url).toContain(`${GATEWAY}/ex/confluence/${CLOUD_ID}/rest/api/content`);
+    expect(url).not.toContain("example.atlassian.net");
+  });
+
+  it("still builds citations from the SITE, which is what a human can open", async () => {
+    const http = vi.fn().mockResolvedValue(respond(200, page()));
+
+    const result = await driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "12345");
+
+    expect(result.url).toBe("https://example.atlassian.net/wiki/spaces/SNC/pages/12345");
+    // A citation pointing at api.atlassian.com is a link nobody can follow.
+    expect(result.url).not.toContain(GATEWAY);
+  });
+
+  it("prefers the base the response reports over our assumption about it", async () => {
+    const http = vi.fn().mockResolvedValue(
+      respond(200, page({ _links: { webui: "/x/abc", base: "https://renamed.atlassian.net/wiki" } })),
+    );
+
+    const result = await driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "12345");
+
+    // The source describing where its own pages live beats our guess — exactly
+    // the assumption most likely to be wrong on first contact with a tenant.
+    expect(result.url).toBe("https://renamed.atlassian.net/wiki/x/abc");
+  });
+
+  it("resolves the cloudId once and reuses it", async () => {
+    let lookups = 0;
+    const routed: FetchLike = async (url) => {
+      if (url.includes("accessible-resources")) {
+        lookups += 1;
+        return respond(200, [{ id: CLOUD_ID, url: "https://example.atlassian.net" }]);
+      }
+      return respond(200, page());
+    };
+    const driver = new ConfluenceDriver({ siteBaseUrl: SITE, gatewayOrigin: GATEWAY, fetch: routed });
+
+    await driver.probe({ space: "SNC" }, { delegated: "a" }, "1");
+    await driver.probe({ space: "SNC" }, { delegated: "b" }, "2");
+
+    // cloudId is a property of the site, identical for every caller — looking
+    // it up per user would add a round trip to every turn.
+    expect(lookups).toBe(1);
+  });
+
+  it("refuses a credential that cannot reach the configured site", async () => {
+    const routed: FetchLike = async (url) =>
+      url.includes("accessible-resources")
+        ? respond(200, [{ id: "other-cloud", url: "https://someone-else.atlassian.net" }])
+        : respond(200, page());
+    const driver = new ConfluenceDriver({ siteBaseUrl: SITE, gatewayOrigin: GATEWAY, fetch: routed });
+
+    // Taking the first entry would read another tenant's content while every
+    // scope check still passed.
+    await expect(driver.probe({ space: "SNC" }, { delegated: "u" }, "1")).rejects.toBeInstanceOf(
+      PermissionDeniedError,
+    );
+  });
+});
 
 describe("scope validation", () => {
   const driver = driverWith(vi.fn());

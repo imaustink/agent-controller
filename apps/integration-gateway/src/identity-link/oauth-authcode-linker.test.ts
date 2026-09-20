@@ -8,8 +8,8 @@ const NOW = Date.parse("2026-09-19T12:00:00Z");
 
 function atlassian() {
   return loadOAuthProviders({
-    ATLASSIAN_OAUTH_CLIENT_ID: "atl-client",
-    ATLASSIAN_OAUTH_CLIENT_SECRET: "atl-secret",
+    ATLASSIAN_CLIENT_ID: "atl-client",
+    ATLASSIAN_CLIENT_SECRET: "atl-secret",
   } as NodeJS.ProcessEnv).get("atlassian")!;
 }
 

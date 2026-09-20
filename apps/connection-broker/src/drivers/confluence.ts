@@ -19,18 +19,38 @@ export type FetchLike = (url: string, init?: { headers?: Record<string, string> 
 }>;
 
 export interface ConfluenceDriverOptions {
-  /** Fixed, trusted base URL of the Confluence site. Never derived from input. */
-  baseUrl: string;
+  /**
+   * The human site URL, e.g. `https://acme.atlassian.net/wiki`. Fixed and
+   * trusted; never derived from input.
+   *
+   * Used for CITATION urls only, not for API calls. The two are genuinely
+   * different hosts under OAuth (see `apiBaseFor`), and conflating them would
+   * produce citations pointing at `api.atlassian.com` that nobody can open —
+   * a link the caller cannot follow is a broken citation, which for a knowledge
+   * base is close to no citation at all.
+   */
+  siteBaseUrl: string;
   fetch?: FetchLike;
   /** Page size for listing; Confluence caps this well below most defaults. */
   pageSize?: number;
+  /**
+   * Override the OAuth gateway origin. Exists for tests; production never sets
+   * it.
+   */
+  gatewayOrigin?: string;
+}
+
+/** One entry from `/oauth/token/accessible-resources`. */
+interface AccessibleResource {
+  id: string;
+  url: string;
 }
 
 interface ConfluencePage {
   id: string;
   title: string;
   version?: { number?: number; when?: string };
-  _links?: { webui?: string };
+  _links?: { webui?: string; base?: string };
   restrictions?: {
     read?: {
       restrictions?: {
@@ -53,14 +73,67 @@ interface ConfluencePage {
 export class ConfluenceDriver implements Driver {
   readonly provider = "confluence";
 
-  private readonly baseUrl: string;
+  private readonly siteBaseUrl: string;
   private readonly http: FetchLike;
   private readonly pageSize: number;
+  private readonly gatewayOrigin: string;
+  /**
+   * cloudId is a property of the SITE, identical for every caller, so it is
+   * resolved once and reused rather than re-fetched per request. Caching it per
+   * token would mean an extra round trip for every user on every turn.
+   */
+  private cloudId: string | undefined;
 
   constructor(options: ConfluenceDriverOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/+$/, "");
+    this.siteBaseUrl = options.siteBaseUrl.replace(/\/+$/, "");
     this.http = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
     this.pageSize = options.pageSize ?? 50;
+    this.gatewayOrigin = (options.gatewayOrigin ?? "https://api.atlassian.com").replace(/\/+$/, "");
+  }
+
+  /**
+   * Where API requests actually go.
+   *
+   * An Atlassian 3LO token does NOT authenticate against the site host: it is
+   * accepted only at the `api.atlassian.com` gateway, addressed by the site's
+   * `cloudId`. Calling `https://acme.atlassian.net/wiki/rest/api/...` with a
+   * Bearer token returns 401 however valid the token is, which is a failure
+   * mode no fetch-mocked test can surface — the mock answers whatever URL it is
+   * given.
+   */
+  private async apiBaseFor(token: string): Promise<string> {
+    if (!this.cloudId) this.cloudId = await this.resolveCloudId(token);
+    return `${this.gatewayOrigin}/ex/confluence/${this.cloudId}`;
+  }
+
+  /**
+   * Resolves this site's cloudId from the resources the token can reach.
+   *
+   * Matched against the configured site URL rather than taking the first
+   * entry: a token may reach several sites, and silently picking one would
+   * read another site's content while every scope check still passed.
+   */
+  private async resolveCloudId(token: string): Promise<string> {
+    const resources = (await this.request(
+      `${this.gatewayOrigin}/oauth/token/accessible-resources`,
+      token,
+    )) as AccessibleResource[];
+
+    const wanted = new URL(this.siteBaseUrl).origin;
+    const match = (resources ?? []).find((resource) => {
+      try {
+        return new URL(resource.url).origin === wanted;
+      } catch {
+        return false;
+      }
+    });
+
+    if (!match) {
+      throw new PermissionDeniedError(
+        `this credential cannot reach ${wanted}; it may be linked to a different Atlassian site`,
+      );
+    }
+    return match.id;
   }
 
   validateScope(scope: Scope): void {
@@ -81,8 +154,9 @@ export class ConfluenceDriver implements Driver {
   async list(scope: Scope, credentials: Credentials, since: Cursor): Promise<ListPage> {
     this.validateScope(scope);
     const start = Number(since ?? "0");
+    const apiBase = await this.apiBaseFor(requireToken(credentials.service));
     const url =
-      `${this.baseUrl}/rest/api/content?spaceKey=${encodeURIComponent(scope.space!)}` +
+      `${apiBase}/rest/api/content?spaceKey=${encodeURIComponent(scope.space!)}` +
       `&expand=version,restrictions.read.restrictions.user,restrictions.read.restrictions.group` +
       `&limit=${this.pageSize}&start=${start}`;
 
@@ -101,12 +175,14 @@ export class ConfluenceDriver implements Driver {
 
   async fetch(scope: Scope, credentials: Credentials, id: string): Promise<Document> {
     this.validateScope(scope);
+    // Delegated when a user is reading; the service credential only during sync.
+    const token = requireToken(credentials.delegated ?? credentials.service);
+    const apiBase = await this.apiBaseFor(token);
     const page = (await this.request(
-      `${this.baseUrl}/rest/api/content/${encodeURIComponent(id)}` +
+      `${apiBase}/rest/api/content/${encodeURIComponent(id)}` +
         `?expand=body.storage,version,space,restrictions.read.restrictions.user,` +
         `restrictions.read.restrictions.group`,
-      // Delegated when a user is reading; the service credential only during sync.
-      credentials.delegated ?? credentials.service,
+      token,
     )) as ConfluencePage & { space?: { key?: string } };
 
     assertInScope(page, scope, id);
@@ -129,8 +205,9 @@ export class ConfluenceDriver implements Driver {
     // Deliberately minimal: the probe establishes readability and returns the
     // fields a citation needs. The body is the model's to request separately
     // (docs/adr/0040), so it is not pulled here.
+    const apiBase = await this.apiBaseFor(credentials.delegated);
     const page = (await this.request(
-      `${this.baseUrl}/rest/api/content/${encodeURIComponent(id)}?expand=version,space`,
+      `${apiBase}/rest/api/content/${encodeURIComponent(id)}?expand=version,space`,
       credentials.delegated,
     )) as ConfluencePage & { space?: { key?: string } };
 
@@ -151,7 +228,11 @@ export class ConfluenceDriver implements Driver {
     return {
       id: page.id,
       title: page.title,
-      url: page._links?.webui ? `${this.baseUrl}${page._links.webui}` : `${this.baseUrl}/pages/${page.id}`,
+      // Built from the SITE, never the gateway: a citation the caller cannot
+      // open is close to no citation at all. `_links.base` is preferred when
+      // the response supplies one, since the source describing itself beats our
+      // assumption about where its pages live.
+      url: citationUrl(page, this.siteBaseUrl),
       version: page.version?.number === undefined ? undefined : String(page.version.number),
       updatedAt: page.version?.when,
       // No explicit read restrictions means space-level permissions govern,
@@ -184,6 +265,29 @@ export class ConfluenceDriver implements Driver {
     }
     throw new TransientError(`confluence returned ${response.status}`);
   }
+}
+
+/**
+ * A credential is required for every call; an absent one is a wiring bug rather
+ * than an authorization answer, so it fails loudly instead of producing a
+ * request with no Authorization header that the source would reject as a 401 —
+ * which the error classifier would then read as a permission denial.
+ */
+function requireToken(token: string | undefined): string {
+  if (!token) throw new Error("no credential supplied for a confluence request");
+  return token;
+}
+
+/**
+ * The human URL for a page, for citations.
+ *
+ * `_links.base` is preferred when present: the source describing where its own
+ * pages live beats our assumption about it, and that assumption is exactly the
+ * kind of thing that is wrong on first contact with a real tenant.
+ */
+function citationUrl(page: ConfluencePage, siteBaseUrl: string): string {
+  const base = (page._links?.base ?? siteBaseUrl).replace(/\/+$/, "");
+  return page._links?.webui ? `${base}${page._links.webui}` : `${base}/pages/${page.id}`;
 }
 
 /**

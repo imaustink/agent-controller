@@ -3,8 +3,8 @@ import { loadOAuthProviders } from "./providers.js";
 
 const githubEnv = { GITHUB_OAUTH_CLIENT_ID: "gh-client" } as NodeJS.ProcessEnv;
 const atlassianEnv = {
-  ATLASSIAN_OAUTH_CLIENT_ID: "atl-client",
-  ATLASSIAN_OAUTH_CLIENT_SECRET: "atl-secret",
+  ATLASSIAN_CLIENT_ID: "atl-client",
+  ATLASSIAN_CLIENT_SECRET: "atl-secret",
 } as NodeJS.ProcessEnv;
 
 describe("loadOAuthProviders", () => {
@@ -38,7 +38,7 @@ describe("loadOAuthProviders", () => {
 
   it("does not register atlassian with only half its credentials", () => {
     const partial = loadOAuthProviders({
-      ATLASSIAN_OAUTH_CLIENT_ID: "atl-client",
+      ATLASSIAN_CLIENT_ID: "atl-client",
     } as NodeJS.ProcessEnv);
     expect(partial.has("atlassian")).toBe(false);
   });
@@ -46,7 +46,7 @@ describe("loadOAuthProviders", () => {
   it("forces offline_access on, since without it no refresh token is issued at all", () => {
     const atlassian = loadOAuthProviders({
       ...atlassianEnv,
-      ATLASSIAN_OAUTH_SCOPES: "read:confluence-content.all",
+      ATLASSIAN_SCOPES: "read:confluence-content.all",
     }).get("atlassian");
 
     expect(atlassian?.scopes).toContain("offline_access");
@@ -55,7 +55,7 @@ describe("loadOAuthProviders", () => {
   it("does not duplicate offline_access when it was already requested", () => {
     const atlassian = loadOAuthProviders({
       ...atlassianEnv,
-      ATLASSIAN_OAUTH_SCOPES: "read:confluence-content.all offline_access",
+      ATLASSIAN_SCOPES: "read:confluence-content.all offline_access",
     }).get("atlassian");
 
     expect(atlassian?.scopes.filter((s) => s === "offline_access")).toHaveLength(1);
@@ -64,11 +64,11 @@ describe("loadOAuthProviders", () => {
   it("accepts scopes separated by spaces or commas", () => {
     const spaced = loadOAuthProviders({
       ...atlassianEnv,
-      ATLASSIAN_OAUTH_SCOPES: "a b",
+      ATLASSIAN_SCOPES: "a b",
     }).get("atlassian");
     const commas = loadOAuthProviders({
       ...atlassianEnv,
-      ATLASSIAN_OAUTH_SCOPES: "a,b",
+      ATLASSIAN_SCOPES: "a,b",
     }).get("atlassian");
 
     expect(spaced?.scopes).toEqual(["a", "b", "offline_access"]);
