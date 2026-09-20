@@ -37,7 +37,24 @@ import { tmpdir } from "node:os";
 
 const REDIRECT = "http://localhost:9099/callback";
 const GATEWAY = "https://api.atlassian.com";
-const SCOPES = "read:confluence-content.all offline_access";
+/**
+ * GRANULAR scopes, not the classic `read:confluence-content.all`.
+ *
+ * A classic scope on a granular app is granted — it comes back in the token's
+ * scope string — and then authorizes nothing, which surfaces as
+ * `401 "scope does not match"` on every endpoint including v1. Classic and
+ * granular cannot be mixed, and newly created apps are granular.
+ *
+ * Override with ATLASSIAN_SCOPES in the env file to iterate without editing
+ * this script; each scope must also be enabled on the app in the developer
+ * console, or the authorize request itself is rejected.
+ */
+const DEFAULT_SCOPES = [
+  "read:page:confluence",
+  "read:space:confluence",
+  "read:content-details:confluence",
+  "offline_access",
+].join(" ");
 
 const spaceKey = process.argv[2];
 if (!spaceKey) {
@@ -91,6 +108,8 @@ function loadEnv(path) {
 }
 
 const env = loadEnv(envPath);
+const SCOPES = env.ATLASSIAN_SCOPES || DEFAULT_SCOPES;
+console.log("requesting scopes:", SCOPES);
 const clientId = env.ATLASSIAN_CLIENT_ID;
 const clientSecret = env.ATLASSIAN_CLIENT_SECRET;
 if (!clientId || !clientSecret) {
@@ -181,16 +200,43 @@ if (!tokenResponse.ok) {
 const tokens = await tokenResponse.json();
 const token = tokens.access_token;
 
-// Report the SHAPE of the token response, never its values.
+// Report the SHAPE of the token response, never its values. The GRANTED scope
+// is the exception and is printed in full: it is the single most useful thing
+// when a valid token gets a 401, and it is not a secret.
 console.log("token response fields:", Object.keys(tokens).sort().join(", "));
 console.log("  expires_in:", tokens.expires_in, "· refresh_token present:", Boolean(tokens.refresh_token));
+console.log("  granted scope:", tokens.scope || "(none — the app has no API permissions added)");
+if (!String(tokens.scope ?? "").includes("confluence")) {
+  console.log("\n  !! No Confluence scope was granted. The OAuth app needs the Confluence API");
+  console.log("     added under Permissions, with its read scopes enabled, before any");
+  console.log("     content call can succeed — a token without them authenticates but");
+  console.log("     authorizes nothing.");
+}
 
 const call = async (url) => {
   const response = await fetch(url, {
     headers: { authorization: `Bearer ${token}`, accept: "application/json" },
   });
-  if (!response.ok) throw new Error(`${response.status} ${url.replace(/\/\/[^/]+/, "//…")}`);
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    const err = new Error(`${response.status} ${url.replace(/^https:\/\/[^/]+/, "")}`);
+    err.status = response.status;
+    err.detail = detail.slice(0, 300);
+    throw err;
+  }
   return response.json();
+};
+
+/** Tries a call and reports rather than throwing, so one dead endpoint does not end the run. */
+const tryCall = async (label, url) => {
+  try {
+    const body = await call(url);
+    console.log(`  ${label}: OK`);
+    return body;
+  } catch (err) {
+    console.log(`  ${label}: ${err.status ?? "error"} ${err.detail ?? err.message}`);
+    return undefined;
+  }
 };
 
 const resources = await call(`${GATEWAY}/oauth/token/accessible-resources`);
@@ -207,6 +253,26 @@ if (resources.length > 1) {
 }
 console.log("  cloudId to configure:", cloudId);
 const api = `${GATEWAY}/ex/confluence/${cloudId}`;
+
+// Confluence Cloud has two generations of REST API and Atlassian is retiring
+// the first. Which one this tenant answers decides what the driver must call,
+// so both are tried rather than assumed.
+console.log("\nwhich content API answers:");
+const v1 = await tryCall(
+  "v1 /rest/api/content",
+  `${api}/rest/api/content?spaceKey=${encodeURIComponent(spaceKey)}&limit=1`,
+);
+const v2Spaces = await tryCall("v2 /api/v2/spaces", `${api}/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}&limit=1`);
+if (v2Spaces?.results?.[0]?.id) {
+  await tryCall("v2 /api/v2/spaces/{id}/pages", `${api}/api/v2/spaces/${v2Spaces.results[0].id}/pages?limit=1`);
+  console.log("  v2 space id:", v2Spaces.results[0].id, "· key:", v2Spaces.results[0].key);
+}
+
+if (!v1) {
+  console.log("\nStopping: the v1 content API did not answer, so the shapes below cannot be read.");
+  console.log("Fix the scopes (or move the driver to v2) and run again.");
+  process.exit(1);
+}
 
 const listUrl =
   `${api}/rest/api/content?spaceKey=${encodeURIComponent(spaceKey)}` +
