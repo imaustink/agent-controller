@@ -38,22 +38,22 @@ import { tmpdir } from "node:os";
 const REDIRECT = "http://localhost:9099/callback";
 const GATEWAY = "https://api.atlassian.com";
 /**
- * GRANULAR scopes, not the classic `read:confluence-content.all`.
+ * GRANULAR scopes.
  *
- * A classic scope on a granular app is granted — it comes back in the token's
- * scope string — and then authorizes nothing, which surfaces as
- * `401 "scope does not match"` on every endpoint including v1. Classic and
- * granular cannot be mixed, and newly created apps are granular.
+ * Every scope requested must also be enabled on the app in the developer
+ * console, or the authorize request itself is rejected — and classic and
+ * granular cannot be mixed on one app, so this set only works once the app has
+ * been switched to the granular permission model.
  *
  * Override with ATLASSIAN_SCOPES in the env file to iterate without editing
- * this script; each scope must also be enabled on the app in the developer
- * console, or the authorize request itself is rejected.
+ * this script.
  */
 const DEFAULT_SCOPES = [
-  "read:page:confluence",
-  "read:space:confluence",
-  "read:content-details:confluence",
-  "offline_access",
+  // Deliberately minimal, and each one earns its place:
+  "read:page:confluence", // the content itself
+  "read:space:confluence", // resolving a space KEY to the space ID that v2 wants
+  "read:content-details:confluence", // read restrictions, which the ACL mirror needs
+  "offline_access", // without it no refresh token is issued at all
 ].join(" ");
 
 const spaceKey = process.argv[2];
@@ -254,62 +254,99 @@ if (resources.length > 1) {
 console.log("  cloudId to configure:", cloudId);
 const api = `${GATEWAY}/ex/confluence/${cloudId}`;
 
-// Confluence Cloud has two generations of REST API and Atlassian is retiring
-// the first. Which one this tenant answers decides what the driver must call,
-// so both are tried rather than assumed.
-console.log("\nwhich content API answers:");
-const v1 = await tryCall(
-  "v1 /rest/api/content",
+// Granular scopes go with the v2 API, so v2 is what the shape checks read.
+// The v1 paths are still probed, but only as a diagnostic: knowing whether v1
+// answers under the same token tells us whether a 401 below is about scopes or
+// about the endpoint.
+//
+// The /wiki context path is tried both ways because Confluence sits under /wiki
+// on the site itself, and whether that survives the OAuth gateway is exactly
+// the kind of guess that produces an opaque 401.
+console.log("\nwhich API answers:");
+const spacesWithWiki = await tryCall(
+  "v2 /wiki/api/v2/spaces",
+  `${api}/wiki/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}&limit=1`,
+);
+const spacesNoWiki = await tryCall(
+  "v2 /api/v2/spaces",
+  `${api}/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}&limit=1`,
+);
+await tryCall(
+  "v1 /wiki/rest/api/content (diagnostic)",
+  `${api}/wiki/rest/api/content?spaceKey=${encodeURIComponent(spaceKey)}&limit=1`,
+);
+await tryCall(
+  "v1 /rest/api/content (diagnostic)",
   `${api}/rest/api/content?spaceKey=${encodeURIComponent(spaceKey)}&limit=1`,
 );
-const v2Spaces = await tryCall("v2 /api/v2/spaces", `${api}/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}&limit=1`);
-if (v2Spaces?.results?.[0]?.id) {
-  await tryCall("v2 /api/v2/spaces/{id}/pages", `${api}/api/v2/spaces/${v2Spaces.results[0].id}/pages?limit=1`);
-  console.log("  v2 space id:", v2Spaces.results[0].id, "· key:", v2Spaces.results[0].key);
-}
 
-if (!v1) {
-  console.log("\nStopping: the v1 content API did not answer, so the shapes below cannot be read.");
-  console.log("Fix the scopes (or move the driver to v2) and run again.");
+const spaces = spacesWithWiki ?? spacesNoWiki;
+const prefix = spacesWithWiki ? "/wiki" : "";
+if (!spaces) {
+  console.log("\nStopping: neither v2 spaces path answered, so no shape can be read.");
+  console.log("Check that the granular scopes above are all enabled on the app.");
   process.exit(1);
 }
+console.log(`  -> using prefix "${prefix || "(none)"}" for the shape checks below`);
 
-const listUrl =
-  `${api}/rest/api/content?spaceKey=${encodeURIComponent(spaceKey)}` +
-  `&expand=version,space,restrictions.read.restrictions.user,restrictions.read.restrictions.group` +
-  `&limit=3`;
+// v2 addresses pages by space ID, not the space KEY a human knows the space by
+// and that the Connection is written in terms of. Resolving one to the other is
+// a step the driver will have to make too, so it is worth confirming the shape
+// it resolves FROM.
+console.log("\nspaces response keys:", Object.keys(spaces).sort().join(", "));
+const space = spaces.results?.[0];
+if (!space) {
+  console.error(`\nno space with key ${spaceKey} is visible to this token`);
+  process.exit(1);
+}
+console.log("  space keys:", Object.keys(space).sort().join(", "));
+console.log("  space.id:", space.id ?? "(absent)");
+console.log("  space.key:", space.key ?? "(absent)");
+console.log("  space._links:", JSON.stringify(space._links ?? {}).slice(0, 200));
+
+const listUrl = `${api}${prefix}/api/v2/pages?space-id=${encodeURIComponent(space.id)}&limit=3`;
 const list = await call(listUrl);
 console.log(`\nlist: ${list.results?.length ?? 0} result(s), top-level keys:`, Object.keys(list).sort().join(", "));
+console.log("  collection _links:", JSON.stringify(list._links ?? {}).slice(0, 200));
 
 const first = list.results?.[0];
 if (!first) {
-  console.error(`\nno content in space ${spaceKey} — wrong key, or no read access`);
+  console.error(`\nno pages in space ${spaceKey} — empty space, or no read access`);
   process.exit(1);
 }
 console.log("  result keys:", Object.keys(first).sort().join(", "));
-console.log("  _links keys:", Object.keys(first._links ?? {}).sort().join(", "));
-console.log("  _links.base:", first._links?.base ?? "(absent)");
-console.log("  _links.webui:", first._links?.webui ?? "(absent)");
-console.log("  space.key:", first.space?.key ?? "(absent)");
-console.log("  version.number:", first.version?.number ?? "(absent)");
-console.log("  restrictions present:", Boolean(first.restrictions));
-if (first.restrictions) {
-  console.log("  restriction path:", JSON.stringify(first.restrictions).slice(0, 300));
-}
+console.log("  spaceId:", first.spaceId ?? "(absent — scope check would fail closed)");
+console.log("  version:", JSON.stringify(first.version ?? {}).slice(0, 200));
+console.log("  _links:", JSON.stringify(first._links ?? {}).slice(0, 200));
 
-const detail = await call(
-  `${api}/rest/api/content/${first.id}?expand=body.storage,version,space,` +
-    `restrictions.read.restrictions.user,restrictions.read.restrictions.group`,
-);
-console.log("\ncontent GET keys:", Object.keys(detail).sort().join(", "));
-console.log("  space.key:", detail.space?.key ?? "(absent — scope check would fail closed)");
-console.log("  body.storage present:", Boolean(detail.body?.storage?.value));
+// The retrieval read: does body content come back, and under which key.
+const detail = await call(`${api}${prefix}/api/v2/pages/${first.id}?body-format=storage`);
+console.log("\npage GET keys:", Object.keys(detail).sort().join(", "));
+console.log("  spaceId:", detail.spaceId ?? "(absent — scope check would fail closed)");
+console.log("  body keys:", Object.keys(detail.body ?? {}).sort().join(", "));
 console.log("  storage length:", detail.body?.storage?.value?.length ?? 0);
+console.log("  _links:", JSON.stringify(detail._links ?? {}).slice(0, 200));
 
-const probe = await call(`${api}/rest/api/content/${first.id}?expand=version,space`);
+// The probe read (ADR 0040): the cheapest call that still answers "may this
+// user see this page, and is my snapshot current". If this shape is right, the
+// probe never has to fetch a body it is going to discard.
+const probe = await call(`${api}${prefix}/api/v2/pages/${first.id}`);
 console.log("\nprobe-shaped GET keys:", Object.keys(probe).sort().join(", "));
-console.log("  space.key:", probe.space?.key ?? "(absent — scope check would fail closed)");
+console.log("  spaceId:", probe.spaceId ?? "(absent — scope check would fail closed)");
 console.log("  title present:", Boolean(probe.title));
-console.log("  _links.webui:", probe._links?.webui ?? "(absent)");
+console.log("  version.number:", probe.version?.number ?? "(absent)");
+console.log("  _links:", JSON.stringify(probe._links ?? {}).slice(0, 200));
+
+// The ACL mirror's source. v2 coverage of restrictions is patchy, so both
+// generations are tried — whichever answers is what the mirror must read.
+console.log("\nread restrictions:");
+await tryCall("v2 .../restrictions", `${api}${prefix}/api/v2/pages/${first.id}/restrictions`);
+const v1Restrictions = await tryCall(
+  "v1 .../restriction/byOperation/read",
+  `${api}${prefix}/rest/api/content/${first.id}/restriction/byOperation/read`,
+);
+if (v1Restrictions) {
+  console.log("  shape:", JSON.stringify(v1Restrictions).slice(0, 400));
+}
 
 console.log("\nDone. Nothing above contains a credential.");

@@ -20,7 +20,7 @@ export type FetchLike = (url: string, init?: { headers?: Record<string, string> 
 
 export interface ConfluenceDriverOptions {
   /**
-   * The human site URL, e.g. `https://acme.atlassian.net/wiki`. Fixed and
+   * The human site URL, e.g. `https://wiki.example.com/wiki`. Fixed and
    * trusted; never derived from input.
    *
    * Used for CITATION urls only, not for API calls. The two are genuinely
@@ -57,24 +57,41 @@ interface AccessibleResource {
   url: string;
 }
 
+/**
+ * A page as the v2 API returns it.
+ *
+ * Note what is NOT here: read restrictions. v1 could expand them onto a content
+ * response; v2 cannot, and its own `/restrictions` endpoint refuses the scopes
+ * this driver holds. They come from a separate call (`readRestrictions`).
+ */
 interface ConfluencePage {
   id: string;
   title: string;
-  version?: { number?: number; when?: string };
+  /** v2 identifies the space by ID. There is no nested `space.key`. */
+  spaceId?: string | number;
+  version?: { number?: number; createdAt?: string };
   _links?: { webui?: string; base?: string };
-  restrictions?: {
-    read?: {
-      restrictions?: {
-        user?: { results?: { accountId?: string }[] };
-        group?: { results?: { id?: string; name?: string }[] };
-      };
-    };
-  };
   body?: { storage?: { value?: string } };
 }
 
+/** The v1 read-restriction response, which is still the only one that answers. */
+interface ReadRestrictions {
+  restrictions?: {
+    user?: { results?: { accountId?: string }[] };
+    group?: { results?: { id?: string; name?: string }[] };
+  };
+}
+
+/** Read restrictions as this driver passes them around, before becoming an ACL. */
+type Principals = string[];
+
 /**
  * Confluence driver (docs/adr/0038).
+ *
+ * Speaks the v2 REST API. Not a preference: the v1 content endpoints now return
+ * `410 Gone — This deprecated endpoint has been removed`, so the generation this
+ * driver was first written against no longer exists. v1 survives for read
+ * restrictions alone, which is why this file straddles both.
  *
  * Scope is a space key, and every request this driver builds is constrained to
  * it — a page id is only ever dereferenced after the space has been asserted,
@@ -94,6 +111,12 @@ export class ConfluenceDriver implements Driver {
    * token would mean an extra round trip for every user on every turn.
    */
   private cloudId: string | undefined;
+  /**
+   * Space KEY to space ID, cached for the same reason as cloudId: it is a
+   * property of the site, not of the caller. Keyed by space key because one
+   * driver instance serves one connection today but need not forever.
+   */
+  private readonly spaceIds = new Map<string, string>();
 
   constructor(options: ConfluenceDriverOptions) {
     this.siteBaseUrl = options.siteBaseUrl.replace(/\/+$/, "");
@@ -108,14 +131,17 @@ export class ConfluenceDriver implements Driver {
    *
    * An Atlassian 3LO token does NOT authenticate against the site host: it is
    * accepted only at the `api.atlassian.com` gateway, addressed by the site's
-   * `cloudId`. Calling `https://acme.atlassian.net/wiki/rest/api/...` with a
+   * `cloudId`. Calling `https://acme.atlassian.net/wiki/api/v2/...` with a
    * Bearer token returns 401 however valid the token is, which is a failure
    * mode no fetch-mocked test can surface — the mock answers whatever URL it is
    * given.
+   *
+   * The `/wiki` context path is kept: Confluence sits under it at the gateway
+   * just as it does on the site.
    */
   private async apiBaseFor(token: string): Promise<string> {
     if (!this.cloudId) this.cloudId = await this.resolveCloudId(token);
-    return `${this.gatewayOrigin}/ex/confluence/${this.cloudId}`;
+    return `${this.gatewayOrigin}/ex/confluence/${this.cloudId}/wiki`;
   }
 
   /**
@@ -166,6 +192,38 @@ export class ConfluenceDriver implements Driver {
     );
   }
 
+  /**
+   * Resolves a space KEY to the space ID that v2 addresses pages by.
+   *
+   * The Connection is written in terms of the key, because that is what a human
+   * knows the space by and what survives being read back in a review. v2 takes
+   * only the id, so exactly one translation happens here rather than leaking
+   * ids into configuration.
+   */
+  private async spaceIdFor(spaceKey: string, token: string): Promise<string> {
+    const cached = this.spaceIds.get(spaceKey);
+    if (cached) return cached;
+
+    const apiBase = await this.apiBaseFor(token);
+    const body = (await this.request(
+      `${apiBase}/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}&limit=1`,
+      token,
+    )) as { results?: { id?: string | number; key?: string }[] };
+
+    // Matched on the key rather than trusting position: a filter that silently
+    // returned something else would scope every later check to the wrong space.
+    const space = (body.results ?? []).find((candidate) => candidate.key === spaceKey);
+    if (space?.id === undefined) {
+      throw new PermissionDeniedError(
+        `space ${spaceKey} is not visible to this credential, so its pages cannot be scoped`,
+      );
+    }
+
+    const id = String(space.id);
+    this.spaceIds.set(spaceKey, id);
+    return id;
+  }
+
   validateScope(scope: Scope): void {
     if (!scope.space) throw new Error("a confluence connection must be scoped to a space");
     if (scope.channel || scope.folderID) {
@@ -183,24 +241,33 @@ export class ConfluenceDriver implements Driver {
 
   async list(scope: Scope, credentials: Credentials, since: Cursor): Promise<ListPage> {
     this.validateScope(scope);
-    const start = Number(since ?? "0");
-    const apiBase = await this.apiBaseFor(requireToken(credentials.service));
-    const url =
-      `${apiBase}/rest/api/content?spaceKey=${encodeURIComponent(scope.space!)}` +
-      `&expand=version,restrictions.read.restrictions.user,restrictions.read.restrictions.group` +
-      `&limit=${this.pageSize}&start=${start}`;
+    const token = requireToken(credentials.service);
+    const apiBase = await this.apiBaseFor(token);
+    const spaceId = await this.spaceIdFor(scope.space!, token);
 
-    const body = (await this.request(url, credentials.service)) as {
+    // v2 paginates by opaque cursor, not offset. The cursor is carried through
+    // `Cursor` untouched — reconstructing one would couple us to its encoding,
+    // which Atlassian does not promise to keep.
+    const url =
+      `${apiBase}/api/v2/pages?space-id=${encodeURIComponent(spaceId)}&limit=${this.pageSize}` +
+      (since ? `&cursor=${encodeURIComponent(since)}` : "");
+
+    const body = (await this.request(url, token)) as {
       results?: ConfluencePage[];
-      size?: number;
+      _links?: { next?: string };
     };
     const results = body.results ?? [];
 
-    return {
-      resources: results.map((page) => this.toRef(page)),
-      // Confluence paginates by offset; an empty page ends the walk.
-      cursor: results.length < this.pageSize ? undefined : String(start + results.length),
-    };
+    // One extra request per page, because v2 dropped inline restriction
+    // expansion and its replacement refuses this driver's scopes. That cost is
+    // paid here, during sync, and never on the retrieval path — the probe is
+    // the authorization decision and does not consult the mirror at all
+    // (docs/adr/0040).
+    const resources = await Promise.all(
+      results.map(async (page) => this.toRef(page, await this.readRestrictions(apiBase, token, page.id))),
+    );
+
+    return { resources, cursor: nextCursor(body._links?.next) };
   }
 
   async fetch(scope: Scope, credentials: Credentials, id: string): Promise<Document> {
@@ -209,16 +276,14 @@ export class ConfluenceDriver implements Driver {
     const token = requireToken(credentials.delegated ?? credentials.service);
     const apiBase = await this.apiBaseFor(token);
     const page = (await this.request(
-      `${apiBase}/rest/api/content/${encodeURIComponent(id)}` +
-        `?expand=body.storage,version,space,restrictions.read.restrictions.user,` +
-        `restrictions.read.restrictions.group`,
+      `${apiBase}/api/v2/pages/${encodeURIComponent(id)}?body-format=storage`,
       token,
-    )) as ConfluencePage & { space?: { key?: string } };
+    )) as ConfluencePage;
 
-    assertInScope(page, scope, id);
+    await this.assertInScope(page, scope, id, token);
 
     return {
-      ...this.toRef(page),
+      ...this.toRef(page, await this.readRestrictions(apiBase, token, id)),
       markdown: storageToMarkdown(page.body?.storage?.value ?? ""),
     };
   }
@@ -234,43 +299,97 @@ export class ConfluenceDriver implements Driver {
 
     // Deliberately minimal: the probe establishes readability and returns the
     // fields a citation needs. The body is the model's to request separately
-    // (docs/adr/0040), so it is not pulled here.
+    // (docs/adr/0040), so no body-format is asked for, and no restrictions are
+    // read — this call reaching 200 under the USER's token is the authorization
+    // decision, which is a stronger statement than any mirrored ACL.
     const apiBase = await this.apiBaseFor(credentials.delegated);
     const page = (await this.request(
-      `${apiBase}/rest/api/content/${encodeURIComponent(id)}?expand=version,space`,
+      `${apiBase}/api/v2/pages/${encodeURIComponent(id)}`,
       credentials.delegated,
-    )) as ConfluencePage & { space?: { key?: string } };
+    )) as ConfluencePage;
 
-    assertInScope(page, scope, id);
+    await this.assertInScope(page, scope, id, credentials.delegated);
 
-    const ref = this.toRef(page);
+    const ref = this.toRef(page, []);
     return { allowed: true, title: ref.title, url: ref.url, version: ref.version };
   }
 
-  private toRef(page: ConfluencePage) {
-    const users = page.restrictions?.read?.restrictions?.user?.results ?? [];
-    const groups = page.restrictions?.read?.restrictions?.group?.results ?? [];
-    const principals = [
-      ...users.map((user) => `user:${user.accountId}`).filter((p) => !p.endsWith("undefined")),
-      ...groups.map((group) => `group:${group.id ?? group.name}`).filter((p) => !p.endsWith("undefined")),
-    ];
+  /**
+   * Reads a page's read restrictions for the ACL mirror.
+   *
+   * Uses the v1 endpoint deliberately. v2's `/pages/{id}/restrictions` returns
+   * `401 scope does not match` under the granular read scopes this driver
+   * holds, while the v1 path answers — an asymmetry worth naming, because the
+   * obvious cleanup of "move everything to v2" silently breaks the mirror.
+   *
+   * A failure here degrades to permissive rather than propagating: the mirror
+   * is a pre-filter, never the authorization decision, so a missing entry costs
+   * a wasted probe while a wrongly restrictive one hides a page the caller can
+   * actually read.
+   */
+  private async readRestrictions(apiBase: string, token: string, id: string): Promise<Principals> {
+    let body: ReadRestrictions;
+    try {
+      body = (await this.request(
+        `${apiBase}/rest/api/content/${encodeURIComponent(id)}/restriction/byOperation/read`,
+        token,
+      )) as ReadRestrictions;
+    } catch {
+      return [];
+    }
 
+    const users = body.restrictions?.user?.results ?? [];
+    const groups = body.restrictions?.group?.results ?? [];
+    return [
+      ...users.map((user) => user.accountId).filter(isPresent).map((id) => `user:${id}`),
+      ...groups.map((group) => group.id ?? group.name).filter(isPresent).map((id) => `group:${id}`),
+    ];
+  }
+
+  private toRef(page: ConfluencePage, principals: Principals) {
     return {
       id: page.id,
       title: page.title,
-      // Built from the SITE, never the gateway: a citation the caller cannot
-      // open is close to no citation at all. `_links.base` is preferred when
-      // the response supplies one, since the source describing itself beats our
-      // assumption about where its pages live.
+      // Built from the configured SITE rather than `_links.base`. The source
+      // describing itself would normally win, but on a custom domain it reports
+      // the canonical *.atlassian.net address — correct, resolvable, and not
+      // the domain anyone in the org recognises or may even be able to reach.
       url: citationUrl(page, this.siteBaseUrl),
       version: page.version?.number === undefined ? undefined : String(page.version.number),
-      updatedAt: page.version?.when,
+      updatedAt: page.version?.createdAt,
       // No explicit read restrictions means space-level permissions govern,
       // which this driver does not resolve. Marked permissive rather than
       // guessed: the probe is the authority, and under-inclusion is the only
       // direction that hurts (docs/adr/0040).
       acl: principals.length > 0 ? { principals } : { principals: [], permissive: true },
     };
+  }
+
+  /**
+   * Asserts a page belongs to this connection's space.
+   *
+   * This is the only thing stopping a guessed or leaked page id from reaching
+   * another client's space, so it fails CLOSED: `spaceId` must be present AND
+   * equal to the configured space's id.
+   *
+   * Compared as strings because the two sides arrive from different endpoints
+   * and v2 is not consistent about quoting ids — `1952415750 !== "1952415750"`
+   * would fail closed rather than open, but it would fail on every page.
+   */
+  private async assertInScope(
+    page: ConfluencePage,
+    scope: Scope,
+    id: string,
+    token: string,
+  ): Promise<void> {
+    const expected = await this.spaceIdFor(scope.space!, token);
+    if (page.spaceId !== undefined && String(page.spaceId) === expected) return;
+
+    throw new PermissionDeniedError(
+      page.spaceId === undefined
+        ? `page ${id} came back without a space id; cannot confirm it is inside this connection's scope`
+        : `page ${id} is in space ${String(page.spaceId)}, outside this connection's scope`,
+    );
   }
 
   private async request(url: string, token: string | undefined): Promise<unknown> {
@@ -308,42 +427,34 @@ function requireToken(token: string | undefined): string {
   return token;
 }
 
+const isPresent = (value: string | undefined): value is string => value !== undefined;
+
 /**
- * The human URL for a page, for citations.
+ * Pulls the opaque cursor out of the `next` link v2 returns.
  *
- * `_links.base` is preferred when present: the source describing where its own
- * pages live beats our assumption about it, and that assumption is exactly the
- * kind of thing that is wrong on first contact with a real tenant.
+ * The link is a path rather than an absolute URL, so it is parsed against a
+ * throwaway origin. Absent means the walk is finished — the only reliable end
+ * signal, since a short page is not one (v2 may return fewer results than the
+ * limit and still have more).
  */
-function citationUrl(page: ConfluencePage, siteBaseUrl: string): string {
-  const base = (page._links?.base ?? siteBaseUrl).replace(/\/+$/, "");
-  return page._links?.webui ? `${base}${page._links.webui}` : `${base}/pages/${page.id}`;
+function nextCursor(next: string | undefined): Cursor {
+  if (!next) return undefined;
+  try {
+    return new URL(next, "https://example.invalid").searchParams.get("cursor") ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
- * Asserts a page belongs to this connection's space.
+ * The human URL for a page, for citations.
  *
- * This is the only thing stopping a guessed or leaked page id from reaching
- * another client's space, so it fails CLOSED: the space key must be present AND
- * equal. An earlier version read `page.space?.key && page.space.key !== scope.space`,
- * which short-circuits to falsy when the field is absent and serves the page —
- * the one direction this check must never fail in.
- *
- * Every call site requests `expand=…,space`, so a response without it is a
- * provider contract we no longer recognise, and continuing on a boundary check
- * we could not evaluate is exactly the wrong response to that.
+ * `_links.webui` is a site-relative path (`/spaces/SNC/pages/123/Title`), so it
+ * is appended to the configured site base — which already carries `/wiki`.
  */
-function assertInScope(
-  page: { space?: { key?: string } },
-  scope: Scope,
-  id: string,
-): void {
-  if (page.space?.key === scope.space) return;
-  throw new PermissionDeniedError(
-    page.space?.key
-      ? `page ${id} is in space ${page.space.key}, outside this connection's scope`
-      : `page ${id} came back without a space key; cannot confirm it is inside this connection's scope`,
-  );
+function citationUrl(page: ConfluencePage, siteBaseUrl: string): string {
+  const base = siteBaseUrl.replace(/\/+$/, "");
+  return page._links?.webui ? `${base}${page._links.webui}` : `${base}/pages/${page.id}`;
 }
 
 /**
