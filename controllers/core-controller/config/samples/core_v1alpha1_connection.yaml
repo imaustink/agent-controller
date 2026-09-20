@@ -1,9 +1,70 @@
+# A real shape rather than a placeholder: Bitovi's SNC Confluence space, on a
+# site that uses a CUSTOM DOMAIN (wiki.at.bitovi.com rather than
+# bitovi.atlassian.net).
+#
+# Two details under `site` are easy to get wrong and expensive to debug:
+#
+#   site.baseURL keeps the /wiki path. Confluence lives under /wiki even on a
+#   custom domain, and this base is what citation URLs are built from — get it
+#   wrong and every citation is a link nobody can open.
+#
+#   site.cloudId is REQUIRED here, not merely advisable. Discovery matches
+#   baseURL against the canonical *.atlassian.net address that
+#   /oauth/token/accessible-resources reports, so a custom domain never matches
+#   and the driver refuses rather than guess. It will not fall back to "the only
+#   site this token can reach": nothing has confirmed that site is this tenant,
+#   and a credential issued for another org fits that description exactly. Read
+#   it from `node apps/connection-broker/scripts/verify-confluence.mjs SNC`.
 apiVersion: core.controller-agent.dev/v1alpha1
 kind: Connection
 metadata:
   labels:
     app.kubernetes.io/name: core-controller
     app.kubernetes.io/managed-by: kustomize
-  name: connection-sample
+  name: snc-confluence
 spec:
-  # TODO(user): Add fields here
+  provider: confluence
+  displayName: SNC Confluence
+  description: >-
+    The SNC client engagement's Confluence space: architecture decisions,
+    meeting notes and delivery status.
+  allowedRoles:
+    - reader
+    - writer
+
+  # The security boundary. Everything the broker does is constrained to it, and
+  # a page id outside this space is refused however it was obtained.
+  scope:
+    space: SNC
+
+  site:
+    # Keeps /wiki. Confluence lives under it even on a custom domain, and this
+    # is what citation URLs are built from — get it wrong and every citation is
+    # a link nobody can open.
+    baseURL: https://wiki.at.bitovi.com/wiki
+    # Not optional for THIS site, even though the field is. Discovery matches
+    # baseURL against the addresses the token reports, which are always the
+    # canonical *.atlassian.net form, so a custom domain never matches and the
+    # driver refuses rather than guessing which tenant it reached.
+    cloudId: 2a2bce9e-5780-4e10-a848-ee82abca0056
+
+  # Retrieval is per user: every candidate is probed against the source with the
+  # asking user's own token before it can be ranked, prompted or cited
+  # (docs/adr/0040). Without this the space can be ingested but never served to
+  # a caller whose access differs from the ingestion credential's.
+  identityProviders:
+    - atlassian
+
+  sync:
+    mode: poll
+    # Required whatever the mode: the full reconcile is the source of truth, and
+    # webhooks only make it faster (docs/adr/0038 §4).
+    reconcileInterval: 6h
+    backfill:
+      since: "2026-01-01T00:00:00Z"
+
+  # The live face: reads the CURRENT state of a page when retrieval's snapshot
+  # is not good enough. GET only, path-allowlisted by the driver, and refused
+  # outside the scope above.
+  api:
+    enabled: true

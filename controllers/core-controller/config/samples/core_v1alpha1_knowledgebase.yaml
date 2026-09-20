@@ -1,9 +1,49 @@
+# The SNC engagement as a knowledge base.
+#
+# Only the Confluence connection exists today; the Slack and Drive members are
+# shown commented out because composition is the point of this resource — the
+# same knowledge base answering from several sources in one retrieval, including
+# two channels from the same provider.
+#
+# Note what is ABSENT: there is no allowedRoles here. Like a Skill (ADR 0011),
+# a KnowledgeBase carries no RBAC of its own — its audience is derived from its
+# members, by UNION rather than intersection, so one restricted member cannot
+# hide the whole client's knowledge base from everyone else.
 apiVersion: core.controller-agent.dev/v1alpha1
 kind: KnowledgeBase
 metadata:
   labels:
     app.kubernetes.io/name: core-controller
     app.kubernetes.io/managed-by: kustomize
-  name: knowledgebase-sample
+  name: snc
 spec:
-  # TODO(user): Add fields here
+  displayName: SNC
+
+  # Embedded for retrieval, and this is SUBJECT MATTER rather than a tool
+  # contract: it is how the planner tells one client's knowledge base from
+  # another's. Near-identical descriptions across clients defeat the design
+  # (docs/adr/0039 §5).
+  description: >-
+    The SNC client engagement: platform migration work, their Confluence space,
+    architecture decisions, meeting notes and delivery status.
+
+  # Also embedded. Codenames and alternative names are usually what someone
+  # actually says, and they discriminate far better than prose does.
+  aliases:
+    - Southern National
+
+  connectionRefs:
+    - snc-confluence
+    # - snc-slack-eng
+    # - snc-slack-general
+    # - snc-drive
+    # - platform-announcements   # shared across several knowledge bases
+
+  chunk:
+    maxTokens: 800
+    overlap: 100
+
+  # Leave this on. A caller who cannot see a restricted member otherwise gets a
+  # confident "there's nothing about that" drawn from a partial corpus, which is
+  # the failure a knowledge base exists to prevent (docs/adr/0039 §4).
+  disclosePartialVisibility: true

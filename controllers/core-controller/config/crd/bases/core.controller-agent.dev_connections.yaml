@@ -195,6 +195,41 @@ spec:
                   - secretRef
                   type: object
                 type: array
+              site:
+                description: |-
+                  site locates the tenant, for providers that have one. Required for
+                  confluence. See ConnectionSite.
+                properties:
+                  baseURL:
+                    description: |-
+                      baseURL is the site as a HUMAN visits it, including any context path
+                      (Confluence lives under /wiki even on a custom domain).
+
+                      This builds CITATIONS, and nothing else. It is deliberately not where API
+                      calls go: an Atlassian OAuth token is rejected by the site host and
+                      accepted only at the gateway, so the two are different addresses for the
+                      same tenant. Getting this wrong yields citations nobody can open, which
+                      for a knowledge base is close to having no citations.
+                    minLength: 1
+                    pattern: ^https://
+                    type: string
+                  cloudId:
+                    description: |-
+                      cloudId names the Atlassian site directly.
+
+                      REQUIRED for a site on a custom domain, and the driver refuses to run
+                      without it. Discovery works by matching baseURL against the addresses the
+                      token reports, and a custom domain never appears there — those are always
+                      the canonical *.atlassian.net form. The tempting fallback of "only one
+                      site is reachable, so use it" is unsafe: nothing has confirmed that site
+                      is this tenant, and a credential issued for another org satisfies it
+                      exactly, pointing the whole Connection at someone else's content.
+
+                      Read it from `node apps/connection-broker/scripts/verify-confluence.mjs`.
+                    type: string
+                required:
+                - baseURL
+                type: object
               sync:
                 description: |-
                   sync configures how this Connection is kept current. Omitted means no
@@ -250,6 +285,9 @@ spec:
             - message: 'sync.reconcileInterval is required unless sync.mode is none:
                 webhooks are lossy and the reconcile pass is the source of truth'
               rule: '!has(self.sync) || self.sync.mode == ''none'' || has(self.sync.reconcileInterval)'
+            - message: a confluence Connection must set site.baseURL; citations cannot
+                be built without it
+              rule: self.provider != 'confluence' || has(self.site)
           status:
             description: status defines the observed state of Connection
             properties:

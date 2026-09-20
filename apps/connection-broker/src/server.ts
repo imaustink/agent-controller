@@ -7,7 +7,12 @@ import {
   type AuthConfig,
   type Operation,
 } from "./auth.js";
-import { PermissionDeniedError, TransientError, type Credentials } from "./drivers/types.js";
+import {
+  PermanentError,
+  PermissionDeniedError,
+  TransientError,
+  type Credentials,
+} from "./drivers/types.js";
 import type { ConnectionRegistry } from "./registry.js";
 
 /**
@@ -110,6 +115,10 @@ async function handle(
     // omission.
     if (err instanceof PermissionDeniedError) return send(res, 403, { error: err.message });
     if (err instanceof TransientError) return send(res, 503, { error: err.message });
+    // Deliberately NOT 503: the caller retries those, and this is the one
+    // failure retrying can never fix. 500 stops the loop and puts the
+    // provider's own explanation where an operator will read it.
+    if (err instanceof PermanentError) return send(res, 500, { error: err.message });
     throw err;
   }
 }

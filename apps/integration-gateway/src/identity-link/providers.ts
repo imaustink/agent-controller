@@ -91,11 +91,11 @@ function githubConfig(env: NodeJS.ProcessEnv): OAuthProviderConfig | undefined {
  * means a link that silently stops working before lunch.
  */
 function atlassianConfig(env: NodeJS.ProcessEnv): OAuthProviderConfig | undefined {
-  const clientId = env.ATLASSIAN_OAUTH_CLIENT_ID;
-  const clientSecret = env.ATLASSIAN_OAUTH_CLIENT_SECRET;
+  const clientId = env.ATLASSIAN_CLIENT_ID;
+  const clientSecret = env.ATLASSIAN_CLIENT_SECRET;
   if (!clientId || !clientSecret) return undefined;
 
-  const scopes = (env.ATLASSIAN_OAUTH_SCOPES ?? "read:confluence-content.all offline_access")
+  const scopes = (env.ATLASSIAN_SCOPES ?? "read:confluence-content.all offline_access")
     .split(/[\s,]+/)
     .filter(Boolean);
 
