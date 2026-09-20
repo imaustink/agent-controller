@@ -92,6 +92,88 @@ describe("the OAuth gateway", () => {
     expect(lookups).toBe(1);
   });
 
+  it("uses the only accessible site when a custom domain cannot match", async () => {
+    // wiki.at.bitovi.com is a custom domain; accessible-resources reports the
+    // canonical bitovi.atlassian.net, so origin equality finds nothing. With
+    // exactly one site there is no ambiguity, and refusing would block the only
+    // tenant there is.
+    const routed: FetchLike = async (url) =>
+      url.includes("accessible-resources")
+        ? respond(200, [{ id: "canonical-cloud", url: "https://bitovi.atlassian.net" }])
+        : respond(200, page());
+    const driver = new ConfluenceDriver({
+      siteBaseUrl: "https://wiki.at.bitovi.com",
+      gatewayOrigin: GATEWAY,
+      fetch: routed,
+    });
+
+    const result = await driver.probe({ space: "SNC" }, { delegated: "u" }, "1");
+    expect(result.allowed).toBe(true);
+  });
+
+  it("still refuses a canonical URL that does not match, however few sites there are", async () => {
+    // Both sides canonical means they should have matched; a mismatch here is a
+    // credential for a DIFFERENT site, not a custom-domain artifact.
+    const routed: FetchLike = async (url) =>
+      url.includes("accessible-resources")
+        ? respond(200, [{ id: "other", url: "https://someone-else.atlassian.net" }])
+        : respond(200, page());
+    const driver = new ConfluenceDriver({ siteBaseUrl: SITE, gatewayOrigin: GATEWAY, fetch: routed });
+
+    await expect(driver.probe({ space: "SNC" }, { delegated: "u" }, "1")).rejects.toBeInstanceOf(
+      PermissionDeniedError,
+    );
+  });
+
+  it("refuses to guess when several sites are reachable and none match", async () => {
+    const routed: FetchLike = async (url) =>
+      url.includes("accessible-resources")
+        ? respond(200, [
+            { id: "a", url: "https://one.atlassian.net" },
+            { id: "b", url: "https://two.atlassian.net" },
+          ])
+        : respond(200, page());
+    const driver = new ConfluenceDriver({
+      siteBaseUrl: "https://wiki.at.bitovi.com",
+      gatewayOrigin: GATEWAY,
+      fetch: routed,
+    });
+
+    // Here the ambiguity is real: picking one would read another tenant's
+    // content while every scope check still passed.
+    await expect(driver.probe({ space: "SNC" }, { delegated: "u" }, "1")).rejects.toThrow(
+      /set the connection's cloudId/,
+    );
+  });
+
+  it("skips discovery entirely when the cloudId is configured", async () => {
+    let lookups = 0;
+    const routed: FetchLike = async (url) => {
+      if (url.includes("accessible-resources")) lookups += 1;
+      return respond(200, page());
+    };
+    const driver = new ConfluenceDriver({
+      siteBaseUrl: "https://wiki.at.bitovi.com",
+      cloudId: "known-cloud",
+      gatewayOrigin: GATEWAY,
+      fetch: routed,
+    });
+
+    await driver.probe({ space: "SNC" }, { delegated: "u" }, "1");
+    expect(lookups).toBe(0);
+  });
+
+  it("says so when the credential reaches no site at all", async () => {
+    const routed: FetchLike = async (url) =>
+      url.includes("accessible-resources") ? respond(200, []) : respond(200, page());
+    const driver = new ConfluenceDriver({ siteBaseUrl: SITE, gatewayOrigin: GATEWAY, fetch: routed });
+
+    // Distinct from "wrong site": the app is probably not installed.
+    await expect(driver.probe({ space: "SNC" }, { delegated: "u" }, "1")).rejects.toThrow(
+      /may not be installed/,
+    );
+  });
+
   it("refuses a credential that cannot reach the configured site", async () => {
     const routed: FetchLike = async (url) =>
       url.includes("accessible-resources")

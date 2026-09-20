@@ -38,6 +38,17 @@ export interface ConfluenceDriverOptions {
    * it.
    */
   gatewayOrigin?: string;
+  /**
+   * The site's cloudId, when it is known.
+   *
+   * Worth setting for a site on a CUSTOM DOMAIN. Discovery matches the site URL
+   * reported by `/oauth/token/accessible-resources`, which is the canonical
+   * `*.atlassian.net` address — so a connection configured with
+   * `https://wiki.example.com` may not match anything, and the check meant to
+   * prevent cross-tenant reads would instead reject the only tenant there is.
+   * Setting it explicitly removes the guesswork.
+   */
+  cloudId?: string;
 }
 
 /** One entry from `/oauth/token/accessible-resources`. */
@@ -89,6 +100,7 @@ export class ConfluenceDriver implements Driver {
     this.http = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
     this.pageSize = options.pageSize ?? 50;
     this.gatewayOrigin = (options.gatewayOrigin ?? "https://api.atlassian.com").replace(/\/+$/, "");
+    this.cloudId = options.cloudId;
   }
 
   /**
@@ -119,21 +131,39 @@ export class ConfluenceDriver implements Driver {
       token,
     )) as AccessibleResource[];
 
+    const available = resources ?? [];
     const wanted = new URL(this.siteBaseUrl).origin;
-    const match = (resources ?? []).find((resource) => {
+
+    const match = available.find((resource) => {
       try {
         return new URL(resource.url).origin === wanted;
       } catch {
         return false;
       }
     });
+    if (match) return match.id;
 
-    if (!match) {
-      throw new PermissionDeniedError(
-        `this credential cannot reach ${wanted}; it may be linked to a different Atlassian site`,
-      );
-    }
-    return match.id;
+    // No origin match. Whether that is expected depends on what was configured.
+    //
+    // A CUSTOM DOMAIN can never match, because accessible-resources reports the
+    // canonical *.atlassian.net address. So when a custom domain was configured
+    // and the token reaches exactly one site, there is no ambiguity and
+    // refusing would block the only tenant there is.
+    //
+    // A canonical *.atlassian.net URL that does not match is a different story:
+    // both sides are canonical, so they should have matched, and a mismatch
+    // means the credential is for a DIFFERENT site. Accepting it there would
+    // read another tenant's content while every scope check still passed — so
+    // that case keeps refusing however few sites are reachable.
+    const configuredCanonical = new URL(this.siteBaseUrl).hostname.endsWith(".atlassian.net");
+    if (available.length === 1 && !configuredCanonical) return available[0]!.id;
+
+    throw new PermissionDeniedError(
+      available.length === 0
+        ? `this credential reaches no Atlassian site; the app may not be installed on ${wanted}`
+        : `this credential does not reach ${wanted} (${available.length} site(s) available); ` +
+          `if ${wanted} is a custom domain, set the connection's cloudId explicitly`,
+    );
   }
 
   validateScope(scope: Scope): void {

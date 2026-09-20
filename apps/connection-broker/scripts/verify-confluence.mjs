@@ -19,6 +19,11 @@
  *
  *   node apps/connection-broker/scripts/verify-confluence.mjs <SPACE_KEY> [envfile]
  *
+ * It also prints the site's cloudId, which is worth recording: a site on a
+ * CUSTOM DOMAIN (wiki.at.bitovi.com) cannot be matched against the canonical
+ * *.atlassian.net address this endpoint reports, so the Connection should carry
+ * the cloudId rather than rely on discovery.
+ *
  * Requires ATLASSIAN_CLIENT_ID and ATLASSIAN_CLIENT_SECRET in the env file
  * (default: tools/recipe-scraper/.env), and http://localhost:9099/callback
  * registered as a callback URL on the Atlassian app.
@@ -132,6 +137,10 @@ if (!cloudId) {
   console.error("no accessible resource — the app may not be installed on a site");
   process.exit(1);
 }
+if (resources.length > 1) {
+  console.log(`  note: ${resources.length} sites reachable; using the first. Set cloudId explicitly in the Connection.`);
+}
+console.log("  cloudId to configure:", cloudId);
 const api = `${GATEWAY}/ex/confluence/${cloudId}`;
 
 const listUrl =
