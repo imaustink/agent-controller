@@ -29,10 +29,11 @@
  * registered as a callback URL on the Atlassian app.
  */
 import { createServer } from "node:http";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const REDIRECT = "http://localhost:9099/callback";
 const GATEWAY = "https://api.atlassian.com";
@@ -98,8 +99,21 @@ if (!clientId || !clientSecret) {
 }
 
 /** Waits for the OAuth redirect and hands back the code. */
-function awaitCode(expectedState) {
+function awaitCode(expectedState, timeoutMs = 5 * 60 * 1000) {
   return new Promise((resolve, reject) => {
+    // Bounded: an unbounded wait on a human is indistinguishable from a hang,
+    // and leaves port 9099 held by a process nobody remembers starting.
+    const timer = setTimeout(() => {
+      server.close();
+      reject(new Error("timed out waiting for the browser redirect"));
+    }, timeoutMs);
+    const done = (fn) => (value) => {
+      clearTimeout(timer);
+      fn(value);
+    };
+    resolve = done(resolve);
+    reject = done(reject);
+
     const server = createServer((req, res) => {
       const url = new URL(req.url, "http://localhost:9099");
       if (url.pathname !== "/callback") return res.writeHead(404).end();
@@ -128,9 +142,24 @@ authorize.searchParams.set("state", state);
 authorize.searchParams.set("response_type", "code");
 authorize.searchParams.set("prompt", "consent");
 
-console.log("\nOpen this URL, approve, and come back:\n");
-console.log(authorize.toString());
-console.log("");
+// Open it rather than printing it to be copied. This script blocks on a human
+// approving in a browser, so when it is run in a way that captures stdout the
+// URL goes to a log file and the script looks hung rather than waiting.
+const authorizeUrl = authorize.toString();
+console.log("\nOpening your browser to approve access…");
+// Written to a temp file rather than into the repo: the URL carries the OAuth
+// client_id, which is not secret but has no business being committed by
+// accident, and nothing under scripts/ is gitignored.
+const urlFile = join(tmpdir(), "atlassian-authorize-url.txt");
+writeFileSync(urlFile, `${authorizeUrl}\n`);
+console.log(`(if nothing opens, the URL is in ${urlFile})\n`);
+
+try {
+  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+  execFileSync(opener, [authorizeUrl], { stdio: "ignore" });
+} catch {
+  console.log(`Could not open a browser automatically — open the URL in ${urlFile}`);
+}
 
 const code = await awaitCode(state);
 
