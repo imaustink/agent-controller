@@ -174,6 +174,34 @@ jobs:
             --set identityLink.tokenSecretName=ig-token \
             | python3 -c "import sys,yaml; list(yaml.safe_load_all(sys.stdin))"
 
+  rbac-parity:
+    name: RBAC parity (markers -> role.yaml -> chart)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      # The spec renders the chart, so this job needs Helm as well as Node --
+      # which is why it is not a step inside the `node` job above.
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+
+      - run: npm ci
+
+      # The one e2e spec that needs no cluster and no credentials. It exists
+      # because core-controller's permissions are written as +kubebuilder:rbac
+      # markers and then copied twice (make manifests, then the Helm chart by
+      # hand), only the chart's copy is installed, and a copy that is skipped
+      # crashloops the controller while the caller sees nothing but a silent
+      # agent run. See e2e/README.md.
+      - name: e2e/specs/rbac-parity.e2e.ts
+        run: npm run e2e -w e2e -- specs/rbac-parity.e2e.ts
+
   core-controller:
     name: Go core-controller (lint, test, build)
     runs-on: ubuntu-latest

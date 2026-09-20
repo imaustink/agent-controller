@@ -108,6 +108,8 @@ specs/
   caller-tools.e2e.ts     consumer-supplied tools: real Qdrant queries + the tool_calls round trip
   chat-harness.e2e.ts     the harness's own signing/SSE parsing, vs. the real product (no cluster)
   waitfor-guard.e2e.ts    waitFor's own bounded-probe guarantee (no cluster)
+  rbac-parity.e2e.ts      markers -> role.yaml -> Helm chart RBAC agree (no cluster)
+  rbac-installed.e2e.ts   the INSTALLED ClusterRole, and that the controller starts
   resilience.e2e.ts       what survives NATS/orchestrator moving mid-turn
 manifests/
   fake-github.yaml          in-cluster GitHub API stub (Deployment + Service + script)
@@ -155,6 +157,35 @@ Two things worth knowing before editing it:
   just-in-time index is skipped entirely, above it a turn embeds, upserts and runs
   the filtered search. A smaller K makes both sides reachable with fewer tools,
   which is fewer real embedding calls per test.
+
+### `rbac-parity.e2e.ts` covers the chain no single change touches end to end
+
+core-controller's permissions are written once as `+kubebuilder:rbac` markers
+and then copied twice — `make manifests` into `config/rbac/role.yaml`, a human
+into the Helm chart's ClusterRole. Only the chart's copy is ever installed, and
+a copy that is skipped fails the same way every time: the manager cannot list a
+kind it watches, the informer never syncs, `Failed to run manager` ends the
+process, and the pod crashloops.
+
+Nothing else reports it. An AgentRun submitted against a controller that never
+started is accepted and left in no phase, and the caller sees `went silent for
+600000ms after 0 progress message(s)` — ten minutes of nothing, naming neither
+RBAC nor the controller. That is how `Add Connection and KnowledgeBase CRDs`
+shipped: role.yaml regenerated with both new kinds, the chart's ClusterRole —
+the one its own comment promises is "kept in lockstep" — left with the previous
+eight.
+
+The spec compares the three as flat `group/resource:verb` triples, because each
+expresses the same permissions in a different grouping and a rule-by-rule diff
+reports reorderings as differences. It reads the **markers**, not role.yaml, as
+the authority: the generated file is itself an artifact someone has to remember
+to regenerate. It also asserts the chart grants nothing *beyond* the markers —
+this ClusterRole is the only thing in the system holding `batch/jobs`
+create+delete (ADR 0010).
+
+`rbac-installed.e2e.ts` is the last link, and the only part needing minikube: a
+correct chart does not make a correct cluster, since a release predating the fix
+keeps serving the old ClusterRole until someone upgrades it.
 
 ### Every wait is bounded, and that is not decoration
 
