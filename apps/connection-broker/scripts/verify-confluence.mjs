@@ -339,6 +339,22 @@ console.log("  _links:", JSON.stringify(probe._links ?? {}).slice(0, 200));
 
 // The ACL mirror's source. v2 coverage of restrictions is patchy, so both
 // generations are tried — whichever answers is what the mirror must read.
+// How much does a probe actually cost? The probe-shaped GET returns a `body`
+// key even with no body-format asked for, which LOOKS like it is carrying the
+// content we deliberately did not request. Measured rather than assumed: if the
+// two sizes are close, the probe is not the cheap call ADR 0040 describes.
+console.log("\nprobe cost:");
+for (const [label, url] of [
+  ["probe (no body-format)", `${api}${prefix}/api/v2/pages/${first.id}`],
+  ["full (body-format=storage)", `${api}${prefix}/api/v2/pages/${first.id}?body-format=storage`],
+]) {
+  const response = await fetch(url, {
+    headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+  });
+  const bytes = (await response.text()).length;
+  console.log(`  ${label}: ${bytes} bytes (content-length: ${response.headers.get("content-length") ?? "absent"})`);
+}
+
 console.log("\nread restrictions:");
 await tryCall("v2 .../restrictions", `${api}${prefix}/api/v2/pages/${first.id}/restrictions`);
 const v1Restrictions = await tryCall(

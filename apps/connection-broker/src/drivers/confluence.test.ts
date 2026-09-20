@@ -1,9 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { ConfluenceDriver, storageToMarkdown, type FetchLike } from "./confluence.js";
-import { PermissionDeniedError, TransientError } from "./types.js";
+import { PermanentError, PermissionDeniedError, TransientError } from "./types.js";
 
-function respond(status: number, body: unknown = {}): Awaited<ReturnType<FetchLike>> {
-  return { ok: status >= 200 && status < 300, status, json: async () => body };
+function respond(
+  status: number,
+  body: unknown = {},
+  text?: string,
+): Awaited<ReturnType<FetchLike>> {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+    text: async () => text ?? JSON.stringify(body),
+  };
 }
 
 const SITE = "https://example.atlassian.net/wiki";
@@ -501,6 +510,56 @@ describe("error classification", () => {
     // Counting a busy source as a denial would quietly shrink an answer and
     // make the same question return different evidence on a retry.
     const http = vi.fn().mockResolvedValue(respond(status));
+    await expect(
+      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
+    ).rejects.toBeInstanceOf(TransientError);
+  });
+
+  it("treats 410 as PERMANENT, not transient", async () => {
+    // The failure that made the v1 migration expensive. Retrying a withdrawn
+    // endpoint reports "temporarily unavailable" forever about something that
+    // is never coming back.
+    const http = vi.fn().mockResolvedValue(
+      respond(410, {}, '{"message":"GoneException: This deprecated endpoint has been removed."}'),
+    );
+    await expect(
+      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
+    ).rejects.toBeInstanceOf(PermanentError);
+  });
+
+  it("carries the provider's own explanation into the error", async () => {
+    const http = vi.fn().mockResolvedValue(
+      respond(401, {}, '{"code":401,"message":"Unauthorized; scope does not match"}'),
+    );
+
+    // `scope does not match` and `endpoint has been removed` are the same
+    // 4xx-shaped failure from the outside and have completely different fixes.
+    await expect(
+      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
+    ).rejects.toThrow(/scope does not match/);
+  });
+
+  it("truncates a long error body rather than pasting it into the message", async () => {
+    const http = vi.fn().mockResolvedValue(respond(500, {}, "x".repeat(5000)));
+
+    // An HTML error page from a proxy in front of the API is a realistic body.
+    await expect(
+      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
+    ).rejects.toThrow(/^confluence returned 500: x{300}$/);
+  });
+
+  it("still fails the original way when the error body cannot be read", async () => {
+    const http = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+      text: async () => {
+        throw new Error("stream already consumed");
+      },
+    });
+
+    // Failing to read WHY something failed must not replace the failure with a
+    // different one.
     await expect(
       driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
     ).rejects.toBeInstanceOf(TransientError);

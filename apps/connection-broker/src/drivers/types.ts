@@ -86,6 +86,23 @@ export class TransientError extends Error {
   readonly name = "TransientError";
 }
 
+/**
+ * The source will never answer this call, however many times we ask.
+ *
+ * Distinct from `TransientError` for one reason: a transient failure is retried
+ * and a permanent one must not be. Confluence's v1 content endpoints now return
+ * `410 Gone`, and classifying that as transient means a sync loop that retries
+ * a removed endpoint forever, reporting "temporarily unavailable" about
+ * something that is never coming back.
+ *
+ * It is not a denial either — the caller is not being refused, the call no
+ * longer exists — so it must not be swallowed the way a drop is. It should
+ * reach an operator.
+ */
+export class PermanentError extends Error {
+  readonly name = "PermanentError";
+}
+
 /** How a driver is told which credential to act with. */
 export interface Credentials {
   /** The connection's shared service credential — ingestion only. */
@@ -120,9 +137,9 @@ export interface Driver {
    * Asks the source, as the calling user, whether a resource is readable —
    * returning the title, URL and version a citation must be built from.
    *
-   * MUST throw `PermissionDeniedError` or `TransientError` rather than a bare
-   * Error: the caller cannot tell which an unclassified failure meant, and
-   * guessing is how a leak gets introduced.
+   * MUST throw `PermissionDeniedError`, `TransientError` or `PermanentError`
+   * rather than a bare Error: the caller cannot tell which an unclassified
+   * failure meant, and guessing is how a leak gets introduced.
    */
   probe(scope: Scope, credentials: Credentials, id?: string): Promise<ProbeResult>;
 }

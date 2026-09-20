@@ -1,4 +1,5 @@
 import {
+  PermanentError,
   PermissionDeniedError,
   TransientError,
   type Credentials,
@@ -16,6 +17,11 @@ export type FetchLike = (url: string, init?: { headers?: Record<string, string> 
   ok: boolean;
   status: number;
   json: () => Promise<unknown>;
+  /**
+   * Read for the explanatory text on a FAILED response only. Optional so a test
+   * double need not supply one, and never called on success.
+   */
+  text?: () => Promise<string>;
 }>;
 
 export interface ConfluenceDriverOptions {
@@ -407,12 +413,25 @@ export class ConfluenceDriver implements Driver {
 
     if (response.ok) return response.json();
 
+    // Atlassian explains itself in the error body, and that explanation is
+    // worth more than it looks: `scope does not match` and `This deprecated
+    // endpoint has been removed` are the same 4xx-shaped failure from the
+    // outside and have completely different fixes. Dropping it cost real hours.
+    const detail = await describeFailure(response);
+
+    // 410 is permanent. Retrying it is not merely wasted work — it reports
+    // "temporarily unavailable" forever about an endpoint that has been
+    // withdrawn, which is how a removed API looks like a flaky one.
+    if (response.status === 410) {
+      throw new PermanentError(`confluence returned 410 Gone${detail}`);
+    }
+
     // The distinction that must not be blurred (docs/adr/0040): 403/404 is a
     // drop, anything else is "we could not find out".
     if (response.status === 401 || response.status === 403 || response.status === 404) {
-      throw new PermissionDeniedError(`confluence returned ${response.status}`);
+      throw new PermissionDeniedError(`confluence returned ${response.status}${detail}`);
     }
-    throw new TransientError(`confluence returned ${response.status}`);
+    throw new TransientError(`confluence returned ${response.status}${detail}`);
   }
 }
 
@@ -428,6 +447,23 @@ function requireToken(token: string | undefined): string {
 }
 
 const isPresent = (value: string | undefined): value is string => value !== undefined;
+
+/**
+ * The provider's own explanation of a failure, bounded and safe to log.
+ *
+ * Truncated because an error body is not always small — an HTML error page from
+ * a proxy in front of the API is a realistic response, and pasting one into an
+ * exception message helps nobody. Never throws: failing to read why something
+ * failed must not replace the failure with a different one.
+ */
+async function describeFailure(response: { text?: () => Promise<string> }): Promise<string> {
+  try {
+    const body = (await response.text?.())?.trim();
+    return body ? `: ${body.slice(0, 300)}` : "";
+  } catch {
+    return "";
+  }
+}
 
 /**
  * Pulls the opaque cursor out of the `next` link v2 returns.
