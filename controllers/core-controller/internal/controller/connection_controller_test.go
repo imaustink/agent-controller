@@ -39,6 +39,9 @@ func confluenceConnection(name string) *corev1alpha1.Connection {
 			DisplayName:  "SNC Confluence",
 			AllowedRoles: []string{"reader"},
 			Scope:        corev1alpha1.ConnectionScope{Space: "SNC"},
+			Site: &corev1alpha1.ConnectionSite{
+				BaseURL: "https://example.atlassian.net/wiki",
+			},
 		},
 	}
 }
@@ -51,6 +54,16 @@ var _ = Describe("Connection Controller", func() {
 	// to fail at ADMISSION rather than be caught by a driver at run time. These
 	// specs exercise the CEL rules that make that true.
 	Context("scope validation", func() {
+		It("refuses a confluence connection with no site, which cannot be cited", func() {
+			// baseURL is what every citation URL is built from. Without it the
+			// connection can be ingested and then only ever cited as links
+			// nobody can open, which is close to not citing at all.
+			conn := confluenceConnection("no-site-confluence")
+			conn.Spec.Site = nil
+			Expect(k8sClient.Create(ctx, conn)).To(
+				MatchError(ContainSubstring("a confluence Connection must set site.baseURL")))
+		})
+
 		It("accepts a confluence connection scoped to a space", func() {
 			conn := confluenceConnection("scope-ok-confluence")
 			Expect(k8sClient.Create(ctx, conn)).To(Succeed())
@@ -62,6 +75,8 @@ var _ = Describe("Connection Controller", func() {
 				conn := confluenceConnection(name)
 				conn.Spec.Provider = "slack"
 				conn.Spec.Scope = corev1alpha1.ConnectionScope{Channel: "C" + name}
+				// A Slack channel is reached without site-level coordinates.
+				conn.Spec.Site = nil
 				Expect(k8sClient.Create(ctx, conn)).To(Succeed(),
 					"same-provider repeats are ordinary, not an error")
 				defer func() { Expect(k8sClient.Delete(ctx, conn)).To(Succeed()) }()

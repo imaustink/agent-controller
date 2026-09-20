@@ -137,6 +137,41 @@ type ConnectionAPI struct {
 // reaches it (ADR 0038). Several Connections of the same provider are ordinary:
 // two Slack channels are two Connections pointing at the same Secret.
 //
+// ConnectionSite locates the tenant a Connection reads from.
+//
+// Only some providers have one. Confluence does — its API is addressed by a
+// per-site `cloudId` that is not derivable from the URL a human uses — while a
+// Slack channel or a Drive folder is reached without any site-level
+// coordinates.
+type ConnectionSite struct {
+	// baseURL is the site as a HUMAN visits it, including any context path
+	// (Confluence lives under /wiki even on a custom domain).
+	//
+	// This builds CITATIONS, and nothing else. It is deliberately not where API
+	// calls go: an Atlassian OAuth token is rejected by the site host and
+	// accepted only at the gateway, so the two are different addresses for the
+	// same tenant. Getting this wrong yields citations nobody can open, which
+	// for a knowledge base is close to having no citations.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^https://`
+	BaseURL string `json:"baseURL"`
+
+	// cloudId names the Atlassian site directly.
+	//
+	// REQUIRED for a site on a custom domain, and the driver refuses to run
+	// without it. Discovery works by matching baseURL against the addresses the
+	// token reports, and a custom domain never appears there — those are always
+	// the canonical *.atlassian.net form. The tempting fallback of "only one
+	// site is reachable, so use it" is unsafe: nothing has confirmed that site
+	// is this tenant, and a credential issued for another org satisfies it
+	// exactly, pointing the whole Connection at someone else's content.
+	//
+	// Read it from `node apps/connection-broker/scripts/verify-confluence.mjs`.
+	// +optional
+	CloudID string `json:"cloudId,omitempty"`
+}
+
 // Scope validation is per-provider and strict. Each rule is written separately
 // rather than as one disjunction so a mismatch reports which provider it
 // violated.
@@ -144,6 +179,7 @@ type ConnectionAPI struct {
 // +kubebuilder:validation:XValidation:rule="self.provider != 'slack' || (has(self.scope.channel) && !has(self.scope.space) && !has(self.scope.folderID))",message="a slack Connection must set scope.channel and nothing else"
 // +kubebuilder:validation:XValidation:rule="self.provider != 'gdrive' || (has(self.scope.folderID) && !has(self.scope.space) && !has(self.scope.channel))",message="a gdrive Connection must set scope.folderID and nothing else"
 // +kubebuilder:validation:XValidation:rule="!has(self.sync) || self.sync.mode == 'none' || has(self.sync.reconcileInterval)",message="sync.reconcileInterval is required unless sync.mode is none: webhooks are lossy and the reconcile pass is the source of truth"
+// +kubebuilder:validation:XValidation:rule="self.provider != 'confluence' || has(self.site)",message="a confluence Connection must set site.baseURL; citations cannot be built without it"
 type ConnectionSpec struct {
 	// provider selects the driver that knows how to list, fetch, watch and
 	// call this system. Adding a provider is an implementation of the driver
@@ -182,6 +218,11 @@ type ConnectionSpec struct {
 	// scope bounds the resources this Connection reaches. See ConnectionScope.
 	// +required
 	Scope ConnectionScope `json:"scope"`
+
+	// site locates the tenant, for providers that have one. Required for
+	// confluence. See ConnectionSite.
+	// +optional
+	Site *ConnectionSite `json:"site,omitempty"`
 
 	// secretEnv are environment variables sourced from Secret keys in the same
 	// namespace (never literal values), resolved by the connection-broker.

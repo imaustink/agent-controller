@@ -2,17 +2,19 @@
 # site that uses a CUSTOM DOMAIN (wiki.at.bitovi.com rather than
 # bitovi.atlassian.net).
 #
-# Two details here are easy to get wrong and expensive to debug:
+# Two details under `site` are easy to get wrong and expensive to debug:
 #
-#   siteBase keeps the /wiki path. Confluence lives under /wiki even on a
+#   site.baseURL keeps the /wiki path. Confluence lives under /wiki even on a
 #   custom domain, and this base is what citation URLs are built from — get it
 #   wrong and every citation is a link nobody can open.
 #
-#   cloudId is set explicitly. Discovery matches against the canonical
-#   *.atlassian.net address that /oauth/token/accessible-resources reports, so a
-#   custom domain can never match it. The driver copes when only one site is
-#   reachable, but naming it removes the guesswork entirely. Read it from
-#   `node apps/connection-broker/scripts/verify-confluence.mjs SNC`.
+#   site.cloudId is REQUIRED here, not merely advisable. Discovery matches
+#   baseURL against the canonical *.atlassian.net address that
+#   /oauth/token/accessible-resources reports, so a custom domain never matches
+#   and the driver refuses rather than guess. It will not fall back to "the only
+#   site this token can reach": nothing has confirmed that site is this tenant,
+#   and a credential issued for another org fits that description exactly. Read
+#   it from `node apps/connection-broker/scripts/verify-confluence.mjs SNC`.
 apiVersion: core.controller-agent.dev/v1alpha1
 kind: Connection
 metadata:
@@ -34,6 +36,17 @@ spec:
   # a page id outside this space is refused however it was obtained.
   scope:
     space: SNC
+
+  site:
+    # Keeps /wiki. Confluence lives under it even on a custom domain, and this
+    # is what citation URLs are built from — get it wrong and every citation is
+    # a link nobody can open.
+    baseURL: https://wiki.at.bitovi.com/wiki
+    # Not optional for THIS site, even though the field is. Discovery matches
+    # baseURL against the addresses the token reports, which are always the
+    # canonical *.atlassian.net form, so a custom domain never matches and the
+    # driver refuses rather than guessing which tenant it reached.
+    cloudId: 2a2bce9e-5780-4e10-a848-ee82abca0056
 
   # Retrieval is per user: every candidate is probed against the source with the
   # asking user's own token before it can be ranked, prompted or cited

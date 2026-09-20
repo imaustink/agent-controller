@@ -114,6 +114,8 @@ describe("the OAuth gateway", () => {
           : respond(200, page({ _links: { webui: "/x/abc", base: "https://bitovi.atlassian.net/wiki" } }));
     const driver = new ConfluenceDriver({
       siteBaseUrl: "https://wiki.at.bitovi.com/wiki",
+      // Named, because a custom domain can no longer be inferred.
+      cloudId: "canonical",
       gatewayOrigin: GATEWAY,
       fetch: routed,
     });
@@ -146,17 +148,34 @@ describe("the OAuth gateway", () => {
     expect(lookups).toBe(1);
   });
 
-  it("uses the only accessible site when a custom domain cannot match", async () => {
-    // wiki.at.bitovi.com is a custom domain; accessible-resources reports the
-    // canonical bitovi.atlassian.net, so origin equality finds nothing. With
-    // exactly one site there is no ambiguity, and refusing would block the only
-    // tenant there is.
+  it("refuses a custom domain with no cloudId, even when only one site is reachable", async () => {
+    // The origin check has already failed by this point, so nothing has
+    // confirmed the one reachable site is the configured tenant. A credential
+    // provisioned for a DIFFERENT single-tenant org satisfies this case
+    // exactly — and since cloudId is cached for every later caller, trusting it
+    // would point the whole connection at another org with every subsequent
+    // scope check passing against that org's space.
     const driver = new ConfluenceDriver({
       siteBaseUrl: "https://wiki.at.bitovi.com",
       gatewayOrigin: GATEWAY,
       fetch: router(async () => respond(200, page()), {
-        resources: respond(200, [{ id: "canonical-cloud", url: "https://bitovi.atlassian.net" }]),
+        resources: respond(200, [{ id: "someone-elses-cloud", url: "https://other-org.atlassian.net" }]),
       }),
+    });
+
+    await expect(driver.probe({ space: "SNC" }, { delegated: "u" }, "1")).rejects.toBeInstanceOf(
+      PermissionDeniedError,
+    );
+  });
+
+  it("serves a custom domain once its cloudId is named", async () => {
+    // The supported path for a custom domain: one field, which the verify
+    // script prints.
+    const driver = new ConfluenceDriver({
+      siteBaseUrl: "https://wiki.at.bitovi.com/wiki",
+      cloudId: "named-cloud",
+      gatewayOrigin: GATEWAY,
+      fetch: router(async () => respond(200, page())),
     });
 
     const result = await driver.probe({ space: "SNC" }, { delegated: "u" }, "1");
@@ -381,6 +400,31 @@ describe("list", () => {
     expect(cursor).toBe("abc123");
   });
 
+  it("survives a cursor containing a literal +", async () => {
+    // These cursors are base64, whose alphabet includes `+`. Form-decoding the
+    // next link turns that into a space, and list() re-encodes it as %20 — so
+    // the token sent back is not the one Confluence issued, and the walk skips
+    // or 400s partway through a large space.
+    const cursor = "ey+Jd/C9+abc==";
+    const http = vi
+      .fn()
+      .mockResolvedValueOnce(
+        respond(200, {
+          results: [page()],
+          _links: { next: `/wiki/api/v2/pages?limit=3&space-id=${SPACE_ID}&cursor=${cursor}` },
+        }),
+      )
+      .mockResolvedValueOnce(respond(200, { results: [] }));
+
+    const driver = driverWith(http);
+    const { cursor: parsed } = await driver.list({ space: "SNC" }, { service: "svc" }, undefined);
+    expect(parsed).toBe(cursor);
+
+    await driver.list({ space: "SNC" }, { service: "svc" }, parsed);
+    const [resumedUrl] = http.mock.calls[1]!;
+    expect(decodeURIComponent(new URL(resumedUrl).searchParams.get("cursor")!)).toBe(cursor);
+  });
+
   it("ends the walk when no next link comes back", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, { results: [page()] }));
     const { cursor } = await driverWith(http).list({ space: "SNC" }, { service: "svc" }, undefined);
@@ -499,11 +543,22 @@ describe("probe", () => {
 });
 
 describe("error classification", () => {
-  it.each([401, 403, 404])("treats %i as a denial", async (status) => {
+  it.each([403, 404])("treats %i as a denial", async (status) => {
     const http = vi.fn().mockResolvedValue(respond(status));
     await expect(
       driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
     ).rejects.toBeInstanceOf(PermissionDeniedError);
+  });
+
+  it("does NOT treat 401 as a denial, however much it looks like one", async () => {
+    // 403/404 is "this user may not read this page". 401 is "this credential
+    // was rejected" — expired, wrong audience, wrong scope — which says nothing
+    // about what the user may see. Calling it a denial silently shrinks every
+    // answer the moment a token goes stale.
+    const http = vi.fn().mockResolvedValue(respond(401));
+    await expect(
+      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
+    ).rejects.toBeInstanceOf(TransientError);
   });
 
   it.each([429, 500, 503])("treats %i as transient, NOT a denial", async (status) => {

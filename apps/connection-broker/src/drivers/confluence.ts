@@ -175,26 +175,28 @@ export class ConfluenceDriver implements Driver {
     });
     if (match) return match.id;
 
-    // No origin match. Whether that is expected depends on what was configured.
+    // No origin match, and there is no safe way to guess past it.
     //
-    // A CUSTOM DOMAIN can never match, because accessible-resources reports the
-    // canonical *.atlassian.net address. So when a custom domain was configured
-    // and the token reaches exactly one site, there is no ambiguity and
-    // refusing would block the only tenant there is.
+    // A CUSTOM DOMAIN can never match here, because accessible-resources
+    // reports the canonical *.atlassian.net address. An earlier version treated
+    // "custom domain and exactly one reachable site" as unambiguous and used
+    // that site. It is not unambiguous: the origin check has already failed, so
+    // nothing has confirmed the one reachable site is the configured tenant. A
+    // credential provisioned for a DIFFERENT single-tenant org satisfies that
+    // branch exactly, and because cloudId is resolved by whichever token calls
+    // first and then cached for every caller, one such token would point the
+    // whole connection at another org — with every later scope check passing,
+    // because they would all be evaluated against that org's space.
     //
-    // A canonical *.atlassian.net URL that does not match is a different story:
-    // both sides are canonical, so they should have matched, and a mismatch
-    // means the credential is for a DIFFERENT site. Accepting it there would
-    // read another tenant's content while every scope check still passed — so
-    // that case keeps refusing however few sites are reachable.
-    const configuredCanonical = new URL(this.siteBaseUrl).hostname.endsWith(".atlassian.net");
-    if (available.length === 1 && !configuredCanonical) return available[0]!.id;
-
+    // So a custom domain must name its cloudId. It is one field, the verify
+    // script prints it, and the alternative is trusting an unverified tenant.
     throw new PermissionDeniedError(
       available.length === 0
         ? `this credential reaches no Atlassian site; the app may not be installed on ${wanted}`
         : `this credential does not reach ${wanted} (${available.length} site(s) available); ` +
-          `if ${wanted} is a custom domain, set the connection's cloudId explicitly`,
+          `if ${wanted} is a custom domain, set the connection's cloudId explicitly — ` +
+          `it cannot be inferred, because a custom domain never matches the canonical ` +
+          `address this endpoint reports`,
     );
   }
 
@@ -428,7 +430,15 @@ export class ConfluenceDriver implements Driver {
 
     // The distinction that must not be blurred (docs/adr/0040): 403/404 is a
     // drop, anything else is "we could not find out".
-    if (response.status === 401 || response.status === 403 || response.status === 404) {
+    //
+    // 401 is deliberately NOT a drop, though it looks like one. Confluence
+    // answers 403/404 for a page this USER may not read; a 401 means the
+    // CREDENTIAL was rejected — expired, wrong audience, wrong scope — which
+    // says nothing about what the user may see. Treating it as a denial would
+    // silently shrink every answer the moment a token went stale, and report it
+    // as a routine per-page denial. This PR chased `401 scope does not match`
+    // for hours precisely because a systemic failure wore a per-resource face.
+    if (response.status === 403 || response.status === 404) {
       throw new PermissionDeniedError(`confluence returned ${response.status}${detail}`);
     }
     throw new TransientError(`confluence returned ${response.status}${detail}`);
@@ -475,9 +485,23 @@ async function describeFailure(response: { text?: () => Promise<string> }): Prom
  */
 function nextCursor(next: string | undefined): Cursor {
   if (!next) return undefined;
+
+  // Read out of the RAW query string rather than through URLSearchParams.
+  // `searchParams.get` form-decodes, which turns a literal `+` into a space —
+  // and these cursors are base64, whose alphabet includes `+`. `list` re-encodes
+  // with encodeURIComponent, so a form-decoded cursor would go back as `%20`
+  // and no longer be the token Confluence issued: the walk skips or 400s
+  // partway through a space, which is the kind of bug that only appears on
+  // corpora large enough to paginate.
+  const raw = /[?&]cursor=([^&]*)/.exec(next)?.[1];
+  if (raw === undefined || raw === "") return undefined;
   try {
-    return new URL(next, "https://example.invalid").searchParams.get("cursor") ?? undefined;
+    // Percent-escapes still have to come off; only the `+`-as-space rule is
+    // wrong here, and decodeURIComponent does not apply it.
+    return decodeURIComponent(raw);
   } catch {
+    // A malformed escape is not worth failing a sync over; ending the walk is
+    // the conservative read, since reconcile only deletes on a FULL pass.
     return undefined;
   }
 }
