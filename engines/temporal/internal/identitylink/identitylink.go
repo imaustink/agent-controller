@@ -109,6 +109,15 @@ type Port interface {
 	// turn then succeeded 0.3s later off the same record (ADR 0031).
 	LinkedLogin(ctx context.Context, provider, subject string) (string, error)
 
+	// LinkedAccountID answers the same question as LinkedLogin for a provider
+	// that has no login to report — its own account id.
+	//
+	// Separate from LinkedLogin because the two are not interchangeable: a
+	// GitHub login is the thing principal resolution reads (ADR 0029), while an
+	// account id is provenance that nothing keys on. Folding them into one
+	// accessor would invite keying on whichever happened to come back.
+	LinkedAccountID(ctx context.Context, provider, subject string) (string, error)
+
 	// Poll advances a device flow.
 	Poll(ctx context.Context, provider, subject, deviceCode string) (string, error)
 
@@ -310,6 +319,27 @@ func (c *Client) LinkedLogin(ctx context.Context, provider, subject string) (str
 		return "", nil
 	}
 	return out.GitHubLogin, nil
+}
+
+// LinkedAccountID reads the provider-side account id the gateway reports for a
+// non-GitHub link.
+//
+// The gateway has always returned this; nothing here could read it, so an
+// Atlassian link looked identity-less to the engine.
+func (c *Client) LinkedAccountID(ctx context.Context, provider, subject string) (string, error) {
+	var out struct {
+		AccountID string `json:"accountId"`
+	}
+	status, err := c.do(ctx, http.MethodGet,
+		"/identity-link/"+url.PathEscape(provider)+"/identity?subject="+url.QueryEscape(subject),
+		nil, &out)
+	if err != nil {
+		return "", err
+	}
+	if status == http.StatusNotFound {
+		return "", nil
+	}
+	return out.AccountID, nil
 }
 
 func (c *Client) Poll(ctx context.Context, provider, subject, deviceCode string) (string, error) {

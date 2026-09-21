@@ -22,6 +22,9 @@ type Fake struct {
 	tokens map[string]map[string]Token
 	// urls is provider -> the link URL to hand a user.
 	urls map[string]string
+	// accountIDs is provider/subject -> the provider-side identity a link
+	// established, for providers that report an account id rather than a login.
+	accountIDs map[string]string
 
 	// StartErr, when set for a provider, makes Start fail — the pre-flight's
 	// degrade-not-block behaviour is only testable if a start can fail.
@@ -118,6 +121,22 @@ func (f *Fake) LinkedLogin(_ context.Context, provider, subject string) (string,
 		return "", err
 	}
 	return f.tokens[provider][subject].GitHubLogin, nil
+}
+
+func (f *Fake) LinkedAccountID(_ context.Context, provider, subject string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.accountIDs[provider+"/"+subject], nil
+}
+
+// SetAccountID records the provider-side identity a link established.
+func (f *Fake) SetAccountID(provider, subject, accountID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.accountIDs == nil {
+		f.accountIDs = map[string]string{}
+	}
+	f.accountIDs[provider+"/"+subject] = accountID
 }
 
 func (f *Fake) Poll(_ context.Context, provider, subject, _ string) (string, error) {
