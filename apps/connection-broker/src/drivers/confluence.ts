@@ -523,7 +523,7 @@ function citationUrl(page: ConfluencePage, siteBaseUrl: string): string {
  * parser dependency into a security-sensitive service.
  */
 export function storageToMarkdown(storage: string): string {
-  return storage
+  return dropNonProse(storage)
     .replace(/<h([1-6])[^>]*>(.*?)<\/h\1>/gis, (_m, level: string, text: string) =>
       `\n${"#".repeat(Number(level))} ${stripTags(text)}\n`,
     )
@@ -535,8 +535,52 @@ export function storageToMarkdown(storage: string): string {
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
+    // Storage format is indented XML, so stripping tags leaves the indentation
+    // behind as runs of spaces on every line. Harmless to read, but it is
+    // embedded and it counts against the chunk budget.
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+/**
+ * Removes the elements whose CONTENT is machine configuration rather than
+ * writing, before tag-stripping turns that content into prose.
+ *
+ * Found by running the converter against a real page: a panel macro put
+ * `#E3FCEF` — its background colour — at the top of the extracted text, which
+ * then got embedded as though it were something the client had written. Macro
+ * parameters, attachment and page references, and layout ids are all like this:
+ * they sit inside elements, so removing the tags alone promotes them to body
+ * text. Every one of them costs vector quality and chunk budget.
+ *
+ * Whole elements are dropped, content included, rather than being filtered
+ * afterwards. There is no way to tell `#E3FCEF` from a legitimate mention of a
+ * colour once the markup is gone.
+ */
+function dropNonProse(storage: string): string {
+  return (
+    storage
+      // Macro configuration: colours, ids, widths, sort orders.
+      .replace(/<ac:parameter\b[^>]*>[\s\S]*?<\/ac:parameter>/gi, "")
+      // Task bookkeeping. The task BODY is writing and must survive; its id and
+      // status are not, and tag-stripping alone turns them into a stray "11"
+      // and "incomplete" sitting in the middle of a sentence.
+      .replace(/<ac:task-(id|status)\b[^>]*>[\s\S]*?<\/ac:task-\1>/gi, "")
+      // Editor placeholder text — prompts from the template, never authored.
+      .replace(/<ac:placeholder\b[^>]*>[\s\S]*?<\/ac:placeholder>/gi, "")
+      // Resource references — attachment filenames, space keys, user keys.
+      .replace(/<ri:[^>]*\/>/gi, "")
+      .replace(/<ri:[^>]*>[\s\S]*?<\/ri:[^>]*>/gi, "")
+      // ADF macro configuration. NOT ac:layout-section or ac:layout-cell, which
+      // look like structure but CONTAIN the page body — dropping those would
+      // silently empty every page that uses a layout, which is most of them.
+      .replace(/<ac:(adf-attribute|adf-parameter)\b[^>]*>[\s\S]*?<\/ac:\1>/gi, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+  );
 }
 
 const stripTags = (html: string): string => html.replace(/<[^>]+>/g, "").trim();

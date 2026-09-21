@@ -678,3 +678,78 @@ describe("storageToMarkdown", () => {
     expect(storageToMarkdown("<p>a &amp; b &lt;c&gt;</p>")).toBe("a & b <c>");
   });
 });
+
+describe("storageToMarkdown against real Confluence storage format", () => {
+  it("drops macro parameters, which are configuration rather than writing", () => {
+    // Found by running the converter against a real page: a panel macro put
+    // its background colour at the top of the extracted text, where it was
+    // embedded as though the client had written it.
+    const markdown = storageToMarkdown(
+      '<ac:structured-macro ac:name="panel">' +
+        '<ac:parameter ac:name="bgColor">#E3FCEF</ac:parameter>' +
+        "<ac:rich-text-body><h2>Welcome</h2><p>Real content.</p></ac:rich-text-body>" +
+        "</ac:structured-macro>",
+    );
+
+    expect(markdown).not.toContain("#E3FCEF");
+    expect(markdown).toContain("## Welcome");
+    expect(markdown).toContain("Real content.");
+  });
+
+  it("KEEPS the content of layout cells, which hold the page body", () => {
+    // ac:layout-cell looks like structure but contains the writing. Dropping it
+    // the way ac:parameter is dropped would silently empty most pages.
+    const markdown = storageToMarkdown(
+      "<ac:layout><ac:layout-section ac:type=\"two_equal\"><ac:layout-cell>" +
+        "<p>Left column text.</p></ac:layout-cell><ac:layout-cell>" +
+        "<p>Right column text.</p></ac:layout-cell></ac:layout-section></ac:layout>",
+    );
+
+    expect(markdown).toContain("Left column text.");
+    expect(markdown).toContain("Right column text.");
+  });
+
+  it("drops resource references, which are filenames and keys", () => {
+    const markdown = storageToMarkdown(
+      '<p>See <ac:image><ri:attachment ri:filename="diagram-v3-FINAL.png" /></ac:image> here.</p>',
+    );
+    expect(markdown).not.toContain("diagram-v3-FINAL.png");
+    expect(markdown).toContain("See");
+  });
+
+  it("collapses the indentation storage format carries", () => {
+    // Stripping tags from indented XML leaves runs of spaces on every line,
+    // which are embedded and count against the chunk budget.
+    const markdown = storageToMarkdown("<p>\n        Indented sentence.\n      </p>");
+    expect(markdown).toBe("Indented sentence.");
+  });
+
+  it("leaves a genuine mention of a colour alone", () => {
+    // The reason whole elements are dropped rather than filtered afterwards:
+    // once the markup is gone there is no telling the two apart.
+    expect(storageToMarkdown("<p>Use #E3FCEF for the banner.</p>")).toBe("Use #E3FCEF for the banner.");
+  });
+});
+
+describe("storageToMarkdown task lists", () => {
+  it("keeps the task text but not its id and status", () => {
+    // Found on a real page: tag-stripping alone left a stray "11" and
+    // "incomplete" sitting in the middle of the extracted prose.
+    const markdown = storageToMarkdown(
+      "<ac:task-list><ac:task><ac:task-id>11</ac:task-id>" +
+        "<ac:task-status>incomplete</ac:task-status>" +
+        "<ac:task-body>Click the edit icon</ac:task-body></ac:task></ac:task-list>",
+    );
+
+    expect(markdown).toContain("Click the edit icon");
+    expect(markdown).not.toMatch(/\bincomplete\b/);
+    expect(markdown).not.toMatch(/\b11\b/);
+  });
+
+  it("drops editor placeholder prompts, which nobody authored", () => {
+    const markdown = storageToMarkdown(
+      "<p><ac:placeholder>Type your notes here</ac:placeholder>Actual note.</p>",
+    );
+    expect(markdown).toBe("Actual note.");
+  });
+});
