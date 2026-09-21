@@ -28,6 +28,10 @@ import (
 	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 )
 
+// providerSlack is the provider name these specs switch a fixture to. A
+// constant only because it now appears in several specs.
+const providerSlack = "slack"
+
 // confluenceConnection is a minimal valid Connection; each test mutates its
 // own copy rather than sharing one across specs.
 func confluenceConnection(name string) *corev1alpha1.Connection {
@@ -54,6 +58,26 @@ var _ = Describe("Connection Controller", func() {
 	// to fail at ADMISSION rather than be caught by a driver at run time. These
 	// specs exercise the CEL rules that make that true.
 	Context("scope validation", func() {
+		It("refuses autoJoin on a non-slack connection", func() {
+			// Joining is a Slack-shaped action and the only WRITE any driver
+			// performs. Silently ignoring it elsewhere would leave an operator
+			// believing they had enabled something.
+			conn := confluenceConnection("autojoin-wrong-provider")
+			conn.Spec.AutoJoin = true
+			Expect(k8sClient.Create(ctx, conn)).To(
+				MatchError(ContainSubstring("autoJoin is only meaningful for a slack Connection")))
+		})
+
+		It("accepts autoJoin on a slack connection", func() {
+			conn := confluenceConnection("autojoin-slack")
+			conn.Spec.Provider = providerSlack
+			conn.Spec.Scope = corev1alpha1.ConnectionScope{Channel: "C123ABC"}
+			conn.Spec.Site = nil
+			conn.Spec.AutoJoin = true
+			Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, conn)).To(Succeed())
+		})
+
 		It("refuses a confluence connection with no site, which cannot be cited", func() {
 			// baseURL is what every citation URL is built from. Without it the
 			// connection can be ingested and then only ever cited as links
@@ -73,7 +97,7 @@ var _ = Describe("Connection Controller", func() {
 		It("accepts two slack connections over the same channel-less secret", func() {
 			for _, name := range []string{"snc-slack-eng", "snc-slack-general"} {
 				conn := confluenceConnection(name)
-				conn.Spec.Provider = "slack"
+				conn.Spec.Provider = providerSlack
 				conn.Spec.Scope = corev1alpha1.ConnectionScope{Channel: "C" + name}
 				// A Slack channel is reached without site-level coordinates.
 				conn.Spec.Site = nil
@@ -85,7 +109,7 @@ var _ = Describe("Connection Controller", func() {
 
 		It("rejects a slack connection scoped to a confluence space", func() {
 			conn := confluenceConnection("scope-wrong-kind")
-			conn.Spec.Provider = "slack"
+			conn.Spec.Provider = providerSlack
 			// Scope left as {Space: "SNC"} — the wrong shape for slack.
 			Expect(k8sClient.Create(ctx, conn)).To(
 				MatchError(ContainSubstring("a slack Connection must set scope.channel")))

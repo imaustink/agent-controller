@@ -180,6 +180,7 @@ type ConnectionSite struct {
 // +kubebuilder:validation:XValidation:rule="self.provider != 'gdrive' || (has(self.scope.folderID) && !has(self.scope.space) && !has(self.scope.channel))",message="a gdrive Connection must set scope.folderID and nothing else"
 // +kubebuilder:validation:XValidation:rule="!has(self.sync) || self.sync.mode == 'none' || has(self.sync.reconcileInterval)",message="sync.reconcileInterval is required unless sync.mode is none: webhooks are lossy and the reconcile pass is the source of truth"
 // +kubebuilder:validation:XValidation:rule="self.provider != 'confluence' || has(self.site)",message="a confluence Connection must set site.baseURL; citations cannot be built without it"
+// +kubebuilder:validation:XValidation:rule="!has(self.autoJoin) || !self.autoJoin || self.provider == 'slack'",message="autoJoin is only meaningful for a slack Connection"
 type ConnectionSpec struct {
 	// provider selects the driver that knows how to list, fetch, watch and
 	// call this system. Adding a provider is an implementation of the driver
@@ -223,6 +224,26 @@ type ConnectionSpec struct {
 	// confluence. See ConnectionSite.
 	// +optional
 	Site *ConnectionSite `json:"site,omitempty"`
+
+	// autoJoin lets the ingestion credential add itself to the scoped Slack
+	// channel when a read is refused for want of membership.
+	//
+	// Off by default, because joining is a WRITE: it changes workspace state
+	// and posts a visible "joined the channel" event. Turning it on also
+	// requires the `channels:join` scope on the bot token, which is the one
+	// scope here that is not read-only.
+	//
+	// The alternative is inviting the app by hand in every channel, which is
+	// the kind of toil that eventually pressures somebody into granting far
+	// broader scopes instead. This is the narrower answer: one extra scope,
+	// used lazily, and only ever against the channel in scope.
+	//
+	// It never applies to a retrieval probe. A probe asks whether a USER may
+	// read something, and joining on their behalf would change that answer
+	// rather than report it — as well as adding them to a channel they never
+	// asked to join, and announcing it.
+	// +optional
+	AutoJoin bool `json:"autoJoin,omitempty"`
 
 	// secretEnv are environment variables sourced from Secret keys in the same
 	// namespace (never literal values), resolved by the connection-broker.

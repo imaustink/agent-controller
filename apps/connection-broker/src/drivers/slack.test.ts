@@ -178,3 +178,107 @@ describe("error classification", () => {
     await expect(driver(http).probe(SCOPE, { delegated: "u" })).rejects.toBeInstanceOf(TransientError);
   });
 });
+
+describe("auto join", () => {
+  const joining = (http: FetchLike) =>
+    new SlackDriver({ fetch: http, workspaceUrl: "https://bitovi.slack.com", autoJoin: true });
+
+  /** Refuses the first read for want of membership, then succeeds. */
+  function refuseThenAllow() {
+    let joined = false;
+    const calls: string[] = [];
+    const http = vi.fn(async (url: string) => {
+      calls.push(new URL(url).pathname.split("/").pop()!);
+      if (url.includes("conversations.join")) {
+        joined = true;
+        return respond({ ok: true, channel: { id: "C123ABC" } });
+      }
+      if (!joined) return respond({ ok: false, error: "not_in_channel" });
+      return respond({ ok: true, messages: [message("1.1")] });
+    });
+    return { http: http as unknown as FetchLike, calls };
+  }
+
+  it("joins and retries when a read is refused for want of membership", async () => {
+    const { http, calls } = refuseThenAllow();
+
+    const { resources } = await joining(http).list(SCOPE, { service: "xoxb" }, undefined);
+
+    expect(resources).toHaveLength(1);
+    expect(calls).toEqual(["conversations.history", "conversations.join", "conversations.history"]);
+  });
+
+  it("does not join when the read already works", async () => {
+    const http = vi.fn().mockResolvedValue(respond({ ok: true, messages: [message("1.1")] }));
+    await joining(http).list(SCOPE, { service: "xoxb" }, undefined);
+
+    // Lazy on purpose: the ordinary path stays read-only, so a connection whose
+    // channel we are already in never writes anything.
+    expect(http.mock.calls.some(([url]) => (url as string).includes("conversations.join"))).toBe(false);
+  });
+
+  it("does not join at all when the Connection did not ask for it", async () => {
+    const { http, calls } = refuseThenAllow();
+
+    await expect(driver(http).list(SCOPE, { service: "xoxb" }, undefined)).rejects.toBeInstanceOf(
+      PermissionDeniedError,
+    );
+    expect(calls).toEqual(["conversations.history"]);
+  });
+
+  it("retries exactly once, then gives up", async () => {
+    // Still refused after a successful join: the refusal is about something
+    // else, and repeating would spin against Slack with a credential that is
+    // not going to start working.
+    const http = vi.fn(async (url: string) =>
+      url.includes("conversations.join")
+        ? respond({ ok: true })
+        : respond({ ok: false, error: "not_in_channel" }),
+    );
+
+    await expect(
+      joining(http as unknown as FetchLike).list(SCOPE, { service: "xoxb" }, undefined),
+    ).rejects.toBeInstanceOf(PermissionDeniedError);
+    expect(http.mock.calls.filter(([url]) => (url as string).includes("conversations.join"))).toHaveLength(1);
+  });
+
+  it("never joins on a PROBE, whatever the Connection says", async () => {
+    const http = vi.fn(async (url: string) =>
+      url.includes("conversations.join")
+        ? respond({ ok: true })
+        : respond({ ok: false, error: "not_in_channel" }),
+    );
+
+    // A probe asks whether a USER may read something. Joining on their behalf
+    // changes the answer rather than reporting it, adds them to a channel they
+    // never asked to join, and announces it to everyone in it.
+    await expect(
+      joining(http as unknown as FetchLike).probe(SCOPE, { delegated: "xoxp" }),
+    ).rejects.toBeInstanceOf(PermissionDeniedError);
+    expect(http.mock.calls.some(([url]) => (url as string).includes("conversations.join"))).toBe(false);
+  });
+
+  it("does not try to join a channel it cannot see", async () => {
+    // channel_not_found covers both "does not exist" and "private, invisible to
+    // us". Joining either is a request that cannot succeed.
+    const http = vi.fn().mockResolvedValue(respond({ ok: false, error: "channel_not_found" }));
+
+    await expect(
+      joining(http).list(SCOPE, { service: "xoxb" }, undefined),
+    ).rejects.toBeInstanceOf(PermissionDeniedError);
+    expect(http.mock.calls.some(([url]) => (url as string).includes("conversations.join"))).toBe(false);
+  });
+
+  it("joins only the channel in scope", async () => {
+    const { http, calls } = refuseThenAllow();
+    await joining(http).list(SCOPE, { service: "xoxb" }, undefined);
+    void calls;
+
+    // The id comes from the Connection CR, never from a caller, so this cannot
+    // be steered into joining anything else.
+    const joinCall = (http as unknown as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      (url as string).includes("conversations.join"),
+    );
+    expect(new URL(joinCall![0] as string).searchParams.get("channel")).toBe("C123ABC");
+  });
+});

@@ -22,6 +22,16 @@ export interface SlackDriverOptions {
   apiOrigin?: string;
   /** The workspace domain, for citation permalinks when Slack does not supply one. */
   workspaceUrl?: string;
+  /**
+   * Join the scoped channel automatically when a read is refused for want of
+   * membership.
+   *
+   * Off unless a Connection asks for it. Joining is a WRITE — it changes
+   * workspace state and posts a visible "joined the channel" event — so it is
+   * an operator's decision rather than a default, and it needs the extra
+   * `channels:join` scope on the bot token.
+   */
+  autoJoin?: boolean;
 }
 
 interface SlackMessage {
@@ -54,12 +64,14 @@ export class SlackDriver implements Driver {
   private readonly pageSize: number;
   private readonly apiOrigin: string;
   private readonly workspaceUrl: string | undefined;
+  private readonly autoJoin: boolean;
 
   constructor(options: SlackDriverOptions = {}) {
     this.http = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
     this.pageSize = options.pageSize ?? 100;
     this.apiOrigin = (options.apiOrigin ?? "https://slack.com/api").replace(/\/+$/, "");
     this.workspaceUrl = options.workspaceUrl?.replace(/\/+$/, "");
+    this.autoJoin = options.autoJoin ?? false;
   }
 
   validateScope(scope: Scope): void {
@@ -89,7 +101,7 @@ export class SlackDriver implements Driver {
     this.validateScope(scope);
     const token = requireToken(credentials.service);
 
-    const body = (await this.call("conversations.history", token, {
+    const body = (await this.callJoining("conversations.history", token, scope, {
       channel: scope.channel!,
       limit: String(this.pageSize),
       // Slack's cursor for "changed since" is a message timestamp. Carried
@@ -118,7 +130,7 @@ export class SlackDriver implements Driver {
     this.validateScope(scope);
     const token = requireToken(credentials.delegated ?? credentials.service);
 
-    const body = (await this.call("conversations.replies", token, {
+    const body = (await this.callJoining("conversations.replies", token, scope, {
       channel: scope.channel!,
       ts: id,
       limit: String(this.pageSize),
@@ -146,6 +158,11 @@ export class SlackDriver implements Driver {
 
     // The channel IS the access unit. If this user can see the channel, they
     // can see every message in it, so no message id is needed or used.
+    //
+    // Deliberately NOT the joining path. A probe asks whether this USER may
+    // read something; joining on their behalf would change the answer instead
+    // of reporting it, add them to a channel they never asked to join, and
+    // announce it to everyone in that channel.
     const body = (await this.call("conversations.info", credentials.delegated, {
       channel: scope.channel!,
     })) as { channel?: { name?: string; is_archived?: boolean } };
@@ -159,6 +176,36 @@ export class SlackDriver implements Driver {
       // marker, so claiming one would be inventing a guarantee.
       version: undefined,
     };
+  }
+
+  /**
+   * A read that may first have to join the channel.
+   *
+   * LAZY on purpose: the join is attempted only after Slack has actually
+   * refused for want of membership, so the ordinary path stays read-only and a
+   * connection whose channel we are already in never writes anything.
+   *
+   * Retried exactly ONCE. If the read still fails after a successful join, the
+   * refusal is about something else and repeating would spin against Slack with
+   * a credential that is not going to start working.
+   */
+  private async callJoining(
+    method: string,
+    token: string,
+    scope: Scope,
+    params: Record<string, string>,
+  ): Promise<unknown> {
+    try {
+      return await this.call(method, token, params);
+    } catch (err) {
+      if (!this.autoJoin || !isNotInChannel(err)) throw err;
+
+      // Only ever the channel this connection is SCOPED to. The id comes from
+      // the Connection CR, never from a caller, so this cannot be steered into
+      // joining anything else.
+      await this.call("conversations.join", token, { channel: scope.channel! });
+      return this.call(method, token, params);
+    }
   }
 
   /**
@@ -292,6 +339,18 @@ const PERMANENT = new Set([
 function requireToken(token: string | undefined): string {
   if (!token) throw new Error("no credential supplied for a slack request");
   return token;
+}
+
+/**
+ * Whether Slack refused because we are not in the channel.
+ *
+ * Matched on the error string Slack returns, which is carried verbatim into the
+ * message. `channel_not_found` is deliberately NOT treated as joinable: Slack
+ * returns it both for a channel that does not exist and for a private one we
+ * cannot see, and attempting to join either is a request that cannot succeed.
+ */
+function isNotInChannel(err: unknown): boolean {
+  return err instanceof PermissionDeniedError && err.message.includes("not_in_channel");
 }
 
 const firstLine = (text: string): string => text.split("\n")[0]?.slice(0, 120).trim() ?? "";

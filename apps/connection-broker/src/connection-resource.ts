@@ -26,6 +26,8 @@ export interface ConnectionCustomResource {
     allowedRoles?: string[];
     scope: { space?: string; channel?: string; folderID?: string };
     site?: { baseURL: string; cloudId?: string };
+    /** Slack only: join the scoped channel rather than requiring a manual invite. */
+    autoJoin?: boolean;
     secretEnv?: { name: string; secretRef: { name: string; key: string } }[];
     sync?: { mode?: string; reconcileInterval?: string };
   };
@@ -100,7 +102,12 @@ function driverFor(name: string, spec: ConnectionCustomResource["spec"]): Driver
     }
     case "slack":
       // No site coordinates: a channel is reached by id alone.
-      return new SlackDriver({ workspaceUrl: spec.site?.baseURL });
+      return new SlackDriver({
+        workspaceUrl: spec.site?.baseURL,
+        // An operator's decision, never a default: joining is the one write
+        // this driver can perform.
+        autoJoin: spec.autoJoin ?? false,
+      });
 
     case "gdrive":
       return new GDriveDriver();
