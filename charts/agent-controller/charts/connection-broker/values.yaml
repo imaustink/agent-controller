@@ -1,0 +1,82 @@
+replicaCount: 1
+
+image:
+  repository: connection-broker
+  # Defaults to .Chart.AppVersion if empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # This app DOES talk to the k8s API: it watches Connection CRs and reads the
+  # Secrets they name, so the token is mounted and rbac.yaml grants exactly
+  # those two things.
+  create: true
+  annotations: {}
+  name: ""
+  automount: true
+
+rbac:
+  # Namespace-scoped, and deliberately narrow. The broker can read Connections
+  # and the Secrets those Connections reference — it never writes either, and
+  # never sees any other kind of object. It is the process holding every
+  # client's third-party credentials, so its cluster reach is the thing most
+  # worth keeping small.
+  create: true
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# The credential the orchestrator presents to probe on a user's behalf. It can
+# NEVER cause a connection's service credential to be spent (docs/adr/0038 §3).
+orchestratorTokenSecret:
+  name: connection-broker-auth
+  key: orchestratorToken
+
+# Per-connection sync tokens, exposed as SYNC_TOKEN_<CONNECTION>. One token per
+# connection rather than one for all of them, so a leaked sync credential
+# reaches one client's source instead of every client's.
+syncTokenSecret:
+  name: connection-broker-sync-tokens
+
+# Indexing. With either of these unset the broker serves the API only and does
+# not index — a real arrangement (another process may own ingestion), which is
+# why it starts rather than exits.
+qdrant:
+  url: ""
+  apiKeySecret:
+    name: ""
+    key: apiKey
+
+embeddings:
+  # Must match whatever the engines embed with: a knowledge base merges scores
+  # from several collections as if directly comparable, which holds only when
+  # every collection was built by the same model.
+  model: text-embedding-3-small
+  apiKeySecret:
+    name: ""
+    key: apiKey
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: true

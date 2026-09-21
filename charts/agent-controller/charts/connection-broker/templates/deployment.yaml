@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "connection-broker.fullname" . }}
+  labels: {{- include "connection-broker.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {{- include "connection-broker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "connection-broker.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "connection-broker.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: connection-broker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.service.port | quote }}
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Refused at startup rather than on the first request: a broker
+            # without this accepts nothing and looks like a networking fault.
+            - name: ORCHESTRATOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.orchestratorTokenSecret.name }}
+                  key: {{ .Values.orchestratorTokenSecret.key }}
+            {{- if .Values.qdrant.url }}
+            - name: QDRANT_URL
+              value: {{ .Values.qdrant.url | quote }}
+            {{- end }}
+            {{- if .Values.qdrant.apiKeySecret.name }}
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.qdrant.apiKeySecret.name }}
+                  key: {{ .Values.qdrant.apiKeySecret.key }}
+            {{- end }}
+            - name: EMBEDDING_MODEL
+              value: {{ .Values.embeddings.model | quote }}
+            {{- if .Values.embeddings.apiKeySecret.name }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.embeddings.apiKeySecret.name }}
+                  key: {{ .Values.embeddings.apiKeySecret.key }}
+            {{- end }}
+          {{- if .Values.syncTokenSecret.name }}
+          # Every key becomes SYNC_TOKEN_<CONNECTION>. One token per connection,
+          # so a leaked sync credential reaches one client's source rather than
+          # every client's.
+          envFrom:
+            - secretRef:
+                name: {{ .Values.syncTokenSecret.name }}
+                optional: true
+          {{- end }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          # No readiness probe path is exposed by the server, so fall back to a
+          # TCP check rather than inventing an endpoint the app does not serve.
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -200,6 +200,19 @@ describe("indexed", () => {
     expect(indexed.map((c) => c.contentHash)).toEqual(["a", "b"]);
   });
 
+  it("reports nothing indexed for a collection that does not exist yet", async () => {
+    const client = fakeQdrant({
+      collectionExists: vi.fn().mockResolvedValue(false),
+      scroll: vi.fn().mockRejectedValue(new Error("404 Collection doesn't exist")),
+    });
+
+    // The state EVERY connection is in on its first sync: syncConnection asks
+    // what is indexed before writing anything, so a propagating 404 means a new
+    // Connection can never complete a first pass.
+    expect(await writer(client).indexed(COLLECTION)).toEqual([]);
+    expect(client.scroll).not.toHaveBeenCalled();
+  });
+
   it("asks for no vectors, which are the bulk of a point", async () => {
     const client = fakeQdrant();
     await writer(client).indexed(COLLECTION);

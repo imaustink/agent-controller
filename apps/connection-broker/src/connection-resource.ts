@@ -16,9 +16,16 @@ export interface ConnectionCustomResource {
   spec: {
     provider: string;
     displayName?: string;
+    /**
+     * Carried for one reason: the broker stamps these onto every chunk it
+     * writes. It never evaluates them — deciding who may retrieve is the
+     * orchestrator's job, and the broker must not grow opinions about it.
+     */
+    allowedRoles?: string[];
     scope: { space?: string; channel?: string; folderID?: string };
     site?: { baseURL: string; cloudId?: string };
     secretEnv?: { name: string; secretRef: { name: string; key: string } }[];
+    sync?: { mode?: string; reconcileInterval?: string };
   };
   status?: { collection?: string };
 }
@@ -67,6 +74,7 @@ export async function toBinding(
     name,
     driver: driverFor(name, spec),
     scope,
+    allowedRoles: spec.allowedRoles ?? [],
     serviceToken,
   };
 }
@@ -117,6 +125,30 @@ async function resolveServiceToken(
     );
   }
   return value;
+}
+
+/**
+ * How often this Connection's full reconcile runs, in milliseconds.
+ *
+ * `undefined` means "do not schedule": mode `none` indexes nothing and exists
+ * only for the GET face. A missing interval on any other mode is a CR that
+ * should not have passed admission (a CEL rule requires it), so it is treated
+ * as unschedulable rather than defaulted — a default here would silently
+ * reconcile on a cadence nobody chose.
+ */
+export function reconcileIntervalMs(cr: ConnectionCustomResource): number | undefined {
+  const sync = cr.spec.sync;
+  if (!sync || sync.mode === "none") return undefined;
+  return parseDuration(sync.reconcileInterval);
+}
+
+/** Parses a Go-style duration ("6h", "30m", "90s") into milliseconds. */
+export function parseDuration(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const match = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/.exec(value.trim());
+  if (!match) return undefined;
+  const scale = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[match[2] as "ms" | "s" | "m" | "h"];
+  return Number(match[1]) * scale;
 }
 
 /**

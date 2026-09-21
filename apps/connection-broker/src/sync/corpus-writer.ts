@@ -90,6 +90,14 @@ export class QdrantCorpusWriter implements CorpusWriter {
    * far the larger half of a point.
    */
   async indexed(collection: string): Promise<IndexedChunk[]> {
+    // A collection that does not exist has nothing indexed, which is the true
+    // answer rather than an error. It is also the state EVERY connection is in
+    // on its first sync: syncConnection asks what is indexed before it writes
+    // anything, so letting the 404 propagate means a new Connection can never
+    // complete a first pass at all. Safe for reconcile, which cannot delete
+    // what it was never told about.
+    if (!(await this.client.collectionExists(collection))) return [];
+
     const out: IndexedChunk[] = [];
     let offset: string | number | undefined;
 

@@ -8,6 +8,15 @@ export interface ConnectionBinding {
   name: string;
   driver: Driver;
   scope: Scope;
+  /**
+   * Roles a caller must hold to retrieve this connection's chunks.
+   *
+   * The broker does not enforce these — retrieval RBAC is the orchestrator's —
+   * but it WRITES them onto every point it indexes, because a KnowledgeBase
+   * mixes connections of differing sensitivity into one search and the filter
+   * has to be evaluable on the point itself (ADR 0039 §4).
+   */
+  allowedRoles: string[];
   /** Ingestion credential. Never handed to a request-path caller (see auth.ts). */
   serviceToken: string;
 }

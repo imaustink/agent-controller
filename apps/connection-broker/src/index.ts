@@ -1,0 +1,155 @@
+/**
+ * The connection-broker process.
+ *
+ * Two jobs in one Deployment, both of which need the same third-party
+ * credentials and neither of which may hold cluster RBAC (ADR 0038 §3):
+ *
+ *   - Serves the HTTP API: per-user authorization probes for retrieval, and
+ *     listing/fetch for ingestion.
+ *   - Runs each Connection's reconcile pass on its own schedule.
+ */
+import * as k8s from "@kubernetes/client-node";
+import { createBrokerServer } from "./server.js";
+import { CrdConnectionRegistry } from "./crd-connection-registry.js";
+import { collectionOf, reconcileIntervalMs, type ConnectionCustomResource } from "./connection-resource.js";
+import { EMBEDDING_DIMENSIONS, OpenAIEmbedder } from "./embedder.js";
+import { QdrantCorpusWriter } from "./sync/corpus-writer.js";
+import { HttpResourceSource } from "./sync/http-source.js";
+import { SyncScheduler } from "./sync/scheduler.js";
+import { QdrantHttpClient } from "./sync/qdrant-client.js";
+
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    // Fail at startup rather than on the first request. A broker running
+    // without its orchestrator token would accept nothing and look like a
+    // networking problem.
+    console.error(`${name} is required`);
+    process.exit(1);
+  }
+  return value;
+}
+
+async function main(): Promise<void> {
+  const namespace = process.env.NAMESPACE ?? "default";
+  const group = process.env.CRD_GROUP ?? "core.controller-agent.dev";
+  const version = process.env.CRD_VERSION ?? "v1alpha1";
+  const port = Number(process.env.PORT ?? 8080);
+
+  const kubeConfig = new k8s.KubeConfig();
+  kubeConfig.loadFromDefault();
+
+  const registry = CrdConnectionRegistry.fromKubeConfig(
+    namespace,
+    group,
+    version,
+    kubeConfig,
+    (connection, err) => {
+      // Reported, never fatal: one malformed Connection must not stop the
+      // broker serving every other client's.
+      console.error(`connection ${connection} could not be bound:`, err);
+    },
+  );
+
+  await registry.loadAll();
+  registry.watch();
+  console.log(`bound ${registry.list().length} connection(s) in ${namespace}`);
+
+  // Sync tokens are per connection, so a leaked one reaches one client's source
+  // rather than every client's. They arrive as SYNC_TOKEN_<CONNECTION>.
+  const syncTokens = new Map<string, string>();
+  for (const [key, value] of Object.entries(process.env)) {
+    const match = /^SYNC_TOKEN_(.+)$/.exec(key);
+    if (match && value) syncTokens.set(match[1]!.toLowerCase().replace(/_/g, "-"), value);
+  }
+
+  const server = createBrokerServer({
+    auth: { orchestratorToken: required("ORCHESTRATOR_TOKEN"), syncTokens },
+    registry,
+  });
+  server.listen(port, () => console.log(`connection-broker listening on ${port}`));
+
+  const scheduler = startSync(registry, syncTokens, port);
+
+  const shutdown = () => {
+    scheduler?.stop();
+    registry.stop();
+    server.close(() => process.exit(0));
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
+}
+
+/**
+ * Wires the reconcile loop, if this deployment is configured to run one.
+ *
+ * Absent OPENAI_API_KEY or QDRANT_URL means "serve only": the broker still
+ * answers probes against corpora somebody else populated. That is a real
+ * arrangement rather than a misconfiguration, so it starts rather than exits —
+ * but it says so, because a broker silently indexing nothing looks exactly like
+ * a broker whose sources are empty.
+ */
+function startSync(
+  registry: CrdConnectionRegistry,
+  syncTokens: Map<string, string>,
+  port: number,
+): SyncScheduler | undefined {
+  const qdrantUrl = process.env.QDRANT_URL;
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!qdrantUrl || !openaiKey) {
+    console.log("QDRANT_URL or OPENAI_API_KEY unset — serving the API only, not indexing");
+    return undefined;
+  }
+
+  // The worker talks to the broker over HTTP even though both live in this
+  // process. The indirection is the boundary being enforced (ADR 0038 §3): the
+  // worker is a client of the credential, and routing it through the same
+  // authorization path as any other caller keeps it that way rather than
+  // letting proximity become privilege.
+  const anySyncToken = [...syncTokens.values()][0];
+  if (!anySyncToken) {
+    console.log("no SYNC_TOKEN_* configured — serving the API only, not indexing");
+    return undefined;
+  }
+
+  const qdrant = new QdrantHttpClient({ url: qdrantUrl, apiKey: process.env.QDRANT_API_KEY });
+  const embedder = new OpenAIEmbedder({ apiKey: openaiKey, model: process.env.EMBEDDING_MODEL });
+
+  const scheduler = new SyncScheduler({
+    source: new HttpResourceSource({ baseUrl: `http://127.0.0.1:${port}`, token: anySyncToken }),
+    // One writer per connection: every point carries its own connection's
+    // allowedRoles, and a shared writer would stamp one client's roles onto
+    // another client's chunks.
+    writerFor: (binding) =>
+      new QdrantCorpusWriter(qdrant, embedder, {
+        allowedRoles: binding.allowedRoles,
+        vectorSize: EMBEDDING_DIMENSIONS,
+      }),
+    targets: () =>
+      registry
+        .listResources()
+        .flatMap((cr: ConnectionCustomResource) => {
+          const binding = registry.get(cr.metadata.name);
+          const collection = collectionOf(cr);
+          const intervalMs = reconcileIntervalMs(cr);
+          // A connection with no collection has not been reconciled by the
+          // controller yet, and one with no interval is not meant to be
+          // indexed. Both are ordinary states, not errors.
+          if (!binding || !collection || !intervalMs) return [];
+          return [{ binding, collection, intervalMs }];
+        }),
+    onReport: (report) =>
+      console.log(
+        `sync ${report.connection}: indexed=${report.indexed} removed=${report.removed} ` +
+          `unchanged=${report.unchanged} failed=${report.failed.length} full=${report.full}`,
+      ),
+    onError: (connection, err) => console.error(`sync ${connection} failed:`, err),
+  });
+  scheduler.start();
+  return scheduler;
+}
+
+void main().catch((err: unknown) => {
+  console.error("connection-broker failed to start:", err);
+  process.exit(1);
+});
