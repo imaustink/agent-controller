@@ -13,16 +13,19 @@ import (
 )
 
 type fakeResolver struct {
-	token     string
-	err       error
-	askedFor  []string
-	callCount int
+	token      string
+	principals []string
+	err        error
+	askedFor   []string
+	callCount  int
 }
 
-func (f *fakeResolver) DelegatedToken(_ context.Context, _ activities.Caller, providers []string) (string, error) {
+func (f *fakeResolver) DelegatedToken(
+	_ context.Context, _ activities.Caller, providers []string,
+) (activities.DelegatedCredential, error) {
 	f.callCount++
 	f.askedFor = providers
-	return f.token, f.err
+	return activities.DelegatedCredential{Token: f.token, Principals: f.principals}, f.err
 }
 
 func searchTool(members ...catalog.KnowledgeBaseExecMember) catalog.ToolDescriptor {

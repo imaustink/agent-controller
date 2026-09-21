@@ -116,6 +116,11 @@ type RetrieveOutcome struct {
 	// Denied is how many candidates the source refused — expected, and a
 	// measure of the mirror's optimism rather than a problem.
 	Denied int
+	// PreFiltered is how many candidates the ACL mirror excluded before any
+	// probe was made. Purely a saving: reported so the mirror's usefulness is
+	// measurable, and so a suspiciously large number is visible rather than
+	// looking like a thin corpus.
+	PreFiltered int
 	// Undetermined names sources whose probe failed transiently, and
 	// SkippedCorpora counts member collections that could not be searched at
 	// all. Both are surfaced because an answer quietly missing evidence is

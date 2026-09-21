@@ -29,7 +29,7 @@ func TestRetrieveReturnsOnlyWhatTheSourceConfirmed(t *testing.T) {
 	}
 
 	outcome, err := corpus.Retrieve(context.Background(),
-		[]vectorstore.Store{store}, prober, "q", []string{"reader"}, 5, 3)
+		[]vectorstore.Store{store}, prober, "q", []string{"reader"}, nil, 5, 3)
 
 	require.NoError(t, err)
 	require.Len(t, outcome.Chunks, 1)
@@ -54,7 +54,7 @@ func TestRetrieveOverFetchesSoProbeDropsDoNotStarveTheAnswer(t *testing.T) {
 	}
 
 	outcome, err := corpus.Retrieve(context.Background(),
-		[]vectorstore.Store{store}, prober, "q", []string{"reader"}, 4, 3)
+		[]vectorstore.Store{store}, prober, "q", []string{"reader"}, nil, 4, 3)
 
 	require.NoError(t, err)
 	require.Len(t, outcome.Chunks, 4, "capped at the requested limit")
@@ -68,7 +68,7 @@ func TestRetrieveDefaultsAnAbsurdMultiplier(t *testing.T) {
 	}}
 
 	outcome, err := corpus.Retrieve(context.Background(),
-		[]vectorstore.Store{store}, prober, "q", []string{"reader"}, 2, 0)
+		[]vectorstore.Store{store}, prober, "q", []string{"reader"}, nil, 2, 0)
 
 	require.NoError(t, err)
 	require.Len(t, outcome.Chunks, 1)
@@ -82,7 +82,7 @@ func TestRetrieveCarriesBothKindsOfMissingEvidence(t *testing.T) {
 	}}
 
 	outcome, err := corpus.Retrieve(context.Background(),
-		[]vectorstore.Store{healthy, broken}, prober, "q", []string{"reader"}, 5, 3)
+		[]vectorstore.Store{healthy, broken}, prober, "q", []string{"reader"}, nil, 5, 3)
 
 	require.NoError(t, err)
 	// A corpus that could not be searched and a source that could not be

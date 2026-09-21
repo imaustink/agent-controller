@@ -55,7 +55,7 @@ describe("retrieve", () => {
       { "c/restricted": new PermissionDeniedError("403") },
     );
 
-    const outcome = await retrieve([store], prober, "q", ["reader"], 5);
+    const outcome = await retrieve([store], prober, "q", ["reader"], [], 5);
 
     expect(outcome.chunks).toHaveLength(1);
     // The title came from the probe, not the mirror's "MIRROR TITLE".
@@ -71,7 +71,7 @@ describe("retrieve", () => {
     }
     const prober = new FakeProber(results);
 
-    const outcome = await retrieve([new FakeStore(many)], prober, "q", ["reader"], 4, 3);
+    const outcome = await retrieve([new FakeStore(many)], prober, "q", ["reader"], [], 4, 3);
 
     expect(outcome.chunks).toHaveLength(4);
     expect(prober.probes).toBe(12);
@@ -79,7 +79,7 @@ describe("retrieve", () => {
 
   it("falls back to the default multiplier for a nonsense one", async () => {
     const prober = new FakeProber({ "c/s": { allowed: true, title: "t", url: "u", version: "v1" } });
-    const outcome = await retrieve([new FakeStore([hit("s", "h", 0.5)])], prober, "q", ["reader"], 2, 0);
+    const outcome = await retrieve([new FakeStore([hit("s", "h", 0.5)])], prober, "q", ["reader"], [], 2, 0);
     expect(outcome.chunks).toHaveLength(1);
   });
 
@@ -88,7 +88,7 @@ describe("retrieve", () => {
     const broken = new FakeStore([], new Error("qdrant down"));
     const prober = new FakeProber({}, { "c/busy": new TransientProbeError("429") });
 
-    const outcome = await retrieve([healthy, broken], prober, "q", ["reader"], 5);
+    const outcome = await retrieve([healthy, broken], prober, "q", ["reader"], [], 5);
 
     // A corpus that could not be searched and a source that could not be
     // checked are different failures, and an answer should be able to say both.

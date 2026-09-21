@@ -43,7 +43,7 @@ const resolver = (token: string | undefined): DelegatedCredentialResolver & { as
     asked,
     async delegatedToken(_subject, providers) {
       asked.push(providers);
-      return token;
+      return token === undefined ? undefined : { token };
     },
   };
 };

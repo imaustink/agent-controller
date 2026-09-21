@@ -114,6 +114,29 @@ export interface CorpusChunk {
    */
   version?: string;
   text: string;
+
+  /**
+   * The MIRROR of the source's read restrictions, captured at ingest —
+   * provider-shaped strings like `user:<accountId>` or `group:<id>`
+   * (docs/adr/0040).
+   *
+   * It exists to make retrieval cheaper, never to decide access. It is a
+   * snapshot of permissions that may have changed a second after it was taken,
+   * and the source is asked again, per user, before any of it is shown.
+   *
+   * PARITY: `ACLPrincipals` on `corpus.Chunk`.
+   */
+  aclPrincipals?: string[];
+  /**
+   * Marks a chunk whose effective permissions the driver could not resolve, so
+   * `aclPrincipals` is not a usable exclusion set.
+   *
+   * Set deliberately rather than inferred from an empty list, because the two
+   * mean opposite things: empty on a non-permissive chunk is "nobody is
+   * specially granted", while permissive is "we do not know, so do not exclude
+   * anyone on this".
+   */
+  aclPermissive?: boolean;
 }
 
 export interface CorpusQueryFilter {

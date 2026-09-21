@@ -52,6 +52,26 @@ type Chunk struct {
 	Version string `json:"version,omitempty"`
 
 	Text string `json:"text"`
+
+	// ACLPrincipals is the MIRROR of the source's read restrictions, captured
+	// at ingest — provider-shaped strings like "user:<accountId>" or
+	// "group:<id>" (ADR 0040).
+	//
+	// It exists to make retrieval cheaper, never to decide access. It is a
+	// snapshot of permissions that may have changed a second after it was
+	// taken, and the source is asked again, per user, before anything here is
+	// shown. Treating it as authoritative would mean serving a permission
+	// decision from a cache nobody revalidated.
+	ACLPrincipals []string `json:"aclPrincipals,omitempty"`
+
+	// ACLPermissive marks a chunk whose effective permissions the driver could
+	// not resolve, so ACLPrincipals is not a usable exclusion set.
+	//
+	// Set deliberately rather than inferred from an empty list, because the two
+	// mean opposite things: an empty list on a non-permissive chunk is "nobody
+	// is specially granted", while permissive is "we do not know, so do not use
+	// this to exclude anyone".
+	ACLPermissive bool `json:"aclPermissive,omitempty"`
 }
 
 // Hit is a chunk with the score it matched at.
