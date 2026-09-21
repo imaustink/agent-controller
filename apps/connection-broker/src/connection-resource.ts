@@ -1,4 +1,6 @@
 import { ConfluenceDriver } from "./drivers/confluence.js";
+import { GDriveDriver } from "./drivers/gdrive.js";
+import { SlackDriver } from "./drivers/slack.js";
 import type { Driver, Scope } from "./drivers/types.js";
 import type { ConnectionBinding } from "./registry.js";
 
@@ -96,9 +98,17 @@ function driverFor(name: string, spec: ConnectionCustomResource["spec"]): Driver
         cloudId: spec.site.cloudId,
       });
     }
+    case "slack":
+      // No site coordinates: a channel is reached by id alone.
+      return new SlackDriver({ workspaceUrl: spec.site?.baseURL });
+
+    case "gdrive":
+      return new GDriveDriver();
+
     default:
-      // Including providers the CRD's enum allows but no driver implements yet.
-      // Serving them with a stand-in would be worse than refusing.
+      // A provider the CRD's enum does not cover, or one added to the enum
+      // ahead of its driver. Serving it with a stand-in would be worse than
+      // refusing.
       throw new ConnectionConfigError(
         `connection ${name}: no driver implements provider "${spec.provider}"`,
       );

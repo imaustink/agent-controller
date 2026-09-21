@@ -50,12 +50,31 @@ describe("toBinding", () => {
     );
   });
 
+  it("builds a slack binding, which needs no site coordinates", async () => {
+    const binding = await toBinding(
+      cr({ provider: "slack", scope: { channel: "C123ABC" }, site: undefined }),
+      secrets(),
+    );
+    expect(binding.driver.provider).toBe("slack");
+    // A channel is reached by id alone, so the confluence site rule must not
+    // apply here.
+    expect(binding.scope.channel).toBe("C123ABC");
+  });
+
+  it("builds a gdrive binding", async () => {
+    const binding = await toBinding(
+      cr({ provider: "gdrive", scope: { folderID: "FOLDER1" }, site: undefined }),
+      secrets(),
+    );
+    expect(binding.driver.provider).toBe("gdrive");
+  });
+
   it("refuses a provider no driver implements", async () => {
-    // The CRD's enum allows slack and gdrive; neither has a driver yet.
-    // Binding them to a stand-in would be worse than refusing to serve them.
+    // A provider added to the CRD's enum ahead of its driver. Binding it to a
+    // stand-in would be worse than refusing to serve it.
     await expect(
-      toBinding(cr({ provider: "slack", scope: { channel: "C1" } }), secrets()),
-    ).rejects.toThrow(/no driver implements provider "slack"/);
+      toBinding(cr({ provider: "notion", scope: { space: "X" } }), secrets()),
+    ).rejects.toThrow(/no driver implements provider "notion"/);
   });
 
   it("refuses when no service credential is named", async () => {
