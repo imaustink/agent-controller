@@ -10,7 +10,10 @@ import {
   type ProbeGranularity,
   type ProbeResult,
   type Scope,
+  type WebhookEvent,
+  type WebhookRequest,
 } from "./types.js";
+import { hmacHex, signaturesMatch } from "./webhook-signature.js";
 
 /** Minimal HTTP surface, injectable so the driver is testable without a tenant. */
 export type FetchLike = (url: string, init?: { headers?: Record<string, string> }) => Promise<{
@@ -320,6 +323,47 @@ export class ConfluenceDriver implements Driver {
 
     const ref = this.toRef(page, []);
     return { allowed: true, title: ref.title, url: ref.url, version: ref.version };
+  }
+
+  /**
+   * Verifies a Confluence webhook delivery.
+   *
+   * Atlassian signs the raw body with the secret configured on the webhook and
+   * sends it as `X-Hub-Signature: sha256=<hex>`. There is no timestamp to bind,
+   * so unlike Slack this cannot rule out replay — which is survivable here
+   * precisely because a webhook only ever triggers a PARTIAL pass over pages
+   * the source is then re-read for. A replayed notification costs a redundant
+   * fetch, not a wrong corpus.
+   */
+  parseWebhook(request: WebhookRequest, secret: string, scope: Scope): WebhookEvent | undefined {
+    this.validateScope(scope);
+
+    const provided = request.headers["x-hub-signature"];
+    if (!provided) throw new PermissionDeniedError("confluence webhook carried no signature");
+
+    const expected = `sha256=${hmacHex(secret, request.rawBody)}`;
+    if (!signaturesMatch(provided, expected)) {
+      throw new PermissionDeniedError("confluence webhook signature did not verify");
+    }
+
+    let body: { page?: { id?: number | string; spaceKey?: string }; space?: { spaceKey?: string } };
+    try {
+      body = JSON.parse(request.rawBody);
+    } catch {
+      throw new PermissionDeniedError("confluence webhook body was not JSON");
+    }
+
+    const spaceKey = body.page?.spaceKey ?? body.space?.spaceKey;
+    // A different space is verified but irrelevant. Refusing to act on it is
+    // the same boundary assertInScope enforces on the read path, applied before
+    // we spend a credential rather than after.
+    if (spaceKey && spaceKey !== scope.space) return undefined;
+
+    const pageId = body.page?.id;
+    // No page id means "something in this space changed, we do not know what".
+    // An empty list is how that is expressed; the caller escalates to a full
+    // pass rather than doing nothing.
+    return { sourceIds: pageId === undefined ? [] : [String(pageId)] };
   }
 
   /**

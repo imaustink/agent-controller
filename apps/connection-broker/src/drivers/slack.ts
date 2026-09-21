@@ -12,6 +12,8 @@ import {
   type Scope,
 } from "./types.js";
 import type { FetchLike } from "./confluence.js";
+import type { WebhookEvent, WebhookRequest } from "./types.js";
+import { hmacHex, signaturesMatch, withinReplayWindow } from "./webhook-signature.js";
 
 export interface SlackDriverOptions {
   fetch?: FetchLike;
@@ -157,6 +159,53 @@ export class SlackDriver implements Driver {
       // marker, so claiming one would be inventing a guarantee.
       version: undefined,
     };
+  }
+
+  /**
+   * Verifies a Slack Events API delivery.
+   *
+   * Slack signs `v0:<timestamp>:<body>` with the app's signing secret. Both
+   * halves matter: the signature proves Slack sent it, the timestamp stops a
+   * captured delivery being replayed forever to make this broker spend a
+   * client's credential on demand.
+   */
+  parseWebhook(request: WebhookRequest, secret: string, scope: Scope): WebhookEvent | undefined {
+    this.validateScope(scope);
+
+    const timestamp = request.headers["x-slack-request-timestamp"];
+    const provided = request.headers["x-slack-signature"];
+    if (!provided) throw new PermissionDeniedError("slack webhook carried no signature");
+    if (!withinReplayWindow(timestamp, Date.now())) {
+      throw new PermissionDeniedError("slack webhook timestamp is outside the replay window");
+    }
+
+    const expected = `v0=${hmacHex(secret, `v0:${timestamp}:${request.rawBody}`)}`;
+    if (!signaturesMatch(provided, expected)) {
+      throw new PermissionDeniedError("slack webhook signature did not verify");
+    }
+
+    let body: {
+      type?: string;
+      challenge?: string;
+      event?: { channel?: string; ts?: string; thread_ts?: string };
+    };
+    try {
+      body = JSON.parse(request.rawBody);
+    } catch {
+      throw new PermissionDeniedError("slack webhook body was not JSON");
+    }
+
+    // The one-time URL verification handshake. Verified, but about nothing.
+    if (body.type === "url_verification") return undefined;
+
+    const event = body.event;
+    // An event for a channel this connection does not cover is verified but
+    // irrelevant — not an error, and emphatically not a reason to sync.
+    if (!event?.channel || event.channel !== scope.channel) return undefined;
+
+    // The THREAD is the indexed unit, so a reply names its parent.
+    const sourceId = event.thread_ts ?? event.ts;
+    return { sourceIds: sourceId ? [sourceId] : [] };
   }
 
   private toRef(scope: Scope, message: SlackMessage) {

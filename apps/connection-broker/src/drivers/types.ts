@@ -114,6 +114,32 @@ export interface Credentials {
   delegated?: string;
 }
 
+/** A provider's change notification, once verified and understood. */
+export interface WebhookEvent {
+  /**
+   * The resources this notification says changed.
+   *
+   * EMPTY is meaningful and common: Drive's push notifications name a channel
+   * rather than a file, and Slack's events can arrive for things this
+   * connection does not index. An empty list means "something changed, we do
+   * not know what", which callers turn into a full pass rather than into
+   * nothing.
+   */
+  sourceIds: string[];
+}
+
+/** The raw request a provider delivered, before any interpretation. */
+export interface WebhookRequest {
+  headers: Record<string, string | undefined>;
+  /**
+   * The body EXACTLY as received.
+   *
+   * Signatures are computed over the bytes, so a parsed-and-restringified body
+   * verifies against nothing. This has to arrive unmodified from the socket.
+   */
+  rawBody: string;
+}
+
 export interface Driver {
   readonly provider: string;
 
@@ -142,4 +168,23 @@ export interface Driver {
    * failure meant, and guessing is how a leak gets introduced.
    */
   probe(scope: Scope, credentials: Credentials, id?: string): Promise<ProbeResult>;
+
+  /**
+   * Verifies a provider's change notification and says what it refers to.
+   *
+   * Optional: a provider without push notifications simply does not implement
+   * it, and that connection stays on its reconcile interval — which is the
+   * source of truth regardless (ADR 0038 §4). Webhooks only make it faster.
+   *
+   * This runs on an endpoint reachable WITHOUT a bearer token, because the
+   * provider is the caller. The signature is therefore the only thing standing
+   * between a stranger and the ability to make this broker spend a client's
+   * credential on demand, so an implementation MUST throw rather than return
+   * for anything it cannot verify.
+   *
+   * Returning `undefined` means "verified, but not about anything we index" —
+   * a Slack event for another channel, a Drive sync ping. Distinct from
+   * throwing, which means the request was not trustworthy.
+   */
+  parseWebhook?(request: WebhookRequest, secret: string, scope: Scope): WebhookEvent | undefined;
 }

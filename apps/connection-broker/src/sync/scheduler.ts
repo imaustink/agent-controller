@@ -51,8 +51,27 @@ export class SyncScheduler {
     this.timers.clear();
   }
 
-  /** Runs one pass now, outside the schedule. Returns undefined if one is already running. */
-  async runOnce(connection: string): Promise<SyncReport | undefined> {
+  /**
+   * Runs a pass for specific resources, in response to a provider webhook.
+   *
+   * A webhook can only ever ADD work, never authorize a deletion: an empty
+   * sourceIds means "something changed, we do not know what", which escalates
+   * to a full pass rather than doing nothing — because a deletion that never
+   * sent an event would otherwise never be noticed, and a corpus that is
+   * correct only if no event was missed is one nobody can trust (ADR 0038 §4).
+   */
+  async onWebhook(connection: string, sourceIds: string[]): Promise<SyncReport | undefined> {
+    return this.runOnce(connection, sourceIds.length > 0 ? sourceIds : undefined);
+  }
+
+  /**
+   * Runs one pass now, outside the schedule. Returns undefined if one is
+   * already running.
+   *
+   * `onlySourceIds` narrows it to a partial pass, which reconcile will not let
+   * delete anything it did not examine.
+   */
+  async runOnce(connection: string, onlySourceIds?: string[]): Promise<SyncReport | undefined> {
     if (this.running.has(connection)) return undefined;
     const target = this.options.targets().find((candidate) => candidate.binding.name === connection);
     if (!target) return undefined;
@@ -67,7 +86,7 @@ export class SyncScheduler {
           label: target.binding.name,
           collection: target.collection,
         },
-        {},
+        onlySourceIds ? { onlySourceIds } : {},
       );
       this.options.onReport?.(report);
       return report;

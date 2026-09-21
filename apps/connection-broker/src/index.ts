@@ -63,13 +63,37 @@ async function main(): Promise<void> {
     if (match && value) syncTokens.set(match[1]!.toLowerCase().replace(/_/g, "-"), value);
   }
 
+  // Webhook signing secrets, one per connection, as WEBHOOK_SECRET_<CONNECTION>.
+  // Separate from the sync tokens on purpose: this one is shared with a third
+  // party, and a secret the provider also holds must not also be the thing that
+  // authorizes our own worker.
+  const webhookSecrets = new Map<string, string>();
+  for (const [key, value] of Object.entries(process.env)) {
+    const match = /^WEBHOOK_SECRET_(.+)$/.exec(key);
+    if (match && value) webhookSecrets.set(match[1]!.toLowerCase().replace(/_/g, "-"), value);
+  }
+
+  // Declared before the server so the webhook route can reach it, and left
+  // undefined when this deployment does not index — in which case the route
+  // reports not-found rather than accepting notifications it cannot act on.
+  let scheduler: SyncScheduler | undefined;
+
   const server = createBrokerServer({
     auth: { orchestratorToken: required("ORCHESTRATOR_TOKEN"), syncTokens },
     registry,
+    webhooks: {
+      secretFor: (connection) => webhookSecrets.get(connection),
+      onChange: (connection, sourceIds) => {
+        // Fire and forget: a provider's delivery must be acknowledged promptly
+        // or it gets retried and eventually the endpoint gets disabled. The
+        // pass reports through the scheduler's own callbacks.
+        void scheduler?.onWebhook(connection, sourceIds);
+      },
+    },
   });
   server.listen(port, () => console.log(`connection-broker listening on ${port}`));
 
-  const scheduler = startSync(registry, syncTokens, port);
+  scheduler = startSync(registry, syncTokens, port);
 
   const shutdown = () => {
     scheduler?.stop();

@@ -29,6 +29,22 @@ import type { ConnectionRegistry } from "./registry.js";
 export interface ServerOptions {
   auth: AuthConfig;
   registry: ConnectionRegistry;
+  /**
+   * Webhook support, absent when this broker does not index.
+   *
+   * `secretFor` returns the shared secret the provider signs with; a connection
+   * without one cannot receive webhooks, which is a configuration state rather
+   * than an error — it simply stays on its reconcile interval.
+   */
+  webhooks?: {
+    secretFor: (connection: string) => string | undefined;
+    /**
+     * Schedules a pass for the named resources. An EMPTY list means "something
+     * changed, we do not know what", which must escalate to a full pass rather
+     * than be dropped.
+     */
+    onChange: (connection: string, sourceIds: string[]) => void;
+  };
 }
 
 /** Header carrying the calling user's delegated token, per request. */
@@ -59,6 +75,15 @@ async function handle(
   const route = parseRoute(url.pathname);
   if (!route) {
     send(res, 404, { error: "not found" });
+    return;
+  }
+
+  // Webhooks are authenticated by the PROVIDER's signature, not by a bearer
+  // token: the caller is Confluence or Slack, which hold no credential of ours.
+  // Handled before the bearer path so an unsigned request cannot fall through
+  // into it.
+  if (route.kind === "webhook") {
+    await handleWebhook(options, route.connection, req, res);
     return;
   }
 
@@ -125,8 +150,67 @@ async function handle(
 
 interface Route {
   connection: string;
-  kind: "resources" | "probe";
+  kind: "resources" | "probe" | "webhook";
   id?: string;
+}
+
+/**
+ * Handles a provider change notification.
+ *
+ * This endpoint is reachable by anyone who can route to the pod, so the
+ * driver's signature check is the entire boundary. Everything here fails
+ * closed: no webhook support, no secret, no driver support, or a signature that
+ * does not verify all end the request without touching a credential.
+ *
+ * It deliberately answers 200 to a VERIFIED notification it does not act on.
+ * Providers disable endpoints that keep returning errors, and "this event was
+ * not about anything we index" is a normal outcome, not a failure.
+ */
+async function handleWebhook(
+  options: ServerOptions,
+  connection: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const webhooks = options.webhooks;
+  const binding = options.registry.get(connection);
+
+  // Deliberately the same answer for "unknown connection", "webhooks off" and
+  // "no secret configured": a distinguishable response here would let an
+  // unauthenticated caller enumerate which connections exist.
+  if (!webhooks || !binding || !binding.driver.parseWebhook) {
+    send(res, 404, { error: "not found" });
+    return;
+  }
+  const secret = webhooks.secretFor(connection);
+  if (!secret) {
+    send(res, 404, { error: "not found" });
+    return;
+  }
+
+  // The bytes as received: a signature is computed over them, so a parsed and
+  // re-stringified body verifies against nothing.
+  const rawBody = await readRawBody(req);
+
+  let event;
+  try {
+    event = binding.driver.parseWebhook(
+      { headers: req.headers as Record<string, string | undefined>, rawBody },
+      secret,
+      binding.scope,
+    );
+  } catch (err) {
+    if (err instanceof PermissionDeniedError) {
+      return send(res, 401, { error: "signature verification failed" });
+    }
+    throw err;
+  }
+
+  // Verified, but not about anything this connection indexes.
+  if (!event) return send(res, 200, { ok: true, acted: false });
+
+  webhooks.onChange(connection, event.sourceIds);
+  send(res, 202, { ok: true, acted: true, resources: event.sourceIds.length });
 }
 
 function parseRoute(pathname: string): Route | undefined {
@@ -135,6 +219,7 @@ function parseRoute(pathname: string): Route | undefined {
   const connection = decodeURIComponent(parts[1]);
 
   if (parts[2] === "probe" && parts.length === 3) return { connection, kind: "probe" };
+  if (parts[2] === "webhook" && parts.length === 3) return { connection, kind: "webhook" };
   if (parts[2] === "resources") {
     if (parts.length === 3) return { connection, kind: "resources" };
     if (parts.length === 4) {
@@ -165,6 +250,28 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   } catch {
     return {};
   }
+}
+
+/**
+ * The body as BYTES, for signature verification.
+ *
+ * Separate from readJson because a signature is computed over exactly what was
+ * sent: parsing and re-stringifying reorders keys and drops whitespace, and the
+ * result verifies against nothing.
+ *
+ * Bounded like every other body here — this endpoint is unauthenticated until
+ * the signature has been checked, and the signature cannot be checked until the
+ * body is read, so the limit is the only thing bounding an anonymous request.
+ */
+async function readRawBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > 256 * 1024) throw new Error("webhook body too large");
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {
