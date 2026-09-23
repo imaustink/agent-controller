@@ -140,12 +140,49 @@ describe("upsert", () => {
     expect(client.upsert).not.toHaveBeenCalled();
   });
 
-  it("embeds in ONE call for the whole batch", async () => {
+  it("embeds a whole batch in a single call", async () => {
     const client = fakeQdrant();
     const embed = embedder();
     await writer(client, embed).upsert(COLLECTION, [chunk(), chunk({ contentHash: "b" })]);
 
+    // Two chunks fit in one batch, so this is one request, not one per chunk.
     expect(embed.embed).toHaveBeenCalledTimes(1);
+  });
+
+  it("splits a large write into batches, keeping each chunk with its own vector", async () => {
+    const client = fakeQdrant();
+    // Give every chunk a distinguishable vector so a mis-pairing is visible:
+    // the vector's first component is the chunk index within its embed call.
+    const embed: Embedder = {
+      embed: vi.fn(async (texts: string[]) => texts.map((_, i) => [i, 0, 0])),
+    };
+
+    // 600 chunks exceeds one 256-input batch (and would exceed OpenAI's 2048
+    // cap for a big first sync), so this must span multiple embed/upsert calls.
+    const chunks = Array.from({ length: 600 }, (_, i) => chunk({ contentHash: `h-${i}` }));
+    await writer(client, embed).upsert(COLLECTION, chunks);
+
+    // 600 / 256 -> 3 batches, embed and upsert invoked once per batch.
+    expect((embed.embed as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
+    expect(client.upsert.mock.calls).toHaveLength(3);
+    expect(client.upsert.mock.calls.map(([, args]) => args.points.length)).toEqual([256, 256, 88]);
+
+    // Every chunk must be written exactly once, paired with the vector its own
+    // text produced within its batch — a mis-alignment would silently pair a
+    // chunk with a neighbour's embedding and make every retrieval wrong.
+    const written = client.upsert.mock.calls.flatMap(([, args]) => args.points);
+    expect(written).toHaveLength(600);
+    for (const [batchIndex, [, args]] of client.upsert.mock.calls.entries()) {
+      for (const [pointIndex, point] of args.points.entries()) {
+        const globalIndex = batchIndex * 256 + pointIndex;
+        expect(point.id).toBe(corpusPointId(COLLECTION, `h-${globalIndex}`));
+        // First vector component is the chunk's index within its batch.
+        expect(point.vector[0]).toBe(pointIndex);
+      }
+    }
+
+    // Every batch still waits, so the next reconcile does not read a stale view.
+    expect(client.upsert.mock.calls.every(([, args]) => args.wait === true)).toBe(true);
   });
 
   it("refuses to write when the embedder returns the wrong number of vectors", async () => {

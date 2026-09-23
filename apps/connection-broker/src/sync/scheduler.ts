@@ -2,7 +2,17 @@ import type { ConnectionBinding } from "../registry.js";
 import { syncConnection, type CorpusWriter, type ResourceSource, type SyncReport } from "./worker.js";
 
 export interface SyncSchedulerOptions {
-  source: ResourceSource;
+  /**
+   * A source for one connection, not one shared source.
+   *
+   * A source carries a sync token, and the broker scopes each sync token to
+   * exactly one connection (see auth.ts): a source built with connection A's
+   * token gets a 403 the moment it lists or fetches connection B, which fails
+   * B's whole pass so B never indexes. One source per connection — carrying that
+   * connection's own token — is the mirror of `writerFor` below, for the same
+   * reason: the per-connection identity has to be honoured, not shared.
+   */
+  sourceFor: (binding: ConnectionBinding) => ResourceSource;
   /**
    * A writer for one connection, not one shared writer.
    *
@@ -79,7 +89,7 @@ export class SyncScheduler {
     this.running.add(connection);
     try {
       const report = await syncConnection(
-        this.options.source,
+        this.options.sourceFor(target.binding),
         this.options.writerFor(target.binding),
         {
           connection: target.binding.name,

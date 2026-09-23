@@ -29,6 +29,17 @@ interface QdrantPoint {
   payload: Record<string, unknown>;
 }
 
+/**
+ * How many chunks to embed and upsert per request.
+ *
+ * OpenAI's embeddings endpoint caps a single request at 2048 inputs (plus a
+ * total-token budget), so embedding an entire pass at once — which is what a
+ * first sync of a large space is — 400s and takes the whole pass down with it.
+ * Batching keeps each request under that ceiling; 256 mirrors the scroll page
+ * size used by `indexed` and leaves comfortable headroom on both limits.
+ */
+const EMBED_BATCH_SIZE = 256;
+
 export interface CorpusWriterConfig {
   /**
    * Roles a caller must hold to retrieve these chunks — the Connection's
@@ -129,31 +140,38 @@ export class QdrantCorpusWriter implements CorpusWriter {
     if (chunks.length === 0) return;
     await this.ensureCollection(collection);
 
-    const vectors = await this.embedder.embed(chunks.map((chunk) => chunk.text));
-    if (vectors.length !== chunks.length) {
-      throw new Error(
-        `embedder returned ${vectors.length} vectors for ${chunks.length} chunks; ` +
-          `writing them would pair chunks with other chunks' embeddings`,
-      );
-    }
+    // Embed and write in batches: the whole set at once overruns OpenAI's
+    // per-request input cap on a large first sync (see EMBED_BATCH_SIZE). Each
+    // batch is embedded and upserted independently, so vectors stay positionally
+    // paired with the chunks that produced them within that batch.
+    for (let start = 0; start < chunks.length; start += EMBED_BATCH_SIZE) {
+      const batch = chunks.slice(start, start + EMBED_BATCH_SIZE);
+      const vectors = await this.embedder.embed(batch.map((chunk) => chunk.text));
+      if (vectors.length !== batch.length) {
+        throw new Error(
+          `embedder returned ${vectors.length} vectors for ${batch.length} chunks; ` +
+            `writing them would pair chunks with other chunks' embeddings`,
+        );
+      }
 
-    await this.client.upsert(collection, {
-      // Without this the next reconcile can read a stale view of what is
-      // indexed and delete what it just wrote.
-      wait: true,
-      points: chunks.map((chunk, index) => ({
-        id: corpusPointId(collection, chunk.contentHash),
-        vector: vectors[index]!,
-        payload: {
-          id: chunk.contentHash,
-          roles: this.cfg.allowedRoles,
-          // Deliberately never true for a corpus point. See the class comment.
-          unrestricted: false,
-          hidden: false,
-          descriptor: JSON.stringify(toDescriptor(chunk)),
-        },
-      })),
-    });
+      await this.client.upsert(collection, {
+        // Without this the next reconcile can read a stale view of what is
+        // indexed and delete what it just wrote.
+        wait: true,
+        points: batch.map((chunk, index) => ({
+          id: corpusPointId(collection, chunk.contentHash),
+          vector: vectors[index]!,
+          payload: {
+            id: chunk.contentHash,
+            roles: this.cfg.allowedRoles,
+            // Deliberately never true for a corpus point. See the class comment.
+            unrestricted: false,
+            hidden: false,
+            descriptor: JSON.stringify(toDescriptor(chunk)),
+          },
+        })),
+      });
+    }
   }
 
   async remove(collection: string, contentHashes: string[]): Promise<void> {

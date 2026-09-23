@@ -130,8 +130,7 @@ function startSync(
   // worker is a client of the credential, and routing it through the same
   // authorization path as any other caller keeps it that way rather than
   // letting proximity become privilege.
-  const anySyncToken = [...syncTokens.values()][0];
-  if (!anySyncToken) {
+  if (syncTokens.size === 0) {
     console.log("no SYNC_TOKEN_* configured — serving the API only, not indexing");
     return undefined;
   }
@@ -139,8 +138,28 @@ function startSync(
   const qdrant = new QdrantHttpClient({ url: qdrantUrl, apiKey: process.env.QDRANT_API_KEY });
   const embedder = new OpenAIEmbedder({ apiKey: openaiKey, model: process.env.EMBEDDING_MODEL });
 
+  // A connection whose SYNC_TOKEN_<name> is missing is reported exactly once,
+  // not on every re-read of the targets. It is skipped rather than run with some
+  // other connection's token — that token authorizes precisely one connection's
+  // source, so borrowing it would either 403 or read the wrong connection.
+  const warnedMissingToken = new Set<string>();
+
   const scheduler = new SyncScheduler({
-    source: new HttpResourceSource({ baseUrl: `http://127.0.0.1:${port}`, token: anySyncToken }),
+    // One source per connection, carrying that connection's own sync token. The
+    // broker scopes each token to a single connection (auth.ts), so a shared
+    // source built with one token would 403 on every other connection's list
+    // and fetch — failing their passes and leaving them silently unindexed. The
+    // target filter below guarantees a token exists before a connection is ever
+    // scheduled, so the lookup here always succeeds.
+    sourceFor: (binding) => {
+      const token = syncTokens.get(binding.name);
+      if (!token) {
+        // Unreachable via the scheduler (targets() excludes tokenless
+        // connections), but never fall back to another connection's token.
+        throw new Error(`no SYNC_TOKEN_* configured for connection ${binding.name}`);
+      }
+      return new HttpResourceSource({ baseUrl: `http://127.0.0.1:${port}`, token });
+    },
     // One writer per connection: every point carries its own connection's
     // allowedRoles, and a shared writer would stamp one client's roles onto
     // another client's chunks.
@@ -160,6 +179,18 @@ function startSync(
           // controller yet, and one with no interval is not meant to be
           // indexed. Both are ordinary states, not errors.
           if (!binding || !collection || !intervalMs) return [];
+          // A connection with no sync token cannot be indexed: its source needs
+          // its own token and there is no other to borrow. Reported once so a
+          // missing SYNC_TOKEN_<name> is visible, then skipped.
+          if (!syncTokens.has(binding.name)) {
+            if (!warnedMissingToken.has(binding.name)) {
+              console.error(
+                `connection ${binding.name} has no SYNC_TOKEN_* configured — not indexing it`,
+              );
+              warnedMissingToken.add(binding.name);
+            }
+            return [];
+          }
           return [{ binding, collection, intervalMs }];
         }),
     onReport: (report) =>
