@@ -106,6 +106,15 @@ not because it should change.
 | 14 | Go's `hasOutOfScopeToolMatch` unions declared `toolIds` + resolved tools (a documented, deliberate RBAC-aware bugfix), where TS checks declared `toolIds` only. Makes the Go guard strictly *less* likely to fire in edge cases where a caller's RBAC-visible tool set differs from the declared list. |
 | 18 | `fallbackToolTopK` is a hardcoded Go constant (`3`) vs. a configurable TS dependency default. Same value today; loses the override knob. |
 
+## Temporal ahead of LangGraph
+
+Gaps the other way round: behaviour the Temporal engine has and the LangGraph
+engine (`apps/agent-orchestrator/src/agent/graph.ts`) does not.
+
+| # | Finding |
+| --- | --- |
+| 19 | The repository read gate ([ADR 0042](../../../docs/adr/0042-repository-read-gate.md), `internal/authz/repository.go`). On Temporal, an agent declaring `github` launches only after its caller is shown to be able to read the target repository, and the run's App write token is scoped to that repository (`AGENT_TARGET_REPOSITORY`). LangGraph's `authorization-service.ts` has no equivalent: a LangGraph deployment declaring `github` gets ADR 0041's read-as-the-caller delegation but no pre-launch check and an installation-wide write token. It also still starts a `github` link under a webhook's shared subject, which the Temporal pre-flight now refuses to do. |
+
 ## Tier 4 — missing feature, out of scope for a fix pass
 
 | # | Finding |

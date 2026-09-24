@@ -106,6 +106,7 @@ specs/
   happy-path.e2e.ts       webhook -> triage -> AgentRun -> comment posted
   identity-keying.e2e.ts  which subject each entry point keys credentials under
   identity-continuity.e2e.ts  a parked chat turn never resumes as anyone but its own caller
+  repo-read-gate.e2e.ts   a GitHub-acting agent launches only into a repository its caller can read
   caller-tools.e2e.ts     consumer-supplied tools: real Qdrant queries + the tool_calls round trip
   chat-harness.e2e.ts     the harness's own signing/SSE parsing, vs. the real product (no cluster)
   waitfor-guard.e2e.ts    waitFor's own bounded-probe guarantee (no cluster)

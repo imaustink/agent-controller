@@ -31,6 +31,11 @@ type LLM interface {
 
 type AgentLoopActivities struct {
 	LLM LLM
+
+	// DefaultGitHubOwner resolves a repository a chat request names without
+	// an owner. Empty leaves such a request unresolved, and the read gate asks
+	// the user which repository they meant.
+	DefaultGitHubOwner string
 }
 
 const (

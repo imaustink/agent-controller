@@ -66,8 +66,15 @@ type loopEnv struct {
 
 	// Authorization knobs. Nil means "authorized with no credentials", which
 	// is what an Agent or Tool declaring no identityProviders gets anyway.
-	authorizeVerdict      func() authz.Verdict
-	authorizeInputs       []activities.AuthorizeInput
+	authorizeVerdict func() authz.Verdict
+	authorizeInputs  []activities.AuthorizeInput
+	// extractedRepo is what ExtractTargetRepository answers for a chat turn;
+	// extractInputs records every request it was asked about.
+	extractedRepo string
+	extractInputs []activities.ExtractTargetRepositoryInput
+	// targetRepository rides every sendTurn, as if an adapter had read it off
+	// the turn's webhook event.
+	targetRepository      string
 	toolCredentialVerdict func() authz.Verdict
 	toolCredentialInputs  []activities.ToolCredentialsInput
 
@@ -173,6 +180,10 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	// identityProviders, so most fixtures never touch it; registered here so
 	// the ones that do can flip a knob instead of racing a second
 	// registration.
+	reg(activities.ExtractTargetRepositoryActivityName, func(_ context.Context, in activities.ExtractTargetRepositoryInput) (string, error) {
+		le.extractInputs = append(le.extractInputs, in)
+		return le.extractedRepo, nil
+	})
 	reg(activities.AuthorizeActivityName, func(_ context.Context, in activities.AuthorizeInput) (authz.Verdict, error) {
 		le.authorizeInputs = append(le.authorizeInputs, in)
 		if le.authorizeVerdict != nil {
@@ -255,6 +266,7 @@ func (le *loopEnv) sendTurnAs(t *testing.T, updateID, message string, caller act
 			SenderLogin:          senderLogin,
 			ForcedSkillID:        le.forcedSkillID,
 			ForcedAgentID:        le.forcedAgentID,
+			TargetRepository:     le.targetRepository,
 			CallerTools:          le.callerTools,
 			PriorCallerToolCalls: le.priorCallerCalls,
 		})
@@ -867,6 +879,113 @@ func TestPendingLinkOwnershipDistinguishesWebhookSenders(t *testing.T) {
 
 	require.Len(t, le.authorizeInputs, 2)
 	require.Nil(t, le.authorizeInputs[1].Pending, "another sender on the same issue must not resume alice's link")
+}
+
+// ── the repository read gate ────────────────────────────────────────────
+
+func githubActingAgent() catalog.AgentDescriptor {
+	agent := mealPlannerAgent()
+	agent.IdentityProviders = []string{"github", "claude"}
+	return agent
+}
+
+// A chat request to a GitHub-acting agent names its repository in prose; the
+// workflow extracts it and hands it to the pre-flight, which checks it with
+// the caller's own token.
+func TestAChatTurnToAGitHubActingAgentCarriesTheRepositoryItNamedIntoThePreFlight(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := githubActingAgent()
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+	le.skillTools = recipesSkillTools()
+	le.agentPlans = []activities.PlannedAgentAction{{Action: activities.AgentActionFinish, Message: "done"}}
+	le.extractedRepo = "bitovi/platform"
+
+	var result workflows.TurnResult
+	alice := activities.Caller{Subject: "openwebui:alice", Roles: []string{"cook"}, PerUser: true}
+	le.sendTurnAs(t, "turn-1", "fix the flaky test in bitovi/platform", alice, "", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, []activities.ExtractTargetRepositoryInput{{Request: "fix the flaky test in bitovi/platform"}}, le.extractInputs)
+	require.Len(t, le.authorizeInputs, 1)
+	require.Equal(t, "bitovi/platform", le.authorizeInputs[0].TargetRepository)
+	require.Equal(t, "done", result.Reply)
+}
+
+// The requirement: a caller who cannot read the repository gets an answer,
+// and nothing starts.
+func TestARefusedPreFlightLaunchesNothing(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := githubActingAgent()
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+	le.skillTools = recipesSkillTools()
+	le.agentPlans = []activities.PlannedAgentAction{{Action: activities.AgentActionFinish, Message: "should never run"}}
+	le.extractedRepo = "bitovi/secret"
+	le.authorizeVerdict = func() authz.Verdict {
+		return authz.Verdict{Kind: authz.KindRefused, Message: "Your GitHub account can't see `bitovi/secret`, so I didn't start meal-planner."}
+	}
+
+	var result workflows.TurnResult
+	alice := activities.Caller{Subject: "openwebui:alice", Roles: []string{"cook"}, PerUser: true}
+	le.sendTurnAs(t, "turn-1", "open a PR in bitovi/secret", alice, "", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "refused", result.Meta.Path)
+	require.Contains(t, result.Reply, "can't see `bitovi/secret`")
+	require.Zero(t, le.agentPlanCalls, "the agent episode must never start")
+	require.Empty(t, le.agentRunLaunches)
+}
+
+// A webhook turn's repository is the one its sender was verified on, so it
+// comes from the event and the prompt is never mined for another one.
+func TestAWebhookTurnUsesItsEventRepositoryAndNeverExtractsOne(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := githubActingAgent()
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+	le.skillTools = recipesSkillTools()
+	le.agentPlans = []activities.PlannedAgentAction{{Action: activities.AgentActionFinish, Message: "done"}}
+	le.targetRepository = "e2e-org/e2e-repo"
+	le.extractedRepo = "someone-else/elsewhere"
+
+	var result workflows.TurnResult
+	relay := activities.Caller{Subject: "integration-gateway", Roles: []string{"cook"}}
+	le.sendTurnAs(t, "turn-1", "triage issue #4 (also see someone-else/elsewhere)", relay, "alice", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Empty(t, le.extractInputs)
+	require.Equal(t, "e2e-org/e2e-repo", le.authorizeInputs[0].TargetRepository)
+}
+
+func TestAnAgentThatDoesNotActOnGitHubNeverExtractsARepository(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := mealPlannerAgent()
+	agent.IdentityProviders = []string{"claude"}
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+	le.skillTools = recipesSkillTools()
+	le.agentPlans = []activities.PlannedAgentAction{{Action: activities.AgentActionFinish, Message: "done"}}
+
+	var result workflows.TurnResult
+	alice := activities.Caller{Subject: "openwebui:alice", Roles: []string{"cook"}, PerUser: true}
+	le.sendTurnAs(t, "turn-1", "plan meals", alice, "", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Empty(t, le.extractInputs)
+	require.Empty(t, le.authorizeInputs[0].TargetRepository)
 }
 
 // An IntegrationRoute names its target outright (upstream ADR 0024), so a

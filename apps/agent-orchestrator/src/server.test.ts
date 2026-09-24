@@ -1463,6 +1463,34 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     await server.close();
   });
 
+  // The repository a webhook fired on is the one integration-gateway checked
+  // the sender's permission on, so it has to reach the engine's read gate as
+  // data rather than only as words in the rendered prompt.
+  it("carries a webhook event's owner/repo into the graph input as the target repository", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "tok-1", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+    const send = (event: unknown) =>
+      fetch(`http://127.0.0.1:${port}/invoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+        body: JSON.stringify({ request: "triage", event }),
+      });
+
+    await send({ source: "github", event: "issues", owner: "e2e-org", repo: "e2e-repo", issueNumber: 4 });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(graph.invoke).toHaveBeenLastCalledWith(expect.objectContaining({ targetRepository: "e2e-org/e2e-repo" }));
+
+    await send({ source: "github", event: "issues", owner: "e2e-org" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(vi.mocked(graph.invoke).mock.lastCall![0]).not.toHaveProperty("targetRepository");
+
+    await server.close();
+  });
+
   it("lets an explicit /invoke identity_link_flow override the configured default", async () => {
     const graph: AgentGraphLike = {
       invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "tok-1", skillCandidates: [], result: "done" } as AgentState),

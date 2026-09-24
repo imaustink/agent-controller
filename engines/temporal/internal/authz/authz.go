@@ -178,6 +178,19 @@ type Request struct {
 	// instead of starting a second one out from under a caller who is
 	// mid-way through the first.
 	Pending *PendingLink `json:"pending,omitempty"`
+
+	// TargetRepository is the "owner/name" this run will work in, when the
+	// agent declares github: the webhook event's repository, or the one the
+	// chat request named. Checked against the caller's read access before
+	// anything launches (see gateRepository), then handed to the run.
+	//
+	// For a chat turn a model extracted this from the request, which is the
+	// one model-produced input here, and it is sound for a narrow reason: the
+	// model chooses WHICH repository is checked, never whether the check
+	// passes. The check runs on the caller's own token, so the worst a wrong
+	// extraction can do is point the run at another repository that caller
+	// can already read.
+	TargetRepository string `json:"targetRepository,omitempty"`
 }
 
 // Kind is the verdict's discriminator.
@@ -192,6 +205,10 @@ const (
 	// KindMisconfigured: not cleared, and not the caller's fault. Distinct
 	// from link-required because no amount of user action fixes it.
 	KindMisconfigured Kind = "misconfigured"
+	// KindRefused: not cleared, because of something about THIS request that
+	// no link would fix -- the caller cannot read the repository, or named
+	// none. Message is the complete user-facing text.
+	KindRefused Kind = "refused"
 )
 
 // PendingLink is the resume anchor for a parked link.
@@ -293,6 +310,10 @@ type Deps struct {
 	// takes the default; tests set it to something negligible so the retry
 	// path is exercised without the suite sleeping through it.
 	StartRetryDelay time.Duration
+
+	// Repos answers the read gate for agents that declare github. Required
+	// for them; a nil reader refuses to authorize such an agent at all.
+	Repos RepoReader
 }
 
 // Service is the pre-flight. Constructed once from deps; unreachable from any
@@ -364,6 +385,16 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 		envVar, supported := ProviderEnvVar[step.name]
 		if !supported {
 			return s.misconfigured(req, step.name, fmt.Sprintf("unsupported identity provider %q", step.name))
+		}
+
+		// A shared subject (a webhook relay's service identity) never holds a
+		// github token. github is keyed by the raw subject, so the first
+		// person to link under it would become every sender's read identity:
+		// the shared-credential bug in its original form. Such a turn reads
+		// with the App token scoped to the repository its sender was
+		// verified on, and gateRepository insists that sender exists.
+		if step.name == identitylink.ProviderGitHub && !step.principalOnly && !req.Identity.PerUser {
+			continue
 		}
 
 		// A cross-entry-point credential is keyed by principal; anything
@@ -512,6 +543,18 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 		return v, nil
 	}
 
+	if gatesRepository(req.IdentityProviders) {
+		refusal, err := s.gateRepository(ctx, req, credentials[ProviderEnvVar[identitylink.ProviderGitHub]])
+		if err != nil {
+			return Verdict{}, fmt.Errorf("repository read check: %w", err)
+		}
+		if refusal != "" {
+			logVerdict(KindRefused, req.AgentID, map[string]any{"targetRepository": req.TargetRepository})
+			return Verdict{Kind: KindRefused, Message: refusal}, nil
+		}
+		credentials[TargetRepositoryEnv] = req.TargetRepository
+	}
+
 	actorLogin := firstNonEmpty(actorLoginFromLoop, principalLogin, s.resolveActorLogin(ctx, req))
 	if actorLogin != "" {
 		credentials[ActorLoginEnv] = actorLogin
@@ -544,6 +587,15 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 			return actorLogin
 		}(),
 		"principal": principal,
+		// Empty unless the agent acts on GitHub. Logged so an operator can
+		// see which repository a launch was gated on, which is the one thing
+		// in the pre-flight a model chose (for a chat turn).
+		"targetRepository": func() any {
+			if req.TargetRepository == "" || !gatesRepository(req.IdentityProviders) {
+				return nil
+			}
+			return req.TargetRepository
+		}(),
 	})
 	return verdict, nil
 }

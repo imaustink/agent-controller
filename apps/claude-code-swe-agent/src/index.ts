@@ -3,7 +3,6 @@ import { readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { AgentFailure, runAgent, type AgentReply, type AgentSession } from "@controller-agent/agent-runtime";
-import { resolveGithubToken } from "@controller-agent/github-app-auth";
 import { buildClaudeSettings, buildPrompt } from "./claude.js";
 import { runClaudeTurn, runClaudeTurnRemoteControlled } from "./claude-runner.js";
 import {
@@ -20,7 +19,13 @@ import { extractContinuationToken } from "./continuation.js";
 import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./marker.js";
 import { loadToolConfig } from "./config.js";
 import { createCredentialsWritebackWatcher, credentialExpiry } from "./credentialsWriteback.js";
-import { AuthorizationError, finalizeDelegatedWrite, isDelegating, resolveDelegatedToken } from "./identityDelegation.js";
+import {
+  AuthorizationError,
+  finalizeDelegatedWrite,
+  isDelegating,
+  resolveDelegatedToken,
+  resolveUndelegatedToken,
+} from "./identityDelegation.js";
 import { GH_READ_TOKEN_ENV, GH_WRITE_TOKEN_ENV, installGhShim } from "./ghShim.js";
 import { clip } from "./security/redact.js";
 
@@ -128,7 +133,7 @@ async function handler(session: AgentSession): Promise<AgentReply> {
       throw err;
     }
   } else {
-    readToken = writeToken = await resolveGithubToken(toolConfig);
+    readToken = writeToken = await resolveUndelegatedToken(toolConfig);
   }
 
   const childEnv: NodeJS.ProcessEnv = {
@@ -311,7 +316,10 @@ async function handler(session: AgentSession): Promise<AgentReply> {
       : (await countCommitsAheadOfOriginHead(repoDir!, childEnv, session.signal)) > 0;
 
   if (delegating && attribution) {
-    if (!marker?.repo) {
+    // A verified target repository needs no post-flight: the write token was
+    // scoped to it before the run started, so there is nothing else the run
+    // could have written to that would need granting or revoking.
+    if (!marker?.repo && !toolConfig.targetRepository) {
       const outcome2 = await finalizeDelegatedWrite({
         // The App credential: this step reads repo metadata and may GRANT the
         // user access, neither of which the user's own token can do.

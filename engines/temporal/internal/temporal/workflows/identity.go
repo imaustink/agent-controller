@@ -171,7 +171,8 @@ func authorizeAgent(
 		// Carried in only on a resume: it is what lets Authorize re-check the
 		// flow this conversation already started instead of starting a
 		// second one for the same (provider, subject).
-		Pending: pending,
+		Pending:          pending,
+		TargetRepository: in.TargetRepository,
 	}).Get(ctx, &verdict)
 	return verdict, err
 }

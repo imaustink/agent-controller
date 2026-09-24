@@ -86,6 +86,11 @@ type invokeRequest struct {
 	// invalid value is silently ignored — the workflow's own "authcode"
 	// default applies — rather than 400ing the whole request.
 	IdentityLinkFlow string `json:"identityLinkFlow,omitempty"`
+
+	// TargetRepository is the "owner/name" an event fired on, named by an
+	// adapter that already read it off the event (agent-orchestrator does).
+	// Absent, it is read from the event's own owner/repo fields.
+	TargetRepository string `json:"targetRepository,omitempty"`
 }
 
 type invokeAccepted struct {
@@ -232,7 +237,27 @@ func shapeInvokeTurn(
 		ForcedSkillID:    forcedSkillID,
 		ForcedAgentID:    forcedAgentID,
 		IdentityLinkFlow: identityLinkFlow,
+		TargetRepository: eventRepository(req),
 	}, nil
+}
+
+// eventRepository is the repository an event-driven turn will work in: the
+// one the adapter named, or else the event's own owner/repo. It is the
+// repository the adapter verified the sender's permission on, which is why a
+// GitHub-acting agent's webhook turn takes it from here and never from the
+// prompt (see delegateToAgent).
+func eventRepository(req invokeRequest) string {
+	if repo := strings.TrimSpace(req.TargetRepository); repo != "" {
+		return repo
+	}
+	if len(req.Event) == 0 {
+		return ""
+	}
+	fields := catalog.EventFields(req.Event)
+	if fields["owner"] == "" || fields["repo"] == "" {
+		return ""
+	}
+	return fields["owner"] + "/" + fields["repo"]
 }
 
 func (s *Server) handleInvoke(c *gin.Context) {

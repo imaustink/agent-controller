@@ -210,6 +210,13 @@ export interface AgentGraphInput {
    * `AgentState.senderLogin`.
    */
   senderLogin?: string;
+  /**
+   * The `owner/repo` a relayed webhook event fired on, read off `/invoke`'s
+   * `event` descriptor. It is the repository integration-gateway verified the
+   * sender's permission on, so the Temporal engine's read gate takes a
+   * GitHub-acting agent's repository from here rather than from the prompt.
+   */
+  targetRepository?: string;
 }
 
 /** The slice of the compiled LangGraph agent this server needs — kept small and mockable for tests. */
@@ -710,6 +717,7 @@ export class InvokeServer {
     let forcedSkillId: string | undefined;
     let forcedAgentId: string | undefined;
     let senderLogin: string | undefined;
+    let targetRepository: string | undefined;
     // Consumer-supplied tools (docs/adr/0035), accepted here too so a
     // programmatic `/invoke` caller has parity with the chat facade. The raw
     // fields are captured inside the parse block and resolved after it, since
@@ -768,6 +776,12 @@ export class InvokeServer {
       } else if (rawEvent && typeof rawEvent === "object") {
         const login = (rawEvent as Record<string, unknown>).senderLogin;
         if (typeof login === "string" && login.trim() !== "") senderLogin = login;
+      }
+      if (rawEvent && typeof rawEvent === "object") {
+        const { owner, repo } = rawEvent as Record<string, unknown>;
+        if (typeof owner === "string" && owner && typeof repo === "string" && repo) {
+          targetRepository = `${owner}/${repo}`;
+        }
       }
       if (this.integrationRouteRegistry && rawEvent && typeof rawEvent === "object") {
         const eventFields = rawEvent as Record<string, unknown>;
@@ -851,6 +865,7 @@ export class InvokeServer {
       senderLogin,
       callerTools,
     ).then((graphInput) => {
+      if (targetRepository) graphInput.targetRepository = targetRepository;
       // Mark the in-flight job identity-link-pending the moment the graph
       // decides a link is needed (before the link URL exists), so a polling
       // caller can withhold a premature "starting work" ack. Only mutate while

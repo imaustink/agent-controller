@@ -27,6 +27,13 @@ temporal-engine:
   temporal:
     address: temporal-dev-server.controller-agent.svc:7233
     namespace: default
+  # The repository read gate asks the GitHub that issued the callers' tokens,
+  # which here is the in-cluster stub. Without this the worker would check a
+  # fake-github token against api.github.com and refuse every gated turn.
+  # defaultOwner lets a chat request name a repository without its owner.
+  github:
+    apiUrl: "http://fake-github.controller-agent.svc.cluster.local"
+    defaultOwner: e2e-org
   llm:
     # The subchart's own default (`agent-controller-agent-orchestrator`)
     # assumes the `agent-orchestrator` subchart at its OWN release-name-derived
@@ -149,6 +156,11 @@ integration-gateway:
     # the suite signs and posts them itself with the same HMAC the gateway
     # verifies, so the signature path is exercised for real.
     githubTriggerLabel: "ai-triage"
+
+    # Relays an issue labeled with this to the issue-review route, which
+    # community-components' values-e2e.yaml points at stub-swe-agent: the
+    # webhook half of the repository read gate (repo-read-gate.e2e.ts).
+    githubReviewLabel: "ai-review"
 
     # Loop prevention: the gateway drops events sent by its own bot login.
     # Specs deliberately use sender logins OTHER than this one, since an

@@ -642,6 +642,29 @@ stubAgent:
   # phase.
   replyAckTimeoutMs: ""
 
+# stub-swe-agent: a second END-TO-END TEST DOUBLE, identical to stub-agent
+# above except for its name and providers. stub-agent stands in for a Claude
+# agent that never touches GitHub; this one stands in for claude-code-swe-agent,
+# declaring `github` too, so a turn to it passes through the repository read
+# gate (the Temporal engine's authz.gateRepository) exactly as a production SWE
+# run does. Shares stub-agent's ServiceAccount rather than creating its own.
+stubSweAgent:
+  enabled: false
+  acknowledgeNotForProduction: false
+  image: stub-agent:latest
+  serviceAccountName: stub-agent
+  # Overrides the stub's "do not delegate to this agent" guidance, for a stub
+  # a spec must be able to reach from chat by naming it.
+  orchestratorPrompt: ""
+  identityLink:
+    enabled: false
+    providers: []
+  pacing:
+    narrateForMs: 0
+    narrateEveryMs: 2000
+    silentForMs: 0
+  replyAckTimeoutMs: ""
+
 integrationRoutes:
   # github-issue-labeled-triage: an IntegrationRoute CR (docs/adr/0024)
   # dispatching a GitHub `issues`/`labeled` webhook event straight to

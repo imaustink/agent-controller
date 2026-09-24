@@ -133,6 +133,27 @@ func TestShapeInvokeTurnDefaultsIdentityLinkFlowToEmpty(t *testing.T) {
 	require.Empty(t, turn.IdentityLinkFlow, "the workflow itself defaults an empty flow to authcode")
 }
 
+// A webhook turn's repository is the one its sender was verified on: named
+// by the adapter, or else read off the event itself.
+func TestShapeInvokeTurnCarriesTheEventRepository(t *testing.T) {
+	cases := []struct {
+		label string
+		req   invokeRequest
+		want  string
+	}{
+		{"named by the adapter", invokeRequest{Request: "x", TargetRepository: "e2e-org/e2e-repo"}, "e2e-org/e2e-repo"},
+		{"read off the event", invokeRequest{Request: "x", Event: map[string]any{"owner": "e2e-org", "repo": "e2e-repo"}}, "e2e-org/e2e-repo"},
+		{"the adapter wins", invokeRequest{Request: "x", TargetRepository: "a/b", Event: map[string]any{"owner": "c", "repo": "d"}}, "a/b"},
+		{"half an event", invokeRequest{Request: "x", Event: map[string]any{"owner": "e2e-org"}}, ""},
+		{"no event", invokeRequest{Request: "x"}, ""},
+	}
+	for _, tc := range cases {
+		turn, err := shapeInvokeTurn(tc.req, "", "", nil, testCaller, time.Now())
+		require.NoError(t, err, tc.label)
+		require.Equal(t, tc.want, turn.TargetRepository, tc.label)
+	}
+}
+
 // The security core of ADR 0030 §6. The sender login selects the principal
 // that credentials are keyed by, so with a secret configured it must come
 // ONLY from a verified assertion — anything holding this endpoint's token

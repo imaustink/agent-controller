@@ -394,6 +394,9 @@ export class TemporalEngine implements AgentGraphLike {
         // Callback URL to match, and where it doesn't, device flow is the only
         // one that works.
         ...(input.identityLinkFlow ? { identityLinkFlow: input.identityLinkFlow } : {}),
+        // The webhook event's repository, which the engine's read gate uses
+        // for a GitHub-acting agent instead of reading one out of the prompt.
+        ...(input.targetRepository ? { targetRepository: input.targetRepository } : {}),
         // Already resolved, validated and top-K-ranked by this process's own
         // handleChat pipeline (ADR 0035) before invoke() is ever called --
         // the engine's /invoke takes the resolved Descriptor shape (each

@@ -125,6 +125,18 @@ describe("TemporalEngine", () => {
     expect(body.identityLinkFlow).toBe("device");
   });
 
+  it("forwards a webhook turn's target repository to the engine's read gate", async () => {
+    const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+
+    await engine.invoke(input({ targetRepository: "e2e-org/e2e-repo" }));
+    await engine.invoke(input());
+
+    const bodies = calls.filter((c) => c.url === `${BASE}/invoke`).map((c) => JSON.parse(String(c.init!.body)));
+    expect(bodies[0].targetRepository).toBe("e2e-org/e2e-repo");
+    expect(bodies[1]).not.toHaveProperty("targetRepository");
+  });
+
   it("omits the identity-link flow entirely when the turn names none", async () => {
     const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
     const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });

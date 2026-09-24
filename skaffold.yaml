@@ -305,6 +305,7 @@ profiles:
             skipBuildDependencies: false
             setValueTemplates:
               stubAgent.image: "{{.IMAGE_FULLY_QUALIFIED_stub_agent}}"
+              stubSweAgent.image: "{{.IMAGE_FULLY_QUALIFIED_stub_agent}}"
               claudeCodeSweAgent.image: "{{.IMAGE_FULLY_QUALIFIED_claude_code_swe_agent}}"
               recipeScraper.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_scraper}}"
               recipePublisher.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_publisher}}"

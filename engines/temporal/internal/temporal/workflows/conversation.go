@@ -150,6 +150,11 @@ type TurnInput struct {
 	// inferred from Live — Live only decides whether the pre-flight may wait
 	// for the human to finish.
 	IdentityLinkFlow string `json:"identityLinkFlow,omitempty"`
+
+	// TargetRepository is the "owner/name" a webhook event fired on, which a
+	// GitHub-acting agent will work in. Only an adapter sets it; a chat turn's
+	// is extracted from its request instead (see delegateToAgent).
+	TargetRepository string `json:"targetRepository,omitempty"`
 }
 
 type TurnResult struct {
