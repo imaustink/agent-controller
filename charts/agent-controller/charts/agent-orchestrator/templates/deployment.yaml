@@ -43,6 +43,28 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.preStopSleepSeconds }}
+          # Outlive our own endpoint removal.
+          #
+          # SIGTERM and endpoint removal are issued concurrently, and this pod
+          # loses that race badly: `/invoke` answers 202 immediately (ADR 0006),
+          # so the drain in index.ts has no in-flight request to wait for and
+          # the process is gone about a second after SIGTERM -- while kube-proxy
+          # applies endpoint changes at most once a second. A caller that
+          # connects in the gap reaches an address with nothing behind it, and
+          # the kernel retries that same dead peer rather than failing fast: a
+          # ~10.5s connect timeout, not a prompt refusal.
+          #
+          # Sleeping here keeps the pod accepting traffic until every proxy has
+          # stopped sending it any. This is the fix for ALL callers; the
+          # gateway's own poll retry (orchestrator-client.ts) only covers the
+          # gateway. Well inside terminationGracePeriodSeconds, and it delays
+          # only the rollout, never a request.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.preStopSleepSeconds }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.ports.http }}
