@@ -461,6 +461,33 @@ export class GatewayServer {
     }
     try {
       await this.runTurn(owner, repo, issueNumber, sessionId, request, event, announce, onRemoteControlUrl);
+    } catch (error) {
+      // Last line of defence: whatever else a turn does, it must not end in
+      // silence. `runTurn` posts the outcome itself, so reaching here means it
+      // threw before doing so -- and the only thing anyone triggering an issue
+      // ever sees is the comment, so a throw with no comment is
+      // indistinguishable from the trigger never having been noticed. That is
+      // what "timed out waiting for a terminal comment" was in the resilience
+      // specs: a poll rejected mid-rollout, escaping all the way out of here.
+      //
+      // The specific hole is closed in OrchestratorClient.invoke (the poll now
+      // retries network errors the way the accept always did). This catch is
+      // the general guarantee, so the next unanticipated throw costs a bad
+      // comment rather than no comment.
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        await this.options.githubReplyClient.postIssueComment(
+          owner,
+          repo,
+          issueNumber,
+          `Something went wrong processing this: ${message}`,
+        );
+      } catch (postError) {
+        // Reported, not thrown: failing to post the failure must not replace
+        // the original error with a less informative one.
+        (this.options.onBackgroundError ?? ((e: unknown) => console.error(e)))(postError);
+      }
+      (this.options.onBackgroundError ?? ((e: unknown) => console.error(e)))(error);
     } finally {
       // `finally`, not the happy path only: a failed or blocked run is
       // exactly when someone wants to re-trigger, so the label must come off

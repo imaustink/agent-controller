@@ -22,6 +22,11 @@ import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "./sender-assertion
 // general-purpose backoff policy.
 const ACCEPT_RETRY_ATTEMPTS = 3;
 const ACCEPT_RETRY_DELAY_MS = 1000;
+// Consecutive poll failures tolerated before the turn is reported unreachable.
+// Small on purpose: the gateway holds a relay for as long as invoke() runs, so
+// waiting out the whole poll budget on a dead orchestrator starves the next
+// turn. A rollout gap is one kube-proxy sync (~1-2s).
+const POLL_NETWORK_RETRY_LIMIT = 3;
 
 export interface OrchestratorInvokeResult {
   status: "succeeded" | "failed" | "timed_out";
@@ -266,12 +271,56 @@ export class OrchestratorClient {
     const deadline = Date.now() + this.options.pollTimeoutMs;
     let announcedRunning = false;
     let announcedRemoteControlUrl = false;
+    let pollNetworkError: unknown;
+    let consecutivePollNetworkErrors = 0;
     while (Date.now() < deadline) {
       await this.sleep(this.options.pollIntervalMs);
-      const pollRes = await this.fetchImpl(
-        `${this.baseUrl()}/invoke/${accepted.id}`,
-        { headers: { authorization: `Bearer ${await this.resolveToken()}` } },
-      );
+      // The SAME failure the accept retry above exists for, on the other half
+      // of the same conversation -- and until now only the accept was covered,
+      // so a rollout landing between two polls still dropped the turn outright.
+      //
+      // It does not need the orchestrator to be down for seconds. The pod exits
+      // about a second after SIGTERM (`/invoke` answers 202 immediately, so the
+      // drain in the orchestrator's shutdown has no in-flight request to wait
+      // for), while kube-proxy applies endpoint changes at most once a second.
+      // A poll sent into that gap reaches an address with nothing behind it,
+      // and Linux keeps retrying the same dead peer rather than failing fast:
+      // measured as a 10.5s UND_ERR_CONNECT_TIMEOUT. Rolling the orchestrator
+      // under a gateway-shaped poller lost a poll in 5 of 10 rollouts.
+      //
+      // Thrown from here it escaped invoke() and runTurn() and no comment was
+      // ever posted -- the "timed out waiting for a terminal comment" the
+      // resilience specs see. Retried instead, the next poll lands on the new
+      // pod, which does not know this id and answers 404, and the turn ends as
+      // a reported failure rather than as silence.
+      let pollRes: Response;
+      try {
+        pollRes = await this.fetchImpl(
+          `${this.baseUrl()}/invoke/${accepted.id}`,
+          { headers: { authorization: `Bearer ${await this.resolveToken()}` } },
+        );
+        pollNetworkError = undefined;
+        consecutivePollNetworkErrors = 0;
+      } catch (err) {
+        // Bounded to a few CONSECUTIVE failures, deliberately not to this
+        // loop's deadline.
+        //
+        // The gateway holds a relay open for the whole time invoke() runs, and
+        // this suite's negative controls depend on an abandoned turn releasing
+        // it promptly -- see the pollTimeoutMs/resumeWaitMs notes in
+        // values-e2e.yaml, both shortened for exactly that reason. Retrying to
+        // the deadline pinned the relay for the full poll window on a turn
+        // whose orchestrator had gone, which starves the NEXT trigger; that
+        // trades a silently dropped turn for a stalled one.
+        //
+        // A rollout gap is ~1-2s (one kube-proxy sync), and the orchestrator's
+        // preStop now covers it besides, so a handful of intervals is all this
+        // ever legitimately needs.
+        pollNetworkError = err;
+        consecutivePollNetworkErrors++;
+        if (consecutivePollNetworkErrors > POLL_NETWORK_RETRY_LIMIT) break;
+        continue;
+      }
       if (!pollRes.ok) {
         return { status: "failed", error: `/invoke/${accepted.id} poll failed: ${pollRes.status}` };
       }
@@ -303,6 +352,17 @@ export class OrchestratorClient {
         await onRunning?.();
       }
       // keep polling.
+    }
+    // Distinguished from an ordinary budget expiry: "we never reached it" and
+    // "it never finished" have different fixes, and the comment the caller
+    // posts is the only place anyone sees either.
+    if (pollNetworkError !== undefined) {
+      return {
+        status: "failed",
+        error: `/invoke/${accepted.id} unreachable after ${POLL_NETWORK_RETRY_LIMIT} consecutive poll failures: ${
+          pollNetworkError instanceof Error ? pollNetworkError.message : String(pollNetworkError)
+        }`,
+      };
     }
     return { status: "timed_out", error: `no terminal result within ${this.options.pollTimeoutMs}ms` };
   }

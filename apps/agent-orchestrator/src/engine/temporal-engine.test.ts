@@ -188,6 +188,37 @@ describe("TemporalEngine", () => {
     expect(state.result).toContain("still running");
   });
 
+  // A rolling restart of the engine gateway REJECTS the poll rather than
+  // answering it: that Deployment is accept-then-poll too, so it drains
+  // nothing and exits promptly on SIGTERM while kube-proxy takes up to a
+  // second to stop routing to it. Thrown, that would abandon a turn that is
+  // still running -- the record is the workflow, not this process's memory.
+  it("retries a poll rejected mid-rollout and finishes the turn once the gateway is back", async () => {
+    let call = 0;
+    const impl = vi.fn(async (url: string | URL) => {
+      const href = String(url);
+      if (href.endsWith("/invoke")) return new Response(JSON.stringify({ id: "c.upd-1", status: "pending" }), { status: 202 });
+      call++;
+      if (call <= 2) throw new Error("UND_ERR_CONNECT_TIMEOUT");
+      return new Response(JSON.stringify({ id: "c.upd-1", status: "succeeded", result: "survived the roll" }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+    const state = await engine.invoke(input());
+    expect(state.error).toBeUndefined();
+    expect(state.result).toBe("survived the roll");
+  });
+
+  it("gives up on an unreachable gateway only once the poll budget is spent", async () => {
+    const impl = vi.fn(async (url: string | URL) => {
+      if (String(url).endsWith("/invoke")) return new Response(JSON.stringify({ id: "c.upd-1", status: "pending" }), { status: 202 });
+      throw new Error("UND_ERR_CONNECT_TIMEOUT");
+    }) as unknown as typeof fetch;
+
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl, timeoutMs: 0 });
+    await expect(engine.invoke(input())).rejects.toThrow(/unreachable for the poll budget/);
+  });
+
   it("throws when the engine is unreachable, so the turn fails honestly", async () => {
     const impl = vi.fn(async () => new Response("nope", { status: 502 })) as unknown as typeof fetch;
     const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });

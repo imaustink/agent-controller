@@ -165,6 +165,111 @@ describe("OrchestratorClient.invoke", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
+  // The other half of the same rollout, and the one the accept retry above
+  // does NOT cover. The pod exits ~1s after SIGTERM (`/invoke` answers 202
+  // immediately, so the shutdown drain has nothing in flight to wait for)
+  // while kube-proxy applies endpoint changes at most once a second, so a poll
+  // sent into that gap reaches a dead address and the kernel waits out a
+  // ~10.5s connect timeout instead of failing fast. Thrown from the poll it
+  // escaped invoke() and runTurn() and no comment was ever posted -- which is
+  // precisely "timed out waiting for a terminal comment" in resilience.e2e.ts.
+  it("retries a poll that hits a network-level error, and finishes the turn once the pod is back", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "run-1" }) })
+      .mockRejectedValueOnce(new Error("UND_ERR_CONNECT_TIMEOUT"))
+      .mockRejectedValueOnce(new Error("connect ECONNREFUSED"))
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "succeeded", result: "survived the roll" }) });
+
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+
+    const result = await client.invoke("do the thing", "session-1");
+    expect(result).toEqual({ status: "succeeded", result: "survived the roll" });
+  });
+
+  // What the e2e spec actually accepts: the retried poll reaches the NEW pod,
+  // which has never heard of this id and answers 404. A reported failure is a
+  // comment; an escaped exception is silence.
+  it("reports a poll that reaches a pod which no longer knows the turn, rather than throwing", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "run-1" }) })
+      .mockRejectedValueOnce(new Error("UND_ERR_CONNECT_TIMEOUT"))
+      .mockResolvedValueOnce({ ok: false, status: 404, text: async () => "not found" });
+
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+
+    const result = await client.invoke("do the thing", "session-1");
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/404/);
+  });
+
+  // The relay, not the turn, is what bounds this. invoke() holds a gateway
+  // relay for as long as it runs, and values-e2e.yaml shortens pollTimeoutMs
+  // and resumeWaitMs specifically so an abandoned turn releases it promptly.
+  // Retrying a dead orchestrator to the deadline honours the poll budget and
+  // starves the NEXT turn -- trading a dropped turn for a stalled one, which
+  // is what the first version of this retry actually did.
+  it("gives up after a bounded number of poll failures rather than holding the relay for the whole budget", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "run-1" }) })
+      .mockRejectedValue(new Error("UND_ERR_CONNECT_TIMEOUT"));
+
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      // Deliberately enormous: if this bounded the give-up, the call would make
+      // hundreds of poll attempts instead of a handful.
+      pollTimeoutMs: 10 * 60 * 1000,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+
+    const result = await client.invoke("do the thing", "session-1");
+    expect(result.status).toBe("failed");
+    // 1 accept + a small, bounded number of polls.
+    expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(6);
+  });
+
+  it("reports an unreachable poll distinctly from a turn that merely never finished", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "run-1" }) })
+      .mockRejectedValue(new Error("UND_ERR_CONNECT_TIMEOUT"));
+
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 20,
+      sleep: noopSleep,
+      fetchImpl,
+    });
+
+    const result = await client.invoke("do the thing", "session-1");
+    // "we never reached it" and "it never finished" have different fixes, and
+    // the posted comment is the only place anyone sees either.
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/unreachable/);
+    expect(result.error).toMatch(/UND_ERR_CONNECT_TIMEOUT/);
+  });
+
   it("returns failed once the initial POST's network error outlasts the retry budget", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED"));
     const client = new OrchestratorClient({
