@@ -89,8 +89,12 @@ func resumePendingLink(
 	}
 
 	// Only the caller who parked the turn may resume it. Anyone else's turn
-	// is an ordinary one, and the anchor stays put so its owner can still
-	// come back to it.
+	// is an ordinary one and does not resume this anchor. It usually stays put
+	// for its owner, but this is best-effort, not a guarantee: there is one
+	// anchor per conversation, so if the intruder's own turn goes on to
+	// authorize an agent, delegateToAgent clears it (delegate.go) and the
+	// owner must re-park. That is the pre-existing single-anchor limitation,
+	// not something this ownership gate changes.
 	if owner := anchor.RequestedBy; owner != nil &&
 		(owner.Subject != in.Caller.Subject || owner.PerUser != in.Caller.PerUser || owner.SenderLogin != in.SenderLogin) {
 		logger.Warn("pending identity link belongs to a different caller; not resuming it",
