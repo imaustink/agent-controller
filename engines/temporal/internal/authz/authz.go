@@ -214,6 +214,24 @@ type PendingLink struct {
 	// is what minted a second, different code for the same still-pending
 	// flow.
 	LinkText string `json:"linkText,omitempty"`
+	// RequestedBy is the caller whose turn parked on this link. Only that
+	// same caller may resume it: the anchor replays Request, and replaying it
+	// for anyone else runs one person's goal under another identity's
+	// credentials. That is exactly what happened when a chat user's forwarded
+	// JWT expired mid-wait and the resume arrived as the shared service
+	// subject. Nil on anchors written before this existed, which resume as
+	// they always did so replaying their history takes the same path.
+	RequestedBy *LinkOwner `json:"requestedBy,omitempty"`
+}
+
+// LinkOwner is the part of a turn's identity that decides whose credentials
+// it runs with: the subject, whether that subject is one human, and the
+// sender an adapter vouched for (a webhook turn's subject is shared, so the
+// login is what tells two commenters apart).
+type LinkOwner struct {
+	Subject     string `json:"subject"`
+	PerUser     bool   `json:"perUser,omitempty"`
+	SenderLogin string `json:"senderLogin,omitempty"`
 }
 
 // Verdict is a TOTAL union: every case is an outcome the caller must handle.

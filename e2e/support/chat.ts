@@ -100,11 +100,26 @@ export interface ChatTurnResult {
   parked: boolean;
 }
 
-export async function chatTurn(
-  userId: string,
-  request: string,
-  opts: { sessionId?: string; timeoutMs?: number; allowPark?: boolean } = {},
-): Promise<ChatTurnResult> {
+/** Options every chat call takes. */
+export interface ChatOptions {
+  sessionId?: string;
+  timeoutMs?: number;
+  allowPark?: boolean;
+  /**
+   * Gives the forwarded-user JWT an `exp` this many seconds out, the way Open
+   * WebUI always does. Unset mints one with no expiry. Negative mints one that
+   * has already expired.
+   */
+  jwtExpiresInSeconds?: number;
+  /**
+   * Sends NO forwarded-user JWT, only the shared Open WebUI bearer -- the
+   * request a caller makes when it has no per-user identity to present, and so
+   * resolves to the shared subject values-e2e.yaml maps that bearer to.
+   */
+  withoutUserJwt?: boolean;
+}
+
+export async function chatTurn(userId: string, request: string, opts: ChatOptions = {}): Promise<ChatTurnResult> {
   const { raw, parked } = await streamChat(userId, [{ role: "user", content: request }], opts);
   return { text: assembleSseContent(raw), parked };
 }
@@ -151,13 +166,7 @@ export interface ChatToolTurnResult extends ChatTurnResult {
 export async function chatToolTurn(
   userId: string,
   messages: ChatMessage[],
-  opts: {
-    tools?: ChatToolDefinition[];
-    toolChoice?: unknown;
-    sessionId?: string;
-    timeoutMs?: number;
-    allowPark?: boolean;
-  } = {},
+  opts: ChatOptions & { tools?: ChatToolDefinition[]; toolChoice?: unknown } = {},
 ): Promise<ChatToolTurnResult> {
   const { raw, parked } = await streamChat(userId, messages, opts, {
     ...(opts.tools ? { tools: opts.tools } : {}),
@@ -183,11 +192,16 @@ export async function chatToolTurn(
 async function streamChat(
   userId: string,
   messages: ChatMessage[],
-  opts: { sessionId?: string; timeoutMs?: number; allowPark?: boolean },
+  opts: ChatOptions,
   extraBody: Record<string, unknown> = {},
 ): Promise<{ raw: string; parked: boolean }> {
-  const secret = await forwardedUserJwtSecret();
-  const jwt = mintForwardedUserJwt(secret, userId);
+  const jwt = opts.withoutUserJwt
+    ? undefined
+    : mintForwardedUserJwt(
+        await forwardedUserJwtSecret(),
+        userId,
+        opts.jwtExpiresInSeconds === undefined ? {} : { expiresInSeconds: opts.jwtExpiresInSeconds },
+      );
   const sessionId = opts.sessionId ?? `e2e-chat-${userId}-${process.pid}`;
 
   return withPortForward(ORCHESTRATOR_SERVICE, ORCHESTRATOR_PORT, CHAT_PORT, async (baseUrl) => {
@@ -207,7 +221,7 @@ async function streamChat(
           // ephemeral session, so two calls "in the same conversation" each
           // land in their own workflow with no shared state whatsoever.
           "x-openwebui-chat-id": sessionId,
-          [FORWARDED_USER_JWT_HEADER]: jwt,
+          ...(jwt ? { [FORWARDED_USER_JWT_HEADER]: jwt } : {}),
         },
         body: JSON.stringify({ model: "agent-orchestrator", stream: true, messages, ...extraBody }),
         // A chat turn that needs a link holds its connection open for the whole

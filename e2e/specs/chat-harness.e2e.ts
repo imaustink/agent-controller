@@ -46,6 +46,17 @@ describe("chat harness agrees with the orchestrator's forwarded-user resolver", 
     await expect(resolver.resolve(mintForwardedUserJwt("not-the-deployments-secret", "e2e-chat-user"))).resolves.toBeUndefined();
   });
 
+  // specs/identity-continuity.e2e.ts depends on the harness minting a JWT
+  // the resolver honors the expiry of, exactly as it does Open WebUI's.
+  it("honors the expiry it mints, like Open WebUI's own", async () => {
+    await expect(
+      resolver.resolve(mintForwardedUserJwt(SECRET, "e2e-chat-user", { expiresInSeconds: 300 })),
+    ).resolves.toMatchObject({ subject: "openwebui:e2e-chat-user" });
+    await expect(
+      resolver.resolve(mintForwardedUserJwt(SECRET, "e2e-chat-user", { expiresInSeconds: -60 })),
+    ).resolves.toBeUndefined();
+  });
+
   it("assembles the assistant's text out of an OpenAI-style stream", async () => {
     const body = [
       'data: {"choices":[{"delta":{"role":"assistant"}}]}',

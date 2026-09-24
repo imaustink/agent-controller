@@ -45,6 +45,11 @@ func delegateToAgent(ctx workflow.Context, actx workflow.Context, state *Convers
 			// link landed. Without this the resume re-delegates "ok, linked
 			// it" and the user's actual request is lost.
 			anchor.Request = in.Message
+			anchor.RequestedBy = &authz.LinkOwner{
+				Subject:     in.Caller.Subject,
+				PerUser:     in.Caller.PerUser,
+				SenderLogin: in.SenderLogin,
+			}
 			state.PendingIdentityLink = &anchor
 		}
 		return verdict.Message, *meta, nil

@@ -230,6 +230,12 @@ func newLoopEnv(t *testing.T) *loopEnv {
 }
 
 func (le *loopEnv) sendTurn(t *testing.T, updateID, message string, result *workflows.TurnResult, at time.Duration) {
+	le.sendTurnAs(t, updateID, message, activities.Caller{Subject: "user:1", Roles: []string{"cook"}}, "", result, at)
+}
+
+// sendTurnAs is sendTurn for a specific caller, for specs about WHO a turn
+// runs as rather than what it does.
+func (le *loopEnv) sendTurnAs(t *testing.T, updateID, message string, caller activities.Caller, senderLogin string, result *workflows.TurnResult, at time.Duration) {
 	le.env.RegisterDelayedCallback(func() {
 		le.env.UpdateWorkflow(workflows.UserTurnUpdate, updateID, &testsuite.TestUpdateCallback{
 			OnAccept: func() {},
@@ -245,7 +251,8 @@ func (le *loopEnv) sendTurn(t *testing.T, updateID, message string, result *work
 			},
 		}, workflows.TurnInput{
 			Message:              message,
-			Caller:               activities.Caller{Subject: "user:1", Roles: []string{"cook"}},
+			Caller:               caller,
+			SenderLogin:          senderLogin,
 			ForcedSkillID:        le.forcedSkillID,
 			ForcedAgentID:        le.forcedAgentID,
 			CallerTools:          le.callerTools,
@@ -736,6 +743,130 @@ func TestPendingLinkResumeReChecksTheSameFlowInsteadOfStartingAnother(t *testing
 		"the resume must re-check the SAME device code, not one from a fresh Start")
 
 	require.Equal(t, "Planned five days of meals.", second.Reply)
+}
+
+// A parked turn replays its ORIGINAL request when it resumes, so only the
+// caller who parked it may resume it. On bitovi a chat user's forwarded JWT
+// expired during the orchestrator's auto-resume loop, the next resume arrived
+// as the shared service subject, and the workflow replayed the user's request
+// under the service subject's credentials. A different caller's turn must be
+// an ordinary turn. It may park on its own link (a conversation holds one
+// anchor, last writer wins), and then that anchor is not the owner's to
+// resume either: ownership is checked in both directions.
+func TestPendingLinkResumesOnlyForTheCallerWhoParkedIt(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := mealPlannerAgent()
+	agent.IdentityProviders = []string{"github"}
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+	le.skillTools = recipesSkillTools()
+	le.resolvedAgent = &agent
+
+	anchor := &authz.PendingLink{
+		AgentID:    agent.ID,
+		Provider:   "github",
+		Flow:       "device",
+		DeviceCode: "device-1",
+		Subject:    "openwebui:alice",
+		ExpiresAt:  time.Now().Add(time.Hour).UnixMilli(),
+		LinkText:   "[link your GitHub account](https://github.com/login/device) and enter code `ABCD-1234`",
+	}
+	// Every turn stays parked: the spec is about which turn RESUMES, not
+	// about launching.
+	le.authorizeVerdict = func() authz.Verdict {
+		return authz.Verdict{Kind: authz.KindLinkRequired, Message: "link please", Pending: anchor}
+	}
+
+	alice := activities.Caller{Subject: "openwebui:alice", Roles: []string{"cook"}, PerUser: true}
+	service := activities.Caller{Subject: "integration-gateway", Roles: []string{"cook"}}
+
+	var first, second, third workflows.TurnResult
+	le.sendTurnAs(t, "turn-1", "open a PR for the oikb daemon", alice, "", &first, time.Millisecond)
+	le.sendTurnAs(t, "turn-2", "something else entirely", service, "", &second, time.Second)
+	le.sendTurnAs(t, "turn-3", "done", alice, "", &third, 2*time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Len(t, le.authorizeInputs, 3)
+
+	intruder := le.authorizeInputs[1]
+	require.Equal(t, "integration-gateway", intruder.Caller.Subject)
+	require.Nil(t, intruder.Pending,
+		"a different caller must not resume someone else's parked link")
+
+	back := le.authorizeInputs[2]
+	require.Equal(t, "openwebui:alice", back.Caller.Subject)
+	require.Nil(t, back.Pending,
+		"the service subject's turn re-anchored the conversation; alice must not resume ITS link either")
+}
+
+// The owner resuming their own link still works, and the anchor records who
+// they were.
+func TestPendingLinkRecordsItsOwner(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := mealPlannerAgent()
+	agent.IdentityProviders = []string{"github"}
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+	le.skillTools = recipesSkillTools()
+	le.resolvedAgent = &agent
+
+	anchor := &authz.PendingLink{
+		AgentID: agent.ID, Provider: "github", Flow: "device", DeviceCode: "device-1",
+		Subject: "openwebui:alice", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
+	}
+	le.authorizeVerdict = func() authz.Verdict {
+		return authz.Verdict{Kind: authz.KindLinkRequired, Message: "link please", Pending: anchor}
+	}
+
+	alice := activities.Caller{Subject: "openwebui:alice", Roles: []string{"cook"}, PerUser: true}
+	var first, second workflows.TurnResult
+	le.sendTurnAs(t, "turn-1", "open a PR", alice, "", &first, time.Millisecond)
+	le.sendTurnAs(t, "turn-2", "done", alice, "", &second, time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Len(t, le.authorizeInputs, 2)
+	resumed := le.authorizeInputs[1]
+	require.NotNil(t, resumed.Pending)
+	require.Equal(t, "device-1", resumed.Pending.DeviceCode)
+	require.Equal(t, &authz.LinkOwner{Subject: "openwebui:alice", PerUser: true}, resumed.Pending.RequestedBy)
+}
+
+// The webhook subject is shared by every commenter, so the sender login is
+// what separates two people on one issue.
+func TestPendingLinkOwnershipDistinguishesWebhookSenders(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := mealPlannerAgent()
+	agent.IdentityProviders = []string{"github"}
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+	le.skillTools = recipesSkillTools()
+	le.resolvedAgent = &agent
+
+	anchor := &authz.PendingLink{
+		AgentID: agent.ID, Provider: "github", Flow: "device", DeviceCode: "device-1",
+		Subject: "integration-gateway", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
+	}
+	le.authorizeVerdict = func() authz.Verdict {
+		return authz.Verdict{Kind: authz.KindLinkRequired, Message: "link please", Pending: anchor}
+	}
+
+	relay := activities.Caller{Subject: "integration-gateway", Roles: []string{"cook"}}
+	var first, second workflows.TurnResult
+	le.sendTurnAs(t, "turn-1", "triage this", relay, "alice", &first, time.Millisecond)
+	le.sendTurnAs(t, "turn-2", "me too", relay, "mallory", &second, time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Len(t, le.authorizeInputs, 2)
+	require.Nil(t, le.authorizeInputs[1].Pending, "another sender on the same issue must not resume alice's link")
 }
 
 // An IntegrationRoute names its target outright (upstream ADR 0024), so a

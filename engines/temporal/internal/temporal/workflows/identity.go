@@ -88,6 +88,17 @@ func resumePendingLink(
 		return "", *meta, false, nil
 	}
 
+	// Only the caller who parked the turn may resume it. Anyone else's turn
+	// is an ordinary one, and the anchor stays put so its owner can still
+	// come back to it.
+	if owner := anchor.RequestedBy; owner != nil &&
+		(owner.Subject != in.Caller.Subject || owner.PerUser != in.Caller.PerUser || owner.SenderLogin != in.SenderLogin) {
+		logger.Warn("pending identity link belongs to a different caller; not resuming it",
+			"provider", anchor.Provider, "agentId", anchor.AgentID,
+			"ownerSubject", owner.Subject, "callerSubject", in.Caller.Subject)
+		return "", *meta, false, nil
+	}
+
 	// Re-resolve under CURRENT roles: an anchor is not a capability, and roles
 	// may have been revoked while the caller was linking.
 	var agent *catalog.AgentDescriptor

@@ -20,12 +20,25 @@ const b64url = (input: Buffer | string): string => Buffer.from(input).toString("
  * dependency list to vitest + typescript. Same no-new-dependency precedent as
  * the orchestrator's own `sender-assertion.ts`.
  */
-export function mintForwardedUserJwt(secret: string, userId: string): string {
+export function mintForwardedUserJwt(
+  secret: string,
+  userId: string,
+  opts: { expiresInSeconds?: number; now?: number } = {},
+): string {
   const header = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   // `id` is the claim the resolver prefers; `role` is Open WebUI's own
   // vocabulary and is deliberately ignored by the resolver (this system's RBAC
   // roles come from configuration, not from the header).
-  const payload = b64url(JSON.stringify({ id: userId, role: "user" }));
+  //
+  // `exp` is opt-in. Open WebUI always sets one (its
+  // FORWARD_USER_INFO_HEADER_JWT_EXPIRES_SECONDS, 300s by default), and a turn
+  // that outlives it is its own class of bug -- see
+  // specs/identity-continuity.e2e.ts -- but most specs finish well inside it.
+  const exp =
+    opts.expiresInSeconds === undefined
+      ? {}
+      : { exp: Math.floor((opts.now ?? Date.now()) / 1000) + opts.expiresInSeconds };
+  const payload = b64url(JSON.stringify({ id: userId, role: "user", ...exp }));
   const signature = createHmac("sha256", secret).update(`${header}.${payload}`).digest("base64url");
   return `${header}.${payload}.${signature}`;
 }
