@@ -742,6 +742,33 @@ export class InvokeServer {
     }
   }
 
+  /**
+   * Persist a terminal invocation record from the fire-and-forget graph chain
+   * without ever rejecting.
+   *
+   * These writes happen on the `void`-ed chain in `handleInvoke`, and
+   * {@link RedisInvocationStore.set} deliberately PROPAGATES its error (a lost
+   * terminal record is the failure the durable store exists to remove, so it
+   * surfaces rather than swallows). But a rejection escaping the void-ed chain
+   * is an unhandled promise rejection, and Node >=20 terminates the process by
+   * default -- which would wipe every OTHER in-flight record on this pod and
+   * reintroduce the `poll failed: 404` by a worse route than the one durability
+   * closed. So the terminal writes here log-and-continue: a Redis blip at
+   * terminal-write time costs THIS record its answer, not the whole pod. The
+   * initial `pending` write (in the request path, not the void-ed chain) still
+   * surfaces its error as a 500 to the caller, who simply retries.
+   */
+  private async persistTerminalInvocation(id: string, record: InvocationRecord): Promise<void> {
+    try {
+      await this.invocations.set(id, record);
+    } catch (err) {
+      console.error(
+        `agent-orchestrator: failed to persist terminal invocation record ${id}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   private async handleInvoke(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const rawBody = await readBody(req);
 
@@ -939,7 +966,7 @@ export class InvokeServer {
           // progress listener above -- this terminal write replaces the whole
           // record, so it would otherwise be dropped on a successful/failed turn.
           const remoteControlUrl = (await this.invocations.get(id))?.remoteControlUrl;
-          await this.invocations.set(id, {
+          await this.persistTerminalInvocation(id, {
             id,
             status: state.error ? "failed" : "succeeded",
             result: state.result,
@@ -967,7 +994,7 @@ export class InvokeServer {
         })
         .catch(async (err: unknown) => {
           const remoteControlUrl = (await this.invocations.get(id))?.remoteControlUrl;
-          await this.invocations.set(id, {
+          await this.persistTerminalInvocation(id, {
             id,
             status: "failed",
             error: err instanceof Error ? err.message : String(err),
@@ -980,7 +1007,7 @@ export class InvokeServer {
       // unhandled -- Node terminates the process, wiping the in-memory
       // `invocations` Map and turning every in-flight poll (not just this
       // one) into a 404 the caller reports as "poll failed: 404".
-      await this.invocations.set(id, {
+      await this.persistTerminalInvocation(id, {
         id,
         status: "failed",
         error: err instanceof Error ? err.message : String(err),
