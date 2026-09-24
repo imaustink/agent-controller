@@ -100,7 +100,14 @@ func resolveExtractedRepository(request, owner, name, defaultOwner string) strin
 
 // mentions reports whether word appears in text as a whole token, ignoring
 // case. A plain substring test would let "api" match inside "rapid".
+//
+// Every character a repository name may contain continues the token on both
+// sides, "." included, so "platform" is not mentioned by "platform.internal":
+// a model that truncated that name must not resolve to a different
+// repository. The one exception is a "." that ends a sentence ("fix it in
+// e2e-repo."), which is followed by something no name contains, or by
+// nothing at all.
 func mentions(text, word string) bool {
-	pattern := `(?i)(^|[^A-Za-z0-9_.-])` + regexp.QuoteMeta(word) + `($|[^A-Za-z0-9_-])`
+	pattern := `(?i)(^|[^A-Za-z0-9_.-])` + regexp.QuoteMeta(word) + `($|[^A-Za-z0-9_.-]|\.($|[^A-Za-z0-9_.-]))`
 	return regexp.MustCompile(pattern).MatchString(text)
 }

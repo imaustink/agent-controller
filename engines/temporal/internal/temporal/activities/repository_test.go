@@ -47,6 +47,25 @@ func TestAModelAnswerTheRequestDoesNotSupportIsDropped(t *testing.T) {
 	}
 }
 
+// A "." is part of a repository name, so a name truncated at one is not the
+// name the user wrote: "platform" must not stand in for "platform.internal"
+// and resolve, via the default owner, to a different repository.
+func TestANameTruncatedAtADotIsNotAMention(t *testing.T) {
+	repo, _ := extract(t, `{"owner":"","name":"platform"}`, "bitovi", "work in the platform.internal repo")
+	require.Empty(t, repo)
+
+	repo, _ = extract(t, `{"owner":"","name":"platform.internal"}`, "bitovi", "work in the platform.internal repo")
+	require.Equal(t, "bitovi/platform.internal", repo)
+}
+
+// ...while the full stop at the end of a sentence is not part of the name.
+func TestANameEndingASentenceIsStillAMention(t *testing.T) {
+	for _, request := range []string{"fix the failing test in e2e-repo.", "fix it in e2e-repo. Thanks", "e2e-repo.\nthanks"} {
+		repo, _ := extract(t, `{"owner":"","name":"e2e-repo"}`, "e2e-org", request)
+		require.Equal(t, "e2e-org/e2e-repo", repo, request)
+	}
+}
+
 func TestABareNameTakesTheDeploymentsDefaultOwner(t *testing.T) {
 	repo, _ := extract(t, `{"owner":"","name":"bitovi-platform-services"}`, "bitovi",
 		"add the oikb daemon to bitovi-platform-services")
