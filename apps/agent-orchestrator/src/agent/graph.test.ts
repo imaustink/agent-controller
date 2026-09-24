@@ -3692,6 +3692,74 @@ describe("buildAgentGraph agent-turn resumability", () => {
     });
   });
 
+  it("anchors the run BEFORE creating it, so a pod killed mid-launch still leaves something to resume", async () => {
+    const deps = resumeDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the bug", authToken: "tok", sessionId: "session-1" });
+
+    // Ordering is the whole point, not just that both happened. The window the
+    // anchor exists for opens when the AgentRun CR does, so an anchor written
+    // after `launch` returns leaves a running agent with nothing pointing at it
+    // for however long creating the CR takes. The next turn then finds no
+    // anchor and re-delegates -- the work done twice, which on a coding agent
+    // is a second branch and a second PR.
+    const anchoredAt = (deps.markAgentRunAwaitingReply as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    const launchedAt = (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    expect(anchoredAt).toBeLessThan(launchedAt);
+  });
+
+  it("clears the anchor when the launch fails, so the next turn does not re-attach to a run that never existed", async () => {
+    const deps = resumeDeps();
+    (deps.agentRunLauncher!.launch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("admission webhook denied the AgentRun"));
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "fix the bug", authToken: "tok", sessionId: "session-1" });
+
+    // Anchoring first means a failed launch leaves a pointer to a run that will
+    // never exist. Left behind, the next turn re-attaches to it, waits out the
+    // whole re-attach window for a reply nobody is writing, and reports the
+    // answer unrecoverable -- a launch failure surfacing as a silent stall one
+    // turn later instead of as itself.
+    expect(deps.clearAgentRunAwaitingReply).toHaveBeenCalledWith("session-1");
+  });
+
+  // The half of the ack fix that returns the answer. Once the reply has been
+  // acked the agent has concluded and will never re-offer, so a re-attach that
+  // only WAITS reports a recoverable answer as "went silent" and drops it. If a
+  // reply was recorded before its ack, the re-attach must read it instead.
+  it("collects a reply recorded before its ack instead of waiting for a re-offer that will never come", async () => {
+    const deps = resumeDeps();
+    // The agent is gone: anything that waits here times out.
+    (deps.agentChannel!.awaitReply as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new AgentTurnTimeoutError("agent stub-agent went silent for 30000ms"),
+    );
+    deps.agentChannel!.recordedReply = vi.fn().mockResolvedValue({
+      message: "the answer the agent was holding",
+      final: true,
+      narration: [],
+    } satisfies AgentTurnResult);
+    deps.agentChannel!.forgetRecordedReply = vi.fn().mockResolvedValue(undefined);
+    const graph = buildAgentGraph(deps);
+
+    const state = await graph.invoke({
+      request: "any update?",
+      authToken: "tok",
+      sessionId: "session-1",
+      activeAgentRunId: "run-1",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunAwaitingReply: true,
+      sessionSubject: "alice",
+    } as never);
+
+    expect(state.result).toContain("the answer the agent was holding");
+    expect(state.error).toBeUndefined();
+    // Read, not waited for -- and the anchor dropped so later turns do not
+    // re-attach to a run that has already been collected.
+    expect(deps.agentChannel!.recordedReply).toHaveBeenCalledWith("run-1");
+    expect(deps.clearAgentRunAwaitingReply).toHaveBeenCalledWith("session-1");
+  });
+
   it("reports a lost channel as a resumable pause, not a failure", async () => {
     const deps = resumeDeps();
     (deps.agentChannel!.awaitReply as ReturnType<typeof vi.fn>).mockRejectedValue(

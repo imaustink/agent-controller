@@ -1478,6 +1478,36 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       });
       if (!found) return {};
 
+      // A reply this run already produced, durably recorded before its ack
+      // (agents/reply-store.ts). Checked BEFORE subscribing, because the ack
+      // that released the agent's hold is exactly what makes waiting futile:
+      // once acked, the agent has concluded and will never re-offer, so a
+      // re-attach that only waits reports a recoverable answer as
+      // "went silent for <idle window>ms" and drops it. This is the other half
+      // of persisting before the ack -- writing it saves the answer, reading it
+      // here is what actually returns it to the caller.
+      if (state.activeAgentRunAwaitingReply && deps.agentChannel.recordedReply) {
+        const recorded = await deps.agentChannel.recordedReply(state.activeAgentRunId).catch(() => undefined);
+        if (recorded) {
+          if (state.sessionId) await deps.clearAgentRunAwaitingReply?.(state.sessionId).catch(() => undefined);
+          await deps.agentChannel.forgetRecordedReply?.(state.activeAgentRunId).catch(() => undefined);
+          return {
+            selectedAgent: found.agent,
+            agentRunId: state.activeAgentRunId,
+            agentAwaitingReply: !recorded.final,
+            result: composeAgentTurnMessage(state, recorded),
+            ...(recorded.final
+              ? {
+                  extractedAgentContinuation: {
+                    agentId: found.agent.id,
+                    token: typeof recorded.result === "string" ? recorded.result : "",
+                  },
+                }
+              : {}),
+          };
+        }
+      }
+
       try {
         const awaitReply = deps.agentChannel.awaitReply(state.activeAgentRunId, {
           idleTimeoutMs: state.activeAgentRunAwaitingReply
@@ -1755,23 +1785,22 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             sessionId: state.sessionId,
           }),
         });
-        await deps.agentRunLauncher.launch(agent.agentRunTemplate, runId, {
-          goal,
-          callbackUrl,
-          callbackSecretRef: deps.callbackSecretRef,
-          timeoutSeconds: deps.agentRunTimeoutSeconds,
-          ...(deps.natsUrl ? { natsUrl: deps.natsUrl, natsSubject: `callbacks.${runId}` } : {}),
-          ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
-          ...(ownedSecretNames ? { ownedSecretNames } : {}),
-          ...(state.sessionId ? { sessionId: state.sessionId } : {}),
-        });
-        // The run now exists and we are about to wait on it. Anchor it to the
-        // conversation HERE, not with the rest of the turn's outcome: from this
-        // line until the reply arrives is exactly the window in which the
-        // orchestrator can be rolled out from under the wait, and an outcome
-        // persisted after the graph returns is precisely what a killed pod never
-        // gets to write. Best-effort -- a session store hiccup should cost
-        // resumability, not the turn.
+        // Anchor the run to the conversation BEFORE creating it, for the same
+        // reason the subscription above is opened first: the window this anchor
+        // exists to survive opens the instant the AgentRun CR exists, not once
+        // `launch` returns.
+        //
+        // Written after the launch, the ordering was: CR created -> controller
+        // starts the Job -> ... -> anchor written. An orchestrator killed inside
+        // that gap leaves a RUNNING agent with NOTHING pointing at it, so the
+        // next turn on the conversation finds no anchor, re-delegates, and the
+        // work is done twice -- a second branch and a second PR on a real coding
+        // agent. That is exactly what `resilience.e2e.ts`'s "recovers the reply
+        // on a follow-up turn after a rollout, without launching a second run"
+        // catches, and the gap widens with however long the CR takes to create.
+        //
+        // Best-effort still: a session store hiccup should cost resumability,
+        // not the turn.
         if (state.sessionId && deps.markAgentRunAwaitingReply) {
           await deps
             .markAgentRunAwaitingReply(state.sessionId, {
@@ -1784,6 +1813,29 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
                 `[agent] failed to record agent run ${runId} as awaiting reply; a rollout mid-turn will not be resumable: ${err instanceof Error ? err.message : String(err)}`,
               );
             });
+        }
+        try {
+          await deps.agentRunLauncher.launch(agent.agentRunTemplate, runId, {
+            goal,
+            callbackUrl,
+            callbackSecretRef: deps.callbackSecretRef,
+            timeoutSeconds: deps.agentRunTimeoutSeconds,
+            ...(deps.natsUrl ? { natsUrl: deps.natsUrl, natsSubject: `callbacks.${runId}` } : {}),
+            ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
+            ...(ownedSecretNames ? { ownedSecretNames } : {}),
+            ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+          });
+        } catch (launchErr) {
+          // The anchor now points at a run that will never exist. Left behind,
+          // the NEXT turn re-attaches to it, spends the whole re-attach window
+          // waiting for a reply nobody is writing, and concludes the answer is
+          // unrecoverable -- turning a launch failure that should surface here
+          // and now into a silent stall one turn later. Clearing is best-effort
+          // for the same reason writing it is.
+          if (state.sessionId && deps.clearAgentRunAwaitingReply) {
+            await deps.clearAgentRunAwaitingReply(state.sessionId).catch(() => {});
+          }
+          throw launchErr;
         }
         const reply = await awaitReply;
         const message = composeAgentTurnMessage(state, reply);
