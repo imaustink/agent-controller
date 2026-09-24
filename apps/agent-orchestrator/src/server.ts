@@ -154,9 +154,10 @@ export interface AgentGraphInput {
    * Per-request override of which OAuth flow `delegateToAgent` starts if
    * this caller needs to link an identity (see `AgentState.identityLinkFlow`
    * in agent/graph.ts). Absent -> the graph's own default ("authcode")
-   * applies. Only ever set by `handleInvoke`'s `identity_link_flow` body
-   * field -- the Open WebUI-facing chat-completions facade never sets this,
-   * so it always gets the browser-redirect default.
+   * applies. Set from an `identity_link_flow` body field on either `/invoke`
+   * or chat completions. Open WebUI never sends one, so its turns get the
+   * browser-redirect default unless the deployment's own default says
+   * otherwise.
    */
   identityLinkFlow?: "device" | "authcode";
   /**
@@ -365,9 +366,9 @@ export class InvokeServer {
     if (callerTools && callerTools.actionHistory.length > 0) input.actionHistory = callerTools.actionHistory;
     if (progressListener) input.progressListener = progressListener;
     if (remoteControlUrlListener) input.remoteControlUrlListener = remoteControlUrlListener;
-    // The chat-completions facade never passes `identityLinkFlow` (it has no
-    // field for it), so without this it fell through to the hardcoded
-    // "authcode" default downstream and no deployment could choose otherwise.
+    // A turn that names no flow (every Open WebUI turn, and most `/invoke`
+    // ones) used to fall through to the hardcoded "authcode" default
+    // downstream, so no deployment could choose otherwise.
     //
     // Injected ONLY when a deployment has opted into something other than
     // "authcode": the graph's own `?? "authcode"` stays the single definition
@@ -942,7 +943,14 @@ export class InvokeServer {
 
   private async handleChatCompletions(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const rawBody = await readBody(req);
-    let parsed: { messages?: unknown; model?: unknown; stream?: unknown; tools?: unknown; tool_choice?: unknown };
+    let parsed: {
+      messages?: unknown;
+      model?: unknown;
+      stream?: unknown;
+      tools?: unknown;
+      tool_choice?: unknown;
+      identity_link_flow?: unknown;
+    };
     try {
       parsed = rawBody ? (JSON.parse(rawBody) as typeof parsed) : {};
     } catch {
@@ -966,6 +974,14 @@ export class InvokeServer {
     const sessionId = headerValue(req.headers[CHAT_ID_HEADER]);
     const forwardedUserToken = headerValue(req.headers[FORWARDED_USER_JWT_HEADER]);
     const stream = parsed.stream === true;
+    // Same optional field, and the same silently-ignored-if-invalid handling,
+    // as `/invoke`'s. Open WebUI never sends it; it is for an OpenAI-SDK
+    // client that has no browser to finish an authcode redirect in, and it
+    // arrives via the SDK's `extra_body`.
+    const identityLinkFlow =
+      parsed.identity_link_flow === "device" || parsed.identity_link_flow === "authcode"
+        ? parsed.identity_link_flow
+        : undefined;
 
     // Open WebUI's own housekeeping completions (title/tags/query/follow-up
     // generation) must NEVER reach the agent graph — see
@@ -995,10 +1011,28 @@ export class InvokeServer {
     }
 
     if (!stream) {
-      await this.handleChatCompletionsBlocking(res, request, model, authToken, sessionId, forwardedUserToken, callerTools);
+      await this.handleChatCompletionsBlocking(
+        res,
+        request,
+        model,
+        authToken,
+        sessionId,
+        forwardedUserToken,
+        callerTools,
+        identityLinkFlow,
+      );
       return;
     }
-    await this.handleChatCompletionsStreaming(res, request, model, authToken, sessionId, forwardedUserToken, callerTools);
+    await this.handleChatCompletionsStreaming(
+      res,
+      request,
+      model,
+      authToken,
+      sessionId,
+      forwardedUserToken,
+      callerTools,
+      identityLinkFlow,
+    );
   }
 
   /**
@@ -1088,6 +1122,7 @@ export class InvokeServer {
     sessionId: string | undefined,
     forwardedUserToken?: string,
     callerTools?: CallerToolTurn,
+    identityLinkFlow?: "device" | "authcode",
   ): Promise<void> {
     // A Remote Control session URL is deliberately NOT surfaced on the
     // non-streaming path: RC's whole value is a LIVE session to watch/steer,
@@ -1100,7 +1135,7 @@ export class InvokeServer {
       authToken,
       sessionId,
       undefined,
-      undefined,
+      identityLinkFlow,
       forwardedUserToken,
       undefined,
       undefined,
@@ -1155,6 +1190,7 @@ export class InvokeServer {
     sessionId: string | undefined,
     forwardedUserToken?: string,
     callerTools?: CallerToolTurn,
+    identityLinkFlow?: "device" | "authcode",
   ): Promise<void> {
     const id = chatCompletionId();
     res.writeHead(200, {
@@ -1271,7 +1307,7 @@ export class InvokeServer {
           : stage || "working…";
         openStatusLabel = label;
         writeSseStatus(res, label, false);
-      }, undefined, forwardedUserToken, undefined, undefined, undefined, undefined, callerTools);
+      }, identityLinkFlow, forwardedUserToken, undefined, undefined, undefined, undefined, callerTools);
       const source = await this.graph.stream(graphInput, { streamMode: "updates" });
       // Accumulated across updates so the session can be persisted once the
       // turn reaches a successful terminal node (docs/adr/0012).

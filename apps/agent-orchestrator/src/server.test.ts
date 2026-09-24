@@ -1386,8 +1386,8 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     await server.close();
   });
 
-  it("applies the configured default identity-link flow to a chat-completions turn, which cannot name one itself", async () => {
-    // The regression this locks down: Open WebUI has no `identity_link_flow`
+  it("applies the configured default identity-link flow to a chat-completions turn that names none", async () => {
+    // The regression this locks down: Open WebUI sends no `identity_link_flow`
     // field, so before this was configurable every chat turn was pinned to
     // "authcode" -- unusable on a deployment whose GitHub App Callback URL
     // cannot be made to match, with no way to opt into the device flow.
@@ -1408,6 +1408,57 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
     // `stream` is called as (input, { streamMode }), so assert on the input
     // argument rather than the whole call signature.
     expect(vi.mocked(graph.stream).mock.calls[0]![0]).toMatchObject({ identityLinkFlow: "device" });
+
+    await server.close();
+  });
+
+  // An OpenAI-SDK client with no browser can ask for the device flow per
+  // turn, the same field /invoke takes. Before, a chat turn could only ever
+  // get the deployment default, which also made the device flow unreachable
+  // from any chat e2e spec.
+  it("threads an explicit identity_link_flow on a chat-completions turn into the graph input, streaming or not", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "tok-1", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockImplementation(() => toStream([{ planAction: { identity, result: "done" } }])),
+    };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+    const send = (stream: boolean) =>
+      fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+        body: JSON.stringify({ stream, identity_link_flow: "device", messages: [{ role: "user", content: "open a PR" }] }),
+      }).then((r) => r.text());
+
+    await send(true);
+    await send(false);
+
+    expect(vi.mocked(graph.stream).mock.calls[0]![0]).toMatchObject({ identityLinkFlow: "device" });
+    expect(graph.invoke).toHaveBeenCalledWith(expect.objectContaining({ identityLinkFlow: "device" }));
+
+    await server.close();
+  });
+
+  it("lets an explicit chat-completions identity_link_flow override the configured default, and ignores an invalid one", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn(),
+      stream: vi.fn().mockImplementation(() => toStream([{ planAction: { identity, result: "done" } }])),
+    };
+    const server = new InvokeServer(graph, undefined, undefined, undefined, undefined, undefined, undefined, 5, "device");
+    const port = await listenOn(server);
+    const send = (flow: string) =>
+      fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+        body: JSON.stringify({ stream: true, identity_link_flow: flow, messages: [{ role: "user", content: "open a PR" }] }),
+      }).then((r) => r.text());
+
+    await send("authcode");
+    await send("carrier-pigeon");
+
+    expect(vi.mocked(graph.stream).mock.calls[0]![0]).toMatchObject({ identityLinkFlow: "authcode" });
+    // Invalid falls back to the deployment default rather than failing the turn.
+    expect(vi.mocked(graph.stream).mock.calls[1]![0]).toMatchObject({ identityLinkFlow: "device" });
 
     await server.close();
   });

@@ -117,6 +117,12 @@ export interface ChatOptions {
    * resolves to the shared subject values-e2e.yaml maps that bearer to.
    */
   withoutUserJwt?: boolean;
+  /**
+   * Asks for this OAuth flow if the turn needs an account link, via the same
+   * `identity_link_flow` body field an OpenAI-SDK client sends as
+   * `extra_body`. Unset takes the deployment default (authcode in e2e).
+   */
+  identityLinkFlow?: "device" | "authcode";
 }
 
 export async function chatTurn(userId: string, request: string, opts: ChatOptions = {}): Promise<ChatTurnResult> {
@@ -223,7 +229,13 @@ async function streamChat(
           "x-openwebui-chat-id": sessionId,
           ...(jwt ? { [FORWARDED_USER_JWT_HEADER]: jwt } : {}),
         },
-        body: JSON.stringify({ model: "agent-orchestrator", stream: true, messages, ...extraBody }),
+        body: JSON.stringify({
+          model: "agent-orchestrator",
+          stream: true,
+          messages,
+          ...(opts.identityLinkFlow ? { identity_link_flow: opts.identityLinkFlow } : {}),
+          ...extraBody,
+        }),
         // A chat turn that needs a link holds its connection open for the whole
         // flow expiry, and a delegated turn waits on a real agent run. Generous,
         // but bounded: an unbounded fetch turns a hung turn into a hung suite.
