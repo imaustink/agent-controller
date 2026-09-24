@@ -3,6 +3,10 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["specs/**/*.e2e.ts"],
+    // Registers the global afterEach that lets a FAILED spec file keep its
+    // AgentRuns instead of having teardown delete the evidence
+    // (support/retain-on-failure.ts).
+    setupFiles: ["support/retain-on-failure.ts"],
     // Serial, both levels. These share ONE cluster and several assert on
     // global state (Redis keys, the AgentRun list, fake-github's recorded
     // requests) that concurrent execution would race on -- a parallel run

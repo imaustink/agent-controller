@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { requireMinikubeContext } from "./guard.js";
+import { shouldRetainArtifacts } from "./retain-on-failure.js";
 
 const exec = promisify(execFile);
 
@@ -385,6 +386,18 @@ export async function agentRunSecretEnvNames(agentRunName: string): Promise<stri
  */
 export async function cleanupAgentRunsSince(since: Date): Promise<number> {
   const runs = await agentRunsSince(since);
+  // A failed test's artifacts are the evidence for the failure, and this is
+  // what used to delete them before anyone could look (see
+  // support/retain-on-failure.ts). The controller reclaims them on its own
+  // schedule either way, so this defers cleanup rather than skipping it.
+  if (runs.length > 0 && shouldRetainArtifacts()) {
+    console.log(
+      `  [teardown] keeping ${runs.length} AgentRun(s) for inspection after a failure:\n` +
+        runs.map((r) => `    kubectl -n controller-agent describe agentrun ${r.name}`).join("\n") +
+        "\n    (set E2E_KEEP_AGENT_RUNS=1 to keep them on a green run too)",
+    );
+    return 0;
+  }
   for (const run of runs) {
     // --wait=false: teardown must not block the suite on finalizers, and a
     // failure here should never fail a test that already passed.

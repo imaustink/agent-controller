@@ -261,7 +261,25 @@ profiles:
             chartPath: charts/agent-controller
             namespace: controller-agent
             createNamespace: true
-            wait: true
+            # Deliberately NOT `wait: true` here, unlike the default profile.
+            #
+            # Skaffold installs these releases in order and stops at the first
+            # failure, and `wait` turns "one workload is slow or crashlooping"
+            # into "this release failed". The release that then never installs
+            # is community-components -- the one that owns every Tool/Skill/
+            # Agent CR -- so the cluster comes up with a working orchestrator
+            # and an EMPTY catalog. Nothing says so: helm reports only
+            # `context deadline exceeded` against agent-controller, and the
+            # suite goes on to spend its per-test budgets waiting for runs that
+            # can never be dispatched because no Agent exists to dispatch to.
+            #
+            # The two releases are independent at install time (community-
+            # components needs the CRDs, which up.sh applies out of band before
+            # either), so there is nothing to be gained by gating the second on
+            # the first being *ready*. Readiness is re-checked explicitly at the
+            # end of e2e/scripts/up.sh, which fails with a readable pod list
+            # instead of a deadline.
+            wait: false
             valuesFiles:
               - charts/agent-controller/values-minikube-demo.yaml
               - charts/agent-controller/values-e2e.yaml
