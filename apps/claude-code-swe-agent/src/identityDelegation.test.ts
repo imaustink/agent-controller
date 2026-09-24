@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { setupGitAuth } from "./git.js";
-import { isDelegating, resolveDelegatedToken } from "./identityDelegation.js";
+import { isDelegating, resolveDelegatedToken, resolveUndelegatedToken } from "./identityDelegation.js";
 import type { AgentToolConfig } from "./config.js";
 
 const IDENTITY = { name: "agent[bot]", email: "1+agent[bot]@users.noreply.github.com" };
@@ -89,5 +89,61 @@ describe("resolveDelegatedToken", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+/**
+ * Stubs GitHub for the App's token endpoint, recording each mint's body so a
+ * spec can see which repositories a token was scoped to.
+ */
+async function withTokenEndpoint<T>(run: (mints: unknown[], calls: string[]) => Promise<T>): Promise<T> {
+  const mints: unknown[] = [];
+  const calls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    const href = String(url);
+    calls.push(href);
+    if (href.endsWith("/access_tokens")) {
+      mints.push(init?.body ? JSON.parse(String(init.body)) : {});
+      return new Response(JSON.stringify({ token: "app-token", expires_at: new Date().toISOString() }), { status: 201 });
+    }
+    throw new Error(`unexpected fetch: ${href}`);
+  }) as typeof fetch;
+  try {
+    return await run(mints, calls);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+// The orchestrator's read gate checked ONE repository before launching. The
+// App token must be scoped to exactly that one, or "the App writes" would
+// mean "the App writes anywhere it is installed".
+describe("a verified target repository", () => {
+  it("scopes a delegating run's write token to it, with reads still on the user's token", async () => {
+    await withTokenEndpoint(async (mints, calls) => {
+      const resolved = await resolveDelegatedToken(config({ targetRepository: "bitovi/platform" }), null);
+      expect(resolved.readToken).toBe("user-token");
+      expect(resolved.writeToken).toBe("app-token");
+      expect(mints).toEqual([{ repositories: ["platform"] }]);
+      // No write-permission check: reads were what the gate verified, and
+      // writes are the App's by design.
+      expect(calls.some((c) => c.includes("/collaborators/"))).toBe(false);
+    });
+  });
+
+  it("scopes a webhook run's only token to it", async () => {
+    await withTokenEndpoint(async (mints) => {
+      const token = await resolveUndelegatedToken(config({ githubToken: "", targetRepository: "e2e-org/e2e-repo" }));
+      expect(token).toBe("app-token");
+      expect(mints).toEqual([{ repositories: ["e2e-repo"] }]);
+    });
+  });
+
+  it("leaves a run with no target repository on the installation-wide token, as before", async () => {
+    await withTokenEndpoint(async (mints) => {
+      await resolveUndelegatedToken(config({ githubToken: "", targetRepository: "" }));
+      expect(mints).toEqual([{}]);
+    });
   });
 });

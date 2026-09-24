@@ -209,6 +209,51 @@ profiles:
         - image: claude-code-swe-agent
           docker:
             dockerfile: apps/claude-code-swe-agent/Dockerfile
+        # The chart defaults route every turn through the Temporal engine, and
+        # the demo values turn on the LocalTool executor sidecars, so neither
+        # set is optional here. Unbuilt, they only worked on a minikube whose
+        # daemon still held `:latest` copies from some earlier manual build; a
+        # fresh cluster sat in ImagePullBackOff until `up.sh` timed out.
+        - image: temporal-engine-worker
+          context: engines/temporal
+          docker:
+            dockerfile: Dockerfile.worker
+        - image: temporal-engine-gateway
+          context: engines/temporal
+          docker:
+            dockerfile: Dockerfile.gateway
+        - image: temporal-engine-catalog-sync
+          context: engines/temporal
+          docker:
+            dockerfile: Dockerfile.catalog-sync
+        - image: localtool-executor-node
+          context: sidecars/localtool-executor
+          docker:
+            dockerfile: Dockerfile
+            buildArgs:
+              BASE_IMAGE: node:24-bookworm-slim
+              RUNTIME: node
+        - image: localtool-executor-python
+          context: sidecars/localtool-executor
+          docker:
+            dockerfile: Dockerfile
+            buildArgs:
+              BASE_IMAGE: python:3.12-slim-bookworm
+              RUNTIME: python
+        - image: localtool-executor-go
+          context: sidecars/localtool-executor
+          docker:
+            dockerfile: Dockerfile
+            buildArgs:
+              BASE_IMAGE: golang:1.24-bookworm
+              RUNTIME: go
+        - image: localtool-executor-shell
+          context: sidecars/localtool-executor
+          docker:
+            dockerfile: Dockerfile
+            buildArgs:
+              BASE_IMAGE: debian:bookworm-slim
+              RUNTIME: shell
     deploy:
       helm:
         releases:
@@ -228,6 +273,23 @@ profiles:
               core-controller.image.tag: "{{.IMAGE_TAG_core_controller}}"
               integration-gateway.image.repository: "{{.IMAGE_REPO_integration_gateway}}"
               integration-gateway.image.tag: "{{.IMAGE_TAG_integration_gateway}}"
+              temporal-engine.worker.image.repository: "{{.IMAGE_REPO_temporal_engine_worker}}"
+              temporal-engine.worker.image.tag: "{{.IMAGE_TAG_temporal_engine_worker}}"
+              temporal-engine.gateway.image.repository: "{{.IMAGE_REPO_temporal_engine_gateway}}"
+              temporal-engine.gateway.image.tag: "{{.IMAGE_TAG_temporal_engine_gateway}}"
+              temporal-engine.catalogSync.image.repository: "{{.IMAGE_REPO_temporal_engine_catalog_sync}}"
+              temporal-engine.catalogSync.image.tag: "{{.IMAGE_TAG_temporal_engine_catalog_sync}}"
+              # `runtimes` is a list, and `--set` on a list index REPLACES the
+              # whole list rather than merging into the values file's, so each
+              # entry's `name` has to be restated alongside its image.
+              agent-orchestrator.localTool.runtimes[0].name: node
+              agent-orchestrator.localTool.runtimes[0].image: "{{.IMAGE_FULLY_QUALIFIED_localtool_executor_node}}"
+              agent-orchestrator.localTool.runtimes[1].name: python
+              agent-orchestrator.localTool.runtimes[1].image: "{{.IMAGE_FULLY_QUALIFIED_localtool_executor_python}}"
+              agent-orchestrator.localTool.runtimes[2].name: go
+              agent-orchestrator.localTool.runtimes[2].image: "{{.IMAGE_FULLY_QUALIFIED_localtool_executor_go}}"
+              agent-orchestrator.localTool.runtimes[3].name: shell
+              agent-orchestrator.localTool.runtimes[3].image: "{{.IMAGE_FULLY_QUALIFIED_localtool_executor_shell}}"
           # A profile replaces deploy.helm.releases wholesale -- omitting this
           # silently drops the chart that owns every Tool/Skill/Agent CR, so
           # the cluster keeps whatever CRs an older install left behind,
@@ -243,6 +305,7 @@ profiles:
             skipBuildDependencies: false
             setValueTemplates:
               stubAgent.image: "{{.IMAGE_FULLY_QUALIFIED_stub_agent}}"
+              stubSweAgent.image: "{{.IMAGE_FULLY_QUALIFIED_stub_agent}}"
               claudeCodeSweAgent.image: "{{.IMAGE_FULLY_QUALIFIED_claude_code_swe_agent}}"
               recipeScraper.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_scraper}}"
               recipePublisher.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_publisher}}"

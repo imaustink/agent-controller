@@ -47,8 +47,14 @@ func newService(t *testing.T, wait time.Duration) (*authz.Service, *identitylink
 	return authz.New(authz.Deps{
 		Links: links, Secret: secrets, WaitForLink: wait,
 		StartRetryDelay: time.Microsecond,
+		Repos:           &fakeRepos{access: map[string]authz.RepoAccess{readableRepo: authz.RepoReadable}},
 	}), links, secrets
 }
+
+// readableRepo is the one repository newService's read gate lets through. A
+// spec declaring github that is not ABOUT the gate names it so the gate stays
+// out of its way (repository_test.go covers the gate itself).
+const readableRepo = "bitovi/platform"
 
 func chatCaller() authz.Identity {
 	// Open WebUI's forwarded-user JWT is the resolver that structurally knows
@@ -77,6 +83,7 @@ func TestNoCredentialMaterialEverLeavesInAVerdict(t *testing.T) {
 		AgentID:           "claude-code-swe-agent",
 		IdentityProviders: []string{"github", "claude"},
 		Identity:          chatCaller(),
+		TargetRepository:  readableRepo,
 	})
 	require.NoError(t, err)
 	require.Equal(t, authz.KindAuthorized, verdict.Kind)
@@ -91,7 +98,7 @@ func TestNoCredentialMaterialEverLeavesInAVerdict(t *testing.T) {
 
 	// The names DO travel, because a launcher needs them and they are not
 	// secret.
-	require.Equal(t, []string{"AGENT_ACTOR_LOGIN", "CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN"}, verdict.EnvVarNames)
+	require.Equal(t, []string{"AGENT_ACTOR_LOGIN", "AGENT_TARGET_REPOSITORY", "CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN"}, verdict.EnvVarNames)
 	require.NotEmpty(t, verdict.SecretName)
 
 	// And the values reached the Secret, keyed by the env var names.
@@ -109,6 +116,7 @@ func TestSecretWriteFailureIsAnErrorNotAVerdict(t *testing.T) {
 		AgentID:           "a",
 		IdentityProviders: []string{"github"},
 		Identity:          chatCaller(),
+		TargetRepository:  readableRepo,
 	})
 	require.ErrorContains(t, err, "persist run credentials")
 }
@@ -117,18 +125,22 @@ func TestSecretWriteFailureIsAnErrorNotAVerdict(t *testing.T) {
 
 // Nothing short-circuits: every gap is found and offered on ONE turn, so a
 // human authorizes once instead of discovering the next gap per trigger.
+//
+// Claude and Claude Remote Control rather than GitHub: a webhook turn no
+// longer links GitHub at all (its subject is shared; see
+// repository_test.go), and what this pins is the batching, not the provider.
 func TestEveryMissingProviderIsReportedTogether(t *testing.T) {
 	svc, _, _ := newService(t, 0)
 
 	verdict, err := svc.Authorize(context.Background(), authz.Request{
 		AgentID:           "claude-code-swe-agent",
-		IdentityProviders: []string{"github", "claude-remote"},
+		IdentityProviders: []string{"claude", "claude-remote"},
 		Identity:          webhookCaller(),
 		SenderLogin:       "imaustink", // already has a principal
 	})
 	require.NoError(t, err)
 	require.Equal(t, authz.KindLinkRequired, verdict.Kind)
-	require.Contains(t, verdict.Message, "GitHub")
+	require.Contains(t, verdict.Message, "[link your Claude account]")
 	require.Contains(t, verdict.Message, "Claude Remote Control")
 	require.NotNil(t, verdict.Pending)
 }
@@ -137,19 +149,19 @@ func TestEveryMissingProviderIsReportedTogether(t *testing.T) {
 // GitHub outage blocked Claude authorization entirely.
 func TestAFailedStartIsReportedAlongsideTheOthersNotInsteadOfThem(t *testing.T) {
 	svc, links, _ := newService(t, 0)
-	links.StartErr["github"] = errors.New("github oauth is down")
+	links.StartErr["claude-remote"] = errors.New("PTY start timed out")
 
 	verdict, err := svc.Authorize(context.Background(), authz.Request{
 		AgentID:           "claude-code-swe-agent",
-		IdentityProviders: []string{"github", "claude"},
+		IdentityProviders: []string{"claude-remote", "claude"},
 		Identity:          webhookCaller(),
 		SenderLogin:       "imaustink",
 	})
 	require.NoError(t, err)
 	require.Equal(t, authz.KindLinkRequired, verdict.Kind)
-	require.Contains(t, verdict.Message, "Claude", "the reachable provider's link is still offered")
+	require.Contains(t, verdict.Message, "[link your Claude account]", "the reachable provider's link is still offered")
 	require.Contains(t, verdict.Message, "couldn't start")
-	require.Contains(t, verdict.Message, "GitHub")
+	require.Contains(t, verdict.Message, "Claude Remote Control")
 }
 
 // One retry turns the common transient failure into a single-turn success,
@@ -218,6 +230,7 @@ func TestALiveAnchorIsReCheckedNotStartedAgain(t *testing.T) {
 		IdentityProviders: []string{"github"},
 		Identity:          chatCaller(),
 		Pending:           anchor,
+		TargetRepository:  readableRepo,
 	})
 	require.NoError(t, err)
 	require.Equal(t, authz.KindAuthorized, verdict.Kind)

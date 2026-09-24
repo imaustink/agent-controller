@@ -53,7 +53,16 @@ data:
         // handles it; `status` is stamped on by `json()` below. Without the
         // stamp the "never called an unstubbed endpoint" assertion silently
         // matches nothing and passes vacuously.
-        const entry = { method: req.method, path: url.pathname, body: body || null, at: new Date().toISOString() };
+        // `auth` is recorded so a spec can tell WHOSE token a call ran on --
+        // the repository read gate must check with the caller's own, never
+        // the App's. Every token this stub ever sees is a fake.
+        const entry = {
+          method: req.method,
+          path: url.pathname,
+          body: body || null,
+          auth: req.headers.authorization || null,
+          at: new Date().toISOString(),
+        };
         requests.push(entry);
         const respond = (status, payload) => { entry.status = status; return json(res, status, payload); };
 
@@ -139,6 +148,15 @@ data:
         // Removing the trigger label once a run finishes.
         if (/^\/repos\/[^/]+\/[^/]+\/issues\/\d+\/labels\//.test(url.pathname) && req.method === "DELETE") {
           return respond(200, []);
+        }
+
+        // e2e-org owns exactly one repository, e2e-repo. Anything else under
+        // it -- e2e-private, or a word a model mistook for a repository name
+        // -- is a 404, which is how GitHub answers a private repository a
+        // token cannot read, and so what the read gate has to treat as "no"
+        // (repo-read-gate.e2e.ts). Other owners keep the catch-all below.
+        if (/^\/repos\/e2e-org\/[^/]+$/.test(url.pathname) && url.pathname !== "/repos/e2e-org/e2e-repo") {
+          return respond(404, { message: "Not Found" });
         }
 
         // Repo metadata -- `created_at` drives the "did the bot just create

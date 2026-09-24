@@ -88,6 +88,21 @@ func resumePendingLink(
 		return "", *meta, false, nil
 	}
 
+	// Only the caller who parked the turn may resume it. Anyone else's turn
+	// is an ordinary one and does not resume this anchor. It usually stays put
+	// for its owner, but this is best-effort, not a guarantee: there is one
+	// anchor per conversation, so if the intruder's own turn goes on to
+	// authorize an agent, delegateToAgent clears it (delegate.go) and the
+	// owner must re-park. That is the pre-existing single-anchor limitation,
+	// not something this ownership gate changes.
+	if owner := anchor.RequestedBy; owner != nil &&
+		(owner.Subject != in.Caller.Subject || owner.PerUser != in.Caller.PerUser || owner.SenderLogin != in.SenderLogin) {
+		logger.Warn("pending identity link belongs to a different caller; not resuming it",
+			"provider", anchor.Provider, "agentId", anchor.AgentID,
+			"ownerSubject", owner.Subject, "callerSubject", in.Caller.Subject)
+		return "", *meta, false, nil
+	}
+
 	// Re-resolve under CURRENT roles: an anchor is not a capability, and roles
 	// may have been revoked while the caller was linking.
 	var agent *catalog.AgentDescriptor
@@ -156,7 +171,8 @@ func authorizeAgent(
 		// Carried in only on a resume: it is what lets Authorize re-check the
 		// flow this conversation already started instead of starting a
 		// second one for the same (provider, subject).
-		Pending: pending,
+		Pending:          pending,
+		TargetRepository: in.TargetRepository,
 	}).Get(ctx, &verdict)
 	return verdict, err
 }

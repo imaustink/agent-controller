@@ -107,6 +107,15 @@ const AUTO_RESUME_INTERVAL_MS = 4_000;
  */
 const CONTENT_NARRATION_PREFIXES = ["agent-text", "identity-link", "remote-control-url"];
 
+/** The per-user identity a turn carries across the hop, resolved once per invoke(). */
+interface ForwardedCaller {
+  subject: string;
+  roles: string[];
+}
+
+/** A turn carried a per-user identity that could not be verified or forwarded. */
+const UNRESOLVED = Symbol("unresolved-forwarded-caller");
+
 function splitNarrationLine(line: string): [stage: string, message: string] {
   for (const stage of CONTENT_NARRATION_PREFIXES) {
     const prefix = `${stage}: `;
@@ -147,11 +156,19 @@ export class TemporalEngine implements AgentGraphLike {
   }
 
   async invoke(input: AgentGraphInput): Promise<AgentState> {
-    const id = await this.start(input);
+    const caller = await this.resolveForwardedCaller(input);
+    if (caller === UNRESOLVED) {
+      // Same refusal as graph.ts's resolveIdentity node. Sending the turn on
+      // without the header would run it as the gateway's shared bearer
+      // subject, i.e. with whatever credentials that subject holds.
+      return { ...input, error: "unauthorized: could not resolve caller identity" } as AgentState;
+    }
+
+    const id = await this.start(input, caller);
     let record = await this.poll(id, input);
 
     if (record.status === "succeeded" && record.path === "link-required") {
-      record = await this.autoResumeLink(input, record);
+      record = await this.autoResumeLink(input, record, caller);
     }
 
     if (record.status === "failed") {
@@ -202,8 +219,20 @@ export class TemporalEngine implements AgentGraphLike {
    * (server.ts's streaming handler renders it as real chat content, not a
    * status label) -- otherwise auto-resuming would silently swallow the
    * one thing the human actually needs to see and act on.
+   *
+   * Every resume carries the caller identity invoke() resolved ONCE, not a
+   * fresh resolution of `forwardedUserToken`. Open WebUI mints that JWT with a
+   * 300s expiry, and this loop runs for up to 10 minutes: re-verifying it on
+   * each resume made the fifth minute's resume arrive as the gateway's shared
+   * bearer subject, which then launched the user's request on that subject's
+   * credentials. The JWT authenticated the request when it arrived; the
+   * resumes continue that same request, as LangGraph's held-open wait does.
    */
-  private async autoResumeLink(input: AgentGraphInput, first: InvokeRecord): Promise<InvokeRecord> {
+  private async autoResumeLink(
+    input: AgentGraphInput,
+    first: InvokeRecord,
+    caller: ForwardedCaller | undefined,
+  ): Promise<InvokeRecord> {
     if (!input.progressListener || !input.sessionId) return first;
 
     input.progressListener("identity-link", first.result);
@@ -213,7 +242,7 @@ export class TemporalEngine implements AgentGraphLike {
     const intervalMs = this.options.autoResumeIntervalMs ?? AUTO_RESUME_INTERVAL_MS;
     while (record.status === "succeeded" && record.path === "link-required" && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
-      const resumeId = await this.start(input);
+      const resumeId = await this.start(input, caller);
       record = await this.poll(resumeId, input);
     }
 
@@ -278,7 +307,32 @@ export class TemporalEngine implements AgentGraphLike {
     });
   }
 
-  private async start(input: AgentGraphInput): Promise<string> {
+  /**
+   * Resolves the forwarded-user JWT into the identity this turn runs as.
+   *
+   * `undefined` means the turn carries no per-user identity to forward (no
+   * JWT, or no resolver configured), so the gateway resolves it from the
+   * bearer token as before. UNRESOLVED means it DID carry one and it could
+   * not be verified or cannot be signed across the hop: that turn must fail,
+   * because the fallback is the shared bearer subject.
+   */
+  private async resolveForwardedCaller(input: AgentGraphInput): Promise<ForwardedCaller | undefined | typeof UNRESOLVED> {
+    const resolver = this.options.forwardedUserIdentityResolver;
+    if (!input.forwardedUserToken || !resolver) return undefined;
+
+    const identity = await resolver.resolve(input.forwardedUserToken);
+    if (!identity) return UNRESOLVED;
+    if (!this.options.senderAssertionSecret) {
+      console.error(
+        "temporal engine: a chat turn carried a per-user identity but AGENT_SENDER_ASSERTION_SECRET is unset, " +
+          "so it cannot be forwarded; refusing the turn rather than running it as the gateway's shared subject",
+      );
+      return UNRESOLVED;
+    }
+    return { subject: identity.subject, roles: identity.roles };
+  }
+
+  private async start(input: AgentGraphInput, caller: ForwardedCaller | undefined): Promise<string> {
     const headers = this.headers();
 
     // The sender login travels as a SIGNED assertion, not a body field —
@@ -307,16 +361,17 @@ export class TemporalEngine implements AgentGraphLike {
     // subject that a webhook turn's OWN senderLogin/sender-assertion channel
     // already handles -- regressing every webhook-driven turn's credential
     // resolution the moment this identity resolves to anything at all.
-    if (this.options.senderAssertionSecret && input.forwardedUserToken && this.options.forwardedUserIdentityResolver) {
-      const identity = await this.options.forwardedUserIdentityResolver.resolve(input.forwardedUserToken);
-      if (identity) {
-        headers[CALLER_IDENTITY_HEADER] = mintCallerIdentityAssertion(
-          this.options.senderAssertionSecret,
-          identity.subject,
-          identity.roles,
-          true,
-        );
-      }
+    //
+    // Resolved once per invoke() (resolveForwardedCaller), and minted fresh
+    // here on every start so a late auto-resume still carries an unexpired
+    // assertion.
+    if (caller && this.options.senderAssertionSecret) {
+      headers[CALLER_IDENTITY_HEADER] = mintCallerIdentityAssertion(
+        this.options.senderAssertionSecret,
+        caller.subject,
+        caller.roles,
+        true,
+      );
     }
 
     const res = await this.fetchImpl(`${this.baseUrl}/invoke`, {
@@ -339,6 +394,9 @@ export class TemporalEngine implements AgentGraphLike {
         // Callback URL to match, and where it doesn't, device flow is the only
         // one that works.
         ...(input.identityLinkFlow ? { identityLinkFlow: input.identityLinkFlow } : {}),
+        // The webhook event's repository, which the engine's read gate uses
+        // for a GitHub-acting agent instead of reading one out of the prompt.
+        ...(input.targetRepository ? { targetRepository: input.targetRepository } : {}),
         // Already resolved, validated and top-K-ranked by this process's own
         // handleChat pipeline (ADR 0035) before invoke() is ever called --
         // the engine's /invoke takes the resolved Descriptor shape (each

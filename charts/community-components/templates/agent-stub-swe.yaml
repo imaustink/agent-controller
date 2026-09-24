@@ -1,0 +1,9 @@
+{{- if .Values.stubSweAgent.enabled }}
+{{- /*
+  The stand-in for claude-code-swe-agent: the same identityProviders, github
+  included, so a turn to it goes through the repository read gate exactly as a
+  production SWE run does. stub-agent stays the stand-in for an agent that
+  never touches GitHub.
+*/}}
+{{- include "communityComponents.stubAgent" (dict "root" . "name" "stub-swe-agent" "values" .Values.stubSweAgent) }}
+{{- end }}

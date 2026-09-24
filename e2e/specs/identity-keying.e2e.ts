@@ -373,11 +373,19 @@ describe("chat and triage converge on one credential (ADR 0031)", () => {
     const startedAt = new Date();
     const sessionId = `e2e-resume-anchor-${Date.now()}`;
 
-    const first = await chatTurn(CHAT_USER, REQUEST, { sessionId, allowPark: true, timeoutMs: 120_000 });
+    // Device flow asked for per turn. The e2e deployment defaults to
+    // authcode, and switching that default would change every other chat
+    // spec: fake-github completes a device code on its first poll.
+    const first = await chatTurn(CHAT_USER, REQUEST, {
+      sessionId,
+      allowPark: true,
+      timeoutMs: 120_000,
+      identityLinkFlow: "device",
+    });
     expect(first.text).toMatch(/link your GitHub account/i);
     expect(first.text).toMatch(/enter code/i);
 
-    await chatTurn(CHAT_USER, "done", { sessionId, allowPark: true, timeoutMs: 120_000 });
+    await chatTurn(CHAT_USER, "done", { sessionId, allowPark: true, timeoutMs: 120_000, identityLinkFlow: "device" });
 
     const deviceCodeStarts = (await fakeGithubRequests()).filter(
       (r) => r.method === "POST" && r.path === "/login/device/code",

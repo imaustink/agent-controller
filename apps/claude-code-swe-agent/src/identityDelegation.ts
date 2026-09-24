@@ -6,6 +6,7 @@ import {
   isWritePermission,
   mintInstallationToken,
   resolveDelegatedWriteToken,
+  resolveGithubToken,
   type GithubAppCredentials,
 } from "@controller-agent/github-app-auth";
 import type { AgentToolConfig } from "./config.js";
@@ -29,6 +30,25 @@ function appCredsFrom(config: AgentToolConfig): GithubAppCredentials | null {
  */
 export function isDelegating(config: AgentToolConfig): boolean {
   return Boolean(config.identityDelegationEnabled && appCredsFrom(config) && config.githubToken);
+}
+
+/**
+ * The credential for a run that does not delegate -- a webhook turn, whose
+ * shared subject never carries a user token. It is the App's either way; with
+ * a verified target repository it is scoped to that repository, which is the
+ * one the webhook's sender was checked on.
+ */
+export async function resolveUndelegatedToken(config: AgentToolConfig, now: number = Date.now()): Promise<string> {
+  const appCreds = appCredsFrom(config);
+  if (appCreds && config.targetRepository) return mintTargetRepositoryToken(config, appCreds, now);
+  return resolveGithubToken(config, now);
+}
+
+async function mintTargetRepositoryToken(config: AgentToolConfig, appCreds: GithubAppCredentials, now: number): Promise<string> {
+  const [owner, name] = config.targetRepository.split("/");
+  if (!owner || !name) throw new Error(`Expected AGENT_TARGET_REPOSITORY as "owner/repo", got: ${config.targetRepository}`);
+  const { token } = await mintInstallationToken(appCreds, config.githubApiUrl, now, { repositories: [name] });
+  return token;
 }
 
 /** The two credentials a delegating turn runs with -- see {@link resolveDelegatedToken}. */
@@ -91,6 +111,18 @@ export async function resolveDelegatedToken(
 ): Promise<DelegatedTokens> {
   const appCreds = appCredsFrom(config);
   if (!appCreds) throw new Error("resolveDelegatedToken requires a full GitHub App configuration");
+
+  // The repository the orchestrator's read gate verified before launching.
+  // Unlike the continuation path below, this requires no write permission of
+  // the user's own: reads run as them, which is the access that was checked,
+  // and writes are the App's by design. Scoping the write token to this one
+  // repository is what keeps "the App writes" from meaning "the App writes
+  // anywhere it is installed".
+  if (!repo && config.targetRepository) {
+    const writeToken = await mintTargetRepositoryToken(config, appCreds, now);
+    const githubLogin = config.actorLogin || (await fetchGithubUser(config.githubToken, config.githubApiUrl)).login;
+    return { readToken: config.githubToken, writeToken, attribution: { githubLogin } };
+  }
 
   if (repo) {
     const { token, githubLogin, githubId } = await resolveDelegatedWriteToken({

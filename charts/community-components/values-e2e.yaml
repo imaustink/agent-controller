@@ -15,17 +15,18 @@
 
 # The agent the triage route actually launches here.
 #
-# claude-code-swe-agent below stays enabled and keeps its Claude
-# identityProviders -- the identity gate is the thing under test and it must see
-# a production-shaped Agent -- but a REAL Claude run cannot terminate in this
-# cluster: there is no Anthropic credential, by design (see the comment on
-# anthropicSecretKey). The run therefore never reached a terminal phase, so the
+# The identity gate is the thing under test, so it must see production-shaped
+# Agents -- but a REAL Claude run cannot terminate in this cluster: there is no
+# Anthropic credential, by design (see the comment on anthropicSecretKey). A
+# claude-code-swe-agent run therefore never reached a terminal phase, so the
 # happy-path spec could not assert the chain at all and was skipped.
 #
-# stub-agent closes that gap without weakening the gate: it declares the SAME
-# identityProviders, so the pre-flight resolves the same credentials, injects the
-# same secretEnv names, and still refuses to launch when a credential is missing
-# (the keying spec's negative controls). Only the model turn is replaced.
+# The stubs close that gap without weakening the gate: each declares a
+# production agent's identityProviders, so the pre-flight resolves the same
+# credentials, injects the same secretEnv names, and still refuses to launch
+# when a credential is missing (the keying spec's negative controls). Only the
+# model turn is replaced. stub-agent is a Claude agent that never touches
+# GitHub; stub-swe-agent (below) is claude-code-swe-agent.
 stubAgent:
   enabled: true
   acknowledgeNotForProduction: true
@@ -33,9 +34,12 @@ stubAgent:
   image: stub-agent:latest
   identityLink:
     enabled: true
-    # MUST match claudeCodeSweAgent.identityLink.providers below. Drifting these
-    # apart makes the gate take a different path for the agent under test than
-    # for the one production runs, which is the whole point of the stub.
+    # The providers of a Claude agent that does NOT act on GitHub, so its turns
+    # never meet the repository read gate. That is what the identity-keying and
+    # identity-continuity specs need: they assert WHICH SUBJECT a Claude
+    # credential resolves under, and a gate refusing the turn first would make
+    # a no-launch assertion pass for the wrong reason. stubSweAgent below is
+    # the one that mirrors claude-code-swe-agent.
     providers:
       - claude
       - claude-remote
@@ -46,6 +50,36 @@ stubAgent:
   # enough for the spec's follow-up trigger to re-attach and collect, short
   # enough that a spec which fails to collect still reaches a terminal phase
   # inside its own budget instead of timing out on a working hold.
+  replyAckTimeoutMs: 90000
+
+# The stand-in for claude-code-swe-agent AS PRODUCTION RUNS IT. Its providers
+# MUST match what a production deployment declares for that agent (github,
+# claude, claude-remote; ADR 0042), not claudeCodeSweAgent below, which is
+# kept Claude-only in this file for the reason given there. Drifting from
+# production makes the read gate take a different path for the agent under test
+# than for the one production runs, which is the whole point of the stub.
+# Reached by name from chat, and by the issue-review route below from a webhook.
+stubSweAgent:
+  enabled: true
+  acknowledgeNotForProduction: true
+  # Overwritten by skaffold's setValueTemplates with the freshly-built tag.
+  image: stub-agent:latest
+  serviceAccountName: stub-agent
+  # Unlike stub-agent, this one must be reachable from chat: the read gate's
+  # chat half is only exercised by a turn that lands on an agent declaring
+  # `github`, and this is the only one in the e2e catalog. The default stub
+  # guidance ("do not delegate to this agent") made the planner route every
+  # such request to claude-code-swe-agent instead.
+  orchestratorPrompt: |
+    An end-to-end test double for claude-code-swe-agent. Delegate to it only
+    when the request names stub-swe-agent explicitly; it then returns a canned
+    reply without doing the requested work.
+  identityLink:
+    enabled: true
+    providers:
+      - github
+      - claude
+      - claude-remote
   replyAckTimeoutMs: 90000
 
 # Removed from the e2e catalog entirely, not merely bypassed by the triage route.
@@ -66,10 +100,10 @@ opencodeSweAgent:
   enabled: false
 
 claudeCodeSweAgent:
-  # Still enabled, though the triage route points at stub-agent above: this
-  # Agent CR is the production-shaped reference the stub's providers are kept in
-  # step with, and re-pointing the route back at it is a one-line change when
-  # a run with a real credential is what's wanted.
+  # Enabled, and it matters more than it looks: the planner never picks a stub
+  # that says "do not delegate to this agent", so the identity-keying and
+  # identity-continuity chat specs' "Delegate this to stub-agent" turns land
+  # HERE, and their assertions are about this agent's Claude credentials.
   enabled: true
   # Overwritten by skaffold's setValueTemplates with the freshly-built tag.
   # Left as the chart default here so a plain `helm template` still renders.
@@ -88,14 +122,13 @@ claudeCodeSweAgent:
   model: ""
   identityLink:
     enabled: true
-    # Mirrors production: only the credentials a run actually needs.
-    #
-    # `github` is absent by design (ADR 0030). The canonical subject and the
-    # actor login are now resolved by a read-only lookup independent of this
-    # list, so declaring github here would only re-provision a credential this
-    # agent never uses -- the conflation that caused the production 401. Order
-    # is no longer load-bearing either: the pre-flight assesses every provider
-    # rather than short-circuiting on the first gap.
+    # Claude only, which is NOT production's shape: production declares
+    # `github` too (ADR 0042), putting every run behind the repository read
+    # gate. Kept Claude-only here because the chat identity specs land on this
+    # agent (see `enabled` above) and assert on its Claude credential keying;
+    # declaring github would put the read gate in front of every one of them.
+    # stubSweAgent carries production's exact providers, and the read-gate
+    # spec reaches it by name.
     providers:
       - claude
       - claude-remote
@@ -108,3 +141,10 @@ integrationRoutes:
     # exactly as production exercises it) AND terminates hermetically (so the
     # chain past the launch -- reply, relay, issue comment -- is assertable).
     agentRef: stub-agent
+  # The webhook half of the read gate: a labeled issue dispatched to the
+  # GitHub-acting stub, whose repository comes from the event (the one
+  # integration-gateway verified the sender on) rather than the prompt.
+  githubIssueLabeledReview:
+    enabled: true
+    agentRef: stub-swe-agent
+    labelName: ai-review

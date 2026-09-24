@@ -111,6 +111,20 @@ stubAgent:
       - claude
       - claude-remote
 
+# The second stub (agent-stub-swe.yaml), with its own orchestratorPrompt so the
+# override path through the shared _stub-agent.tpl partial is rendered too.
+stubSweAgent:
+  enabled: true
+  acknowledgeNotForProduction: true
+  orchestratorPrompt: |
+    Delegate to this agent only when the request names stub-swe-agent explicitly.
+  identityLink:
+    enabled: true
+    providers:
+      - github
+      - claude
+      - claude-remote
+
 skills:
   recipeRefining:
     enabled: true

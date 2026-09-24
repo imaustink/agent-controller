@@ -8,7 +8,21 @@ import (
 	"github.com/controller-agent/temporal-engine/internal/authz"
 	"github.com/controller-agent/temporal-engine/internal/catalog"
 	"github.com/controller-agent/temporal-engine/internal/continuation"
+	"github.com/controller-agent/temporal-engine/internal/identitylink"
+	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 )
+
+// agentActsOnGitHub reports whether an agent's runs work in a GitHub
+// repository, and so must pass the read gate: declaring the github provider
+// is what makes a run read as its caller (ADR 0041).
+func agentActsOnGitHub(agent catalog.AgentDescriptor) bool {
+	for _, p := range agent.IdentityProviders {
+		if p == identitylink.ProviderGitHub {
+			return true
+		}
+	}
+	return false
+}
 
 // delegateToAgent starts a fresh agent episode as a child workflow and
 // relays its first non-progress up-signal into the turn: a question becomes
@@ -17,6 +31,21 @@ import (
 func delegateToAgent(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput, agent catalog.AgentDescriptor, meta *TurnMeta, note func(string), pending *authz.PendingLink) (string, TurnMeta, error) {
 	meta.Path = "agent"
 	meta.AgentID = agent.ID
+
+	// Which repository a GitHub-acting agent will work in, for a chat caller
+	// whose request did not arrive with one. A webhook turn's repository comes
+	// from its event and nowhere else: its sender was verified on THAT
+	// repository, so a different one read out of the prompt would be
+	// unverified.
+	if agentActsOnGitHub(agent) && in.TargetRepository == "" && in.Caller.PerUser {
+		var repo string
+		if err := workflow.ExecuteActivity(actx, activities.ExtractTargetRepositoryActivityName, activities.ExtractTargetRepositoryInput{
+			Request: in.Message,
+		}).Get(ctx, &repo); err != nil {
+			return "", *meta, fmt.Errorf("extract target repository for %s: %w", agent.ID, err)
+		}
+		in.TargetRepository = repo
+	}
 
 	// Authorization pre-flight, before anything is launched (upstream ADR
 	// 0030). Plain control flow: no model call reaches this decision, and
@@ -45,8 +74,19 @@ func delegateToAgent(ctx workflow.Context, actx workflow.Context, state *Convers
 			// link landed. Without this the resume re-delegates "ok, linked
 			// it" and the user's actual request is lost.
 			anchor.Request = in.Message
+			anchor.RequestedBy = &authz.LinkOwner{
+				Subject:     in.Caller.Subject,
+				PerUser:     in.Caller.PerUser,
+				SenderLogin: in.SenderLogin,
+			}
 			state.PendingIdentityLink = &anchor
 		}
+		return verdict.Message, *meta, nil
+	case authz.KindRefused:
+		// The caller can't read the repository, or named none. Nothing to
+		// resume: no link they could complete would change the answer.
+		meta.Path = "refused"
+		state.PendingIdentityLink = nil
 		return verdict.Message, *meta, nil
 	default:
 		meta.Path = "misconfigured"

@@ -8,6 +8,8 @@ export interface RecordedRequest {
   method: string;
   path: string;
   body: string | null;
+  /** The request's Authorization header, verbatim (every token here is a fake). */
+  auth: string | null;
   at: string;
   /** Present only on responses fake-github rejected as unstubbed. */
   status?: number;

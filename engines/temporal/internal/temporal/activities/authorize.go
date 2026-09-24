@@ -30,6 +30,9 @@ type AuthorizeInput struct {
 	// link, carried in on a resume so Authorize re-checks that outstanding
 	// flow instead of starting a second one.
 	Pending *authz.PendingLink `json:"pending,omitempty"`
+	// TargetRepository is the "owner/name" the run will work in; see
+	// authz.Request.TargetRepository.
+	TargetRepository string `json:"targetRepository,omitempty"`
 }
 
 // AuthorizeActivities is the workflow-facing side of the pre-flight.
@@ -59,6 +62,7 @@ func (in AuthorizeInput) request() authz.Request {
 		WaitForLink:       in.WaitForLink,
 		RunTimeoutSeconds: in.RunTimeoutSeconds,
 		Pending:           in.Pending,
+		TargetRepository:  in.TargetRepository,
 	}
 }
 

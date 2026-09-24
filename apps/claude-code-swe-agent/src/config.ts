@@ -29,6 +29,16 @@ export interface AgentToolConfig {
    */
   actorLogin: string;
   /**
+   * The `owner/repo` this run works in, verified by the orchestrator's read
+   * gate before it launched the run and injected as `AGENT_TARGET_REPOSITORY`:
+   * a per-user caller's own token could read it, or a webhook's sender had
+   * permission on it. Every App token this run mints is scoped to exactly
+   * this repository, so the repository that was checked is the only one the
+   * run can write to. Empty when the orchestrator named none (an agent that
+   * does not declare `github`), which keeps the pre-existing behaviour.
+   */
+  targetRepository: string;
+  /**
    * GitHub App credentials, used instead of `githubToken` when all three are
    * set: a short-lived installation access token is minted per run (see
    * @controller-agent/github-app-auth) rather than using a long-lived static
@@ -158,6 +168,7 @@ export function loadToolConfig(env: NodeJS.ProcessEnv = process.env): AgentToolC
   return {
     githubToken: env.GITHUB_TOKEN ?? "",
     actorLogin: env.AGENT_ACTOR_LOGIN ?? "",
+    targetRepository: env.AGENT_TARGET_REPOSITORY ?? "",
     githubAppId: env.GITHUB_APP_ID ?? "",
     githubAppPrivateKey: normalizePem(env.GITHUB_APP_PRIVATE_KEY),
     githubAppInstallationId: env.GITHUB_APP_INSTALLATION_ID ?? "",

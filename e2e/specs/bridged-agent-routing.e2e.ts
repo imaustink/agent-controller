@@ -40,7 +40,7 @@ describe("pod-based agents are annotated for BridgedAgentWorkflow routing", () =
   // hermetically in engines/temporal/internal/temporal/workflows/
   // agent_workflow_routing_test.go (TestPodAgentsRouteBridged), alongside
   // claude-code-swe-agent.
-  const BRIDGED_AGENTS = ["claude-code-swe-agent", "stub-agent"];
+  const BRIDGED_AGENTS = ["claude-code-swe-agent", "stub-agent", "stub-swe-agent"];
 
   it.each(BRIDGED_AGENTS)("Agent %s declares the bridged annotation", async (agentName) => {
     const agent = await kubectlJson<{ metadata?: { annotations?: Record<string, string> } }>([

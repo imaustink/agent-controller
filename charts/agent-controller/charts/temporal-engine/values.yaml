@@ -80,6 +80,18 @@ catalogSync:
     limits:
       memory: 192Mi
 
+# The repository read gate (authz.gateRepository): before an agent that
+# declares the `github` identity provider launches, the worker checks the
+# caller can read the repository it will work in, with the caller's own token.
+github:
+  # Must be the GitHub the callers' tokens were issued by. Empty is
+  # api.github.com.
+  apiUrl: ""
+  # Resolves a repository a chat request names without its owner, for a
+  # deployment belonging to one organization (e.g. "bitovi"). Empty asks the
+  # user which repository they meant.
+  defaultOwner: ""
+
 worker:
   replicas: 1
   image:

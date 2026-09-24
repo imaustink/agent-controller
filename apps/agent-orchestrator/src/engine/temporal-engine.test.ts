@@ -3,6 +3,10 @@ import { TemporalEngine } from "./temporal-engine.js";
 import { SENDER_ASSERTION_HEADER } from "../rbac/sender-assertion.js";
 import { verifySenderAssertion } from "../rbac/sender-assertion.js";
 import type { AgentGraphInput } from "../server.js";
+import { SignJWT } from "jose";
+import { CALLER_IDENTITY_HEADER } from "../rbac/caller-identity-assertion.js";
+import { OpenWebUiForwardedUserResolver } from "../rbac/openwebui-forwarded-user-resolver.js";
+import type { IdentityResolver } from "../rbac/types.js";
 
 const BASE = "http://temporal-engine-gateway:8080";
 
@@ -25,6 +29,31 @@ function scriptedFetch(records: unknown[], accepted = { id: "conversation-abc.up
     return new Response(JSON.stringify(body), { status: 200 });
   });
   return { impl: impl as unknown as typeof fetch, calls };
+}
+
+const JWT_SECRET = "openwebui-forward-jwt-secret";
+const ASSERTION_SECRET = "sender-assertion-secret";
+
+/** Mints the forwarded-user JWT Open WebUI sends, expiring `ttlSeconds` from now. */
+async function forwardedJwt(userId: string, ttlSeconds: number): Promise<string> {
+  return new SignJWT({ id: userId, role: "user" })
+    .setProtectedHeader({ alg: "HS256" })
+    .setExpirationTime(Math.floor(Date.now() / 1000) + ttlSeconds)
+    .sign(new TextEncoder().encode(JWT_SECRET));
+}
+
+/** The subject each POST /invoke asserted, or undefined for a POST that asserted none. */
+function assertedSubjects(calls: { url: string; init?: RequestInit }[]): (string | undefined)[] {
+  return calls
+    .filter((c) => c.url === `${BASE}/invoke`)
+    .map((c) => {
+      const header = (c.init?.headers as Record<string, string> | undefined)?.[CALLER_IDENTITY_HEADER];
+      if (!header) return undefined;
+      const payload = JSON.parse(Buffer.from(header.split(".")[0]!, "base64url").toString("utf8")) as {
+        subject: string;
+      };
+      return payload.subject;
+    });
 }
 
 describe("TemporalEngine", () => {
@@ -94,6 +123,18 @@ describe("TemporalEngine", () => {
 
     const body = JSON.parse(String(calls[0]!.init!.body));
     expect(body.identityLinkFlow).toBe("device");
+  });
+
+  it("forwards a webhook turn's target repository to the engine's read gate", async () => {
+    const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+
+    await engine.invoke(input({ targetRepository: "e2e-org/e2e-repo" }));
+    await engine.invoke(input());
+
+    const bodies = calls.filter((c) => c.url === `${BASE}/invoke`).map((c) => JSON.parse(String(c.init!.body)));
+    expect(bodies[0].targetRepository).toBe("e2e-org/e2e-repo");
+    expect(bodies[1]).not.toHaveProperty("targetRepository");
   });
 
   it("omits the identity-link flow entirely when the turn names none", async () => {
@@ -351,6 +392,121 @@ describe("TemporalEngine", () => {
       expect(state.result).toContain("Still waiting for you to finish linking");
       expect(state.result).not.toContain("please link your GitHub account");
       expect(progressListener).toHaveBeenCalledTimes(1);
+    });
+
+    // The bitovi incident: Open WebUI's JWT lives 300s, this loop runs for
+    // up to 10 minutes, and re-verifying the JWT on every resume made the
+    // resume after its expiry reach the engine with NO caller identity -- so
+    // the gateway ran the user's request as its shared bearer subject. Real
+    // JWT, real resolver, real expiry (shortened to ~1s).
+    it("keeps the caller's identity on every resume, even after the forwarded JWT expires", async () => {
+      const { impl, calls } = scriptedFetch([
+        { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
+        { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
+        { id: "x", status: "succeeded", result: "Opened PR #42." },
+      ]);
+      const engine = new TemporalEngine({
+        baseUrl: BASE,
+        fetchImpl: impl,
+        senderAssertionSecret: ASSERTION_SECRET,
+        forwardedUserIdentityResolver: new OpenWebUiForwardedUserResolver({ secret: JWT_SECRET, roles: ["writer"] }),
+        // Longer than the JWT's life, so the later resumes happen after it expired.
+        autoResumeIntervalMs: 1_100,
+      });
+
+      const state = await engine.invoke(
+        input({ progressListener: vi.fn(), sessionId: "chat-1", forwardedUserToken: await forwardedJwt("alice", 1) }),
+      );
+
+      expect(state.result).toBe("Opened PR #42.");
+      expect(assertedSubjects(calls)).toEqual(["openwebui:alice", "openwebui:alice", "openwebui:alice"]);
+    });
+  });
+
+  describe("forwarding the caller's per-user identity", () => {
+    function resolverReturning(...results: ({ subject: string; roles: string[] } | undefined)[]) {
+      const resolve = vi.fn(async () => results.shift());
+      return { resolver: { resolve } as unknown as IdentityResolver, resolve };
+    }
+
+    it("asserts the resolved subject on the hop", async () => {
+      const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+      const { resolver } = resolverReturning({ subject: "openwebui:alice", roles: ["writer"] });
+      const engine = new TemporalEngine({
+        baseUrl: BASE,
+        fetchImpl: impl,
+        senderAssertionSecret: ASSERTION_SECRET,
+        forwardedUserIdentityResolver: resolver,
+      });
+
+      await engine.invoke(input({ forwardedUserToken: "jwt" }));
+      expect(assertedSubjects(calls)).toEqual(["openwebui:alice"]);
+    });
+
+    it("resolves the forwarded JWT once per turn, not once per resume", async () => {
+      const { impl } = scriptedFetch([
+        { id: "x", status: "succeeded", result: "link please", path: "link-required" },
+        { id: "x", status: "succeeded", result: "done" },
+      ]);
+      const { resolver, resolve } = resolverReturning({ subject: "openwebui:alice", roles: ["writer"] });
+      const engine = new TemporalEngine({
+        baseUrl: BASE,
+        fetchImpl: impl,
+        senderAssertionSecret: ASSERTION_SECRET,
+        forwardedUserIdentityResolver: resolver,
+        autoResumeIntervalMs: 1,
+      });
+
+      await engine.invoke(input({ forwardedUserToken: "jwt", progressListener: vi.fn(), sessionId: "chat-1" }));
+      expect(resolve).toHaveBeenCalledTimes(1);
+    });
+
+    // Same refusal as the LangGraph engine's resolveIdentity. Before, an
+    // unverifiable JWT just dropped the header and the turn ran as the
+    // gateway's shared bearer subject.
+    it("refuses the turn, without reaching the engine, when the forwarded JWT does not verify", async () => {
+      const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+      const engine = new TemporalEngine({
+        baseUrl: BASE,
+        fetchImpl: impl,
+        senderAssertionSecret: ASSERTION_SECRET,
+        forwardedUserIdentityResolver: new OpenWebUiForwardedUserResolver({ secret: JWT_SECRET, roles: ["writer"] }),
+      });
+
+      const state = await engine.invoke(input({ forwardedUserToken: await forwardedJwt("alice", -60) }));
+
+      expect(state.error).toBe("unauthorized: could not resolve caller identity");
+      expect(calls).toHaveLength(0);
+    });
+
+    it("refuses the turn when a per-user identity cannot be signed across the hop", async () => {
+      const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+      const { resolver } = resolverReturning({ subject: "openwebui:alice", roles: ["writer"] });
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl, forwardedUserIdentityResolver: resolver });
+
+      const state = await engine.invoke(input({ forwardedUserToken: "jwt" }));
+
+      expect(state.error).toBe("unauthorized: could not resolve caller identity");
+      expect(calls).toHaveLength(0);
+      errors.mockRestore();
+    });
+
+    it("sends no caller assertion for a turn that carries no forwarded JWT", async () => {
+      const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+      const { resolver, resolve } = resolverReturning();
+      const engine = new TemporalEngine({
+        baseUrl: BASE,
+        fetchImpl: impl,
+        senderAssertionSecret: ASSERTION_SECRET,
+        forwardedUserIdentityResolver: resolver,
+      });
+
+      const state = await engine.invoke(input());
+
+      expect(state.result).toBe("ok");
+      expect(resolve).not.toHaveBeenCalled();
+      expect(assertedSubjects(calls)).toEqual([undefined]);
     });
   });
 });

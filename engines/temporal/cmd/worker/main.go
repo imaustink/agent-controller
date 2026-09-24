@@ -78,7 +78,13 @@ func main() {
 		Name: activities.CompleteTurnActivityName,
 	})
 
-	agentLoop := &activities.AgentLoopActivities{LLM: llmClient}
+	agentLoop := &activities.AgentLoopActivities{
+		LLM: llmClient,
+		// Resolves a repository a chat request names without its owner, for a
+		// deployment that belongs to one organization. Unset, such a request
+		// is asked which repository it meant.
+		DefaultGitHubOwner: os.Getenv("AGENT_DEFAULT_GITHUB_OWNER"),
+	}
 	w.RegisterActivityWithOptions(agentLoop.CheckNeedsCapability, activity.RegisterOptions{Name: activities.CheckNeedsCapabilityActivityName})
 	w.RegisterActivityWithOptions(agentLoop.CheckSkillFit, activity.RegisterOptions{Name: activities.CheckSkillFitActivityName})
 	w.RegisterActivityWithOptions(agentLoop.CheckToolFit, activity.RegisterOptions{Name: activities.CheckToolFitActivityName})
@@ -86,6 +92,7 @@ func main() {
 	w.RegisterActivityWithOptions(agentLoop.PlanAction, activity.RegisterOptions{Name: activities.PlanActionActivityName})
 	w.RegisterActivityWithOptions(agentLoop.ComposeResponse, activity.RegisterOptions{Name: activities.ComposeResponseActivityName})
 	w.RegisterActivityWithOptions(agentLoop.SelectDelegate, activity.RegisterOptions{Name: activities.SelectDelegateActivityName})
+	w.RegisterActivityWithOptions(agentLoop.ExtractTargetRepository, activity.RegisterOptions{Name: activities.ExtractTargetRepositoryActivityName})
 	w.RegisterActivityWithOptions(agentLoop.PlanAgentAction, activity.RegisterOptions{Name: activities.PlanAgentActionActivityName})
 
 	// Authorization pre-flight. The real credential store lives in
@@ -127,6 +134,10 @@ func main() {
 		// human's attention; this only lets the gateway short-circuit it when
 		// the link lands immediately.
 		WaitForLink: 30 * time.Second,
+		// The read gate for agents that declare github: checked against the
+		// caller's own token, so it must reach the same GitHub the tokens were
+		// issued by (fake-github in e2e).
+		Repos: authz.GitHubRepoReader{APIURL: getenv("GITHUB_API_URL", "https://api.github.com")},
 	})}
 	w.RegisterActivityWithOptions(authorize.Authorize, activity.RegisterOptions{Name: activities.AuthorizeActivityName})
 	w.RegisterActivityWithOptions(authorize.ResolveLinked, activity.RegisterOptions{Name: activities.ResolveLinkedActivityName})
