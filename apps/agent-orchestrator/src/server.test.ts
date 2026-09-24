@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "./rbac/sender-assertion.js";
+import { InMemoryInvocationStore } from "./invocation/types.js";
 import { InvokeServer, type AgentGraphLike } from "./server.js";
 import type { AgentState } from "./agent/graph.js";
 import type { AgentOrchestratorChannel } from "./agents/nats-agent-channel.js";
@@ -63,6 +64,66 @@ async function readSse(res: Response): Promise<unknown[]> {
 }
 
 describe("InvokeServer", () => {
+  // The record is the request, and it used to live only in the memory of the
+  // pod that accepted it. That pod therefore had to survive to answer the
+  // poll -- so a rollout lost every turn accepted around it (AgentRun created
+  // at 04:48:30 against a pod whose replacement started at 04:48:32; its
+  // answer stranded behind a 404), and /invoke could not run two replicas at
+  // all. A shared store means whichever replica is asked can answer.
+  it("serves a poll from a store, so a DIFFERENT instance can answer it", async () => {
+    const shared = new InMemoryInvocationStore();
+    let resolveGraph!: (state: AgentState) => void;
+    const accepting = new InvokeServer(
+      { invoke: vi.fn().mockReturnValue(new Promise<AgentState>((r) => (resolveGraph = r))), stream: vi.fn().mockResolvedValue(noStream()) },
+      undefined, undefined, undefined, undefined, undefined, undefined, 5, "authcode", shared,
+    );
+    // A second process entirely -- same store, its own graph it never runs.
+    const polling = new InvokeServer(
+      { invoke: vi.fn(), stream: vi.fn() },
+      undefined, undefined, undefined, undefined, undefined, undefined, 5, "authcode", shared,
+    );
+    const acceptPort = await listenOn(accepting);
+    const pollPort = await listenOn(polling);
+
+    const postRes = await fetch(`http://127.0.0.1:${acceptPort}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "do the thing" }),
+    });
+    const { id } = (await postRes.json()) as { id: string };
+
+    resolveGraph({ request: "x", authToken: "tok-1", skillCandidates: [], result: "done" } as unknown as AgentState);
+    await new Promise((r) => setTimeout(r, 10));
+
+    // The instance that never saw the POST answers the poll.
+    const polled = await fetch(`http://127.0.0.1:${pollPort}/invoke/${id}`);
+    expect(polled.status).toBe(200);
+    expect((await polled.json()) as { status: string }).toMatchObject({ status: "succeeded" });
+  });
+
+  // Durable records make an answer RETRIEVABLE from any replica; they do not
+  // make a turn whose graph died with its process complete itself. So a pod on
+  // the way out must refuse new work rather than hand back a 202 for a turn
+  // nobody will ever finish -- the caller retries and reaches the replacement.
+  it("refuses new turns once draining, instead of accepting one it cannot finish", async () => {
+    const graph: AgentGraphLike = { invoke: vi.fn(), stream: vi.fn().mockResolvedValue(noStream()) };
+    const server = new InvokeServer(graph);
+    const port = await listenOn(server);
+
+    server.beginDraining();
+
+    const res = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify({ request: "do the thing" }),
+    });
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("1");
+    // The decisive part: no graph run was started for a turn that could not
+    // have been completed.
+    expect(graph.invoke).not.toHaveBeenCalled();
+  });
+
   it("accepts a request, returns 202 + id, and the result becomes available once the graph resolves", async () => {
     let resolveGraph!: (state: AgentState) => void;
     const graph: AgentGraphLike = {

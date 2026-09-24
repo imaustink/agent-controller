@@ -13,6 +13,7 @@ import { parseCallerTools } from "./caller-tools/parse.js";
 import { resolveCallerTools, toCallerToolDescriptor } from "./caller-tools/resolve.js";
 import type { ToolDescriptor } from "./tool-descriptor.js";
 import type { SessionStore } from "./session/types.js";
+import { InMemoryInvocationStore, type InvocationStore } from "./invocation/types.js";
 import { renderPromptTemplate, type CrdIntegrationRouteRegistry } from "./routing/crd-integration-route-registry.js";
 import {
   buildAgentRequest,
@@ -270,7 +271,22 @@ interface CallerToolTurn {
 
 export class InvokeServer {
   private server: Server | undefined;
-  private readonly invocations = new Map<string, InvocationRecord>();
+  /**
+   * Where accept-then-poll records live. Defaults to an in-process Map (the
+   * previous behaviour, single-replica); a Redis-backed store lets ANY replica
+   * answer any poll, which is what stops a rollout losing every turn accepted
+   * around it. See invocation/types.ts.
+   */
+  private readonly invocations: InvocationStore;
+  /**
+   * Set the moment shutdown begins. A pod that is going away must stop
+   * ACCEPTING new turns even while it finishes the ones it has: `/invoke`
+   * answers 202 and runs the graph in this process, so a turn accepted now is
+   * a turn whose graph dies with the pod. Durable records make the answer
+   * *retrievable*, not the work survivable -- only refusing keeps a caller
+   * from being handed a turn that can never complete.
+   */
+  private draining = false;
 
   constructor(
     private readonly graph: AgentGraphLike,
@@ -338,7 +354,25 @@ export class InvokeServer {
      * before this was configurable.
      */
     private readonly defaultIdentityLinkFlow: "device" | "authcode" = "authcode",
-  ) {}
+    /**
+     * Where accept-then-poll records live. Defaults to the in-process Map this
+     * used to hard-code; pass a Redis-backed store so a poll can be answered
+     * by a replica other than the one that accepted it.
+     */
+    invocationStore?: InvocationStore,
+  ) {
+    this.invocations = invocationStore ?? new InMemoryInvocationStore();
+  }
+
+  /**
+   * Stops accepting new turns. Called at the top of shutdown, BEFORE the
+   * drain: everything already in flight finishes, but a caller asking for new
+   * work is told to go elsewhere rather than handed a turn whose graph is
+   * about to be killed with this process.
+   */
+  beginDraining(): void {
+    this.draining = true;
+  }
 
   /** Builds the graph input for one turn, folding in any session-scoped active skill or agent run (docs/adr/0012). */
   private async buildGraphInput(
@@ -548,7 +582,7 @@ export class InvokeServer {
 
     const match = /^\/invoke\/([^/]+)$/.exec(url.pathname);
     if (req.method === "GET" && match) {
-      this.handleGetInvocation(res, match[1] as string);
+      await this.handleGetInvocation(res, match[1] as string);
       return;
     }
 
@@ -827,9 +861,20 @@ export class InvokeServer {
       return;
     }
 
+    if (this.draining) {
+      // 503 + Retry-After, not a queued 202: this process is going away and the
+      // graph for anything accepted now would die with it. A caller that
+      // retries reaches the replacement pod; one handed a 202 would poll a
+      // record nobody is ever going to complete.
+      res
+        .writeHead(503, { "content-type": "application/json", "retry-after": "1" })
+        .end(JSON.stringify({ error: "orchestrator is shutting down; retry" }));
+      return;
+    }
+
     const authToken = bearerToken(req.headers.authorization);
     const id = randomUUID();
-    this.invocations.set(id, { id, status: "pending" });
+    await this.invocations.set(id, { id, status: "pending" });
 
     // Fire-and-forget: the HTTP response returns immediately; the graph run
     // (which blocks on the launched tool Job's callback) updates the record
@@ -856,10 +901,10 @@ export class InvokeServer {
       // `progressListener` (see above). Only mutate while still pending --
       // never clobber a terminal record (mirrors `reportIdentityLinkPending`
       // below).
-      (url) => {
-        const current = this.invocations.get(id);
+      async (url) => {
+        const current = await this.invocations.get(id);
         if (current && current.status === "pending") {
-          this.invocations.set(id, { ...current, remoteControlUrl: url });
+          await this.invocations.set(id, { ...current, remoteControlUrl: url });
         }
       },
       senderLogin,
@@ -870,10 +915,10 @@ export class InvokeServer {
       // decides a link is needed (before the link URL exists), so a polling
       // caller can withhold a premature "starting work" ack. Only mutate while
       // still pending -- never clobber a terminal record.
-      graphInput.reportIdentityLinkPending = (info) => {
-        const current = this.invocations.get(id);
+      graphInput.reportIdentityLinkPending = async (info) => {
+        const current = await this.invocations.get(id);
         if (current && current.status === "pending") {
-          this.invocations.set(id, { ...current, identityLinkPending: true, identityLink: info });
+          await this.invocations.set(id, { ...current, identityLinkPending: true, identityLink: info });
         }
       };
       return this.graph
@@ -893,8 +938,8 @@ export class InvokeServer {
           // Carry forward any remoteControlUrl already recorded by the
           // progress listener above -- this terminal write replaces the whole
           // record, so it would otherwise be dropped on a successful/failed turn.
-          const remoteControlUrl = this.invocations.get(id)?.remoteControlUrl;
-          this.invocations.set(id, {
+          const remoteControlUrl = (await this.invocations.get(id))?.remoteControlUrl;
+          await this.invocations.set(id, {
             id,
             status: state.error ? "failed" : "succeeded",
             result: state.result,
@@ -920,22 +965,22 @@ export class InvokeServer {
               : {}),
           });
         })
-        .catch((err: unknown) => {
-          const remoteControlUrl = this.invocations.get(id)?.remoteControlUrl;
-          this.invocations.set(id, {
+        .catch(async (err: unknown) => {
+          const remoteControlUrl = (await this.invocations.get(id))?.remoteControlUrl;
+          await this.invocations.set(id, {
             id,
             status: "failed",
             error: err instanceof Error ? err.message : String(err),
             ...(remoteControlUrl ? { remoteControlUrl } : {}),
           });
         });
-    }).catch((err: unknown) => {
+    }).catch(async (err: unknown) => {
       // `buildGraphInput` itself can reject (e.g. `sessionStore.get` hitting
       // Redis) before the graph ever runs. Without this, that rejection is
       // unhandled -- Node terminates the process, wiping the in-memory
       // `invocations` Map and turning every in-flight poll (not just this
       // one) into a 404 the caller reports as "poll failed: 404".
-      this.invocations.set(id, {
+      await this.invocations.set(id, {
         id,
         status: "failed",
         error: err instanceof Error ? err.message : String(err),
@@ -947,8 +992,8 @@ export class InvokeServer {
     );
   }
 
-  private handleGetInvocation(res: ServerResponse, id: string): void {
-    const record = this.invocations.get(id);
+  private async handleGetInvocation(res: ServerResponse, id: string): Promise<void> {
+    const record = await this.invocations.get(id);
     if (!record) {
       res.writeHead(404).end();
       return;

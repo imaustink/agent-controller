@@ -54,6 +54,9 @@ import { TemporalEngine } from "./engine/temporal-engine.js";
 import { OpenAiTaskCompleter } from "./openai/task-completer.js";
 import { InMemorySessionStore } from "./session/in-memory-session-store.js";
 import { RedisSessionStore } from "./session/redis-session-store.js";
+import { RedisInvocationStore } from "./invocation/redis-invocation-store.js";
+import { InMemoryAgentReplyStore, RedisAgentReplyStore, type AgentReplyStore } from "./agents/reply-store.js";
+import { InMemoryInvocationStore, type InvocationStore } from "./invocation/types.js";
 import type { SessionStore } from "./session/types.js";
 import { clearAgentRunAwaitingReply, markAgentRunAwaitingReply } from "./session/inflight-agent-run.js";
 import { InvokeServer, type AgentGraphLike } from "./server.js";
@@ -410,6 +413,8 @@ async function main(): Promise<void> {
   // `agentRegistry`/`agents` themselves were already loaded above (before
   // the Skill section) so RBAC derivation has them regardless of NATS;
   // reused here rather than re-listing the cluster.
+  let redisAgentReplyStore: RedisAgentReplyStore | undefined;
+  let agentReplyStore: AgentReplyStore = new InMemoryAgentReplyStore();
   let agentDelegation:
     | {
         agentStore: QdrantAgentStore;
@@ -456,11 +461,28 @@ async function main(): Promise<void> {
       (err) => console.error("Agent watch error:", err),
     );
 
+    // Durable home for an agent's concluding reply, written before its ack --
+    // what makes releasing the agent's hold safe across a rollout.
+    if (config.redisUrl) {
+      redisAgentReplyStore = new RedisAgentReplyStore(config.redisUrl, { ttlSeconds: config.invocationTtlSeconds });
+      await retryWithBackoff("redis agent reply store startup check", () => redisAgentReplyStore!.connect(), {
+        attempts: 12,
+        initialDelayMs: 1_000,
+        maxDelayMs: 15_000,
+      });
+      agentReplyStore = redisAgentReplyStore;
+    }
+
     agentDelegation = {
       agentStore,
       delegateSelector: new OpenAiDelegateSelector({ model: config.selectionModel }),
       agentRunLauncher: AgentRunLauncher.fromKubeConfig(config.crdGroup, config.crdVersion, kubeConfig),
-      agentChannel: await NatsAgentChannel.connect(config.natsUrl),
+      // The reply store is what makes the protocol's `reply_ack` safe: the
+      // concluding reply is persisted before the ack releases the agent's
+      // hold, so a rollout between the two can no longer destroy the only copy
+      // of the answer. Without Redis it is in-process, and that guarantee is
+      // limited to this pod -- the same caveat as the invocation store.
+      agentChannel: await NatsAgentChannel.connect(config.natsUrl, "agent", agentReplyStore),
     };
   }
 
@@ -640,6 +662,36 @@ async function main(): Promise<void> {
     });
   }
 
+  // Where `/invoke`'s accept-then-poll records live. On Redis, ANY replica can
+  // answer a poll -- which is what stops a rollout losing every turn accepted
+  // in the seconds around it, and is the precondition for running more than one
+  // replica at all. Without Redis this is the in-process Map it has always
+  // been, and the same single-replica caveat applies.
+  //
+  // TTL has to outlast the longest poll budget a caller uses, not the session
+  // TTL: integration-gateway polls for up to `pollTimeoutMs` (15 minutes by
+  // default) on one record.
+  let redisInvocationStore: RedisInvocationStore | undefined;
+  let invocationStore: InvocationStore;
+  if (config.redisUrl) {
+    redisInvocationStore = new RedisInvocationStore(config.redisUrl, {
+      ttlSeconds: config.invocationTtlSeconds,
+    });
+    await retryWithBackoff("redis invocation store startup check", () => redisInvocationStore!.connect(), {
+      attempts: 12,
+      initialDelayMs: 1_000,
+      maxDelayMs: 15_000,
+    });
+    console.error(`Using Redis invocation store: ${config.redisUrl} (ttl ${config.invocationTtlSeconds}s)`);
+    invocationStore = redisInvocationStore;
+  } else {
+    console.error(
+      "No REDIS_URL: /invoke records are in-process, so a poll must reach the SAME pod that accepted it. " +
+        "A rollout loses turns accepted around it, and more than one replica will 404 polls.",
+    );
+    invocationStore = new InMemoryInvocationStore();
+  }
+
   const graph = buildAgentGraph({
     identityResolver,
     forwardedUserIdentityResolver,
@@ -768,6 +820,7 @@ async function main(): Promise<void> {
     callerToolStore,
     config.callerToolTopK,
     config.defaultIdentityLinkFlow,
+    invocationStore,
   );
   if (!config.senderAssertionSecret) {
     console.error(
@@ -804,6 +857,15 @@ async function main(): Promise<void> {
     identityProviderWatch.stop();
     if (skillReindexTimer) clearTimeout(skillReindexTimer);
     clearInterval(callerToolPruneTimer);
+
+    // Refuse NEW turns first. Durable invocation records make an answer
+    // retrievable from any replica; they do not make a turn whose graph died
+    // with this process complete itself. So a caller arriving now is told to
+    // retry (503) and reaches the replacement, rather than being handed a 202
+    // for a turn that can never finish -- the failure that produced an
+    // AgentRun at 04:48:30 against a pod replaced at 04:48:32, its answer
+    // stranded behind a poll the new pod 404s.
+    invokeServer.beginDraining();
 
     // Phase 1 -- stop accepting new work, then let in-flight requests finish.
     // This MUST complete before the transports below are torn down: an
@@ -854,6 +916,8 @@ async function main(): Promise<void> {
     }
     if (agentDelegation) closers.push(agentDelegation.agentChannel.close());
     if (redisSessionStore) closers.push(redisSessionStore.close());
+    if (redisInvocationStore) closers.push(redisInvocationStore.close());
+    if (redisAgentReplyStore) closers.push(redisAgentReplyStore.close());
     await Promise.all(closers);
     process.exit(0);
   };
