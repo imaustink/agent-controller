@@ -83,3 +83,48 @@ describe("delegatedToken", () => {
     expect((await resolver.delegatedToken("s", ["github"]))?.principals).toEqual(["user:octocat"]);
   });
 });
+
+describe("a provider the gateway has not been configured for", () => {
+  /** What the deployed gateway actually answers: 400 Unsupported identity provider. */
+  const unsupported = () =>
+    ({
+      ok: false,
+      status: 400,
+      text: async () => JSON.stringify({ error: "Unsupported identity provider: atlassian" }),
+      json: async () => ({}),
+    }) as Response;
+
+  it("falls through instead of failing the whole search", async () => {
+    // Found against the real gateway: this fired on the FIRST Atlassian
+    // Connection, because the deployed gateway has no atlassian provider. The
+    // resolver propagated the 400 and every knowledge-base search touching that
+    // connection died, rather than degrading to "link your account".
+    const links = {
+      start: vi.fn(),
+      poll: vi.fn(),
+      getToken: vi.fn().mockResolvedValue(undefined),
+    } as unknown as IdentityLinkPort;
+
+    const client = new (await import("../identity-link/gateway-client.js")).IdentityLinkGatewayClient({
+      baseUrl: "http://gw",
+      token: "t",
+      fetchImpl: (async () => unsupported()) as unknown as typeof fetch,
+    });
+
+    expect(await client.getToken("atlassian", "s")).toBeUndefined();
+    expect(await client.getLinkedAccountId!("atlassian", "s")).toBeUndefined();
+    void links;
+  });
+
+  it("still raises a genuine failure", async () => {
+    const client = new (await import("../identity-link/gateway-client.js")).IdentityLinkGatewayClient({
+      baseUrl: "http://gw",
+      token: "t",
+      fetchImpl: (async () =>
+        ({ ok: false, status: 500, text: async () => "boom", json: async () => ({}) }) as Response) as unknown as typeof fetch,
+    });
+
+    // "Could not find out" must stay distinct from "nothing linked" (ADR 0031).
+    await expect(client.getToken("github", "s")).rejects.toThrow(/token lookup/);
+  });
+});

@@ -164,6 +164,8 @@ export class IdentityLinkGatewayClient implements IdentityLinkPort {
       { headers: { authorization: `Bearer ${this.options.token}` } },
     );
     if (res.status === 404) return undefined;
+    // See getToken: an unconfigured provider is not an error here.
+    if (res.status === 400) return undefined;
     if (!res.ok) {
       throw new Error(`identity-link identity lookup (${provider}) failed: ${res.status} ${await res.text()}`);
     }
@@ -182,6 +184,8 @@ export class IdentityLinkGatewayClient implements IdentityLinkPort {
       { headers: { authorization: `Bearer ${this.options.token}` } },
     );
     if (res.status === 404) return undefined;
+    // See getToken: an unconfigured provider is not an error here.
+    if (res.status === 400) return undefined;
     if (!res.ok) {
       throw new Error(`identity-link identity lookup (${provider}) failed: ${res.status} ${await res.text()}`);
     }
@@ -215,6 +219,16 @@ export class IdentityLinkGatewayClient implements IdentityLinkPort {
       { headers: { authorization: `Bearer ${this.options.token}` } },
     );
     if (res.status === 404) return undefined;
+    if (res.status === 400) {
+      // The gateway does not have this provider configured. A statement about
+      // deployment rather than a fault, and for a LOOKUP it means the same
+      // thing as no link: there is nothing here to return.
+      //
+      // Erroring instead takes down every knowledge-base search touching a
+      // provider the gateway has not been set up for, rather than degrading to
+      // an ask — which is the thing a caller can actually act on.
+      return undefined;
+    }
     if (!res.ok) {
       throw new Error(`identity-link token lookup (${provider}) failed: ${res.status} ${await res.text()}`);
     }

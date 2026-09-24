@@ -293,6 +293,16 @@ func (c *Client) Token(ctx context.Context, provider, subject string) (*Token, e
 
 	var out Token
 	status, err := c.do(ctx, http.MethodGet, path, nil, &out)
+	if status == http.StatusBadRequest {
+		// The gateway does not have this provider configured. That is a
+		// statement about deployment rather than a fault, and for a LOOKUP it
+		// means the same thing as no link: there is nothing here to return.
+		//
+		// Erroring instead takes down every knowledge-base search touching a
+		// provider the gateway has not been set up for, rather than degrading
+		// to an ask — which is the thing a caller can actually act on.
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -312,6 +322,11 @@ func (c *Client) LinkedLogin(ctx context.Context, provider, subject string) (str
 	status, err := c.do(ctx, http.MethodGet,
 		"/identity-link/"+url.PathEscape(provider)+"/identity?subject="+url.QueryEscape(subject),
 		nil, &out)
+	if status == http.StatusBadRequest {
+		// See Token: a provider the gateway has not been configured for is not
+		// an error here.
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}
@@ -333,6 +348,11 @@ func (c *Client) LinkedAccountID(ctx context.Context, provider, subject string) 
 	status, err := c.do(ctx, http.MethodGet,
 		"/identity-link/"+url.PathEscape(provider)+"/identity?subject="+url.QueryEscape(subject),
 		nil, &out)
+	if status == http.StatusBadRequest {
+		// See Token: a provider the gateway has not been configured for is not
+		// an error here.
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}
