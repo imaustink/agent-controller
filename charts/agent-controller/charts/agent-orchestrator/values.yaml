@@ -35,6 +35,23 @@ ports:
   http: 8081
   callback: 8080
 
+# Seconds to sleep in preStop before the process is signalled, so the pod
+# outlives its own endpoint removal.
+#
+# SIGTERM and endpoint removal are concurrent, and this pod loses that race:
+# `/invoke` answers 202 immediately, so the shutdown drain has nothing in flight
+# to wait for and the process exits ~1s after SIGTERM, while kube-proxy applies
+# endpoint changes at most once a second. A caller connecting in the gap hits an
+# address with nothing behind it and waits out a ~10.5s connect timeout rather
+# than being refused. Measured: 5 of 10 rollouts lost a poll from a
+# gateway-shaped client.
+#
+# 5s covers a 1s proxy sync with room to spare and sits well inside the default
+# 30s terminationGracePeriodSeconds. It delays only rollouts, never a request.
+# Set to 0 (or "") to disable -- e.g. on Kubernetes older than 1.30, where the
+# `sleep` preStop action does not exist.
+preStopSleepSeconds: 5
+
 config:
   # Ignored when qdrant.enabled=true below (the in-cluster subchart's
   # Service URL is derived automatically instead). Set this to point at an
@@ -390,6 +407,22 @@ localTool:
 qdrant:
   enabled: false
   replicaCount: 1
+  # The subchart defaults `config.cluster.enabled: true`, which is wrong for the
+  # single replica above and fails closed rather than degrading: pod-0's
+  # entrypoint runs `--uri http://<release>-qdrant-0.<release>-qdrant-headless:6335`
+  # and Raft dials that address during startup, before qdrant is listening on
+  # 6335 itself. It panics in `Can't initialize consensus: Failed to initialize
+  # Consensus for new Raft state` (exit 101) and crashloops, which then takes
+  # out everything downstream -- agent-orchestrator blocks on its qdrant startup
+  # check, and the temporal worker on `CollectionExists`.
+  #
+  # Nothing here ever runs more than one replica (values-production.yaml calls
+  # it "this single-replica dev/demo instance"), so consensus buys nothing. Turn
+  # it off in the base values rather than per-profile: every consumer inherits
+  # replicaCount 1, so every consumer has the same bug.
+  config:
+    cluster:
+      enabled: false
   persistence:
     size: 10Gi
   resources:

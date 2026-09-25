@@ -30,6 +30,25 @@ spec:
         - name: gateway
           image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
           imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          {{- if .Values.gateway.preStopSleepSeconds }}
+          # Same race, one hop over, as agent-orchestrator's own preStop.
+          #
+          # This gateway is also accept-then-poll, so it too has no in-flight
+          # request to drain and exits promptly on SIGTERM, while kube-proxy
+          # applies endpoint changes at most once a second. agent-orchestrator
+          # polls it for the whole of every turn on the Temporal engine (ADR
+          # 0036, the default engine), so a connection opened into that gap
+          # waits out a ~10.5s connect timeout on a dead address and the turn
+          # in flight is lost to a routine rollout.
+          #
+          # Sleeping here keeps this pod reachable until every proxy has
+          # stopped pointing at it. The orchestrator's client retries network
+          # errors as well; this is the half that does not depend on the caller.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.gateway.preStopSleepSeconds }}
+          {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

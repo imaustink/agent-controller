@@ -120,6 +120,16 @@ gateway:
     repository: temporal-engine-gateway
     tag: latest
     pullPolicy: IfNotPresent
+  # Seconds to sleep in preStop so this pod outlives its own endpoint removal.
+  # Same reasoning as agent-orchestrator's `preStopSleepSeconds`: accept-then-
+  # poll means nothing is in flight to drain, the process goes promptly on
+  # SIGTERM, and kube-proxy takes up to a second to stop routing to it --
+  # leaving a window where a caller connects to a dead address and waits out a
+  # ~10.5s connect timeout instead of being refused. agent-orchestrator polls
+  # this gateway for the whole of every turn on the Temporal engine, so that
+  # window costs a turn. Set to 0 to disable (Kubernetes < 1.30 has no `sleep`
+  # preStop action).
+  preStopSleepSeconds: 5
   service:
     type: ClusterIP
     port: 8080

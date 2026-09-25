@@ -359,6 +359,78 @@ describe("GatewayServer", () => {
     expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, expect.stringContaining("boom"));
   });
 
+  // The `relayAndReply` catch is the PR's headline guarantee: a turn can never
+  // end in silence. Unlike the test above (where the orchestrator turn *fails*
+  // gracefully and `runTurn` posts the outcome itself), these drive `runTurn`
+  // to actually THROW -- an `invoke` that rejects, e.g. a poll rejected
+  // mid-rollout -- which is the only path that reaches the catch.
+  it("posts a fallback comment when runTurn throws, so a turn never ends in silence", async () => {
+    invoke.mockRejectedValue(new Error("poll failed: UND_ERR_CONNECT_TIMEOUT"));
+    await postWebhook(port, "issues", {
+      action: "labeled",
+      repository: { owner: { login: "acme" }, name: "widgets" },
+      sender: { login: "alice", type: "User" },
+      issue: { number: 7, title: "t", body: "b" },
+      label: { name: "ai-triage" },
+    });
+    await flush();
+    expect(postIssueComment).toHaveBeenCalledWith(
+      "acme",
+      "widgets",
+      7,
+      expect.stringContaining("Something went wrong processing this"),
+    );
+    expect(postIssueComment).toHaveBeenCalledWith(
+      "acme",
+      "widgets",
+      7,
+      expect.stringContaining("UND_ERR_CONNECT_TIMEOUT"),
+    );
+    // finally still runs: the trigger label comes off so a re-apply re-triggers.
+    expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-triage");
+  });
+
+  it("reports via onBackgroundError when the fallback comment itself fails, without masking the original error", async () => {
+    const onBackgroundError = vi.fn();
+    const rejectingInvoke = vi.fn().mockRejectedValue(new Error("poll failed: UND_ERR_CONNECT_TIMEOUT"));
+    const rejectingPost = vi.fn().mockRejectedValue(new Error("github unreachable"));
+    const localRemoveLabel = vi.fn().mockResolvedValue(undefined);
+    const localServer = new GatewayServer({
+      githubWebhookSecret: SECRET,
+      identityResolver,
+      orchestratorClient: { invoke: rejectingInvoke } as unknown as OrchestratorClient,
+      githubReplyClient: {
+        postIssueComment: rejectingPost,
+        removeIssueLabel: localRemoveLabel,
+      } as unknown as GithubReplyClient,
+      githubTriggerLabel: "ai-triage",
+      githubReviewLabel: "ai-review",
+      onBackgroundError,
+    });
+    await localServer.listen(0);
+    const localPort = (localServer as unknown as { server: { address: () => AddressInfo } }).server.address().port;
+    try {
+      await postWebhook(localPort, "issues", {
+        action: "labeled",
+        repository: { owner: { login: "acme" }, name: "widgets" },
+        sender: { login: "alice", type: "User" },
+        issue: { number: 7, title: "t", body: "b" },
+        label: { name: "ai-triage" },
+      });
+      await flush();
+      // Both errors are surfaced: the failed post AND the original turn error,
+      // so failing to post the failure never replaces it with a less
+      // informative one.
+      const reported = onBackgroundError.mock.calls.map((c) => (c[0] instanceof Error ? c[0].message : String(c[0])));
+      expect(reported).toContain("github unreachable");
+      expect(reported).toContain("poll failed: UND_ERR_CONNECT_TIMEOUT");
+      // finally still removes the label even after both failures.
+      expect(localRemoveLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-triage");
+    } finally {
+      await localServer.close();
+    }
+  });
+
   it("removes the trigger label once an issue triage run completes, so re-applying it re-triggers", async () => {
     await postWebhook(port, "issues", {
       action: "labeled",

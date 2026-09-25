@@ -103,6 +103,37 @@ step "Building images and deploying (skaffold profile: e2e)..."
 # A dependency count far below the artifact's real source-file count is the tell.
 (cd "$REPO_ROOT" && skaffold run -p e2e)
 
+step "Checking both Helm releases installed..."
+# Skaffold installs the releases in order and stops at the first failure, so a
+# problem in agent-controller used to leave community-components -- the release
+# that owns every Tool/Skill/Agent CR -- simply not installed. That presents to
+# a test as a turn that never dispatches, not as a deploy error, and costs a
+# whole run to work out. Checked here, by name, so it reads as what it is.
+missing_releases=()
+for release in agent-controller community-components; do
+  status="$(helm -n "$NS" status "$release" -o json 2>/dev/null | sed -n 's/.*"status":"\([^"]*\)".*/\1/p' | head -1)"
+  [[ "$status" == "deployed" ]] || missing_releases+=("$release (${status:-not installed})")
+done
+if [[ ${#missing_releases[@]} -gt 0 ]]; then
+  echo "" >&2
+  echo "✗ Helm releases not deployed:" >&2
+  for r in "${missing_releases[@]}"; do echo "    - $r" >&2; done
+  echo "" >&2
+  echo "  helm -n $NS list --all" >&2
+  exit 1
+fi
+# The catalog itself, not just the release: an installed community-components
+# with zero CRs would dispatch nothing, and the suite's failure for that is a
+# silent timeout rather than a missing-object error.
+cr_count="$(kubectl -n "$NS" get tools,skills,agents --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+if [[ "$cr_count" -eq 0 ]]; then
+  echo "" >&2
+  echo "✗ community-components is deployed but no Tool/Skill/Agent CRs exist." >&2
+  echo "  Nothing can be dispatched, so every agent turn in the suite would time out." >&2
+  exit 1
+fi
+echo "  ✓ both releases deployed, $cr_count Tool/Skill/Agent CRs"
+
 step "Waiting for the stack to be ready..."
 # `helm --wait` already gates on this, but it is re-checked explicitly so a
 # partially-ready cluster fails HERE with a readable pod list rather than

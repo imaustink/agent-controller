@@ -439,9 +439,35 @@ export class TemporalEngine implements AgentGraphLike {
     // streaming caller from seeing every line repeated on every poll tick.
     let seen = 0;
     for (;;) {
-      const res = await this.fetchImpl(`${this.baseUrl}/invoke/${encodeURIComponent(id)}`, {
-        headers: this.headers(),
-      });
+      // A REJECTED fetch is not the same as a non-ok response below: it means
+      // the request never reached the engine gateway at all, which is what a
+      // rolling restart of that Deployment produces. Its `/invoke` is
+      // accept-then-poll too, so it has nothing in flight to drain and goes
+      // promptly on SIGTERM, while kube-proxy takes up to a second to stop
+      // routing to it -- and a connection opened into that gap waits out a
+      // ~10.5s connect timeout against a dead address rather than being
+      // refused.
+      //
+      // Thrown from here it would abandon a turn that is still perfectly
+      // alive: the record IS the workflow, not this process's memory (see the
+      // deadline branch below, which says exactly that). So a transport
+      // failure is retried until this poll's own deadline, at which point the
+      // existing "still running, ask me next message" pause applies. Same
+      // treatment integration-gateway's OrchestratorClient gives its poll.
+      let res: Response;
+      try {
+        res = await this.fetchImpl(`${this.baseUrl}/invoke/${encodeURIComponent(id)}`, {
+          headers: this.headers(),
+        });
+      } catch (err) {
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `temporal engine /invoke/${id} unreachable for the poll budget: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        continue;
+      }
       if (!res.ok) {
         throw new Error(`temporal engine /invoke/${id} failed: ${res.status}`);
       }

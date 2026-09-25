@@ -110,6 +110,13 @@ export interface AppConfig {
    * a chat's active skill is remembered between turns (docs/adr/0012).
    */
   sessionTtlSeconds: number;
+  /**
+   * TTL for a `/invoke` accept-then-poll record. Must outlast the longest
+   * poll budget any caller uses -- integration-gateway's `pollTimeoutMs`
+   * defaults to 15 minutes -- or a slow turn's answer expires before the
+   * caller reads it, which reads as the 404 this store exists to prevent.
+   */
+  invocationTtlSeconds: number;
   /** Hard cap on stored conversation sessions; least-recently-updated evicted first (docs/adr/0012). */
   sessionMaxEntries: number;
   /**
@@ -275,6 +282,7 @@ export const config: AppConfig = {
   agentIdleTimeoutSeconds: num(process.env.AGENT_IDLE_TIMEOUT_SECONDS, 600), // 10m of silence
   shutdownDrainMs: num(process.env.AGENT_SHUTDOWN_DRAIN_MS, 25_000), // under the 30s grace period
   sessionTtlSeconds: num(process.env.AGENT_SESSION_TTL_SECONDS, 1800),
+  invocationTtlSeconds: num(process.env.AGENT_INVOCATION_TTL_SECONDS, 3600),
   sessionMaxEntries: num(process.env.AGENT_SESSION_MAX_ENTRIES, 1000),
   redisUrl: process.env.AGENT_REDIS_URL,
   callbackPort: num(process.env.AGENT_CALLBACK_PORT, 8080),

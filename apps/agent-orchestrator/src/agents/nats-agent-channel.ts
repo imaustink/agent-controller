@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { connect, JSONCodec, type NatsConnection, type Subscription } from "nats";
+// Type-only, so the cycle with reply-store.ts (which needs AgentTurnResult from
+// here) is erased at compile time.
+import type { AgentReplyStore } from "./reply-store.js";
 import {
   AgentUpMessageSchema,
   NATS_RECONNECT_OPTIONS,
@@ -100,6 +103,16 @@ export interface AgentOrchestratorChannel {
       onToolCall?: (call: { callId: string; tool: string; input: string }) => void;
     },
   ): Promise<AgentTurnResult>;
+  /**
+   * The concluding reply durably recorded for this run before its ack, if any
+   * (see `agents/reply-store.ts`). A re-attaching turn reads this FIRST: once
+   * the ack has been sent the agent has stopped holding, so waiting for a
+   * re-offer that will never arrive is how a recoverable answer got reported
+   * as "went silent". Optional -- fakes and the in-memory path may omit it.
+   */
+  recordedReply?(agentRunId: string): Promise<AgentTurnResult | undefined>;
+  /** Drops a recorded reply once a turn has collected it. Optional. */
+  forgetRecordedReply?(agentRunId: string): Promise<void>;
   /** Sends a follow-up user turn to an already-running agent (HITL continuation, or a fresh follow-up turn). */
   sendPrompt(agentRunId: string, message: string): Promise<void>;
   /**
@@ -186,11 +199,27 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
   private constructor(
     private readonly nc: NatsConnection,
     private readonly subjectPrefix: string,
+    /**
+     * Where a concluding reply is persisted BEFORE it is acked. Absent -> the
+     * pre-existing behaviour: ack on receipt, and an orchestrator that dies
+     * before recording the turn takes the only copy of the answer with it.
+     */
+    private readonly replyStore?: AgentReplyStore,
   ) {}
 
-  static async connect(natsUrl: string, subjectPrefix = "agent"): Promise<NatsAgentChannel> {
+  static async connect(natsUrl: string, subjectPrefix = "agent", replyStore?: AgentReplyStore): Promise<NatsAgentChannel> {
     const nc = await connect({ servers: natsUrl, ...NATS_RECONNECT_OPTIONS });
-    return new NatsAgentChannel(nc, subjectPrefix);
+    return new NatsAgentChannel(nc, subjectPrefix, replyStore);
+  }
+
+  /** The durably recorded reply for a run, if one was persisted before its ack. */
+  async recordedReply(agentRunId: string): Promise<AgentTurnResult | undefined> {
+    return this.replyStore?.get(agentRunId);
+  }
+
+  /** Drops a recorded reply once the turn that collected it has concluded. */
+  async forgetRecordedReply(agentRunId: string): Promise<void> {
+    await this.replyStore?.delete(agentRunId);
   }
 
   /**
@@ -279,16 +308,27 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
             narration.push(`Warning: ${msg.message}`);
             opts.onProgress?.("warning", msg.message);
             break;
-          case "reply":
-            // Ack BEFORE unsubscribing/returning: the agent holds its
-            // concluding message until this lands (see the protocol's
-            // `reply_ack`), re-offering it meanwhile, and a re-offer arriving
-            // after we unsubscribe would be dropped. A non-final reply (a HITL
-            // question) is acked too -- losing a question strands the
-            // conversation exactly the way losing an answer does.
+          case "reply": {
+            const reply = { message: msg.message, final: msg.final, result: msg.result, narration };
+            // PERSIST before acking, then ack before unsubscribing.
+            //
+            // The ack releases the agent's hold (docs/adr/0033): it stops
+            // re-offering, concludes, and its Job goes Succeeded. Sent on mere
+            // receipt it meant "I have it in memory" -- so an orchestrator
+            // killed between the ack and writing the turn's outcome destroyed
+            // the only copy, and the next turn re-attached to an agent holding
+            // nothing ("went silent for 30000ms"). Persisting first means the
+            // hold is released only once the answer outlives this process.
+            //
+            // A failed write deliberately throws rather than acking anyway:
+            // not acking leaves the agent holding, which is recoverable. The
+            // ack still precedes `unsubscribe()` for the original reason -- a
+            // re-offer arriving after we unsubscribe would be dropped.
+            await this.replyStore?.set(agentRunId, reply);
             this.ackConcluding(agentRunId, msg.seq);
             sub.unsubscribe();
-            return { message: msg.message, final: msg.final, result: msg.result, narration };
+            return reply;
+          }
           case "failed":
             this.ackConcluding(agentRunId, msg.seq);
             sub.unsubscribe();
