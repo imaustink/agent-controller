@@ -8,8 +8,11 @@
 #   Act 1  A ToolRun on the Job backend reaches Succeeded.           (unchanged)
 #   Act 2  The same ToolRun on the Sandbox backend reaches Succeeded. (new path)
 #   Act 3  Both backends produced a byte-identical hardened pod spec.
-#   Act 4  A Sandbox-backed run suspends and resumes in place — the thing a
-#          batch Job structurally cannot do.
+#   Act 4  A Sandbox-backed run suspends and resumes without the ToolRun going
+#          terminal. NOTE: a Job can suspend too (spec.suspend, which likewise
+#          deletes active pods and recreates them on resume). What differs is
+#          that the Sandbox keeps its name, hostname and volumes across the
+#          cycle, where a resumed Job gets a brand-new pod.
 #   Act 5  Deleting the ToolRun garbage-collects its Sandbox via ownerReferences.
 #
 # Usage:
@@ -223,7 +226,7 @@ info "secretKeyRef, never a literal value — the property AX's TaskSpec cannot 
 
 # ------------------------------------------------------------------ act 4 --
 
-act "Act 4 — suspend and resume a running Sandbox-backed run"
+act "Act 4 — suspend and resume, keeping identity"
 
 run_manifest parked slow-tool "$SANDBOX_ANN" | kn apply -f - >/dev/null
 wait_phase parked Running 180 || die "parked never reached Running"
@@ -299,7 +302,9 @@ echo "    • ADR 0010's rule holds: the workload's own status, not the callback
 echo "      the terminal phase — via the Sandbox Finished condition."
 echo "    • docs/security.md's hardened contract is byte-identical across backends."
 echo "    • Credentials stay secretKeyRef-resolved; nothing is written in plaintext."
-echo "    • Suspend/resume is declarative state, not bespoke checkpoint machinery."
+echo "    • Suspend/resume is declarative state, and the pod keeps its name and"
+echo "      hostname across the cycle. (A Job can suspend too — spec.suspend — but"
+echo "      a resumed Job gets a brand-new pod with a new random name.)"
 echo "    • ownerReferences GC is preserved."
 echo
 bold "  What this does NOT prove"

@@ -64,13 +64,63 @@ gVisor one is the cheaper of the two.
 What Agent Sandbox actually gives us over a Job is lifecycle: suspend/resume,
 stable identity, and warm pools.
 
-Two things we gain that Jobs cannot give us:
+### What we actually gain over a Job
 
-- `operatingMode: Suspended` terminates the Pod but retains the Sandbox object
-  and its volumes, declaratively. This is the ADR 0033 path expressed as state
-  rather than machinery.
-- `SandboxWarmPool` + `SandboxClaim` pre-warm sandboxes, attacking one-shot
-  tool cold-start latency directly.
+Most of the comparison is a tie, and it is worth being exact about which parts,
+because "Kubernetes already orchestrates this" is a fair objection to most of
+the table.
+
+| Capability | `batch/v1` Job | `Sandbox` |
+| ---------- | -------------- | --------- |
+| Run to completion with an exit status | yes | yes (`Finished`) |
+| Deadline | `activeDeadlineSeconds` | `shutdownTime` |
+| Suspend / resume | **yes** (`spec.suspend`) | yes (`operatingMode`) |
+| `ownerReferences` GC | yes | yes |
+| gVisor/Kata isolation | yes (PodSpec field) | yes (same field) |
+| Stable pod name + hostname across a resume | **no** — new random name | **yes** — pod name = Sandbox name |
+| Controller-managed persistent storage | **no** | **yes** (`volumeClaimTemplates`) |
+| Pre-warmed pool, ms provisioning | **no** | **yes** (`SandboxWarmPool`/`SandboxClaim`) |
+| Auto-resume on inbound connection | **no** | **yes** |
+| Headless Service + stable FQDN | **no** | **yes** (`spec.service`, `status.serviceFQDN`) |
+| Singleton by construction | **no** — tune completions/parallelism/backoff | **yes** |
+
+Note especially that **suspend is a tie**. Kubernetes' own docs: "Suspending a
+Job will delete its active Pods until the Job is resumed again," and a resume
+creates fresh pods. That is what `operatingMode: Suspended` does too. An
+earlier draft of this document, and the demo's Act 4, both claimed suspension
+was something a Job structurally could not do. It is not.
+
+What differs is everything below that line: a resumed Job gets a brand-new pod
+with a new name and no retained storage, while a resumed Sandbox is the same
+named, addressable workload on the same volumes.
+
+The gap Agent Sandbox fills is therefore narrow and specific: **Kubernetes has
+no primitive for a singleton, stateful, suspendable, addressable workload.**
+Deployment gives fungible replicas; StatefulSet gives N ordered replicas and
+cannot suspend; Job gives run-to-completion with fungible pods; a bare Pod has
+no lifecycle management at all. Upstream pitches Sandbox as replacing "manually
+orchestrating StatefulSets, Services, and PersistentVolumeClaims" — which is a
+real hole, but a smaller one than the marketing around agent runtimes suggests.
+
+### Which of our workloads is actually in that hole
+
+`ToolRun` is not. A container that scrapes a URL and exits is run-to-completion
+with a fungible pod — precisely what Job is for. It has no identity worth
+keeping and no state worth persisting between runs. **`ToolRun` should stay on
+Jobs.** The prototype targets it only because it was the smallest seam to prove
+the mechanism end to end against a real cluster.
+
+`AgentRun` is. A `claude-code-swe-agent` session is long-lived, holds a working
+tree, is addressed over the NATS tunnel ([ADR 0026](adr/0026-live-opencode-session-nats-tunnel.md)),
+and is parked mid-turn ([ADR 0033](adr/0033-resumable-agent-turns.md)). Stable
+hostname, managed storage that survives a park, auto-resume on inbound
+connection, and a warm pool against cold start are four things we would
+otherwise hand-build — and some of which we already have hand-built.
+
+`SandboxWarmPool` is the single most compelling item and the one the prototype
+has not touched: "assigned in milliseconds rather than waiting for a cold pod
+to schedule and start" has no Job equivalent at any price, and cold start is a
+latency cost paid on every tool call today.
 
 ### The honest limitation: where resume actually comes from
 
@@ -237,8 +287,10 @@ it for parked turns — has to get this ordering right.
 2. **`AgentRun`.** Only `ToolRun` has the backend switch. AgentRun is the case
    that actually wants suspend/resume (ADR 0033), and it is a larger change
    because of the NATS bridge in `engines/temporal/internal/agentrun`.
-3. **`SandboxWarmPool`** for tool cold-start latency — untouched, and the one
-   capability with no Job equivalent at all.
+3. **`SandboxWarmPool`** — untouched, no Job equivalent at any price, and per
+   the comparison above the strongest single reason to adopt any of this. If
+   only one more thing gets proved, it should be warm-pool provisioning latency
+   on `AgentRun`, not further `ToolRun` work.
 4. **The real dependency.** `internal/sandboxapi` should become
    `sigs.k8s.io/agent-sandbox/api/v1beta1` once we are ready to take k8s v0.37
    and controller-runtime v0.25 deliberately.

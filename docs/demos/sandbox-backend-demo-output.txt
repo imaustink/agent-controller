@@ -8,20 +8,20 @@
   ✓ CRDs + namespace + callback secret in place
   · building core-controller
   · starting core-controller against the cluster (log: /tmp/ax-sandbox-demo-controller.log)
-  ✓ core-controller reconciling (pid 5588)
+  ✓ core-controller reconciling (pid 74801)
 
 ━━━ Act 1 — the unchanged path: ToolRun on the Job backend
 NAME     PHASE       JOB              BACKEND   AGE
-on-job   Succeeded   toolrun-on-job   job       7s
+on-job   Succeeded   toolrun-on-job   job       8s
   ✓ Job backend reached Succeeded (status.executionBackend=job)
 
 ━━━ Act 2 — the same ToolRun on the Sandbox backend
 NAME         PHASE       JOB                  BACKEND   AGE
-on-sandbox   Succeeded   toolrun-on-sandbox   sandbox   6s
+on-sandbox   Succeeded   toolrun-on-sandbox   sandbox   7s
 
   · the workload it created is not a Job:
 NAME                 READY   REASON         AGE
-toolrun-on-sandbox   False   PodSucceeded   6s
+toolrun-on-sandbox   False   PodSucceeded   7s
 
   · its terminal phase came from the Sandbox's Finished condition:
     Suspended=False reason=NotSuspended
@@ -51,7 +51,7 @@ toolrun-on-sandbox   False   PodSucceeded   6s
   · note the credential wiring: RECIPE_CALLBACK_SECRET resolves through a
   · secretKeyRef, never a literal value — the property AX's TaskSpec cannot express.
 
-━━━ Act 4 — suspend and resume a running Sandbox-backed run
+━━━ Act 4 — suspend and resume, keeping identity
   ✓ run is Running; pod is up
     toolrun-parked   1/1   Running   0     2s
   · suspending: kubectl patch sandbox toolrun-parked --type=merge -p '{"spec":{"operatingMode":"Suspended"}}'
@@ -63,11 +63,11 @@ toolrun-on-sandbox   False   PodSucceeded   6s
 
   · and the ToolRun did NOT go terminal — a suspended run has not finished:
 NAME     PHASE     JOB              BACKEND   AGE
-parked   Running   toolrun-parked   sandbox   34s
+parked   Running   toolrun-parked   sandbox   33s
   ✓ ToolRun stayed Running across the suspension
   · resuming: operatingMode=Running
-  ✓ pod back in 1s, same Sandbox name and identity
-    toolrun-parked   1/1   Running   0     1s
+  ✓ pod back in 2s, same Sandbox name and identity
+    toolrun-parked   1/1   Running   0     2s
 
   · IMPORTANT: this is a cold restart onto retained volumes, not a memory
   · snapshot. The container restarted its work from the beginning:
@@ -80,7 +80,7 @@ parked   Running   toolrun-parked   sandbox   34s
 
 ━━━ Summary
 NAME         PHASE       JOB                  BACKEND   AGE
-on-job       Succeeded   toolrun-on-job       job       49s
+on-job       Succeeded   toolrun-on-job       job       50s
 on-sandbox   Succeeded   toolrun-on-sandbox   sandbox   42s
 
   What this proves
@@ -89,7 +89,9 @@ on-sandbox   Succeeded   toolrun-on-sandbox   sandbox   42s
       the terminal phase — via the Sandbox Finished condition.
     • docs/security.md's hardened contract is byte-identical across backends.
     • Credentials stay secretKeyRef-resolved; nothing is written in plaintext.
-    • Suspend/resume is declarative state, not bespoke checkpoint machinery.
+    • Suspend/resume is declarative state, and the pod keeps its name and
+      hostname across the cycle. (A Job can suspend too — spec.suspend — but
+      a resumed Job gets a brand-new pod with a new random name.)
     • ownerReferences GC is preserved.
 
   What this does NOT prove
