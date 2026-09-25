@@ -4,9 +4,12 @@ Status: **prototype landed** — `ToolRun` runs on either backend, demo included
 Date: 2026-09-24
 Branch: `worktree-ax-integration`
 
-> **Run the demo:** `scripts/sandbox-backend-demo.sh` (needs kind, kubectl, go,
-> docker; ~2 min on a warm cluster, `--teardown` to remove it). A captured run
-> is in [demos/sandbox-backend-demo-output.txt](demos/sandbox-backend-demo-output.txt).
+> **Run the demo:** `scripts/sandbox-backend-demo.sh` — needs kind, kubectl, go
+> and docker, and nothing else. It creates its own throwaway cluster, installs
+> agent-sandbox v1.0.4, and runs five acts: **1m19s from no cluster at all**,
+> ~45s against a warm one. Re-runnable; `--teardown` removes the cluster. A
+> captured run is in
+> [demos/sandbox-backend-demo-output.txt](demos/sandbox-backend-demo-output.txt).
 
 Question this answers: can Google's agent-runtime stack replace the execution
 layer under our `ToolRun`/`AgentRun` CRDs, and retire the checkpoint-resume
