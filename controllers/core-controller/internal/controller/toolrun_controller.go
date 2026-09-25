@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,6 +33,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	"github.com/controller-agent/core-controller/internal/sandboxapi"
 )
 
 const (
@@ -58,6 +60,8 @@ type ToolRunReconciler struct {
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=tools,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get
+// +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes/status,verbs=get
 
 // Reconcile is the ONLY place in the system that creates a k8s Job (ADR 0010 —
 // this replaces the JS orchestrator's K8sJobLauncher, which is left in place
@@ -84,13 +88,21 @@ func (r *ToolRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if run.Status.JobName == "" {
-		return r.createJob(ctx, &run)
+		return r.createWorkload(ctx, &run)
 	}
 
+	if ExecutionBackend(run.Status.ExecutionBackend) == BackendSandbox {
+		return r.syncSandboxStatus(ctx, &run)
+	}
 	return r.syncJobStatus(ctx, &run)
 }
 
-func (r *ToolRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.ToolRun) (ctrl.Result, error) {
+// createWorkload resolves the Tool, picks an execution backend, and creates
+// the corresponding workload owned by the ToolRun. The chosen backend is
+// recorded in status alongside the workload name so every later reconcile
+// reads back the kind it actually launched, rather than re-resolving a default
+// that may have been flipped in the meantime.
+func (r *ToolRunReconciler) createWorkload(ctx context.Context, run *toolv1alpha1.ToolRun) (ctrl.Result, error) {
 	var tool toolv1alpha1.Tool
 	toolKey := types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.ToolRef}
 	if err := r.Get(ctx, toolKey, &tool); err != nil {
@@ -100,27 +112,86 @@ func (r *ToolRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Too
 		return ctrl.Result{}, err
 	}
 
-	job, err := buildJob(run, &tool)
+	backend := resolveExecutionBackend(run.Annotations, tool.Annotations)
+
+	var workload client.Object
+	var err error
+	if backend == BackendSandbox {
+		workload, err = buildSandbox(run, &tool)
+	} else {
+		workload, err = buildJob(run, &tool)
+	}
 	if err != nil {
 		return r.markFailed(ctx, run, "InvalidToolRun", err.Error())
 	}
 
-	if err := controllerutil.SetControllerReference(run, job, r.Scheme); err != nil {
+	if err := controllerutil.SetControllerReference(run, workload, r.Scheme); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.Create(ctx, job); err != nil {
+	if err := r.Create(ctx, workload); err != nil {
+		// A run that asked for the Sandbox backend on a cluster without
+		// agent-sandbox installed fails cleanly rather than requeueing
+		// forever: no retry can install a CRD, and a run wedged in Pending is
+		// harder to diagnose than one that says why it stopped.
+		if meta.IsNoMatchError(err) {
+			return r.markFailed(ctx, run, "ExecutionBackendUnavailable",
+				fmt.Sprintf("execution backend %q requires the agent-sandbox CRDs, which are not installed: %v", backend, err))
+		}
 		if !apierrors.IsAlreadyExists(err) {
 			return ctrl.Result{}, err
 		}
 	}
 
 	run.Status.Phase = toolv1alpha1.ToolRunPhasePending
-	run.Status.JobName = job.Name
+	run.Status.JobName = workload.GetName()
+	run.Status.ExecutionBackend = string(backend)
 	if err := r.Status().Update(ctx, run); err != nil {
 		return ctrl.Result{}, err
 	}
 
+	return ctrl.Result{}, nil
+}
+
+// syncSandboxStatus mirrors an owned Sandbox's conditions onto ToolRun.status,
+// the Sandbox-backend counterpart of syncJobStatus.
+func (r *ToolRunReconciler) syncSandboxStatus(ctx context.Context, run *toolv1alpha1.ToolRun) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	var sb sandboxapi.Sandbox
+	key := types.NamespacedName{Namespace: run.Namespace, Name: run.Status.JobName}
+	if err := r.Get(ctx, key, &sb); err != nil {
+		if apierrors.IsNotFound(err) {
+			return r.markFailed(ctx, run, "SandboxMissing", fmt.Sprintf("owned Sandbox %q no longer exists", run.Status.JobName))
+		}
+		return ctrl.Result{}, err
+	}
+
+	phase, message := sandboxPhase(&sb, run.Status.Message)
+
+	// StartTime is set once and never revised. Unlike Job.status.startTime,
+	// the Ready condition's LastTransitionTime moves every time readiness
+	// flips -- including to False when the pod finishes or is suspended -- so
+	// reassigning it on each sync would walk the recorded start forward.
+	if run.Status.StartTime == nil {
+		if t := sandboxStartTime(&sb); t != nil {
+			run.Status.StartTime = t
+		}
+	}
+	if t := sandboxCompletionTime(&sb); t != nil {
+		run.Status.CompletionTime = t
+	}
+
+	if phase == run.Status.Phase && message == run.Status.Message {
+		return ctrl.Result{}, nil
+	}
+
+	run.Status.Phase = phase
+	run.Status.Message = message
+
+	if err := r.Status().Update(ctx, run); err != nil {
+		return ctrl.Result{}, err
+	}
+	log.Info("toolrun status synced", "toolrun", run.Name, "phase", phase, "backend", BackendSandbox)
 	return ctrl.Result{}, nil
 }
 
@@ -198,20 +269,34 @@ func (r *ToolRunReconciler) markFailed(ctx context.Context, run *toolv1alpha1.To
 // RuntimeDefault + an emptyDir /tmp mount, matching the Helm chart's pod
 // securityContext (which the JS launcher never carried).
 func buildJob(run *toolv1alpha1.ToolRun, tool *toolv1alpha1.Tool) (*batchv1.Job, error) {
+	return buildRunJob(toolRunParams(run, tool))
+}
+
+// buildSandbox is buildJob's Sandbox-backend counterpart. Both derive their
+// parameters from the same toolRunParams, so image/args/env/secretEnv/timeout
+// resolution is shared and the two backends cannot disagree about what the
+// Tool asked for.
+func buildSandbox(run *toolv1alpha1.ToolRun, tool *toolv1alpha1.Tool) (*sandboxapi.Sandbox, error) {
+	return buildRunSandbox(toolRunParams(run, tool))
+}
+
+// toolRunParams resolves a ToolRun against its Tool into the backend-neutral
+// parameter set both workload builders consume.
+func toolRunParams(run *toolv1alpha1.ToolRun, tool *toolv1alpha1.Tool) runJobParams {
 	args := tool.Spec.Args
 	if len(run.Spec.Args) > 0 {
 		args = run.Spec.Args
 	}
 
 	// A per-invocation timeout on the ToolRun wins; otherwise fall back to the
-	// Tool's own default (buildRunJob applies the global 300s default when both
+	// Tool's own default (the builders apply the global 300s default when both
 	// are 0).
 	timeoutSeconds := run.Spec.TimeoutSeconds
 	if timeoutSeconds == 0 {
 		timeoutSeconds = tool.Spec.TimeoutSeconds
 	}
 
-	return buildRunJob(runJobParams{
+	return runJobParams{
 		jobName:     fmt.Sprintf("toolrun-%s", run.Name),
 		namespace:   run.Namespace,
 		annotations: sessionIDAnnotations(run.Annotations),
@@ -232,14 +317,45 @@ func buildJob(run *toolv1alpha1.ToolRun, tool *toolv1alpha1.Tool) (*batchv1.Job,
 		resources:      tool.Spec.Resources,
 		callback:       run.Spec.Callback,
 		timeoutSeconds: timeoutSeconds,
-	})
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//
+// The Sandbox watch is registered ONLY when the agent-sandbox CRD is present.
+// controller-runtime does not resolve an owned type's informer lazily: it
+// starts the watch at manager startup and, for a kind with no CRD, retries the
+// failing discovery forever while the controller blocks waiting for that cache
+// to sync. Registering it unconditionally therefore stops the ToolRun
+// controller from ever starting its workers on a cluster that has not
+// installed agent-sandbox -- i.e. every current deployment. Verified directly
+// against a kind cluster with our CRDs and no agent-sandbox.
+//
+// The consequence of the conditional is that installing agent-sandbox into a
+// running cluster needs a controller restart before the Sandbox backend can be
+// used. That is the right trade: the alternative breaks the default path.
 func (r *ToolRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&toolv1alpha1.ToolRun{}).
-		Owns(&batchv1.Job{}).
-		Named("toolrun").
-		Complete(r)
+		Owns(&batchv1.Job{})
+
+	if sandboxAPIAvailable(mgr) {
+		b = b.Owns(&sandboxapi.Sandbox{})
+	} else {
+		logf.Log.WithName("toolrun").Info(
+			"agent-sandbox CRD not installed; the sandbox execution backend is unavailable",
+			"group", sandboxapi.GroupVersion.Group)
+	}
+
+	return b.Named("toolrun").Complete(r)
+}
+
+// sandboxAPIAvailable reports whether agents.x-k8s.io/v1beta1 Sandbox is served
+// by this cluster, via the manager's RESTMapper.
+func sandboxAPIAvailable(mgr ctrl.Manager) bool {
+	_, err := mgr.GetRESTMapper().RESTMapping(
+		schema.GroupKind{Group: sandboxapi.GroupVersion.Group, Kind: "Sandbox"},
+		sandboxapi.GroupVersion.Version,
+	)
+	return err == nil
 }

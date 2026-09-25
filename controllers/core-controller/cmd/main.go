@@ -37,6 +37,7 @@ import (
 
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 	"github.com/controller-agent/core-controller/internal/controller"
+	"github.com/controller-agent/core-controller/internal/sandboxapi"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -49,6 +50,11 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(toolv1alpha1.AddToScheme(scheme))
+	// Registering the agent-sandbox types costs nothing on a cluster without
+	// the agent-sandbox CRDs installed: the scheme is a client-side type
+	// registry, and no Sandbox is ever read or written unless a run resolves
+	// to the sandbox execution backend.
+	utilruntime.Must(sandboxapi.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

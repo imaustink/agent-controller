@@ -122,9 +122,21 @@ type ToolRunStatus struct {
 	// +optional
 	Phase ToolRunPhase `json:"phase,omitempty"`
 
-	// jobName is the name of the Job this ToolRun created.
+	// jobName is the name of the workload this ToolRun created. Named for the
+	// batch/v1 Job that was originally the only execution backend; it now holds
+	// the name of whichever workload kind executionBackend names.
 	// +optional
 	JobName string `json:"jobName,omitempty"`
+
+	// executionBackend records which workload kind was actually created for
+	// this run ("job" or "sandbox"). Written once at creation and never
+	// changed, so a later reconcile reads back the same kind it launched even
+	// if the controller-wide default has been flipped in between. An empty
+	// value means a run created before this field existed, and is read as
+	// "job".
+	// +optional
+	// +kubebuilder:validation:Enum=job;sandbox
+	ExecutionBackend string `json:"executionBackend,omitempty"`
 
 	// startTime is when the owned Job started.
 	// +optional
@@ -157,6 +169,7 @@ type ToolRunStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Job",type=string,JSONPath=`.status.jobName`
+// +kubebuilder:printcolumn:name="Backend",type=string,JSONPath=`.status.executionBackend`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // ToolRun is the Schema for the toolruns API

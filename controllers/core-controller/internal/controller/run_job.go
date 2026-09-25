@@ -92,13 +92,50 @@ type runJobParams struct {
 // Exactly one of the two modes must be configured; an error is returned if
 // neither URL nor NatsSubject is non-empty.
 func buildRunJob(p runJobParams) (*batchv1.Job, error) {
-	if p.callback.URL == "" && p.callback.NatsSubject == "" {
-		return nil, fmt.Errorf("job %s/%s: callback must set either url or natsSubject", p.namespace, p.jobName)
+	podSpec, err := buildRunPodSpec(p)
+	if err != nil {
+		return nil, err
 	}
 
 	timeout := defaultTimeoutSeconds
 	if p.timeoutSeconds > 0 {
 		timeout = int64(p.timeoutSeconds)
+	}
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        p.jobName,
+			Namespace:   p.namespace,
+			Labels:      p.labels,
+			Annotations: p.annotations,
+		},
+		Spec: batchv1.JobSpec{
+			ActiveDeadlineSeconds:   ptr.To(timeout),
+			TTLSecondsAfterFinished: ptr.To(defaultTTLSecondsAfterFinished),
+			BackoffLimit:            ptr.To(int32(0)),
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      p.labels,
+					Annotations: p.annotations,
+				},
+				Spec: podSpec,
+			},
+		},
+	}
+	return job, nil
+}
+
+// buildRunPodSpec builds the hardened pod spec shared by every execution
+// backend (cap-drop ALL, read-only root fs, non-root uid/gid 10001, no
+// privilege escalation, seccomp RuntimeDefault, emptyDir /tmp), including the
+// transport/callback env wiring described on buildRunJob.
+//
+// Both backends call this, so the Job and Sandbox backends cannot drift in
+// their security contract: a change here lands on both, and
+// TestBackendsProduceIdenticalPodSpec asserts they stay equal.
+func buildRunPodSpec(p runJobParams) (corev1.PodSpec, error) {
+	if p.callback.URL == "" && p.callback.NatsSubject == "" {
+		return corev1.PodSpec{}, fmt.Errorf("run %s/%s: callback must set either url or natsSubject", p.namespace, p.jobName)
 	}
 
 	env := toCoreEnv(p.staticEnv, p.secretEnv, 3)
@@ -129,7 +166,7 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 
 	resources, err := toCoreResourceRequirements(p.resources)
 	if err != nil {
-		return nil, err
+		return corev1.PodSpec{}, err
 	}
 
 	var initContainers []corev1.Container
@@ -158,69 +195,49 @@ func buildRunJob(p runJobParams) (*batchv1.Job, error) {
 		}
 	}
 
-	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        p.jobName,
-			Namespace:   p.namespace,
-			Labels:      p.labels,
-			Annotations: p.annotations,
+	return corev1.PodSpec{
+		ServiceAccountName: p.serviceAccountName,
+		RestartPolicy:      corev1.RestartPolicyNever,
+		SecurityContext: &corev1.PodSecurityContext{
+			RunAsNonRoot: ptr.To(true),
+			RunAsUser:    ptr.To(jobRunAsUser),
+			RunAsGroup:   ptr.To(jobRunAsGroup),
+			SeccompProfile: &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
+			},
 		},
-		Spec: batchv1.JobSpec{
-			ActiveDeadlineSeconds:   ptr.To(timeout),
-			TTLSecondsAfterFinished: ptr.To(defaultTTLSecondsAfterFinished),
-			BackoffLimit:            ptr.To(int32(0)),
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      p.labels,
-					Annotations: p.annotations,
+		Volumes: []corev1.Volume{
+			{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		},
+		InitContainers: initContainers,
+		Containers: []corev1.Container{
+			{
+				Name:  "run",
+				Image: p.image,
+				// Explicit, rather than relying on k8s's default (which is
+				// "Always" for a ":latest" tag) -- tool/agent images in this
+				// repo are built straight into the cluster's own container
+				// runtime (e.g. minikube's docker daemon) for local/dev use,
+				// never pushed to a registry, so "Always" would wrongly try
+				// to pull from Docker Hub and fail with ImagePullBackOff.
+				// Overridable via AGENT_IMAGE_PULL_POLICY (see imagePullPolicy
+				// above) for deployments that do push to a real registry.
+				ImagePullPolicy: imagePullPolicy(),
+				Args:            p.args,
+				Env:             env,
+				Resources:       resources,
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "tmp", MountPath: "/tmp"},
 				},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: p.serviceAccountName,
-					RestartPolicy:      corev1.RestartPolicyNever,
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: ptr.To(true),
-						RunAsUser:    ptr.To(jobRunAsUser),
-						RunAsGroup:   ptr.To(jobRunAsGroup),
-						SeccompProfile: &corev1.SeccompProfile{
-							Type: corev1.SeccompProfileTypeRuntimeDefault,
-						},
-					},
-					Volumes: []corev1.Volume{
-						{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-					},
-					InitContainers: initContainers,
-					Containers: []corev1.Container{
-						{
-							Name:  "run",
-							Image: p.image,
-							// Explicit, rather than relying on k8s's default (which is
-							// "Always" for a ":latest" tag) -- tool/agent images in this
-							// repo are built straight into the cluster's own container
-							// runtime (e.g. minikube's docker daemon) for local/dev use,
-							// never pushed to a registry, so "Always" would wrongly try
-							// to pull from Docker Hub and fail with ImagePullBackOff.
-							// Overridable via AGENT_IMAGE_PULL_POLICY (see imagePullPolicy
-							// above) for deployments that do push to a real registry.
-							ImagePullPolicy: imagePullPolicy(),
-							Args:            p.args,
-							Env:             env,
-							Resources:       resources,
-							VolumeMounts: []corev1.VolumeMount{
-								{Name: "tmp", MountPath: "/tmp"},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: ptr.To(false),
-								ReadOnlyRootFilesystem:   ptr.To(true),
-								RunAsNonRoot:             ptr.To(true),
-								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-							},
-						},
-					},
+				SecurityContext: &corev1.SecurityContext{
+					AllowPrivilegeEscalation: ptr.To(false),
+					ReadOnlyRootFilesystem:   ptr.To(true),
+					RunAsNonRoot:             ptr.To(true),
+					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 				},
 			},
 		},
-	}
-	return job, nil
+	}, nil
 }
 
 // toCoreEnv builds a corev1.EnvVar list from static name/value pairs plus
