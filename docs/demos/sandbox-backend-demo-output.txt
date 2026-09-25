@@ -8,7 +8,7 @@
   ✓ CRDs + namespace + callback secret in place
   · building core-controller
   · starting core-controller against the cluster (log: /tmp/ax-sandbox-demo-controller.log)
-  ✓ core-controller reconciling (pid 8040)
+  ✓ core-controller reconciling (pid 5588)
 
 ━━━ Act 1 — the unchanged path: ToolRun on the Job backend
 NAME     PHASE       JOB              BACKEND   AGE
@@ -80,8 +80,8 @@ parked   Running   toolrun-parked   sandbox   34s
 
 ━━━ Summary
 NAME         PHASE       JOB                  BACKEND   AGE
-on-job       Succeeded   toolrun-on-job       job       48s
-on-sandbox   Succeeded   toolrun-on-sandbox   sandbox   41s
+on-job       Succeeded   toolrun-on-job       job       49s
+on-sandbox   Succeeded   toolrun-on-sandbox   sandbox   42s
 
   What this proves
     • The ToolRun CRD is unchanged as a public API; only the workload kind differs.
@@ -95,7 +95,9 @@ on-sandbox   Succeeded   toolrun-on-sandbox   sandbox   41s
   What this does NOT prove
     • Resume is a cold restart on retained volumes. Mid-process wake needs GKE
       Pod Snapshots (GKE Standard ≥1.35.3, gVisor node pool, GCS bucket).
-    • No gVisor/Kata RuntimeClass here, so isolation is stock runc.
+    • Nothing about isolation. Neither backend sets runtimeClassName, and kind
+      runs stock runc. Note that runtimeClassName is a plain PodSpec field, so
+      gVisor is available on the Job path too — it is not a reason to adopt this.
     • AgentRun still runs on Jobs; only ToolRun has the backend switch.
 
   · cluster left running — rerun this script to repeat, or --teardown to remove it

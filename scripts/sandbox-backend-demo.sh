@@ -305,7 +305,9 @@ echo
 bold "  What this does NOT prove"
 echo "    • Resume is a cold restart on retained volumes. Mid-process wake needs GKE"
 echo "      Pod Snapshots (GKE Standard ≥1.35.3, gVisor node pool, GCS bucket)."
-echo "    • No gVisor/Kata RuntimeClass here, so isolation is stock runc."
+echo "    • Nothing about isolation. Neither backend sets runtimeClassName, and kind"
+echo "      runs stock runc. Note that runtimeClassName is a plain PodSpec field, so"
+echo "      gVisor is available on the Job path too — it is not a reason to adopt this."
 echo "    • AgentRun still runs on Jobs; only ToolRun has the backend switch."
 echo
 info "cluster left running — rerun this script to repeat, or --teardown to remove it"

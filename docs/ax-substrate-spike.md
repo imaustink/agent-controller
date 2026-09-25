@@ -40,11 +40,29 @@ does not foreclose Substrate later.
 | `timeoutSeconds` → `activeDeadlineSeconds` | `lifecycle.shutdownTime` + `shutdownPolicy` | absolute time, not duration |
 | `job.Status.Succeeded` (`run_job.go:305`) | `Finished` condition, reason `PodSucceeded`/`PodFailed` | [ADR 0010](adr/0010-crd-catalog-and-tool-controller.md) semantics preserved |
 | Secret GC via `ownerReferences` | real k8s object — owner refs work | unchanged |
-| Hardened run contract (`docs/security.md`) | plus `RuntimeClass` gVisor/Kata | strictly stronger |
+| Hardened run contract (`docs/security.md`) | same pod spec, unchanged | see the RuntimeClass note below |
 
 So `run_job.go` changes from building a `batchv1.Job` to building a
 `v1beta1.Sandbox` around substantially the same PodSpec. Tool images are
 **not** rebuilt. This applies to both `ToolRun` and `AgentRun`.
+
+### RuntimeClass is not one of the gains
+
+Worth stating plainly, because it is easy to get backwards and an earlier draft
+of this document did. Agent Sandbox does not isolate anything itself — its docs
+describe it as a sandbox *orchestrator* that "delegates low-level container
+isolation to secure Sandbox Runtimes (like gVisor or Kata Containers) by
+managing Pods configured to use these runtimes (via `RuntimeClass`)", and
+KEP-539.2 lists mandating an isolation technology as an explicit non-goal.
+
+`runtimeClassName` is an ordinary `corev1.PodSpec` field. **A `batch/v1` Job's
+pod can set it exactly as well as a Sandbox's pod can.** Running tools under
+gVisor is therefore available on our existing Job path today and is not a
+reason to adopt Agent Sandbox. The two are orthogonal improvements, and the
+gVisor one is the cheaper of the two.
+
+What Agent Sandbox actually gives us over a Job is lifecycle: suspend/resume,
+stable identity, and warm pools.
 
 Two things we gain that Jobs cannot give us:
 
@@ -193,9 +211,29 @@ it for parked turns — has to get this ordering right.
 
 ## What is left
 
-1. **`RuntimeClass` on the k3s target.** Untested; kind runs stock runc, so the
-   demo proves the control flow, not the isolation upgrade. This is still the
-   load-bearing unknown for the homelab.
+1. **`RuntimeClass` — a separate, smaller piece of work.** The prototype sets
+   no `runtimeClassName` anywhere, so neither backend is isolated beyond the
+   existing hardened contract today. kind runs stock runc, so the demo proves
+   control flow, not isolation.
+
+   Because it is a plain PodSpec field (see the note above), this should be
+   done on the **Job** path first — that is the production path and it needs no
+   new CRDs. Plumbing an optional `ToolSpec.runtimeClassName` through
+   `buildRunPodSpec` gives both backends the field for free.
+
+   On k3s the host-level setup is three layers: install `runsc` and its
+   containerd shim on each node; register the handler via a
+   `config.toml.tmpl` Go template in
+   `/var/lib/rancher/k3s/agent/etc/containerd/` (k3s rewrites `config.toml`
+   itself on every restart, so it cannot be edited directly) with
+   `runtime_type = "io.containerd.runsc.v1"`; then create the `RuntimeClass`
+   with `handler: runsc`.
+
+   Verify before committing: gVisor's syscall coverage is good but incomplete,
+   so the `github` and Node-based tools need an actual smoke test rather than
+   an assumption; check ARM support against the node hardware; expect a
+   performance cost on syscall-heavy work. Kata is the stronger boundary but
+   wants nested virtualization, which homelab hardware often lacks.
 2. **`AgentRun`.** Only `ToolRun` has the backend switch. AgentRun is the case
    that actually wants suspend/resume (ADR 0033), and it is a larger change
    because of the NATS bridge in `engines/temporal/internal/agentrun`.
