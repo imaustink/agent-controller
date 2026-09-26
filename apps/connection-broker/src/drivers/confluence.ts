@@ -10,6 +10,7 @@ import {
   type ProbeGranularity,
   type ProbeResult,
   type Scope,
+  type SearchHit,
   type WebhookEvent,
   type WebhookRequest,
 } from "./types.js";
@@ -464,6 +465,56 @@ export class ConfluenceDriver implements Driver {
     );
   }
 
+  /**
+   * Live CQL search, as the caller, inside the corpus's space.
+   *
+   * Every clause here was verified against the live tenant rather than read off
+   * the docs (scripts/probe-confluence-search.mjs), which matters because this
+   * driver previously shipped against v1 endpoints that had been 410 Gone for
+   * months:
+   *
+   * - `/rest/api/search` is ALIVE. The v1 deprecation took `/rest/api/content`
+   *   with it but not this, and v2 has no text search to migrate to.
+   * - It needs the `search:confluence` scope, which the sync path never asked
+   *   for. Without it the call fails on a token that reads pages perfectly well.
+   * - `type = page` is load-bearing. Unconstrained, the top hit on a real space
+   *   was a FOLDER, and folders, blogposts and attachments carry ids the read
+   *   tool cannot serve — the agent would be handed references that always fail.
+   * - The space term does real work: dropping it returned pages from another
+   *   client's space on this same tenant.
+   */
+  async searchAsUser(
+    credentials: Credentials,
+    scope: Scope,
+    query: string,
+    limit = 10,
+  ): Promise<SearchHit[]> {
+    this.validateScope(scope);
+    if (!credentials.delegated) {
+      throw new Error("a confluence search requires the calling user's delegated token");
+    }
+
+    const trimmed = query.trim();
+    if (trimmed.length === 0) return [];
+
+    // CQL string literals are double-quoted, so a quote or backslash in the
+    // user's words would end the literal and let the rest be read as query
+    // syntax — against a term the CALLER supplies. Escaped, not stripped: the
+    // words are the user's question and mangling them changes the search.
+    const escaped = trimmed.replace(/["\\]/g, "\\$&");
+    const cql = `space = "${scope.space}" AND type = page AND text ~ "${escaped}"`;
+
+    const apiBase = await this.apiBaseFor(credentials.delegated);
+    const url = `${apiBase}/rest/api/search?cql=${encodeURIComponent(cql)}&limit=${Math.min(limit, 25)}`;
+    const body = (await this.request(url, credentials.delegated)) as {
+      results?: ConfluenceSearchResult[];
+    };
+
+    return (body.results ?? [])
+      .map((result) => toSearchHit(result, this.siteBaseUrl))
+      .filter((hit): hit is SearchHit => hit !== undefined);
+  }
+
   private async request(url: string, token: string | undefined): Promise<unknown> {
     if (!token) throw new Error("no credential supplied for a confluence request");
 
@@ -583,6 +634,43 @@ function nextCursor(next: string | undefined): Cursor {
     // the conservative read, since reconcile only deletes on a FULL pass.
     return undefined;
   }
+}
+
+/** A `/rest/api/search` hit. The page lives under `content`; the rest is search metadata. */
+interface ConfluenceSearchResult {
+  content?: { id?: string; type?: string; title?: string };
+  title?: string;
+  excerpt?: string;
+  /** Site-relative, like `_links.webui` — `/spaces/BITOVI/pages/997064705/Title`. */
+  url?: string;
+  lastModified?: string;
+}
+
+/**
+ * A search hit as a ResourceRef, or undefined for one we cannot cite.
+ *
+ * A hit with no content id is dropped rather than passed on with a blank id:
+ * the id is what the read tool is handed, so an unusable one is a reference
+ * that always fails, which is worse for the agent than one fewer result.
+ *
+ * No `acl` is set. These come from a search run as the USER, so they are
+ * already filtered by what that person can see — the mirror's pre-filter
+ * exists for the INDEX, where the reader is not the one who fetched.
+ */
+function toSearchHit(result: ConfluenceSearchResult, siteBaseUrl: string): SearchHit | undefined {
+  const id = result.content?.id;
+  if (!id) return undefined;
+
+  const base = siteBaseUrl.replace(/\/+$/, "");
+  return {
+    id,
+    title: result.content?.title ?? result.title ?? id,
+    url: result.url ? `${base}${result.url}` : `${base}/pages/${id}`,
+    updatedAt: result.lastModified,
+    // Confluence marks matched terms with @@@hl@@@ sentinels; they are noise
+    // to a model, which reads the words rather than the highlighting.
+    excerpt: result.excerpt?.replace(/@@@(end)?hl@@@/g, "").trim() || undefined,
+  };
 }
 
 /**

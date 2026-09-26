@@ -227,4 +227,43 @@ export interface Driver {
    * implicit behaviour nobody notices until it is wrong.
    */
   readAsUser?(credentials: Credentials, id: string): Promise<Document>;
+
+  /**
+   * Searches the SOURCE as the calling user, bounded by the corpus's scope.
+   *
+   * The deliberate asymmetry with `readAsUser` is the whole design, so it is
+   * worth stating plainly: search is bounded by scope AND identity, a read is
+   * bounded by identity alone.
+   *
+   * They differ because discovery and retrieval are different acts. A read
+   * follows a citation the user is already looking at, so leaving the scope
+   * behind lets an agent follow a link out of the indexed space — useful, and
+   * safe, because the caller's own token decides what comes back. Search has no
+   * such anchor: an unbounded one turns "what does this knowledge base know"
+   * into "everything this person can see anywhere", which is a different
+   * question and not the one a knowledge base was asked. Verified against the
+   * live tenant: dropping the space term returns pages from ANOTHER client's
+   * space, so the bound is doing real work rather than decoration.
+   *
+   * This complements vector search rather than replacing it. The index answers
+   * "what do we know about X" over a snapshot; this answers "what is there NOW",
+   * which is what a stale snapshot cannot.
+   *
+   * Optional: a provider whose search needs a scope or token type we do not
+   * hold simply does not implement it, and that corpus keeps vector search.
+   *
+   * MUST throw the classified errors, for the same reason `probe` must.
+   */
+  searchAsUser?(credentials: Credentials, scope: Scope, query: string, limit?: number): Promise<SearchHit[]>;
+}
+
+/**
+ * One live search result.
+ *
+ * A `ResourceRef` plus the provider's own `excerpt`, which is worth carrying:
+ * it is the source's answer to "why did this match", and it lets an agent
+ * decide whether a hit is worth a read rather than reading all of them.
+ */
+export interface SearchHit extends ResourceRef {
+  excerpt?: string;
 }
