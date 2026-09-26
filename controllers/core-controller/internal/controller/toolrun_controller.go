@@ -306,6 +306,7 @@ func toolRunParams(run *toolv1alpha1.ToolRun, tool *toolv1alpha1.Tool) runJobPar
 		},
 		image:              tool.Spec.Image,
 		serviceAccountName: tool.Spec.ServiceAccountName,
+		runtimeClassName:   tool.Spec.RuntimeClassName,
 		args:               args,
 		staticEnv:          tool.Spec.Env,
 		// mergeSecretEnv lets a caller inject a per-invocation credential

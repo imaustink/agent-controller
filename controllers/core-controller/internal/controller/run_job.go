@@ -80,6 +80,46 @@ type runJobParams struct {
 
 	callback       toolv1alpha1.ToolRunCallback
 	timeoutSeconds int32
+
+	// runtimeClassName is the catalog entry's RuntimeClass choice, before the
+	// cluster default is applied. nil means "inherit the default"; a non-nil
+	// empty string means "explicitly the cluster's default runtime, ignoring
+	// AGENT_DEFAULT_RUNTIME_CLASS". See resolveRuntimeClassName.
+	runtimeClassName *string
+}
+
+// defaultRuntimeClassName is the RuntimeClass applied to every run whose
+// catalog entry does not name one, from AGENT_DEFAULT_RUNTIME_CLASS. Unset
+// means the cluster's default runtime, which is the behavior every existing
+// deployment already has.
+//
+// This exists so an operator can sandbox the whole catalog with one Helm
+// value instead of editing every Tool and Agent CR -- the common case, since
+// isolation is usually a cluster-wide posture rather than a per-workload one.
+func defaultRuntimeClassName() string {
+	return os.Getenv("AGENT_DEFAULT_RUNTIME_CLASS")
+}
+
+// resolveRuntimeClassName folds the catalog entry's choice over the cluster
+// default into the value corev1.PodSpec.RuntimeClassName wants.
+//
+// The controller never validates the name. A RuntimeClass that does not exist
+// makes the pod unschedulable and the kubelet says so plainly, which is a
+// better failure than this controller second-guessing an operator's runtime
+// inventory -- and it keeps agent-controller out of the business of having an
+// opinion about isolation technology (ADR 0043).
+func resolveRuntimeClassName(spec *string) *string {
+	if spec != nil {
+		if *spec == "" {
+			// An explicit opt-out of the cluster default.
+			return nil
+		}
+		return spec
+	}
+	if d := defaultRuntimeClassName(); d != "" {
+		return &d
+	}
+	return nil
 }
 
 // buildRunJob builds the hardened one-shot Job every run kind launches
@@ -198,6 +238,7 @@ func buildRunPodSpec(p runJobParams) (corev1.PodSpec, error) {
 	return corev1.PodSpec{
 		ServiceAccountName: p.serviceAccountName,
 		RestartPolicy:      corev1.RestartPolicyNever,
+		RuntimeClassName:   resolveRuntimeClassName(p.runtimeClassName),
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsNonRoot: ptr.To(true),
 			RunAsUser:    ptr.To(jobRunAsUser),

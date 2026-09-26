@@ -115,6 +115,28 @@ type ToolSpec struct {
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
 
+	// runtimeClassName selects the container runtime this Tool's pod runs
+	// under -- a sandboxed runtime such as gVisor (`runsc`) or Kata, named by
+	// a RuntimeClass the operator has installed. Passed through to the pod
+	// spec verbatim; this controller does not interpret it, validate that the
+	// class exists, or have an opinion about which isolation technology is
+	// right for a cluster (ADR 0043).
+	//
+	// Three states, following corev1.PodSpec.RuntimeClassName:
+	//   - unset (nil): inherit AGENT_DEFAULT_RUNTIME_CLASS, if the operator set one
+	//   - "": explicitly the cluster's default runtime, overriding that default
+	//   - "<name>": that RuntimeClass
+	//
+	// The empty-string case is the reason this is a pointer: a tool whose
+	// syscalls or tooling do not survive a sandboxed runtime needs a way to
+	// opt out of a cluster-wide default, and "unset" cannot express that.
+	//
+	// Deliberately on the Tool and not on ToolRun: isolation is the operator's
+	// choice, and a per-invocation override would let a caller pick a weaker
+	// runtime than the catalog entry asked for.
+	// +optional
+	RuntimeClassName *string `json:"runtimeClassName,omitempty"`
+
 	// args are static extra container args appended after the caller-supplied input.
 	// +optional
 	Args []string `json:"args,omitempty"`

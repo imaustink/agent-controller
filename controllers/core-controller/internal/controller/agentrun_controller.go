@@ -168,6 +168,7 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 		},
 		image:              agent.Spec.Image,
 		serviceAccountName: agent.Spec.ServiceAccountName,
+		runtimeClassName:   agent.Spec.RuntimeClassName,
 		// The agent-runtime SDK reads the goal from AGENT_GOAL env (not argv),
 		// to avoid shell escaping issues with arbitrary natural-language goals.
 		args:           nil,
