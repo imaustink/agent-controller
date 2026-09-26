@@ -52,7 +52,13 @@ CHART_CRDS_DIR ?= ../../charts/agent-controller/charts/core-controller/crds
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects, then sync them into the Helm chart's crds/ dir.
-	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	"$(CONTROLLER_GEN)" rbac:roleName=manager-role webhook paths="./..."
+	# CRDs are generated from ./api/... only, never the whole module. internal/
+	# packages may mirror an API owned by another project (see
+	# internal/sandboxapi); controller-gen infers a root object from any
+	# TypeMeta+ObjectMeta+Spec struct and would emit a second, partial CRD for
+	# it -- with an empty group, and colliding with the real definition on install.
+	"$(CONTROLLER_GEN)" crd paths="./api/..." output:crd:artifacts:config=config/crd/bases
 	$(MAKE) sync-crds
 
 .PHONY: sync-crds

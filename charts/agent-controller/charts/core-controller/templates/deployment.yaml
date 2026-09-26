@@ -59,6 +59,10 @@ spec:
             - name: AGENT_IMAGE_PULL_POLICY
               value: {{ .Values.runJob.imagePullPolicy | quote }}
             {{- end }}
+            {{- if .Values.runJob.defaultRuntimeClassName }}
+            - name: AGENT_DEFAULT_RUNTIME_CLASS
+              value: {{ .Values.runJob.defaultRuntimeClassName | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

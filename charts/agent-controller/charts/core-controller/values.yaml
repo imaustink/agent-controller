@@ -60,6 +60,21 @@ nats:
 runJob:
   imagePullPolicy: ""
 
+  # RuntimeClass applied to every Tool and Agent pod whose CR does not name
+  # one of its own -- e.g. "gvisor" or "kata", matching a RuntimeClass you have
+  # already installed on the nodes. Empty (the default) means the cluster's own
+  # runtime, which is the behavior every existing deployment has.
+  #
+  # The controller passes this through and never validates it: naming a
+  # RuntimeClass that does not exist leaves pods unschedulable with the
+  # kubelet's own message. Isolation technology is the operator's choice, not
+  # this controller's (ADR 0044).
+  #
+  # A Tool or Agent can override this by setting spec.runtimeClassName, and can
+  # opt out of it entirely by setting that field to "" -- for a workload whose
+  # tooling does not survive a sandboxed runtime.
+  defaultRuntimeClassName: ""
+
 leaderElection:
   # Only matters when replicaCount > 1.
   enabled: false

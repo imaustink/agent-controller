@@ -79,6 +79,25 @@ type AgentSpec struct {
 	// +required
 	ServiceAccountName string `json:"serviceAccountName"`
 
+	// runtimeClassName selects the container runtime this Agent's pod runs
+	// under -- a sandboxed runtime such as gVisor (`runsc`) or Kata, named by
+	// a RuntimeClass the operator has installed. Passed through to the pod
+	// spec verbatim; this controller does not interpret it, validate that the
+	// class exists, or have an opinion about which isolation technology is
+	// right for a cluster (ADR 0044).
+	//
+	// Three states, following corev1.PodSpec.RuntimeClassName:
+	//   - unset (nil): inherit AGENT_DEFAULT_RUNTIME_CLASS, if the operator set one
+	//   - "": explicitly the cluster's default runtime, overriding that default
+	//   - "<name>": that RuntimeClass
+	//
+	// An Agent runs model-directed code and is the workload most worth
+	// isolating, so a cluster-wide default is usually the right control and
+	// this field the exception -- for an agent whose tooling does not survive
+	// a sandboxed runtime.
+	// +optional
+	RuntimeClassName *string `json:"runtimeClassName,omitempty"`
+
 	// env are static, non-secret environment variables for the Job container.
 	// +optional
 	Env []EnvVar `json:"env,omitempty"`

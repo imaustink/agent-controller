@@ -1,0 +1,313 @@
+# Agent Sandbox / Substrate / AX spike: findings and scope
+
+Status: **prototype landed** — `ToolRun` runs on either backend, demo included
+Date: 2026-09-24
+Branch: `worktree-ax-integration`
+
+> **Run the demo:** `scripts/sandbox-backend-demo.sh` — needs kind, kubectl, go
+> and docker, and nothing else. It creates its own throwaway cluster, installs
+> agent-sandbox v1.0.4, and runs five acts: **1m19s from no cluster at all**,
+> ~45s against a warm one. Re-runnable; `--teardown` removes the cluster. A
+> captured run is in
+> [demos/sandbox-backend-demo-output.txt](demos/sandbox-backend-demo-output.txt).
+
+Question this answers: can Google's agent-runtime stack replace the execution
+layer under our `ToolRun`/`AgentRun` CRDs, and retire the checkpoint-resume
+machinery of [ADR 0033](adr/0033-resumable-agent-turns.md)?
+
+Answer: **yes, at the Agent Sandbox layer. Not at the AX layer.**
+
+## Three layers, not one
+
+| Layer | What it is | Maturity |
+| ----- | ---------- | -------- |
+| [`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox) | Kubernetes CRDs: `Sandbox`, `SandboxTemplate`, `SandboxClaim`, `SandboxWarmPool`. Wraps a full `corev1.PodSpec`; delegates isolation to gVisor/Kata via `RuntimeClass` | **v1beta1**, SIG Apps, vendor-neutral |
+| [Agent Substrate](https://cloud.google.com/blog/products/containers-kubernetes/bringing-you-agent-sandbox-on-gke-and-agent-substrate) | Takes "the core secure runtime and snapshotting capabilities of Agent Sandbox and pairs them with a minimal control plane designed to bypass some of the limitations of Kubernetes". Source of the 250-actors-on-8-pods and sub-second-resume numbers | v1alpha1, GKE-tuned, GA allowlisted |
+| [`google/ax`](https://github.com/google/ax) | Opinionated agent orchestrator on Substrate | v1alpha1, breaking changes promised |
+
+Substrate builds **on** Sandbox rather than replacing it, so targeting Sandbox
+does not foreclose Substrate later.
+
+## Recommendation: target Agent Sandbox
+
+`Sandbox.spec.podTemplate.spec` is a full `corev1.PodSpec`. Everything
+`run_job.go` builds today carries over:
+
+| Ours | Agent Sandbox | Notes |
+| ---- | ------------- | ----- |
+| Job `serviceAccountName` (`run_job.go:178`) | `podTemplate.spec.serviceAccountName` | unchanged |
+| `secretEnv` → `secretKeyRef` ([ADR 0032](adr/0032-tool-level-identity-delegation-and-github-cli-tool.md)) | `podTemplate.spec.containers[].env[].valueFrom.secretKeyRef` | unchanged; no plaintext |
+| `timeoutSeconds` → `activeDeadlineSeconds` | `lifecycle.shutdownTime` + `shutdownPolicy` | absolute time, not duration |
+| `job.Status.Succeeded` (`run_job.go:305`) | `Finished` condition, reason `PodSucceeded`/`PodFailed` | [ADR 0010](adr/0010-crd-catalog-and-tool-controller.md) semantics preserved |
+| Secret GC via `ownerReferences` | real k8s object — owner refs work | unchanged |
+| Hardened run contract (`docs/security.md`) | same pod spec, unchanged | see the RuntimeClass note below |
+
+So `run_job.go` changes from building a `batchv1.Job` to building a
+`v1beta1.Sandbox` around substantially the same PodSpec. Tool images are
+**not** rebuilt. This applies to both `ToolRun` and `AgentRun`.
+
+### RuntimeClass is not one of the gains
+
+Worth stating plainly, because it is easy to get backwards and an earlier draft
+of this document did. Agent Sandbox does not isolate anything itself — its docs
+describe it as a sandbox *orchestrator* that "delegates low-level container
+isolation to secure Sandbox Runtimes (like gVisor or Kata Containers) by
+managing Pods configured to use these runtimes (via `RuntimeClass`)", and
+KEP-539.2 lists mandating an isolation technology as an explicit non-goal.
+
+`runtimeClassName` is an ordinary `corev1.PodSpec` field. **A `batch/v1` Job's
+pod can set it exactly as well as a Sandbox's pod can.** Running tools under
+gVisor is therefore available on our existing Job path today and is not a
+reason to adopt Agent Sandbox. The two are orthogonal improvements, and the
+gVisor one is the cheaper of the two.
+
+What Agent Sandbox actually gives us over a Job is lifecycle: suspend/resume,
+stable identity, and warm pools.
+
+### What we actually gain over a Job
+
+Most of the comparison is a tie, and it is worth being exact about which parts,
+because "Kubernetes already orchestrates this" is a fair objection to most of
+the table.
+
+| Capability | `batch/v1` Job | `Sandbox` |
+| ---------- | -------------- | --------- |
+| Run to completion with an exit status | yes | yes (`Finished`) |
+| Deadline | `activeDeadlineSeconds` | `shutdownTime` |
+| Suspend / resume | **yes** (`spec.suspend`) | yes (`operatingMode`) |
+| `ownerReferences` GC | yes | yes |
+| gVisor/Kata isolation | yes (PodSpec field) | yes (same field) |
+| Stable pod name + hostname across a resume | **no** — new random name | **yes** — pod name = Sandbox name |
+| Controller-managed persistent storage | **no** | **yes** (`volumeClaimTemplates`) |
+| Pre-warmed pool, ms provisioning | **no** | **yes** (`SandboxWarmPool`/`SandboxClaim`) |
+| Auto-resume on inbound connection | **no** | **yes** |
+| Headless Service + stable FQDN | **no** | **yes** (`spec.service`, `status.serviceFQDN`) |
+| Singleton by construction | **no** — tune completions/parallelism/backoff | **yes** |
+
+Note especially that **suspend is a tie**. Kubernetes' own docs: "Suspending a
+Job will delete its active Pods until the Job is resumed again," and a resume
+creates fresh pods. That is what `operatingMode: Suspended` does too. An
+earlier draft of this document, and the demo's Act 4, both claimed suspension
+was something a Job structurally could not do. It is not.
+
+What differs is everything below that line: a resumed Job gets a brand-new pod
+with a new name and no retained storage, while a resumed Sandbox is the same
+named, addressable workload on the same volumes.
+
+The gap Agent Sandbox fills is therefore narrow and specific: **Kubernetes has
+no primitive for a singleton, stateful, suspendable, addressable workload.**
+Deployment gives fungible replicas; StatefulSet gives N ordered replicas and
+cannot suspend; Job gives run-to-completion with fungible pods; a bare Pod has
+no lifecycle management at all. Upstream pitches Sandbox as replacing "manually
+orchestrating StatefulSets, Services, and PersistentVolumeClaims" — which is a
+real hole, but a smaller one than the marketing around agent runtimes suggests.
+
+### Which of our workloads is actually in that hole
+
+`ToolRun` is not. A container that scrapes a URL and exits is run-to-completion
+with a fungible pod — precisely what Job is for. It has no identity worth
+keeping and no state worth persisting between runs. **`ToolRun` should stay on
+Jobs.** The prototype targets it only because it was the smallest seam to prove
+the mechanism end to end against a real cluster.
+
+`AgentRun` is. A `claude-code-swe-agent` session is long-lived, holds a working
+tree, is addressed over the NATS tunnel ([ADR 0026](adr/0026-live-opencode-session-nats-tunnel.md)),
+and is parked mid-turn ([ADR 0033](adr/0033-resumable-agent-turns.md)). Stable
+hostname, managed storage that survives a park, auto-resume on inbound
+connection, and a warm pool against cold start are four things we would
+otherwise hand-build — and some of which we already have hand-built.
+
+`SandboxWarmPool` is the single most compelling item and the one the prototype
+has not touched: "assigned in milliseconds rather than waiting for a cold pod
+to schedule and start" has no Job equivalent at any price, and cold start is a
+latency cost paid on every tool call today.
+
+### The honest limitation: where resume actually comes from
+
+Three separate things, easily conflated:
+
+| Capability | Where it lives | Availability |
+| ---------- | -------------- | ------------ |
+| Suspend = terminate Pod, keep CR + volumes | core Sandbox, `spec.operatingMode` | portable, v1beta1 |
+| Checkpoint live memory + rootfs, wake mid-process | **GKE Pod Snapshots** (`podsnapshot.gke.io/v1`) | **GKE only** |
+| Driving the above at density with sub-second wake | Agent Substrate's control plane | GKE-tuned, alpha |
+
+[KEP-694](https://github.com/kubernetes-sigs/agent-sandbox/blob/main/docs/keps/694-kep-for-suspend-and-resume-for-beta/README.md)
+states the beta goal plainly: a clean suspend/resume API, and "This does not
+include the Snapshot API." Core suspend has no memory state — a resume is a
+cold boot onto the same volumes.
+
+Substrate does **not** add memory resume to Sandbox. Per Google's announcement
+it *takes* "the core secure runtime and snapshotting capabilities of Agent
+Sandbox and pairs them with a minimal control plane" — it consumes that
+machinery. Its contribution is bypassing the Kubernetes API server on the hot
+path, which is what the density and latency numbers measure.
+
+**Consequence for us:** the "resume mid-thought" behavior needs GKE Standard
+≥ 1.35.3, a gVisor node pool on a non-E2 machine series, and a GCS bucket with
+hierarchical namespace. On k3s we get pod-termination suspend and nothing more,
+regardless of which of the three layers we adopt. Note also that snapshot
+*creation* is slow — the GKE runbook waits on it with `--timeout=600s`. The
+sub-second figure describes the wake, not the checkpoint.
+
+So the ADR 0033 question splits in two: Sandbox gives us suspend/resume as
+declarative state instead of bespoke machinery, which is worth having on its
+own. Eliminating rehydration entirely is a GKE-only capability we cannot reach
+from the homelab target.
+
+## Why not AX
+
+Recorded so we do not revisit it.
+
+AX is not CRDs. It is a separate gRPC control plane (`ax-server` +
+`ax-controller`) with its own Redis store and `metadata.atespace` instead of
+`namespace`. No informers, no `ownerReferences`, no `kubectl get task`.
+`TaskSpec` field 8 (`gateway`) and field 9 (`policies`) are both `reserved` —
+removed. The entire spec is `suspend`, `image`, `command`, `env`, `resources`,
+`workspaces`, `debug`.
+
+Three disqualifiers:
+
+1. **No exit status.** `docs/runner.md`: *"The control plane does not currently
+   read the command's exit status back from the container."* Phases are
+   Running / Suspended / Failed / Terminating — no Succeeded. ADR 0010 made the
+   Job-mirrored phase the source of truth *over* the callback payload; AX
+   inverts that. No deadline field either.
+2. **Secrets are plaintext.** `EnvVar` is `{name, value}` strings persisted in
+   AX's Redis. `ToolRunSpec.SecretKeySelector` says "Never carry the secret
+   value itself in the spec," and [ADR 0034](adr/0034-durable-credential-store.md)
+   exists because credentials in an ephemeral store cost us an outage. No
+   service account field at all.
+3. **Every tool image rebuilt.** The container is always launched as
+   `/usr/local/bin/ax-task-runner`, which must serve HTTP on port 80
+   (`/healthz`, `/readyz`, metadata), prepare workspaces idempotently,
+   supervise the command, stay running after it exits, and drain on `SIGTERM`.
+   Our tools are one-shot CLIs that exit with a status.
+
+AX's `Workspace` (git + MCP + skills) is the one genuinely nice idea, and it
+duplicates what our catalog already does better.
+
+## What the prototype does
+
+Implemented on this branch, against agent-sandbox **v1.0.4** on kind:
+
+| File | What it adds |
+| ---- | ------------ |
+| `internal/sandboxapi/types.go` | Minimal mirror of `agents.x-k8s.io/v1beta1` Sandbox (see the package doc for why it is a mirror rather than the real dependency) |
+| `internal/controller/run_sandbox.go` | `buildRunSandbox`, `sandboxPhase`, and the backend resolver |
+| `internal/controller/run_job.go` | `buildRunPodSpec` extracted so both backends build the *same* pod |
+| `internal/controller/toolrun_controller.go` | `createWorkload` dispatches on backend; `syncSandboxStatus` mirrors conditions |
+| `api/v1alpha1/toolrun_types.go` | `status.executionBackend`, recorded at creation |
+| `scripts/sandbox-backend-demo.sh` | The five-act demo |
+
+Selecting a backend, most specific first: a
+`core.controller-agent.dev/execution-backend` annotation on the ToolRun, then
+the same annotation on the Tool, then `AGENT_EXECUTION_BACKEND`. **Anything
+unrecognised means Job**, so a typo cannot silently move production onto the
+experimental path. Nothing changes for existing runs: the default is Job, and
+`make test` passes unmodified.
+
+### What the demo establishes
+
+1. A ToolRun on the Job backend reaches `Succeeded` — unchanged.
+2. The same ToolRun on the Sandbox backend reaches `Succeeded`, with the
+   terminal phase read from the Sandbox's `Finished=True/PodSucceeded`
+   condition. ADR 0010's rule survives intact.
+3. The two backends produce a byte-identical pod: same service account,
+   uid/gid 10001, `RuntimeDefault` seccomp, read-only root fs, drop-ALL,
+   and the same `secretKeyRef`-resolved credential env. Asserted in the
+   cluster by the demo and in CI by `TestBackendsProduceIdenticalPodSpec`.
+4. A running Sandbox-backed run suspends (`operatingMode: Suspended`, pod
+   terminated, Sandbox object retained) and resumes — **2 seconds** on kind —
+   without the ToolRun ever going terminal.
+5. Deleting the ToolRun garbage-collects the Sandbox through `ownerReferences`,
+   exactly as it does a Job.
+
+### Two bugs found while building it
+
+Both are recorded because neither is visible from the API docs, and the second
+would have taken production down.
+
+**1. Registering the Sandbox watch unconditionally breaks every cluster that
+has not installed agent-sandbox.** controller-runtime does not resolve an owned
+type's informer lazily — it starts the watch at manager startup and, for a kind
+with no CRD, retries discovery forever while the controller blocks waiting for
+that cache to sync. The ToolRun controller never started its workers at all.
+Verified directly against a kind cluster carrying our CRDs and no
+agent-sandbox; `make test` does not catch it, because envtest never calls
+`SetupWithManager`.
+
+`SetupWithManager` now probes the RESTMapper and registers `Owns(&Sandbox{})`
+only when the API is served, logging a one-line notice otherwise. A run that
+asks for the Sandbox backend on such a cluster fails immediately with
+`ExecutionBackendUnavailable` and a message naming the missing CRDs, rather
+than requeueing forever. The trade-off: installing agent-sandbox into a running
+cluster needs a controller restart before the backend can be used.
+
+**2. A suspension looks like a failure.** Suspending a
+Sandbox terminates its pod, and for a moment that pod is a *failed* pod:
+upstream publishes a transient `Finished=True/PodFailed` while the termination
+settles, then drops the condition once suspension completes. Reading conditions
+before intent therefore latched a suspended run to `Failed` — terminal, so the
+reconciler stopped watching it and the later resume had nothing tracking it.
+
+`sandboxPhase` now consults `spec.operatingMode` ahead of every condition,
+since it is desired state: set before teardown begins, cleared on resume, and
+therefore the only signal that does not race the pod's death.
+`TestSuspensionIsNotAFailure` pins it.
+
+Anything built on Sandbox suspend/resume — which is the whole point of adopting
+it for parked turns — has to get this ordering right.
+
+## What is left
+
+1. **`RuntimeClass` — a separate, smaller piece of work.** The prototype sets
+   no `runtimeClassName` anywhere, so neither backend is isolated beyond the
+   existing hardened contract today. kind runs stock runc, so the demo proves
+   control flow, not isolation.
+
+   Because it is a plain PodSpec field (see the note above), this should be
+   done on the **Job** path first — that is the production path and it needs no
+   new CRDs. Plumbing an optional `ToolSpec.runtimeClassName` through
+   `buildRunPodSpec` gives both backends the field for free.
+
+   On k3s the host-level setup is three layers: install `runsc` and its
+   containerd shim on each node; register the handler via a
+   `config.toml.tmpl` Go template in
+   `/var/lib/rancher/k3s/agent/etc/containerd/` (k3s rewrites `config.toml`
+   itself on every restart, so it cannot be edited directly) with
+   `runtime_type = "io.containerd.runsc.v1"`; then create the `RuntimeClass`
+   with `handler: runsc`.
+
+   Verify before committing: gVisor's syscall coverage is good but incomplete,
+   so the `github` and Node-based tools need an actual smoke test rather than
+   an assumption; check ARM support against the node hardware; expect a
+   performance cost on syscall-heavy work. Kata is the stronger boundary but
+   wants nested virtualization, which homelab hardware often lacks.
+2. **`AgentRun`.** Only `ToolRun` has the backend switch. AgentRun is the case
+   that actually wants suspend/resume (ADR 0033), and it is a larger change
+   because of the NATS bridge in `engines/temporal/internal/agentrun`.
+3. **`SandboxWarmPool`** — untouched, no Job equivalent at any price, and per
+   the comparison above the strongest single reason to adopt any of this. If
+   only one more thing gets proved, it should be warm-pool provisioning latency
+   on `AgentRun`, not further `ToolRun` work.
+4. **The real dependency.** `internal/sandboxapi` should become
+   `sigs.k8s.io/agent-sandbox/api/v1beta1` once we are ready to take k8s v0.37
+   and controller-runtime v0.25 deliberately.
+5. **A suspension policy.** Nothing decides *when* to suspend a parked turn.
+   Note that `shutdownTime` keeps running while suspended, so a long park still
+   expires the run — correct, matching a Job deadline, but it means park
+   duration and tool timeout are now coupled.
+
+Substrate is a later question, reopened only if Sandbox's suspend proves too
+coarse for parked turns — and per the section above, on k3s it is the only
+suspend available regardless.
+
+## What this does not change
+
+Temporal stays. Sandbox suspends a Pod; Temporal gives deterministic replay,
+signals, retries, and the conversation workflow as a durable object.
+[ADR 0036](adr/0036-temporal-execution-engine.md) is unaffected.
+
+The identity model stays. Nothing in this stack resolves *whose* credential a
+workload runs with, so every ADR from 0029 through 0042 remains ours.

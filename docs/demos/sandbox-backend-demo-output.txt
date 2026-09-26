@@ -1,0 +1,105 @@
+
+━━━ Setup
+  · reusing kind cluster ax-sandbox-demo
+  ✓ cluster ready
+  · installing agent-sandbox v1.0.4 (kubernetes-sigs)
+  ✓ agent-sandbox controller running (v1beta1)
+  · installing core-controller CRDs
+  ✓ CRDs + namespace + callback secret in place
+  · building core-controller
+  · starting core-controller against the cluster (log: /tmp/ax-sandbox-demo-controller.log)
+  ✓ core-controller reconciling (pid 74801)
+
+━━━ Act 1 — the unchanged path: ToolRun on the Job backend
+NAME     PHASE       JOB              BACKEND   AGE
+on-job   Succeeded   toolrun-on-job   job       8s
+  ✓ Job backend reached Succeeded (status.executionBackend=job)
+
+━━━ Act 2 — the same ToolRun on the Sandbox backend
+NAME         PHASE       JOB                  BACKEND   AGE
+on-sandbox   Succeeded   toolrun-on-sandbox   sandbox   7s
+
+  · the workload it created is not a Job:
+NAME                 READY   REASON         AGE
+toolrun-on-sandbox   False   PodSucceeded   7s
+
+  · its terminal phase came from the Sandbox's Finished condition:
+    Suspended=False reason=NotSuspended
+    PodScheduled=True reason=PodScheduled
+    Ready=False reason=PodSucceeded
+    Finished=True reason=PodSucceeded
+  ✓ Sandbox backend reached Succeeded through the same ToolRun contract
+
+━━━ Act 3 — both backends produced the same hardened pod
+  ✓ security context, image, args, and env are identical across backends
+
+    default
+    10001
+    10001
+    true
+    RuntimeDefault
+    Never
+    busybox:1.36
+    ["sh","-c","echo '[tool] running'; sleep 3; echo '[tool] done'"]
+    true
+    false
+    ["ALL"]
+    RECIPE_TRANSPORT=callback/
+    RECIPE_CALLBACK_URL=http://agent-orchestrator-callback.controller-agent.svc.cluster.local:8080/
+    RECIPE_CALLBACK_SECRET=callback-hmac/secret
+
+  · note the credential wiring: RECIPE_CALLBACK_SECRET resolves through a
+  · secretKeyRef, never a literal value — the property AX's TaskSpec cannot express.
+
+━━━ Act 4 — suspend and resume, keeping identity
+  ✓ run is Running; pod is up
+    toolrun-parked   1/1   Running   0     2s
+  · suspending: kubectl patch sandbox toolrun-parked --type=merge -p '{"spec":{"operatingMode":"Suspended"}}'
+  ✓ backing pod terminated
+
+  · the Sandbox object survived, and reports why:
+    Suspended=True reason=PodTerminated
+    Ready=False reason=SandboxSuspended
+
+  · and the ToolRun did NOT go terminal — a suspended run has not finished:
+NAME     PHASE     JOB              BACKEND   AGE
+parked   Running   toolrun-parked   sandbox   33s
+  ✓ ToolRun stayed Running across the suspension
+  · resuming: operatingMode=Running
+  ✓ pod back in 2s, same Sandbox name and identity
+    toolrun-parked   1/1   Running   0     2s
+
+  · IMPORTANT: this is a cold restart onto retained volumes, not a memory
+  · snapshot. The container restarted its work from the beginning:
+    [tool] tick 0
+  · Mid-process resume needs GKE Pod Snapshots, which are not available here.
+
+━━━ Act 5 — ownerReferences still garbage-collect the workload
+    owner: ToolRun/parked
+  ✓ deleting the ToolRun reclaimed its Sandbox — same lifecycle as a Job
+
+━━━ Summary
+NAME         PHASE       JOB                  BACKEND   AGE
+on-job       Succeeded   toolrun-on-job       job       50s
+on-sandbox   Succeeded   toolrun-on-sandbox   sandbox   42s
+
+  What this proves
+    • The ToolRun CRD is unchanged as a public API; only the workload kind differs.
+    • ADR 0010's rule holds: the workload's own status, not the callback, decides
+      the terminal phase — via the Sandbox Finished condition.
+    • docs/security.md's hardened contract is byte-identical across backends.
+    • Credentials stay secretKeyRef-resolved; nothing is written in plaintext.
+    • Suspend/resume is declarative state, and the pod keeps its name and
+      hostname across the cycle. (A Job can suspend too — spec.suspend — but
+      a resumed Job gets a brand-new pod with a new random name.)
+    • ownerReferences GC is preserved.
+
+  What this does NOT prove
+    • Resume is a cold restart on retained volumes. Mid-process wake needs GKE
+      Pod Snapshots (GKE Standard ≥1.35.3, gVisor node pool, GCS bucket).
+    • Nothing about isolation. Neither backend sets runtimeClassName, and kind
+      runs stock runc. Note that runtimeClassName is a plain PodSpec field, so
+      gVisor is available on the Job path too — it is not a reason to adopt this.
+    • AgentRun still runs on Jobs; only ToolRun has the backend switch.
+
+  · cluster left running — rerun this script to repeat, or --teardown to remove it
