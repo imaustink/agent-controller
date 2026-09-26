@@ -528,3 +528,86 @@ describe("author and mention names", () => {
     expect(renderText("ask <@U2|grace> about it")).toBe("ask @grace about it");
   });
 });
+
+describe("searchAsUser", () => {
+  const match = (over = {}) => ({
+    ts: "1.1",
+    text: "the deploy runbook lives in confluence",
+    channel: { id: "C123ABC", name: "globex-eng" },
+    permalink: "https://bitovi.slack.com/archives/C123ABC/p11",
+    ...over,
+  });
+
+  /** conversations.info for the name, then search.messages. */
+  const routed = (matches, name = "globex-eng") =>
+    vi.fn(async (url: string) => {
+      if (url.includes("conversations.info")) return respond({ ok: true, channel: { name } });
+      return respond({ ok: true, messages: { matches } });
+    }) as unknown as FetchLike;
+
+  it("bounds the query to the channel by name", async () => {
+    const http = routed([match()]);
+    await driver(http).searchAsUser({ delegated: "u" }, SCOPE, "deploy runbook");
+
+    const search = (http as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .find((u: string) => u.includes("search.messages"))!;
+    expect(decodeURIComponent(search).replace(/\+/g, " ")).toContain("in:#globex-eng deploy runbook");
+  });
+
+  it("filters results by channel ID, because `in:` matches a mutable NAME", async () => {
+    // The whole reason the scope stores an id. If another channel is renamed
+    // into ours, or our cached name is stale, `in:` stops being a boundary —
+    // so the id comparison is the actual one.
+    const http = routed([match(), match({ channel: { id: "C_OTHER", name: "globex-eng" } })]);
+
+    const hits = await driver(http).searchAsUser({ delegated: "u" }, SCOPE, "deploy");
+
+    expect(hits).toHaveLength(1);
+    expect(hits[0].id).toBe("C123ABC/1.1");
+  });
+
+  it("strips operators out of the caller's words", async () => {
+    // A caller's own `in:` would widen the search past this channel.
+    const http = routed([match()]);
+    await driver(http).searchAsUser({ delegated: "u" }, SCOPE, "in:#exec-private salary");
+
+    const search = (http as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .find((u: string) => u.includes("search.messages"))!;
+    const decoded = decodeURIComponent(search).replace(/\+/g, " ");
+    expect(decoded).not.toContain("exec-private");
+    expect(decoded).toContain("salary");
+  });
+
+  it("cites the THREAD parent, not the matched reply", async () => {
+    // The read face indexes threads; a reply's own ts would fetch a
+    // one-message thread instead of the conversation holding the answer.
+    const http = routed([match({ ts: "9.9", thread_ts: "1.1" })]);
+    const hits = await driver(http).searchAsUser({ delegated: "u" }, SCOPE, "deploy");
+    expect(hits[0].id).toBe("C123ABC/1.1");
+  });
+
+  it("searches anyway when the channel name cannot be resolved", async () => {
+    const http = vi.fn(async (url: string) => {
+      if (url.includes("conversations.info")) return respond({ ok: false, error: "channel_not_found" });
+      return respond({ ok: true, messages: { matches: [match()] } });
+    }) as unknown as FetchLike;
+
+    // Degrades to a wider search that the id filter still narrows.
+    const hits = await driver(http).searchAsUser({ delegated: "u" }, SCOPE, "deploy");
+    expect(hits).toHaveLength(1);
+  });
+
+  it("refuses the service credential", async () => {
+    await expect(
+      driver(vi.fn() as unknown as FetchLike).searchAsUser({ service: "s" }, SCOPE, "x"),
+    ).rejects.toThrow(/delegated token/);
+  });
+
+  it("returns nothing for an empty query rather than searching for nothing", async () => {
+    const http = vi.fn() as unknown as FetchLike;
+    expect(await driver(http).searchAsUser({ delegated: "u" }, SCOPE, "   ")).toEqual([]);
+    expect(http).not.toHaveBeenCalled();
+  });
+});

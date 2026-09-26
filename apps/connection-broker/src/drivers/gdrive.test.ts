@@ -177,3 +177,43 @@ describe("error classification", () => {
     ).rejects.toBeInstanceOf(TransientError);
   });
 });
+
+describe("searchAsUser", () => {
+  it("escapes an apostrophe rather than letting it close the query literal", async () => {
+    // `fullText contains '...'` is a single-quoted literal and the words are
+    // the CALLER's. This is the same lesson the folder id taught.
+    const http = vi.fn(async () => respond({ files: [] })) as unknown as FetchLike;
+    await driver(http).searchAsUser({ delegated: "u" }, { folderID: "F1" }, "the client's brief");
+
+    const url = String((http as unknown as ReturnType<typeof vi.fn>).mock.calls[0]![0]);
+    expect(decodeURIComponent(url).replace(/\+/g, " ")).toContain("fullText contains 'the client\\'s brief'");
+  });
+
+  it("keeps only files whose parent chain reaches the scoped folder", async () => {
+    // `'<id>' in parents` is one level and the corpus is recursive, so the
+    // query cannot express the bound; the walk does.
+    const http = vi.fn(async (url: string) => {
+      if (url.includes("fullText")) {
+        return respond({
+          files: [
+            { id: "inside", name: "Brief", mimeType: "text/plain", parents: ["SUB"] },
+            { id: "outside", name: "Other", mimeType: "text/plain", parents: ["ELSEWHERE"] },
+          ],
+        });
+      }
+      if (url.includes("/files/SUB")) return respond({ id: "SUB", parents: ["F1"] });
+      if (url.includes("/files/ELSEWHERE")) return respond({ id: "ELSEWHERE", parents: [] });
+      return respond({});
+    }) as unknown as FetchLike;
+
+    const hits = await driver(http).searchAsUser({ delegated: "u" }, { folderID: "F1" }, "brief");
+
+    expect(hits.map((h) => h.id)).toEqual(["inside"]);
+  });
+
+  it("refuses the service credential", async () => {
+    await expect(
+      driver(vi.fn() as unknown as FetchLike).searchAsUser({ service: "s" }, { folderID: "F1" }, "x"),
+    ).rejects.toThrow(/delegated token/);
+  });
+});

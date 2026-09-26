@@ -156,4 +156,106 @@ describe("broker server", () => {
     });
     expect(res.status).toBe(404);
   });
+
+  describe("live search", () => {
+    const searching = () =>
+      fakeDriver({
+        searchAsUser: vi.fn().mockResolvedValue([
+          { id: "9", title: "Runbook", url: "https://wiki/9", excerpt: "deploy steps" },
+        ]),
+      });
+
+    it("searches with the caller's token, bounded by the corpus scope", async () => {
+      start(searching());
+
+      const res = await call("/corpora/globex-confluence/search?q=deploy", {
+        headers: { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "user" },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        hits: [{ id: "9", title: "Runbook", url: "https://wiki/9", excerpt: "deploy steps" }],
+      });
+      // Both bounds, in one call: the delegated credential and the scope.
+      expect(driver.searchAsUser).toHaveBeenCalledWith(
+        { delegated: "user" },
+        { space: "GLOBEX" },
+        "deploy",
+        10,
+      );
+    });
+
+    it("never reaches the ingestion credential", async () => {
+      // A search runs on the caller's behalf. Authorizing it as a fetch is
+      // what stops a sync worker — which has no user — from driving it.
+      start(searching());
+
+      const res = await call("/corpora/globex-confluence/search?q=deploy", {
+        headers: { authorization: "Bearer sync" },
+      });
+
+      expect(res.status).toBe(403);
+      expect(driver.searchAsUser).not.toHaveBeenCalled();
+    });
+
+    it("refuses an orchestrator search with no delegated token", async () => {
+      start(searching());
+
+      const res = await call("/corpora/globex-confluence/search?q=deploy", {
+        headers: { authorization: "Bearer orch" },
+      });
+
+      expect(res.status).toBe(403);
+      expect(driver.searchAsUser).not.toHaveBeenCalled();
+    });
+
+    it("caps the limit a caller can ask for", async () => {
+      start(searching());
+
+      await call("/corpora/globex-confluence/search?q=deploy&limit=5000", {
+        headers: { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "user" },
+      });
+
+      expect(driver.searchAsUser).toHaveBeenCalledWith(expect.anything(), expect.anything(), "deploy", 25);
+    });
+
+    it("falls back to the default for a nonsense limit", async () => {
+      start(searching());
+
+      await call("/corpora/globex-confluence/search?q=deploy&limit=abc", {
+        headers: { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "user" },
+      });
+
+      expect(driver.searchAsUser).toHaveBeenCalledWith(expect.anything(), expect.anything(), "deploy", 10);
+    });
+
+    it("says so when the provider has no live search", async () => {
+      // Optional on the interface: a provider whose search needs a scope or
+      // token type we do not hold keeps vector search and nothing breaks.
+      start(fakeDriver());
+
+      const res = await call("/corpora/globex-confluence/search?q=deploy", {
+        headers: { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "user" },
+      });
+
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toMatch(/no live search/);
+    });
+  });
+
+
+  it("refuses a SYNC worker the user-read route", async () => {
+    // A sync worker passes the fetch check — fetch is a legitimate ingestion
+    // operation — and would arrive holding the service credential. The route
+    // refuses it rather than leaving the driver to notice.
+    start(fakeDriver({ readAsUser: vi.fn().mockResolvedValue({ id: "1", markdown: "b" }) }));
+
+    const res = await call("/corpora/globex-confluence/documents/1", {
+      headers: { authorization: "Bearer sync" },
+    });
+
+    expect(res.status).toBe(403);
+    expect(driver.readAsUser).not.toHaveBeenCalled();
+  });
+
 });

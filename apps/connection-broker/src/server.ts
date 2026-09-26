@@ -26,6 +26,7 @@ import type { CorpusRegistry } from "./registry.js";
  *   GET  /corpora/:name/resources              — incremental listing (sync only)
  *   GET  /corpora/:name/resources/:id          — one document, SCOPE-bounded (sync)
  *   GET  /corpora/:name/documents/:id          — one document, IDENTITY-bounded (read)
+ *   GET  /corpora/:name/search?q=              — live search, SCOPE- and identity-bounded
  *   POST /corpora/:name/probe                  — per-user authorization (ADR 0040)
  *   POST /corpora/:name/sync                   — run a reconcile now (sync only)
  *   POST /connections/:name/webhook            — provider change notification
@@ -112,7 +113,15 @@ async function handle(
     // with a delegated token, and a sync worker may not — it has no user to
     // read as, and this read is nothing but the user's access.
     const operation: Operation =
-      route.kind === "probe" ? "probe" : route.kind === "documents" || route.id ? "fetch" : "list";
+      route.kind === "probe"
+        ? "probe"
+        : // A search reads on the caller's behalf and must never reach the
+          // ingestion credential, which is exactly what `fetch` already
+          // encodes — so it authorizes as one rather than growing a fourth
+          // operation that would have to be kept in step with it.
+          route.kind === "documents" || route.kind === "search" || route.id
+          ? "fetch"
+          : "list";
     ({ credential } = authorize(caller, operation, route.name, delegated));
   } catch (err) {
     if (err instanceof UnauthorizedError) return send(res, 401, { error: err.message });
@@ -130,6 +139,22 @@ async function handle(
   const credentials: Credentials =
     credential === "service" ? { service: binding.serviceToken } : { delegated };
 
+  // `documents` and `search` are user reads BY DEFINITION: both answer "what
+  // can this person see", and both are meaningless without a person.
+  //
+  // auth.ts authorizes them as a fetch, which is right about the danger — they
+  // must never spend the ingestion credential — but a fetch is also a
+  // legitimate SYNC operation, so a sync worker passes that check and arrives
+  // here holding the service credential. Today every driver refuses it, but
+  // that makes the boundary a thing each driver has to remember, and
+  // `searchAsUser` is optional, so the next one can forget. Refusing here
+  // makes it a property of the route instead.
+  if ((route.kind === "documents" || route.kind === "search") && credential !== "delegated") {
+    return send(res, 403, {
+      error: `${route.kind} is a read on a user's behalf and requires a delegated token`,
+    });
+  }
+
   try {
     if (route.kind === "documents") {
       if (!binding.driver.readAsUser) {
@@ -140,6 +165,24 @@ async function handle(
       // would only invite it to enforce one.
       const document = await binding.driver.readAsUser(credentials, route.id!);
       return send(res, 200, document);
+    }
+
+    if (route.kind === "search") {
+      if (!binding.driver.searchAsUser) {
+        return send(res, 404, { error: `${binding.driver.provider} has no live search` });
+      }
+      const query = url.searchParams.get("q") ?? "";
+      const limit = Number(url.searchParams.get("limit") ?? "10");
+      const hits = await binding.driver.searchAsUser(
+        credentials,
+        // The scope IS passed here, unlike the document read directly above.
+        // That asymmetry is the design (see Driver.searchAsUser), not an
+        // inconsistency between two neighbouring lines.
+        binding.scope,
+        query,
+        Number.isFinite(limit) && limit > 0 ? Math.min(limit, 25) : 10,
+      );
+      return send(res, 200, { hits });
     }
 
     if (route.kind === "sync") {
@@ -193,7 +236,7 @@ async function handle(
 interface Route {
   /** A corpus name for data routes; a CONNECTION name for a webhook. */
   name: string;
-  kind: "resources" | "documents" | "probe" | "sync" | "webhook";
+  kind: "resources" | "documents" | "search" | "probe" | "sync" | "webhook";
   id?: string;
 }
 
@@ -305,6 +348,10 @@ function parseRoute(pathname: string): Route | undefined {
     if (parts[2] === "documents" && parts.length === 4) {
       return { name, kind: "documents", id: decodeURIComponent(parts[3]!) };
     }
+    // The third read, and the one bounded BOTH ways: by the corpus's scope and
+    // by the caller. `documents` may leave the scope because a citation
+    // anchors it; a search has no anchor, so it may not.
+    if (parts[2] === "search" && parts.length === 3) return { name, kind: "search" };
     if (parts[2] === "resources") {
       if (parts.length === 3) return { name, kind: "resources" };
       if (parts.length === 4) {

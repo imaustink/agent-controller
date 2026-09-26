@@ -10,6 +10,7 @@ import {
   type ProbeGranularity,
   type ProbeResult,
   type Scope,
+  type SearchHit,
 } from "./types.js";
 import type { FetchLike } from "./confluence.js";
 
@@ -127,6 +128,67 @@ export class GDriveDriver implements Driver {
     })) as DriveFile;
 
     return { ...toRef(file), markdown: await this.readContent(file, token) };
+  }
+
+  /**
+   * Live full-text search, as the caller, inside the corpus's folder.
+   *
+   * Two Drive-specific wrinkles shape this.
+   *
+   * `fullText contains '...'` is a Drive query literal in SINGLE quotes, and
+   * the folder id already taught this driver that lesson: an apostrophe in the
+   * caller's words would close the literal and let the rest parse as query
+   * syntax. Escaped rather than stripped — the words are the question.
+   *
+   * `'<id>' in parents` is ONE level, and the corpus is recursive. A file in a
+   * subfolder is in the corpus but not in that result set, so the query cannot
+   * express the bound on its own. Rather than walk every subfolder up front —
+   * unbounded work for one search — this searches the user's whole Drive and
+   * then keeps only what the existing parent-chain walk says is inside. The
+   * walk is the same code the fetch path enforces scope with, so search cannot
+   * drift from it.
+   */
+  async searchAsUser(
+    credentials: Credentials,
+    scope: Scope,
+    query: string,
+    limit = 10,
+  ): Promise<SearchHit[]> {
+    this.validateScope(scope);
+    if (!credentials.delegated) {
+      throw new Error("a gdrive search requires the calling user's delegated token");
+    }
+
+    const trimmed = query.trim();
+    if (trimmed.length === 0) return [];
+
+    const escaped = trimmed.replace(/['\\]/g, "\\$&");
+    const body = (await this.call("/files", credentials.delegated, {
+      q: `fullText contains '${escaped}' and trashed = false`,
+      fields: "files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents)",
+      // Over-fetched on purpose: the scope filter below removes most of these,
+      // and asking for exactly `limit` would return a short page of hits that
+      // happen to be in the folder rather than the best ones that are.
+      pageSize: String(Math.min(limit * 10, 100)),
+    })) as { files?: DriveFile[] };
+
+    const candidates = (body.files ?? []).filter((file) => this.indexable(file));
+
+    const hits: SearchHit[] = [];
+    for (const file of candidates) {
+      if (hits.length >= limit) break;
+      // The same walk fetch enforces scope with. Run as the CALLER, so a file
+      // whose parent chain they cannot see is not in their corpus either.
+      try {
+        await this.assertInScope(file, scope, credentials.delegated);
+        hits.push(toRef(file));
+      } catch {
+        // A walk that cannot complete is not evidence the file is inside.
+        // Dropping the candidate is the safe direction here: over-inclusion
+        // would put another folder's file in a client's knowledge base.
+      }
+    }
+    return hits;
   }
 
   async probe(scope: Scope, credentials: Credentials, id?: string): Promise<ProbeResult> {

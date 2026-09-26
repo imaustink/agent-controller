@@ -10,6 +10,7 @@ import {
   type ProbeGranularity,
   type ProbeResult,
   type Scope,
+  type SearchHit,
 } from "./types.js";
 import type { FetchLike } from "./confluence.js";
 import type { WebhookEvent, WebhookRequest } from "./types.js";
@@ -32,6 +33,15 @@ export interface SlackDriverOptions {
    * `channels:join` scope on the bot token.
    */
   autoJoin?: boolean;
+}
+
+/** A `search.messages` match. Carries its own channel, which is what bounds a hit. */
+interface SlackSearchMatch {
+  ts: string;
+  text?: string;
+  thread_ts?: string;
+  permalink?: string;
+  channel?: { id?: string; name?: string };
 }
 
 interface SlackMessage {
@@ -76,6 +86,9 @@ export class SlackDriver implements Driver {
    * message in the corpus.
    */
   private readonly userNames = new Map<string, string | null>();
+
+  /** Channel id -> name, for search's `in:` term. Null means "asked, no answer". */
+  private readonly channelNames = new Map<string, string | null>();
 
   constructor(options: SlackDriverOptions = {}) {
     this.http = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
@@ -171,6 +184,101 @@ export class SlackDriver implements Driver {
       // into the chunk. The parent survives regardless — it is what this
       // document is, and dropping it would leave a thread with no opening.
       markdown: await this.renderThread(token, [parent, ...messages.slice(1).filter(isProse)]),
+    };
+  }
+
+  /**
+   * Live message search, as the caller, inside the corpus's channel.
+   *
+   * Three things were established against the live workspace rather than
+   * assumed (a bot token cannot do this at all):
+   *
+   * - `search.messages` refuses a BOT token outright with
+   *   `not_allowed_token_type`. This is user-token-only by Slack's design,
+   *   which suits us: search must run as the caller anyway (ADR 0040).
+   * - It needs `search:read` on the user token. Without it every variant
+   *   returns `missing_scope`, so a workspace that has not granted it simply
+   *   has no live search and keeps vector search.
+   * - `in:` matches a channel NAME, not an id.
+   *
+   * That last one is the awkward part, and it is why the results are filtered
+   * again below. Our scope deliberately stores the channel ID, because names
+   * are mutable and a rename must not silently re-point a corpus. But the only
+   * bound Slack's query language offers is the mutable name — so the `in:`
+   * term is treated as an OPTIMIZATION that keeps the result set small, and
+   * the id comparison afterwards is the actual security boundary. If the name
+   * we resolve is stale, or another channel is renamed into it, the filter
+   * still holds.
+   */
+  async searchAsUser(
+    credentials: Credentials,
+    scope: Scope,
+    query: string,
+    limit = 10,
+  ): Promise<SearchHit[]> {
+    this.validateScope(scope);
+    const token = requireDelegatedSlack(credentials);
+
+    const trimmed = query.trim();
+    if (trimmed.length === 0) return [];
+
+    const channel = scope.channel!;
+    const name = await this.channelName(token, channel);
+
+    // Slack has no quoting to escape into — the query is a term language, not
+    // a structured one — but a caller's own `in:` would widen the search past
+    // this channel, so operators are stripped from the user's words.
+    const terms = trimmed.replace(/\b(in|from|with|during|before|after|on):\S*/gi, " ").trim();
+    if (terms.length === 0) return [];
+
+    const query_ = name ? `in:#${name} ${terms}` : terms;
+    const body = (await this.call("search.messages", token, {
+      query: query_,
+      count: String(Math.min(limit, 20)),
+    })) as { messages?: { matches?: SlackSearchMatch[] } };
+
+    return (body.messages?.matches ?? [])
+      // THE bound. See the note above: `in:` is by name and names move.
+      .filter((match) => match.channel?.id === channel)
+      .map((match) => this.toSearchHit(channel, match))
+      .slice(0, limit);
+  }
+
+  /**
+   * The channel's name, for the `in:` term. Cached, and never fatal.
+   *
+   * A failure here costs a wider search that the id filter still narrows, so
+   * it degrades rather than throwing — the same shape as name resolution.
+   */
+  private async channelName(token: string, channel: string): Promise<string | undefined> {
+    if (this.channelNames.has(channel)) return this.channelNames.get(channel) ?? undefined;
+    try {
+      const body = (await this.call("conversations.info", token, { channel })) as {
+        channel?: { name?: string };
+      };
+      this.channelNames.set(channel, body.channel?.name ?? null);
+    } catch {
+      this.channelNames.set(channel, null);
+    }
+    return this.channelNames.get(channel) ?? undefined;
+  }
+
+  /**
+   * A match as a citable hit.
+   *
+   * The id is `<channel>/<ts>` — what the read face takes — and the thread
+   * parent is preferred over the matched message where Slack tells us one,
+   * since the read face indexes threads and a reply's own ts would fetch a
+   * one-message thread rather than the conversation the answer is in.
+   */
+  private toSearchHit(channel: string, match: SlackSearchMatch): SearchHit {
+    const ts = match.thread_ts ?? match.ts;
+    return {
+      id: `${channel}/${ts}`,
+      title: firstLine(match.text ?? "") || `message ${ts}`,
+      url: match.permalink ?? this.messageUrl(channel, ts),
+      version: ts,
+      excerpt: renderText(match.text ?? "").slice(0, 300) || undefined,
     };
   }
 
