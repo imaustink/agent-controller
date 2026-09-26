@@ -59,11 +59,13 @@ scope, same roles, same driver, same collection, same sync semantics — with
 `provider`, the service address and `secretEnv` replaced by a
 `connectionRef`.
 
-Everything that hangs off it is therefore unchanged: the provider driver
-interface (§1 of 0038), the scope check that refuses a resource outside the
-subset, per-subset collections and the fan-out that merges them
-(§1 of 0039), per-point roles written at ingest, and the per-user probe
-(0040). None of that is reopened here.
+Most of what hangs off it is therefore unchanged: the scope check that refuses
+a resource outside the subset, per-subset collections and the fan-out that
+merges them (§1 of 0039), per-point roles written at ingest, and the per-user
+probe (0040). None of that is reopened here.
+
+The exception is webhook delivery, which the split genuinely does change — see
+§4.
 
 ### 2. Why the subset is the unit, and not the KnowledgeBase
 
@@ -106,7 +108,52 @@ input from the request.
 The cap is optional. A `Connection` that omits it permits any subset, which is
 the right default when creating a `Corpus` is already privileged.
 
-### 4. Naming
+### 4. Sync under the split
+
+Reconcile is unaffected. A pass still enumerates one `Corpus` and still governs
+what may be deleted, which is the property ADR 0038 §4 rests on — webhooks
+remain an optimization over it, never a replacement.
+
+Webhook DELIVERY does change, and this is the one place the split has real
+consequences rather than cosmetic ones. A provider signs and delivers per
+integration: one Slack app, one Confluence site. That is a `Connection`, not a
+`Corpus`. So a single delivery now has to reach however many Corpora cover the
+thing that changed — zero, one, or several.
+
+Three consequences follow:
+
+- **The endpoint and the signing secret belong to the `Connection`.** One
+  registration per app, verified once. A per-`Corpus` endpoint would mean
+  registering the same webhook N times against the same provider integration.
+- **The driver stops filtering and starts reporting.** Today
+  `parseWebhook(request, secret, scope)` is handed a scope and returns the ids
+  inside it. It should instead return the **scope key** it is about — the
+  channel id, space key or folder id — alongside the ids, and let the broker
+  route. The driver cannot do the filtering any more, because it no longer
+  knows which subsets exist.
+- **Routing fans out.** Every `Corpus` whose scope matches the reported key gets
+  a partial pass. Several matching is legitimate: two Corpora may overlap, and
+  both need the update. None matching is the ordinary case — most events in a
+  workspace concern channels nobody indexed — and stays a verified-but-ignored
+  200, because providers disable endpoints that return errors.
+
+Two lifecycle rules fall out of the same reasoning:
+
+- **A `Connection` with Corpora referencing it must not vanish underneath
+  them.** Deletion is refused while any remain, rather than cascading: cascading
+  destroys indexed material as a side effect of removing a credential, and the
+  two decisions deserve to be made separately.
+- **Deleting a `Corpus` drops its collection.** ADR 0039 deliberately declined
+  to delete a collection on eviction, because a collection might be reachable
+  from several knowledge bases. That caution does not apply here: a collection
+  belongs to exactly one `Corpus`, so nothing else can be relying on it.
+
+Editing a `Corpus`'s scope needs no special handling, which is worth stating
+because it looks like it should. The next full pass enumerates the new scope and
+deletes whatever it did not see — so the collection converges on its own, by the
+same rule that makes a deletion upstream eventually take effect.
+
+### 5. Naming
 
 `Corpus` rather than `Source`, `Workspace` or `Dataset`, for reasons that are
 not only aesthetic:
@@ -137,6 +184,11 @@ yesterday, and every existing reference — ADRs, samples, the broker's registry
 the wrong tier. This is the main cost, and it is churn rather than risk: the
 compiler and the CEL rules catch most of it, and the semantics of each piece
 are unchanged.
+
+**One driver-interface change.** `parseWebhook` loses its scope argument and
+gains a scope key in its return. Small, but it is the only part of ADR 0038's
+driver contract this reopens, and the three existing implementations move with
+it.
 
 **A third CRD.** More machinery, one more reconciler, one more thing to explain.
 Justified only because the middle tier is load-bearing for access control, sync
@@ -177,7 +229,12 @@ into the view, with the same role problem one step removed.
    address and `secretEnv` with `connectionRef`.
 4. Update `KnowledgeBase.spec.connectionRefs` to `corpusRefs`, and the derived
    tool ids that embed the tier's name.
-5. Update ADRs 0038 and 0039 to point here for the tier they describe.
+5. Move webhook routing to the broker: `parseWebhook` reports a scope key, and
+   a delivery fans out to every matching `Corpus` (§4). Until this lands,
+   webhooks reach one subset only and a second `Corpus` on the same
+   `Connection` is kept current by its reconcile interval alone — correct, and
+   slower than it should be.
+6. Update ADRs 0038 and 0039 to point here for the tier they describe.
 
 Superseding is partial and deliberate: 0038's driver interface, webhook policy
 and broker execution model stand unchanged, and 0039's composition, access and
