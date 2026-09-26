@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { deriveKnowledgeBaseIndex } from "./index-derivation.js";
-import type { ConnectionDescriptor, KnowledgeBaseDescriptor } from "./types.js";
+import type { CorpusDescriptor, KnowledgeBaseDescriptor } from "./types.js";
 
-function connections(): Map<string, ConnectionDescriptor> {
-  return new Map<string, ConnectionDescriptor>([
+function connections(): Map<string, CorpusDescriptor> {
+  return new Map<string, CorpusDescriptor>([
     [
       "snc-confluence",
       {
@@ -39,7 +39,7 @@ function sncKb(): KnowledgeBaseDescriptor {
     displayName: "SNC",
     description: "The SNC engagement.",
     aliases: [],
-    connectionRefs: ["snc-confluence", "snc-slack-private"],
+    corpusRefs: ["snc-confluence", "snc-slack-private"],
     disclosePartialVisibility: true,
   };
 }
@@ -53,7 +53,7 @@ describe("deriveKnowledgeBaseIndex", () => {
     expect(skills[0].effectiveRoles).toEqual(["lead", "reader", "writer"]);
 
     expect(tools.map((t) => t.id).sort()).toEqual([
-      "conn:snc-confluence/get",
+      "corpus:snc-confluence/get",
       "kb:snc/search",
     ]);
   });
@@ -84,7 +84,7 @@ describe("deriveKnowledgeBaseIndex", () => {
   it("gives a connection's GET tool its own roles, not the union", () => {
     const { tools } = deriveKnowledgeBaseIndex([sncKb()], connections());
 
-    const get = tools.find((t) => t.id === "conn:snc-confluence/get")!;
+    const get = tools.find((t) => t.id === "corpus:snc-confluence/get")!;
     // The GET face is one source's capability, not the composition's: granting
     // it the union would let a lead-only caller read a source they hold no role
     // for.
@@ -96,7 +96,7 @@ describe("deriveKnowledgeBaseIndex", () => {
 
   it("omits a GET tool for a member with no api face", () => {
     const { tools } = deriveKnowledgeBaseIndex([sncKb()], connections());
-    expect(tools.find((t) => t.id === "conn:snc-slack-private/get")).toBeUndefined();
+    expect(tools.find((t) => t.id === "corpus:snc-slack-private/get")).toBeUndefined();
   });
 
   it("emits one tool record for a connection shared by several knowledge bases", () => {
@@ -104,17 +104,17 @@ describe("deriveKnowledgeBaseIndex", () => {
       ...sncKb(),
       id: "acme",
       displayName: "Acme",
-      connectionRefs: ["snc-confluence"],
+      corpusRefs: ["snc-confluence"],
     };
 
     const { tools } = deriveKnowledgeBaseIndex([sncKb(), second], connections());
 
-    const gets = tools.filter((t) => t.id === "conn:snc-confluence/get");
+    const gets = tools.filter((t) => t.id === "corpus:snc-confluence/get");
     expect(gets).toHaveLength(1);
   });
 
   it("falls closed for a knowledge base whose members all dangle", () => {
-    const orphan: KnowledgeBaseDescriptor = { ...sncKb(), connectionRefs: ["gone"] };
+    const orphan: KnowledgeBaseDescriptor = { ...sncKb(), corpusRefs: ["gone"] };
 
     const { skills } = deriveKnowledgeBaseIndex([orphan], connections());
 

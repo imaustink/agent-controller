@@ -34,7 +34,7 @@ func (f *fakeProber) Probe(_ context.Context, req corpus.ProbeRequest) (corpus.P
 	f.probes = append(f.probes, req)
 	f.mu.Unlock()
 
-	key := req.ConnectionID + "/" + req.SourceID
+	key := req.CorpusID + "/" + req.SourceID
 	if err, ok := f.errs[key]; ok {
 		return corpus.ProbeResult{}, err
 	}
@@ -54,7 +54,7 @@ func candidate(connectionID, sourceID, version string, score float32) corpus.Hit
 	return corpus.Hit{
 		Score: score,
 		Chunk: corpus.Chunk{
-			ConnectionID: connectionID,
+			CorpusID: connectionID,
 			SourceID:     sourceID,
 			Version:      version,
 			// Deliberately misleading mirror metadata: Authorize must never let

@@ -26,7 +26,7 @@ const DefaultCandidateMultiplier = 3
 //
 // The orchestrator deliberately holds no third-party credential of its own: it
 // forwards the user's delegated token per request and the broker refuses to let
-// it spend a connection's service credential at all (the broker's auth.ts).
+// it spend a corpus's service credential at all (the broker's auth.ts).
 // So this type carries a token it did not mint and cannot widen.
 type BrokerProber struct {
 	// BaseURL of the connection-broker Service.
@@ -66,7 +66,7 @@ func (b *BrokerProber) Probe(ctx context.Context, req ProbeRequest) (ProbeResult
 		return ProbeResult{}, err
 	}
 
-	endpoint := strings.TrimRight(b.BaseURL, "/") + "/connections/" + url.PathEscape(req.ConnectionID) + "/probe"
+	endpoint := strings.TrimRight(b.BaseURL, "/") + "/connections/" + url.PathEscape(req.CorpusID) + "/probe"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return ProbeResult{}, err

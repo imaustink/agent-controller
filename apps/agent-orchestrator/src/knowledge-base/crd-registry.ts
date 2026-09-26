@@ -2,17 +2,17 @@ import * as k8s from "@kubernetes/client-node";
 import { makeCrdWatcher, type CrdChangeEvent, type WatchCrdFn } from "../k8s/crd-watcher.js";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import {
-  CONNECTION_PLURAL,
+  CORPUS_PLURAL,
   KNOWLEDGE_BASE_PLURAL,
-  toConnectionDescriptor,
+  toCorpusDescriptor,
   toKnowledgeBaseDescriptor,
-  type ConnectionCustomResource,
+  type CorpusCustomResource,
   type KnowledgeBaseCustomResource,
 } from "./crd.js";
-import type { ConnectionDescriptor, KnowledgeBaseDescriptor } from "./types.js";
+import type { CorpusDescriptor, KnowledgeBaseDescriptor } from "./types.js";
 
 /**
- * Discovers Connections and KnowledgeBases from custom resources, the same
+ * Discovers Corpora and KnowledgeBases from custom resources, the same
  * shape `CrdSkillRegistry` uses: `listAll()` seeds the catalog at startup,
  * `watch()` (ADR 0020) keeps it current afterwards.
  *
@@ -75,8 +75,8 @@ class CrdRegistry<CR, D> {
 }
 
 export class CrdConnectionRegistry extends CrdRegistry<
-  ConnectionCustomResource,
-  ConnectionDescriptor
+  CorpusCustomResource,
+  CorpusDescriptor
 > {
   constructor(
     namespace: string,
@@ -85,7 +85,7 @@ export class CrdConnectionRegistry extends CrdRegistry<
     api: CustomObjectsApiLike,
     watchFn?: WatchCrdFn,
   ) {
-    super(namespace, group, version, CONNECTION_PLURAL, toConnectionDescriptor, api, watchFn);
+    super(namespace, group, version, CORPUS_PLURAL, toCorpusDescriptor, api, watchFn);
   }
 
   static fromKubeConfig(

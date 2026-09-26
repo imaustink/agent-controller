@@ -3,11 +3,11 @@ import type { ToolDescriptor } from "../tool-descriptor.js";
 import { deriveKnowledgeBaseSkill } from "./derive.js";
 import type { KnowledgeBaseExecMember, KnowledgeBaseExecSpec } from "./exec.js";
 import {
-  connectionGetToolId,
+  corpusGetToolId,
   connectionLabel,
   knowledgeBaseLabel,
   knowledgeBaseSearchToolId,
-  type ConnectionDescriptor,
+  type CorpusDescriptor,
   type KnowledgeBaseDescriptor,
 } from "./types.js";
 
@@ -41,7 +41,7 @@ export interface KnowledgeBaseIndex {
  */
 export function deriveKnowledgeBaseIndex(
   bases: KnowledgeBaseDescriptor[],
-  connections: ReadonlyMap<string, ConnectionDescriptor>,
+  connections: ReadonlyMap<string, CorpusDescriptor>,
 ): KnowledgeBaseIndex {
   const skills: SkillAccess[] = [];
   const tools = new Map<string, ToolDescriptor>();
@@ -73,7 +73,7 @@ export function deriveKnowledgeBaseIndex(
  */
 export function knowledgeBaseTools(
   kb: KnowledgeBaseDescriptor,
-  connections: ReadonlyMap<string, ConnectionDescriptor>,
+  connections: ReadonlyMap<string, CorpusDescriptor>,
   roles: string[],
 ): ToolDescriptor[] {
   const label = knowledgeBaseLabel(kb);
@@ -102,7 +102,7 @@ export function knowledgeBaseTools(
     },
   ];
 
-  for (const ref of kb.connectionRefs) {
+  for (const ref of kb.corpusRefs) {
     const connection = connections.get(ref);
     if (!connection?.apiEnabled) continue;
     tools.push(connectionGetTool(connection));
@@ -112,15 +112,15 @@ export function knowledgeBaseTools(
 }
 
 /**
- * A Connection's scope-enforced GET face (docs/adr/0038 §5), carrying that
+ * A Corpus's scope-enforced GET face (docs/adr/0038 §5), carrying that
  * connection's OWN roles rather than the knowledge base's union — it is one
  * source's capability, not the composition's. Granting it the union would let a
  * caller read a source they hold no role for.
  */
-export function connectionGetTool(connection: ConnectionDescriptor): ToolDescriptor {
+export function connectionGetTool(connection: CorpusDescriptor): ToolDescriptor {
   const label = connectionLabel(connection);
   return {
-    id: connectionGetToolId(connection.id),
+    id: corpusGetToolId(connection.id),
     name: `Read from ${label}`,
     description:
       `Read the current state of a resource in ${label} (${connection.provider}). ` +
@@ -142,10 +142,10 @@ export function connectionGetTool(connection: ConnectionDescriptor): ToolDescrip
  */
 function execMembers(
   kb: KnowledgeBaseDescriptor,
-  connections: ReadonlyMap<string, ConnectionDescriptor>,
+  connections: ReadonlyMap<string, CorpusDescriptor>,
 ): KnowledgeBaseExecMember[] {
   const members: KnowledgeBaseExecMember[] = [];
-  for (const ref of kb.connectionRefs) {
+  for (const ref of kb.corpusRefs) {
     const connection = connections.get(ref);
     if (!connection) continue; // dangling; the controller reports it in status
     members.push({

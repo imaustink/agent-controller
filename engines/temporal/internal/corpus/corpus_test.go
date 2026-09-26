@@ -55,8 +55,8 @@ func (f *fakeStore) GetByIDsUnfiltered(context.Context, []string) ([]vectorstore
 
 func chunkHit(connectionID, sourceID, hash string, score float32) vectorstore.Hit {
 	payload, err := json.Marshal(corpus.Chunk{
-		ConnectionID:    connectionID,
-		ConnectionLabel: "#" + connectionID,
+		CorpusID:    connectionID,
+		CorpusLabel: "#" + connectionID,
 		SourceURL:       fmt.Sprintf("https://example.test/%s/%s", connectionID, sourceID),
 		SourceID:        sourceID,
 		ContentHash:     hash,
@@ -113,7 +113,7 @@ func TestSearchDeduplicatesTheSamePassageReachedTwice(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, hits, 1, "a cited answer must not list two URLs for one fact")
-	require.Equal(t, "snc-confluence", hits[0].Chunk.ConnectionID, "the better-scoring copy wins")
+	require.Equal(t, "snc-confluence", hits[0].Chunk.CorpusID, "the better-scoring copy wins")
 }
 
 func TestSearchIsDeterministicAcrossRuns(t *testing.T) {

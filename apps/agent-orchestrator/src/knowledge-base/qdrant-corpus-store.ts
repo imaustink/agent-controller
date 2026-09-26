@@ -73,7 +73,7 @@ export class QdrantCorpusStore implements CorpusStore {
 
     if (response.status === 404) {
       // A collection that does not exist yet is an empty corpus, which is the
-      // correct answer for a Connection that has not synced. Failing here would
+      // correct answer for a Corpus that has not synced. Failing here would
       // take down the whole fan-out and its healthy siblings with it.
       return [];
     }

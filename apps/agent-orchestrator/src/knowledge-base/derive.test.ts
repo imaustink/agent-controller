@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { collectionsOf, deriveKnowledgeBaseSkill, visibleConnections } from "./derive.js";
-import type { ConnectionDescriptor, KnowledgeBaseDescriptor } from "./types.js";
+import { collectionsOf, deriveKnowledgeBaseSkill, visibleCorpora } from "./derive.js";
+import type { CorpusDescriptor, KnowledgeBaseDescriptor } from "./types.js";
 
 /**
  * A knowledge base's worth of members: two Slack channels (same provider,
  * distinct display names) plus a Confluence space, one deliberately more
  * restricted than the others.
  */
-function sncConnections(): Map<string, ConnectionDescriptor> {
-  return new Map<string, ConnectionDescriptor>([
+function sncConnections(): Map<string, CorpusDescriptor> {
+  return new Map<string, CorpusDescriptor>([
     [
       "snc-confluence",
       {
@@ -57,7 +57,7 @@ function sncKb(): KnowledgeBaseDescriptor {
     displayName: "SNC",
     description: "The SNC client engagement.",
     aliases: ["Southern National", "Project Harbor"],
-    connectionRefs: ["snc-confluence", "snc-slack-eng", "snc-slack-private"],
+    corpusRefs: ["snc-confluence", "snc-slack-eng", "snc-slack-private"],
     disclosePartialVisibility: true,
   };
 }
@@ -73,21 +73,21 @@ describe("deriveKnowledgeBaseSkill", () => {
   });
 
   it("is never unrestricted", () => {
-    const kb = { ...sncKb(), connectionRefs: ["snc-slack-eng"] };
+    const kb = { ...sncKb(), corpusRefs: ["snc-slack-eng"] };
     const { effectiveRoles } = deriveKnowledgeBaseSkill(kb, sncConnections());
     expect(effectiveRoles).not.toBeNull();
   });
 
   it("lets a dangling ref contribute nothing without failing the skill closed", () => {
-    const kb = { ...sncKb(), connectionRefs: [...sncKb().connectionRefs, "never-created"] };
+    const kb = { ...sncKb(), corpusRefs: [...sncKb().corpusRefs, "never-created"] };
     const { skill, effectiveRoles } = deriveKnowledgeBaseSkill(kb, sncConnections());
 
     expect(effectiveRoles).toEqual(["lead", "reader", "writer"]);
-    expect(skill.toolIds).not.toContain("conn:never-created/get");
+    expect(skill.toolIds).not.toContain("corpus:never-created/get");
   });
 
   it("falls closed when no member resolves", () => {
-    const kb = { ...sncKb(), connectionRefs: ["gone", "also-gone"] };
+    const kb = { ...sncKb(), corpusRefs: ["gone", "also-gone"] };
     const { effectiveRoles } = deriveKnowledgeBaseSkill(kb, sncConnections());
 
     expect(effectiveRoles).toEqual([]);
@@ -101,7 +101,7 @@ describe("deriveKnowledgeBaseSkill", () => {
     // skill never steers the planner toward an unimplemented tool.
     expect(skill.toolIds).toEqual([
       "kb:snc/search",
-      "conn:snc-confluence/get", // the only member with api.enabled
+      "corpus:snc-confluence/get", // the only member with api.enabled
     ]);
   });
 
@@ -159,7 +159,7 @@ describe("the generated markdown", () => {
   it("mentions the live face only when a member has one", () => {
     expect(markdownFor(sncKb())).toContain("true *right now*");
 
-    const withoutApi = markdownFor({ ...sncKb(), connectionRefs: ["snc-slack-eng"] });
+    const withoutApi = markdownFor({ ...sncKb(), corpusRefs: ["snc-slack-eng"] });
     expect(withoutApi).not.toContain("true *right now*");
   });
 
@@ -171,13 +171,13 @@ describe("the generated markdown", () => {
   });
 
   it("tells the planner to say so when nothing resolves", () => {
-    expect(markdownFor({ ...sncKb(), connectionRefs: ["gone"] })).toContain("nothing to search");
+    expect(markdownFor({ ...sncKb(), corpusRefs: ["gone"] })).toContain("nothing to search");
   });
 });
 
-describe("visibleConnections", () => {
+describe("visibleCorpora", () => {
   it("withholds members the caller has no role for, and counts them", () => {
-    const { visible, withheld } = visibleConnections(sncKb(), sncConnections(), ["reader"]);
+    const { visible, withheld } = visibleCorpora(sncKb(), sncConnections(), ["reader"]);
 
     expect(visible.map((c) => c.id)).toEqual(["snc-confluence", "snc-slack-eng"]);
     // The count is what lets an answer say "there may be more I can't see".
@@ -185,13 +185,13 @@ describe("visibleConnections", () => {
   });
 
   it("shows a lead the restricted channel too", () => {
-    const { visible, withheld } = visibleConnections(sncKb(), sncConnections(), ["reader", "lead"]);
+    const { visible, withheld } = visibleCorpora(sncKb(), sncConnections(), ["reader", "lead"]);
     expect(visible).toHaveLength(3);
     expect(withheld).toBe(0);
   });
 
   it("shows nothing to a caller with no roles", () => {
-    const { visible, withheld } = visibleConnections(sncKb(), sncConnections(), []);
+    const { visible, withheld } = visibleCorpora(sncKb(), sncConnections(), []);
     expect(visible).toEqual([]);
     expect(withheld).toBe(3);
   });
@@ -203,21 +203,21 @@ describe("visibleConnections", () => {
       collection: undefined,
     });
 
-    const { visible, withheld } = visibleConnections(sncKb(), connections, ["reader", "lead"]);
+    const { visible, withheld } = visibleCorpora(sncKb(), connections, ["reader", "lead"]);
     expect(visible).toHaveLength(2);
     // Nothing indexed yet is still something the answer is missing.
     expect(withheld).toBe(1);
   });
 
   it("does not count a dangling ref as withheld", () => {
-    const kb = { ...sncKb(), connectionRefs: [...sncKb().connectionRefs, "never-created"] };
-    const { withheld } = visibleConnections(kb, sncConnections(), ["reader", "lead"]);
+    const kb = { ...sncKb(), corpusRefs: [...sncKb().corpusRefs, "never-created"] };
+    const { withheld } = visibleCorpora(kb, sncConnections(), ["reader", "lead"]);
     // A misconfiguration is the controller's to report, not an access disclosure.
     expect(withheld).toBe(0);
   });
 
   it("returns collections in member order", () => {
-    const { visible } = visibleConnections(sncKb(), sncConnections(), ["reader"]);
+    const { visible } = visibleCorpora(sncKb(), sncConnections(), ["reader"]);
     expect(collectionsOf(visible)).toEqual([
       "conn_default_snc-confluence",
       "conn_default_snc-slack-eng",

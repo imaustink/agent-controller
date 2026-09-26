@@ -62,7 +62,7 @@ describe("query", () => {
   it("treats a missing collection as an empty corpus", async () => {
     const http = vi.fn().mockResolvedValue(respond(404, { status: { error: "doesn't exist" } }));
 
-    // The state of a Connection that has not synced yet. Throwing would take
+    // The state of a Corpus that has not synced yet. Throwing would take
     // down the whole fan-out and its healthy siblings with it.
     expect(await store(http as unknown as typeof fetch).query("q", { callerRoles: ["r"] }, 5)).toEqual([]);
   });

@@ -34,8 +34,8 @@ func knowledgeBaseCR(name string, spec map[string]any) *unstructured.Unstructure
 // sncConnections is a knowledge base's worth of members: two Slack channels
 // (same provider, distinct display names) plus a Confluence space, one of them
 // deliberately more restricted than the others.
-func sncConnections() map[string]catalog.ConnectionDescriptor {
-	return map[string]catalog.ConnectionDescriptor{
+func sncConnections() map[string]catalog.CorpusDescriptor {
+	return map[string]catalog.CorpusDescriptor{
 		"snc-confluence": {
 			ID: "snc-confluence", Provider: "confluence", DisplayName: "SNC Confluence",
 			Description: "The SNC space.", AllowedRoles: []string{"reader", "writer"},
@@ -60,45 +60,67 @@ func sncKB() catalog.KnowledgeBaseDescriptor {
 		DisplayName: "SNC",
 		Description: "The SNC client engagement.",
 		Aliases:     []string{"Southern National", "Project Harbor"},
-		ConnectionRefs: []string{
+		CorpusRefs: []string{
 			"snc-confluence", "snc-slack-eng", "snc-slack-private",
 		},
 		DisclosePartialVisibility: true,
 	}
 }
 
-func TestDecodeConnection(t *testing.T) {
+func TestDecodeCorpus(t *testing.T) {
 	t.Run("reads the collection off status, not the spec", func(t *testing.T) {
-		conn, err := catalog.DecodeConnection(connectionCR("snc-slack-eng",
+		conn, err := catalog.DecodeCorpus(connectionCR("snc-slack-eng",
 			map[string]any{
-				"provider":     "slack",
-				"description":  "Engineering channel.",
-				"displayName":  "#snc-eng",
-				"allowedRoles": []any{"reader"},
-				"api":          map[string]any{"enabled": true},
+				"connectionRef": "bitovi-slack",
+				"description":   "Engineering channel.",
+				"displayName":   "#snc-eng",
+				"allowedRoles":  []any{"reader"},
+				"api":           map[string]any{"enabled": true},
 			},
-			map[string]any{"collection": "conn_default_snc-slack-eng"},
+			map[string]any{"collection": "corpus_default_snc-slack-eng", "provider": "slack"},
 		))
 		require.NoError(t, err)
-		require.Equal(t, "conn_default_snc-slack-eng", conn.Collection)
+		require.Equal(t, "corpus_default_snc-slack-eng", conn.Collection)
+		require.Equal(t, "slack", conn.Provider)
 		require.True(t, conn.APIEnabled)
 		require.Equal(t, "#snc-eng", conn.Label())
 	})
 
-	t.Run("carries declared identity providers through", func(t *testing.T) {
-		conn, err := catalog.DecodeConnection(connectionCR("snc-confluence",
+	t.Run("reads provider and identity providers off STATUS, where the controller put them", func(t *testing.T) {
+		// They live on the Connection (ADR 0043). The controller copies them
+		// here so this engine reads one kind rather than joining two.
+		conn, err := catalog.DecodeCorpus(connectionCR("snc-confluence",
+			map[string]any{
+				"connectionRef": "bitovi-confluence",
+				"description":   "The SNC space.",
+				"allowedRoles":  []any{"reader"},
+			},
 			map[string]any{
 				"provider":          "confluence",
-				"description":       "The SNC space.",
-				"allowedRoles":      []any{"reader"},
 				"identityProviders": []any{"atlassian"},
-			}, nil))
+			}))
 		require.NoError(t, err)
+		require.Equal(t, "confluence", conn.Provider)
 		require.Equal(t, []string{"atlassian"}, conn.IdentityProviders)
 	})
 
+	t.Run("tolerates a Corpus that has not resolved its Connection yet", func(t *testing.T) {
+		// An empty status is an ordinary state — the Corpus may have been
+		// applied before its Connection, or have stopped resolving it. It
+		// contributes nothing rather than a member whose provider nobody knows.
+		conn, err := catalog.DecodeCorpus(connectionCR("unresolved",
+			map[string]any{
+				"connectionRef": "not-yet",
+				"description":   "Pending.",
+				"allowedRoles":  []any{"reader"},
+			}, nil))
+		require.NoError(t, err)
+		require.Empty(t, conn.Provider)
+		require.Empty(t, conn.IdentityProviders)
+	})
+
 	t.Run("a connection declaring none can be ingested but not probed", func(t *testing.T) {
-		conn, err := catalog.DecodeConnection(connectionCR("no-delegation",
+		conn, err := catalog.DecodeCorpus(connectionCR("no-delegation",
 			map[string]any{
 				"provider":     "confluence",
 				"description":  "The SNC space.",
@@ -111,7 +133,7 @@ func TestDecodeConnection(t *testing.T) {
 	})
 
 	t.Run("an unreconciled connection decodes without a collection", func(t *testing.T) {
-		conn, err := catalog.DecodeConnection(connectionCR("fresh",
+		conn, err := catalog.DecodeCorpus(connectionCR("fresh",
 			map[string]any{
 				"provider":     "slack",
 				"description":  "Just created.",
@@ -161,7 +183,7 @@ func TestDeriveKnowledgeBaseSkill(t *testing.T) {
 
 	t.Run("is never unrestricted", func(t *testing.T) {
 		kb := sncKB()
-		kb.ConnectionRefs = []string{"snc-slack-eng"}
+		kb.CorpusRefs = []string{"snc-slack-eng"}
 		skill := catalog.DeriveKnowledgeBaseSkill(kb, conns)
 		require.False(t, skill.Unrestricted,
 			"a knowledge base must never become visible to every resolved identity")
@@ -169,17 +191,17 @@ func TestDeriveKnowledgeBaseSkill(t *testing.T) {
 
 	t.Run("a dangling ref contributes nothing but does not fail the skill closed", func(t *testing.T) {
 		kb := sncKB()
-		kb.ConnectionRefs = append(kb.ConnectionRefs, "never-created")
+		kb.CorpusRefs = append(kb.CorpusRefs, "never-created")
 
 		skill := catalog.DeriveKnowledgeBaseSkill(kb, conns)
 		require.Equal(t, []string{"lead", "reader", "writer"}, skill.EffectiveRoles,
 			"one mistyped member must not take the other three down with it")
-		require.NotContains(t, skill.ToolIDs, "conn:never-created/get")
+		require.NotContains(t, skill.ToolIDs, "corpus:never-created/get")
 	})
 
 	t.Run("no resolvable member falls closed", func(t *testing.T) {
 		kb := sncKB()
-		kb.ConnectionRefs = []string{"gone", "also-gone"}
+		kb.CorpusRefs = []string{"gone", "also-gone"}
 
 		skill := catalog.DeriveKnowledgeBaseSkill(kb, conns)
 		require.Empty(t, skill.EffectiveRoles, "nothing to search, so visible to no one")
@@ -193,7 +215,7 @@ func TestDeriveKnowledgeBaseSkill(t *testing.T) {
 		// skill never steers the planner toward an unimplemented tool.
 		require.Equal(t, []string{
 			"kb:snc/search",
-			"conn:snc-confluence/get", // the only member with api.enabled
+			"corpus:snc-confluence/get", // the only member with api.enabled
 		}, skill.ToolIDs)
 	})
 
@@ -256,7 +278,7 @@ func TestVisibleConnections(t *testing.T) {
 
 	t.Run("a dangling ref is not counted as withheld", func(t *testing.T) {
 		kb := sncKB()
-		kb.ConnectionRefs = append(kb.ConnectionRefs, "never-created")
+		kb.CorpusRefs = append(kb.CorpusRefs, "never-created")
 
 		_, withheld := catalog.VisibleConnections(kb, conns, []string{"reader", "lead"})
 		require.Zero(t, withheld,
@@ -309,7 +331,7 @@ func TestKnowledgeBaseMarkdown(t *testing.T) {
 		require.Contains(t, withAPI, "true *right now*")
 
 		kb := sncKB()
-		kb.ConnectionRefs = []string{"snc-slack-eng"} // no api.enabled member
+		kb.CorpusRefs = []string{"snc-slack-eng"} // no api.enabled member
 		withoutAPI := catalog.DeriveKnowledgeBaseSkill(kb, conns).Markdown
 		require.NotContains(t, withoutAPI, "true *right now*",
 			"do not instruct the planner to call a tool it was not given")
@@ -327,7 +349,7 @@ func TestKnowledgeBaseMarkdown(t *testing.T) {
 
 	t.Run("tells the planner to say so when nothing resolves", func(t *testing.T) {
 		kb := sncKB()
-		kb.ConnectionRefs = []string{"gone"}
+		kb.CorpusRefs = []string{"gone"}
 		markdown := catalog.DeriveKnowledgeBaseSkill(kb, conns).Markdown
 		require.Contains(t, markdown, "nothing to search")
 	})

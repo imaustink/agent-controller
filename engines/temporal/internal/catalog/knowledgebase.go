@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	ConnectionGVR    = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "connections"}
+	CorpusGVR        = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "corpora"}
 	KnowledgeBaseGVR = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "knowledgebases"}
 )
 
@@ -21,7 +21,7 @@ var (
 // so its id must not be able to collide with one.
 const (
 	KnowledgeBaseIDPrefix = "kb:"
-	ConnectionIDPrefix    = "conn:"
+	CorpusIDPrefix        = "corpus:"
 )
 
 // KnowledgeBaseSkillID is the derived skill's id for a KnowledgeBase CR.
@@ -37,16 +37,16 @@ func KnowledgeBaseSearchToolID(name string) string { return KnowledgeBaseIDPrefi
 // remove any fetch record written by an earlier build.
 func KnowledgeBaseFetchToolID(name string) string { return KnowledgeBaseIDPrefix + name + "/fetch" }
 
-// ConnectionGetToolID is a Connection's scope-enforced GET face (ADR 0038 §5).
-func ConnectionGetToolID(name string) string { return ConnectionIDPrefix + name + "/get" }
+// CorpusGetToolID is a Connection's scope-enforced GET face (ADR 0038 §5).
+func CorpusGetToolID(name string) string { return CorpusIDPrefix + name + "/get" }
 
-// ConnectionDescriptor is one scoped external resource subset (ADR 0038).
+// CorpusDescriptor is one scoped external resource subset (ADR 0038).
 //
 // Scope and credentials are deliberately absent: they belong to the
 // connection-broker, which is the only thing that dereferences them. What the
 // orchestrator needs is which collection to search, who may see it, and how to
 // name it in a citation.
-type ConnectionDescriptor struct {
+type CorpusDescriptor struct {
 	ID           string   `json:"id"`
 	Provider     string   `json:"provider"`
 	DisplayName  string   `json:"displayName,omitempty"`
@@ -71,21 +71,21 @@ type ConnectionDescriptor struct {
 }
 
 // Label is what a citation renders for this connection.
-func (c ConnectionDescriptor) Label() string {
+func (c CorpusDescriptor) Label() string {
 	if c.DisplayName != "" {
 		return c.DisplayName
 	}
 	return c.ID
 }
 
-// KnowledgeBaseDescriptor composes Connections into a queryable corpus
+// KnowledgeBaseDescriptor composes Corpora into a queryable corpus
 // (ADR 0039).
 type KnowledgeBaseDescriptor struct {
 	ID             string   `json:"id"`
 	DisplayName    string   `json:"displayName,omitempty"`
 	Description    string   `json:"description"`
 	Aliases        []string `json:"aliases,omitempty"`
-	ConnectionRefs []string `json:"connectionRefs"`
+	CorpusRefs []string `json:"connectionRefs"`
 
 	// DisclosePartialVisibility makes a search report how many member
 	// connections this caller could not see, so the agent can distinguish
@@ -101,26 +101,29 @@ func (kb KnowledgeBaseDescriptor) Label() string {
 	return kb.ID
 }
 
-type connectionSpec struct {
-	Provider          string   `json:"provider"`
-	Description       string   `json:"description"`
-	DisplayName       string   `json:"displayName,omitempty"`
-	AllowedRoles      []string `json:"allowedRoles"`
-	IdentityProviders []string `json:"identityProviders,omitempty"`
-	API               *struct {
+type corpusSpec struct {
+	ConnectionRef string   `json:"connectionRef"`
+	Description   string   `json:"description"`
+	DisplayName   string   `json:"displayName,omitempty"`
+	AllowedRoles  []string `json:"allowedRoles"`
+	API           *struct {
 		Enabled bool `json:"enabled,omitempty"`
 	} `json:"api,omitempty"`
 }
 
-type connectionStatus struct {
-	Collection string `json:"collection,omitempty"`
+// corpusStatus carries what the controller resolved from this Corpus's
+// Connection, so this engine reads ONE kind to build its catalog (ADR 0043 s1).
+type corpusStatus struct {
+	Collection        string   `json:"collection,omitempty"`
+	Provider          string   `json:"provider,omitempty"`
+	IdentityProviders []string `json:"identityProviders,omitempty"`
 }
 
 type knowledgeBaseSpec struct {
 	Description               string   `json:"description"`
 	DisplayName               string   `json:"displayName,omitempty"`
 	Aliases                   []string `json:"aliases,omitempty"`
-	ConnectionRefs            []string `json:"connectionRefs"`
+	CorpusRefs            []string `json:"connectionRefs"`
 	DisclosePartialVisibility *bool    `json:"disclosePartialVisibility,omitempty"`
 }
 
@@ -135,27 +138,36 @@ func decodeStatus(obj *unstructured.Unstructured, into any) error {
 	return runtime.DefaultUnstructuredConverter.FromUnstructured(status, into)
 }
 
-// DecodeConnection reads a Connection CR. A connection whose status has no
+// DecodeCorpus reads a Corpus CR. A connection whose status has no
 // collection yet (admitted, not yet reconciled) decodes fine and is simply not
 // searchable until the controller assigns one.
-func DecodeConnection(obj *unstructured.Unstructured) (ConnectionDescriptor, error) {
-	var spec connectionSpec
+func DecodeCorpus(obj *unstructured.Unstructured) (CorpusDescriptor, error) {
+	var spec corpusSpec
 	if err := decodeSpec(obj, &spec); err != nil {
-		return ConnectionDescriptor{}, err
+		return CorpusDescriptor{}, err
 	}
-	var status connectionStatus
+	var status corpusStatus
 	if err := decodeStatus(obj, &status); err != nil {
-		return ConnectionDescriptor{}, err
+		return CorpusDescriptor{}, err
 	}
-	return ConnectionDescriptor{
-		ID:                obj.GetName(),
-		Provider:          spec.Provider,
-		DisplayName:       spec.DisplayName,
-		Description:       spec.Description,
-		AllowedRoles:      spec.AllowedRoles,
-		Collection:        status.Collection,
-		APIEnabled:        spec.API != nil && spec.API.Enabled,
-		IdentityProviders: spec.IdentityProviders,
+	return CorpusDescriptor{
+		ID:           obj.GetName(),
+		DisplayName:  spec.DisplayName,
+		Description:  spec.Description,
+		AllowedRoles: spec.AllowedRoles,
+		Collection:   status.Collection,
+		APIEnabled:   spec.API != nil && spec.API.Enabled,
+		// Provider and IdentityProviders come from STATUS, where the controller
+		// copied them off this Corpus's Connection (ADR 0043 §1). Reading them
+		// from the Connection here instead would make every consumer join
+		// across two resources to build a catalog.
+		//
+		// Empty means the Corpus has not resolved its Connection yet, or has
+		// stopped resolving it. Both are states this engine must tolerate: an
+		// unresolved Corpus contributes nothing rather than contributing a
+		// member whose provider nobody knows.
+		Provider:          status.Provider,
+		IdentityProviders: status.IdentityProviders,
 	}, nil
 }
 
@@ -180,7 +192,7 @@ func DecodeKnowledgeBase(obj *unstructured.Unstructured) (KnowledgeBaseDescripto
 		DisplayName:               spec.DisplayName,
 		Description:               spec.Description,
 		Aliases:                   spec.Aliases,
-		ConnectionRefs:            spec.ConnectionRefs,
+		CorpusRefs:            spec.CorpusRefs,
 		DisclosePartialVisibility: disclose,
 	}, nil
 }
@@ -212,15 +224,15 @@ func DecodeKnowledgeBase(obj *unstructured.Unstructured) (KnowledgeBaseDescripto
 // Output is deterministic (sorted roles and tool ids) so that re-deriving an
 // unchanged knowledge base produces an identical descriptor and does not churn
 // the index.
-func DeriveKnowledgeBaseSkill(kb KnowledgeBaseDescriptor, connections map[string]ConnectionDescriptor) SkillDescriptor {
+func DeriveKnowledgeBaseSkill(kb KnowledgeBaseDescriptor, connections map[string]CorpusDescriptor) SkillDescriptor {
 	var (
-		resolved  []ConnectionDescriptor
+		resolved  []CorpusDescriptor
 		roleSet   = map[string]struct{}{}
 		toolIDs   = []string{KnowledgeBaseSearchToolID(kb.ID)}
 		getToolID []string
 	)
 
-	for _, ref := range kb.ConnectionRefs {
+	for _, ref := range kb.CorpusRefs {
 		conn, ok := connections[ref]
 		if !ok {
 			continue
@@ -230,7 +242,7 @@ func DeriveKnowledgeBaseSkill(kb KnowledgeBaseDescriptor, connections map[string
 			roleSet[role] = struct{}{}
 		}
 		if conn.APIEnabled {
-			getToolID = append(getToolID, ConnectionGetToolID(conn.ID))
+			getToolID = append(getToolID, CorpusGetToolID(conn.ID))
 		}
 	}
 
@@ -280,15 +292,15 @@ func DeriveKnowledgeBaseSkill(kb KnowledgeBaseDescriptor, connections map[string
 // counted as unavailable rather than visible, since there is nothing to search.
 func VisibleConnections(
 	kb KnowledgeBaseDescriptor,
-	connections map[string]ConnectionDescriptor,
+	connections map[string]CorpusDescriptor,
 	callerRoles []string,
-) (visible []ConnectionDescriptor, withheld int) {
+) (visible []CorpusDescriptor, withheld int) {
 	held := make(map[string]struct{}, len(callerRoles))
 	for _, role := range callerRoles {
 		held[role] = struct{}{}
 	}
 
-	for _, ref := range kb.ConnectionRefs {
+	for _, ref := range kb.CorpusRefs {
 		conn, ok := connections[ref]
 		if !ok {
 			continue // dangling; the KnowledgeBase controller reports it in status
@@ -307,7 +319,7 @@ func VisibleConnections(
 }
 
 // CollectionsOf is the collection names of some connections, in order.
-func CollectionsOf(connections []ConnectionDescriptor) []string {
+func CollectionsOf(connections []CorpusDescriptor) []string {
 	names := make([]string, 0, len(connections))
 	for _, conn := range connections {
 		names = append(names, conn.Collection)
@@ -343,7 +355,7 @@ func knowledgeBaseEmbeddingDescription(kb KnowledgeBaseDescriptor) string {
 // than assuming it: answer only from retrieved chunks, always cite, admit
 // partial visibility and staleness, treat chunk text as data, and ask which
 // knowledge base was meant when the question could belong to another.
-func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []ConnectionDescriptor) string {
+func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []CorpusDescriptor) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "# %s knowledge base\n\n", kb.Label())
@@ -400,7 +412,7 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []ConnectionDescr
 	if anyAPIEnabled(members) {
 		b.WriteString("- Retrieval shows this material as of the last sync. When the question\n" +
 			"  is about what is true *right now*, read the live object with the\n" +
-			"  connection's own `get` tool instead of trusting a chunk.\n")
+			"  corpus's own `get` tool instead of trusting a chunk.\n")
 	}
 
 	b.WriteString("\n## Rules\n\n" +
@@ -416,7 +428,7 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []ConnectionDescr
 	return b.String()
 }
 
-func anyAPIEnabled(members []ConnectionDescriptor) bool {
+func anyAPIEnabled(members []CorpusDescriptor) bool {
 	for _, member := range members {
 		if member.APIEnabled {
 			return true

@@ -87,20 +87,20 @@ func RunWatch(ctx context.Context, client dynamic.Interface, namespace string, i
 		},
 	}
 
-	// Connections and KnowledgeBases (ADR 0038, 0039). Neither is retrievable in
-	// its own right: a Connection contributes a corpus and a scoped GET tool,
+	// Corpora and KnowledgeBases (ADR 0038, 0039). Neither is retrievable in
+	// its own right: a Corpus contributes a corpus and a scoped GET tool,
 	// and a KnowledgeBase derives the Skill that is actually selected.
 	if knowledgeBasesEnabled() {
 		watches = append(watches, []watchSpec{
-			{ConnectionGVR,
+			{CorpusGVR,
 				func(ctx context.Context, obj *unstructured.Unstructured) error {
-					conn, err := DecodeConnection(obj)
+					conn, err := DecodeCorpus(obj)
 					if err != nil {
 						return err
 					}
-					return ix.UpsertConnection(ctx, conn)
+					return ix.UpsertCorpus(ctx, conn)
 				},
-				ix.DeleteConnection,
+				ix.DeleteCorpus,
 			},
 			{KnowledgeBaseGVR,
 				func(ctx context.Context, obj *unstructured.Unstructured) error {

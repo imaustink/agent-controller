@@ -17,14 +17,14 @@ import (
 //     GET tools competing in the global catalog is exactly the outcome that
 //     design avoids.
 
-// UpsertConnection mirrors a Connection and re-derives the knowledge bases
+// UpsertCorpus mirrors a Corpus and re-derives the knowledge bases
 // using it.
 //
 // A connection change moves more than its own record: it can change a knowledge
 // base's audience (the role union), its tool list (a GET face toggled), and its
 // generated markdown (a member renamed). So it schedules the same debounced
 // re-derivation a Tool change does.
-func (ix *Indexer) UpsertConnection(ctx context.Context, conn ConnectionDescriptor) error {
+func (ix *Indexer) UpsertCorpus(ctx context.Context, conn CorpusDescriptor) error {
 	ix.mu.Lock()
 	ix.connections[conn.ID] = conn
 	ix.mu.Unlock()
@@ -32,11 +32,11 @@ func (ix *Indexer) UpsertConnection(ctx context.Context, conn ConnectionDescript
 	// The GET face is a tool a knowledge base may declare; without a record it
 	// would dangle when the skill resolves its refs.
 	if conn.APIEnabled {
-		tool := connectionGetTool(conn)
+		tool := corpusGetTool(conn)
 		if err := upsertHidden(ctx, ix.stores.Tools, tool); err != nil {
 			return err
 		}
-	} else if err := ix.stores.Tools.Delete(ctx, []string{ConnectionGetToolID(conn.ID)}); err != nil {
+	} else if err := ix.stores.Tools.Delete(ctx, []string{CorpusGetToolID(conn.ID)}); err != nil {
 		return err
 	}
 
@@ -44,17 +44,17 @@ func (ix *Indexer) UpsertConnection(ctx context.Context, conn ConnectionDescript
 	return nil
 }
 
-// DeleteConnection drops a connection and re-derives what referenced it.
+// DeleteCorpus drops a connection and re-derives what referenced it.
 //
 // The knowledge bases keep working over their remaining members — a vanished
 // member is a dangling ref, which contributes nothing rather than failing the
 // whole skill closed.
-func (ix *Indexer) DeleteConnection(ctx context.Context, id string) error {
+func (ix *Indexer) DeleteCorpus(ctx context.Context, id string) error {
 	ix.mu.Lock()
 	delete(ix.connections, id)
 	ix.mu.Unlock()
 
-	if err := ix.stores.Tools.Delete(ctx, []string{ConnectionGetToolID(id)}); err != nil {
+	if err := ix.stores.Tools.Delete(ctx, []string{CorpusGetToolID(id)}); err != nil {
 		return err
 	}
 	ix.scheduleSkillReindex()
@@ -65,7 +65,7 @@ func (ix *Indexer) DeleteConnection(ctx context.Context, id string) error {
 func (ix *Indexer) UpsertKnowledgeBase(ctx context.Context, kb KnowledgeBaseDescriptor) error {
 	ix.mu.Lock()
 	ix.knowledgeBases[kb.ID] = kb
-	connections := ix.connectionsSnapshot()
+	connections := ix.corporaSnapshot()
 	ix.mu.Unlock()
 
 	for _, tool := range knowledgeBaseTools(kb, connections) {
@@ -104,7 +104,7 @@ func (ix *Indexer) DeleteKnowledgeBase(ctx context.Context, id string) error {
 // Caller must NOT hold ix.mu.
 func (ix *Indexer) reindexKnowledgeBases(ctx context.Context) error {
 	ix.mu.Lock()
-	connections := ix.connectionsSnapshot()
+	connections := ix.corporaSnapshot()
 	bases := make([]KnowledgeBaseDescriptor, 0, len(ix.knowledgeBases))
 	for _, kb := range ix.knowledgeBases {
 		bases = append(bases, kb)
@@ -133,10 +133,10 @@ func (ix *Indexer) reindexKnowledgeBases(ctx context.Context) error {
 	return ix.stores.Skills.Upsert(ctx, records)
 }
 
-// connectionsSnapshot copies the mirror so derivation runs without the lock.
+// corporaSnapshot copies the mirror so derivation runs without the lock.
 // Caller must hold ix.mu.
-func (ix *Indexer) connectionsSnapshot() map[string]ConnectionDescriptor {
-	out := make(map[string]ConnectionDescriptor, len(ix.connections))
+func (ix *Indexer) corporaSnapshot() map[string]CorpusDescriptor {
+	out := make(map[string]CorpusDescriptor, len(ix.connections))
 	for id, conn := range ix.connections {
 		out[id] = conn
 	}
@@ -155,9 +155,9 @@ func (ix *Indexer) connectionsSnapshot() map[string]ConnectionDescriptor {
 // as scaffolding for that deferred path, and dispatch fails closed on any
 // operation but "search".
 //
-// The member GET tools are (re)written here as well as by UpsertConnection
+// The member GET tools are (re)written here as well as by UpsertCorpus
 // because a knowledge base may be indexed before its members are.
-func knowledgeBaseTools(kb KnowledgeBaseDescriptor, connections map[string]ConnectionDescriptor) []ToolDescriptor {
+func knowledgeBaseTools(kb KnowledgeBaseDescriptor, connections map[string]CorpusDescriptor) []ToolDescriptor {
 	derived := DeriveKnowledgeBaseSkill(kb, connections)
 	roles := derived.EffectiveRoles
 	exec := knowledgeBaseExec(kb, connections)
@@ -177,26 +177,26 @@ func knowledgeBaseTools(kb KnowledgeBaseDescriptor, connections map[string]Conne
 		},
 	}
 
-	for _, ref := range kb.ConnectionRefs {
+	for _, ref := range kb.CorpusRefs {
 		conn, ok := connections[ref]
 		if !ok || !conn.APIEnabled {
 			continue
 		}
-		tools = append(tools, connectionGetTool(conn))
+		tools = append(tools, corpusGetTool(conn))
 	}
 	return tools
 }
 
-// connectionGetTool is a Connection's scope-enforced GET face (ADR 0038 §5),
-// carrying that connection's OWN roles rather than the knowledge base's union —
+// corpusGetTool is a Connection's scope-enforced GET face (ADR 0038 §5),
+// carrying that corpus's OWN roles rather than the knowledge base's union —
 // it is one source's capability, not the composition's.
-func connectionGetTool(conn ConnectionDescriptor) ToolDescriptor {
+func corpusGetTool(conn CorpusDescriptor) ToolDescriptor {
 	return ToolDescriptor{
-		ID: ConnectionGetToolID(conn.ID),
+		ID: CorpusGetToolID(conn.ID),
 		Description: fmt.Sprintf(
 			"Read the current state of a resource in %s (%s). %s",
 			conn.Label(), conn.Provider, conn.Description),
-		Input: "The id or path of a resource inside this connection's scope. Requests " +
+		Input: "The id or path of a resource inside this corpus's scope. Requests " +
 			"outside that scope are refused.",
 		Output:       "The resource as the source returns it now, for the calling user.",
 		AllowedRoles: conn.AllowedRoles,
@@ -221,10 +221,10 @@ func upsertHidden(ctx context.Context, store vectorstore.Store, tool ToolDescrip
 // consults.
 func knowledgeBaseExec(
 	kb KnowledgeBaseDescriptor,
-	connections map[string]ConnectionDescriptor,
+	connections map[string]CorpusDescriptor,
 ) func(operation string) *KnowledgeBaseExecSpec {
-	members := make([]KnowledgeBaseExecMember, 0, len(kb.ConnectionRefs))
-	for _, ref := range kb.ConnectionRefs {
+	members := make([]KnowledgeBaseExecMember, 0, len(kb.CorpusRefs))
+	for _, ref := range kb.CorpusRefs {
 		conn, ok := connections[ref]
 		if !ok {
 			continue // dangling; the controller reports it in status

@@ -112,7 +112,7 @@ func TestBrokerProberSendsTheDelegatedTokenAndReadsTheProbe(t *testing.T) {
 	}
 
 	result, err := prober.Probe(context.Background(),
-		corpus.ProbeRequest{ConnectionID: "snc-confluence", SourceID: "page-1"})
+		corpus.ProbeRequest{CorpusID: "snc-confluence", SourceID: "page-1"})
 
 	require.NoError(t, err)
 	require.Equal(t, "Auth design", result.Title)
@@ -138,7 +138,7 @@ func TestBrokerProberClassifiesBrokerStatuses(t *testing.T) {
 		}))
 
 		prober := &corpus.BrokerProber{BaseURL: server.URL, Token: "t", DelegatedToken: "u"}
-		_, err := prober.Probe(context.Background(), corpus.ProbeRequest{ConnectionID: "c", SourceID: "s"})
+		_, err := prober.Probe(context.Background(), corpus.ProbeRequest{CorpusID: "c", SourceID: "s"})
 
 		var denied *corpus.PermissionDenied
 		var transient *corpus.Transient
@@ -155,7 +155,7 @@ func TestBrokerProberClassifiesBrokerStatuses(t *testing.T) {
 func TestBrokerProberRefusesToProbeWithoutADelegatedCredential(t *testing.T) {
 	prober := &corpus.BrokerProber{BaseURL: "http://unused", Token: "t"}
 
-	_, err := prober.Probe(context.Background(), corpus.ProbeRequest{ConnectionID: "c", SourceID: "s"})
+	_, err := prober.Probe(context.Background(), corpus.ProbeRequest{CorpusID: "c", SourceID: "s"})
 
 	// Nothing to answer the question with; the broker would refuse it anyway.
 	var denied *corpus.PermissionDenied
@@ -168,7 +168,7 @@ func TestBrokerProberTreatsAnUnreachableBrokerAsTransient(t *testing.T) {
 	server.Close() // nothing is listening now
 
 	prober := &corpus.BrokerProber{BaseURL: url, Token: "t", DelegatedToken: "u"}
-	_, err := prober.Probe(context.Background(), corpus.ProbeRequest{ConnectionID: "c", SourceID: "s"})
+	_, err := prober.Probe(context.Background(), corpus.ProbeRequest{CorpusID: "c", SourceID: "s"})
 
 	var transient *corpus.Transient
 	require.ErrorAs(t, err, &transient)

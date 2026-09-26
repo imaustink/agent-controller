@@ -85,16 +85,16 @@ func newIndexerHarness() *indexerHarness {
 	}
 }
 
-func confluenceConnectionDescriptor() catalog.ConnectionDescriptor {
-	return catalog.ConnectionDescriptor{
+func confluenceConnectionDescriptor() catalog.CorpusDescriptor {
+	return catalog.CorpusDescriptor{
 		ID: "snc-confluence", Provider: "confluence", DisplayName: "SNC Confluence",
 		Description: "The SNC space.", AllowedRoles: []string{"reader", "writer"},
 		Collection: "conn_default_snc-confluence", APIEnabled: true,
 	}
 }
 
-func leadsConnectionDescriptor() catalog.ConnectionDescriptor {
-	return catalog.ConnectionDescriptor{
+func leadsConnectionDescriptor() catalog.CorpusDescriptor {
+	return catalog.CorpusDescriptor{
 		ID: "snc-slack-private", Provider: "slack", DisplayName: "#snc-leads",
 		Description: "Leads-only channel.", AllowedRoles: []string{"lead"},
 		Collection: "conn_default_snc-slack-private",
@@ -104,7 +104,7 @@ func leadsConnectionDescriptor() catalog.ConnectionDescriptor {
 func indexedKnowledgeBase() catalog.KnowledgeBaseDescriptor {
 	return catalog.KnowledgeBaseDescriptor{
 		ID: "snc", DisplayName: "SNC", Description: "The SNC engagement.",
-		ConnectionRefs:            []string{"snc-confluence", "snc-slack-private"},
+		CorpusRefs:            []string{"snc-confluence", "snc-slack-private"},
 		DisclosePartialVisibility: true,
 	}
 }
@@ -120,8 +120,8 @@ func TestUpsertKnowledgeBaseIndexesASkillAndItsTools(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
-	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
 	skill, ok := h.skills.get("kb:snc")
@@ -130,7 +130,7 @@ func TestUpsertKnowledgeBaseIndexesASkillAndItsTools(t *testing.T) {
 	require.ElementsMatch(t, []string{"lead", "reader", "writer"}, skill.Roles)
 
 	require.ElementsMatch(t, []string{
-		"kb:snc/search", "conn:snc-confluence/get",
+		"kb:snc/search", "corpus:snc-confluence/get",
 	}, h.tools.ids())
 	require.NotContains(t, h.tools.ids(), "kb:snc/fetch",
 		"fetch has no dispatch path, so no fetch tool is generated")
@@ -140,13 +140,13 @@ func TestGeneratedToolsAreHiddenFromOpenRetrieval(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
 	// Referenceable by the skill that declares them, never returned by open
 	// retrieval — otherwise every client's scoped tooling competes in front of
 	// every caller (ADR 0039 §2).
-	for _, id := range []string{"kb:snc/search", "conn:snc-confluence/get"} {
+	for _, id := range []string{"kb:snc/search", "corpus:snc-confluence/get"} {
 		rec, ok := h.tools.get(id)
 		require.True(t, ok, id)
 		require.True(t, rec.Hidden, "%s must not be retrievable on its own", id)
@@ -157,11 +157,11 @@ func TestConnectionGetToolCarriesItsOwnRolesNotTheUnion(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
-	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	get, ok := h.tools.get("conn:snc-confluence/get")
+	get, ok := h.tools.get("corpus:snc-confluence/get")
 	require.True(t, ok)
 	// The GET face is one source's capability, not the composition's: granting
 	// it the knowledge base's union would let a `lead`-only caller read a source
@@ -179,10 +179,10 @@ func TestConnectionWithoutAnApiFaceContributesNoGetTool(t *testing.T) {
 
 	conn := confluenceConnectionDescriptor()
 	conn.APIEnabled = false
-	require.NoError(t, h.ix.UpsertConnection(ctx, conn))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, conn))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	_, ok := h.tools.get("conn:snc-confluence/get")
+	_, ok := h.tools.get("corpus:snc-confluence/get")
 	require.False(t, ok)
 }
 
@@ -190,15 +190,15 @@ func TestTurningOffTheApiFaceRemovesTheGetTool(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
-	_, ok := h.tools.get("conn:snc-confluence/get")
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	_, ok := h.tools.get("corpus:snc-confluence/get")
 	require.True(t, ok)
 
 	off := confluenceConnectionDescriptor()
 	off.APIEnabled = false
-	require.NoError(t, h.ix.UpsertConnection(ctx, off))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, off))
 
-	_, ok = h.tools.get("conn:snc-confluence/get")
+	_, ok = h.tools.get("corpus:snc-confluence/get")
 	require.False(t, ok, "a withdrawn capability must not linger as a callable tool")
 }
 
@@ -206,7 +206,7 @@ func TestDeleteKnowledgeBaseRemovesTheDerivedSkillByItsDerivedId(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 	require.NoError(t, h.ix.DeleteKnowledgeBase(ctx, "snc"))
 
@@ -225,12 +225,12 @@ func TestDeleteConnectionRemovesItsGetToolAndLeavesTheKnowledgeBaseWorking(t *te
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
-	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	require.NoError(t, h.ix.DeleteConnection(ctx, "snc-confluence"))
-	_, ok := h.tools.get("conn:snc-confluence/get")
+	require.NoError(t, h.ix.DeleteCorpus(ctx, "snc-confluence"))
+	_, ok := h.tools.get("corpus:snc-confluence/get")
 	require.False(t, ok)
 
 	// The knowledge base keeps answering over its remaining member: a vanished
@@ -246,14 +246,14 @@ func TestReindexRederivesKnowledgeBasesAgainstCurrentConnections(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
 	before, _ := h.skills.get("kb:snc")
 	require.ElementsMatch(t, []string{"reader", "writer"}, before.Roles)
 
 	// A member arriving after the knowledge base was indexed must widen it.
-	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.ReindexSkills(ctx))
 
 	after, _ := h.skills.get("kb:snc")
@@ -264,8 +264,8 @@ func TestGeneratedToolsCarryTheirExecutionSpec(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
-	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
 	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
@@ -294,8 +294,8 @@ func TestExecutionSpecRecordsEachProvidersProbeUnit(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
-	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
 	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
@@ -314,7 +314,7 @@ func TestExecutionSpecOmitsADanglingMember(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
 	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
@@ -326,7 +326,7 @@ func TestGeneratedToolDescriptorsDescribeThemselves(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
 	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
@@ -334,7 +334,7 @@ func TestGeneratedToolDescriptorsDescribeThemselves(t *testing.T) {
 	require.Contains(t, search.Description, "SNC")
 	require.Contains(t, search.Output, "withheld")
 
-	get := decodeTool(t, mustGet(t, h.tools, "conn:snc-confluence/get"))
+	get := decodeTool(t, mustGet(t, h.tools, "corpus:snc-confluence/get"))
 	require.Contains(t, get.Input, "outside that scope are refused")
 }
 

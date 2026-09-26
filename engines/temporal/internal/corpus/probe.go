@@ -25,7 +25,7 @@ const (
 // ProbeRequest identifies what to authorize. SourceID is empty for a
 // connection-granularity provider.
 type ProbeRequest struct {
-	ConnectionID string
+	CorpusID string
 	SourceID     string
 }
 
@@ -118,10 +118,10 @@ func Authorize(ctx context.Context, prober Prober, hits []Hit) (AuthorizeOutcome
 
 	requests := map[ProbeRequest]struct{}{}
 	keyFor := func(chunk Chunk) ProbeRequest {
-		if prober.Granularity(chunk.ConnectionID) == GranularityConnection {
-			return ProbeRequest{ConnectionID: chunk.ConnectionID}
+		if prober.Granularity(chunk.CorpusID) == GranularityConnection {
+			return ProbeRequest{CorpusID: chunk.CorpusID}
 		}
-		return ProbeRequest{ConnectionID: chunk.ConnectionID, SourceID: chunk.SourceID}
+		return ProbeRequest{CorpusID: chunk.CorpusID, SourceID: chunk.SourceID}
 	}
 	for _, hit := range hits {
 		requests[keyFor(hit.Chunk)] = struct{}{}
@@ -173,7 +173,7 @@ func Authorize(ctx context.Context, prober Prober, hits []Hit) (AuthorizeOutcome
 
 		var transient *Transient
 		if errors.As(probe.err, &transient) {
-			undetermined[hit.Chunk.ConnectionID+"/"+hit.Chunk.SourceID] = struct{}{}
+			undetermined[hit.Chunk.CorpusID+"/"+hit.Chunk.SourceID] = struct{}{}
 			continue
 		}
 		var denied *PermissionDenied

@@ -24,8 +24,8 @@ import {
   knowledgeBaseFetchToolId,
   knowledgeBaseSearchToolId,
   knowledgeBaseSkillId,
-  connectionGetToolId,
-  type ConnectionDescriptor,
+  corpusGetToolId,
+  type CorpusDescriptor,
   type KnowledgeBaseDescriptor,
 } from "./knowledge-base/types.js";
 import { QdrantSkillStore } from "./skills/qdrant-skill-store.js";
@@ -261,7 +261,7 @@ async function main(): Promise<void> {
   // declares neither) before indexing.
   await skillStore.upsert(deriveSkillAccess(skills, allTools, [...agentsById.values()]));
 
-  // Knowledge bases (ADR 0039) and the scoped Connections they compose
+  // Knowledge bases (ADR 0039) and the scoped Corpora they compose
   // (ADR 0038). Neither is retrievable in its own right: a KnowledgeBase
   // DERIVES a Skill -- which is what makes its search/fetch and its members'
   // GET tools reachable only once that knowledge base has been selected -- and
@@ -282,7 +282,7 @@ async function main(): Promise<void> {
     config.crdVersion,
     kubeConfig,
   );
-  const connectionsById = new Map<string, ConnectionDescriptor>(
+  const corporaById = new Map<string, CorpusDescriptor>(
     config.knowledgeBasesEnabled
       ? (await connectionRegistry.listAll()).map((connection) => [connection.id, connection])
       : [],
@@ -295,7 +295,7 @@ async function main(): Promise<void> {
 
   const indexKnowledgeBases = async (): Promise<void> => {
     if (!config.knowledgeBasesEnabled) return;
-    const derived = deriveKnowledgeBaseIndex([...knowledgeBasesById.values()], connectionsById);
+    const derived = deriveKnowledgeBaseIndex([...knowledgeBasesById.values()], corporaById);
     await vectorStore.upsert(derived.tools);
     await skillStore.upsert(derived.skills);
   };
@@ -319,7 +319,7 @@ async function main(): Promise<void> {
         .upsert(deriveSkillAccess([...skillsById.values()], [...toolsById.values()], [...agentsById.values()]))
         .catch((err) => console.error("failed to re-index skills after a catalog change:", err));
       // Knowledge bases derive skills too, off the same trigger and the same
-      // debounce: a Connection change can alter a knowledge base's audience,
+      // debounce: a Corpus change can alter a knowledge base's audience,
       // its tool list and its generated markdown at once.
       void indexKnowledgeBases().catch((err) =>
         console.error("failed to re-index knowledge bases after a catalog change:", err),
@@ -368,16 +368,16 @@ async function main(): Promise<void> {
   const connectionWatch = !config.knowledgeBasesEnabled ? undefined : connectionRegistry.watch(
     (event) => {
       if (event.type === "delete") {
-        connectionsById.delete(event.id);
+        corporaById.delete(event.id);
         // A withdrawn source must not linger as a callable tool. The knowledge
         // bases that referenced it keep working over their remaining members --
         // a vanished connection is a dangling ref, which contributes nothing
         // rather than failing the whole skill closed.
         void vectorStore
-          .delete([connectionGetToolId(event.id)])
+          .delete([corpusGetToolId(event.id)])
           .catch((err) => console.error(`failed to remove connection tool "${event.id}":`, err));
       } else {
-        connectionsById.set(event.descriptor.id, event.descriptor);
+        corporaById.set(event.descriptor.id, event.descriptor);
       }
       scheduleSkillReindex();
     },

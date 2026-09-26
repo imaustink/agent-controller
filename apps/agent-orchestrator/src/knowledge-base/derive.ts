@@ -1,11 +1,11 @@
 import type { SkillAccess } from "../skills/types.js";
 import {
-  connectionGetToolId,
+  corpusGetToolId,
   connectionLabel,
   knowledgeBaseLabel,
   knowledgeBaseSearchToolId,
   knowledgeBaseSkillId,
-  type ConnectionDescriptor,
+  type CorpusDescriptor,
   type KnowledgeBaseDescriptor,
 } from "./types.js";
 
@@ -40,18 +40,18 @@ import {
  */
 export function deriveKnowledgeBaseSkill(
   kb: KnowledgeBaseDescriptor,
-  connections: ReadonlyMap<string, ConnectionDescriptor>,
+  connections: ReadonlyMap<string, CorpusDescriptor>,
 ): SkillAccess {
-  const resolved: ConnectionDescriptor[] = [];
+  const resolved: CorpusDescriptor[] = [];
   const roles = new Set<string>();
   const getToolIds: string[] = [];
 
-  for (const ref of kb.connectionRefs) {
+  for (const ref of kb.corpusRefs) {
     const connection = connections.get(ref);
     if (!connection) continue;
     resolved.push(connection);
     for (const role of connection.allowedRoles) roles.add(role);
-    if (connection.apiEnabled) getToolIds.push(connectionGetToolId(connection.id));
+    if (connection.apiEnabled) getToolIds.push(corpusGetToolId(connection.id));
   }
 
   getToolIds.sort();
@@ -95,16 +95,16 @@ export function deriveKnowledgeBaseSkill(
  * reconciled — counts as unavailable rather than visible, since there is
  * nothing to search.
  */
-export function visibleConnections(
+export function visibleCorpora(
   kb: KnowledgeBaseDescriptor,
-  connections: ReadonlyMap<string, ConnectionDescriptor>,
+  connections: ReadonlyMap<string, CorpusDescriptor>,
   callerRoles: string[],
-): { visible: ConnectionDescriptor[]; withheld: number } {
+): { visible: CorpusDescriptor[]; withheld: number } {
   const held = new Set(callerRoles);
-  const visible: ConnectionDescriptor[] = [];
+  const visible: CorpusDescriptor[] = [];
   let withheld = 0;
 
-  for (const ref of kb.connectionRefs) {
+  for (const ref of kb.corpusRefs) {
     const connection = connections.get(ref);
     // Dangling: a misconfiguration is the controller's to report in status,
     // not an access disclosure to this caller.
@@ -125,7 +125,7 @@ export function visibleConnections(
 }
 
 /** The collection names of some connections, in order. */
-export const collectionsOf = (connections: ConnectionDescriptor[]): string[] =>
+export const collectionsOf = (connections: CorpusDescriptor[]): string[] =>
   connections.map((connection) => connection.collection!).filter(Boolean);
 
 /**
@@ -153,7 +153,7 @@ function knowledgeBaseEmbeddingDescription(kb: KnowledgeBaseDescriptor): string 
  */
 function knowledgeBaseMarkdown(
   kb: KnowledgeBaseDescriptor,
-  members: ConnectionDescriptor[],
+  members: CorpusDescriptor[],
 ): string {
   const parts: string[] = [];
 
