@@ -66,6 +66,17 @@ export class SlackDriver implements Driver {
   private readonly workspaceUrl: string | undefined;
   private readonly autoJoin: boolean;
 
+  /**
+   * Slack user id -> display name, or null for "asked, and Slack would not say".
+   *
+   * A driver instance is built per corpus binding and lives for the sync, so a
+   * channel's authors are resolved once rather than once per thread. Caching
+   * the FAILURE matters as much as caching the hit: without it a workspace
+   * whose token lacks `users:read` would issue a doomed lookup for every
+   * message in the corpus.
+   */
+  private readonly userNames = new Map<string, string | null>();
+
   constructor(options: SlackDriverOptions = {}) {
     this.http = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
     this.pageSize = options.pageSize ?? 100;
@@ -159,10 +170,14 @@ export class SlackDriver implements Driver {
       // a thread whose replies include three join events should not carry them
       // into the chunk. The parent survives regardless — it is what this
       // document is, and dropping it would leave a thread with no opening.
-      markdown: [parent, ...messages.slice(1).filter(isProse)]
-        .map((message) => renderMessage(message))
-        .join("\n\n"),
+      markdown: await this.renderThread(token, [parent, ...messages.slice(1).filter(isProse)]),
     };
+  }
+
+  /** The shared tail of both read paths: resolve who spoke, then render. */
+  private async renderThread(token: string, messages: readonly SlackMessage[]): Promise<string> {
+    const names = await this.resolveNames(token, referencedUserIDs(messages));
+    return messages.map((message) => renderMessage(message, names)).join("\n\n");
   }
 
   /**
@@ -189,9 +204,7 @@ export class SlackDriver implements Driver {
     const parent = messages[0]!;
     return {
       ...this.toRef({ channel }, parent),
-      markdown: [parent, ...messages.slice(1).filter(isProse)]
-        .map((message) => renderMessage(message))
-        .join("\n\n"),
+      markdown: await this.renderThread(token, [parent, ...messages.slice(1).filter(isProse)]),
     };
   }
 
@@ -331,6 +344,42 @@ export class SlackDriver implements Driver {
    * not the answer. The error STRING is, and it distinguishes the cases that
    * must not be blurred (ADR 0040).
    */
+  /**
+   * Resolves author and mention ids to display names, BEST EFFORT.
+   *
+   * An opaque `@U0C14S3U61W` is noise in an embedding and worse in a citation
+   * the agent reads back to someone. But a name is a nicety and the message is
+   * the point, so every failure here degrades to the raw id rather than
+   * propagating: `users.info` needs the `users:read` scope, and this driver
+   * classifies `missing_scope` as PERMANENT, so a workspace that never granted
+   * it would otherwise see every fetch fail over decoration.
+   */
+  private async resolveNames(token: string, ids: Iterable<string>): Promise<Map<string, string>> {
+    const wanted = [...new Set(ids)].filter((id) => !this.userNames.has(id));
+
+    // Sequential on purpose: this is a per-author cost paid once, and Slack
+    // rate-limits users.info per workspace rather than per connection.
+    for (const id of wanted) {
+      try {
+        const body = (await this.call("users.info", token, { user: id })) as {
+          user?: { profile?: { display_name?: string; real_name?: string }; name?: string };
+        };
+        const profile = body.user?.profile;
+        const name = profile?.display_name || profile?.real_name || body.user?.name;
+        this.userNames.set(id, name && name.length > 0 ? name : null);
+      } catch {
+        this.userNames.set(id, null);
+      }
+    }
+
+    const resolved = new Map<string, string>();
+    for (const id of ids) {
+      const name = this.userNames.get(id);
+      if (name) resolved.set(id, name);
+    }
+    return resolved;
+  }
+
   private async call(
     method: string,
     token: string,
@@ -440,7 +489,7 @@ const firstLine = (text: string): string =>
  * entities are parsed first and the escapes undone afterwards — do it the other
  * way and a message quoting "a <b|c> d" becomes an entity we then mangle.
  */
-export function renderText(text: string): string {
+export function renderText(text: string, names?: ReadonlyMap<string, string>): string {
   return (
     text
       // <url|label> — keep both: the label is what a person searches for, the
@@ -455,7 +504,7 @@ export function renderText(text: string): string {
       // <@U123|name> and <@U123>. Without a users.info lookup the id is all
       // there is; the brackets are markup and go regardless.
       .replace(/<@([UW][A-Z0-9]+)\|([^>]+)>/g, "@$2")
-      .replace(/<@([UW][A-Z0-9]+)>/g, "@$1")
+      .replace(/<@([UW][A-Z0-9]+)>/g, (_whole, id: string) => `@${names?.get(id) ?? id}`)
       // <#C123|general> and <#C123>
       .replace(/<#(C[A-Z0-9]+)\|([^>]+)>/g, "#$2")
       .replace(/<#(C[A-Z0-9]+)>/g, "#$1")
@@ -496,12 +545,23 @@ function isProse(message: SlackMessage): boolean {
 /**
  * One message as Markdown.
  *
- * Author ids are still ids: resolving them to names needs a users.info per
- * distinct author and a cache the broker has nowhere to put. That is a real
- * cost to retrieval — an opaque `@U0C14S3U61W` embeds as noise where a name
- * would help — and it is deliberately deferred rather than unnoticed.
+ * `names` is what SlackDriver.resolveNames could resolve; anything missing
+ * falls back to the raw id, which is ugly but never wrong.
  */
-function renderMessage(message: SlackMessage): string {
-  const author = message.user ? `@${message.user}` : "unknown";
-  return `**${author}**: ${renderText(message.text ?? "")}`.trim();
+function renderMessage(message: SlackMessage, names?: ReadonlyMap<string, string>): string {
+  const author = message.user ? `@${names?.get(message.user) ?? message.user}` : "unknown";
+  return `**${author}**: ${renderText(message.text ?? "", names)}`.trim();
+}
+
+/** Every user id a rendered thread would otherwise expose: authors and mentions. */
+export function referencedUserIDs(messages: readonly SlackMessage[]): string[] {
+  const ids: string[] = [];
+  for (const message of messages) {
+    if (message.user) ids.push(message.user);
+    // Bare `<@U123>` only. The `<@U123|name>` form already carries its name.
+    for (const match of (message.text ?? "").matchAll(/<@([UW][A-Z0-9]+)>/g)) {
+      if (match[1]) ids.push(match[1]);
+    }
+  }
+  return ids;
 }

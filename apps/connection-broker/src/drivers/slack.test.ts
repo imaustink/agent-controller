@@ -440,3 +440,91 @@ describe("rendering reaches the title too", () => {
     expect(resources[0]!.title).toBe("@U1 opened [the PR](https://x.test/1)");
   });
 });
+
+describe("author and mention names", () => {
+  /** conversations.replies once, then a users.info per distinct id. */
+  function routed(messages: unknown[], users: Record<string, unknown>) {
+    return vi.fn(async (url: string) => {
+      if (url.includes("conversations.replies")) return respond({ ok: true, messages });
+      const id = new URL(url).searchParams.get("user")!;
+      const user = users[id];
+      return user ? respond({ ok: true, user }) : respond({ ok: false, error: "user_not_found" });
+    }) as unknown as FetchLike;
+  }
+
+  it("resolves the author and any bare mention to display names", async () => {
+    const http = routed(
+      [message("1.1", { user: "U1", text: "ask <@U2> about the key" })],
+      {
+        U1: { profile: { display_name: "ada" } },
+        U2: { profile: { display_name: "grace" } },
+      },
+    );
+
+    const doc = await driver(http).fetch(SCOPE, { service: "t" }, "1.1");
+
+    expect(doc.markdown).toContain("**@ada**");
+    expect(doc.markdown).toContain("@grace");
+    expect(doc.markdown).not.toMatch(/U[12]\b/);
+  });
+
+  it("falls back to real_name, then to the handle", async () => {
+    const http = routed([message("1.1", { user: "U1", text: "hi" })], {
+      U1: { profile: { real_name: "Ada Lovelace" } },
+    });
+    const doc = await driver(http).fetch(SCOPE, { service: "t" }, "1.1");
+    expect(doc.markdown).toContain("**@Ada Lovelace**");
+  });
+
+  it("keeps the raw id when the token lacks users:read, rather than failing", async () => {
+    // This is the LIVE case: both workspace tokens return missing_scope, which
+    // this driver classifies as PERMANENT. Letting that propagate would make a
+    // decoration fail the read it was decorating, so every thread in a
+    // workspace without `users:read` would be unreadable.
+    const http = vi.fn(async (url: string) => {
+      if (url.includes("conversations.replies")) {
+        return respond({ ok: true, messages: [message("1.1", { user: "U1", text: "hi" })] });
+      }
+      return respond({ ok: false, error: "missing_scope" });
+    }) as unknown as FetchLike;
+
+    const doc = await driver(http).fetch(SCOPE, { service: "t" }, "1.1");
+
+    expect(doc.markdown).toContain("**@U1**");
+    expect(doc.markdown).toContain("hi");
+  });
+
+  it("asks Slack once per author across several fetches", async () => {
+    const http = routed([message("1.1", { user: "U1", text: "hi" })], {
+      U1: { profile: { display_name: "ada" } },
+    });
+    const d = driver(http);
+
+    await d.fetch(SCOPE, { service: "t" }, "1.1");
+    await d.fetch(SCOPE, { service: "t" }, "1.1");
+
+    const lookups = (http as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (call: unknown[]) => String(call[0]).includes("users.info"),
+    );
+    expect(lookups).toHaveLength(1);
+  });
+
+  it("does not retry an author Slack refused to name", async () => {
+    // Caching the failure is the point: without it, a workspace missing
+    // `users:read` pays a doomed lookup for every message in the corpus.
+    const http = routed([message("1.1", { user: "U1", text: "hi" })], {});
+    const d = driver(http);
+
+    await d.fetch(SCOPE, { service: "t" }, "1.1");
+    await d.fetch(SCOPE, { service: "t" }, "1.1");
+
+    const lookups = (http as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (call: unknown[]) => String(call[0]).includes("users.info"),
+    );
+    expect(lookups).toHaveLength(1);
+  });
+
+  it("leaves the <@U1|name> form alone, which already carries its name", () => {
+    expect(renderText("ask <@U2|grace> about it")).toBe("ask @grace about it");
+  });
+});
