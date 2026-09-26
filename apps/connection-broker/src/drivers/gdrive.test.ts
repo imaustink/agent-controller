@@ -432,3 +432,115 @@ trailer<</Root 1 0 R>>`;
     warn.mockRestore();
   });
 });
+
+describe("shortcuts", () => {
+  const shortcut = (over = {}) => ({
+    id: "sc1",
+    name: "Notes by Gemini",
+    mimeType: "application/vnd.google-apps.shortcut",
+    parents: ["F1"],
+    shortcutDetails: {
+      targetId: "doc1",
+      targetMimeType: "application/vnd.google-apps.document",
+    },
+    ...over,
+  });
+
+  /** Folder walk, file listing, then per-id metadata and content. */
+  function drive(files, targets = {}) {
+    return vi.fn(async (url: string) => {
+      const target = String(url);
+      const q = decodeURIComponent(new URL(target).searchParams.get("q") ?? "");
+      if (q.includes("google-apps.folder")) return respond({ files: [] });
+      if (q) return respond({ files });
+
+      for (const [id, meta] of Object.entries(targets)) {
+        if (target.includes(`/files/${id}`)) {
+          if (target.includes("alt=media") || target.includes("/export")) {
+            return { ok: true, status: 200, json: async () => ({}), text: async () => "target body" };
+          }
+          return respond(meta);
+        }
+      }
+      return respond({});
+    }) as unknown as FetchLike;
+  }
+
+  it("indexes a shortcut to a document, instead of skipping it", async () => {
+    // A live Drive had 54 of these, pointing at meeting notes that are
+    // ordinary Docs. Judged by their own mime type, every one was skipped.
+    const http = drive([shortcut()], { doc1: { id: "doc1", version: "9" } });
+
+    const page = await driver(http).list({ folderID: "F1" }, { service: "t" }, undefined);
+
+    expect(page.resources.map((r) => r.id)).toEqual(["sc1"]);
+  });
+
+  it("still skips a shortcut to something unindexable", async () => {
+    // One of the live shortcuts pointed at a video. Following the shortcut
+    // must not mean indexing whatever is on the other end.
+    const http = drive([
+      shortcut({
+        id: "sc2",
+        shortcutDetails: { targetId: "vid1", targetMimeType: "video/mp4" },
+      }),
+    ]);
+
+    const page = await driver(http).list({ folderID: "F1" }, { service: "t" }, undefined);
+
+    expect(page.resources).toEqual([]);
+  });
+
+  it("keeps the SHORTCUT's id, because that is what lives in the folder", async () => {
+    // The target usually sits outside the corpus, often somewhere the parent
+    // walk cannot see. Indexing its id would hand the scope check a file it
+    // would rightly refuse.
+    const http = drive([shortcut()], { doc1: { id: "doc1", version: "9" } });
+
+    const page = await driver(http).list({ folderID: "F1" }, { service: "t" }, undefined);
+
+    expect(page.resources[0].id).toBe("sc1");
+    expect(page.resources[0].id).not.toBe("doc1");
+  });
+
+  it("takes the TARGET's version, so an edit is noticed", async () => {
+    // A shortcut's own version never changes when its target is edited. A
+    // corpus keyed on it would go stale with nothing to notice, because a
+    // reconcile compares versions and this one always matches.
+    const http = drive([shortcut({ version: "1" })], {
+      doc1: { id: "doc1", version: "42", modifiedTime: "2026-09-26T00:00:00Z" },
+    });
+
+    const page = await driver(http).list({ folderID: "F1" }, { service: "t" }, undefined);
+
+    expect(page.resources[0].version).toBe("42");
+    expect(page.resources[0].updatedAt).toBe("2026-09-26T00:00:00Z");
+  });
+
+  it("reads the target's content, not the shortcut's", async () => {
+    const http = drive([shortcut()], {
+      sc1: shortcut(),
+      doc1: { id: "doc1", mimeType: "text/plain", parents: ["ELSEWHERE"] },
+    });
+
+    const doc = await driver(http).fetch({ folderID: "F1" }, { service: "t" }, "sc1");
+
+    expect(doc.markdown).toBe("target body");
+  });
+
+  it("keeps the resource when the target's metadata cannot be read", async () => {
+    // Dropping it would make the shortcut silently never appear. Keeping it
+    // means the fetch refuses later, with a reason.
+    const http = vi.fn(async (url: string) => {
+      const q = decodeURIComponent(new URL(String(url)).searchParams.get("q") ?? "");
+      if (q.includes("google-apps.folder")) return respond({ files: [] });
+      if (q) return respond({ files: [shortcut({ version: "1" })] });
+      return respond({}, 404);
+    }) as unknown as FetchLike;
+
+    const page = await driver(http).list({ folderID: "F1" }, { service: "t" }, undefined);
+
+    expect(page.resources.map((r) => r.id)).toEqual(["sc1"]);
+    expect(page.resources[0].version).toBe("1");
+  });
+});

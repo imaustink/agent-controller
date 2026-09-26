@@ -31,6 +31,8 @@ interface DriveFile {
   parents?: string[];
   /** Bytes, as a STRING — Drive reports it that way, and it exceeds 2^53 for nothing we index. */
   size?: string;
+  /** Present only on shortcuts. `targetMimeType` is in the LISTING, so indexability costs no extra call. */
+  shortcutDetails?: { targetId?: string; targetMimeType?: string };
   permissions?: { type?: string; emailAddress?: string; domain?: string }[];
 }
 
@@ -42,6 +44,24 @@ const EXPORTABLE: Record<string, string> = {
 };
 
 const PDF_MIME = "application/pdf";
+const SHORTCUT_MIME = "application/vnd.google-apps.shortcut";
+
+/**
+ * What a file effectively IS, following a shortcut.
+ *
+ * Drive folders are routinely organised with shortcuts — a live Drive had 54
+ * of them, pointing at meeting notes that are ordinary Google Docs. Judging
+ * them by their own mime type skipped every one, and until the skip was
+ * reported, silently.
+ *
+ * `targetMimeType` rides along in the listing, so deciding indexability
+ * follows a shortcut without costing a call.
+ */
+function effectiveMime(file: DriveFile): string {
+  const mime = file.mimeType ?? "";
+  if (mime !== SHORTCUT_MIME) return mime;
+  return file.shortcutDetails?.targetMimeType ?? "";
+}
 
 /**
  * The largest PDF worth pulling into a 512Mi container.
@@ -120,7 +140,7 @@ export class GDriveDriver implements Driver {
 
     const body = (await this.call("/files", token, {
       q: `(${parents}) and trashed = false`,
-      fields: "nextPageToken,files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size)",
+      fields: "nextPageToken,files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size,shortcutDetails)",
       pageSize: String(this.pageSize),
       ...(since ? { pageToken: since } : {}),
     })) as { files?: DriveFile[]; nextPageToken?: string };
@@ -146,9 +166,46 @@ export class GDriveDriver implements Driver {
     }
 
     return {
-      resources: files.map((file) => toRef(file)),
+      resources: await Promise.all(files.map((file) => this.refFor(file, token))),
       cursor: body.nextPageToken,
     };
+  }
+
+  /**
+   * A resource ref, following a shortcut to whatever it points at.
+   *
+   * The ID stays the SHORTCUT's, deliberately. The shortcut is what lives in
+   * the scoped folder; its target usually does not, and often sits somewhere
+   * the parent walk cannot even see. Indexing the target's id would hand the
+   * scope check a file outside the corpus and it would rightly refuse.
+   *
+   * The VERSION, though, has to be the target's. A shortcut's own version
+   * never changes when the document it points at is edited, so a corpus keyed
+   * on it would go stale with nothing to notice — a reconcile compares
+   * versions, and this one would always match. That costs one metadata read
+   * per shortcut per full pass, which is proportional to how many shortcuts
+   * there are rather than to the size of the corpus.
+   */
+  private async refFor(file: DriveFile, token: string) {
+    const targetId = file.shortcutDetails?.targetId;
+    if (!targetId) return toRef(file);
+
+    try {
+      const target = (await this.call(`/files/${encodeURIComponent(targetId)}`, token, {
+        fields: "id,version,modifiedTime,mimeType,size",
+      })) as DriveFile;
+      return {
+        ...toRef(file),
+        version: target.version,
+        updatedAt: target.modifiedTime,
+      };
+    } catch {
+      // A target we cannot read is still a shortcut we listed. Fall back to
+      // the shortcut's own metadata rather than dropping the resource: the
+      // fetch will refuse it later, with a reason, which is more useful than
+      // it silently never appearing.
+      return toRef(file);
+    }
   }
 
   /**
@@ -216,7 +273,7 @@ export class GDriveDriver implements Driver {
     const token = requireToken(credentials.delegated ?? credentials.service);
 
     const file = (await this.call(`/files/${encodeURIComponent(id)}`, token, {
-      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size",
+      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size,shortcutDetails",
     })) as DriveFile;
 
     await this.assertInScope(file, scope, token);
@@ -236,7 +293,7 @@ export class GDriveDriver implements Driver {
     const token = requireDelegatedDrive(credentials);
 
     const file = (await this.call(`/files/${encodeURIComponent(id)}`, token, {
-      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size",
+      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size,shortcutDetails",
     })) as DriveFile;
 
     return { ...toRef(file), markdown: await this.readContent(file, token) };
@@ -277,7 +334,7 @@ export class GDriveDriver implements Driver {
     const escaped = trimmed.replace(/['\\]/g, "\\$&");
     const body = (await this.call("/files", credentials.delegated, {
       q: `fullText contains '${escaped}' and trashed = false`,
-      fields: "files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size)",
+      fields: "files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size,shortcutDetails)",
       // Over-fetched on purpose: the scope filter below removes most of these,
       // and asking for exactly `limit` would return a short page of hits that
       // happen to be in the folder rather than the best ones that are.
@@ -313,7 +370,7 @@ export class GDriveDriver implements Driver {
     // Metadata only: reaching 200 under the USER's token is the authorization
     // decision, and the body is the model's to request separately (ADR 0040).
     const file = (await this.call(`/files/${encodeURIComponent(id)}`, credentials.delegated, {
-      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size",
+      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size,shortcutDetails",
     })) as DriveFile;
 
     await this.assertInScope(file, scope, credentials.delegated);
@@ -324,13 +381,24 @@ export class GDriveDriver implements Driver {
 
   /** Files whose bytes are worth indexing as text. */
   private indexable(file: DriveFile): boolean {
-    const mime = file.mimeType ?? "";
+    const mime = effectiveMime(file);
     // Folders are traversed, not indexed; anything binary would embed as noise.
     if (mime === "application/vnd.google-apps.folder") return false;
     return mime in EXPORTABLE || PLAIN_TEXT.has(mime) || mime === PDF_MIME;
   }
 
   private async readContent(file: DriveFile, token: string): Promise<string> {
+    // A shortcut has no content of its own; read what it points at. Scope was
+    // already asserted against the SHORTCUT, which is the thing that lives in
+    // the folder — see refFor.
+    const targetId = file.shortcutDetails?.targetId;
+    if (targetId) {
+      const target = (await this.call(`/files/${encodeURIComponent(targetId)}`, token, {
+        fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size",
+      })) as DriveFile;
+      return this.readContent(target, token);
+    }
+
     const mime = file.mimeType ?? "";
     if (mime === PDF_MIME) return this.readPdf(file, token);
 
