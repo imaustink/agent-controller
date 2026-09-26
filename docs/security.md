@@ -110,7 +110,7 @@ allowlist alone. See
 **This is the threat a sandboxed runtime does not address.** Reading a Secret
 with a mounted token is an authorized API call, not a container escape, so
 gVisor or Kata would not have stopped it. A `runtimeClassName` can be set per
-Tool/Agent or cluster-wide ([ADR 0043](adr/0043-runtimeclass-passthrough-isolation-is-the-operators-choice.md))
+Tool/Agent or cluster-wide ([ADR 0044](adr/0044-runtimeclass-passthrough-isolation-is-the-operators-choice.md))
 and is worth having, but it defends a different and lower-probability path
 than the one this section closes.
 

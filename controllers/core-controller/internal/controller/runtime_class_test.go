@@ -22,7 +22,7 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-// The three-state resolution from ADR 0043: unset inherits the cluster
+// The three-state resolution from ADR 0044: unset inherits the cluster
 // default, a name wins over it, and an explicit empty string opts out of it.
 func TestResolveRuntimeClassName(t *testing.T) {
 	cases := []struct {

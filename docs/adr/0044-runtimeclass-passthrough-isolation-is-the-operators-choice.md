@@ -1,4 +1,4 @@
-# 0043. `runtimeClassName` passthrough: isolation is the operator's choice
+# 0044. `runtimeClassName` passthrough: isolation is the operator's choice
 
 Date: 2026-09-25
 

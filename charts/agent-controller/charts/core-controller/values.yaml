@@ -68,7 +68,7 @@ runJob:
   # The controller passes this through and never validates it: naming a
   # RuntimeClass that does not exist leaves pods unschedulable with the
   # kubelet's own message. Isolation technology is the operator's choice, not
-  # this controller's (ADR 0043).
+  # this controller's (ADR 0044).
   #
   # A Tool or Agent can override this by setting spec.runtimeClassName, and can
   # opt out of it entirely by setting that field to "" -- for a workload whose

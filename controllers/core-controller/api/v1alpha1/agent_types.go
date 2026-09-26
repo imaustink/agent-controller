@@ -84,7 +84,7 @@ type AgentSpec struct {
 	// a RuntimeClass the operator has installed. Passed through to the pod
 	// spec verbatim; this controller does not interpret it, validate that the
 	// class exists, or have an opinion about which isolation technology is
-	// right for a cluster (ADR 0043).
+	// right for a cluster (ADR 0044).
 	//
 	// Three states, following corev1.PodSpec.RuntimeClassName:
 	//   - unset (nil): inherit AGENT_DEFAULT_RUNTIME_CLASS, if the operator set one

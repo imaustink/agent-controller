@@ -107,7 +107,7 @@ func defaultRuntimeClassName() string {
 // makes the pod unschedulable and the kubelet says so plainly, which is a
 // better failure than this controller second-guessing an operator's runtime
 // inventory -- and it keeps agent-controller out of the business of having an
-// opinion about isolation technology (ADR 0043).
+// opinion about isolation technology (ADR 0044).
 func resolveRuntimeClassName(spec *string) *string {
 	if spec != nil {
 		if *spec == "" {
