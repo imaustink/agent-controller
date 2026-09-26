@@ -103,6 +103,7 @@ func knowledgeBaseToolIDs(id string) []string {
 	return []string{
 		KnowledgeBaseSearchToolID(id),
 		KnowledgeBaseReadToolID(id),
+		KnowledgeBaseLookupToolID(id),
 		KnowledgeBaseFetchToolID(id),
 	}
 }
@@ -132,9 +133,11 @@ func (ix *Indexer) DeleteKnowledgeBase(ctx context.Context, id string) error {
 	delete(ix.knowledgeBases, id)
 	ix.mu.Unlock()
 
-	if err := ix.stores.Tools.Delete(ctx, []string{
-		KnowledgeBaseSearchToolID(id), KnowledgeBaseFetchToolID(id),
-	}); err != nil {
+	// Every id this knowledge base owns, from the one list that knows them.
+	// Spelling them out here had already drifted: the read tool was missing, so
+	// deleting a knowledge base left it in the catalog for the planner to find,
+	// pointing at a skill that no longer existed.
+	if err := ix.stores.Tools.Delete(ctx, knowledgeBaseToolIDs(id)); err != nil {
 		return err
 	}
 	return ix.stores.Skills.Delete(ctx, []string{KnowledgeBaseSkillID(id)})
@@ -226,6 +229,7 @@ func knowledgeBaseTools(kb KnowledgeBaseDescriptor, connections map[string]Corpu
 	// instead, where the model can read it straight off a citation.
 	if readable := readableMembers(kb, connections); len(readable) > 0 {
 		tools = append(tools, knowledgeBaseReadTool(kb, readable, exec("read")))
+		tools = append(tools, knowledgeBaseLookupTool(kb, readable, exec("lookup")))
 	}
 	return tools
 }
@@ -293,6 +297,47 @@ func knowledgeBaseReadTool(
 // corpusGetTool is a Connection's scope-enforced GET face (ADR 0038 §5),
 // carrying that corpus's OWN roles rather than the knowledge base's union —
 // it is one source's capability, not the composition's.
+
+// knowledgeBaseLookupTool is the LIVE search face, paired with the read face.
+//
+// The description works hard to separate this from the indexed search, because
+// the two are chosen by embedding and "search the knowledge base" describes
+// both. The distinction that matters to a planner is not semantic-vs-lexical,
+// which is an implementation detail, but WHEN each is right: the index is the
+// default, and this is for when the index may be behind.
+func knowledgeBaseLookupTool(
+	kb KnowledgeBaseDescriptor,
+	readable []CorpusDescriptor,
+	exec *KnowledgeBaseExecSpec,
+) ToolDescriptor {
+	roles := map[string]bool{}
+	for _, conn := range readable {
+		for _, role := range conn.AllowedRoles {
+			roles[role] = true
+		}
+	}
+	allowed := make([]string, 0, len(roles))
+	for role := range roles {
+		allowed = append(allowed, role)
+	}
+	sort.Strings(allowed)
+
+	return ToolDescriptor{
+		ID: KnowledgeBaseLookupToolID(kb.ID),
+		Description: fmt.Sprintf(
+			"Look up documents in %s by keyword, asking the sources directly instead of the "+
+				"search index. Use when something may be too new or too recently changed to "+
+				"be indexed, or when a keyword search found nothing and you know the material "+
+				"exists.", kb.Label()),
+		Input: "Keywords to match. This is a literal keyword search in the source, not a " +
+			"question — short distinctive terms work, whole sentences do not.",
+		Output: "Matching documents with their titles, URLs and a `<corpus>/<id>` reference " +
+			"that can be read in full. Only what the asking user may see, and only from " +
+			"inside this knowledge base.",
+		AllowedRoles:      allowed,
+		KnowledgeBaseExec: exec,
+	}
+}
 
 // upsertHidden writes a tool that may be referenced but never retrieved.
 func upsertHidden(ctx context.Context, store vectorstore.Store, tool ToolDescriptor) error {

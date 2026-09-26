@@ -416,6 +416,40 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			return read.Result, meta, nil, nil
 		}
 
+		// The LIVE search face. Beside the read branch, and before the generic
+		// search branch, for the same reason: it resolves the caller's
+		// delegated credential inside the activity and never lets it back out.
+		if tool.KnowledgeBaseExec != nil && tool.KnowledgeBaseExec.Operation == "lookup" {
+			note("Looking up in " + tool.KnowledgeBaseExec.DisplayName + "…")
+			var found activities.LookupCorpusOutput
+			if err := workflow.ExecuteActivity(actx, activities.LookupCorpusActivityName,
+				activities.LookupCorpusInput{
+					Caller: in.Caller,
+					Tool:   tool,
+					Query:  plan.ToolInput,
+				}).Get(ctx, &found); err != nil {
+				return "", meta, nil, err
+			}
+			meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
+
+			if found.NeedsLink {
+				note(plan.ToolID + " needs a linked account")
+			}
+			return found.Result, meta, nil, nil
+		}
+
+		// Everything else with an exec spec is the INDEXED search. Guarded on
+		// the operation rather than left as a catch-all: an unrecognised
+		// operation reaching here would run a vector search over whatever the
+		// model typed and return plausible passages, which looks like an answer
+		// and is not one. Failing closed makes a missing dispatch branch
+		// obvious instead of silently wrong.
+		if tool.KnowledgeBaseExec != nil && tool.KnowledgeBaseExec.Operation != "search" {
+			return "", meta, nil, fmt.Errorf(
+				"tool %s declares knowledge-base operation %q, which has no dispatch path",
+				tool.ID, tool.KnowledgeBaseExec.Operation)
+		}
+
 		if tool.KnowledgeBaseExec != nil {
 			note("Searching " + tool.KnowledgeBaseExec.DisplayName + "…")
 			var found activities.SearchKnowledgeBaseOutput

@@ -41,6 +41,16 @@ func KnowledgeBaseFetchToolID(name string) string { return KnowledgeBaseIDPrefix
 // (ADR 0038 §5): one per knowledge base, not one per member.
 func KnowledgeBaseReadToolID(name string) string { return KnowledgeBaseIDPrefix + name + "/read" }
 
+// KnowledgeBaseLookupToolID is the LIVE search a KnowledgeBase generates.
+//
+// Named "lookup" rather than "search" on purpose. Two tools whose ids and
+// descriptions both say "search" is the near-identical-description problem
+// ADR 0039 §5 warns about, and here it would be self-inflicted: the planner
+// picks by embedding, so the one word that must differ is the verb.
+func KnowledgeBaseLookupToolID(name string) string {
+	return KnowledgeBaseIDPrefix + name + "/lookup"
+}
+
 // CorpusGetToolID is the id a PER-MEMBER read tool used to carry. No such tool
 // is generated any more — one read per knowledge base replaced them — and the
 // id is retained only so DeleteKnowledgeBase can remove records written by an

@@ -133,7 +133,7 @@ func TestUpsertKnowledgeBaseIndexesASkillAndItsTools(t *testing.T) {
 	require.ElementsMatch(t, []string{"lead", "reader", "writer"}, skill.Roles)
 
 	require.ElementsMatch(t, []string{
-		"kb:globex/search", "kb:globex/read",
+		"kb:globex/search", "kb:globex/read", "kb:globex/lookup",
 	}, h.tools.ids())
 	require.NotContains(t, h.tools.ids(), "kb:globex/fetch",
 		"fetch has no dispatch path, so no fetch tool is generated")
@@ -358,4 +358,64 @@ func mustGet(t *testing.T, store *recordingStore, id string) vectorstore.Record 
 	rec, ok := store.get(id)
 	require.True(t, ok, "expected %s to be indexed", id)
 	return rec
+}
+
+
+func TestLookupToolIsDistinctFromTheIndexedSearch(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+
+	searchRec, ok := h.tools.get("kb:globex/search")
+	require.True(t, ok)
+	lookupRec, ok := h.tools.get("kb:globex/lookup")
+	require.True(t, ok)
+	search := decodeTool(t, searchRec)
+	lookup := decodeTool(t, lookupRec)
+
+	// Both are chosen by embedding, so the text a planner sees must actually
+	// distinguish them. Sharing the verb is how the near-identical-description
+	// problem of ADR 0039 §5 gets reproduced one level down.
+	require.NotEqual(t, search.Description, lookup.Description)
+	require.Contains(t, lookup.Description, "instead of the search index")
+	require.NotContains(t, lookup.Description, "Search the")
+
+	require.Equal(t, "lookup", lookup.KnowledgeBaseExec.Operation,
+		"dispatch fails closed on an unrecognised operation")
+}
+
+func TestLookupToolIsOmittedWhenNoMemberCanServeIt(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	// A corpus with no API face cannot answer a live search any more than a
+	// live read, so offering the tool would offer something that always fails.
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, catalog.KnowledgeBaseDescriptor{
+		ID:         "leadsonly",
+		CorpusRefs: []string{leadsConnectionDescriptor().ID},
+	}))
+
+	require.NotContains(t, h.tools.ids(), "kb:leadsonly/lookup")
+	require.NotContains(t, h.tools.ids(), "kb:leadsonly/read")
+}
+
+func TestDeleteKnowledgeBaseRemovesEveryToolItOwns(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+	require.NotEmpty(t, h.tools.ids())
+
+	require.NoError(t, h.ix.DeleteKnowledgeBase(ctx, "globex"))
+
+	// The delete path used to spell its ids out by hand and had drifted: the
+	// read tool survived deletion, staying in the catalog for the planner to
+	// find while pointing at a skill that no longer existed.
+	require.Empty(t, h.tools.ids(), "every generated tool goes with the knowledge base")
+	_, ok := h.skills.get("kb:globex")
+	require.False(t, ok)
 }
