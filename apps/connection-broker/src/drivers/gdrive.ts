@@ -29,6 +29,8 @@ interface DriveFile {
   webViewLink?: string;
   trashed?: boolean;
   parents?: string[];
+  /** Bytes, as a STRING — Drive reports it that way, and it exceeds 2^53 for nothing we index. */
+  size?: string;
   permissions?: { type?: string; emailAddress?: string; domain?: string }[];
 }
 
@@ -38,6 +40,16 @@ const EXPORTABLE: Record<string, string> = {
   "application/vnd.google-apps.presentation": "text/plain",
   "application/vnd.google-apps.spreadsheet": "text/csv",
 };
+
+const PDF_MIME = "application/pdf";
+
+/**
+ * The largest PDF worth pulling into a 512Mi container.
+ *
+ * Checked against Drive's reported size BEFORE downloading, so an oversized
+ * file costs one metadata read rather than a transfer and a parse.
+ */
+const MAX_PDF_BYTES = 25 * 1024 * 1024;
 
 /** Formats worth indexing as text without conversion. */
 const PLAIN_TEXT = new Set(["text/plain", "text/markdown", "text/csv", "application/json"]);
@@ -108,12 +120,30 @@ export class GDriveDriver implements Driver {
 
     const body = (await this.call("/files", token, {
       q: `(${parents}) and trashed = false`,
-      fields: "nextPageToken,files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents)",
+      fields: "nextPageToken,files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size)",
       pageSize: String(this.pageSize),
       ...(since ? { pageToken: since } : {}),
     })) as { files?: DriveFile[]; nextPageToken?: string };
 
-    const files = (body.files ?? []).filter((file) => this.indexable(file));
+    const all = body.files ?? [];
+    const files = all.filter((file) => this.indexable(file));
+
+    // Say what was left behind.
+    //
+    // Skipping unsupported types is right; doing it SILENTLY is what let a
+    // folder of PDFs index as empty and look like it had worked. A corpus that
+    // is confidently incomplete is worse than one that is visibly partial,
+    // and until now nothing anywhere recorded the difference.
+    const skipped = new Map<string, number>();
+    for (const file of all) {
+      const mime = file.mimeType ?? "unknown";
+      if (this.indexable(file) || mime === "application/vnd.google-apps.folder") continue;
+      skipped.set(mime, (skipped.get(mime) ?? 0) + 1);
+    }
+    if (skipped.size > 0) {
+      const summary = [...skipped].map(([mime, count]) => `${count}x ${mime}`).join(", ");
+      console.warn(`gdrive: not indexed, unsupported type: ${summary}`);
+    }
 
     return {
       resources: files.map((file) => toRef(file)),
@@ -186,7 +216,7 @@ export class GDriveDriver implements Driver {
     const token = requireToken(credentials.delegated ?? credentials.service);
 
     const file = (await this.call(`/files/${encodeURIComponent(id)}`, token, {
-      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents",
+      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size",
     })) as DriveFile;
 
     await this.assertInScope(file, scope, token);
@@ -206,7 +236,7 @@ export class GDriveDriver implements Driver {
     const token = requireDelegatedDrive(credentials);
 
     const file = (await this.call(`/files/${encodeURIComponent(id)}`, token, {
-      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents",
+      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size",
     })) as DriveFile;
 
     return { ...toRef(file), markdown: await this.readContent(file, token) };
@@ -247,7 +277,7 @@ export class GDriveDriver implements Driver {
     const escaped = trimmed.replace(/['\\]/g, "\\$&");
     const body = (await this.call("/files", credentials.delegated, {
       q: `fullText contains '${escaped}' and trashed = false`,
-      fields: "files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents)",
+      fields: "files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size)",
       // Over-fetched on purpose: the scope filter below removes most of these,
       // and asking for exactly `limit` would return a short page of hits that
       // happen to be in the folder rather than the best ones that are.
@@ -283,7 +313,7 @@ export class GDriveDriver implements Driver {
     // Metadata only: reaching 200 under the USER's token is the authorization
     // decision, and the body is the model's to request separately (ADR 0040).
     const file = (await this.call(`/files/${encodeURIComponent(id)}`, credentials.delegated, {
-      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents",
+      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size",
     })) as DriveFile;
 
     await this.assertInScope(file, scope, credentials.delegated);
@@ -297,11 +327,13 @@ export class GDriveDriver implements Driver {
     const mime = file.mimeType ?? "";
     // Folders are traversed, not indexed; anything binary would embed as noise.
     if (mime === "application/vnd.google-apps.folder") return false;
-    return mime in EXPORTABLE || PLAIN_TEXT.has(mime);
+    return mime in EXPORTABLE || PLAIN_TEXT.has(mime) || mime === PDF_MIME;
   }
 
   private async readContent(file: DriveFile, token: string): Promise<string> {
     const mime = file.mimeType ?? "";
+    if (mime === PDF_MIME) return this.readPdf(file, token);
+
     const exportAs = EXPORTABLE[mime];
 
     const path = exportAs
@@ -311,6 +343,71 @@ export class GDriveDriver implements Driver {
 
     const text = await this.callText(path, token, params);
     return text.trim();
+  }
+
+  /**
+   * Extracts a PDF's text.
+   *
+   * PDFs were silently DROPPED before this: `indexable()` rejected the mime
+   * type and nothing recorded that anything had been skipped, so a folder of
+   * them indexed as empty and looked like it had worked. Silence is the part
+   * that made it dangerous — the corpus was confidently incomplete.
+   *
+   * This takes a parser dependency into a service that holds every client's
+   * credentials, which the Confluence driver's storage-format conversion
+   * deliberately avoided doing. The exception is argued rather than assumed:
+   * PDF is a compressed binary container with object streams and font
+   * encodings, so the hand-rolled approach that worked for XHTML is not
+   * available. `unpdf` is one package with ZERO transitive dependencies and no
+   * native bindings, so the supply-chain surface is a single reviewable unit,
+   * and it runs in a memory-safe runtime where a parser bug is a crash rather
+   * than a read of adjacent memory.
+   *
+   * What is left is resource exhaustion, which is bounded here: oversized
+   * files are refused before a byte is downloaded.
+   */
+  private async readPdf(file: DriveFile, token: string): Promise<string> {
+    const size = Number(file.size ?? 0);
+    if (size > MAX_PDF_BYTES) {
+      // A refusal, not a silent skip. Permanent because retrying cannot make
+      // the file smaller, and an operator should see it rather than watch a
+      // sync retry forever.
+      throw new PermanentError(
+        `gdrive file ${file.id} is ${Math.round(size / 1024 / 1024)}MB, over the ` +
+          `${Math.round(MAX_PDF_BYTES / 1024 / 1024)}MB limit for PDF extraction`,
+      );
+    }
+
+    const bytes = await this.callBytes(`/files/${encodeURIComponent(file.id)}`, token, {
+      alt: "media",
+    });
+
+    // Imported lazily so the parser is loaded only by a deployment that
+    // actually indexes PDFs — this is a ~9MB one-off heap cost in a container
+    // budgeted at 512Mi, and a broker serving only Slack should not pay it.
+    const { extractText, getDocumentProxy } = await import("unpdf");
+
+    try {
+      const document = await getDocumentProxy(new Uint8Array(bytes));
+      const { text } = await extractText(document, { mergePages: true });
+      return (Array.isArray(text) ? text.join("\n\n") : text).trim();
+    } catch (cause) {
+      // A PDF we cannot parse is not a PDF we should retry: encrypted,
+      // truncated or malformed does not improve on a second pass.
+      throw new PermanentError(`gdrive file ${file.id} could not be parsed as a PDF: ${String(cause)}`);
+    }
+  }
+
+  private async callBytes(
+    path: string,
+    token: string,
+    params: Record<string, string>,
+  ): Promise<ArrayBuffer> {
+    const response = await this.request(path, token, params);
+    if (!response.arrayBuffer) {
+      throw new PermanentError("this fetch implementation cannot read bytes");
+    }
+    return response.arrayBuffer();
   }
 
   /**
@@ -371,7 +468,7 @@ export class GDriveDriver implements Driver {
     path: string,
     token: string,
     params: Record<string, string>,
-  ): Promise<{ ok: boolean; status: number; json: () => Promise<unknown>; text?: () => Promise<string> }> {
+  ): Promise<Awaited<ReturnType<FetchLike>>> {
     const url = `${this.apiOrigin}${path}?${new URLSearchParams(params).toString()}`;
 
     let response;

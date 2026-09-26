@@ -26,6 +26,13 @@ export type FetchLike = (url: string, init?: { headers?: Record<string, string> 
    * double need not supply one, and never called on success.
    */
   text?: () => Promise<string>;
+  /**
+   * Raw bytes, for content that is not text at all — a PDF from Drive.
+   *
+   * Optional for the same reason `text` is: most drivers never read bytes, and
+   * a test double should not have to pretend it can.
+   */
+  arrayBuffer?: () => Promise<ArrayBuffer>;
 }>;
 
 export interface ConfluenceDriverOptions {
@@ -722,6 +729,14 @@ function citationUrl(page: ConfluencePage, siteBaseUrl: string): string {
  * Confluence storage format is XHTML. This is a deliberately small conversion —
  * enough structure for chunking to have something to cut on, without taking a
  * parser dependency into a security-sensitive service.
+ *
+ * That rule now has exactly one exception, and it is worth naming here rather
+ * than leaving the two to look inconsistent: the Drive driver imports `unpdf`
+ * to extract PDF text. XHTML yields to a hand-rolled pass; PDF is a compressed
+ * binary container with object streams and font encodings, and does not. The
+ * exception was argued on its supply-chain surface — one package, zero
+ * transitive dependencies, no native bindings — rather than on convenience.
+ * See GDriveDriver.readPdf.
  */
 export function storageToMarkdown(storage: string): string {
   return dropNonProse(storage)

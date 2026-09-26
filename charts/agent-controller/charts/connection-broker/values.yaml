@@ -61,12 +61,17 @@ embeddings:
     name: ""
     key: apiKey
 
+# Sized for PDF extraction, which is the only thing here that touches real
+# memory. A bounded 25MB PDF plus pdf.js's working set peaks well above the
+# steady state of a service that otherwise just proxies HTTP, and the parser
+# itself costs about 9MB one-off on first use. 512Mi left little margin for a
+# large file arriving during a sync.
 resources:
   requests:
     cpu: 50m
-    memory: 128Mi
+    memory: 192Mi
   limits:
-    memory: 512Mi
+    memory: 768Mi
 
 nodeSelector: {}
 tolerations: []

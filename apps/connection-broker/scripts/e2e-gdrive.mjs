@@ -166,6 +166,22 @@ else warn("no Google-native doc among the fetched files: the EXPORT path was not
 if (binary.length > 0) ok(`${binary.length} plain/binary file(s): the DOWNLOAD path ran`);
 else warn("no plain/binary file among the fetched files: the DOWNLOAD path was not exercised");
 
+// PDFs are downloaded and PARSED, which is the one path with a dependency
+// behind it. A folder with no PDF leaves that untested — and PDFs were
+// silently dropped entirely until recently, so this says so rather than
+// staying quiet.
+const pdfs = fetched.filter(({ resource }) => /\.pdf$/i.test(resource.title ?? ""));
+if (pdfs.length > 0) {
+  const empty = pdfs.filter(({ doc }) => doc.markdown.trim().length === 0);
+  if (empty.length > 0) {
+    fail("pdf extraction", new Error(`${empty.length} PDF(s) extracted to EMPTY text`));
+  }
+  ok(`${pdfs.length} PDF(s) extracted to text: e.g. ${pdfs[0].doc.markdown.slice(0, 60).replace(/\s+/g, " ")}`);
+} else {
+  warn("no PDF among the fetched files: EXTRACTION was not exercised");
+  warn("drop a PDF in the folder and re-run — this is the one path with a parser behind it");
+}
+
 console.log("\n3. scope enforcement — the parent-chain walk");
 // The least-validated code in this driver. A file id that is real but lives
 // outside the corpus must be refused, and the only way to be sure the walk

@@ -306,3 +306,129 @@ describe("recursive listing", () => {
     ).resolves.toBeDefined();
   });
 });
+
+describe("PDF extraction", () => {
+  /**
+   * A real, minimal PDF — not a stub.
+   *
+   * The point of these tests is that unpdf actually reads what Drive hands us,
+   * so mocking the extraction would test nothing but the mock.
+   */
+  const REAL_PDF = `%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/Resources<</Font<</F1 4 0 R>>>>/MediaBox[0 0 612 792]/Contents 5 0 R>>endobj
+4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
+5 0 obj<</Length 68>>stream
+BT /F1 18 Tf 72 700 Td (Statement of Work: GLOBEX delivery) Tj ET
+endstream
+endobj
+trailer<</Root 1 0 R>>`;
+
+  function pdfDrive(file: Record<string, unknown>, bytes = REAL_PDF) {
+    return vi.fn(async (url: string) => {
+      const target = String(url);
+      if (target.includes("alt=media")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({}),
+          // A standalone ArrayBuffer, not Buffer's shared allocator pool:
+          // pdf.js TRANSFERS its input, and a pooled buffer cannot be
+          // transferred (and would carry the whole pool's bytes anyway).
+          arrayBuffer: async () => Uint8Array.from(Buffer.from(bytes, "latin1")).buffer,
+        };
+      }
+      return respond(file);
+    }) as unknown as FetchLike;
+  }
+
+  const PDF = {
+    id: "pdf1",
+    name: "SOW.pdf",
+    mimeType: "application/pdf",
+    parents: ["F1"],
+    size: "12345",
+  };
+
+  it("indexes a PDF instead of dropping it", async () => {
+    // These were silently skipped: indexable() rejected the mime type and
+    // nothing recorded it, so a folder of PDFs indexed as empty.
+    const http = pdfDrive(PDF);
+    const doc = await driver(http).fetch({ folderID: "F1" }, { service: "t" }, "pdf1");
+
+    expect(doc.markdown).toContain("Statement of Work: GLOBEX delivery");
+  });
+
+  it("lists PDFs as indexable", async () => {
+    const http = vi.fn(async (url: string) => {
+      const q = decodeURIComponent(new URL(String(url)).searchParams.get("q") ?? "");
+      if (q.includes("google-apps.folder")) return respond({ files: [] });
+      return respond({ files: [PDF] });
+    }) as unknown as FetchLike;
+
+    const page = await driver(http).list({ folderID: "F1" }, { service: "t" }, undefined);
+    expect(page.resources.map((r) => r.id)).toEqual(["pdf1"]);
+  });
+
+  it("refuses an oversized PDF before downloading it", async () => {
+    // Checked against Drive's reported size, so this costs one metadata read
+    // rather than a transfer and a parse in a 512Mi container.
+    const http = pdfDrive({ ...PDF, size: String(64 * 1024 * 1024) });
+
+    await expect(
+      driver(http).fetch({ folderID: "F1" }, { service: "t" }, "pdf1"),
+    ).rejects.toThrow(/over the .*limit/);
+
+    const downloaded = (http as unknown as ReturnType<typeof vi.fn>).mock.calls.some(
+      (call: unknown[]) => String(call[0]).includes("alt=media"),
+    );
+    expect(downloaded).toBe(false);
+  });
+
+  it("treats an unparseable PDF as permanent, not retryable", async () => {
+    // Encrypted, truncated or malformed does not improve on a second pass, and
+    // a sync that retries it forever reports the wrong thing.
+    const http = pdfDrive(PDF, "not a pdf at all");
+
+    await expect(
+      driver(http).fetch({ folderID: "F1" }, { service: "t" }, "pdf1"),
+    ).rejects.toThrow(PermanentError);
+  });
+
+  it("names the types it skipped rather than dropping them silently", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const http = vi.fn(async (url: string) => {
+      const q = decodeURIComponent(new URL(String(url)).searchParams.get("q") ?? "");
+      if (q.includes("google-apps.folder")) return respond({ files: [] });
+      return respond({
+        files: [
+          { id: "a", name: "clip.mp4", mimeType: "video/mp4", parents: ["F1"] },
+          { id: "b", name: "art.psd", mimeType: "image/vnd.adobe.photoshop", parents: ["F1"] },
+        ],
+      });
+    }) as unknown as FetchLike;
+
+    const page = await driver(http).list({ folderID: "F1" }, { service: "t" }, undefined);
+
+    expect(page.resources).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("video/mp4"));
+    warn.mockRestore();
+  });
+
+  it("does not announce skipped FOLDERS, which are traversed rather than dropped", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const http = vi.fn(async (url: string) => {
+      const q = decodeURIComponent(new URL(String(url)).searchParams.get("q") ?? "");
+      if (q.includes("google-apps.folder")) return respond({ files: [] });
+      return respond({
+        files: [{ id: "sub", mimeType: "application/vnd.google-apps.folder", parents: ["F1"] }],
+      });
+    }) as unknown as FetchLike;
+
+    await driver(http).list({ folderID: "F1" }, { service: "t" }, undefined);
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
