@@ -117,7 +117,7 @@ describe("BrokerProber", () => {
 
     expect(result.title).toBe("Auth design");
     const [url, init] = http.mock.calls[0]!;
-    expect(url).toBe("http://broker/connections/globex-confluence/probe");
+    expect(url).toBe("http://broker/corpora/globex-confluence/probe");
     expect((init as RequestInit).headers).toMatchObject({
       authorization: "Bearer orch-token",
       "x-delegated-token": "user-token",
@@ -125,8 +125,15 @@ describe("BrokerProber", () => {
   });
 
   it.each([
+    // 403 is the ONLY denial: it is what the broker answers a driver's
+    // PermissionDeniedError with, and nothing else.
     [403, "denied"],
-    [404, "denied"],
+    // 404 is NOT a denial, and reading it as one hid a real bug for as long
+    // as it existed — this prober asked for a route that had been renamed, so
+    // every probe 404'd, every candidate was dropped as "denied", and
+    // retrieval reported nothing found. A missing corpus or route is a fault
+    // to surface, not a permission to respect.
+    [404, "transient"],
     [429, "transient"],
     [500, "transient"],
     [503, "transient"],

@@ -66,7 +66,9 @@ func (b *BrokerProber) Probe(ctx context.Context, req ProbeRequest) (ProbeResult
 		return ProbeResult{}, err
 	}
 
-	endpoint := strings.TrimRight(b.BaseURL, "/") + "/connections/" + url.PathEscape(req.CorpusID) + "/probe"
+	// `/corpora/`, not `/connections/`. Data is addressed by CORPUS; the
+	// `/connections/` prefix survives only for webhooks (ADR 0043).
+	endpoint := strings.TrimRight(b.BaseURL, "/") + "/corpora/" + url.PathEscape(req.CorpusID) + "/probe"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return ProbeResult{}, err
@@ -97,7 +99,15 @@ func (b *BrokerProber) Probe(ctx context.Context, req ProbeRequest) (ProbeResult
 		}
 		return result, nil
 
-	case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound:
+	// 403 is the ONLY denial. The broker answers a driver's PermissionDenied
+	// with 403 and nothing else, so treating another status as "this caller may
+	// not see it" turns a fault into a silent, total and invisible drop.
+	//
+	// 404 used to be read as a denial and hid exactly that: the endpoint above
+	// named a route that no longer exists, so every probe 404'd, every
+	// candidate was "denied", and retrieval reported nothing found —
+	// indistinguishable from an empty corpus.
+	case resp.StatusCode == http.StatusForbidden:
 		return ProbeResult{}, &PermissionDenied{Err: fmt.Errorf("broker returned %d", resp.StatusCode)}
 
 	default:

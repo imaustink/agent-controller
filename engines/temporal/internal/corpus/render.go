@@ -81,6 +81,18 @@ func writeCaveats(b *strings.Builder, in RenderInput) {
 			"%d source(s) in this knowledge base are outside your access, so there may be more you cannot see.",
 			in.Withheld))
 	}
+	// Candidates the SOURCE refused for this caller.
+	//
+	// Gated on the same flag as Withheld, because the leak is the same shape:
+	// saying "12 passages were refused" admits the material exists. What is
+	// not acceptable is the silence — with every candidate denied the answer
+	// read "No passages matched", indistinguishable from an empty corpus, and
+	// that hid a routing bug in the prober for as long as it existed.
+	if in.Disclose && in.Outcome.Denied > 0 {
+		lines = append(lines, fmt.Sprintf(
+			"%d passage(s) matched but the source did not confirm your access to them.",
+			in.Outcome.Denied))
+	}
 	if len(in.Outcome.Undetermined) > 0 {
 		sorted := append([]string(nil), in.Outcome.Undetermined...)
 		sort.Strings(sorted)

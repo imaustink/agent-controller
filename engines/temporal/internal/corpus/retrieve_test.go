@@ -118,7 +118,7 @@ func TestBrokerProberSendsTheDelegatedTokenAndReadsTheProbe(t *testing.T) {
 	require.Equal(t, "Auth design", result.Title)
 	require.Equal(t, "Bearer orch-token", gotAuth, "the orchestrator authenticates itself")
 	require.Equal(t, "user-token", gotDelegated, "and forwards the user's own credential")
-	require.Equal(t, "/connections/globex-confluence/probe", gotPath)
+	require.Equal(t, "/corpora/globex-confluence/probe", gotPath)
 	require.Equal(t, "page-1", gotBody["sourceId"])
 }
 
@@ -127,8 +127,15 @@ func TestBrokerProberClassifiesBrokerStatuses(t *testing.T) {
 		status int
 		denied bool
 	}{
+		// 403 is the ONLY denial: it is what the broker answers a driver's
+		// PermissionDenied with, and nothing else.
 		{http.StatusForbidden, true},
-		{http.StatusNotFound, true},
+		// 404 is NOT a denial, and reading it as one hid a real bug for as
+		// long as it existed — this prober asked for a route that had been
+		// renamed, so every probe 404'd, every candidate was dropped as
+		// "denied", and retrieval reported nothing found. A missing corpus or
+		// route is a fault to surface, not a permission to respect.
+		{http.StatusNotFound, false},
 		{http.StatusTooManyRequests, false},
 		{http.StatusServiceUnavailable, false},
 		{http.StatusInternalServerError, false},

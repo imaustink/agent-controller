@@ -117,7 +117,9 @@ export class BrokerProber implements Prober {
       throw new PermissionDeniedError("no delegated credential for this caller");
     }
 
-    const endpoint = `${baseUrl.replace(/\/+$/, "")}/connections/${encodeURIComponent(request.connectionId)}/probe`;
+    // `/corpora/`, not `/connections/`. Data is addressed by CORPUS; the
+    // `/connections/` prefix survives only for webhooks (docs/adr/0043).
+    const endpoint = `${baseUrl.replace(/\/+$/, "")}/corpora/${encodeURIComponent(request.connectionId)}/probe`;
 
     let response: Response;
     try {
@@ -138,7 +140,18 @@ export class BrokerProber implements Prober {
     }
 
     if (response.ok) return (await response.json()) as ProbeResult;
-    if (response.status === 403 || response.status === 404) {
+
+    // 403 is the ONLY denial. The broker answers a driver's
+    // PermissionDeniedError with 403 and nothing else, so treating any other
+    // status as "this caller may not see it" converts a fault into a silent,
+    // total and invisible drop.
+    //
+    // 404 in particular used to be read as a denial, and it hid this exact
+    // bug: the endpoint above named a route that no longer exists, so every
+    // probe 404'd, every candidate was "denied", and retrieval answered "no
+    // passages matched" — indistinguishable from an empty corpus. A 404 means
+    // the corpus or the route is missing, which is a fault to surface.
+    if (response.status === 403) {
       throw new PermissionDeniedError(`broker returned ${response.status}`);
     }
     throw new TransientProbeError(`broker returned ${response.status}`);
