@@ -32,6 +32,18 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY --from=build /repo/node_modules ./node_modules
+# The workspace's OWN node_modules, when npm could not hoist something.
+#
+# A dependency whose version conflicts with another workspace's is nested here
+# instead of at the root, and a root copy that exists only as somebody's dev
+# transitive is then removed by `npm prune --omit=dev` — leaving the image
+# with neither. parse5 is exactly that shape, and the broker crashlooped on
+# ERR_MODULE_NOT_FOUND with the package plainly present in package.json.
+#
+# Optional, via the trailing `.`-safe glob: most builds hoist everything and
+# leave no such directory.
+COPY --from=build /repo/apps/connection-broker/node_module[s] ./node_modules_ws
+RUN if [ -d ./node_modules_ws ]; then cp -R ./node_modules_ws/. ./node_modules/ && rm -rf ./node_modules_ws; fi
 COPY --from=build /repo/apps/connection-broker/dist ./dist
 COPY --from=build /repo/apps/connection-broker/package.json ./package.json
 

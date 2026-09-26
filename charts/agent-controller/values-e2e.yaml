@@ -372,9 +372,13 @@ connection-broker:
   apiOrigins:
     atlassian: "http://fake-confluence.controller-agent.svc.cluster.local"
   embeddings:
+    # The key name the orchestrator's secret actually uses. Getting this wrong
+    # is not a runtime error — the Pod never starts, with
+    # CreateContainerConfigError and a message naming the key, which is at
+    # least honest but easy to miss behind a rollout timeout.
     apiKeySecret:
       name: agent-orchestrator-secrets
-      key: openaiApiKey
+      key: OPENAI_API_KEY
   orchestratorTokenSecret:
     name: e2e-connection-broker-secrets
     key: orchestratorToken

@@ -15,11 +15,22 @@ metadata:
   name: {{ include "connection-broker.fullname" . }}
   labels: {{- include "connection-broker.labels" . | nindent 4 }}
 rules:
-  # Watching Connections is what makes a CR created after startup take effect
-  # without a restart (docs/adr/0020).
+  # Watching these is what makes a CR created after startup take effect without
+  # a restart (docs/adr/0020).
+  #
+  # BOTH kinds, since the split: the broker resolves a Corpus's scope against
+  # the Connection that holds its credential (ADR 0043), and it loads
+  # Connections first so a Corpus never binds to one it has not seen. Missing
+  # `corpora` here does not degrade anything — the registry's watch 403s at
+  # startup and the process crashloops, which is at least loud, and is how this
+  # was found.
   - apiGroups: ["core.controller-agent.dev"]
-    resources: ["connections"]
+    resources: ["connections", "corpora"]
     verbs: ["get", "list", "watch"]
+  # Reporting sync results back onto the Corpus that asked for them.
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["corpora/status"]
+    verbs: ["get", "patch", "update"]
   # The ingestion credentials those Connections name. Read only, and in this
   # namespace only: the broker is the process holding every client's
   # third-party credentials, so its reach into the cluster is what is most

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { requireMinikubeContext } from "../support/guard.js";
-import { kubectl, kubectlJson, kubectlApplyStdin, waitFor } from "../support/k8s.js";
+import { kubectl, kubectlJson, kubectlApplyStdin, waitFor, NAMESPACE } from "../support/k8s.js";
 
 /**
  * The Connection/Corpus/KnowledgeBase CRDs against the controller that
@@ -133,17 +133,52 @@ describe("the CRDs this branch generates are the ones installed", () => {
   });
 });
 
+/**
+ * The controller's ClusterRole, found rather than named.
+ *
+ * The chart's fullname depends on the release name, so hardcoding one couples
+ * this spec to how the cluster happened to be installed — and a NotFound then
+ * reads as "RBAC is broken" when it only means the release is called something
+ * else. Matching on the rules it must contain would be circular, so it is
+ * found by the ServiceAccount the controller Deployment actually runs as.
+ */
+async function controllerClusterRole(): Promise<{
+  rules: { apiGroups: string[]; resources: string[] }[];
+}> {
+  const serviceAccount = (
+    await kubectl([
+      "get",
+      "deploy",
+      "-l",
+      "app.kubernetes.io/name=core-controller",
+      "-o",
+      "jsonpath={.items[0].spec.template.spec.serviceAccountName}",
+    ])
+  ).trim();
+  expect(serviceAccount, "no core-controller Deployment in the cluster").not.toBe("");
+
+  const bindings = await kubectlJson<{
+    items: {
+      roleRef: { kind: string; name: string };
+      subjects?: { kind: string; name: string; namespace?: string }[];
+    }[];
+  }>(["get", "clusterrolebinding", "-o", "json"]);
+
+  const binding = bindings.items.find((b) =>
+    (b.subjects ?? []).some(
+      (s) => s.kind === "ServiceAccount" && s.name === serviceAccount && s.namespace === NAMESPACE,
+    ),
+  );
+  expect(binding, `nothing binds a ClusterRole to ${serviceAccount}`).toBeDefined();
+
+  return kubectlJson(["get", "clusterrole", binding!.roleRef.name, "-o", "json"]);
+}
+
 describe("the chart grants the controller what it watches", () => {
   it("permits corpora, connections and knowledgebases", async () => {
     // The hand-copied hop. A kind missing here crashloops the manager on
     // `Failed to run manager`, and nothing downstream names RBAC.
-    const rules = await kubectlJson<{ rules: { apiGroups: string[]; resources: string[] }[] }>([
-      "get",
-      "clusterrole",
-      "agent-controller-core-controller",
-      "-o",
-      "json",
-    ]);
+    const rules = await controllerClusterRole();
 
     const granted = new Set(
       rules.rules
@@ -159,13 +194,7 @@ describe("the chart grants the controller what it watches", () => {
   it("permits the cronjobs a Corpus's sync is reconciled into", async () => {
     // Added with the CronJob-based sync and just as hand-copied. Without it the
     // Corpus reconciles, reports healthy, and is never synced by anything.
-    const rules = await kubectlJson<{ rules: { apiGroups: string[]; resources: string[] }[] }>([
-      "get",
-      "clusterrole",
-      "agent-controller-core-controller",
-      "-o",
-      "json",
-    ]);
+    const rules = await controllerClusterRole();
 
     const batch = new Set(
       rules.rules.filter((rule) => rule.apiGroups.includes("batch")).flatMap((r) => r.resources),
