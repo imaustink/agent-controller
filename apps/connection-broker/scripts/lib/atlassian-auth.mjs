@@ -8,6 +8,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { awaitCode, openForApproval, REDIRECT } from "./oauth-loopback.mjs";
+import { cachedRefreshToken, cacheRefreshToken } from "./token-cache.mjs";
 
 export { REDIRECT };
 export const GATEWAY = "https://api.atlassian.com";
@@ -26,6 +27,19 @@ export async function getAccessToken({ env, scopes = DEFAULT_SCOPES, timeoutMs =
   const clientSecret = env.ATLASSIAN_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
     throw new Error("ATLASSIAN_CLIENT_ID / ATLASSIAN_CLIENT_SECRET not found in the env file");
+  }
+
+  // A cached refresh token skips the browser. Atlassian ROTATES these, so the
+  // replacement is written back on every use — miss that and the next run
+  // silently falls back to a dance, which is how a rotation bug hides.
+  const cached = cachedRefreshToken("atlassian");
+  if (cached) {
+    const refreshed = await refresh(clientId, clientSecret, cached);
+    if (refreshed) {
+      console.log("using the cached Atlassian grant (no browser needed)");
+      return refreshed;
+    }
+    console.log("the cached Atlassian grant no longer works; re-authorizing");
   }
 
   const state = randomBytes(16).toString("hex");
@@ -56,5 +70,35 @@ export async function getAccessToken({ env, scopes = DEFAULT_SCOPES, timeoutMs =
 
   const tokens = await response.json();
   console.log("granted scope:", tokens.scope || "(none)");
+  cacheRefreshToken("atlassian", tokens.refresh_token);
   return tokens.access_token;
+}
+
+/**
+ * Spends a refresh token for an access token, or undefined if it is dead.
+ *
+ * Atlassian rotates: the response carries a NEW refresh token and invalidates
+ * the one just used, so not writing it back would work exactly once. This is
+ * the same failure that produced the recurring claude-remote re-auth loop, in
+ * miniature.
+ */
+async function refresh(clientId, clientSecret, refreshToken) {
+  try {
+    const response = await fetch("https://auth.atlassian.com/oauth/token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+      }),
+    });
+    if (!response.ok) return undefined;
+    const tokens = await response.json();
+    cacheRefreshToken("atlassian", tokens.refresh_token);
+    return tokens.access_token;
+  } catch {
+    return undefined;
+  }
 }

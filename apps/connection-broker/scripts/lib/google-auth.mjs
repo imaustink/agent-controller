@@ -8,6 +8,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { awaitCode, openForApproval, REDIRECT } from "./oauth-loopback.mjs";
+import { cachedRefreshToken, cacheRefreshToken } from "./token-cache.mjs";
 
 export { REDIRECT };
 
@@ -27,6 +28,19 @@ export async function getAccessToken({ env, scopes = DEFAULT_SCOPES, timeoutMs =
   const clientSecret = env.GOOGLE_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
     throw new Error("GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not found in the env file");
+  }
+
+  // A cached refresh token skips the browser entirely. Tried first, and a
+  // failure here falls through to the full dance rather than stopping: a
+  // revoked or expired grant should cost one approval, not a failed run.
+  const cached = cachedRefreshToken("google");
+  if (cached) {
+    const refreshed = await refresh(clientId, clientSecret, cached);
+    if (refreshed) {
+      console.log("using the cached Google grant (no browser needed)");
+      return refreshed;
+    }
+    console.log("the cached Google grant no longer works; re-authorizing");
   }
 
   const state = randomBytes(16).toString("hex");
@@ -64,5 +78,28 @@ export async function getAccessToken({ env, scopes = DEFAULT_SCOPES, timeoutMs =
 
   const tokens = await response.json();
   console.log("granted scope:", tokens.scope || "(none)");
+  // Google issues a refresh token only on first consent unless
+  // prompt=consent is set, which it is — see DEFAULT_SCOPES' note above.
+  cacheRefreshToken("google", tokens.refresh_token);
   return tokens.access_token;
+}
+
+/** Spends a refresh token for an access token, or undefined if it is dead. */
+async function refresh(clientId, clientSecret, refreshToken) {
+  try {
+    const response = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+      }).toString(),
+    });
+    if (!response.ok) return undefined;
+    return (await response.json()).access_token;
+  } catch {
+    return undefined;
+  }
 }

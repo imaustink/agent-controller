@@ -246,6 +246,81 @@ try {
   fail("driver.readAsUser", e);
 }
 
+console.log("\n7. searchAsUser — live, scoped to the folder and to the caller");
+// Never run against Google before now: the Drive half of live lookup was
+// implemented from the API docs and unit-tested against mocks only.
+const TERM = process.argv[2] ?? "bio";
+try {
+  const hits = await driver.searchAsUser(delegated, scope, TERM);
+  ok(`${hits.length} hit(s) for ${JSON.stringify(TERM)}`);
+  for (const hit of hits.slice(0, 3)) console.log(`    - ${hit.title}  [${hit.id}]`);
+
+  if (hits.length > 0) {
+    // The bound that cannot be expressed in the query: `'<id>' in parents` is
+    // one level, so scope is enforced by the parent walk afterwards. Every hit
+    // must be something driver.list would also have returned.
+    const listed = new Set(page.resources.map((r) => r.id));
+    const stray = hits.filter((hit) => !listed.has(hit.id));
+    if (stray.length > 0) {
+      for (const hit of stray) warn(`  ${hit.title} [${hit.id}]`);
+      fail("search scope", new Error(`${stray.length} hit(s) are outside the corpus`));
+    }
+    ok("every hit is inside the scoped folder");
+
+    // A hit the read face cannot serve is a reference that always fails.
+    const doc = await driver.readAsUser(delegated, hits[0].id);
+    ok(`the first hit reads back: ${JSON.stringify(doc.title ?? null)}`);
+  } else {
+    warn(`no hit for ${JSON.stringify(TERM)} — pass a term as argv[2] to exercise this properly`);
+  }
+} catch (e) {
+  fail("driver.searchAsUser", e);
+}
+
+console.log("\n8. a search that must NOT escape the folder");
+try {
+  // A term chosen to match widely across the whole Drive. Anything it returns
+  // has to have survived the parent walk.
+  const wide = await driver.searchAsUser(delegated, scope, "the");
+  const listed = new Set(page.resources.map((r) => r.id));
+  const stray = wide.filter((hit) => !listed.has(hit.id));
+  if (stray.length > 0) {
+    for (const hit of stray.slice(0, 3)) warn(`  ${hit.title} [${hit.id}]`);
+    fail("search scope", new Error("a broad search reached outside the corpus"));
+  }
+  ok(`a broad term returned ${wide.length} hit(s), all inside the folder`);
+} catch (e) {
+  fail("driver.searchAsUser", e);
+}
+
+console.log("\n9. PDF extraction, against a real PDF");
+// The scoped folder holds only Google Docs, so this looks across the Drive the
+// caller can already see. Clearly OUTSIDE the corpus, and read through
+// readAsUser, which is identity-bounded by design — the same access the person
+// has by opening it themselves.
+const anyPdf = await driveQuery(
+  token,
+  "mimeType = 'application/pdf' and trashed = false",
+);
+if (anyPdf.length === 0) {
+  warn("no PDF anywhere in this Drive, so extraction remains unexercised");
+} else {
+  const target = anyPdf[0];
+  try {
+    const doc = await driver.readAsUser(delegated, target.id);
+    const text = doc.markdown.trim();
+    if (text.length === 0) {
+      warn(`${target.name}: extracted to EMPTY text`);
+      warn("a scanned PDF has no text layer; that is a real limit, not a bug");
+    } else {
+      ok(`${target.name}: ${text.length} chars extracted`);
+      console.log(`      "${text.slice(0, 120).replace(/\s+/g, " ")}"`);
+    }
+  } catch (e) {
+    fail("pdf extraction", e);
+  }
+}
+
 console.log("\nPASS — the real Drive driver works against a live Drive.");
 console.log("Note: one Google account played BOTH the service and delegated roles, so");
 console.log("the deny path is only as tested as that identity. Proving we withhold");
