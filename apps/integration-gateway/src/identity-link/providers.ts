@@ -103,9 +103,13 @@ function atlassianConfig(env: NodeJS.ProcessEnv): OAuthProviderConfig | undefine
   //
   // Classic and granular cannot be mixed on one app, so overriding this means
   // overriding all of it.
+  // `search:confluence` is separate from the read scopes and easy to miss: a
+  // token without it reads pages perfectly well and fails every live lookup,
+  // which looks like a broken feature rather than a missing permission.
   const scopes = (
     env.ATLASSIAN_SCOPES ??
-    "read:page:confluence read:space:confluence read:content-details:confluence offline_access"
+    "read:page:confluence read:space:confluence read:content-details:confluence " +
+      "search:confluence offline_access"
   )
     .split(/[\s,]+/)
     .filter(Boolean);

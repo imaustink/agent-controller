@@ -163,6 +163,24 @@ identityLink:
   # Optional device-flow OAuth scope. Leave empty to use the app's own
   # default ("repo").
   githubDeviceFlowScope: ""
+  # Atlassian 3LO client id, for linking a user's own Confluence access
+  # (docs/adr/0040). Public by design, same as the GitHub App client id above.
+  #
+  # Setting this is what ENABLES Atlassian linking at all: the gateway builds
+  # the provider only when both the id and the secret are present, so a
+  # deployment that leaves it empty simply has no Atlassian provider — which is
+  # the state that made every knowledge base over Confluence unusable, since
+  # both the live read and the live lookup run as the asking user and have no
+  # service-credential fallback by design.
+  atlassianClientId: ""
+  # Optional scope override. Empty uses the app's granular default, which
+  # includes `search:confluence` — separate from the read scopes and easy to
+  # miss, because a token without it reads pages perfectly well and fails every
+  # live lookup.
+  #
+  # Classic and granular scopes cannot be mixed on one app, so overriding this
+  # means overriding all of it.
+  atlassianScopes: ""
   # Redis URL passed to this app as AGENT_REDIS_URL.
   #
   # No longer the credential store: linked credentials are Kubernetes Secrets as
@@ -261,6 +279,8 @@ secrets:
   identityLinkEncryptionKeyKey: IDENTITY_LINK_ENCRYPTION_KEY
   identityLinkTokenKey: GATEWAY_IDENTITY_LINK_TOKEN
   githubAppClientSecretKey: GITHUB_APP_CLIENT_SECRET
+  # Only read when identityLink.atlassianClientId is set.
+  atlassianClientSecretKey: ATLASSIAN_CLIENT_SECRET
   identityLinkStateSecretKey: IDENTITY_LINK_STATE_SECRET
   # Signs the sender assertion sent to agent-orchestrator (docs/adr/0030 §6).
   # MUST match agent-orchestrator's senderAssertionSecretKey value. Unset (or
