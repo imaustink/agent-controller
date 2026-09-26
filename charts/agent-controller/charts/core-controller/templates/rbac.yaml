@@ -40,6 +40,20 @@ rules:
   - apiGroups: ["core.controller-agent.dev"]
     resources: ["tools/status", "skills/status", "agents/status", "toolruns/status", "agentruns/status", "localtools/status", "integrationroutes/status", "identityproviders/status", "connections/status", "knowledgebases/status"]
     verbs: ["get", "patch", "update"]
+{{/*
+kubernetes-sigs/agent-sandbox, for the Sandbox execution backend. Granted
+unconditionally, and harmless on a cluster that has not installed
+agent-sandbox: RBAC names a group/resource as strings, so a rule for a kind no
+CRD defines grants nothing and is never evaluated. The controller likewise
+registers its Sandbox watch only when the API is served, so a Job-only cluster
+never touches any of this.
+*/}}
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes/status"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
