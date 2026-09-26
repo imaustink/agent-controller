@@ -108,9 +108,37 @@ if (ids.size !== page.resources.length) {
 }
 
 console.log("\n2. driver.fetch — the whole thread as one document");
+
+/**
+ * A thread that actually HAS replies.
+ *
+ * Fetching whichever thread happened to be first left the assembly this
+ * driver exists for — a question and its answers as one document — untested
+ * on every run, and said so in a warning nobody could act on without knowing
+ * which thread to pick. Slack reports `reply_count` on the parent, so ask it
+ * directly rather than fetching candidates until one looks right.
+ */
+async function threadWithReplies() {
+  const res = await fetch(
+    `https://slack.com/api/conversations.history?channel=${env.SLACK_CHANNEL_ID}&limit=200`,
+    { headers: { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}` } },
+  );
+  const body = await res.json();
+  if (!body.ok) return undefined;
+  return (body.messages ?? []).find((m) => (m.reply_count ?? 0) > 0);
+}
+
+const conversation = await threadWithReplies();
+const target = conversation?.ts ?? first.id;
+if (conversation) {
+  ok(`fetching a thread with ${conversation.reply_count} repl(ies), not just the first one`);
+} else {
+  warn("no thread in this channel has replies, so assembly cannot be tested here");
+}
+
 let doc;
 try {
-  doc = await driver.fetch(scope, service, first.id);
+  doc = await driver.fetch(scope, service, target);
 } catch (e) {
   fail("driver.fetch", e);
 }
@@ -124,6 +152,19 @@ const messageCount = (doc.markdown.match(/^\*\*@/gm) ?? []).length;
 if (messageCount === 0) fail("driver.fetch", new Error("no messages rendered in the thread"));
 ok(`${messageCount} message(s) rendered in the thread`);
 
+// The whole point of indexing a thread rather than a message: the answer
+// usually lives in the replies, and a parent on its own is a question with no
+// answer attached.
+if (conversation) {
+  if (messageCount < 2) {
+    fail(
+      "thread assembly",
+      new Error(`thread has ${conversation.reply_count} repl(ies) but only ${messageCount} message(s) rendered`),
+    );
+  }
+  ok("the replies are in the document, not just the parent");
+}
+
 // Post-rendering the brackets are gone, but the id is still an id.
 const rawMentions = doc.markdown.match(/@[UW][A-Z0-9]{6,}/g) ?? [];
 if (rawMentions.length > 0) {
@@ -131,11 +172,10 @@ if (rawMentions.length > 0) {
   warn("the driver resolves these via users.info; an id surviving means the token");
   warn("lacks `users:read`, or Slack declined — the read still succeeds either way");
 }
-if (messageCount < 2) {
-  // Not fatal — the channel may have no replies — but it means the part of the
-  // driver that exists to keep a question with its answer went unexercised.
-  warn("this thread has no replies, so thread assembly was not really tested");
-  warn("re-run against a channel with a real back-and-forth to cover it");
+if (!conversation && messageCount < 2) {
+  // Only reachable when the channel genuinely has no threaded conversation —
+  // the fetch above targets one with replies whenever one exists.
+  warn("no thread here has replies, so thread assembly went unexercised");
 }
 
 // System messages are the Slack equivalent of Confluence's macro parameters:
