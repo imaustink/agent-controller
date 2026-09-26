@@ -251,6 +251,82 @@ try {
   ok(`refused: ${e.name}`);
 }
 
+console.log("\n7. searchAsUser — live, scoped to the channel and to the caller");
+const TERM = process.argv[2] ?? "deploy";
+let hits;
+try {
+  hits = await driver.searchAsUser(delegated, scope, TERM);
+} catch (e) {
+  if (/missing_scope/.test(String(e?.message ?? e))) {
+    warn("the user token lacks `search:read`, so live lookup went untested");
+    warn("it is a User Token Scope, separate from users:read, and needs a reinstall");
+    hits = undefined;
+  } else {
+    fail("driver.searchAsUser", e);
+  }
+}
+
+if (hits) {
+  ok(`${hits.length} hit(s) for ${JSON.stringify(TERM)}`);
+  for (const hit of hits.slice(0, 3)) {
+    console.log(`    - ${hit.title.slice(0, 70)}`);
+    console.log(`      ${hit.id}`);
+  }
+
+  // THE check. `in:` matches a channel NAME and names are mutable, which is
+  // exactly why the scope stores an id — so the id filter, not the query, is
+  // the boundary. Live, an unbounded search of this workspace returns
+  // thousands of messages from other channels.
+  const strays = hits.filter((hit) => !hit.id.startsWith(`${env.SLACK_CHANNEL_ID}/`));
+  if (strays.length > 0) {
+    for (const hit of strays.slice(0, 3)) warn(`  ${hit.id}`);
+    fail("search scope", new Error(`${strays.length} hit(s) came from another channel`));
+  }
+  ok(`every hit is in ${env.SLACK_CHANNEL_ID}`);
+
+  if (hits.length > 0) {
+    // A hit the read face cannot serve is a reference that always fails. The
+    // id is `<channel>/<ts>`, which is what kb:<name>/read takes.
+    //
+    // This is also the ONLY place the per-user read runs on a real user
+    // token — every other read in this harness uses the bot's. Slack splits
+    // its scopes by token type, and the two do not overlap the way the other
+    // providers' do: the bot can read history and cannot search, the user can
+    // search and, without `channels:history`, cannot read.
+    try {
+      const doc = await driver.readAsUser(delegated, hits[0].id);
+      ok(`the first hit reads back as the USER: ${doc.markdown.length} chars`);
+    } catch (e) {
+      if (/missing_scope/.test(String(e?.message ?? e))) {
+        warn("the user token cannot read a thread: needs `channels:history`");
+        warn("(and `groups:history` for private channels) as USER Token Scopes");
+        warn("without it every kb:<name>/read against Slack refuses, though search works");
+      } else {
+        fail("readAsUser", e);
+      }
+    }
+  }
+
+  console.log("\n8. a caller's own operators must not widen the search");
+  // `in:` in the user's words would reach past this channel. The driver
+  // strips operators before they reach Slack.
+  const crafted = await driver.searchAsUser(delegated, scope, "in:#general deploy");
+  const escaped = crafted.filter((hit) => !hit.id.startsWith(`${env.SLACK_CHANNEL_ID}/`));
+  if (escaped.length > 0) {
+    for (const hit of escaped.slice(0, 3)) warn(`  ${hit.id}`);
+    fail("search scope", new Error("a crafted query reached another channel"));
+  }
+  ok(`handled as plain terms: ${crafted.length} hit(s), none outside the channel`);
+
+  console.log("\n9. the service credential is refused");
+  try {
+    await driver.searchAsUser(service, scope, TERM);
+    fail("credential check", new Error("searched on the SERVICE credential"));
+  } catch (e) {
+    ok(`refused: ${e.message}`);
+  }
+}
+
 console.log("\nPASS — the real Slack driver works against a live workspace.");
 console.log("Note: the DENY path is only as tested as the identity you used. Proving we");
 console.log("withhold correctly needs a second Slack user who cannot see this channel.");
