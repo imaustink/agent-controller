@@ -16,7 +16,8 @@
  * localhost:6333, and OPENAI_API_KEY plus the Atlassian credentials in the env
  * file. Writes into a throwaway collection it deletes on the way in.
  */
-import { findEnvFile, getAccessToken, loadEnv } from "./lib/atlassian-auth.mjs";
+import { getAccessToken } from "./lib/atlassian-auth.mjs";
+import { findEnvFile, loadEnv } from "./lib/env.mjs";
 import { ConfluenceDriver } from "../dist/drivers/confluence.js";
 import { chunkDocument } from "../dist/sync/chunk.js";
 import { QdrantCorpusWriter } from "../dist/sync/corpus-writer.js";
@@ -115,6 +116,14 @@ console.log(`\nend-to-end: ${SPACE} -> ${COLLECTION}\n`);
 const token = await getAccessToken({ env }).catch((e) => fail("oauth", e));
 
 // A clean slate, so a pass cannot be an artifact of a previous run.
+// A harness that opens by deleting a collection must not be able to point at
+// a real one. The e2e suite guards the cluster by refusing any context that is
+// not minikube; this is the same idea one layer down, because QDRANT_URL can
+// be pointed anywhere.
+if (!COLLECTION.startsWith("e2e-")) {
+  console.error(`refusing to delete ${COLLECTION}: harnesses only touch e2e- collections`);
+  process.exit(1);
+}
 await fetch(`${QDRANT}/collections/${COLLECTION}`, { method: "DELETE" });
 
 const driver = new ConfluenceDriver({ siteBaseUrl: SITE, cloudId: CLOUD_ID });

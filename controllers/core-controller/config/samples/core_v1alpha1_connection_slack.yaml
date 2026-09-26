@@ -1,0 +1,44 @@
+# Bitovi's Slack workspace as ONE Connection (ADR 0043).
+#
+# Every indexed channel is a Corpus over this object, sharing this credential.
+# Ten channels is ten Corpora and one bot token, not ten of each — which is the
+# duplication the split exists to remove.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Connection
+metadata:
+  labels:
+    app.kubernetes.io/name: core-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: bitovi-slack
+spec:
+  provider: slack
+
+  # Only for citation permalinks. Slack needs no site coordinates to be
+  # reached: a channel is addressed by id alone, which is why the confluence
+  # site rule does not apply here.
+  site:
+    baseURL: https://bitovi.slack.com
+
+  # Lets the ingestion credential add itself to a scoped channel when a read is
+  # refused for want of membership, instead of requiring /invite per channel —
+  # the kind of toil that eventually pressures somebody into granting far
+  # broader scopes instead.
+  #
+  # It is the one WRITE any driver performs: it changes workspace state and
+  # posts a visible "joined the channel" event, and it needs `channels:join` on
+  # the bot token. So it is opt-in, lazy (only after Slack actually refuses),
+  # and never applied to a retrieval probe — joining on a caller's behalf would
+  # change the answer rather than report it.
+  autoJoin: true
+
+  secretEnv:
+    - name: SERVICE_TOKEN
+      secretRef:
+        name: bitovi-slack
+        key: botToken
+
+  # Retrieval probes run as the ASKING USER (ADR 0040). Slack authorizes the
+  # CHANNEL rather than the message, so one probe settles every candidate from
+  # a corpus — cheaper than the per-resource case rather than harder.
+  identityProviders:
+    - slack

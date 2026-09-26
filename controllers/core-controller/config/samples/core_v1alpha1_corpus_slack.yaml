@@ -1,0 +1,45 @@
+# One Slack channel as a Corpus (ADR 0043), drawn through the workspace
+# Connection that holds the bot token.
+#
+# A second channel is another file exactly like this one with a different
+# scope.channel and its own allowedRoles — and NOT another credential. That is
+# what lets #snc-eng and #exec-private live in one workspace with different
+# audiences, which is why roles sit here rather than on the Connection.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Corpus
+metadata:
+  labels:
+    app.kubernetes.io/name: core-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: snc-slack-eng
+spec:
+  connectionRef: bitovi-slack
+
+  # What a citation renders. Two Slack Corpora in one KnowledgeBase are
+  # distinguishable only by this, so a cited answer can say which channel it
+  # came from.
+  displayName: "#snc-eng"
+  description: >-
+    The SNC engagement's engineering channel: deploy chatter, incident threads
+    and the decisions that never made it into Confluence.
+
+  allowedRoles:
+    - reader
+
+  # The security boundary. An id, not a name: names are mutable and a renamed
+  # channel must not silently re-point this corpus at different material.
+  scope:
+    channel: C6RQKL5BK
+
+  sync:
+    # Slack's Events API is low-latency and lossy — it drops events with no
+    # replay — so the reconcile is still what makes the corpus trustworthy
+    # (ADR 0038 §4). The webhook arrives on the CONNECTION and fans out to
+    # whichever Corpora cover the channel (ADR 0043 §4).
+    mode: webhook
+    reconcileInterval: 6h
+
+  # A thread is the indexed unit here, and the GET face reads one back live
+  # when the retrieval snapshot is not good enough.
+  api:
+    enabled: true

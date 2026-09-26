@@ -16,7 +16,8 @@
  *
  *   node apps/connection-broker/scripts/e2e-broker.mjs SNC
  */
-import { findEnvFile, getAccessToken, loadEnv } from "./lib/atlassian-auth.mjs";
+import { getAccessToken } from "./lib/atlassian-auth.mjs";
+import { findEnvFile, loadEnv } from "./lib/env.mjs";
 import { ConfluenceDriver } from "../dist/drivers/confluence.js";
 import { StaticCorpusRegistry } from "../dist/registry.js";
 import { createBrokerServer } from "../dist/server.js";
@@ -51,6 +52,14 @@ const fail = (step, err) => {
 console.log(`\nbroker end-to-end: ${SPACE} -> ${COLLECTION}\n`);
 const token = await getAccessToken({ env }).catch((e) => fail("oauth", e));
 
+// A harness that opens by deleting a collection must not be able to point at
+// a real one. The e2e suite guards the cluster by refusing any context that is
+// not minikube; this is the same idea one layer down, because QDRANT_URL can
+// be pointed anywhere.
+if (!COLLECTION.startsWith("e2e-")) {
+  console.error(`refusing to delete ${COLLECTION}: harnesses only touch e2e- collections`);
+  process.exit(1);
+}
 await fetch(`${QDRANT}/collections/${COLLECTION}`, { method: "DELETE" });
 
 // The real registry is CRD-backed; a static one stands in so this runs without

@@ -29,7 +29,8 @@
  * registered as a callback URL on the Atlassian app.
  */
 import { createServer } from "node:http";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
+import { findEnvFile, loadEnv } from "./lib/env.mjs";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -63,49 +64,6 @@ if (!spaceKey) {
 }
 const envPath = findEnvFile(process.argv[3]);
 console.log(`reading credentials from ${envPath} (values are never printed)`);
-
-/**
- * Finds the env file.
- *
- * Checked against the MAIN checkout as well as the cwd, because .env is
- * gitignored and a git worktree is a separate copy of the repo — so running
- * this from a worktree finds nothing, which is a confusing way to learn that
- * your credentials live somewhere else.
- */
-function findEnvFile(explicit) {
-  const candidates = [explicit].filter(Boolean);
-  if (!explicit) {
-    candidates.push("tools/recipe-scraper/.env");
-    try {
-      // The parent of the shared git dir is the main checkout.
-      const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
-        encoding: "utf8",
-      }).trim();
-      candidates.push(join(common, "..", "tools/recipe-scraper/.env"));
-    } catch {
-      // Not a git checkout; the cwd-relative candidate is all there is.
-    }
-  }
-
-  const found = candidates.find((candidate) => existsSync(candidate));
-  if (found) return found;
-
-  console.error("Could not find an env file with the Atlassian credentials. Looked in:");
-  for (const candidate of candidates) console.error(`  ${candidate}`);
-  console.error("\nPass the path explicitly:");
-  console.error("  node apps/connection-broker/scripts/verify-confluence.mjs SNC /path/to/.env");
-  process.exit(1);
-}
-
-/** Reads the env file without echoing any value. */
-function loadEnv(path) {
-  const out = {};
-  for (const line of readFileSync(path, "utf8").split("\n")) {
-    const match = /^\s*([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line);
-    if (match) out[match[1]] = match[2].trim().replace(/^["']|["']$/g, "");
-  }
-  return out;
-}
 
 const env = loadEnv(envPath);
 const SCOPES = env.ATLASSIAN_SCOPES || DEFAULT_SCOPES;
