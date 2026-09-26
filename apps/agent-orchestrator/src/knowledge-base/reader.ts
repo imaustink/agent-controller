@@ -52,13 +52,53 @@ export class CorpusReader {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  async read(tool: ToolDescriptor, sourceId: string, subject: string): Promise<CorpusReadResult> {
-    const exec = tool.corpusGetExec;
-    if (!exec) throw new Error(`tool ${tool.id} carries no corpus GET spec`);
+  async read(
+    tool: ToolDescriptor,
+    reference: string,
+    caller: { subject: string; roles: string[] },
+  ): Promise<CorpusReadResult> {
+    const exec = tool.knowledgeBaseExec;
+    if (!exec || exec.operation !== "read") {
+      throw new Error(`tool ${tool.id} is not a knowledge-base read`);
+    }
+
+    // `<corpus>/<id>`. Split on the FIRST separator only: a Slack id is itself
+    // `<channel>/<ts>`, so everything after the corpus belongs to the source.
+    const slash = reference.indexOf("/");
+    const corpusId = slash > 0 ? reference.slice(0, slash) : "";
+    const sourceId = slash > 0 ? reference.slice(slash + 1) : "";
+    if (!corpusId || !sourceId) {
+      return {
+        result:
+          `"${reference}" is not a readable reference. Use \`<corpus>/<id>\`, where ` +
+          `<corpus> is one of: ${memberNames(exec.members)}.`,
+      };
+    }
+
+    const member = exec.members.find((candidate) => candidate.id === corpusId);
+    if (!member) {
+      // Prose, not an error: the model named something outside this knowledge
+      // base, which it can correct. Saying what IS available turns a dead end
+      // into a usable next step.
+      return {
+        result:
+          `"${corpusId}" is not part of ${exec.displayName ?? "this knowledge base"}. ` +
+          `Readable here: ${memberNames(exec.members)}.`,
+      };
+    }
+
+    // Union to INVOKE, per member to READ — the same split search uses per
+    // point (docs/adr/0039 §4). This is OUR policy layer, and it is not the
+    // same question as the source's: a caller whose Atlassian account happens
+    // to see a page still may not reach it through a corpus the operator
+    // scoped to other roles.
+    if (!member.allowedRoles.some((role) => caller.roles.includes(role))) {
+      return { result: `You do not have access to ${member.label} in this knowledge base.` };
+    }
 
     const credential = await this.options.credentials.delegatedToken(
-      subject,
-      exec.identityProviders ?? [],
+      caller.subject,
+      member.identityProviders ?? [],
     );
     if (!credential?.token) {
       // Asked rather than failed, and never silently fallen back to the
@@ -67,14 +107,14 @@ export class CorpusReader {
       return {
         needsLink: true,
         result:
-          `I need you to link the account behind ${exec.label ?? exec.corpusId} before I can ` +
+          `I need you to link the account behind ${member.label} before I can ` +
           "read from it — a live read has to run as you, not as the ingestion credential.",
       };
     }
 
     const endpoint =
       `${this.options.brokerUrl.replace(/\/+$/, "")}` +
-      `/corpora/${encodeURIComponent(exec.corpusId)}/documents/${encodeURIComponent(sourceId)}`;
+      `/corpora/${encodeURIComponent(corpusId)}/documents/${encodeURIComponent(sourceId)}`;
 
     let response: Response;
     try {
@@ -103,8 +143,14 @@ export class CorpusReader {
     const citation = document.url ? ` — ${document.url}` : "";
     return {
       result:
-        `Live read from ${exec.label ?? exec.corpusId}: ${document.title ?? sourceId}${citation}\n\n` +
+        `Live read from ${member.label}: ${document.title ?? sourceId}${citation}\n\n` +
         `${document.markdown ?? ""}`,
     };
   }
+}
+
+/** What the model may name, so a refusal is actionable rather than a dead end. */
+function memberNames(members: { id: string; label: string }[]): string {
+  if (members.length === 0) return "nothing — this knowledge base has no readable members";
+  return members.map((member) => `${member.id} (${member.label})`).join(", ");
 }

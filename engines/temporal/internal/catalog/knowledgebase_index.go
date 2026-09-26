@@ -3,6 +3,8 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/controller-agent/temporal-engine/internal/vectorstore"
 )
@@ -29,17 +31,15 @@ func (ix *Indexer) UpsertCorpus(ctx context.Context, conn CorpusDescriptor) erro
 	ix.connections[conn.ID] = conn
 	ix.mu.Unlock()
 
-	// The GET face is a tool a knowledge base may declare; without a record it
-	// would dangle when the skill resolves its refs.
-	if conn.APIEnabled {
-		tool := corpusGetTool(conn)
-		if err := upsertHidden(ctx, ix.stores.Tools, tool); err != nil {
-			return err
-		}
-	} else if err := ix.stores.Tools.Delete(ctx, []string{CorpusGetToolID(conn.ID)}); err != nil {
+	// A per-member read tool is no longer generated — one read per knowledge
+	// base replaced them — so any record an earlier build wrote is removed
+	// here rather than left to dangle in the catalog forever.
+	if err := ix.stores.Tools.Delete(ctx, []string{CorpusGetToolID(conn.ID)}); err != nil {
 		return err
 	}
 
+	// The read tool itself belongs to the knowledge base, so it is (re)written
+	// by the re-derivation below rather than here.
 	ix.scheduleSkillReindex()
 	return nil
 }
@@ -62,16 +62,59 @@ func (ix *Indexer) DeleteCorpus(ctx context.Context, id string) error {
 }
 
 // UpsertKnowledgeBase mirrors a KnowledgeBase and indexes what it derives.
+// writeKnowledgeBaseTools makes the catalog match what this knowledge base
+// currently generates — writing what it produces and removing what it does not.
+//
+// One implementation because there are two callers, and the last time they each
+// had their own, only one of them removed stale tools. The result was a
+// withdrawn capability that vanished from the skill's refs and stayed in the
+// catalog for the planner to find.
+func (ix *Indexer) writeKnowledgeBaseTools(
+	ctx context.Context,
+	kb KnowledgeBaseDescriptor,
+	connections map[string]CorpusDescriptor,
+) error {
+	generated := knowledgeBaseTools(kb, connections)
+	written := make(map[string]struct{}, len(generated))
+	for _, tool := range generated {
+		if err := upsertHidden(ctx, ix.stores.Tools, tool); err != nil {
+			return err
+		}
+		written[tool.ID] = struct{}{}
+	}
+
+	var stale []string
+	for _, id := range knowledgeBaseToolIDs(kb.ID) {
+		if _, ok := written[id]; !ok {
+			stale = append(stale, id)
+		}
+	}
+	if len(stale) == 0 {
+		return nil
+	}
+	return ix.stores.Tools.Delete(ctx, stale)
+}
+
+// knowledgeBaseToolIDs is every id a knowledge base owns, generated or not.
+//
+// The fetch id is listed although no fetch tool exists: it is how a record
+// written by an older build gets cleaned up.
+func knowledgeBaseToolIDs(id string) []string {
+	return []string{
+		KnowledgeBaseSearchToolID(id),
+		KnowledgeBaseReadToolID(id),
+		KnowledgeBaseFetchToolID(id),
+	}
+}
+
 func (ix *Indexer) UpsertKnowledgeBase(ctx context.Context, kb KnowledgeBaseDescriptor) error {
 	ix.mu.Lock()
 	ix.knowledgeBases[kb.ID] = kb
 	connections := ix.corporaSnapshot()
 	ix.mu.Unlock()
 
-	for _, tool := range knowledgeBaseTools(kb, connections) {
-		if err := upsertHidden(ctx, ix.stores.Tools, tool); err != nil {
-			return err
-		}
+	if err := ix.writeKnowledgeBaseTools(ctx, kb, connections); err != nil {
+		return err
 	}
 
 	derived := DeriveKnowledgeBaseSkill(kb, connections)
@@ -117,10 +160,8 @@ func (ix *Indexer) reindexKnowledgeBases(ctx context.Context) error {
 
 	records := make([]vectorstore.Record, 0, len(bases))
 	for _, kb := range bases {
-		for _, tool := range knowledgeBaseTools(kb, connections) {
-			if err := upsertHidden(ctx, ix.stores.Tools, tool); err != nil {
-				return err
-			}
+		if err := ix.writeKnowledgeBaseTools(ctx, kb, connections); err != nil {
+			return err
 		}
 		derived := DeriveKnowledgeBaseSkill(kb, connections)
 		rec, err := record(derived.ID, derived.EmbeddingText(),
@@ -177,43 +218,81 @@ func knowledgeBaseTools(kb KnowledgeBaseDescriptor, connections map[string]Corpu
 		},
 	}
 
-	for _, ref := range kb.CorpusRefs {
-		conn, ok := connections[ref]
-		if !ok || !conn.APIEnabled {
-			continue
-		}
-		// A Corpus with no identity provider cannot serve a per-user read, and
-		// the GET face has no service-credential mode by design (ADR 0040):
-		// reading live on the ingestion credential would answer a different
-		// question, permissively. So no tool, rather than one that can only
-		// fail after the model has committed to using it.
-		if len(conn.IdentityProviders) == 0 {
-			continue
-		}
-		tools = append(tools, corpusGetTool(conn))
+	// ONE read tool, not one per member. A knowledge base with eight members
+	// used to produce eight near-identical "Read from X" tools competing inside
+	// a single skill — the near-identical descriptions ADR 0039 §5 warns about,
+	// reproduced one level down — and the model had to pick the right tool
+	// before it could ask the right question. The corpus travels in the input
+	// instead, where the model can read it straight off a citation.
+	if readable := readableMembers(kb, connections); len(readable) > 0 {
+		tools = append(tools, knowledgeBaseReadTool(kb, readable, exec("read")))
 	}
 	return tools
+}
+
+// readableMembers are the members that can actually serve a per-user read.
+//
+// A member with no identity provider is excluded: the read face has no
+// service-credential mode by design (ADR 0040), so listing it would offer the
+// model an option that always fails.
+func readableMembers(
+	kb KnowledgeBaseDescriptor,
+	connections map[string]CorpusDescriptor,
+) []CorpusDescriptor {
+	readable := make([]CorpusDescriptor, 0, len(kb.CorpusRefs))
+	for _, ref := range kb.CorpusRefs {
+		conn, ok := connections[ref]
+		if ok && conn.APIEnabled && len(conn.IdentityProviders) > 0 {
+			readable = append(readable, conn)
+		}
+	}
+	return readable
+}
+
+// knowledgeBaseReadTool is the ONE live read a knowledge base offers.
+func knowledgeBaseReadTool(
+	kb KnowledgeBaseDescriptor,
+	readable []CorpusDescriptor,
+	exec *KnowledgeBaseExecSpec,
+) ToolDescriptor {
+	names := make([]string, 0, len(readable))
+	roles := map[string]bool{}
+	for _, conn := range readable {
+		names = append(names, fmt.Sprintf("%s (%s)", conn.ID, conn.Label()))
+		for _, role := range conn.AllowedRoles {
+			roles[role] = true
+		}
+	}
+
+	// Union to invoke, as the search tool does (ADR 0039 §4): a caller who may
+	// reach ANY member may call it, and which documents they can actually read
+	// is settled per read by the source itself.
+	allowed := make([]string, 0, len(roles))
+	for role := range roles {
+		allowed = append(allowed, role)
+	}
+	sort.Strings(allowed)
+
+	return ToolDescriptor{
+		ID: KnowledgeBaseReadToolID(kb.ID),
+		Description: fmt.Sprintf(
+			"Read the full, current text of one document in %s. Use after searching, when a "+
+				"passage is not enough or looks out of date.", kb.Label()),
+		Input: fmt.Sprintf(
+			"`<corpus>/<id>`, where <corpus> is one of: %s, and <id> is the resource id a "+
+				"search result cites. Reads LIVE and as the asking user, so it can follow a "+
+				"reference out of this knowledge base into anything that person has access "+
+				"to — and refuses anything they cannot see.",
+			strings.Join(names, ", ")),
+		Output:            "The document as the source returns it now, with a citation.",
+		AllowedRoles:      allowed,
+		KnowledgeBaseExec: exec,
+	}
 }
 
 // corpusGetTool is a Connection's scope-enforced GET face (ADR 0038 §5),
 // carrying that corpus's OWN roles rather than the knowledge base's union —
 // it is one source's capability, not the composition's.
-func corpusGetTool(conn CorpusDescriptor) ToolDescriptor {
-	return ToolDescriptor{
-		ID: CorpusGetToolID(conn.ID),
-		Description: fmt.Sprintf(
-			"Read the current state of a resource in %s (%s). %s",
-			conn.Label(), conn.Provider, conn.Description),
-		Input:        "The id of a page or resource, as a search result cites it. Reads it LIVE and as the asking user, so it can follow a reference out of this corpus into anything that person has access to — and refuses anything they do not.",
-		Output:       "The resource as the source returns it now, for the calling user.",
-		AllowedRoles: conn.AllowedRoles,
-		CorpusGetExec: &CorpusGetExecSpec{
-			CorpusID:          conn.ID,
-			Label:             conn.Label(),
-			IdentityProviders: conn.IdentityProviders,
-		},
-	}
-}
 
 // upsertHidden writes a tool that may be referenced but never retrieved.
 func upsertHidden(ctx context.Context, store vectorstore.Store, tool ToolDescriptor) error {

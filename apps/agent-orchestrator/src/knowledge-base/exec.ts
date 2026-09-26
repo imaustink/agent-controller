@@ -38,7 +38,8 @@ export interface KnowledgeBaseExecMember {
 export interface KnowledgeBaseExecSpec {
   knowledgeBaseId: string;
   displayName: string;
-  operation: "search" | "fetch";
+  /** "fetch" is legacy: no such tool is generated (docs/adr/0040). */
+  operation: "search" | "read" | "fetch";
   members: KnowledgeBaseExecMember[];
   disclosePartialVisibility: boolean;
 }

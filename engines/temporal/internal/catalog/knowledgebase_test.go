@@ -39,7 +39,7 @@ func globexConnections() map[string]catalog.CorpusDescriptor {
 		"globex-confluence": {
 			ID: "globex-confluence", Provider: "confluence", DisplayName: "GLOBEX Confluence",
 			Description: "The GLOBEX space.", AllowedRoles: []string{"reader", "writer"},
-			Collection: "conn_default_globex-confluence", APIEnabled: true,
+			Collection: "conn_default_globex-confluence", APIEnabled: true, IdentityProviders: []string{"atlassian"},
 		},
 		"globex-slack-eng": {
 			ID: "globex-slack-eng", Provider: "slack", DisplayName: "#globex-eng",
@@ -208,14 +208,14 @@ func TestDeriveKnowledgeBaseSkill(t *testing.T) {
 		require.False(t, skill.Unrestricted)
 	})
 
-	t.Run("generates search, and GET only for api-enabled members", func(t *testing.T) {
+	t.Run("generates search, and one read when a member can serve one", func(t *testing.T) {
 		skill := catalog.DeriveKnowledgeBaseSkill(globexKB(), conns)
 
 		// No kb:globex/fetch: whole-document fetch has no dispatch path yet, so the
 		// skill never steers the planner toward an unimplemented tool.
 		require.Equal(t, []string{
 			"kb:globex/search",
-			"corpus:globex-confluence/get", // the only member with api.enabled
+			"kb:globex/read", // one read tool, because a member can serve one
 		}, skill.ToolIDs)
 	})
 

@@ -2078,7 +2078,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // A Corpus's live GET face (docs/adr/0038 §5). Same shape as the search
       // below — in-process, no continuation state — but it answers a different
       // question: what the source says RIGHT NOW, rather than what we indexed.
-      if (tool.corpusGetExec) {
+      if (tool.knowledgeBaseExec?.operation === "read") {
         if (!deps.corpusReader) {
           return { error: `tool ${tool.id} reads a corpus but knowledge bases are not configured` };
         }
@@ -2087,7 +2087,10 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // it as.
           return { error: `tool ${tool.id} requires a resolved caller identity` };
         }
-        const read = await deps.corpusReader.read(tool, input, state.identity.subject);
+        const read = await deps.corpusReader.read(tool, input, {
+          subject: state.identity.subject,
+          roles: state.identity.roles,
+        });
         return {
           result: read.result,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: read.result }],

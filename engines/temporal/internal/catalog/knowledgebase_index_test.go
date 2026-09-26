@@ -90,6 +90,9 @@ func confluenceConnectionDescriptor() catalog.CorpusDescriptor {
 		ID: "globex-confluence", Provider: "confluence", DisplayName: "GLOBEX Confluence",
 		Description: "The GLOBEX space.", AllowedRoles: []string{"reader", "writer"},
 		Collection: "conn_default_globex-confluence", APIEnabled: true,
+		// A readable member: the read face has no service-credential mode, so a
+		// corpus without this contributes no read tool (ADR 0040).
+		IdentityProviders: []string{"atlassian"},
 	}
 }
 
@@ -130,7 +133,7 @@ func TestUpsertKnowledgeBaseIndexesASkillAndItsTools(t *testing.T) {
 	require.ElementsMatch(t, []string{"lead", "reader", "writer"}, skill.Roles)
 
 	require.ElementsMatch(t, []string{
-		"kb:globex/search", "corpus:globex-confluence/get",
+		"kb:globex/search", "kb:globex/read",
 	}, h.tools.ids())
 	require.NotContains(t, h.tools.ids(), "kb:globex/fetch",
 		"fetch has no dispatch path, so no fetch tool is generated")
@@ -146,14 +149,14 @@ func TestGeneratedToolsAreHiddenFromOpenRetrieval(t *testing.T) {
 	// Referenceable by the skill that declares them, never returned by open
 	// retrieval — otherwise every client's scoped tooling competes in front of
 	// every caller (ADR 0039 §2).
-	for _, id := range []string{"kb:globex/search", "corpus:globex-confluence/get"} {
+	for _, id := range []string{"kb:globex/search", "kb:globex/read"} {
 		rec, ok := h.tools.get(id)
 		require.True(t, ok, id)
 		require.True(t, rec.Hidden, "%s must not be retrievable on its own", id)
 	}
 }
 
-func TestConnectionGetToolCarriesItsOwnRolesNotTheUnion(t *testing.T) {
+func TestReadToolIsUnionToInvokeAndPerMemberToRead(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
@@ -161,19 +164,24 @@ func TestConnectionGetToolCarriesItsOwnRolesNotTheUnion(t *testing.T) {
 	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	get, ok := h.tools.get("corpus:globex-confluence/get")
+	read, ok := h.tools.get("kb:globex/read")
 	require.True(t, ok)
-	// The GET face is one source's capability, not the composition's: granting
-	// it the knowledge base's union would let a `lead`-only caller read a source
-	// they have no role for.
-	require.ElementsMatch(t, []string{"reader", "writer"}, get.Roles)
+	// Union to INVOKE, over the members this tool can actually SERVE. One tool
+	// covers every readable member, so restricting it to any single member's
+	// roles would make it uncallable for the rest — but the leads channel has
+	// no API face, so a `lead`-only caller could read nothing through it, and
+	// granting them invoke access would offer a tool that always refuses.
+	//
+	// Which member a caller may read is then checked per read, in the activity:
+	// the same split search uses per point (ADR 0039 s4).
+	require.ElementsMatch(t, []string{"reader", "writer"}, read.Roles)
 
 	search, ok := h.tools.get("kb:globex/search")
 	require.True(t, ok)
 	require.ElementsMatch(t, []string{"lead", "reader", "writer"}, search.Roles)
 }
 
-func TestConnectionWithoutAnApiFaceContributesNoGetTool(t *testing.T) {
+func TestConnectionWithoutAnApiFaceContributesNoReadTool(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
@@ -182,23 +190,27 @@ func TestConnectionWithoutAnApiFaceContributesNoGetTool(t *testing.T) {
 	require.NoError(t, h.ix.UpsertCorpus(ctx, conn))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	_, ok := h.tools.get("corpus:globex-confluence/get")
+	_, ok := h.tools.get("kb:globex/read")
 	require.False(t, ok)
 }
 
-func TestTurningOffTheApiFaceRemovesTheGetTool(t *testing.T) {
+func TestTurningOffTheApiFaceRemovesTheReadTool(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
+	// The read tool belongs to the KNOWLEDGE BASE now, not to a member, so it
+	// appears with the knowledge base rather than with the corpus.
 	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
-	_, ok := h.tools.get("corpus:globex-confluence/get")
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+	_, ok := h.tools.get("kb:globex/read")
 	require.True(t, ok)
 
 	off := confluenceConnectionDescriptor()
 	off.APIEnabled = false
 	require.NoError(t, h.ix.UpsertCorpus(ctx, off))
+	require.NoError(t, h.ix.ReindexSkills(ctx))
 
-	_, ok = h.tools.get("corpus:globex-confluence/get")
+	_, ok = h.tools.get("kb:globex/read")
 	require.False(t, ok, "a withdrawn capability must not linger as a callable tool")
 }
 
@@ -221,7 +233,7 @@ func TestDeleteKnowledgeBaseRemovesTheDerivedSkillByItsDerivedId(t *testing.T) {
 	require.False(t, ok)
 }
 
-func TestDeleteConnectionRemovesItsGetToolAndLeavesTheKnowledgeBaseWorking(t *testing.T) {
+func TestDeleteConnectionLeavesTheKnowledgeBaseWorking(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
@@ -230,13 +242,16 @@ func TestDeleteConnectionRemovesItsGetToolAndLeavesTheKnowledgeBaseWorking(t *te
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
 	require.NoError(t, h.ix.DeleteCorpus(ctx, "globex-confluence"))
-	_, ok := h.tools.get("corpus:globex-confluence/get")
+	require.NoError(t, h.ix.ReindexSkills(ctx))
+
+	// The only member that could serve a read is gone, so the read tool goes
+	// with it rather than staying as an option that always fails.
+	_, ok := h.tools.get("kb:globex/read")
 	require.False(t, ok)
 
 	// The knowledge base keeps answering over its remaining member: a vanished
 	// connection is a dangling ref, which contributes nothing rather than
 	// failing the whole skill closed.
-	require.NoError(t, h.ix.ReindexSkills(ctx))
 	skill, ok := h.skills.get("kb:globex")
 	require.True(t, ok)
 	require.ElementsMatch(t, []string{"lead"}, skill.Roles)
@@ -334,7 +349,7 @@ func TestGeneratedToolDescriptorsDescribeThemselves(t *testing.T) {
 	require.Contains(t, search.Description, "GLOBEX")
 	require.Contains(t, search.Output, "withheld")
 
-	get := decodeTool(t, mustGet(t, h.tools, "corpus:globex-confluence/get"))
+	get := decodeTool(t, mustGet(t, h.tools, "kb:globex/read"))
 	require.Contains(t, get.Input, "as the asking user")
 }
 

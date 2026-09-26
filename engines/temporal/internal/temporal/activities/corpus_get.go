@@ -21,9 +21,9 @@ type ReadCorpusInput struct {
 	// Tool carries the execution spec snapshotted at index time, so this runs
 	// against exactly the corpus the planner was offered.
 	Tool catalog.ToolDescriptor `json:"tool"`
-	// SourceID is the id of a resource in this corpus — the same id retrieval
-	// cites, so the model asks for something it has seen rather than composing
-	// a provider path.
+	// SourceID is `<corpus>/<id>` — which member, and the resource id retrieval
+	// cites. One tool serves the whole knowledge base, so the corpus travels
+	// here rather than in the choice of tool.
 	SourceID string `json:"sourceId"`
 }
 
@@ -65,12 +65,49 @@ func (a *KnowledgeBaseActivities) ReadCorpus(
 	ctx context.Context,
 	in ReadCorpusInput,
 ) (ReadCorpusOutput, error) {
-	exec := in.Tool.CorpusGetExec
-	if exec == nil {
-		return ReadCorpusOutput{}, fmt.Errorf("tool %s carries no corpus GET spec", in.Tool.ID)
+	exec := in.Tool.KnowledgeBaseExec
+	if exec == nil || exec.Operation != "read" {
+		return ReadCorpusOutput{}, fmt.Errorf("tool %s is not a knowledge-base read", in.Tool.ID)
 	}
 
-	credential, err := a.Credentials.DelegatedToken(ctx, in.Caller, exec.IdentityProviders)
+	// `<corpus>/<id>`. Split on the FIRST separator only: a Slack id is itself
+	// `<channel>/<ts>`, so anything after the corpus belongs to the source.
+	corpusID, sourceID, ok := strings.Cut(in.SourceID, "/")
+	if !ok || corpusID == "" || sourceID == "" {
+		return ReadCorpusOutput{
+			Result: fmt.Sprintf(
+				"%q is not a readable reference. Use `<corpus>/<id>`, where <corpus> is one of: %s.",
+				in.SourceID, memberNames(exec.Members)),
+		}, nil
+	}
+
+	member, found := memberByID(exec.Members, corpusID)
+	if !found {
+		// Prose, not an error: the model named something outside this knowledge
+		// base, which it can correct. Saying what IS available turns a dead end
+		// into a usable next step.
+		return ReadCorpusOutput{
+			Result: fmt.Sprintf(
+				"%q is not part of %s. Readable here: %s.",
+				corpusID, exec.DisplayName, memberNames(exec.Members)),
+		}, nil
+	}
+
+	// Union to INVOKE, per member to READ — the same split search uses per point
+	// (ADR 0039 §4). The tool is callable by anyone who may reach any member,
+	// because a tool nobody can call is useless; which member they may actually
+	// read is checked here.
+	//
+	// This is OUR policy layer and it is not the same question as the source's.
+	// A caller whose Atlassian account happens to see a page still may not reach
+	// it through a corpus the operator scoped to other roles.
+	if !holdsAnyRole(in.Caller.Roles, member.AllowedRoles) {
+		return ReadCorpusOutput{
+			Result: fmt.Sprintf("You do not have access to %s in this knowledge base.", member.Label),
+		}, nil
+	}
+
+	credential, err := a.Credentials.DelegatedToken(ctx, in.Caller, member.IdentityProviders)
 	if err != nil {
 		return ReadCorpusOutput{}, err
 	}
@@ -79,17 +116,17 @@ func (a *KnowledgeBaseActivities) ReadCorpus(
 			NeedsLink: true,
 			Result: fmt.Sprintf(
 				"I need you to link the account behind %s before I can read from it — "+
-					"a live read has to run as you, not as the ingestion credential.", exec.Label),
+					"a live read has to run as you, not as the ingestion credential.", member.Label),
 		}, nil
 	}
 
-	body, citation, err := a.readThroughBroker(ctx, exec.CorpusID, in.SourceID, credential.Token)
+	body, citation, err := a.readThroughBroker(ctx, corpusID, sourceID, credential.Token)
 	if err != nil {
 		return ReadCorpusOutput{}, err
 	}
 
 	var out strings.Builder
-	fmt.Fprintf(&out, "Live read from %s (%s)", exec.Label, in.SourceID)
+	fmt.Fprintf(&out, "Live read from %s (%s)", member.Label, sourceID)
 	if citation != "" {
 		fmt.Fprintf(&out, " — %s", citation)
 	}
@@ -148,4 +185,47 @@ func (a *KnowledgeBaseActivities) readThroughBroker(
 		return "", "", fmt.Errorf("decode broker response: %w", err)
 	}
 	return parsed.Markdown, parsed.URL, nil
+}
+
+// memberByID finds the member a reference names.
+func memberByID(members []catalog.KnowledgeBaseExecMember, id string) (catalog.KnowledgeBaseExecMember, bool) {
+	for _, member := range members {
+		if member.ID == id {
+			return member, true
+		}
+	}
+	return catalog.KnowledgeBaseExecMember{}, false
+}
+
+// memberNames lists what the model may name, so a refusal is actionable rather
+// than a dead end.
+func memberNames(members []catalog.KnowledgeBaseExecMember) string {
+	names := make([]string, 0, len(members))
+	for _, member := range members {
+		names = append(names, fmt.Sprintf("%s (%s)", member.ID, member.Label))
+	}
+	if len(names) == 0 {
+		return "nothing — this knowledge base has no readable members"
+	}
+	return strings.Join(names, ", ")
+}
+
+// holdsAnyRole is the match-any rule the vector store applies to a point.
+//
+// Empty caller roles match NOTHING, which is the fail-closed default: an
+// unresolved identity is not a permissive one.
+func holdsAnyRole(caller, required []string) bool {
+	if len(caller) == 0 || len(required) == 0 {
+		return false
+	}
+	held := make(map[string]struct{}, len(caller))
+	for _, role := range caller {
+		held[role] = struct{}{}
+	}
+	for _, role := range required {
+		if _, ok := held[role]; ok {
+			return true
+		}
+	}
+	return false
 }

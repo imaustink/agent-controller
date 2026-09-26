@@ -396,8 +396,8 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		// caller's delegated credential INSIDE the activity and never lets it
 		// back out, where the gate below resolves a Tool CR's providers into
 		// secretEnv for a Job.
-		if tool.CorpusGetExec != nil {
-			note("Reading from " + tool.CorpusGetExec.Label + "…")
+		if tool.KnowledgeBaseExec != nil && tool.KnowledgeBaseExec.Operation == "read" {
+			note("Reading from " + tool.KnowledgeBaseExec.DisplayName + "…")
 			var read activities.ReadCorpusOutput
 			if err := workflow.ExecuteActivity(actx, activities.ReadCorpusActivityName,
 				activities.ReadCorpusInput{

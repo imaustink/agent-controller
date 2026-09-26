@@ -53,7 +53,7 @@ describe("deriveKnowledgeBaseIndex", () => {
     expect(skills[0].effectiveRoles).toEqual(["lead", "reader", "writer"]);
 
     expect(tools.map((t) => t.id).sort()).toEqual([
-      "corpus:globex-confluence/get",
+      "kb:globex/read",
       "kb:globex/search",
     ]);
   });
@@ -61,12 +61,13 @@ describe("deriveKnowledgeBaseIndex", () => {
   it("does not generate a fetch tool while fetch has no dispatch path", () => {
     const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
 
-    // The `/fetch` whole-document read is deferred with its source adapter
-    // (ADR 0040); offering it would steer the planner into a call that
-    // silently degrades to a similarity search.
+    // `/fetch` was a whole-document read with no dispatch path, and offering
+    // it steered the planner into a call that silently degraded to a
+    // similarity search. `/read` replaced it and DOES dispatch, so the rule is
+    // now about the id rather than about there being only one tool.
     expect(tools.map((t) => t.id)).not.toContain("kb:globex/fetch");
     for (const tool of tools) {
-      expect(tool.knowledgeBaseExec?.operation ?? "search").toBe("search");
+      expect(tool.knowledgeBaseExec?.operation ?? "search").not.toBe("fetch");
     }
   });
 
@@ -81,10 +82,10 @@ describe("deriveKnowledgeBaseIndex", () => {
     }
   });
 
-  it("gives a connection's GET tool its own roles, not the union", () => {
+  it("gives the read tool the union of the members it can SERVE", () => {
     const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
 
-    const get = tools.find((t) => t.id === "corpus:globex-confluence/get")!;
+    const get = tools.find((t) => t.id === "kb:globex/read")!;
     // The GET face is one source's capability, not the composition's: granting
     // it the union would let a lead-only caller read a source they hold no role
     // for.
@@ -109,7 +110,7 @@ describe("deriveKnowledgeBaseIndex", () => {
 
     const { tools } = deriveKnowledgeBaseIndex([globexKb(), second], connections());
 
-    const gets = tools.filter((t) => t.id === "corpus:globex-confluence/get");
+    const gets = tools.filter((t) => t.id === "kb:globex/read");
     expect(gets).toHaveLength(1);
   });
 

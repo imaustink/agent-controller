@@ -6,6 +6,7 @@ import {
   corpusGetToolId,
   connectionLabel,
   knowledgeBaseLabel,
+  knowledgeBaseReadToolId,
   knowledgeBaseSearchToolId,
   type CorpusDescriptor,
   type KnowledgeBaseDescriptor,
@@ -77,7 +78,7 @@ export function knowledgeBaseTools(
   roles: string[],
 ): ToolDescriptor[] {
   const label = knowledgeBaseLabel(kb);
-  const exec = (operation: "search" | "fetch"): KnowledgeBaseExecSpec => ({
+  const exec = (operation: "search" | "read"): KnowledgeBaseExecSpec => ({
     knowledgeBaseId: kb.id,
     displayName: label,
     operation,
@@ -102,44 +103,62 @@ export function knowledgeBaseTools(
     },
   ];
 
-  for (const ref of kb.corpusRefs) {
-    const connection = connections.get(ref);
-    if (!connection?.apiEnabled) continue;
-    // A Corpus with no identity provider cannot serve a per-user read, and the
-    // GET face has no service-credential mode by design (docs/adr/0040):
-    // reading live on the ingestion credential would answer a different
-    // question, permissively. So no tool, rather than one that can only fail
-    // after the model has committed to using it.
-    if (!connection.identityProviders?.length) continue;
-    tools.push(connectionGetTool(connection));
+  // ONE read tool, not one per member. A knowledge base with eight members
+  // produced eight near-identical "Read from X" tools competing inside a single
+  // skill — the near-identical descriptions docs/adr/0039 §5 warns about,
+  // reproduced one level down — and the model had to pick the right tool before
+  // it could ask the right question. The corpus travels in the input instead,
+  // where the model can read it straight off a citation.
+  const readable = kb.corpusRefs
+    .map((ref) => connections.get(ref))
+    .filter((connection): connection is CorpusDescriptor => {
+      // A member with no identity provider cannot serve a per-user read: the
+      // read face has no service-credential mode by design (docs/adr/0040), so
+      // listing it would offer an option that always fails.
+      return Boolean(connection?.apiEnabled && connection.identityProviders?.length);
+    });
+
+  if (readable.length > 0) {
+    tools.push(knowledgeBaseReadTool(kb, readable, exec("read")));
   }
 
   return tools;
 }
 
 /**
- * A Corpus's scope-enforced GET face (docs/adr/0038 §5), carrying that
- * connection's OWN roles rather than the knowledge base's union — it is one
- * source's capability, not the composition's. Granting it the union would let a
- * caller read a source they hold no role for.
+ * The ONE live read a knowledge base offers.
+ *
+ * Union to INVOKE over the members it can actually serve, then per member at
+ * call time (docs/adr/0039 §4). Restricting it to a single member's roles would
+ * make it uncallable for the rest; granting it the whole knowledge base's union
+ * would offer it to callers who could read nothing through it.
+ *
+ * PARITY: `knowledgeBaseReadTool` in `engines/temporal/internal/catalog`.
  */
-export function connectionGetTool(connection: CorpusDescriptor): ToolDescriptor {
-  const label = connectionLabel(connection);
+export function knowledgeBaseReadTool(
+  kb: KnowledgeBaseDescriptor,
+  readable: CorpusDescriptor[],
+  exec: ToolDescriptor["knowledgeBaseExec"],
+): ToolDescriptor {
+  const names = readable
+    .map((connection) => `${connection.id} (${connectionLabel(connection)})`)
+    .join(", ");
+  const roles = [...new Set(readable.flatMap((connection) => connection.allowedRoles))].sort();
+
   return {
-    id: corpusGetToolId(connection.id),
-    name: `Read from ${label}`,
+    id: knowledgeBaseReadToolId(kb.id),
+    name: `Read from ${knowledgeBaseLabel(kb)}`,
     description:
-      `Read the current state of a resource in ${label} (${connection.provider}). ` +
-      `${connection.description}` +
-      "\n\nInput: The id of a page or resource, as a search result cites it. Reads it LIVE and as the asking user, so it can follow a reference out of this corpus into anything that person has access to — and refuses anything they do not." +
-      "\nOutput: The resource as the source returns it now, for the calling user.",
-    allowedRoles: connection.allowedRoles,
+      `Read the full, current text of one document in ${knowledgeBaseLabel(kb)}. ` +
+      "Use after searching, when a passage is not enough or looks out of date." +
+      `\n\nInput: \`<corpus>/<id>\`, where <corpus> is one of: ${names}, and <id> is ` +
+      "the resource id a search result cites. Reads LIVE and as the asking user, so it " +
+      "can follow a reference out of this knowledge base into anything that person has " +
+      "access to — and refuses anything they cannot see." +
+      "\nOutput: The document as the source returns it now, with a citation.",
+    allowedRoles: roles,
     hidden: true,
-    corpusGetExec: {
-      corpusId: connection.id,
-      label,
-      identityProviders: connection.identityProviders,
-    },
+    knowledgeBaseExec: exec,
   };
 }
 

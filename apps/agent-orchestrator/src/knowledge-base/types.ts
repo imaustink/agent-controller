@@ -22,6 +22,10 @@ export const CORPUS_ID_PREFIX = "corpus:";
 export const knowledgeBaseSkillId = (name: string) => `${KNOWLEDGE_BASE_ID_PREFIX}${name}`;
 export const knowledgeBaseSearchToolId = (name: string) =>
   `${KNOWLEDGE_BASE_ID_PREFIX}${name}/search`;
+/** The live read a KnowledgeBase generates: one per base, not one per member. */
+export const knowledgeBaseReadToolId = (name: string) =>
+  `${KNOWLEDGE_BASE_ID_PREFIX}${name}/read`;
+
 export const knowledgeBaseFetchToolId = (name: string) =>
   `${KNOWLEDGE_BASE_ID_PREFIX}${name}/fetch`;
 /** A Corpus's scope-enforced GET face (docs/adr/0038 §5). */

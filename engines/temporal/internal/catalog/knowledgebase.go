@@ -37,7 +37,14 @@ func KnowledgeBaseSearchToolID(name string) string { return KnowledgeBaseIDPrefi
 // remove any fetch record written by an earlier build.
 func KnowledgeBaseFetchToolID(name string) string { return KnowledgeBaseIDPrefix + name + "/fetch" }
 
-// CorpusGetToolID is a Connection's scope-enforced GET face (ADR 0038 §5).
+// KnowledgeBaseReadToolID is the live read a KnowledgeBase generates
+// (ADR 0038 §5): one per knowledge base, not one per member.
+func KnowledgeBaseReadToolID(name string) string { return KnowledgeBaseIDPrefix + name + "/read" }
+
+// CorpusGetToolID is the id a PER-MEMBER read tool used to carry. No such tool
+// is generated any more — one read per knowledge base replaced them — and the
+// id is retained only so DeleteKnowledgeBase can remove records written by an
+// earlier build.
 func CorpusGetToolID(name string) string { return CorpusIDPrefix + name + "/get" }
 
 // CorpusDescriptor is one scoped external resource subset (ADR 0038).
@@ -226,10 +233,10 @@ func DecodeKnowledgeBase(obj *unstructured.Unstructured) (KnowledgeBaseDescripto
 // the index.
 func DeriveKnowledgeBaseSkill(kb KnowledgeBaseDescriptor, connections map[string]CorpusDescriptor) SkillDescriptor {
 	var (
-		resolved  []CorpusDescriptor
-		roleSet   = map[string]struct{}{}
-		toolIDs   = []string{KnowledgeBaseSearchToolID(kb.ID)}
-		getToolID []string
+		resolved []CorpusDescriptor
+		roleSet  = map[string]struct{}{}
+		toolIDs  = []string{KnowledgeBaseSearchToolID(kb.ID)}
+		readable bool
 	)
 
 	for _, ref := range kb.CorpusRefs {
@@ -241,8 +248,10 @@ func DeriveKnowledgeBaseSkill(kb KnowledgeBaseDescriptor, connections map[string
 		for _, role := range conn.AllowedRoles {
 			roleSet[role] = struct{}{}
 		}
-		if conn.APIEnabled {
-			getToolID = append(getToolID, CorpusGetToolID(conn.ID))
+		// One read tool serves every readable member, so this only records
+		// WHETHER any member can serve a per-user read — not one id each.
+		if conn.APIEnabled && len(conn.IdentityProviders) > 0 {
+			readable = true
 		}
 	}
 
@@ -251,8 +260,9 @@ func DeriveKnowledgeBaseSkill(kb KnowledgeBaseDescriptor, connections map[string
 		roles = append(roles, role)
 	}
 	sort.Strings(roles)
-	sort.Strings(getToolID)
-	toolIDs = append(toolIDs, getToolID...)
+	if readable {
+		toolIDs = append(toolIDs, KnowledgeBaseReadToolID(kb.ID))
+	}
 
 	skill := SkillDescriptor{
 		ID:             KnowledgeBaseSkillID(kb.ID),
