@@ -212,6 +212,14 @@ jobs:
       - name: e2e/specs/broker-contract.e2e.ts
         run: npm run e2e -w e2e -- specs/broker-contract.e2e.ts
 
+      # The third. Every cluster spec that indexes a corpus rests on the fake
+      # Confluence answering what the real driver asks; if it has drifted,
+      # those specs pass against a fiction. This drives the production driver
+      # against the manifest's own server, so drift fails here in seconds
+      # rather than turning a cluster suite green over nothing.
+      - name: e2e/specs/fake-confluence-fidelity.e2e.ts
+        run: npm run e2e -w e2e -- specs/fake-confluence-fidelity.e2e.ts
+
   core-controller:
     name: Go core-controller (lint, test, build)
     runs-on: ubuntu-latest
