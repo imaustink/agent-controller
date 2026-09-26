@@ -53,6 +53,12 @@ spec:
                   name: {{ .Values.qdrant.apiKeySecret.name }}
                   key: {{ .Values.qdrant.apiKeySecret.key }}
             {{- end }}
+            {{- range $provider, $origin := .Values.apiOrigins }}
+            {{- if $origin }}
+            - name: {{ $provider | upper }}_API_ORIGIN
+              value: {{ $origin | quote }}
+            {{- end }}
+            {{- end }}
             - name: EMBEDDING_MODEL
               value: {{ .Values.embeddings.model | quote }}
             {{- if .Values.embeddings.apiKeySecret.name }}

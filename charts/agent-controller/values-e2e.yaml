@@ -336,3 +336,47 @@ agent-orchestrator:
     # with fewer tools -- which is fewer real embedding calls per test, not just
     # a shorter fixture.
     callerToolTopK: 3
+
+# Both engines are told where the broker is. ADR 0036 keeps them in parity, so
+# a knowledge-base behaviour proven on one engine and never wired on the other
+# is exactly the asymmetry this suite exists to catch.
+agent-orchestrator:
+  knowledgeBases:
+    enabled: true
+    brokerUrl: "http://agent-controller-connection-broker:8080"
+    brokerTokenSecret:
+      name: e2e-connection-broker-secrets
+      key: orchestratorToken
+
+temporal-engine:
+  knowledgeBases:
+    enabled: true
+    brokerUrl: "http://agent-controller-connection-broker:8080"
+    brokerTokenSecret:
+      name: e2e-connection-broker-secrets
+      key: orchestratorToken
+
+# The connection-broker, and the knowledge-base pipeline that needs it.
+#
+# Off in the default values, deliberately — it is the process that holds every
+# client's third-party credentials. On here because the knowledge-base specs
+# cannot exercise anything without it, and a corpus that is never synced makes
+# every retrieval assertion vacuous.
+connection-broker:
+  enabled: true
+  qdrant:
+    url: "http://agent-controller-qdrant:6333"
+  # Pointed at the in-cluster stand-in (e2e/manifests/fake-confluence.yaml),
+  # the same way integration-gateway reaches fake-github through githubApiUrl.
+  # Nothing production-shaped changes: this is the Data Center/Server seam.
+  apiOrigins:
+    atlassian: "http://fake-confluence.controller-agent.svc.cluster.local"
+  embeddings:
+    apiKeySecret:
+      name: agent-orchestrator-secrets
+      key: openaiApiKey
+  orchestratorTokenSecret:
+    name: e2e-connection-broker-secrets
+    key: orchestratorToken
+  syncTokenSecret:
+    name: e2e-connection-broker-sync-tokens

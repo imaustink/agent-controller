@@ -97,6 +97,20 @@ spec:
                   name: {{ . }}
                   key: {{ $.Values.identityLink.tokenSecretKey }}
             {{- end }}
+            {{- if .Values.knowledgeBases.enabled }}
+            # Knowledge bases (docs/adr/0039). The worker registers its
+            # knowledge-base activities only when the broker URL is set, and
+            # logs that it has disabled them otherwise — so a worker never told
+            # about the broker fails every knowledge-base turn with an
+            # unregistered activity rather than anything that names the cause.
+            - name: CONNECTION_BROKER_URL
+              value: {{ .Values.knowledgeBases.brokerUrl | quote }}
+            - name: CONNECTION_BROKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.knowledgeBases.brokerTokenSecret.name }}
+                  key: {{ .Values.knowledgeBases.brokerTokenSecret.key }}
+            {{- end }}
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:

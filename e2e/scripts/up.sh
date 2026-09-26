@@ -72,6 +72,14 @@ kubectl apply -n "$NS" -f "$REPO_ROOT/e2e/manifests/temporal-dev-server.yaml" >/
 kubectl -n "$NS" wait --for=condition=Available --timeout=120s deploy/temporal-dev-server >/dev/null
 echo "  ✓ temporal-dev-server"
 
+step "Deploying the fake Confluence (e2e/manifests/fake-confluence.yaml)..."
+# The connection-broker is pointed at this by values-e2e.yaml. It must exist
+# BEFORE the release, or the first sync CronJob fires against a Service with no
+# endpoints and the corpus comes up empty for a reason no assertion names.
+kubectl apply -n "$NS" -f "$REPO_ROOT/e2e/manifests/fake-confluence.yaml" >/dev/null
+kubectl -n "$NS" wait --for=condition=Available --timeout=120s deploy/fake-confluence >/dev/null
+echo "  ✓ fake-confluence"
+
 step "Adopting hand-created objects into Helm..."
 # dev-up.sh creates these ServiceAccounts with `kubectl create serviceaccount`,
 # but community-components' templates also declare them. Helm refuses to adopt

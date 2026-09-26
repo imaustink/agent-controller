@@ -52,6 +52,24 @@ qdrant:
     name: ""
     key: apiKey
 
+# Where each provider's API lives, when it is not the vendor's public cloud.
+#
+# Empty means the driver's own default, which is what a Cloud tenant wants. A
+# Confluence Data Center or Server install serves the REST API from the site
+# itself with no `api.atlassian.com` in front, and a deployment pointed at one
+# has to be able to say so.
+#
+# Process-wide rather than per-Connection: an installation talks to one
+# Atlassian or another, not to both, and a per-Connection field would invite
+# pointing two Corpora at two different Atlassians while sharing a credential.
+#
+# The e2e environment sets `atlassian` to its in-cluster stand-in, the same way
+# fake-github is reached through `githubApiUrl`.
+apiOrigins:
+  atlassian: ""
+  slack: ""
+  gdrive: ""
+
 embeddings:
   # Must match whatever the engines embed with: a knowledge base merges scores
   # from several collections as if directly comparable, which holds only when

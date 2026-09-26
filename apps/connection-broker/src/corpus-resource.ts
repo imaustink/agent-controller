@@ -151,6 +151,22 @@ function driverFor(name: string, connection: ConnectionCustomResource): Driver {
       return new ConfluenceDriver({
         siteBaseUrl: spec.site.baseURL,
         cloudId: spec.site.cloudId,
+        // Where the API lives, when it is not Atlassian Cloud's gateway.
+        //
+        // Cloud is the default and needs none of this. A Data Center or Server
+        // install does: it serves the REST API from the site itself, with no
+        // `api.atlassian.com` in front, so a deployment pointed at one has to
+        // be able to say so. Process-wide rather than per-Connection because
+        // it is a property of the DEPLOYMENT — an installation talks to one
+        // Atlassian or another, not to both — and a per-Connection field would
+        // invite somebody to point two Corpora at two different Atlassians
+        // while sharing one credential.
+        //
+        // The e2e suite uses it to reach its in-cluster stand-in, the same way
+        // fake-github is reached through `githubApiUrl`.
+        ...(process.env.ATLASSIAN_API_ORIGIN
+          ? { gatewayOrigin: process.env.ATLASSIAN_API_ORIGIN }
+          : {}),
       });
     }
 
@@ -158,6 +174,8 @@ function driverFor(name: string, connection: ConnectionCustomResource): Driver {
       // No site coordinates: a channel is reached by id alone.
       return new SlackDriver({
         workspaceUrl: spec.site?.baseURL,
+        // Same seam, same reasoning as ATLASSIAN_API_ORIGIN above.
+        ...(process.env.SLACK_API_ORIGIN ? { apiOrigin: process.env.SLACK_API_ORIGIN } : {}),
         // An operator's decision on the CONNECTION, never a default: joining is
         // the one write this driver can perform, and it is a property of the
         // credential rather than of any one channel.
@@ -165,7 +183,10 @@ function driverFor(name: string, connection: ConnectionCustomResource): Driver {
       });
 
     case "gdrive":
-      return new GDriveDriver();
+      // Same seam, same reasoning as ATLASSIAN_API_ORIGIN above.
+      return new GDriveDriver(
+        process.env.GDRIVE_API_ORIGIN ? { apiOrigin: process.env.GDRIVE_API_ORIGIN } : {},
+      );
 
     default:
       // A provider the CRD's enum does not cover, or one added to the enum

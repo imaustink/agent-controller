@@ -40,6 +40,13 @@ upsert() {
 }
 
 rand() { openssl rand -hex 32; }
+# Fixed, and for the same reason as the two below it: the orchestrator presents
+# this to the broker on every probe and every user read, and the broker checks
+# it. Two independently-generated values would 401 every retrieval, which
+# surfaces as "the knowledge base found nothing" rather than as an auth error —
+# the exact silence that hid a routing bug in this path once already.
+CONNECTION_BROKER_TOKEN="e2e-connection-broker-token"
+
 # Fixed, not random: this exact value must appear on BOTH sides of the
 # orchestrator<->gateway identity-link channel (the gateway's
 # GATEWAY_IDENTITY_LINK_TOKEN and the orchestrator's
@@ -66,6 +73,25 @@ echo "Creating throwaway e2e secrets in $NS (context: $CTX)..."
 upsert recipe-publisher-secrets --from-literal=MEALIE_API_TOKEN="e2e-not-a-real-token"
 upsert agent-controller-openwebui-google-oauth --from-literal=client-secret="e2e-not-a-real-secret"
 upsert searxng-secrets --from-literal=secret-key="$(rand)"
+
+# The connection-broker's two halves of auth.
+#
+# orchestratorToken is what a retrieval caller presents; the sync-tokens secret
+# is keyed BY CORPUS NAME, because a sync worker is trusted for exactly one
+# corpus and a single shared token would let any of them drive any other's
+# ingestion credential.
+upsert e2e-connection-broker-secrets \
+  --from-literal=orchestratorToken="$CONNECTION_BROKER_TOKEN"
+# alpha-docs is the corpus the knowledge-base specs create; see
+# e2e/specs/knowledge-base-*.e2e.ts.
+upsert e2e-connection-broker-sync-tokens \
+  --from-literal=alpha-docs="e2e-sync-token-alpha" \
+  --from-literal=beta-docs="e2e-sync-token-beta"
+# The credential the fake Confluence accepts for INGESTION. Its user-facing
+# counterparts are seeded per-test into the identity-link store, because which
+# caller holds which is the thing under test.
+upsert e2e-connection-alpha \
+  --from-literal=token="e2e-service-token"
 
 # The gateway's own secret, referenced by values-e2e.yaml via
 # `secrets.existingSecret`. The name deliberately avoids the chart's own

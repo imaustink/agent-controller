@@ -177,6 +177,12 @@ profiles:
         - image: integration-gateway
           docker:
             dockerfile: apps/integration-gateway/Dockerfile
+        # values-e2e.yaml turns the broker on: the knowledge-base specs cannot
+        # sync a corpus without it, and an unbuilt image sits in
+        # ImagePullBackOff until up.sh times out.
+        - image: connection-broker
+          docker:
+            dockerfile: apps/connection-broker/Dockerfile
         - image: opencode-swe-agent
           docker:
             dockerfile: apps/opencode-swe-agent/Dockerfile
@@ -291,6 +297,8 @@ profiles:
               core-controller.image.tag: "{{.IMAGE_TAG_core_controller}}"
               integration-gateway.image.repository: "{{.IMAGE_REPO_integration_gateway}}"
               integration-gateway.image.tag: "{{.IMAGE_TAG_integration_gateway}}"
+              connection-broker.image.repository: "{{.IMAGE_REPO_connection_broker}}"
+              connection-broker.image.tag: "{{.IMAGE_TAG_connection_broker}}"
               temporal-engine.worker.image.repository: "{{.IMAGE_REPO_temporal_engine_worker}}"
               temporal-engine.worker.image.tag: "{{.IMAGE_TAG_temporal_engine_worker}}"
               temporal-engine.gateway.image.repository: "{{.IMAGE_REPO_temporal_engine_gateway}}"
