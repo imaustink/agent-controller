@@ -271,6 +271,22 @@ bases in one turn would not create a cross-client leak. The singular-skill
 constraint is not what makes tenancy safe here, which is why relaxing it is
 safe.
 
+**The sharper limit is a knowledge base plus a *procedure*.** Two knowledge
+bases in one turn has a deliberate answer above; "follow the deploy runbook and
+check the client's Confluence" does not. Knowledge is orthogonal to procedure,
+and modelling it as a skill makes the two compete for a slot that only one can
+hold. Selection is also per turn, so a knowledge base the conversation has been
+using is re-won from scratch each turn and silently lost on any turn that picks
+a procedure — which is not how a person uses a knowledge base.
+
+The fix is to stop modelling knowledge as a skill: make KnowledgeBase a
+first-class object retrieved *alongside* skill selection and attached without
+consuming the slot. We are not doing that here. It trades away the two
+properties §2 buys for free — subject matter competing instead of tool
+contracts, and scoped API tools staying out of the global catalog — so a
+replacement has to re-earn both, and doing that before the mid-loop acquisition
+change lands means guessing how the two interact. Revisit when it does.
+
 **`vectorstore.Collections` becomes dynamic.** It goes from a fixed three-field
 struct to a fixed catalog plus a per-Connection registry. Contained —
 `NewQdrant` is already parameterized by collection name and `EnsureCollection`
