@@ -50,7 +50,7 @@ export class HttpResourceSource implements ResourceSource {
 
   async list(connection: string, cursor: Cursor): Promise<{ resources: ResourceRef[]; cursor: Cursor }> {
     const url =
-      `${this.baseUrl}/connections/${encodeURIComponent(connection)}/resources` +
+      `${this.baseUrl}/corpora/${encodeURIComponent(connection)}/resources` +
       (cursor ? `?cursor=${encodeURIComponent(cursor)}` : "");
 
     const body = (await this.request(url)) as { resources?: ResourceRef[]; cursor?: Cursor };
@@ -58,7 +58,7 @@ export class HttpResourceSource implements ResourceSource {
   }
 
   async fetch(connection: string, id: string): Promise<Document> {
-    const url = `${this.baseUrl}/connections/${encodeURIComponent(connection)}/resources/${encodeURIComponent(id)}`;
+    const url = `${this.baseUrl}/corpora/${encodeURIComponent(connection)}/resources/${encodeURIComponent(id)}`;
     return (await this.request(url)) as Document;
   }
 

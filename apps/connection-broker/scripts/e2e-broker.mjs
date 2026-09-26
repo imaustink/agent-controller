@@ -30,18 +30,10 @@ import { syncConnection } from "../dist/sync/worker.js";
 const SPACE = process.argv[2] ?? "GLOBEX";
 const CORPUS = `${SPACE.toLowerCase()}-confluence`;
 const CONNECTION = "bitovi-confluence";
-const SITE = "https://wiki.at.bitovi.com/wiki";
-const CLOUD_ID = "2a2bce9e-5780-4e10-a848-ee82abca0056";
 const QDRANT = process.env.QDRANT_URL ?? "http://localhost:6333";
 const COLLECTION = `e2e-broker-${CORPUS}`;
 const ORCHESTRATOR_TOKEN = "orchestrator-secret";
 const SYNC_TOKEN = "sync-secret";
-
-const env = loadEnv(findEnvFile());
-if (!env.OPENAI_API_KEY) {
-  console.error("OPENAI_API_KEY not found in the env file");
-  process.exit(1);
-}
 
 const ok = (msg) => console.log(`  ✓ ${msg}`);
 const fail = (step, err) => {
@@ -49,8 +41,41 @@ const fail = (step, err) => {
   process.exit(1);
 };
 
+const env = loadEnv(findEnvFile());
+if (!env.OPENAI_API_KEY) {
+  console.error("OPENAI_API_KEY not found in the env file");
+  process.exit(1);
+}
+
 console.log(`\nbroker end-to-end: ${SPACE} -> ${COLLECTION}\n`);
 const token = await getAccessToken({ env }).catch((e) => fail("oauth", e));
+
+/**
+ * The site URL and cloudId, ASKED FOR rather than pinned here.
+ *
+ * Both were hardcoded, and the site had gone stale — it named a custom domain
+ * while the tenant's canonical address is elsewhere. Neither fails loudly: the
+ * cloudId decides which tenant is read and a wrong one reads a DIFFERENT
+ * site's content with every scope check still passing, while siteBaseUrl only
+ * builds citations, so a wrong one produces links nobody can open and nothing
+ * anywhere complains.
+ *
+ * `accessible-resources` reports both, for exactly the credential in hand, so
+ * they cannot drift from each other or from the token.
+ */
+const sites = await (
+  await fetch("https://api.atlassian.com/oauth/token/accessible-resources", {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+  })
+).json();
+if (!Array.isArray(sites) || sites.length === 0) fail("site discovery", new Error("no accessible site"));
+if (sites.length > 1) {
+  // Picking one silently is how a harness reads the wrong tenant.
+  fail("site discovery", new Error(`this token reaches ${sites.length} sites; name one explicitly`));
+}
+const SITE = `${sites[0].url}/wiki`;
+const CLOUD_ID = sites[0].id;
+ok(`site ${SITE} (cloudId ${CLOUD_ID})`);
 
 // A harness that opens by deleting a collection must not be able to point at
 // a real one. The e2e suite guards the cluster by refusing any context that is
