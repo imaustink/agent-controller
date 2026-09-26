@@ -55,8 +55,8 @@ func candidate(connectionID, sourceID, version string, score float32) corpus.Hit
 		Score: score,
 		Chunk: corpus.Chunk{
 			CorpusID: connectionID,
-			SourceID:     sourceID,
-			Version:      version,
+			SourceID: sourceID,
+			Version:  version,
 			// Deliberately misleading mirror metadata: Authorize must never let
 			// these reach a citation.
 			Title:       "STALE MIRROR TITLE",

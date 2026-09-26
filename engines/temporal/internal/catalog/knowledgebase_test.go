@@ -149,8 +149,8 @@ func TestDecodeCorpus(t *testing.T) {
 func TestDecodeKnowledgeBase(t *testing.T) {
 	t.Run("defaults partial-visibility disclosure to on", func(t *testing.T) {
 		kb, err := catalog.DecodeKnowledgeBase(knowledgeBaseCR("snc", map[string]any{
-			"description":    "The SNC engagement.",
-			"corpusRefs": []any{"snc-confluence"},
+			"description": "The SNC engagement.",
+			"corpusRefs":  []any{"snc-confluence"},
 		}))
 		require.NoError(t, err)
 		require.True(t, kb.DisclosePartialVisibility,
@@ -160,7 +160,7 @@ func TestDecodeKnowledgeBase(t *testing.T) {
 	t.Run("honours an explicit opt-out", func(t *testing.T) {
 		kb, err := catalog.DecodeKnowledgeBase(knowledgeBaseCR("snc", map[string]any{
 			"description":               "The SNC engagement.",
-			"corpusRefs":            []any{"snc-confluence"},
+			"corpusRefs":                []any{"snc-confluence"},
 			"disclosePartialVisibility": false,
 		}))
 		require.NoError(t, err)

@@ -81,11 +81,11 @@ func (c CorpusDescriptor) Label() string {
 // KnowledgeBaseDescriptor composes Corpora into a queryable corpus
 // (ADR 0039).
 type KnowledgeBaseDescriptor struct {
-	ID             string   `json:"id"`
-	DisplayName    string   `json:"displayName,omitempty"`
-	Description    string   `json:"description"`
-	Aliases        []string `json:"aliases,omitempty"`
-	CorpusRefs []string `json:"corpusRefs"`
+	ID          string   `json:"id"`
+	DisplayName string   `json:"displayName,omitempty"`
+	Description string   `json:"description"`
+	Aliases     []string `json:"aliases,omitempty"`
+	CorpusRefs  []string `json:"corpusRefs"`
 
 	// DisclosePartialVisibility makes a search report how many member
 	// connections this caller could not see, so the agent can distinguish
@@ -123,7 +123,7 @@ type knowledgeBaseSpec struct {
 	Description               string   `json:"description"`
 	DisplayName               string   `json:"displayName,omitempty"`
 	Aliases                   []string `json:"aliases,omitempty"`
-	CorpusRefs            []string `json:"corpusRefs"`
+	CorpusRefs                []string `json:"corpusRefs"`
 	DisclosePartialVisibility *bool    `json:"disclosePartialVisibility,omitempty"`
 }
 
@@ -192,7 +192,7 @@ func DecodeKnowledgeBase(obj *unstructured.Unstructured) (KnowledgeBaseDescripto
 		DisplayName:               spec.DisplayName,
 		Description:               spec.Description,
 		Aliases:                   spec.Aliases,
-		CorpusRefs:            spec.CorpusRefs,
+		CorpusRefs:                spec.CorpusRefs,
 		DisclosePartialVisibility: disclose,
 	}, nil
 }

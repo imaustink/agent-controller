@@ -104,7 +104,7 @@ func leadsConnectionDescriptor() catalog.CorpusDescriptor {
 func indexedKnowledgeBase() catalog.KnowledgeBaseDescriptor {
 	return catalog.KnowledgeBaseDescriptor{
 		ID: "snc", DisplayName: "SNC", Description: "The SNC engagement.",
-		CorpusRefs:            []string{"snc-confluence", "snc-slack-private"},
+		CorpusRefs:                []string{"snc-confluence", "snc-slack-private"},
 		DisclosePartialVisibility: true,
 	}
 }

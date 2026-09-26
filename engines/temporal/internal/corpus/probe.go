@@ -26,7 +26,7 @@ const (
 // connection-granularity provider.
 type ProbeRequest struct {
 	CorpusID string
-	SourceID     string
+	SourceID string
 }
 
 // ProbeResult is the source's answer, and the ONLY acceptable origin for

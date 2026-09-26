@@ -16,7 +16,7 @@ func authorized(title, url, text string) corpus.AuthorizedChunk {
 		Chunk: corpus.Chunk{
 			CorpusID:    "snc-confluence",
 			CorpusLabel: "SNC Confluence",
-			SourceID:        "page-1",
+			SourceID:    "page-1",
 			// Deliberately wrong: the mirror's copy must never reach a citation.
 			Title:     "STALE MIRROR TITLE",
 			SourceURL: "https://mirror.invalid/leaked",

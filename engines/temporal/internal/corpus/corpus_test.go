@@ -57,10 +57,10 @@ func chunkHit(connectionID, sourceID, hash string, score float32) vectorstore.Hi
 	payload, err := json.Marshal(corpus.Chunk{
 		CorpusID:    connectionID,
 		CorpusLabel: "#" + connectionID,
-		SourceURL:       fmt.Sprintf("https://example.test/%s/%s", connectionID, sourceID),
-		SourceID:        sourceID,
-		ContentHash:     hash,
-		Text:            "…" + sourceID + "…",
+		SourceURL:   fmt.Sprintf("https://example.test/%s/%s", connectionID, sourceID),
+		SourceID:    sourceID,
+		ContentHash: hash,
+		Text:        "…" + sourceID + "…",
 	})
 	if err != nil {
 		panic(err)

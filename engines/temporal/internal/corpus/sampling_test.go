@@ -12,7 +12,7 @@ import (
 // aclHit is chunkHit plus the mirror fields this file is about.
 func aclHit(hash string, principals []string, permissive bool) vectorstore.Hit {
 	payload, err := json.Marshal(corpus.Chunk{
-		CorpusID:  "snc-confluence",
+		CorpusID:      "snc-confluence",
 		SourceID:      hash,
 		SourceURL:     "https://wiki.test/" + hash,
 		ContentHash:   hash,
