@@ -6,14 +6,10 @@
  * same credential the verify run proved works, so a drift between two copies
  * of this would make a failure impossible to attribute.
  */
-import { createServer } from "node:http";
-import { writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { awaitCode, openForApproval, REDIRECT } from "./oauth-loopback.mjs";
 
-export const REDIRECT = "http://localhost:9099/callback";
+export { REDIRECT };
 export const GATEWAY = "https://api.atlassian.com";
 
 /** Granular scopes. The app was migrated off classic, whose v1 endpoints are gone. */
@@ -24,47 +20,7 @@ export const DEFAULT_SCOPES = [
   "offline_access",
 ].join(" ");
 
-/** Waits for the OAuth redirect and hands back the code. */
-function awaitCode(expectedState, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    // Bounded: an unbounded wait on a human is indistinguishable from a hang,
-    // and leaves port 9099 held by a process nobody remembers starting.
-    const timer = setTimeout(() => {
-      server.close();
-      reject(new Error("timed out waiting for the browser redirect"));
-    }, timeoutMs);
-    const done = (fn) => (value) => {
-      clearTimeout(timer);
-      fn(value);
-    };
-    resolve = done(resolve);
-    reject = done(reject);
-
-    const server = createServer((req, res) => {
-      const url = new URL(req.url, "http://localhost:9099");
-      if (url.pathname !== "/callback") return res.writeHead(404).end();
-
-      const code = url.searchParams.get("code");
-      const state = url.searchParams.get("state");
-      res.writeHead(200, { "content-type": "text/html" });
-      res.end("<p>Linked. You can close this tab.</p>");
-      server.close();
-
-      if (state !== expectedState) return reject(new Error("state mismatch"));
-      if (!code) return reject(new Error(`no code: ${url.searchParams.get("error") ?? "unknown"}`));
-      resolve(code);
-    });
-    server.listen(9099);
-  });
-}
-
-/**
- * Runs the full authorization-code flow and returns an access token.
- *
- * Opens the browser rather than printing a URL to be copied: this blocks on a
- * human approving, so when stdout is captured the URL goes to a log file and
- * the script looks hung rather than waiting.
- */
+/** Runs the full authorization-code flow and returns an access token. */
 export async function getAccessToken({ env, scopes = DEFAULT_SCOPES, timeoutMs = 5 * 60 * 1000 }) {
   const clientId = env.ATLASSIAN_CLIENT_ID;
   const clientSecret = env.ATLASSIAN_CLIENT_SECRET;
@@ -82,22 +38,7 @@ export async function getAccessToken({ env, scopes = DEFAULT_SCOPES, timeoutMs =
   authorize.searchParams.set("response_type", "code");
   authorize.searchParams.set("prompt", "consent");
 
-  const authorizeUrl = authorize.toString();
-  console.log("\nOpening your browser to approve access…");
-  // A temp file rather than the repo: the URL carries the OAuth client_id,
-  // which is not secret but has no business being committed by accident.
-  const urlFile = join(tmpdir(), "atlassian-authorize-url.txt");
-  writeFileSync(urlFile, `${authorizeUrl}\n`);
-  console.log(`(if nothing opens, the URL is in ${urlFile})\n`);
-
-  try {
-    const opener =
-      process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-    execFileSync(opener, [authorizeUrl], { stdio: "ignore" });
-  } catch {
-    console.log(`Could not open a browser automatically — open the URL in ${urlFile}`);
-  }
-
+  openForApproval(authorize.toString(), "atlassian");
   const code = await awaitCode(state, timeoutMs);
 
   const response = await fetch("https://auth.atlassian.com/oauth/token", {
