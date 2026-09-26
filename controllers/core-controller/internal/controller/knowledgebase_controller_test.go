@@ -37,8 +37,8 @@ func sncKnowledgeBase(name string) *corev1alpha1.KnowledgeBase {
 			DisplayName: "SNC",
 			Description: "The SNC client engagement: platform migration work, " +
 				"their Confluence space and the #snc-eng Slack channel.",
-			Aliases:        []string{"Southern National", "Project Harbor"},
-			ConnectionRefs: []string{"snc-confluence", "snc-slack-eng"},
+			Aliases:    []string{"Southern National", "Project Harbor"},
+			CorpusRefs: []string{"snc-confluence", "snc-slack-eng"},
 		},
 	}
 }
@@ -49,7 +49,7 @@ var _ = Describe("KnowledgeBase Controller", func() {
 	Context("composition", func() {
 		It("accepts several connections, including repeats of one provider", func() {
 			kb := sncKnowledgeBase("kb-compose-ok")
-			kb.Spec.ConnectionRefs = []string{
+			kb.Spec.CorpusRefs = []string{
 				"snc-confluence", "snc-slack-eng", "snc-slack-general", "snc-drive",
 				"platform-announcements", // shared with other knowledge bases
 			}
@@ -59,14 +59,14 @@ var _ = Describe("KnowledgeBase Controller", func() {
 
 		It("rejects a duplicated connection ref", func() {
 			kb := sncKnowledgeBase("kb-dup-refs")
-			kb.Spec.ConnectionRefs = []string{"snc-confluence", "snc-confluence"}
+			kb.Spec.CorpusRefs = []string{"snc-confluence", "snc-confluence"}
 			Expect(k8sClient.Create(ctx, kb)).To(HaveOccurred(),
 				"a repeated ref would double-count one connection's chunks at merge")
 		})
 
 		It("rejects a knowledge base composing nothing", func() {
 			kb := sncKnowledgeBase("kb-no-refs")
-			kb.Spec.ConnectionRefs = nil
+			kb.Spec.CorpusRefs = nil
 			Expect(k8sClient.Create(ctx, kb)).To(HaveOccurred())
 		})
 
@@ -125,22 +125,22 @@ var _ = Describe("KnowledgeBase Controller", func() {
 			reconciler = &KnowledgeBaseReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		})
 
-		// createMember makes a synced Connection and publishes the status a
-		// sync worker would have written, so the knowledge base has something
-		// real to aggregate.
-		createMember := func(name string, resources int64, lastReconcile *metav1.Time) *corev1alpha1.Connection {
-			conn := confluenceConnection(name)
-			conn.Spec.Sync = &corev1alpha1.ConnectionSync{
-				Mode:              corev1alpha1.ConnectionSyncPoll,
+		// createMember makes a synced Corpus and publishes the status a sync
+		// worker would have written, so the knowledge base has something real
+		// to aggregate.
+		createMember := func(name string, resources int64, lastReconcile *metav1.Time) *corev1alpha1.Corpus {
+			corpus := corpusFor("kb-member-connection", name)
+			corpus.Spec.Sync = &corev1alpha1.CorpusSync{
+				Mode:              corev1alpha1.CorpusSyncPoll,
 				ReconcileInterval: &metav1.Duration{Duration: time.Hour},
 			}
-			Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+			Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
 
-			conn.Status.Resources = resources
-			conn.Status.LastReconcileTime = lastReconcile
-			conn.Status.LastSyncTime = lastReconcile
-			Expect(k8sClient.Status().Update(ctx, conn)).To(Succeed())
-			return conn
+			corpus.Status.Resources = resources
+			corpus.Status.LastReconcileTime = lastReconcile
+			corpus.Status.LastSyncTime = lastReconcile
+			Expect(k8sClient.Status().Update(ctx, corpus)).To(Succeed())
+			return corpus
 		}
 
 		reconcileKB := func(kb *corev1alpha1.KnowledgeBase) *corev1alpha1.KnowledgeBase {
@@ -159,14 +159,14 @@ var _ = Describe("KnowledgeBase Controller", func() {
 			b := createMember("agg-member-b", 1192, &fresh)
 
 			kb := sncKnowledgeBase("kb-aggregates")
-			kb.Spec.ConnectionRefs = []string{a.Name, b.Name}
+			kb.Spec.CorpusRefs = []string{a.Name, b.Name}
 			Expect(k8sClient.Create(ctx, kb)).To(Succeed())
 
 			stored := reconcileKB(kb)
 			Expect(stored.Status.Documents).To(BeNumerically("==", 5312))
-			Expect(stored.Status.PerConnection).To(HaveLen(2))
-			Expect(stored.Status.MissingConnections).To(BeEmpty())
-			Expect(stored.Status.StaleConnections).To(BeEmpty())
+			Expect(stored.Status.PerCorpus).To(HaveLen(2))
+			Expect(stored.Status.MissingCorpora).To(BeEmpty())
+			Expect(stored.Status.StaleCorpora).To(BeEmpty())
 			Expect(meta.IsStatusConditionTrue(stored.Status.Conditions, "Ready")).To(BeTrue())
 
 			Expect(k8sClient.Delete(ctx, kb)).To(Succeed())
@@ -179,12 +179,12 @@ var _ = Describe("KnowledgeBase Controller", func() {
 			present := createMember("dangling-present", 10, &fresh)
 
 			kb := sncKnowledgeBase("kb-dangling")
-			kb.Spec.ConnectionRefs = []string{present.Name, "never-created"}
+			kb.Spec.CorpusRefs = []string{present.Name, "never-created"}
 			Expect(k8sClient.Create(ctx, kb)).To(Succeed())
 
 			stored := reconcileKB(kb)
-			Expect(stored.Status.MissingConnections).To(ConsistOf("never-created"))
-			Expect(stored.Status.PerConnection).To(HaveLen(1),
+			Expect(stored.Status.MissingCorpora).To(ConsistOf("never-created"))
+			Expect(stored.Status.PerCorpus).To(HaveLen(1),
 				"the resolvable member still contributes")
 			Expect(meta.IsStatusConditionTrue(stored.Status.Conditions, "Ready")).To(BeFalse())
 
@@ -196,11 +196,11 @@ var _ = Describe("KnowledgeBase Controller", func() {
 			never := createMember("stale-never-reconciled", 0, nil)
 
 			kb := sncKnowledgeBase("kb-stale")
-			kb.Spec.ConnectionRefs = []string{never.Name}
+			kb.Spec.CorpusRefs = []string{never.Name}
 			Expect(k8sClient.Create(ctx, kb)).To(Succeed())
 
 			stored := reconcileKB(kb)
-			Expect(stored.Status.StaleConnections).To(ConsistOf(never.Name))
+			Expect(stored.Status.StaleCorpora).To(ConsistOf(never.Name))
 			Expect(meta.IsStatusConditionTrue(stored.Status.Conditions, "Ready")).To(BeTrue(),
 				"stale is a freshness signal, not a broken reference")
 
@@ -215,19 +215,19 @@ var _ = Describe("KnowledgeBase Controller", func() {
 			Expect(k8sClient.Create(ctx, shared)).To(Succeed())
 
 			first := sncKnowledgeBase("kb-fanout-one")
-			first.Spec.ConnectionRefs = []string{shared.Name}
+			first.Spec.CorpusRefs = []string{shared.Name}
 			Expect(k8sClient.Create(ctx, first)).To(Succeed())
 
 			second := sncKnowledgeBase("kb-fanout-two")
-			second.Spec.ConnectionRefs = []string{shared.Name, "snc-confluence"}
+			second.Spec.CorpusRefs = []string{shared.Name, "snc-confluence"}
 			Expect(k8sClient.Create(ctx, second)).To(Succeed())
 
 			unrelated := sncKnowledgeBase("kb-fanout-unrelated")
-			unrelated.Spec.ConnectionRefs = []string{"some-other-connection"}
+			unrelated.Spec.CorpusRefs = []string{"some-other-connection"}
 			Expect(k8sClient.Create(ctx, unrelated)).To(Succeed())
 
 			reconciler := &KnowledgeBaseReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			requests := reconciler.knowledgeBasesForConnection(ctx, shared)
+			requests := reconciler.knowledgeBasesForCorpus(ctx, shared)
 
 			names := make([]string, 0, len(requests))
 			for _, req := range requests {

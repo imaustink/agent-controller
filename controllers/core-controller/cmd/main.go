@@ -258,6 +258,13 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "connection")
 		os.Exit(1)
 	}
+	if err := (&controller.CorpusReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "corpus")
+		os.Exit(1)
+	}
 	if err := (&controller.KnowledgeBaseReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
