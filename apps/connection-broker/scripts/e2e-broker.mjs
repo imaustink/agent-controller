@@ -42,12 +42,55 @@ const fail = (step, err) => {
 };
 
 const env = loadEnv(findEnvFile());
-if (!env.OPENAI_API_KEY) {
+
+/**
+ * `--local-embeddings` swaps the embedder for a deterministic local one.
+ *
+ * What this harness is really for is the INCREMENTAL story: that a second
+ * pass over unchanged content re-embeds nothing. That rests on content hashes
+ * and point ids being stable across runs, and it holds for any deterministic
+ * embedder — the vectors' meaning is irrelevant to it.
+ *
+ * So the plumbing can be exercised without a key or a bill, which matters
+ * because the alternative is not running it. What this mode canNOT tell you is
+ * whether retrieval returns the right passages; that needs real vectors, and
+ * the output says so rather than letting a green run imply it.
+ */
+const LOCAL_EMBEDDINGS = process.argv.includes("--local-embeddings");
+if (!LOCAL_EMBEDDINGS && !env.OPENAI_API_KEY) {
   console.error("OPENAI_API_KEY not found in the env file");
+  console.error("(or pass --local-embeddings to exercise the plumbing without one)");
   process.exit(1);
 }
 
+/**
+ * A deterministic stand-in: the same text always yields the same vector, and
+ * different text almost always yields a different one. Not semantic, and not
+ * pretending to be.
+ */
+class LocalEmbedder {
+  async embed(texts) {
+    return texts.map((text) => {
+      const vector = new Array(EMBEDDING_DIMENSIONS).fill(0);
+      // FNV-1a over the text, spread across the dimensions.
+      let hash = 0x811c9dc5;
+      for (let i = 0; i < text.length; i += 1) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+        vector[i % EMBEDDING_DIMENSIONS] += (hash % 1000) / 1000;
+      }
+      const norm = Math.hypot(...vector) || 1;
+      return vector.map((value) => value / norm);
+    });
+  }
+}
+
 console.log(`\nbroker end-to-end: ${SPACE} -> ${COLLECTION}\n`);
+if (LOCAL_EMBEDDINGS) {
+  console.log("  ! --local-embeddings: deterministic stand-in vectors.");
+  console.log("  ! This proves the PLUMBING — sync, chunking, point ids, the");
+  console.log("  ! incremental pass. It says nothing about retrieval quality.\n");
+}
 const token = await getAccessToken({ env }).catch((e) => fail("oauth", e));
 
 /**
@@ -119,7 +162,7 @@ const baseUrl = `http://127.0.0.1:${port}`;
 const source = new HttpResourceSource({ baseUrl, token: SYNC_TOKEN });
 const writer = new QdrantCorpusWriter(
   new QdrantHttpClient({ url: QDRANT }),
-  new OpenAIEmbedder({ apiKey: env.OPENAI_API_KEY }),
+  LOCAL_EMBEDDINGS ? new LocalEmbedder() : new OpenAIEmbedder({ apiKey: env.OPENAI_API_KEY }),
   { allowedRoles: ["reader"], vectorSize: EMBEDDING_DIMENSIONS },
 );
 
