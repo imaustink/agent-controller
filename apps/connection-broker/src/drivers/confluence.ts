@@ -1,3 +1,5 @@
+import { parseFragment } from "parse5";
+
 import {
   PermanentError,
   PermissionDeniedError,
@@ -726,34 +728,34 @@ function citationUrl(page: ConfluencePage, siteBaseUrl: string): string {
 }
 
 /**
- * Confluence storage format is XHTML. This is a deliberately small conversion —
- * enough structure for chunking to have something to cut on, without taking a
- * parser dependency into a security-sensitive service.
+ * Confluence storage format is XHTML, converted with a real parser.
  *
- * That rule now has exactly one exception, and it is worth naming here rather
- * than leaving the two to look inconsistent: the Drive driver imports `unpdf`
- * to extract PDF text. XHTML yields to a hand-rolled pass; PDF is a compressed
- * binary container with object streams and font encodings, and does not. The
- * exception was argued on its supply-chain surface — one package, zero
- * transitive dependencies, no native bindings — rather than on convenience.
- * See GDriveDriver.readPdf.
+ * This was hand-rolled regexes, deliberately, to avoid "taking a parser
+ * dependency into a security-sensitive service". That reasoning was wrong, and
+ * it is worth saying why rather than quietly reversing it.
+ *
+ * It weighed supply-chain risk and ignored parser-correctness risk, which is
+ * the one that actually applies to untrusted input from every client wiki we
+ * index. In a memory-safe runtime a parser bug is not a read of adjacent
+ * memory; it is WRONG OUTPUT — silently corrupt or missing content in a corpus
+ * an agent will answer from. The hand-rolled version had already produced that
+ * failure twice: it embedded `#E3FCEF`, a macro's background colour, as though
+ * a client had written it, and an early revision dropped `ac:layout-cell`,
+ * which contains the page body, and would have emptied every page using a
+ * layout. `.replace(/<[^>]+>/g, "")` also mishandles any attribute containing
+ * `>`, and the entity pass decoded four entities, so `&mdash;` and every
+ * numeric entity reached the index as literal text.
+ *
+ * parse5 is the WHATWG HTML parser — two packages, no native bindings — and it
+ * decodes entities, recovers from unclosed tags and keeps `ac:`/`ri:` elements
+ * as ordinary named nodes.
  */
 export function storageToMarkdown(storage: string): string {
-  return dropNonProse(storage)
-    .replace(/<h([1-6])[^>]*>(.*?)<\/h\1>/gis, (_m, level: string, text: string) =>
-      `\n${"#".repeat(Number(level))} ${stripTags(text)}\n`,
-    )
-    .replace(/<li[^>]*>(.*?)<\/li>/gis, (_m, text: string) => `- ${stripTags(text)}\n`)
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    // Storage format is indented XML, so stripping tags leaves the indentation
-    // behind as runs of spaces on every line. Harmless to read, but it is
-    // embedded and it counts against the chunk budget.
+  const text = renderChildren(parseFragment(storage));
+  return text
+    // Storage format is indented XML, so structural whitespace survives as
+    // runs of spaces. Harmless to read, but it is embedded and counts against
+    // the chunk budget.
     .replace(/[ \t]+/g, " ")
     .replace(/ *\n */g, "\n")
     .replace(/\n{3,}/g, "\n\n")
@@ -761,42 +763,77 @@ export function storageToMarkdown(storage: string): string {
 }
 
 /**
- * Removes the elements whose CONTENT is machine configuration rather than
- * writing, before tag-stripping turns that content into prose.
+ * Elements whose CONTENT is machine configuration rather than writing.
  *
- * Found by running the converter against a real page: a panel macro put
- * `#E3FCEF` — its background colour — at the top of the extracted text, which
- * then got embedded as though it were something the client had written. Macro
- * parameters, attachment and page references, and layout ids are all like this:
- * they sit inside elements, so removing the tags alone promotes them to body
- * text. Every one of them costs vector quality and chunk budget.
- *
- * Whole elements are dropped, content included, rather than being filtered
- * afterwards. There is no way to tell `#E3FCEF` from a legitimate mention of a
- * colour once the markup is gone.
+ * Dropped whole, content included: once the markup is gone there is no way to
+ * tell `#E3FCEF` from a legitimate mention of a colour. Every one of these is
+ * properly closed in storage format, so removing the subtree removes exactly
+ * itself.
  */
-function dropNonProse(storage: string): string {
-  return (
-    storage
-      // Macro configuration: colours, ids, widths, sort orders.
-      .replace(/<ac:parameter\b[^>]*>[\s\S]*?<\/ac:parameter>/gi, "")
-      // Task bookkeeping. The task BODY is writing and must survive; its id and
-      // status are not, and tag-stripping alone turns them into a stray "11"
-      // and "incomplete" sitting in the middle of a sentence.
-      .replace(/<ac:task-(id|status)\b[^>]*>[\s\S]*?<\/ac:task-\1>/gi, "")
-      // Editor placeholder text — prompts from the template, never authored.
-      .replace(/<ac:placeholder\b[^>]*>[\s\S]*?<\/ac:placeholder>/gi, "")
-      // Resource references — attachment filenames, space keys, user keys.
-      .replace(/<ri:[^>]*\/>/gi, "")
-      .replace(/<ri:[^>]*>[\s\S]*?<\/ri:[^>]*>/gi, "")
-      // ADF macro configuration. NOT ac:layout-section or ac:layout-cell, which
-      // look like structure but CONTAIN the page body — dropping those would
-      // silently empty every page that uses a layout, which is most of them.
-      .replace(/<ac:(adf-attribute|adf-parameter)\b[^>]*>[\s\S]*?<\/ac:\1>/gi, "")
-      .replace(/<!--[\s\S]*?-->/g, "")
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-  );
+const DROP_SUBTREE = new Set([
+  // Macro configuration: colours, ids, widths, sort orders.
+  "ac:parameter",
+  // Task bookkeeping. The task BODY is writing and survives; its id and status
+  // would otherwise land as a stray "11" and "incomplete" mid-sentence.
+  "ac:task-id",
+  "ac:task-status",
+  // Editor prompts from the template, never authored.
+  "ac:placeholder",
+  // ADF macro configuration.
+  "ac:adf-attribute",
+  "ac:adf-parameter",
+  "style",
+  "script",
+]);
+
+/**
+ * Elements that are removed but whose CHILDREN are kept.
+ *
+ * `ri:` elements — attachment filenames, space and user keys — are written
+ * self-closing (`<ri:attachment ri:filename="x.pdf"/>`), and HTML5 does not
+ * allow unknown elements to self-close. So the parser treats everything that
+ * FOLLOWS one as its content, and dropping the subtree would take the rest of
+ * the page with it. Unwrapping removes the reference and keeps the document.
+ *
+ * `ac:layout-section` and `ac:layout-cell` are deliberately absent from both
+ * lists: they look structural and contain the page body.
+ */
+function isUnwrapped(tagName: string): boolean {
+  return tagName.startsWith("ri:");
+}
+
+interface Parse5Node {
+  nodeName: string;
+  tagName?: string;
+  value?: string;
+  childNodes?: Parse5Node[];
+}
+
+function renderChildren(node: Parse5Node): string {
+  return (node.childNodes ?? []).map(renderNode).join("");
+}
+
+function renderNode(node: Parse5Node): string {
+  // Comments carry no prose, and their content is frequently old markup.
+  if (node.nodeName === "#comment") return "";
+  if (node.nodeName === "#text") return node.value ?? "";
+
+  const tag = node.tagName ?? "";
+  if (DROP_SUBTREE.has(tag)) return "";
+  if (isUnwrapped(tag)) return renderChildren(node);
+
+  const heading = /^h([1-6])$/.exec(tag);
+  if (heading) return `\n${"#".repeat(Number(heading[1]))} ${inline(node)}\n`;
+  if (tag === "li") return `- ${inline(node)}\n`;
+  if (tag === "p") return `${renderChildren(node)}\n\n`;
+  if (tag === "br") return "\n";
+
+  return renderChildren(node);
+}
+
+/** A heading or list item on ONE line, however it was marked up inside. */
+function inline(node: Parse5Node): string {
+  return renderChildren(node).replace(/\s+/g, " ").trim();
 }
 
 const stripTags = (html: string): string => html.replace(/<[^>]+>/g, "").trim();

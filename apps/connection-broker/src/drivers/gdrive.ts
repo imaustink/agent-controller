@@ -353,17 +353,19 @@ export class GDriveDriver implements Driver {
    * them indexed as empty and looked like it had worked. Silence is the part
    * that made it dangerous — the corpus was confidently incomplete.
    *
-   * This takes a parser dependency into a service that holds every client's
-   * credentials, which the Confluence driver's storage-format conversion
-   * deliberately avoided doing. The exception is argued rather than assumed:
-   * PDF is a compressed binary container with object streams and font
-   * encodings, so the hand-rolled approach that worked for XHTML is not
-   * available. `unpdf` is one package with ZERO transitive dependencies and no
-   * native bindings, so the supply-chain surface is a single reviewable unit,
-   * and it runs in a memory-safe runtime where a parser bug is a crash rather
-   * than a read of adjacent memory.
+   * Parsing is delegated, as it now is for Confluence storage format. The rule
+   * both follow: on untrusted input from client systems, a battle-tested
+   * parser beats one we wrote. Hand-rolling is what conflates supply-chain
+   * risk with parser-correctness risk, and only the second one applies to
+   * every wiki page and every PDF we ingest — in a memory-safe runtime a
+   * parser bug is wrong output, not a read of adjacent memory, and wrong
+   * output in a corpus is content an agent will answer from.
    *
-   * What is left is resource exhaustion, which is bounded here: oversized
+   * `unpdf` was chosen on its supply-chain surface rather than convenience:
+   * one package, ZERO transitive dependencies, no native bindings, so what is
+   * trusted is a single reviewable unit.
+   *
+   * What that leaves is resource exhaustion, which is bounded here: oversized
    * files are refused before a byte is downloaded.
    */
   private async readPdf(file: DriveFile, token: string): Promise<string> {

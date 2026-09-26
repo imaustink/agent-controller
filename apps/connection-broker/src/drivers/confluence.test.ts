@@ -816,3 +816,73 @@ describe("service credential shape", () => {
     expect(isApiToken(":leading")).toBe(false);
   });
 });
+
+describe("what the hand-rolled converter got wrong", () => {
+  // These are the reason storageToMarkdown uses a real parser. Every one of
+  // them is a case regexes handled incorrectly on input we do not control.
+
+  it("keeps text after an attribute containing a > character", () => {
+    // `.replace(/<[^>]+>/g, "")` ended the tag at the FIRST `>`, so the rest of
+    // the attribute — `b"` — was promoted to body text.
+    const markdown = storageToMarkdown('<p title="a > b">Deploy the gateway</p>');
+
+    expect(markdown).toBe("Deploy the gateway");
+    expect(markdown).not.toContain('b"');
+  });
+
+  it("decodes entities beyond the four the old pass knew", () => {
+    // It handled &nbsp; &amp; &lt; &gt; and nothing else, so every other
+    // entity reached the index as literal text an embedding had to carry.
+    const markdown = storageToMarkdown("<p>Bitovi&mdash;GLOBEX&rsquo;s partner&#8212;since 2024</p>");
+
+    expect(markdown).toBe("Bitovi—GLOBEX’s partner—since 2024");
+    expect(markdown).not.toContain("&");
+  });
+
+  it("does not let a comment's contents reach the corpus", () => {
+    const markdown = storageToMarkdown("<!-- <p>superseded draft</p> --><p>Current</p>");
+
+    expect(markdown).toBe("Current");
+    expect(markdown).not.toContain("superseded");
+  });
+
+  it("recovers from unclosed tags rather than swallowing the rest", () => {
+    const markdown = storageToMarkdown("<p>First<p>Second");
+    expect(markdown).toBe("First\n\nSecond");
+  });
+
+  it("keeps the page body that FOLLOWS a self-closing ri: reference", () => {
+    // The subtle one, and it would have been a repeat of the ac:layout-cell
+    // bug. HTML5 does not allow unknown elements to self-close, so a parser
+    // treats everything after `<ri:attachment/>` as its CONTENT. Dropping the
+    // subtree would take the rest of the page with it.
+    const markdown = storageToMarkdown(
+      '<ri:attachment ri:filename="plan.pdf"/><p>The plan is to ship on Friday</p>',
+    );
+
+    expect(markdown).toContain("The plan is to ship on Friday");
+    expect(markdown).not.toContain("plan.pdf");
+  });
+
+  it("still drops macro configuration, which is a properly closed element", () => {
+    // The distinction that makes the two lists necessary: ac:parameter closes,
+    // so removing its subtree removes exactly itself.
+    const markdown = storageToMarkdown(
+      '<ac:parameter ac:name="bg">#E3FCEF</ac:parameter><p>Body</p>',
+    );
+
+    expect(markdown).toBe("Body");
+    expect(markdown).not.toContain("E3FCEF");
+  });
+
+  it("keeps a heading on one line however it is marked up inside", () => {
+    const markdown = storageToMarkdown("<h2>Deploy\n   <strong>runbook</strong></h2>");
+    expect(markdown).toContain("## Deploy runbook");
+  });
+
+  it("survives markup that is not well-formed XML at all", () => {
+    // Storage format is XHTML by convention, not by guarantee. An XML parser
+    // would throw here; the point of an HTML5 parser is that it cannot.
+    expect(() => storageToMarkdown("<p>Unclosed <b>bold <i>both</p></div>")).not.toThrow();
+  });
+});
