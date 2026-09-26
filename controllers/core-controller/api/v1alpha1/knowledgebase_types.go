@@ -71,7 +71,7 @@ type KnowledgeBaseSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Description string `json:"description"`
 
-	// displayName is the human name for this knowledge base (e.g. "SNC").
+	// displayName is the human name for this knowledge base (e.g. "GLOBEX").
 	// Defaults to metadata.name.
 	// +optional
 	DisplayName string `json:"displayName,omitempty"`

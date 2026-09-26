@@ -10,7 +10,7 @@
  * driver, so a failure here is OURS. Until it passes, every test in the broker
  * is a mock answering whatever it was asked.
  *
- *   node apps/connection-broker/scripts/e2e-confluence.mjs SNC
+ *   node apps/connection-broker/scripts/e2e-confluence.mjs GLOBEX
  *
  * Needs: a built broker (npm run build -w connection-broker), a Qdrant on
  * localhost:6333, and OPENAI_API_KEY plus the Atlassian credentials in the env
@@ -23,7 +23,7 @@ import { chunkDocument } from "../dist/sync/chunk.js";
 import { QdrantCorpusWriter } from "../dist/sync/corpus-writer.js";
 import { corpusPointId } from "../dist/sync/point-id.js";
 
-const SPACE = process.argv[2] ?? "SNC";
+const SPACE = process.argv[2] ?? "GLOBEX";
 const SITE = "https://wiki.at.bitovi.com/wiki";
 // A custom domain cannot be discovered — the driver refuses rather than guess a
 // tenant, so this is named. Read from verify-confluence.mjs.

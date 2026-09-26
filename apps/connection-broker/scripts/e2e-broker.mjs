@@ -14,7 +14,7 @@
  * story, rests entirely on content hashes being stable across runs, and is
  * invisible to any test that syncs once.
  *
- *   node apps/connection-broker/scripts/e2e-broker.mjs SNC
+ *   node apps/connection-broker/scripts/e2e-broker.mjs GLOBEX
  */
 import { getAccessToken } from "./lib/atlassian-auth.mjs";
 import { findEnvFile, loadEnv } from "./lib/env.mjs";
@@ -27,7 +27,7 @@ import { QdrantHttpClient } from "../dist/sync/qdrant-client.js";
 import { OpenAIEmbedder, EMBEDDING_DIMENSIONS } from "../dist/embedder.js";
 import { syncConnection } from "../dist/sync/worker.js";
 
-const SPACE = process.argv[2] ?? "SNC";
+const SPACE = process.argv[2] ?? "GLOBEX";
 const CORPUS = `${SPACE.toLowerCase()}-confluence`;
 const CONNECTION = "bitovi-confluence";
 const SITE = "https://wiki.at.bitovi.com/wiki";

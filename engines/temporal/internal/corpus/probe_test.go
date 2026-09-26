@@ -69,7 +69,7 @@ func candidate(connectionID, sourceID, version string, score float32) corpus.Hit
 
 func TestAuthorizeTakesCitationFieldsFromTheProbeNotTheMirror(t *testing.T) {
 	prober := &fakeProber{results: map[string]corpus.ProbeResult{
-		"snc-confluence/page-1": {
+		"globex-confluence/page-1": {
 			Allowed: true,
 			Title:   "Auth design",
 			URL:     "https://example.atlassian.net/wiki/page-1",
@@ -78,7 +78,7 @@ func TestAuthorizeTakesCitationFieldsFromTheProbeNotTheMirror(t *testing.T) {
 	}}
 
 	outcome, err := corpus.Authorize(context.Background(), prober,
-		[]corpus.Hit{candidate("snc-confluence", "page-1", "v7", 0.9)})
+		[]corpus.Hit{candidate("globex-confluence", "page-1", "v7", 0.9)})
 
 	require.NoError(t, err)
 	require.Len(t, outcome.Chunks, 1)
@@ -92,16 +92,16 @@ func TestAuthorizeTakesCitationFieldsFromTheProbeNotTheMirror(t *testing.T) {
 func TestAuthorizeDropsWhatTheSourceRefuses(t *testing.T) {
 	prober := &fakeProber{
 		results: map[string]corpus.ProbeResult{
-			"snc-confluence/page-1": {Allowed: true, Title: "Readable", URL: "u", Version: "v1"},
+			"globex-confluence/page-1": {Allowed: true, Title: "Readable", URL: "u", Version: "v1"},
 		},
 		errs: map[string]error{
-			"snc-confluence/page-2": &corpus.PermissionDenied{Err: errors.New("403")},
+			"globex-confluence/page-2": &corpus.PermissionDenied{Err: errors.New("403")},
 		},
 	}
 
 	outcome, err := corpus.Authorize(context.Background(), prober, []corpus.Hit{
-		candidate("snc-confluence", "page-1", "v1", 0.9),
-		candidate("snc-confluence", "page-2", "v1", 0.8),
+		candidate("globex-confluence", "page-1", "v1", 0.9),
+		candidate("globex-confluence", "page-2", "v1", 0.8),
 	})
 
 	require.NoError(t, err)
@@ -185,14 +185,14 @@ func TestAuthorizeProbesOncePerConnectionForChannelScopedProviders(t *testing.T)
 	prober := &fakeProber{
 		granularity: corpus.GranularityConnection,
 		results: map[string]corpus.ProbeResult{
-			"snc-slack-eng/": {Allowed: true, Title: "#snc-eng", URL: "u", Version: ""},
+			"globex-slack-eng/": {Allowed: true, Title: "#globex-eng", URL: "u", Version: ""},
 		},
 	}
 
 	outcome, err := corpus.Authorize(context.Background(), prober, []corpus.Hit{
-		candidate("snc-slack-eng", "msg-1", "", 0.9),
-		candidate("snc-slack-eng", "msg-2", "", 0.8),
-		candidate("snc-slack-eng", "msg-3", "", 0.7),
+		candidate("globex-slack-eng", "msg-1", "", 0.9),
+		candidate("globex-slack-eng", "msg-2", "", 0.8),
+		candidate("globex-slack-eng", "msg-3", "", 0.7),
 	})
 
 	require.NoError(t, err)

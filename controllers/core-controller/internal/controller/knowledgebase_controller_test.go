@@ -30,15 +30,15 @@ import (
 	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 )
 
-func sncKnowledgeBase(name string) *corev1alpha1.KnowledgeBase {
+func globexKnowledgeBase(name string) *corev1alpha1.KnowledgeBase {
 	return &corev1alpha1.KnowledgeBase{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec: corev1alpha1.KnowledgeBaseSpec{
-			DisplayName: "SNC",
-			Description: "The SNC client engagement: platform migration work, " +
-				"their Confluence space and the #snc-eng Slack channel.",
+			DisplayName: "GLOBEX",
+			Description: "The GLOBEX client engagement: platform migration work, " +
+				"their Confluence space and the #globex-eng Slack channel.",
 			Aliases:    []string{"Southern National", "Project Harbor"},
-			CorpusRefs: []string{"snc-confluence", "snc-slack-eng"},
+			CorpusRefs: []string{"globex-confluence", "globex-slack-eng"},
 		},
 	}
 }
@@ -48,9 +48,9 @@ var _ = Describe("KnowledgeBase Controller", func() {
 
 	Context("composition", func() {
 		It("accepts several connections, including repeats of one provider", func() {
-			kb := sncKnowledgeBase("kb-compose-ok")
+			kb := globexKnowledgeBase("kb-compose-ok")
 			kb.Spec.CorpusRefs = []string{
-				"snc-confluence", "snc-slack-eng", "snc-slack-general", "snc-drive",
+				"globex-confluence", "globex-slack-eng", "globex-slack-general", "globex-drive",
 				"platform-announcements", // shared with other knowledge bases
 			}
 			Expect(k8sClient.Create(ctx, kb)).To(Succeed())
@@ -58,20 +58,20 @@ var _ = Describe("KnowledgeBase Controller", func() {
 		})
 
 		It("rejects a duplicated connection ref", func() {
-			kb := sncKnowledgeBase("kb-dup-refs")
-			kb.Spec.CorpusRefs = []string{"snc-confluence", "snc-confluence"}
+			kb := globexKnowledgeBase("kb-dup-refs")
+			kb.Spec.CorpusRefs = []string{"globex-confluence", "globex-confluence"}
 			Expect(k8sClient.Create(ctx, kb)).To(HaveOccurred(),
 				"a repeated ref would double-count one connection's chunks at merge")
 		})
 
 		It("rejects a knowledge base composing nothing", func() {
-			kb := sncKnowledgeBase("kb-no-refs")
+			kb := globexKnowledgeBase("kb-no-refs")
 			kb.Spec.CorpusRefs = nil
 			Expect(k8sClient.Create(ctx, kb)).To(HaveOccurred())
 		})
 
 		It("requires a description, since that is what retrieval discriminates on", func() {
-			kb := sncKnowledgeBase("kb-no-description")
+			kb := globexKnowledgeBase("kb-no-description")
 			kb.Spec.Description = ""
 			Expect(k8sClient.Create(ctx, kb)).To(HaveOccurred())
 		})
@@ -79,7 +79,7 @@ var _ = Describe("KnowledgeBase Controller", func() {
 
 	Context("defaults", func() {
 		It("discloses partial visibility unless told otherwise", func() {
-			kb := sncKnowledgeBase("kb-disclosure-default")
+			kb := globexKnowledgeBase("kb-disclosure-default")
 			Expect(k8sClient.Create(ctx, kb)).To(Succeed())
 
 			stored := &corev1alpha1.KnowledgeBase{}
@@ -96,7 +96,7 @@ var _ = Describe("KnowledgeBase Controller", func() {
 		})
 
 		It("applies chunking defaults", func() {
-			kb := sncKnowledgeBase("kb-chunk-default")
+			kb := globexKnowledgeBase("kb-chunk-default")
 			kb.Spec.Chunk = &corev1alpha1.KnowledgeBaseChunking{}
 			Expect(k8sClient.Create(ctx, kb)).To(Succeed())
 
@@ -111,7 +111,7 @@ var _ = Describe("KnowledgeBase Controller", func() {
 		})
 
 		It("rejects an overlap that is not smaller than the chunk", func() {
-			kb := sncKnowledgeBase("kb-chunk-bad")
+			kb := globexKnowledgeBase("kb-chunk-bad")
 			kb.Spec.Chunk = &corev1alpha1.KnowledgeBaseChunking{MaxTokens: 200, Overlap: 200}
 			Expect(k8sClient.Create(ctx, kb)).To(
 				MatchError(ContainSubstring("chunk.overlap must be smaller than chunk.maxTokens")))
@@ -158,7 +158,7 @@ var _ = Describe("KnowledgeBase Controller", func() {
 			a := createMember("agg-member-a", 4120, &fresh)
 			b := createMember("agg-member-b", 1192, &fresh)
 
-			kb := sncKnowledgeBase("kb-aggregates")
+			kb := globexKnowledgeBase("kb-aggregates")
 			kb.Spec.CorpusRefs = []string{a.Name, b.Name}
 			Expect(k8sClient.Create(ctx, kb)).To(Succeed())
 
@@ -178,7 +178,7 @@ var _ = Describe("KnowledgeBase Controller", func() {
 			fresh := metav1.Now()
 			present := createMember("dangling-present", 10, &fresh)
 
-			kb := sncKnowledgeBase("kb-dangling")
+			kb := globexKnowledgeBase("kb-dangling")
 			kb.Spec.CorpusRefs = []string{present.Name, "never-created"}
 			Expect(k8sClient.Create(ctx, kb)).To(Succeed())
 
@@ -195,7 +195,7 @@ var _ = Describe("KnowledgeBase Controller", func() {
 		It("flags a member that has never reconciled as stale", func() {
 			never := createMember("stale-never-reconciled", 0, nil)
 
-			kb := sncKnowledgeBase("kb-stale")
+			kb := globexKnowledgeBase("kb-stale")
 			kb.Spec.CorpusRefs = []string{never.Name}
 			Expect(k8sClient.Create(ctx, kb)).To(Succeed())
 
@@ -214,15 +214,15 @@ var _ = Describe("KnowledgeBase Controller", func() {
 			shared := confluenceConnection("shared-announcements")
 			Expect(k8sClient.Create(ctx, shared)).To(Succeed())
 
-			first := sncKnowledgeBase("kb-fanout-one")
+			first := globexKnowledgeBase("kb-fanout-one")
 			first.Spec.CorpusRefs = []string{shared.Name}
 			Expect(k8sClient.Create(ctx, first)).To(Succeed())
 
-			second := sncKnowledgeBase("kb-fanout-two")
-			second.Spec.CorpusRefs = []string{shared.Name, "snc-confluence"}
+			second := globexKnowledgeBase("kb-fanout-two")
+			second.Spec.CorpusRefs = []string{shared.Name, "globex-confluence"}
 			Expect(k8sClient.Create(ctx, second)).To(Succeed())
 
-			unrelated := sncKnowledgeBase("kb-fanout-unrelated")
+			unrelated := globexKnowledgeBase("kb-fanout-unrelated")
 			unrelated.Spec.CorpusRefs = []string{"some-other-connection"}
 			Expect(k8sClient.Create(ctx, unrelated)).To(Succeed())
 

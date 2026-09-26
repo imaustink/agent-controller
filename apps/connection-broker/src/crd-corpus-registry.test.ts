@@ -19,7 +19,7 @@ function connection(name: string, overrides: Partial<ConnectionCustomResource["s
   } satisfies ConnectionCustomResource;
 }
 
-function corpus(name: string, connectionRef = "bitovi-confluence", space = "SNC") {
+function corpus(name: string, connectionRef = "bitovi-confluence", space = "GLOBEX") {
   return {
     metadata: { name, namespace: "clients" },
     spec: {
@@ -59,10 +59,10 @@ function registryWith(
 
 describe("loadAll", () => {
   it("binds a Corpus by joining it to its Connection", async () => {
-    const { registry } = registryWith([corpus("snc")], [connection("bitovi-confluence")]);
+    const { registry } = registryWith([corpus("globex")], [connection("bitovi-confluence")]);
     await registry.loadAll();
 
-    const binding = registry.get("snc");
+    const binding = registry.get("globex");
     expect(binding?.connection).toBe("bitovi-confluence");
     expect(binding?.driver.provider).toBe("confluence");
     expect(binding?.serviceToken).toBe("svc");
@@ -71,7 +71,7 @@ describe("loadAll", () => {
   it("loads Connections before Corpora", async () => {
     // The other order reports every Corpus as broken on a cold start and then
     // quietly fixes itself, which looks exactly like a flapping bug.
-    const { registry, api, onError } = registryWith([corpus("snc")], [connection("bitovi-confluence")]);
+    const { registry, api, onError } = registryWith([corpus("globex")], [connection("bitovi-confluence")]);
     await registry.loadAll();
 
     expect(api.listNamespacedCustomObject.mock.calls.map(([args]) => args.plural)).toEqual([
@@ -103,7 +103,7 @@ describe("loadAll", () => {
   });
 
   it("reads the Secret from the CORPUS's namespace, not a caller's", async () => {
-    const { registry, core } = registryWith([corpus("snc")], [connection("bitovi-confluence")]);
+    const { registry, core } = registryWith([corpus("globex")], [connection("bitovi-confluence")]);
     await registry.loadAll();
 
     // Otherwise the broker becomes a tool for reading any Secret in the cluster.
@@ -116,12 +116,12 @@ describe("corporaFor", () => {
     // A provider signs and delivers per integration, so one delivery has to
     // reach however many Corpora cover what changed (ADR 0043 §4).
     const { registry } = registryWith(
-      [corpus("eng", "bitovi-confluence", "ENG"), corpus("snc", "bitovi-confluence", "SNC")],
+      [corpus("eng", "bitovi-confluence", "ENG"), corpus("globex", "bitovi-confluence", "GLOBEX")],
       [connection("bitovi-confluence")],
     );
     await registry.loadAll();
 
-    expect(registry.corporaFor("bitovi-confluence").map((b) => b.name).sort()).toEqual(["eng", "snc"]);
+    expect(registry.corporaFor("bitovi-confluence").map((b) => b.name).sort()).toEqual(["eng", "globex"]);
     expect(registry.corporaFor("someone-else")).toEqual([]);
   });
 });
@@ -166,7 +166,7 @@ describe("watch", () => {
   it("rebuilds every Corpus over an edited Connection", async () => {
     const { watchFn, emit } = fakeWatch();
     const { registry } = registryWith(
-      [corpus("snc"), corpus("eng", "bitovi-confluence", "ENG")],
+      [corpus("globex"), corpus("eng", "bitovi-confluence", "ENG")],
       [connection("bitovi-confluence")],
       watchFn,
     );
@@ -176,14 +176,14 @@ describe("watch", () => {
 
     // A tightened cap now excludes ENG. Without a rebuild the broker would keep
     // serving it on what the Connection used to say.
-    emit("connections", "MODIFIED", connection("bitovi-confluence", { allowedScopes: { spaces: ["SNC"] } }));
+    emit("connections", "MODIFIED", connection("bitovi-confluence", { allowedScopes: { spaces: ["GLOBEX"] } }));
 
-    await vi.waitFor(() => expect(registry.list().map((b) => b.name)).toEqual(["snc"]));
+    await vi.waitFor(() => expect(registry.list().map((b) => b.name)).toEqual(["globex"]));
   });
 
   it("drops every Corpus when its Connection is deleted", async () => {
     const { watchFn, emit } = fakeWatch();
-    const { registry } = registryWith([corpus("snc")], [connection("bitovi-confluence")], watchFn);
+    const { registry } = registryWith([corpus("globex")], [connection("bitovi-confluence")], watchFn);
     await registry.loadAll();
     registry.watch();
 
@@ -192,17 +192,17 @@ describe("watch", () => {
     // There is no credential left to serve them with. The controller blocks
     // this deletion while Corpora exist, but the broker must not depend on
     // that having worked.
-    await vi.waitFor(() => expect(registry.get("snc")).toBeUndefined());
+    await vi.waitFor(() => expect(registry.get("globex")).toBeUndefined());
   });
 
   it("drops a deleted Corpus immediately", async () => {
     const { watchFn, emit } = fakeWatch();
-    const { registry } = registryWith([corpus("snc")], [connection("bitovi-confluence")], watchFn);
+    const { registry } = registryWith([corpus("globex")], [connection("bitovi-confluence")], watchFn);
     await registry.loadAll();
     registry.watch();
 
-    emit("corpora", "DELETED", corpus("snc"));
-    expect(registry.get("snc")).toBeUndefined();
+    emit("corpora", "DELETED", corpus("globex"));
+    expect(registry.get("globex")).toBeUndefined();
     expect(registry.listResources()).toHaveLength(0);
   });
 });

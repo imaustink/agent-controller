@@ -6,7 +6,7 @@ const NOW = new Date("2026-09-26T12:00:00.000Z");
 
 function report(overrides: Partial<SyncReport> = {}): SyncReport {
   return {
-    connection: "snc-confluence",
+    connection: "globex-confluence",
     indexed: 3,
     removed: 0,
     unchanged: 97,
@@ -38,10 +38,10 @@ const patchedStatus = (patch: ReturnType<typeof vi.fn>) =>
 describe("record", () => {
   it("publishes what the pass did, onto the named corpus", async () => {
     const { writer: w, patch } = writer();
-    await w.record("snc-confluence", report());
+    await w.record("globex-confluence", report());
 
     expect(patch).toHaveBeenCalledWith(
-      expect.objectContaining({ plural: "corpora", name: "snc-confluence", namespace: "clients" }),
+      expect.objectContaining({ plural: "corpora", name: "globex-confluence", namespace: "clients" }),
     );
     // Total indexed material, not just what this pass touched — an unchanged
     // chunk is still in the corpus.

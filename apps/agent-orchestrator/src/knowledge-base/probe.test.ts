@@ -61,7 +61,7 @@ function candidate(
 describe("authorize", () => {
   it("takes citation fields from the probe, not the mirror", async () => {
     const prober = new FakeProber({
-      "snc-confluence/page-1": {
+      "globex-confluence/page-1": {
         allowed: true,
         title: "Auth design",
         url: "https://example.atlassian.net/wiki/page-1",
@@ -69,7 +69,7 @@ describe("authorize", () => {
       },
     });
 
-    const outcome = await authorize(prober, [candidate("snc-confluence", "page-1", "v7", 0.9)]);
+    const outcome = await authorize(prober, [candidate("globex-confluence", "page-1", "v7", 0.9)]);
 
     expect(outcome.chunks).toHaveLength(1);
     // Citations are content: a title or URL from the mirror would bypass the
@@ -80,13 +80,13 @@ describe("authorize", () => {
 
   it("drops what the source refuses", async () => {
     const prober = new FakeProber(
-      { "snc-confluence/page-1": { allowed: true, title: "Readable", url: "u", version: "v1" } },
-      { "snc-confluence/page-2": new PermissionDeniedError("403") },
+      { "globex-confluence/page-1": { allowed: true, title: "Readable", url: "u", version: "v1" } },
+      { "globex-confluence/page-2": new PermissionDeniedError("403") },
     );
 
     const outcome = await authorize(prober, [
-      candidate("snc-confluence", "page-1", "v1", 0.9),
-      candidate("snc-confluence", "page-2", "v1", 0.8),
+      candidate("globex-confluence", "page-1", "v1", 0.9),
+      candidate("globex-confluence", "page-2", "v1", 0.8),
     ]);
 
     expect(outcome.chunks).toHaveLength(1);
@@ -152,15 +152,15 @@ describe("authorize", () => {
     // Slack authorizes a CHANNEL: membership is the access unit, so one probe
     // settles every candidate from that connection.
     const prober = new FakeProber(
-      { "snc-slack-eng/": { allowed: true, title: "#snc-eng", url: "u" } },
+      { "globex-slack-eng/": { allowed: true, title: "#globex-eng", url: "u" } },
       {},
       "connection",
     );
 
     const outcome = await authorize(prober, [
-      candidate("snc-slack-eng", "msg-1", "", 0.9),
-      candidate("snc-slack-eng", "msg-2", "", 0.8),
-      candidate("snc-slack-eng", "msg-3", "", 0.7),
+      candidate("globex-slack-eng", "msg-1", "", 0.9),
+      candidate("globex-slack-eng", "msg-2", "", 0.8),
+      candidate("globex-slack-eng", "msg-3", "", 0.7),
     ]);
 
     expect(outcome.chunks).toHaveLength(3);

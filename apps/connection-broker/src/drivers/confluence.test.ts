@@ -28,7 +28,7 @@ function page(overrides: Record<string, unknown> = {}) {
     title: "Auth design",
     spaceId: SPACE_ID,
     version: { number: 7, createdAt: "2026-09-01T10:00:00Z" },
-    _links: { webui: "/spaces/SNC/pages/12345" },
+    _links: { webui: "/spaces/GLOBEX/pages/12345" },
     ...overrides,
   };
 }
@@ -65,7 +65,7 @@ function router(fetchImpl: FetchLike, routes: Routes = {}): FetchLike {
       return routes.resources ?? respond(200, [{ id: CLOUD_ID, url: "https://example.atlassian.net" }]);
     }
     if (url.includes("/api/v2/spaces")) {
-      return routes.spaces ?? respond(200, { results: [{ id: SPACE_ID, key: "SNC" }] });
+      return routes.spaces ?? respond(200, { results: [{ id: SPACE_ID, key: "GLOBEX" }] });
     }
     if (url.includes("/restriction/byOperation/read")) {
       return routes.restrictions ?? respond(200, restrictions());
@@ -86,7 +86,7 @@ describe("the OAuth gateway", () => {
   it("sends API calls to the gateway with the site's cloudId, not to the site", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, page()));
 
-    await driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "12345");
+    await driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "12345");
 
     const [url] = http.mock.calls[0]!;
     // A 3LO token is accepted only at the gateway; calling the site host
@@ -98,9 +98,9 @@ describe("the OAuth gateway", () => {
   it("builds citations from the SITE, which is what a human can open", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, page()));
 
-    const result = await driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "12345");
+    const result = await driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "12345");
 
-    expect(result.url).toBe("https://example.atlassian.net/wiki/spaces/SNC/pages/12345");
+    expect(result.url).toBe("https://example.atlassian.net/wiki/spaces/GLOBEX/pages/12345");
     // A citation pointing at api.atlassian.com is a link nobody can follow.
     expect(result.url).not.toContain(GATEWAY);
   });
@@ -110,7 +110,7 @@ describe("the OAuth gateway", () => {
       url.includes("accessible-resources")
         ? respond(200, [{ id: "canonical", url: "https://bitovi.atlassian.net" }])
         : url.includes("/api/v2/spaces")
-          ? respond(200, { results: [{ id: SPACE_ID, key: "SNC" }] })
+          ? respond(200, { results: [{ id: SPACE_ID, key: "GLOBEX" }] })
           : respond(200, page({ _links: { webui: "/x/abc", base: "https://bitovi.atlassian.net/wiki" } }));
     const driver = new ConfluenceDriver({
       siteBaseUrl: "https://wiki.at.bitovi.com/wiki",
@@ -120,7 +120,7 @@ describe("the OAuth gateway", () => {
       fetch: routed,
     });
 
-    const result = await driver.probe({ space: "SNC" }, { delegated: "user" }, "12345");
+    const result = await driver.probe({ space: "GLOBEX" }, { delegated: "user" }, "12345");
 
     // A tenant on a custom domain reports its CANONICAL address here. Following
     // it produces a citation that resolves but that nobody recognises, and that
@@ -135,13 +135,13 @@ describe("the OAuth gateway", () => {
         lookups += 1;
         return respond(200, [{ id: CLOUD_ID, url: "https://example.atlassian.net" }]);
       }
-      if (url.includes("/api/v2/spaces")) return respond(200, { results: [{ id: SPACE_ID, key: "SNC" }] });
+      if (url.includes("/api/v2/spaces")) return respond(200, { results: [{ id: SPACE_ID, key: "GLOBEX" }] });
       return respond(200, page());
     };
     const driver = new ConfluenceDriver({ siteBaseUrl: SITE, gatewayOrigin: GATEWAY, fetch: routed });
 
-    await driver.probe({ space: "SNC" }, { delegated: "a" }, "1");
-    await driver.probe({ space: "SNC" }, { delegated: "b" }, "2");
+    await driver.probe({ space: "GLOBEX" }, { delegated: "a" }, "1");
+    await driver.probe({ space: "GLOBEX" }, { delegated: "b" }, "2");
 
     // cloudId is a property of the site, identical for every caller — looking
     // it up per user would add a round trip to every turn.
@@ -163,7 +163,7 @@ describe("the OAuth gateway", () => {
       }),
     });
 
-    await expect(driver.probe({ space: "SNC" }, { delegated: "u" }, "1")).rejects.toBeInstanceOf(
+    await expect(driver.probe({ space: "GLOBEX" }, { delegated: "u" }, "1")).rejects.toBeInstanceOf(
       PermissionDeniedError,
     );
   });
@@ -178,7 +178,7 @@ describe("the OAuth gateway", () => {
       fetch: router(async () => respond(200, page())),
     });
 
-    const result = await driver.probe({ space: "SNC" }, { delegated: "u" }, "1");
+    const result = await driver.probe({ space: "GLOBEX" }, { delegated: "u" }, "1");
     expect(result.allowed).toBe(true);
   });
 
@@ -189,7 +189,7 @@ describe("the OAuth gateway", () => {
       resources: respond(200, [{ id: "other", url: "https://someone-else.atlassian.net" }]),
     });
 
-    await expect(driver.probe({ space: "SNC" }, { delegated: "u" }, "1")).rejects.toBeInstanceOf(
+    await expect(driver.probe({ space: "GLOBEX" }, { delegated: "u" }, "1")).rejects.toBeInstanceOf(
       PermissionDeniedError,
     );
   });
@@ -208,7 +208,7 @@ describe("the OAuth gateway", () => {
 
     // Here the ambiguity is real: picking one would read another tenant's
     // content while every scope check still passed.
-    await expect(driver.probe({ space: "SNC" }, { delegated: "u" }, "1")).rejects.toThrow(
+    await expect(driver.probe({ space: "GLOBEX" }, { delegated: "u" }, "1")).rejects.toThrow(
       /set the connection's cloudId/,
     );
   });
@@ -217,7 +217,7 @@ describe("the OAuth gateway", () => {
     let lookups = 0;
     const routed: FetchLike = async (url) => {
       if (url.includes("accessible-resources")) lookups += 1;
-      if (url.includes("/api/v2/spaces")) return respond(200, { results: [{ id: SPACE_ID, key: "SNC" }] });
+      if (url.includes("/api/v2/spaces")) return respond(200, { results: [{ id: SPACE_ID, key: "GLOBEX" }] });
       return respond(200, page());
     };
     const driver = new ConfluenceDriver({
@@ -227,7 +227,7 @@ describe("the OAuth gateway", () => {
       fetch: routed,
     });
 
-    await driver.probe({ space: "SNC" }, { delegated: "u" }, "1");
+    await driver.probe({ space: "GLOBEX" }, { delegated: "u" }, "1");
     expect(lookups).toBe(0);
   });
 
@@ -235,7 +235,7 @@ describe("the OAuth gateway", () => {
     const driver = driverWith(async () => respond(200, page()), { resources: respond(200, []) });
 
     // Distinct from "wrong site": the app is probably not installed.
-    await expect(driver.probe({ space: "SNC" }, { delegated: "u" }, "1")).rejects.toThrow(
+    await expect(driver.probe({ space: "GLOBEX" }, { delegated: "u" }, "1")).rejects.toThrow(
       /may not be installed/,
     );
   });
@@ -245,13 +245,13 @@ describe("resolving the space key", () => {
   it("translates the configured KEY into the id v2 addresses pages by", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, { results: [page()] }));
 
-    await driverWith(http).list({ space: "SNC" }, { service: "svc" }, undefined);
+    await driverWith(http).list({ space: "GLOBEX" }, { service: "svc" }, undefined);
 
     // The Connection stays written in terms of the key, which is what a human
     // knows the space by; exactly one translation happens, here.
     const [url] = http.mock.calls[0]!;
     expect(url).toContain(`space-id=${SPACE_ID}`);
-    expect(url).not.toContain("SNC");
+    expect(url).not.toContain("GLOBEX");
   });
 
   it("resolves the space id once and reuses it", async () => {
@@ -262,15 +262,15 @@ describe("resolving the space key", () => {
       }
       if (url.includes("/api/v2/spaces")) {
         lookups += 1;
-        return respond(200, { results: [{ id: SPACE_ID, key: "SNC" }] });
+        return respond(200, { results: [{ id: SPACE_ID, key: "GLOBEX" }] });
       }
       if (url.includes("/restriction/")) return respond(200, restrictions());
       return respond(200, page());
     };
     const driver = new ConfluenceDriver({ siteBaseUrl: SITE, gatewayOrigin: GATEWAY, fetch: routed });
 
-    await driver.probe({ space: "SNC" }, { delegated: "a" }, "1");
-    await driver.probe({ space: "SNC" }, { delegated: "b" }, "2");
+    await driver.probe({ space: "GLOBEX" }, { delegated: "a" }, "1");
+    await driver.probe({ space: "GLOBEX" }, { delegated: "b" }, "2");
 
     // A property of the site, not of the caller.
     expect(lookups).toBe(1);
@@ -283,7 +283,7 @@ describe("resolving the space key", () => {
       spaces: respond(200, { results: [] }),
     });
 
-    await expect(driver.probe({ space: "SNC" }, { delegated: "u" }, "1")).rejects.toThrow(
+    await expect(driver.probe({ space: "GLOBEX" }, { delegated: "u" }, "1")).rejects.toThrow(
       /not visible to this credential/,
     );
   });
@@ -295,7 +295,7 @@ describe("resolving the space key", () => {
       spaces: respond(200, { results: [{ id: "999", key: "OTHER" }] }),
     });
 
-    await expect(driver.probe({ space: "SNC" }, { delegated: "u" }, "1")).rejects.toThrow(
+    await expect(driver.probe({ space: "GLOBEX" }, { delegated: "u" }, "1")).rejects.toThrow(
       /not visible to this credential/,
     );
   });
@@ -309,7 +309,7 @@ describe("scope validation", () => {
   });
 
   it("rejects a scope that also names another provider's unit", () => {
-    expect(() => driver.validateScope({ space: "SNC", channel: "C123" })).toThrow(/nothing else/);
+    expect(() => driver.validateScope({ space: "GLOBEX", channel: "C123" })).toThrow(/nothing else/);
   });
 
   it("rejects a space key that would escape the URL path", () => {
@@ -325,11 +325,11 @@ describe("list", () => {
 
     const { resources } = await driverWith(http, {
       restrictions: respond(200, restrictions(["acc-1"], ["grp-1"])),
-    }).list({ space: "SNC" }, { service: "svc" }, undefined);
+    }).list({ space: "GLOBEX" }, { service: "svc" }, undefined);
 
     expect(resources[0]!.acl).toEqual({ principals: ["user:acc-1", "group:grp-1"] });
     expect(resources[0]!.version).toBe("7");
-    expect(resources[0]!.url).toBe("https://example.atlassian.net/wiki/spaces/SNC/pages/12345");
+    expect(resources[0]!.url).toBe("https://example.atlassian.net/wiki/spaces/GLOBEX/pages/12345");
   });
 
   it("reads restrictions from the v1 endpoint, the only one that answers", async () => {
@@ -344,13 +344,13 @@ describe("list", () => {
         if (url.includes("accessible-resources")) {
           return respond(200, [{ id: CLOUD_ID, url: "https://example.atlassian.net" }]);
         }
-        if (url.includes("/api/v2/spaces")) return respond(200, { results: [{ id: SPACE_ID, key: "SNC" }] });
+        if (url.includes("/api/v2/spaces")) return respond(200, { results: [{ id: SPACE_ID, key: "GLOBEX" }] });
         if (url.includes("/restriction/")) return respond(200, restrictions(["acc-1"]));
         return respond(200, { results: [page()] });
       },
     });
 
-    const { resources } = await driver.list({ space: "SNC" }, { service: "svc" }, undefined);
+    const { resources } = await driver.list({ space: "GLOBEX" }, { service: "svc" }, undefined);
 
     // v2's own /pages/{id}/restrictions returns 401 under these scopes while
     // the v1 path answers, so the obvious cleanup of "move everything to v2"
@@ -363,7 +363,7 @@ describe("list", () => {
   it("marks a page with no explicit restrictions PERMISSIVE rather than guessing", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, { results: [page()] }));
 
-    const { resources } = await driverWith(http).list({ space: "SNC" }, { service: "svc" }, undefined);
+    const { resources } = await driverWith(http).list({ space: "GLOBEX" }, { service: "svc" }, undefined);
 
     // Space-level permissions govern here and this driver does not resolve
     // them. Over-inclusion costs a wasted probe; under-inclusion silently
@@ -375,7 +375,7 @@ describe("list", () => {
     const http = vi.fn().mockResolvedValue(respond(200, { results: [page()] }));
 
     const { resources } = await driverWith(http, { restrictions: respond(500) }).list(
-      { space: "SNC" },
+      { space: "GLOBEX" },
       { service: "svc" },
       undefined,
     );
@@ -393,7 +393,7 @@ describe("list", () => {
       }),
     );
 
-    const { cursor } = await driverWith(http).list({ space: "SNC" }, { service: "svc" }, undefined);
+    const { cursor } = await driverWith(http).list({ space: "GLOBEX" }, { service: "svc" }, undefined);
 
     // v2 paginates by opaque cursor. Reconstructing one would couple us to an
     // encoding Atlassian does not promise to keep.
@@ -417,17 +417,17 @@ describe("list", () => {
       .mockResolvedValueOnce(respond(200, { results: [] }));
 
     const driver = driverWith(http);
-    const { cursor: parsed } = await driver.list({ space: "SNC" }, { service: "svc" }, undefined);
+    const { cursor: parsed } = await driver.list({ space: "GLOBEX" }, { service: "svc" }, undefined);
     expect(parsed).toBe(cursor);
 
-    await driver.list({ space: "SNC" }, { service: "svc" }, parsed);
+    await driver.list({ space: "GLOBEX" }, { service: "svc" }, parsed);
     const [resumedUrl] = http.mock.calls[1]!;
     expect(decodeURIComponent(new URL(resumedUrl).searchParams.get("cursor")!)).toBe(cursor);
   });
 
   it("ends the walk when no next link comes back", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, { results: [page()] }));
-    const { cursor } = await driverWith(http).list({ space: "SNC" }, { service: "svc" }, undefined);
+    const { cursor } = await driverWith(http).list({ space: "GLOBEX" }, { service: "svc" }, undefined);
 
     // Absence of the link is the only reliable end signal: a short page is not
     // one, since v2 may return fewer results than the limit and still have more.
@@ -436,14 +436,14 @@ describe("list", () => {
 
   it("resumes from a supplied cursor", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, { results: [] }));
-    await driverWith(http).list({ space: "SNC" }, { service: "svc" }, "abc123");
+    await driverWith(http).list({ space: "GLOBEX" }, { service: "svc" }, "abc123");
 
     expect(http.mock.calls[0]![0]).toContain("cursor=abc123");
   });
 
   it("lists with the SERVICE credential, since ingestion ignores permissions", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, { results: [] }));
-    await driverWith(http).list({ space: "SNC" }, { service: "svc", delegated: "user" }, undefined);
+    await driverWith(http).list({ space: "GLOBEX" }, { service: "svc", delegated: "user" }, undefined);
 
     expect(http).toHaveBeenCalledWith(
       expect.stringContaining("space-id="),
@@ -456,12 +456,12 @@ describe("probe", () => {
   it("returns the citation fields from the source", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, page()));
 
-    const result = await driverWith(http).probe({ space: "SNC" }, { delegated: "user-token" }, "12345");
+    const result = await driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user-token" }, "12345");
 
     expect(result).toEqual({
       allowed: true,
       title: "Auth design",
-      url: "https://example.atlassian.net/wiki/spaces/SNC/pages/12345",
+      url: "https://example.atlassian.net/wiki/spaces/GLOBEX/pages/12345",
       version: "7",
     });
   });
@@ -469,7 +469,7 @@ describe("probe", () => {
   it("uses the CALLING USER's token, not the service credential", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, page()));
 
-    await driverWith(http).probe({ space: "SNC" }, { service: "svc", delegated: "user-token" }, "12345");
+    await driverWith(http).probe({ space: "GLOBEX" }, { service: "svc", delegated: "user-token" }, "12345");
 
     expect(http).toHaveBeenCalledWith(
       expect.any(String),
@@ -483,13 +483,13 @@ describe("probe", () => {
     // Probing with the service credential answers a different question, and
     // answers it permissively.
     await expect(
-      driverWith(vi.fn()).probe({ space: "SNC" }, { service: "svc" }, "12345"),
+      driverWith(vi.fn()).probe({ space: "GLOBEX" }, { service: "svc" }, "12345"),
     ).rejects.toThrow(/delegated token/);
   });
 
   it("does not pull the body — that is the model's own call to make", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, page()));
-    await driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "12345");
+    await driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "12345");
 
     const [url] = http.mock.calls[0]!;
     expect(url).not.toContain("body-format");
@@ -506,7 +506,7 @@ describe("probe", () => {
       }),
     });
 
-    await driver.probe({ space: "SNC" }, { delegated: "user" }, "12345");
+    await driver.probe({ space: "GLOBEX" }, { delegated: "user" }, "12345");
 
     // Consulting the mirror here would be both slower and weaker than the
     // answer the source just gave (ADR 0040).
@@ -518,7 +518,7 @@ describe("probe", () => {
     const http = vi.fn().mockResolvedValue(respond(200, page({ spaceId: "99999" })));
 
     await expect(
-      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "99999"),
+      driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "99999"),
     ).rejects.toBeInstanceOf(PermissionDeniedError);
   });
 
@@ -528,7 +528,7 @@ describe("probe", () => {
     const http = vi.fn().mockResolvedValue(respond(200, page({ spaceId: undefined })));
 
     await expect(
-      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "99999"),
+      driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "99999"),
     ).rejects.toBeInstanceOf(PermissionDeniedError);
   });
 
@@ -537,7 +537,7 @@ describe("probe", () => {
     // but it would fail on every page in the space.
     const http = vi.fn().mockResolvedValue(respond(200, page({ spaceId: Number(SPACE_ID) })));
 
-    const result = await driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "12345");
+    const result = await driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "12345");
     expect(result.allowed).toBe(true);
   });
 });
@@ -546,7 +546,7 @@ describe("error classification", () => {
   it.each([403, 404])("treats %i as a denial", async (status) => {
     const http = vi.fn().mockResolvedValue(respond(status));
     await expect(
-      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
+      driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "1"),
     ).rejects.toBeInstanceOf(PermissionDeniedError);
   });
 
@@ -557,7 +557,7 @@ describe("error classification", () => {
     // answer the moment a token goes stale.
     const http = vi.fn().mockResolvedValue(respond(401));
     await expect(
-      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
+      driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "1"),
     ).rejects.toBeInstanceOf(TransientError);
   });
 
@@ -566,7 +566,7 @@ describe("error classification", () => {
     // make the same question return different evidence on a retry.
     const http = vi.fn().mockResolvedValue(respond(status));
     await expect(
-      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
+      driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "1"),
     ).rejects.toBeInstanceOf(TransientError);
   });
 
@@ -578,7 +578,7 @@ describe("error classification", () => {
       respond(410, {}, '{"message":"GoneException: This deprecated endpoint has been removed."}'),
     );
     await expect(
-      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
+      driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "1"),
     ).rejects.toBeInstanceOf(PermanentError);
   });
 
@@ -590,7 +590,7 @@ describe("error classification", () => {
     // `scope does not match` and `endpoint has been removed` are the same
     // 4xx-shaped failure from the outside and have completely different fixes.
     await expect(
-      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
+      driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "1"),
     ).rejects.toThrow(/scope does not match/);
   });
 
@@ -599,7 +599,7 @@ describe("error classification", () => {
 
     // An HTML error page from a proxy in front of the API is a realistic body.
     await expect(
-      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
+      driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "1"),
     ).rejects.toThrow(/^confluence returned 500: x{300}$/);
   });
 
@@ -616,14 +616,14 @@ describe("error classification", () => {
     // Failing to read WHY something failed must not replace the failure with a
     // different one.
     await expect(
-      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
+      driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "1"),
     ).rejects.toBeInstanceOf(TransientError);
   });
 
   it("treats a network failure as transient", async () => {
     const http = vi.fn().mockRejectedValue(new Error("ECONNRESET"));
     await expect(
-      driverWith(http).probe({ space: "SNC" }, { delegated: "user" }, "1"),
+      driverWith(http).probe({ space: "GLOBEX" }, { delegated: "user" }, "1"),
     ).rejects.toBeInstanceOf(TransientError);
   });
 });
@@ -635,7 +635,7 @@ describe("fetch", () => {
     );
 
     const doc = await driverWith(http).fetch(
-      { space: "SNC" },
+      { space: "GLOBEX" },
       { service: "svc", delegated: "user-token" },
       "12345",
     );
@@ -652,14 +652,14 @@ describe("fetch", () => {
   it("refuses a page outside the connection's scope", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, page({ spaceId: "99999" })));
     await expect(
-      driverWith(http).fetch({ space: "SNC" }, { service: "svc" }, "99999"),
+      driverWith(http).fetch({ space: "GLOBEX" }, { service: "svc" }, "99999"),
     ).rejects.toBeInstanceOf(PermissionDeniedError);
   });
 
   it("fails CLOSED when the response carries no space id", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, page({ spaceId: undefined })));
     await expect(
-      driverWith(http).fetch({ space: "SNC" }, { service: "svc" }, "99999"),
+      driverWith(http).fetch({ space: "GLOBEX" }, { service: "svc" }, "99999"),
     ).rejects.toBeInstanceOf(PermissionDeniedError);
   });
 });

@@ -12,8 +12,8 @@ import { corpusPointId } from "./point-id.js";
  * `uuid.NewSHA1(uuid.NameSpaceURL, []byte("github.com/controller-agent/temporal-engine/"+collection+"/"+id))`.
  */
 const GO_REFERENCE: [collection: string, id: string, expected: string][] = [
-  ["corpus-default-snc-confluence", "abc123", "306b216e-7f2f-53e9-ba09-2383bd8dfff6"],
-  ["corpus-default-snc-confluence", "", "712232d6-c950-5ab7-b211-42b1394fecba"],
+  ["corpus-default-globex-confluence", "abc123", "1b0ef555-fa9c-5ea1-8d6d-f8263b11da99"],
+  ["corpus-default-globex-confluence", "", "07105c17-a3f8-530e-98d4-3b7d40c9007e"],
   ["other", "abc123", "cff60923-fc57-57dc-b6db-685559bd7f43"],
   // Non-ASCII, to pin UTF-8 encoding rather than assuming it.
   ["c", "ünïcode-✓", "f6f13525-0653-54ae-b6dd-935161d283dc"],

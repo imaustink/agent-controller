@@ -32,7 +32,7 @@ describe("scope validation", () => {
   });
 
   it("rejects a scope naming another provider's unit", () => {
-    expect(() => d.validateScope({ channel: "C1", space: "SNC" })).toThrow(/nothing else/);
+    expect(() => d.validateScope({ channel: "C1", space: "GLOBEX" })).toThrow(/nothing else/);
   });
 
   it("rejects a channel id that is not one", () => {
@@ -122,13 +122,13 @@ describe("fetch", () => {
 
 describe("probe", () => {
   it("asks about the channel and needs no message id", async () => {
-    const http = vi.fn().mockResolvedValue(respond({ ok: true, channel: { name: "snc-eng" } }));
+    const http = vi.fn().mockResolvedValue(respond({ ok: true, channel: { name: "globex-eng" } }));
 
     const result = await driver(http).probe(SCOPE, { delegated: "xoxp" });
 
     expect(result).toEqual({
       allowed: true,
-      title: "#snc-eng",
+      title: "#globex-eng",
       url: "https://bitovi.slack.com/archives/C123ABC",
       version: undefined,
     });

@@ -1835,20 +1835,20 @@ func TestResumedCallerToolTurnWithAnEmptyResultDoesNotReportFailure(t *testing.T
 // launch template.
 func knowledgeBaseSkillTools() *activities.SkillTools {
 	tool := catalog.ToolDescriptor{
-		ID:           "kb:snc/search",
-		Description:  "Search the SNC knowledge base.",
+		ID:           "kb:globex/search",
+		Description:  "Search the GLOBEX knowledge base.",
 		AllowedRoles: []string{"reader"},
 		KnowledgeBaseExec: &catalog.KnowledgeBaseExecSpec{
-			KnowledgeBaseID:           "snc",
-			DisplayName:               "SNC",
+			KnowledgeBaseID:           "globex",
+			DisplayName:               "GLOBEX",
 			Operation:                 "search",
 			DisclosePartialVisibility: true,
 		},
 	}
 	return &activities.SkillTools{
 		Skill: catalog.SkillDescriptor{
-			ID:       "kb:snc",
-			Markdown: "# SNC knowledge base",
+			ID:       "kb:globex",
+			Markdown: "# GLOBEX knowledge base",
 			ToolIDs:  []string{tool.ID},
 		},
 		Tools: []catalog.ToolDescriptor{tool},
@@ -1859,19 +1859,19 @@ func knowledgeBaseSkillTools() *activities.SkillTools {
 // nothing to launch, and its credential must never leave the activity.
 func TestKnowledgeBaseSearchRunsAsAnActivityNotALaunch(t *testing.T) {
 	le := newLoopEnv(t)
-	le.selected = "kb:snc"
+	le.selected = "kb:globex"
 	le.skills = []catalog.SkillDescriptor{knowledgeBaseSkillTools().Skill}
 	le.skillTools = knowledgeBaseSkillTools()
 	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
 		Result: "Found 1 passage.\n\nSources:\n- [Auth](https://wiki/auth)\n",
 	}
 	le.plans = []activities.PlannedAction{
-		{Action: activities.ActionCallTool, ToolID: "kb:snc/search", ToolInput: "how is auth configured"},
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "how is auth configured"},
 		{Action: activities.ActionFinish},
 	}
 
 	var result workflows.TurnResult
-	le.sendTurn(t, "turn-1", "how is auth configured for SNC?", &result, time.Millisecond)
+	le.sendTurn(t, "turn-1", "how is auth configured for GLOBEX?", &result, time.Millisecond)
 
 	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
 	require.True(t, le.env.IsWorkflowCompleted())
@@ -1879,7 +1879,7 @@ func TestKnowledgeBaseSearchRunsAsAnActivityNotALaunch(t *testing.T) {
 
 	require.Len(t, le.kbSearchInputs, 1)
 	require.Equal(t, "how is auth configured", le.kbSearchInputs[0].Query)
-	require.Equal(t, "kb:snc/search", le.kbSearchInputs[0].Tool.ID)
+	require.Equal(t, "kb:globex/search", le.kbSearchInputs[0].Tool.ID)
 	require.Nil(t, le.launched, "a knowledge-base search must never create a ToolRun")
 	require.Contains(t, result.Reply, "Sources:")
 }
@@ -1888,19 +1888,19 @@ func TestKnowledgeBaseSearchRunsAsAnActivityNotALaunch(t *testing.T) {
 // answer to give and the turn ends on the ask.
 func TestKnowledgeBaseSearchNeedingALinkEndsTheTurnOnTheAsk(t *testing.T) {
 	le := newLoopEnv(t)
-	le.selected = "kb:snc"
+	le.selected = "kb:globex"
 	le.skills = []catalog.SkillDescriptor{knowledgeBaseSkillTools().Skill}
 	le.skillTools = knowledgeBaseSkillTools()
 	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
 		NeedsLink: true,
-		Result:    "I need you to link the account behind SNC before I can search it.",
+		Result:    "I need you to link the account behind GLOBEX before I can search it.",
 	}
 	le.plans = []activities.PlannedAction{
-		{Action: activities.ActionCallTool, ToolID: "kb:snc/search", ToolInput: "q"},
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "q"},
 	}
 
 	var result workflows.TurnResult
-	le.sendTurn(t, "turn-1", "what does SNC say about auth?", &result, time.Millisecond)
+	le.sendTurn(t, "turn-1", "what does GLOBEX say about auth?", &result, time.Millisecond)
 
 	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
 	require.True(t, le.env.IsWorkflowCompleted())

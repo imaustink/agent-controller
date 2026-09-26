@@ -3,14 +3,14 @@ import { QdrantCorpusWriter, type Embedder, type QdrantLike } from "./corpus-wri
 import { corpusPointId } from "./point-id.js";
 import type { Chunk } from "./chunk.js";
 
-const COLLECTION = "corpus-default-snc-confluence";
+const COLLECTION = "corpus-default-globex-confluence";
 
 function chunk(overrides: Partial<Chunk> = {}): Chunk {
   return {
-    connectionId: "snc-confluence",
-    connectionLabel: "SNC Confluence",
+    connectionId: "globex-confluence",
+    connectionLabel: "GLOBEX Confluence",
     sourceId: "12345",
-    sourceUrl: "https://wiki.at.bitovi.com/wiki/spaces/SNC/pages/12345",
+    sourceUrl: "https://wiki.at.bitovi.com/wiki/spaces/GLOBEX/pages/12345",
     title: "Auth design",
     updatedAt: "2026-09-01T10:00:00Z",
     version: "7",

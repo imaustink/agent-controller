@@ -1,4 +1,4 @@
-# The SNC engagement as a knowledge base.
+# The GLOBEX engagement as a knowledge base.
 #
 # Only the Confluence corpus exists today; the Slack and Drive members are shown
 # commented out because composition is the point of this resource — the same
@@ -20,16 +20,16 @@ metadata:
   labels:
     app.kubernetes.io/name: core-controller
     app.kubernetes.io/managed-by: kustomize
-  name: snc
+  name: globex
 spec:
-  displayName: SNC
+  displayName: GLOBEX
 
   # Embedded for retrieval, and this is SUBJECT MATTER rather than a tool
   # contract: it is how the planner tells one client's knowledge base from
   # another's. Near-identical descriptions across clients defeat the design
   # (docs/adr/0039 §5).
   description: >-
-    The SNC client engagement: platform migration work, their Confluence space,
+    The GLOBEX client engagement: platform migration work, their Confluence space,
     architecture decisions, meeting notes and delivery status.
 
   # Also embedded. Codenames and alternative names are usually what someone
@@ -38,10 +38,10 @@ spec:
     - Southern National
 
   corpusRefs:
-    - snc-confluence
-    # - snc-slack-eng           # both of these are Corpora over ONE
-    # - snc-slack-general       # Connection: one Slack app, one credential
-    # - snc-drive
+    - globex-confluence
+    # - globex-slack-eng           # both of these are Corpora over ONE
+    # - globex-slack-general       # Connection: one Slack app, one credential
+    # - globex-drive
     # - platform-announcements   # shared across several knowledge bases
 
   chunk:

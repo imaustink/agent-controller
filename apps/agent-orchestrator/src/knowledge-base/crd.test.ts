@@ -12,11 +12,11 @@ function connectionCr(
   status?: CorpusCustomResource["status"],
 ): CorpusCustomResource {
   return {
-    metadata: { name: "snc-slack-eng" },
+    metadata: { name: "globex-slack-eng" },
     spec: {
       connectionRef: "bitovi-slack",
       description: "Engineering channel.",
-      displayName: "#snc-eng",
+      displayName: "#globex-eng",
       allowedRoles: ["reader"],
       ...overrides,
     },
@@ -28,10 +28,10 @@ function knowledgeBaseCr(
   overrides: Partial<KnowledgeBaseCustomResource["spec"]> = {},
 ): KnowledgeBaseCustomResource {
   return {
-    metadata: { name: "snc" },
+    metadata: { name: "globex" },
     spec: {
-      description: "The SNC engagement.",
-      corpusRefs: ["snc-confluence"],
+      description: "The GLOBEX engagement.",
+      corpusRefs: ["globex-confluence"],
       ...overrides,
     },
   };
@@ -40,12 +40,12 @@ function knowledgeBaseCr(
 describe("toCorpusDescriptor", () => {
   it("reads the collection off status, not the spec", () => {
     const connection = toCorpusDescriptor(
-      connectionCr({ api: { enabled: true } }, { collection: "conn_default_snc-slack-eng" }),
+      connectionCr({ api: { enabled: true } }, { collection: "conn_default_globex-slack-eng" }),
     );
 
-    expect(connection?.collection).toBe("conn_default_snc-slack-eng");
+    expect(connection?.collection).toBe("conn_default_globex-slack-eng");
     expect(connection?.apiEnabled).toBe(true);
-    expect(connectionLabel(connection!)).toBe("#snc-eng");
+    expect(connectionLabel(connection!)).toBe("#globex-eng");
   });
 
   it("decodes an unreconciled connection without a collection", () => {
@@ -54,7 +54,7 @@ describe("toCorpusDescriptor", () => {
     // Not searchable until the controller assigns one, but still a valid CR.
     expect(connection?.collection).toBeUndefined();
     expect(connection?.apiEnabled).toBe(false);
-    expect(connectionLabel(connection!)).toBe("snc-slack-eng");
+    expect(connectionLabel(connection!)).toBe("globex-slack-eng");
   });
 
   it("rejects a corpus missing its structurally required fields", () => {

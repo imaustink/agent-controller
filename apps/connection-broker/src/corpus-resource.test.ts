@@ -25,15 +25,15 @@ function connection(overrides: Partial<ConnectionCustomResource["spec"]> = {}): 
 
 function corpus(overrides: Partial<CorpusCustomResource["spec"]> = {}): CorpusCustomResource {
   return {
-    metadata: { name: "snc-confluence", namespace: "clients" },
+    metadata: { name: "globex-confluence", namespace: "clients" },
     spec: {
       connectionRef: "bitovi-confluence",
-      displayName: "SNC Confluence",
+      displayName: "GLOBEX Confluence",
       allowedRoles: ["reader"],
-      scope: { space: "SNC" },
+      scope: { space: "GLOBEX" },
       ...overrides,
     },
-    status: { collection: "corpus_clients_snc-confluence" },
+    status: { collection: "corpus_clients_globex-confluence" },
   };
 }
 
@@ -47,12 +47,12 @@ describe("toBinding", () => {
     const read = secrets();
     const binding = await toBinding(corpus(), connection(), read);
 
-    expect(binding.name).toBe("snc-confluence");
+    expect(binding.name).toBe("globex-confluence");
     // Carried so a webhook delivery, which arrives per Connection, can be
     // routed to every Corpus over it.
     expect(binding.connection).toBe("bitovi-confluence");
     expect(binding.driver).toBeInstanceOf(ConfluenceDriver);
-    expect(binding.scope).toEqual({ space: "SNC", channel: undefined, folderID: undefined });
+    expect(binding.scope).toEqual({ space: "GLOBEX", channel: undefined, folderID: undefined });
     expect(binding.allowedRoles).toEqual(["reader"]);
     expect(binding.serviceToken).toBe("svc-token");
     expect(read).toHaveBeenCalledWith("atlassian", "token");
@@ -144,17 +144,17 @@ describe("the Connection's allowedScopes cap", () => {
   it("permits a subset inside the cap", async () => {
     const binding = await toBinding(
       corpus(),
-      connection({ allowedScopes: { spaces: ["SNC"] } }),
+      connection({ allowedScopes: { spaces: ["GLOBEX"] } }),
       secrets(),
     );
-    expect(binding.name).toBe("snc-confluence");
+    expect(binding.name).toBe("globex-confluence");
   });
 
   it("permits anything when the Connection sets no cap", async () => {
     // An absent allowlist means no cap, not an empty one — reading it the
     // other way would break every Connection that never set one.
     const binding = await toBinding(corpus(), connection(), secrets());
-    expect(binding.name).toBe("snc-confluence");
+    expect(binding.name).toBe("globex-confluence");
   });
 
   it("ignores a cap for a different provider's unit", async () => {
@@ -164,13 +164,13 @@ describe("the Connection's allowedScopes cap", () => {
       connection({ allowedScopes: { channels: ["C123"] } }),
       secrets(),
     );
-    expect(binding.name).toBe("snc-confluence");
+    expect(binding.name).toBe("globex-confluence");
   });
 });
 
 describe("collectionOf", () => {
   it("reads the collection the controller published", () => {
-    expect(collectionOf(corpus())).toBe("corpus_clients_snc-confluence");
+    expect(collectionOf(corpus())).toBe("corpus_clients_globex-confluence");
   });
 
   it("is undefined before the Corpus has been reconciled", () => {

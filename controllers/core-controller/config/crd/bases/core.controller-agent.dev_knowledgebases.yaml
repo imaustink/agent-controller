@@ -119,7 +119,7 @@ spec:
                 type: boolean
               displayName:
                 description: |-
-                  displayName is the human name for this knowledge base (e.g. "SNC").
+                  displayName is the human name for this knowledge base (e.g. "GLOBEX").
                   Defaults to metadata.name.
                 type: string
             required:

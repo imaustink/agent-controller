@@ -112,13 +112,13 @@ func TestBrokerProberSendsTheDelegatedTokenAndReadsTheProbe(t *testing.T) {
 	}
 
 	result, err := prober.Probe(context.Background(),
-		corpus.ProbeRequest{CorpusID: "snc-confluence", SourceID: "page-1"})
+		corpus.ProbeRequest{CorpusID: "globex-confluence", SourceID: "page-1"})
 
 	require.NoError(t, err)
 	require.Equal(t, "Auth design", result.Title)
 	require.Equal(t, "Bearer orch-token", gotAuth, "the orchestrator authenticates itself")
 	require.Equal(t, "user-token", gotDelegated, "and forwards the user's own credential")
-	require.Equal(t, "/connections/snc-confluence/probe", gotPath)
+	require.Equal(t, "/connections/globex-confluence/probe", gotPath)
 	require.Equal(t, "page-1", gotBody["sourceId"])
 }
 

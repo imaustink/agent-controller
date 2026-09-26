@@ -11,16 +11,16 @@ metadata:
   labels:
     app.kubernetes.io/name: core-controller
     app.kubernetes.io/managed-by: kustomize
-  name: snc-confluence
+  name: globex-confluence
 spec:
   # The authenticated route this subset is drawn through. One Connection serves
   # many Corpora; adding a second space is another Corpus, not another
   # credential.
   connectionRef: bitovi-confluence
 
-  displayName: SNC Confluence
+  displayName: GLOBEX Confluence
   description: >-
-    The SNC client engagement's Confluence space: architecture decisions,
+    The GLOBEX client engagement's Confluence space: architecture decisions,
     meeting notes and delivery status.
 
   # Gates retrieval, and lives HERE rather than on the Connection or the
@@ -40,7 +40,7 @@ spec:
   # so that half is checked by the controller, which degrades a mismatched
   # Corpus, and again by the driver when it binds.
   scope:
-    space: SNC
+    space: GLOBEX
 
   sync:
     mode: poll

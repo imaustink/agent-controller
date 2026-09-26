@@ -4,7 +4,7 @@ import { QdrantCorpusStore } from "./qdrant-corpus-store.js";
 const embedder = { embed: vi.fn(async () => [0.1, 0.2, 0.3]) };
 
 const chunk = (overrides: Record<string, unknown> = {}) => ({
-  connectionId: "snc-confluence",
+  connectionId: "globex-confluence",
   sourceId: "12345",
   sourceUrl: "https://wiki/page",
   contentHash: "h1",

@@ -92,7 +92,7 @@ describe("slack webhooks", () => {
 
 describe("confluence webhooks", () => {
   const driver = new ConfluenceDriver({ siteBaseUrl: "https://x.atlassian.net/wiki", cloudId: "c" });
-  const scope = { space: "SNC" };
+  const scope = { space: "GLOBEX" };
 
   const signed = (body: string) => ({
     headers: { "x-hub-signature": `sha256=${hmacHex(SECRET, body)}` },
@@ -100,9 +100,9 @@ describe("confluence webhooks", () => {
   });
 
   it("names the changed page, and which space", () => {
-    const body = JSON.stringify({ page: { id: 12345, spaceKey: "SNC" } });
+    const body = JSON.stringify({ page: { id: 12345, spaceKey: "GLOBEX" } });
     expect(driver.parseWebhook!(signed(body), SECRET)).toEqual({
-      scopeKey: "SNC",
+      scopeKey: "GLOBEX",
       sourceIds: ["12345"],
     });
   });
@@ -117,12 +117,12 @@ describe("confluence webhooks", () => {
   it("reports an unknown change as an empty list, not as nothing", () => {
     // Which the caller escalates to a full pass: a deletion whose event never
     // arrived would otherwise never be noticed.
-    const body = JSON.stringify({ space: { spaceKey: "SNC" } });
-    expect(driver.parseWebhook!(signed(body), SECRET)).toEqual({ scopeKey: "SNC", sourceIds: [] });
+    const body = JSON.stringify({ space: { spaceKey: "GLOBEX" } });
+    expect(driver.parseWebhook!(signed(body), SECRET)).toEqual({ scopeKey: "GLOBEX", sourceIds: [] });
   });
 
   it("refuses a forged signature", () => {
-    const request = signed(JSON.stringify({ page: { id: 1, spaceKey: "SNC" } }));
+    const request = signed(JSON.stringify({ page: { id: 1, spaceKey: "GLOBEX" } }));
     request.headers["x-hub-signature"] = "sha256=0000";
     expect(() => driver.parseWebhook!(request, SECRET)).toThrow(PermissionDeniedError);
   });

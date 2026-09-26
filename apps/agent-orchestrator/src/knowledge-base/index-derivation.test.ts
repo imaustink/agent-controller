@@ -5,27 +5,27 @@ import type { CorpusDescriptor, KnowledgeBaseDescriptor } from "./types.js";
 function connections(): Map<string, CorpusDescriptor> {
   return new Map<string, CorpusDescriptor>([
     [
-      "snc-confluence",
+      "globex-confluence",
       {
-        id: "snc-confluence",
+        id: "globex-confluence",
         provider: "confluence",
-        displayName: "SNC Confluence",
-        description: "The SNC space.",
+        displayName: "GLOBEX Confluence",
+        description: "The GLOBEX space.",
         allowedRoles: ["reader", "writer"],
-        collection: "conn_default_snc-confluence",
+        collection: "conn_default_globex-confluence",
         apiEnabled: true,
         identityProviders: ["atlassian"],
       },
     ],
     [
-      "snc-slack-private",
+      "globex-slack-private",
       {
-        id: "snc-slack-private",
+        id: "globex-slack-private",
         provider: "slack",
-        displayName: "#snc-leads",
+        displayName: "#globex-leads",
         description: "Leads-only channel.",
         allowedRoles: ["lead"],
-        collection: "conn_default_snc-slack-private",
+        collection: "conn_default_globex-slack-private",
         apiEnabled: false,
         identityProviders: [],
       },
@@ -33,45 +33,45 @@ function connections(): Map<string, CorpusDescriptor> {
   ]);
 }
 
-function sncKb(): KnowledgeBaseDescriptor {
+function globexKb(): KnowledgeBaseDescriptor {
   return {
-    id: "snc",
-    displayName: "SNC",
-    description: "The SNC engagement.",
+    id: "globex",
+    displayName: "GLOBEX",
+    description: "The GLOBEX engagement.",
     aliases: [],
-    corpusRefs: ["snc-confluence", "snc-slack-private"],
+    corpusRefs: ["globex-confluence", "globex-slack-private"],
     disclosePartialVisibility: true,
   };
 }
 
 describe("deriveKnowledgeBaseIndex", () => {
   it("derives a skill and its tools", () => {
-    const { skills, tools } = deriveKnowledgeBaseIndex([sncKb()], connections());
+    const { skills, tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
 
     expect(skills).toHaveLength(1);
-    expect(skills[0].skill.id).toBe("kb:snc");
+    expect(skills[0].skill.id).toBe("kb:globex");
     expect(skills[0].effectiveRoles).toEqual(["lead", "reader", "writer"]);
 
     expect(tools.map((t) => t.id).sort()).toEqual([
-      "corpus:snc-confluence/get",
-      "kb:snc/search",
+      "corpus:globex-confluence/get",
+      "kb:globex/search",
     ]);
   });
 
   it("does not generate a fetch tool while fetch has no dispatch path", () => {
-    const { tools } = deriveKnowledgeBaseIndex([sncKb()], connections());
+    const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
 
     // The `/fetch` whole-document read is deferred with its source adapter
     // (ADR 0040); offering it would steer the planner into a call that
     // silently degrades to a similarity search.
-    expect(tools.map((t) => t.id)).not.toContain("kb:snc/fetch");
+    expect(tools.map((t) => t.id)).not.toContain("kb:globex/fetch");
     for (const tool of tools) {
       expect(tool.knowledgeBaseExec?.operation ?? "search").toBe("search");
     }
   });
 
   it("marks every generated tool hidden", () => {
-    const { tools } = deriveKnowledgeBaseIndex([sncKb()], connections());
+    const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
 
     // Referenceable by the skill that declares them, never returned by open
     // retrieval — otherwise every client's scoped tooling competes in front of
@@ -82,39 +82,39 @@ describe("deriveKnowledgeBaseIndex", () => {
   });
 
   it("gives a connection's GET tool its own roles, not the union", () => {
-    const { tools } = deriveKnowledgeBaseIndex([sncKb()], connections());
+    const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
 
-    const get = tools.find((t) => t.id === "corpus:snc-confluence/get")!;
+    const get = tools.find((t) => t.id === "corpus:globex-confluence/get")!;
     // The GET face is one source's capability, not the composition's: granting
     // it the union would let a lead-only caller read a source they hold no role
     // for.
     expect(get.allowedRoles).toEqual(["reader", "writer"]);
 
-    const search = tools.find((t) => t.id === "kb:snc/search")!;
+    const search = tools.find((t) => t.id === "kb:globex/search")!;
     expect(search.allowedRoles).toEqual(["lead", "reader", "writer"]);
   });
 
   it("omits a GET tool for a member with no api face", () => {
-    const { tools } = deriveKnowledgeBaseIndex([sncKb()], connections());
-    expect(tools.find((t) => t.id === "corpus:snc-slack-private/get")).toBeUndefined();
+    const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
+    expect(tools.find((t) => t.id === "corpus:globex-slack-private/get")).toBeUndefined();
   });
 
   it("emits one tool record for a connection shared by several knowledge bases", () => {
     const second: KnowledgeBaseDescriptor = {
-      ...sncKb(),
+      ...globexKb(),
       id: "acme",
       displayName: "Acme",
-      corpusRefs: ["snc-confluence"],
+      corpusRefs: ["globex-confluence"],
     };
 
-    const { tools } = deriveKnowledgeBaseIndex([sncKb(), second], connections());
+    const { tools } = deriveKnowledgeBaseIndex([globexKb(), second], connections());
 
-    const gets = tools.filter((t) => t.id === "corpus:snc-confluence/get");
+    const gets = tools.filter((t) => t.id === "corpus:globex-confluence/get");
     expect(gets).toHaveLength(1);
   });
 
   it("falls closed for a knowledge base whose members all dangle", () => {
-    const orphan: KnowledgeBaseDescriptor = { ...sncKb(), corpusRefs: ["gone"] };
+    const orphan: KnowledgeBaseDescriptor = { ...globexKb(), corpusRefs: ["gone"] };
 
     const { skills } = deriveKnowledgeBaseIndex([orphan], connections());
 

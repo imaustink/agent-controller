@@ -33,7 +33,7 @@ the three instances are the same shape:
 Each has a list operation, a fetch operation, a change notification, and a
 credential. Each needs incremental sync rather than a full re-read. Each
 belongs to exactly one client engagement, and several of them — including
-**two of the same kind**, such as `#snc-eng` and `#snc-general` — have to
+**two of the same kind**, such as `#globex-eng` and `#globex-general` — have to
 compose into one thing the agent can query.
 
 Writing three bespoke ingestion tools (the first draft of
@@ -69,10 +69,10 @@ ordinary and expected.
 apiVersion: core.controller-agent.dev/v1alpha1
 kind: Connection
 metadata:
-  name: snc-slack-eng
+  name: globex-slack-eng
 spec:
   provider: slack                 # confluence | slack | gdrive  (driver enum)
-  displayName: "#snc-eng"         # what citations render
+  displayName: "#globex-eng"         # what citations render
   allowedRoles: [reader, writer]
 
   scope:                          # provider-validated; the security boundary
@@ -234,7 +234,7 @@ catalog tool `conn:<name>/get`, subject to three limits:
 2. **A driver-declared path allowlist.** The provider names which endpoints are
    exposable — not free-form URL construction by a planner.
 3. **Scope enforcement.** The driver validates that the request stays inside
-   `spec.scope`: a `snc-confluence` Connection cannot read a page in another
+   `spec.scope`: a `globex-confluence` Connection cannot read a page in another
    space, whatever arguments the planner produces.
 
 Point 3 is only possible because drivers are typed, and it is the strongest

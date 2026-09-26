@@ -21,9 +21,9 @@ describe("list", () => {
   it("asks the broker for the connection's resources", async () => {
     const http = vi.fn().mockResolvedValue(respond(200, { resources: [{ id: "1" }], cursor: "c1" }));
 
-    const page = await source(http).list("snc-confluence", undefined);
+    const page = await source(http).list("globex-confluence", undefined);
 
-    expect(http.mock.calls[0]![0]).toBe(`${BASE}/connections/snc-confluence/resources`);
+    expect(http.mock.calls[0]![0]).toBe(`${BASE}/connections/globex-confluence/resources`);
     expect(page).toEqual({ resources: [{ id: "1" }], cursor: "c1" });
   });
 

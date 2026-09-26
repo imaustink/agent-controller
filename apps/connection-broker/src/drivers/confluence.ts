@@ -552,7 +552,7 @@ function nextCursor(next: string | undefined): Cursor {
 /**
  * The human URL for a page, for citations.
  *
- * `_links.webui` is a site-relative path (`/spaces/SNC/pages/123/Title`), so it
+ * `_links.webui` is a site-relative path (`/spaces/GLOBEX/pages/123/Title`), so it
  * is appended to the configured site base — which already carries `/wiki`.
  */
 function citationUrl(page: ConfluencePage, siteBaseUrl: string): string {

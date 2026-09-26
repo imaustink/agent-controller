@@ -30,10 +30,10 @@ func (f *fakeResolver) DelegatedToken(
 
 func searchTool(members ...catalog.KnowledgeBaseExecMember) catalog.ToolDescriptor {
 	return catalog.ToolDescriptor{
-		ID: "kb:snc/search",
+		ID: "kb:globex/search",
 		KnowledgeBaseExec: &catalog.KnowledgeBaseExecSpec{
-			KnowledgeBaseID:           "snc",
-			DisplayName:               "SNC",
+			KnowledgeBaseID:           "globex",
+			DisplayName:               "GLOBEX",
 			Operation:                 "search",
 			Members:                   members,
 			DisclosePartialVisibility: true,
@@ -75,7 +75,7 @@ func TestSearchRejectsAToolWithNoExecutionSpec(t *testing.T) {
 	_, err := activitiesWith(&fakeResolver{}).SearchKnowledgeBase(context.Background(),
 		activities.SearchKnowledgeBaseInput{
 			Caller: activities.Caller{Subject: "s", Roles: []string{"reader"}},
-			Tool:   catalog.ToolDescriptor{ID: "kb:snc/search"},
+			Tool:   catalog.ToolDescriptor{ID: "kb:globex/search"},
 		})
 
 	require.Error(t, err)
@@ -84,7 +84,7 @@ func TestSearchRejectsAToolWithNoExecutionSpec(t *testing.T) {
 func TestSearchDoesNotSilentlyRunASearchForANonSearchOperation(t *testing.T) {
 	resolver := &fakeResolver{token: "t"}
 	tool := searchTool(member("c", []string{"reader"}, "coll"))
-	tool.ID = "kb:snc/fetch"
+	tool.ID = "kb:globex/fetch"
 	tool.KnowledgeBaseExec.Operation = "fetch"
 
 	out, err := activitiesWith(resolver).SearchKnowledgeBase(context.Background(),

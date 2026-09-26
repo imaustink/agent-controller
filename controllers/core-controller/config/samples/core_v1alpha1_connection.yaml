@@ -1,6 +1,6 @@
 # A Connection is an authenticated route to ONE system (ADR 0043) — not one
 # per space or channel. Bitovi's whole Confluence site is this single object,
-# and every Corpus over it (SNC, ENG, …) shares this credential.
+# and every Corpus over it (GLOBEX, ENG, …) shares this credential.
 #
 # That is the point of the split: rotating the token is one edit, not ten.
 #
@@ -16,7 +16,7 @@
 #   and the driver refuses rather than guess. It will not fall back to "the only
 #   site this token can reach": nothing has confirmed that site is this tenant,
 #   and a credential issued for another org fits that description exactly. Read
-#   it from `node apps/connection-broker/scripts/verify-confluence.mjs SNC`.
+#   it from `node apps/connection-broker/scripts/verify-confluence.mjs GLOBEX`.
 apiVersion: core.controller-agent.dev/v1alpha1
 kind: Connection
 metadata:
@@ -41,7 +41,7 @@ spec:
   # is in scope.
   allowedScopes:
     spaces:
-      - SNC
+      - GLOBEX
 
   # The INGESTION credential, shared by every Corpus over this Connection. It
   # stays a service credential: a scheduled reconcile has no calling user, so a

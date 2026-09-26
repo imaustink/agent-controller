@@ -32,7 +32,7 @@ import (
 // and a driver that widened it would silently cross a client boundary. It is
 // therefore validated at ADMISSION rather than left to the driver at run time.
 type CorpusScope struct {
-	// space is a Confluence space key (e.g. "SNC").
+	// space is a Confluence space key (e.g. "GLOBEX").
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	Space string `json:"space,omitempty"`
@@ -167,7 +167,7 @@ type CorpusSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Description string `json:"description"`
 
-	// displayName is what citations render (e.g. "#snc-eng"). Two Corpora of
+	// displayName is what citations render (e.g. "#globex-eng"). Two Corpora of
 	// the same provider inside one KnowledgeBase need distinct values, or a
 	// cited answer cannot say which channel it came from. Defaults to
 	// metadata.name.

@@ -17,7 +17,7 @@ Status: partly superseded by [0043](0043-connection-corpus-knowledgebase.md)
 subset of an external system — a Confluence space, a Slack channel, a Drive
 folder — into a `Connection` that stays in sync. That is deliberately one
 source. What people ask questions against is a **client engagement**, which
-spans several: for SNC, a Confluence space, a Drive folder, and *two* Slack
+spans several: for GLOBEX, a Confluence space, a Drive folder, and *two* Slack
 channels.
 
 The composition is many-to-many and expected to churn:
@@ -41,25 +41,25 @@ is what the agent queries.
 apiVersion: core.controller-agent.dev/v1alpha1
 kind: KnowledgeBase
 metadata:
-  name: snc
+  name: globex
 spec:
-  displayName: "SNC"
+  displayName: "GLOBEX"
   # Embedded for retrieval. This is SUBJECT MATTER, not a tool contract (§2),
   # and it is what the planner tells twenty client knowledge bases apart by.
   description: >-
-    The SNC client engagement: platform migration work, their Confluence space,
-    the #snc-eng and #snc-general Slack channels, and the shared delivery
+    The GLOBEX client engagement: platform migration work, their Confluence space,
+    the #globex-eng and #globex-general Slack channels, and the shared delivery
     folder. Covers architecture decisions, meeting notes, and delivery status.
-  aliases: ["Southern National", "SNC migration", "Project Harbor"]
+  aliases: ["Southern National", "GLOBEX migration", "Project Harbor"]
 
   # No allowedRoles: like a Skill (ADR 0011), a KnowledgeBase carries no RBAC
   # of its own — its audience is derived from its members, by union (§4).
 
   connectionRefs:
-    - snc-confluence
-    - snc-slack-eng
-    - snc-slack-general
-    - snc-drive
+    - globex-confluence
+    - globex-slack-eng
+    - globex-slack-general
+    - globex-drive
     - platform-announcements      # shared across several knowledge bases
 
   chunk: { maxTokens: 800, overlap: 100 }
@@ -67,8 +67,8 @@ spec:
 status:
   documents: 5312
   perConnection:
-    - { name: snc-slack-eng, documents: 4120, lastSyncTime: "..." }
-  staleConnections: ["snc-drive"]
+    - { name: globex-slack-eng, documents: 4120, lastSyncTime: "..." }
+  staleConnections: ["globex-drive"]
   conditions: [...]
 ```
 
@@ -140,7 +140,7 @@ compete in the existing selection rather than building a parallel one.
 
 - **`kb:<name>/search`** — semantic search across member Connections. An
   optional `connections: [...]` argument narrows to specific members ("what did
-  #snc-eng say about the migration"), which is why same-provider repeats need
+  #globex-eng say about the migration"), which is why same-provider repeats need
   distinct `displayName`s. Returns chunks with `sourceUrl`, originating
   Connection and `updatedAt`.
 - **`kb:<name>/fetch`** — the full document behind a chunk. A chunk is
@@ -207,7 +207,7 @@ this, in order of how often they apply:
    one rather than guessing. Candidates come from role-filtered retrieval, so
    the offered list never names a knowledge base the caller cannot see. This is
    a good question to put to a human precisely because §2 made the choice one
-   between *subjects* — "SNC or Acme?" is answerable in a way "`kb:snc/search`
+   between *subjects* — "GLOBEX or Acme?" is answerable in a way "`kb:globex/search`
    or `kb:acme/search`?" never was.
 3. **Discriminating text.** `spec.description` and `spec.aliases` carry the
    client's real name, project codenames, systems involved, and what people
@@ -256,7 +256,7 @@ Connections costs one CR and no embedding. A new *source* still costs a
 backfill.
 
 **One knowledge base per turn, for now.** Skills are singular per turn, so
-"compare how we handled auth for SNC and Acme" cannot span two knowledge bases.
+"compare how we handled auth for GLOBEX and Acme" cannot span two knowledge bases.
 Today the explicit answer is that this is a knowledge base too — compose the
 cross-client Connections deliberately, which is better than implicit
 cross-client retrieval anyway.

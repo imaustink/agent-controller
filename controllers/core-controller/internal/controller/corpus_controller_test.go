@@ -40,10 +40,10 @@ func corpusFor(connectionRef, name string) *corev1alpha1.Corpus {
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec: corev1alpha1.CorpusSpec{
 			ConnectionRef: connectionRef,
-			Description:   "The SNC client's Confluence space.",
-			DisplayName:   "SNC Confluence",
+			Description:   "The GLOBEX client's Confluence space.",
+			DisplayName:   "GLOBEX Confluence",
 			AllowedRoles:  []string{"reader"},
-			Scope:         corev1alpha1.CorpusScope{Space: "SNC"},
+			Scope:         corev1alpha1.CorpusScope{Space: "GLOBEX"},
 		},
 	}
 }
@@ -170,7 +170,7 @@ var _ = Describe("Corpus Controller", func() {
 			defer func() { _ = k8sClient.Delete(ctx, conn) }()
 
 			corpus := corpusFor("capped", "outside-cap")
-			Expect(k8sClient.Create(ctx, corpus)).To(Succeed()) // scope.space is "SNC"
+			Expect(k8sClient.Create(ctx, corpus)).To(Succeed()) // scope.space is "GLOBEX"
 			defer func() { _ = k8sClient.Delete(ctx, corpus) }()
 
 			reconcileCorpus("outside-cap")
@@ -181,7 +181,7 @@ var _ = Describe("Corpus Controller", func() {
 
 		It("permits a subset inside the cap", func() {
 			conn := confluenceConnection("capped-ok")
-			conn.Spec.AllowedScopes = &corev1alpha1.ConnectionAllowedScopes{Spaces: []string{"SNC"}}
+			conn.Spec.AllowedScopes = &corev1alpha1.ConnectionAllowedScopes{Spaces: []string{"GLOBEX"}}
 			Expect(k8sClient.Create(ctx, conn)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, conn) }()
 
@@ -410,7 +410,7 @@ func TestEnvSuffixMatchesTheBrokersConvention(t *testing.T) {
 	// The broker reads SYNC_TOKEN_<CORPUS>, upper-cased with dashes as
 	// underscores. A mismatch here means the kick Job authenticates with an
 	// unset variable and every scheduled pass 401s.
-	if got := envSuffix("snc-confluence"); got != "SNC_CONFLUENCE" {
+	if got := envSuffix("globex-confluence"); got != "GLOBEX_CONFLUENCE" {
 		t.Fatalf("envSuffix = %q", got)
 	}
 }

@@ -113,11 +113,11 @@ describe("BrokerProber", () => {
       fetchImpl: http as unknown as typeof fetch,
     });
 
-    const result = await prober.probe({ connectionId: "snc-confluence", sourceId: "page-1" });
+    const result = await prober.probe({ connectionId: "globex-confluence", sourceId: "page-1" });
 
     expect(result.title).toBe("Auth design");
     const [url, init] = http.mock.calls[0]!;
-    expect(url).toBe("http://broker/connections/snc-confluence/probe");
+    expect(url).toBe("http://broker/connections/globex-confluence/probe");
     expect((init as RequestInit).headers).toMatchObject({
       authorization: "Bearer orch-token",
       "x-delegated-token": "user-token",

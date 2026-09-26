@@ -3,7 +3,7 @@
 #
 # A second channel is another file exactly like this one with a different
 # scope.channel and its own allowedRoles — and NOT another credential. That is
-# what lets #snc-eng and #exec-private live in one workspace with different
+# what lets #globex-eng and #exec-private live in one workspace with different
 # audiences, which is why roles sit here rather than on the Connection.
 apiVersion: core.controller-agent.dev/v1alpha1
 kind: Corpus
@@ -11,16 +11,16 @@ metadata:
   labels:
     app.kubernetes.io/name: core-controller
     app.kubernetes.io/managed-by: kustomize
-  name: snc-slack-eng
+  name: globex-slack-eng
 spec:
   connectionRef: bitovi-slack
 
   # What a citation renders. Two Slack Corpora in one KnowledgeBase are
   # distinguishable only by this, so a cited answer can say which channel it
   # came from.
-  displayName: "#snc-eng"
+  displayName: "#globex-eng"
   description: >-
-    The SNC engagement's engineering channel: deploy chatter, incident threads
+    The GLOBEX engagement's engineering channel: deploy chatter, incident threads
     and the decisions that never made it into Confluence.
 
   allowedRoles:
