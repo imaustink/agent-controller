@@ -130,6 +130,45 @@ function atlassianConfig(env: NodeJS.ProcessEnv): OAuthProviderConfig | undefine
 }
 
 /**
+ * Google, for per-user Drive reads (docs/adr/0040).
+ *
+ * `drive.readonly` deliberately, and deliberately not narrower: the probe's
+ * whole job is to ask what THIS user may open, so a scope narrower than their
+ * own view would make it answer a different question and withhold files they
+ * can see.
+ *
+ * `access_type=offline` with `prompt=consent` is what makes a refresh token
+ * arrive at all. Google issues one only on the first consent otherwise, so a
+ * user who has linked before would re-link into a credential that dies in an
+ * hour with nothing to renew it — and the symptom is a knowledge base that
+ * works for one turn.
+ */
+function googleConfig(env: NodeJS.ProcessEnv): OAuthProviderConfig | undefined {
+  const clientId = env.GOOGLE_CLIENT_ID;
+  const clientSecret = env.GOOGLE_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return undefined;
+
+  const scopes = (env.GOOGLE_SCOPES ?? "https://www.googleapis.com/auth/drive.readonly")
+    .split(/[\s,]+/)
+    .filter(Boolean);
+
+  return {
+    name: "google",
+    kind: "authcode",
+    clientId,
+    clientSecret,
+    authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenUrl: "https://oauth2.googleapis.com/token",
+    scopes,
+    authorizeParams: { access_type: "offline", prompt: "consent" },
+    // Google does not rotate: the refresh token issued at consent stays valid
+    // until revoked, unlike Atlassian's.
+    rotatesRefreshToken: false,
+    identity: { url: "https://www.googleapis.com/oauth2/v3/userinfo", field: "sub" },
+  };
+}
+
+/**
  * Builds the provider registry from the environment.
  *
  * A provider whose credentials are absent is simply not registered, rather than
@@ -139,7 +178,7 @@ function atlassianConfig(env: NodeJS.ProcessEnv): OAuthProviderConfig | undefine
  */
 export function loadOAuthProviders(env: NodeJS.ProcessEnv = process.env): Map<string, OAuthProviderConfig> {
   const registry = new Map<string, OAuthProviderConfig>();
-  for (const build of [githubConfig, atlassianConfig]) {
+  for (const build of [githubConfig, atlassianConfig, googleConfig]) {
     const config = build(env);
     if (config) registry.set(config.name, config);
   }
