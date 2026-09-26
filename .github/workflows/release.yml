@@ -178,6 +178,20 @@ jobs:
           REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
           REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
 
+      # Public copy on Docker Hub. It is one repository, so every image lives
+      # under it as a tag: `blackmarket/agent-controller:<image>` (mutable,
+      # tracks main) plus `<image>-<sha>` (immutable, for pinning). The
+      # private registry above stays the one the homelab deploy pulls from:
+      # its Jobs/Deployments use pullPolicy Always, which would run straight
+      # into Docker Hub's anonymous pull rate limit.
+      - name: Docker Hub login
+        run: |
+          echo "$DOCKERHUB_TOKEN" | docker login docker.io \
+            -u "$DOCKERHUB_USERNAME" --password-stdin
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Build & push ${{ matrix.image }}
         uses: docker/build-push-action@v6
         with:
@@ -185,7 +199,10 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           build-args: ${{ matrix.build_args }}
-          tags: registry.kurpuis.com:5000/${{ matrix.image }}:latest
+          tags: |
+            registry.kurpuis.com:5000/${{ matrix.image }}:latest
+            docker.io/blackmarket/agent-controller:${{ matrix.image }}
+            docker.io/blackmarket/agent-controller:${{ matrix.image }}-${{ github.sha }}
           # GitHub Actions cache backend, scoped per image so unrelated images
           # don't evict each other's layers. `mode=max` also caches
           # intermediate (build-stage) layers, not just the final stage --
