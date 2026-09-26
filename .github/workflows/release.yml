@@ -170,13 +170,17 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Docker login
+      # Public images on GHCR, one package per image under a shared
+      # `agent-controller/` path: ghcr.io/imaustink/agent-controller/<image>.
+      # A package is created on its first push, so adding an image is still
+      # just an entry in release-images.json. GITHUB_TOKEN can push because
+      # the workflow grants `packages: write`.
+      - name: Log in to GHCR
         run: |
-          echo "$REGISTRY_PASSWORD" | docker login registry.kurpuis.com:5000 \
-            -u "$REGISTRY_USERNAME" --password-stdin
+          echo "$GITHUB_TOKEN" | docker login ghcr.io \
+            -u "${{ github.actor }}" --password-stdin
         env:
-          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
-          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & push ${{ matrix.image }}
         uses: docker/build-push-action@v6
@@ -185,7 +189,14 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           build-args: ${{ matrix.build_args }}
-          tags: registry.kurpuis.com:5000/${{ matrix.image }}:latest
+          # `:latest` tracks main; `:<sha>` is immutable, for pinning.
+          tags: |
+            ghcr.io/imaustink/agent-controller/${{ matrix.image }}:latest
+            ghcr.io/imaustink/agent-controller/${{ matrix.image }}:${{ github.sha }}
+          # Links each package to this repo on GHCR, so it shows up on the
+          # repo page and can inherit its access settings.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           # GitHub Actions cache backend, scoped per image so unrelated images
           # don't evict each other's layers. `mode=max` also caches
           # intermediate (build-stage) layers, not just the final stage --
@@ -200,8 +211,7 @@ jobs:
     # something under charts/ changes on main. Runs on a GitHub-hosted
     # runner (not the arc-runner-set-agent-controller self-hosted runner
     # used by publish-images) -- this job only needs outbound internet to
-    # ghcr.io and a GITHUB_TOKEN, not access to the internal cluster or
-    # registry.kurpuis.com.
+    # ghcr.io and a GITHUB_TOKEN, not access to the internal cluster.
     #
     # Charts are pushed under their Chart.yaml `version` -- OCI tags are
     # mutable, so pushing again at the same version overwrites that tag

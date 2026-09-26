@@ -44,12 +44,14 @@ charts/agent-controller/
   values file you actually install with.
 - Your own images for `agent-orchestrator.image`/`core-controller.image` (and,
   for `community-components`, `recipeScraper`/`recipePublisher`/`webSearch`/
-  `opencodeSweAgent`). `.github/workflows/publish.yml` currently only pushes
-  these to a private self-hosted registry (`registry.kurpuis.com:5000`), and
-  every chart default is a bare `<name>:latest` with no registry prefix — that
-  resolves against Docker Hub and 404s for anyone without access to that
-  registry. Build and push your own images and override the `image`/
-  `image.repository` values accordingly.
+  `opencodeSweAgent`). Every chart default is a bare `<name>:latest` with no
+  registry prefix, which resolves against Docker Hub and 404s.
+  `.github/workflows/release.yml` publishes every image publicly to GHCR as
+  `ghcr.io/imaustink/agent-controller/<name>`, tagged `latest` (tracks main)
+  and `<commit sha>` (pinned) — so set e.g. `image.repository:
+  ghcr.io/imaustink/agent-controller/agent-orchestrator`, or `image:
+  ghcr.io/imaustink/agent-controller/recipe-scraper:latest` for
+  `community-components` (which is what `values-production.yaml` does).
 
 ## Fetching dependencies
 
