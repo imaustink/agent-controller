@@ -177,7 +177,7 @@ helm install community-components charts/community-components -n controller-agen
 
 Both charts are also published as OCI artifacts to GitHub Container Registry
 on every merge to `main` that touches `charts/**` (see
-[.github/workflows/publish-charts.yml](.github/workflows/publish-charts.yml)),
+[.github/workflows/release.yml](.github/workflows/release.yml)),
 so you can install without cloning the repo:
 
 ```bash
@@ -186,6 +186,44 @@ helm install agent-controller oci://ghcr.io/imaustink/charts/agent-controller --
 helm install community-components oci://ghcr.io/imaustink/charts/community-components --version 0.1.0 \
   -n controller-agent
 ```
+
+### Container images
+
+Every image is published publicly to GitHub Container Registry by
+[.github/workflows/release.yml](.github/workflows/release.yml) on each merge to
+`main` that touches its sources. No login is needed to pull. Each is tagged
+`latest` (tracks `main`) and with the full commit SHA (immutable, for pinning),
+e.g. `docker pull ghcr.io/imaustink/agent-controller/agent-orchestrator:latest`.
+The chart defaults are bare `<name>:latest`, so point `image` values at these
+paths (as `values-production.yaml` does).
+
+| Image | Built from |
+| ----- | ---------- |
+| `ghcr.io/imaustink/agent-controller/agent-orchestrator` | [apps/agent-orchestrator/Dockerfile](apps/agent-orchestrator/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/opencode-swe-agent` | [apps/opencode-swe-agent/Dockerfile](apps/opencode-swe-agent/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/claude-code-swe-agent` | [apps/claude-code-swe-agent/Dockerfile](apps/claude-code-swe-agent/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/integration-gateway` | [apps/integration-gateway/Dockerfile](apps/integration-gateway/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/recipe-scraper` | [tools/recipe-scraper/Dockerfile](tools/recipe-scraper/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/recipe-publisher` | [tools/recipe-publisher/Dockerfile](tools/recipe-publisher/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/web-search` | [tools/web-search/Dockerfile](tools/web-search/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/web-fetch` | [tools/web-fetch/Dockerfile](tools/web-fetch/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/image-gen` | [tools/image-gen/Dockerfile](tools/image-gen/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/kubectl-readonly` | [tools/kubectl-readonly/Dockerfile](tools/kubectl-readonly/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/signoz-query` | [tools/signoz-query/Dockerfile](tools/signoz-query/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/github` | [tools/github/Dockerfile](tools/github/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/glyph` | [tools/glyph/Dockerfile](tools/glyph/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/ssh` | [tools/ssh/Dockerfile](tools/ssh/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/core-controller` | [controllers/core-controller/Dockerfile](controllers/core-controller/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/temporal-engine-worker` | [engines/temporal/Dockerfile.worker](engines/temporal/Dockerfile.worker) |
+| `ghcr.io/imaustink/agent-controller/temporal-engine-gateway` | [engines/temporal/Dockerfile.gateway](engines/temporal/Dockerfile.gateway) |
+| `ghcr.io/imaustink/agent-controller/temporal-engine-catalog-sync` | [engines/temporal/Dockerfile.catalog-sync](engines/temporal/Dockerfile.catalog-sync) |
+| `ghcr.io/imaustink/agent-controller/localtool-executor-node` | [sidecars/localtool-executor/Dockerfile](sidecars/localtool-executor/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/localtool-executor-python` | [sidecars/localtool-executor/Dockerfile](sidecars/localtool-executor/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/localtool-executor-go` | [sidecars/localtool-executor/Dockerfile](sidecars/localtool-executor/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/localtool-executor-shell` | [sidecars/localtool-executor/Dockerfile](sidecars/localtool-executor/Dockerfile) |
+
+The list comes from [.github/release-images.json](.github/release-images.json);
+adding an entry there publishes a new image.
 
 ### Minikube quick-start
 
