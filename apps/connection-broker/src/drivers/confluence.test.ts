@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ConfluenceDriver, storageToMarkdown, type FetchLike } from "./confluence.js";
+import { ConfluenceDriver, isApiToken, storageToMarkdown, type FetchLike } from "./confluence.js";
 import { PermanentError, PermissionDeniedError, TransientError } from "./types.js";
 
 function respond(
@@ -751,5 +751,68 @@ describe("storageToMarkdown task lists", () => {
       "<p><ac:placeholder>Type your notes here</ac:placeholder>Actual note.</p>",
     );
     expect(markdown).toBe("Actual note.");
+  });
+});
+
+describe("service credential shape", () => {
+  /** Captures the headers and URL of the first call. */
+  function capture(body: unknown = { results: [{ id: "1", key: "GLOBEX" }] }) {
+    return vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => body,
+      text: async () => "",
+    })) as unknown as FetchLike;
+  }
+
+  it("uses Basic auth and the SITE for an API token", async () => {
+    // An OAuth access token expires in about an hour and nothing in the broker
+    // refreshes a service credential, so a long-lived API token is what makes
+    // unattended ingestion possible at all (docs/adr/0044).
+    const http = capture();
+    const driver = new ConfluenceDriver({
+      fetch: http,
+      siteBaseUrl: "https://bitovi.atlassian.net/wiki",
+      cloudId: "cloud-1",
+    });
+
+    await driver.list({ space: "GLOBEX" }, { service: "bot@bitovi.com:api-token-value" }, undefined);
+
+    const [url, init] = (http as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    // Direct to the site: accessible-resources is an OAuth endpoint and does
+    // not answer for Basic auth, so the gateway path would fail before the
+    // first real call.
+    expect(String(url)).toContain("https://bitovi.atlassian.net/wiki");
+    expect(String(url)).not.toContain("api.atlassian.com");
+    expect((init as RequestInit).headers).toMatchObject({
+      Authorization: `Basic ${Buffer.from("bot@bitovi.com:api-token-value").toString("base64")}`,
+    });
+  });
+
+  it("uses Bearer and the OAuth gateway for an access token", async () => {
+    const http = capture();
+    const driver = new ConfluenceDriver({
+      fetch: http,
+      siteBaseUrl: "https://bitovi.atlassian.net/wiki",
+      cloudId: "cloud-1",
+    });
+
+    await driver.list({ space: "GLOBEX" }, { service: "oauth-access-token" }, undefined);
+
+    const [url, init] = (http as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(String(url)).toContain("api.atlassian.com/ex/confluence/cloud-1/wiki");
+    expect((init as RequestInit).headers).toMatchObject({
+      Authorization: "Bearer oauth-access-token",
+    });
+  });
+
+  it("does not mistake an OAuth token containing a colon for an API token", async () => {
+    // The discriminator is the `@` in the first half, not the colon alone:
+    // an opaque token may contain punctuation, and guessing wrong here sends
+    // a valid credential to the wrong host with the wrong scheme.
+    expect(isApiToken("abc:def")).toBe(false);
+    expect(isApiToken("bot@bitovi.com:secret")).toBe(true);
+    expect(isApiToken("no-separator")).toBe(false);
+    expect(isApiToken(":leading")).toBe(false);
   });
 });

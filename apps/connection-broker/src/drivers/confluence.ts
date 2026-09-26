@@ -150,6 +150,17 @@ export class ConfluenceDriver implements Driver {
    * just as it does on the site.
    */
   private async apiBaseFor(token: string): Promise<string> {
+    // An API token addresses the site directly. There is no OAuth gateway in
+    // front of it and no cloudId to resolve — `/oauth/token/accessible-resources`
+    // is an OAuth endpoint and does not answer for Basic auth at all, so
+    // routing this through the gateway would fail before the first real call.
+    //
+    // The cross-tenant check the gateway path needs is moot here for the same
+    // reason it is needed there: a Bearer token may reach several sites and
+    // has to be pinned to one, while an API token is issued against exactly
+    // the site in `siteBaseUrl` and can reach no other.
+    if (isApiToken(token)) return this.siteBaseUrl.replace(/\/+$/, "");
+
     if (!this.cloudId) this.cloudId = await this.resolveCloudId(token);
     return `${this.gatewayOrigin}/ex/confluence/${this.cloudId}/wiki`;
   }
@@ -521,7 +532,7 @@ export class ConfluenceDriver implements Driver {
     let response;
     try {
       response = await this.http(url, {
-        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        headers: { Authorization: authorization(token), Accept: "application/json" },
       });
     } catch (cause) {
       // A network failure is not an answer about permissions.
@@ -671,6 +682,29 @@ function toSearchHit(result: ConfluenceSearchResult, siteBaseUrl: string): Searc
     // to a model, which reads the words rather than the highlighting.
     excerpt: result.excerpt?.replace(/@@@(end)?hl@@@/g, "").trim() || undefined,
   };
+}
+
+/**
+ * Whether this credential is an Atlassian API token rather than an OAuth
+ * access token.
+ *
+ * The convention is `email:token`, which is exactly what Atlassian's own docs
+ * tell you to base64 for Basic auth — so an operator pastes the two halves
+ * they already have rather than learning a format of ours.
+ *
+ * Detected on the separator plus an `@` in the first half. An OAuth access
+ * token is a JWT or an opaque string and contains neither, so the two shapes
+ * cannot be confused for one another.
+ */
+export function isApiToken(token: string): boolean {
+  const separator = token.indexOf(":");
+  return separator > 0 && token.slice(0, separator).includes("@");
+}
+
+/** The Authorization header for whichever credential shape this is. */
+function authorization(token: string): string {
+  if (!isApiToken(token)) return `Bearer ${token}`;
+  return `Basic ${Buffer.from(token, "utf8").toString("base64")}`;
 }
 
 /**

@@ -46,6 +46,14 @@ spec:
   # The INGESTION credential, shared by every Corpus over this Connection. It
   # stays a service credential: a scheduled reconcile has no calling user, so a
   # per-user sync is incoherent as stated (ADR 0038 §7).
+  #
+  # An API token on a dedicated service account, as `email:token`
+  # (docs/adr/0044). Long-lived on purpose — nothing refreshes a service
+  # credential, so an OAuth access token here syncs for about an hour and then
+  # fails permanently, in a way that reads as a permissions problem.
+  #
+  # Per-user reads do NOT use this. They run on the caller's own delegated
+  # OAuth token (docs/adr/0040), which is refreshed by the integration-gateway.
   secretEnv:
     - name: SERVICE_TOKEN
       secretRef:
