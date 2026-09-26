@@ -26,7 +26,6 @@ import type { CorpusRegistry } from "./registry.js";
  *   GET  /corpora/:name/resources              — incremental listing (sync only)
  *   GET  /corpora/:name/resources/:id          — one document
  *   POST /corpora/:name/probe                  — per-user authorization (ADR 0040)
- *   GET  /corpora/:name/api/*                  — the live GET face (ADR 0038 §5)
  *   POST /corpora/:name/sync                   — run a reconcile now (sync only)
  *   POST /connections/:name/webhook            — provider change notification
  *
@@ -108,11 +107,8 @@ async function handle(
     const caller = authenticate(options.auth, header(req, "authorization"));
     // A sync kick spends the SERVICE credential, exactly as listing does, so
     // it authorizes as a list: only this corpus's sync worker may ask for one.
-    // The GET face reads one resource as the calling user, which is exactly
-    // what `fetch` authorizes: the orchestrator may, with a delegated token,
-    // and a sync worker may not — it has no user to read as.
     const operation: Operation =
-      route.kind === "probe" ? "probe" : route.kind === "api" || route.id ? "fetch" : "list";
+      route.kind === "probe" ? "probe" : route.id ? "fetch" : "list";
     ({ credential } = authorize(caller, operation, route.name, delegated));
   } catch (err) {
     if (err instanceof UnauthorizedError) return send(res, 401, { error: err.message });
@@ -131,17 +127,6 @@ async function handle(
     credential === "service" ? { service: binding.serviceToken } : { delegated };
 
   try {
-    if (route.kind === "api") {
-      if (!binding.driver.api) {
-        return send(res, 404, { error: `${binding.driver.provider} has no live GET face` });
-      }
-      const result = await binding.driver.api(binding.scope, credentials, {
-        path: route.path ?? "",
-        query: Object.fromEntries(url.searchParams),
-      });
-      return send(res, 200, result);
-    }
-
     if (route.kind === "sync") {
       if (!options.runSync) return send(res, 404, { error: "this broker does not index" });
       const report = await options.runSync(route.name);
@@ -193,10 +178,8 @@ async function handle(
 interface Route {
   /** A corpus name for data routes; a CONNECTION name for a webhook. */
   name: string;
-  kind: "resources" | "probe" | "sync" | "webhook" | "api";
+  kind: "resources" | "probe" | "sync" | "webhook";
   id?: string;
-  /** For the GET face: everything after `/api/`, unparsed. */
-  path?: string;
 }
 
 /**
@@ -300,15 +283,13 @@ function parseRoute(pathname: string): Route | undefined {
   if (parts[0] === "corpora") {
     if (parts[2] === "probe" && parts.length === 3) return { name, kind: "probe" };
     if (parts[2] === "sync" && parts.length === 3) return { name, kind: "sync" };
-    if (parts[2] === "api" && parts.length > 3) {
-      // Passed through whole and unparsed: the driver's allowlist is what
-      // decides whether this path is servable, and a route that pre-interpreted
-      // it would be a second, weaker opinion about the same question.
-      return { name, kind: "api", path: parts.slice(3).map(decodeURIComponent).join("/") };
-    }
     if (parts[2] === "resources") {
       if (parts.length === 3) return { name, kind: "resources" };
       if (parts.length === 4) {
+        // Reading ONE resource by the id the index gave out. This is the live
+        // read face: no provider path, no pattern matching — an id, checked
+        // against the corpus's scope by the driver, fetched with the caller's
+        // own token.
         return { name, kind: "resources", id: decodeURIComponent(parts[3]!) };
       }
     }

@@ -20,6 +20,14 @@ export interface CorpusReadResult {
  * Reads one resource live, as the calling user — a Corpus's GET face
  * (docs/adr/0038 §5).
  *
+ * Takes an ID, never a path. An earlier version accepted a provider path and
+ * matched it against per-driver regexes, which answered the wrong question —
+ * "does this look like a page read" rather than "is this in the corpus" — and
+ * put pattern matching on model-supplied text at the centre of a security
+ * boundary. An id goes to the driver's existing fetch, which already refuses
+ * anything outside the corpus's scope, and the read runs on the caller's own
+ * token so the source applies their permissions too.
+ *
  * The escape hatch retrieval needs and deliberately does not take on itself: an
  * indexed chunk is a snapshot, and when the model decides the snapshot is not
  * good enough it spends a call, rather than every retrieval paying for
@@ -40,7 +48,7 @@ export class CorpusReader {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  async read(tool: ToolDescriptor, path: string, subject: string): Promise<CorpusReadResult> {
+  async read(tool: ToolDescriptor, sourceId: string, subject: string): Promise<CorpusReadResult> {
     const exec = tool.corpusGetExec;
     if (!exec) throw new Error(`tool ${tool.id} carries no corpus GET spec`);
 
@@ -60,18 +68,9 @@ export class CorpusReader {
       };
     }
 
-    // Each segment escaped separately: escaping the whole path would encode the
-    // separators and turn a two-segment request into one meaningless one.
-    const segments = path
-      .replace(/^\/+/, "")
-      .replace(/\/+$/, "")
-      .split("/")
-      .map(encodeURIComponent)
-      .join("/");
-
     const endpoint =
       `${this.options.brokerUrl.replace(/\/+$/, "")}` +
-      `/corpora/${encodeURIComponent(exec.corpusId)}/api/${segments}`;
+      `/corpora/${encodeURIComponent(exec.corpusId)}/resources/${encodeURIComponent(sourceId)}`;
 
     let response: Response;
     try {
@@ -94,12 +93,14 @@ export class CorpusReader {
       return { result: `The source refused that read (${response.status}). ${detail}`.trim() };
     }
 
-    const body = (await response.json()) as { body?: unknown; url?: string };
-    const citation = body.url ? ` — ${body.url}` : "";
+    // The fetch route returns a Document: the resource normalised to Markdown,
+    // with the citation the source itself reported.
+    const document = (await response.json()) as { markdown?: string; url?: string; title?: string };
+    const citation = document.url ? ` — ${document.url}` : "";
     return {
       result:
-        `Live read from ${exec.label ?? exec.corpusId} (${path})${citation}:\n\n` +
-        `${JSON.stringify(body.body, null, 2)}`,
+        `Live read from ${exec.label ?? exec.corpusId}: ${document.title ?? sourceId}${citation}\n\n` +
+        `${document.markdown ?? ""}`,
     };
   }
 }

@@ -11,9 +11,7 @@ import {
   type ProbeResult,
   type Scope,
 } from "./types.js";
-import { matchPath } from "./path-allowlist.js";
 import type { FetchLike } from "./confluence.js";
-import type { ApiRequest, ApiResponse } from "./types.js";
 
 export interface GDriveDriverOptions {
   fetch?: FetchLike;
@@ -130,56 +128,6 @@ export class GDriveDriver implements Driver {
 
     const ref = toRef(file);
     return { allowed: true, title: ref.title, url: ref.url, version: ref.version };
-  }
-
-  /**
-   * The live GET face (ADR 0038 §5).
-   *
-   * Two paths: re-read one file, or list a folder's children to walk down from
-   * the scoped root. Both are scope-checked by the same parent walk the
-   * retrieval path uses, so a file id from outside the folder is refused here
-   * exactly as it is there.
-   */
-  async api(scope: Scope, credentials: Credentials, request: ApiRequest): Promise<ApiResponse> {
-    this.validateScope(scope);
-    if (!credentials.delegated) {
-      throw new Error("the gdrive GET face requires the calling user's delegated token");
-    }
-    const token = credentials.delegated;
-
-    const fileId = matchPath(request.path, [/^files\/([A-Za-z0-9_-]+)$/]);
-    const folderId = matchPath(request.path, [/^folders\/([A-Za-z0-9_-]+)\/children$/]);
-    if (!fileId && !folderId) {
-      throw new PermissionDeniedError(
-        `gdrive GET face does not serve ${request.path}; it serves files/<id> and folders/<id>/children`,
-      );
-    }
-
-    if (folderId) {
-      // The folder itself must be in scope before its contents are listed;
-      // otherwise a folder id alone would enumerate another client's tree.
-      const folder = (await this.call(`/files/${encodeURIComponent(folderId)}`, token, {
-        fields: "id,name,mimeType,parents",
-      })) as DriveFile;
-      if (folderId !== scope.folderID) await this.assertInScope(folder, scope, token);
-
-      const listed = (await this.call("/files", token, {
-        q: `'${folderId}' in parents and trashed = false`,
-        fields: "files(id,name,mimeType,modifiedTime,webViewLink)",
-        pageSize: "50",
-      })) as { files?: DriveFile[] };
-      return { body: listed, url: `https://drive.google.com/drive/folders/${folderId}` };
-    }
-
-    const file = (await this.call(`/files/${encodeURIComponent(fileId!)}`, token, {
-      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents",
-    })) as DriveFile;
-    await this.assertInScope(file, scope, token);
-
-    return {
-      body: { ...toRef(file), markdown: await this.readContent(file, token) },
-      url: file.webViewLink,
-    };
   }
 
   /** Files whose bytes are worth indexing as text. */

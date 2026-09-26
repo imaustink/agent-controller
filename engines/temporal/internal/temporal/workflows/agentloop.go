@@ -401,9 +401,9 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			var read activities.ReadCorpusOutput
 			if err := workflow.ExecuteActivity(actx, activities.ReadCorpusActivityName,
 				activities.ReadCorpusInput{
-					Caller: in.Caller,
-					Tool:   tool,
-					Path:   plan.ToolInput,
+					Caller:   in.Caller,
+					Tool:     tool,
+					SourceID: plan.ToolInput,
 				}).Get(ctx, &read); err != nil {
 				return "", meta, nil, err
 			}

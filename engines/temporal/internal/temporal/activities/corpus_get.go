@@ -21,10 +21,10 @@ type ReadCorpusInput struct {
 	// Tool carries the execution spec snapshotted at index time, so this runs
 	// against exactly the corpus the planner was offered.
 	Tool catalog.ToolDescriptor `json:"tool"`
-	// Path is the model's request, unparsed. The BROKER's driver allowlists it;
-	// interpreting it here would be a second, weaker opinion about the same
-	// question, and the one further from the scope it has to respect.
-	Path string `json:"path"`
+	// SourceID is the id of a resource in this corpus — the same id retrieval
+	// cites, so the model asks for something it has seen rather than composing
+	// a provider path.
+	SourceID string `json:"sourceId"`
 }
 
 // ReadCorpusOutput carries prose and a citation, never a credential.
@@ -43,6 +43,14 @@ type ReadCorpusOutput struct {
 // itself: an indexed chunk is a snapshot, and when the model decides the
 // snapshot is not good enough it spends a call rather than every retrieval
 // paying for hydration it may not need (ADR 0040).
+//
+// It takes an ID, never a path. An earlier version accepted a provider path
+// and matched it against per-driver regexes, which answered the wrong
+// question — "does this look like a page read" rather than "is this in the
+// corpus" — and put pattern matching on model-supplied text at the centre of
+// a security boundary. An id goes straight to the driver's existing fetch,
+// which already refuses anything outside the corpus's scope, and the read runs
+// on the caller's own token so the source applies their permissions too.
 //
 // The credential is resolved INSIDE the activity and never leaves it, for the
 // reason AuthorizeActivities states: an activity result is persisted to
@@ -70,13 +78,13 @@ func (a *KnowledgeBaseActivities) ReadCorpus(
 		}, nil
 	}
 
-	body, citation, err := a.readThroughBroker(ctx, exec.CorpusID, in.Path, credential.Token)
+	body, citation, err := a.readThroughBroker(ctx, exec.CorpusID, in.SourceID, credential.Token)
 	if err != nil {
 		return ReadCorpusOutput{}, err
 	}
 
 	var out strings.Builder
-	fmt.Fprintf(&out, "Live read from %s (%s)", exec.Label, in.Path)
+	fmt.Fprintf(&out, "Live read from %s (%s)", exec.Label, in.SourceID)
 	if citation != "" {
 		fmt.Fprintf(&out, " — %s", citation)
 	}
@@ -92,17 +100,10 @@ func (a *KnowledgeBaseActivities) ReadCorpus(
 // service credential at all.
 func (a *KnowledgeBaseActivities) readThroughBroker(
 	ctx context.Context,
-	corpus, path, delegated string,
+	corpus, sourceID, delegated string,
 ) (body string, citation string, err error) {
-	// Each segment escaped separately: escaping the whole path would encode the
-	// separators and turn a two-segment request into one meaningless one.
-	segments := strings.Split(strings.Trim(path, "/"), "/")
-	for i, segment := range segments {
-		segments[i] = url.PathEscape(segment)
-	}
-
-	endpoint := fmt.Sprintf("%s/corpora/%s/api/%s",
-		strings.TrimRight(a.BrokerURL, "/"), url.PathEscape(corpus), strings.Join(segments, "/"))
+	endpoint := fmt.Sprintf("%s/corpora/%s/resources/%s",
+		strings.TrimRight(a.BrokerURL, "/"), url.PathEscape(corpus), url.PathEscape(sourceID))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -131,12 +132,15 @@ func (a *KnowledgeBaseActivities) readThroughBroker(
 			res.StatusCode, strings.TrimSpace(string(raw))), "", nil
 	}
 
+	// The fetch route returns a Document: the resource normalised to Markdown,
+	// with the citation the source itself reported.
 	var parsed struct {
-		Body json.RawMessage `json:"body"`
-		URL  string          `json:"url"`
+		Markdown string `json:"markdown"`
+		URL      string `json:"url"`
+		Title    string `json:"title"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return "", "", fmt.Errorf("decode broker response: %w", err)
 	}
-	return string(parsed.Body), parsed.URL, nil
+	return parsed.Markdown, parsed.URL, nil
 }

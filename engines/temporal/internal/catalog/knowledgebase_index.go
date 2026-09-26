@@ -204,10 +204,9 @@ func corpusGetTool(conn CorpusDescriptor) ToolDescriptor {
 		Description: fmt.Sprintf(
 			"Read the current state of a resource in %s (%s). %s",
 			conn.Label(), conn.Provider, conn.Description),
-		Input: fmt.Sprintf(
-			"A path inside this corpus's scope, in the form this provider serves: %s. "+
-				"Anything else, or anything outside the scope, is refused.",
-			getFacePaths(conn.Provider)),
+		Input: "The id of a resource in this corpus — the same id a search result cites. " +
+			"Ids outside this corpus's scope are refused, and the read runs as the asking " +
+			"user, so anything they cannot see is refused too.",
 		Output:       "The resource as the source returns it now, for the calling user.",
 		AllowedRoles: conn.AllowedRoles,
 		CorpusGetExec: &CorpusGetExecSpec{
@@ -215,24 +214,6 @@ func corpusGetTool(conn CorpusDescriptor) ToolDescriptor {
 			Label:             conn.Label(),
 			IdentityProviders: conn.IdentityProviders,
 		},
-	}
-}
-
-// getFacePaths tells the model what this provider's GET face actually serves.
-//
-// Spelled out in the tool's own input description rather than left to be
-// discovered by trial: the broker allowlists these paths, so a model guessing
-// at a wider API spends a turn being refused for no reason.
-func getFacePaths(provider string) string {
-	switch provider {
-	case "confluence":
-		return "`pages/<id>` or `pages/<id>/children`"
-	case "slack":
-		return "`threads/<ts>`"
-	case "gdrive":
-		return "`files/<id>` or `folders/<id>/children`"
-	default:
-		return "a resource path"
 	}
 }
 

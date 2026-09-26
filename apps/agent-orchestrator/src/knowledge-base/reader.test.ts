@@ -33,12 +33,18 @@ const ok = (body: unknown) =>
   ({ ok: true, status: 200, json: async () => body, text: async () => "" }) as Response;
 
 describe("read", () => {
-  it("calls the broker's GET face with the CALLER's token", async () => {
-    const http = vi.fn().mockResolvedValue(ok({ body: { title: "Auth" }, url: "https://wiki/x" }));
+  it("calls the broker's fetch route with the CALLER's token", async () => {
+    const http = vi
+      .fn()
+      .mockResolvedValue(ok({ markdown: "Auth notes", url: "https://wiki/x", title: "Auth" }));
 
-    const result = await reader(http as unknown as typeof fetch).read(tool, "pages/12345", "openwebui:42");
+    const result = await reader(http as unknown as typeof fetch).read(tool, "12345", "openwebui:42");
 
-    expect(http.mock.calls[0]![0]).toBe("http://broker.test/corpora/globex-confluence/api/pages/12345");
+    // An id, not a path: the driver's own scope check is what bounds this, so
+    // there is no provider path for anything to have to validate.
+    expect(http.mock.calls[0]![0]).toBe(
+      "http://broker.test/corpora/globex-confluence/resources/12345",
+    );
     // The orchestrator holds no third-party credential: it forwards one it did
     // not mint and cannot widen.
     expect((http.mock.calls[0]![1] as RequestInit).headers).toMatchObject({
@@ -46,23 +52,23 @@ describe("read", () => {
       "x-delegated-token": "user-token",
     });
     expect(result.result).toContain("https://wiki/x");
-    expect(result.result).toContain("Auth");
+    expect(result.result).toContain("Auth notes");
   });
 
-  it("escapes each path segment, not the whole path", async () => {
-    // Escaping the whole thing encodes the separators and turns a two-segment
-    // request into one meaningless one.
-    const http = vi.fn().mockResolvedValue(ok({ body: {} }));
-    await reader(http as unknown as typeof fetch).read(tool, "pages/12345/children", "s");
+  it("escapes an id that would otherwise escape the path", async () => {
+    // The id reaches a URL, so it is encoded rather than trusted — something
+    // upstream supplied it, even if indirectly.
+    const http = vi.fn().mockResolvedValue(ok({ markdown: "" }));
+    await reader(http as unknown as typeof fetch).read(tool, "../../admin", "s");
 
-    expect(http.mock.calls[0]![0]).toContain("/api/pages/12345/children");
+    expect(http.mock.calls[0]![0]).toContain("/resources/..%2F..%2Fadmin");
   });
 
   it("asks for a link rather than falling back to the ingestion credential", async () => {
     // Reading live on the service credential would answer a different
     // question, permissively (docs/adr/0040).
     const http = vi.fn();
-    const result = await reader(http as unknown as typeof fetch, undefined).read(tool, "pages/1", "s");
+    const result = await reader(http as unknown as typeof fetch, undefined).read(tool, "1", "s");
 
     expect(result.needsLink).toBe(true);
     expect(result.result).toContain("link the account");
@@ -80,7 +86,7 @@ describe("read", () => {
       json: async () => ({}),
     } as Response);
 
-    const result = await reader(http as unknown as typeof fetch).read(tool, "pages/9", "s");
+    const result = await reader(http as unknown as typeof fetch).read(tool, "9", "s");
 
     expect(result.result).toContain("refused that read (403)");
     expect(result.result).toContain("outside this corpus's scope");
@@ -92,7 +98,7 @@ describe("read", () => {
     // would be inventing it.
     const http = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
     await expect(
-      reader(http as unknown as typeof fetch).read(tool, "pages/1", "s"),
+      reader(http as unknown as typeof fetch).read(tool, "1", "s"),
     ).rejects.toThrow(/unreachable/);
   });
 

@@ -9,13 +9,10 @@ import {
   type ListPage,
   type ProbeGranularity,
   type ProbeResult,
-  type ApiRequest,
-  type ApiResponse,
   type Scope,
   type WebhookEvent,
   type WebhookRequest,
 } from "./types.js";
-import { matchPath } from "./path-allowlist.js";
 import { hmacHex, signaturesMatch } from "./webhook-signature.js";
 
 /** Minimal HTTP surface, injectable so the driver is testable without a tenant. */
@@ -365,53 +362,6 @@ export class ConfluenceDriver implements Driver {
     return {
       scopeKey: body.page?.spaceKey ?? body.space?.spaceKey,
       sourceIds: pageId === undefined ? [] : [String(pageId)],
-    };
-  }
-
-  /**
-   * The live GET face (ADR 0038 §5).
-   *
-   * Two paths, because two are all a knowledge base needs: read a page it
-   * already has an id for, and list the children of one to walk a space. The
-   * v2 API is far larger than that, and everything else it offers is either
-   * already covered by retrieval or is not a read.
-   */
-  async api(scope: Scope, credentials: Credentials, request: ApiRequest): Promise<ApiResponse> {
-    this.validateScope(scope);
-    if (!credentials.delegated) {
-      // Reading live on the ingestion credential would answer "what can the
-      // service account see", which is not the question the caller asked.
-      throw new Error("the confluence GET face requires the calling user's delegated token");
-    }
-
-    const page = matchPath(request.path, [/^pages\/(\d+)$/, /^pages\/(\d+)\/children$/]);
-    if (!page) {
-      throw new PermissionDeniedError(
-        `confluence GET face does not serve ${request.path}; it serves pages/<id> and pages/<id>/children`,
-      );
-    }
-
-    const apiBase = await this.apiBaseFor(credentials.delegated);
-    const children = request.path.endsWith("/children");
-
-    // The scope check FIRST, on the page itself, before anything is read
-    // through it. A children listing inherits the parent's scope, so proving
-    // the parent is in scope proves the listing is.
-    const parent = (await this.request(
-      `${apiBase}/api/v2/pages/${encodeURIComponent(page)}`,
-      credentials.delegated,
-    )) as ConfluencePage;
-    await this.assertInScope(parent, scope, page, credentials.delegated);
-
-    const url = children
-      ? `${apiBase}/api/v2/pages/${encodeURIComponent(page)}/children?limit=50`
-      : `${apiBase}/api/v2/pages/${encodeURIComponent(page)}?body-format=storage`;
-
-    const body = await this.request(url, credentials.delegated);
-    return {
-      body: children ? body : { ...(body as object), markdown: storageToMarkdown(
-        (body as ConfluencePage).body?.storage?.value ?? "") },
-      url: citationUrl(parent, this.siteBaseUrl),
     };
   }
 
