@@ -183,9 +183,9 @@ try {
 }
 
 console.log("\n4. chunk");
-const connection = { id: `${SPACE.toLowerCase()}-confluence`, label: `${SPACE} Confluence` };
+const corpus = { id: `${SPACE.toLowerCase()}-confluence`, label: `${SPACE} Confluence` };
 const chunks = documents.flatMap((doc) =>
-  chunkDocument(connection, doc, { maxTokens: 800, overlap: 100 }),
+  chunkDocument(corpus, doc, { maxTokens: 800, overlap: 100 }),
 );
 ok(`${chunks.length} chunk(s) from ${documents.length} document(s)`);
 if (chunks.length === 0) fail("chunk", new Error("no chunks produced"));

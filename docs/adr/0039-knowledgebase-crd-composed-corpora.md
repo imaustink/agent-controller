@@ -1,6 +1,15 @@
-# 0039. `KnowledgeBase`: composing Connections into a corpus the agent can query
+# 0039. `KnowledgeBase`: composing Corpora into a corpus the agent can query
 
-Status: proposed
+Status: partly superseded by [0043](0043-connection-corpus-knowledgebase.md)
+
+> **Members are now `Corpus` resources, not `Connection`s,** and
+> `spec.connectionRefs` is `spec.corpusRefs`. ADR 0043 moved the credential and
+> the address onto a separate `Connection`; the member tier — the thing with a
+> scope, a role list and one vector collection — kept every property this
+> document gives it and changed only its name.
+>
+> §1's per-member collections, §4's union-to-invoke, and §5's disambiguation
+> all stand as written.
 
 ## Context
 

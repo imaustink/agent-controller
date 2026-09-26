@@ -1,0 +1,57 @@
+# A Corpus is a scoped subset of one Connection's material (ADR 0043): this
+# Confluence space, drawn through the credential the Connection holds.
+#
+# Note what is NOT here: no provider, no site, no credential. Those belong to
+# core_v1alpha1_connection.yaml and are shared by every Corpus over it. What
+# IS here is what legitimately differs between subsets — the scope, and who may
+# read it.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Corpus
+metadata:
+  labels:
+    app.kubernetes.io/name: core-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: snc-confluence
+spec:
+  # The authenticated route this subset is drawn through. One Connection serves
+  # many Corpora; adding a second space is another Corpus, not another
+  # credential.
+  connectionRef: bitovi-confluence
+
+  displayName: SNC Confluence
+  description: >-
+    The SNC client engagement's Confluence space: architecture decisions,
+    meeting notes and delivery status.
+
+  # Gates retrieval, and lives HERE rather than on the Connection or the
+  # KnowledgeBase (ADR 0043 §2). On the Connection it would be site-wide, with
+  # no way to gate one space differently from another. On the KnowledgeBase it
+  # would have no single value to write, because a chunk is stamped once at
+  # ingest and two knowledge bases may disagree about the same space.
+  allowedRoles:
+    - reader
+    - writer
+
+  # The security boundary. Everything the broker does is constrained to it, and
+  # a page id outside this space is refused however it was obtained.
+  #
+  # Exactly one unit is set, which admission enforces. WHICH unit is right
+  # depends on the Connection's provider, and CEL cannot read another resource —
+  # so that half is checked by the controller, which degrades a mismatched
+  # Corpus, and again by the driver when it binds.
+  scope:
+    space: SNC
+
+  sync:
+    mode: poll
+    # Required whatever the mode: the full reconcile is the source of truth, and
+    # webhooks only make it faster (ADR 0038 §4).
+    reconcileInterval: 6h
+    backfill:
+      since: "2026-01-01T00:00:00Z"
+
+  # The live face: reads the CURRENT state of a page when retrieval's snapshot
+  # is not good enough. GET only, path-allowlisted by the driver, and refused
+  # outside the scope above.
+  api:
+    enabled: true

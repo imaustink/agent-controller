@@ -85,7 +85,7 @@ type KnowledgeBaseDescriptor struct {
 	DisplayName    string   `json:"displayName,omitempty"`
 	Description    string   `json:"description"`
 	Aliases        []string `json:"aliases,omitempty"`
-	CorpusRefs []string `json:"connectionRefs"`
+	CorpusRefs []string `json:"corpusRefs"`
 
 	// DisclosePartialVisibility makes a search report how many member
 	// connections this caller could not see, so the agent can distinguish
@@ -123,7 +123,7 @@ type knowledgeBaseSpec struct {
 	Description               string   `json:"description"`
 	DisplayName               string   `json:"displayName,omitempty"`
 	Aliases                   []string `json:"aliases,omitempty"`
-	CorpusRefs            []string `json:"connectionRefs"`
+	CorpusRefs            []string `json:"corpusRefs"`
 	DisclosePartialVisibility *bool    `json:"disclosePartialVisibility,omitempty"`
 }
 

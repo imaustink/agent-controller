@@ -1,15 +1,17 @@
-# A real shape rather than a placeholder: Bitovi's SNC Confluence space, on a
-# site that uses a CUSTOM DOMAIN (wiki.at.bitovi.com rather than
-# bitovi.atlassian.net).
+# A Connection is an authenticated route to ONE system (ADR 0043) — not one
+# per space or channel. Bitovi's whole Confluence site is this single object,
+# and every Corpus over it (SNC, ENG, …) shares this credential.
 #
-# Two details under `site` are easy to get wrong and expensive to debug:
+# That is the point of the split: rotating the token is one edit, not ten.
+#
+# Two details here are easy to get wrong and expensive to debug:
 #
 #   site.baseURL keeps the /wiki path. Confluence lives under /wiki even on a
 #   custom domain, and this base is what citation URLs are built from — get it
 #   wrong and every citation is a link nobody can open.
 #
-#   site.cloudId is REQUIRED here, not merely advisable. Discovery matches
-#   baseURL against the canonical *.atlassian.net address that
+#   site.cloudId is REQUIRED for this site, not merely advisable. Discovery
+#   matches baseURL against the canonical *.atlassian.net address that
 #   /oauth/token/accessible-resources reports, so a custom domain never matches
 #   and the driver refuses rather than guess. It will not fall back to "the only
 #   site this token can reach": nothing has confirmed that site is this tenant,
@@ -21,50 +23,43 @@ metadata:
   labels:
     app.kubernetes.io/name: core-controller
     app.kubernetes.io/managed-by: kustomize
-  name: snc-confluence
+  name: bitovi-confluence
 spec:
   provider: confluence
-  displayName: SNC Confluence
-  description: >-
-    The SNC client engagement's Confluence space: architecture decisions,
-    meeting notes and delivery status.
-  allowedRoles:
-    - reader
-    - writer
-
-  # The security boundary. Everything the broker does is constrained to it, and
-  # a page id outside this space is refused however it was obtained.
-  scope:
-    space: SNC
+  displayName: Bitovi Confluence
 
   site:
-    # Keeps /wiki. Confluence lives under it even on a custom domain, and this
-    # is what citation URLs are built from — get it wrong and every citation is
-    # a link nobody can open.
     baseURL: https://wiki.at.bitovi.com/wiki
-    # Not optional for THIS site, even though the field is. Discovery matches
-    # baseURL against the addresses the token reports, which are always the
-    # canonical *.atlassian.net form, so a custom domain never matches and the
-    # driver refuses rather than guessing which tenant it reached.
     cloudId: 2a2bce9e-5780-4e10-a848-ee82abca0056
 
-  # Retrieval is per user: every candidate is probed against the source with the
-  # asking user's own token before it can be ranked, prompted or cited
-  # (docs/adr/0040). Without this the space can be ingested but never served to
-  # a caller whose access differs from the ingestion credential's.
+  # Optional cap on what Corpora may be built from this credential (ADR 0043
+  # §3). Absent means no cap, not an empty one.
+  #
+  # Worth setting when creating a Corpus is less privileged than creating a
+  # Connection: without it, anyone who can create a Corpus can reach anything
+  # this token can, and the broker would be taking the caller's word for what
+  # is in scope.
+  allowedScopes:
+    spaces:
+      - SNC
+
+  # The INGESTION credential, shared by every Corpus over this Connection. It
+  # stays a service credential: a scheduled reconcile has no calling user, so a
+  # per-user sync is incoherent as stated (ADR 0038 §7).
+  secretEnv:
+    - name: SERVICE_TOKEN
+      secretRef:
+        name: bitovi-atlassian
+        key: token
+
+  # Retrieval is the opposite of ingestion: every candidate is probed against
+  # the source with the ASKING USER's own token before it can be ranked,
+  # prompted or cited (ADR 0040). Without this the site can be ingested but
+  # never served to a caller whose access differs from the ingestion
+  # credential's.
+  #
+  # On the Connection because it describes how a human authenticates to this
+  # system, which cannot differ between two spaces of one site. The controller
+  # copies it onto each Corpus's status.
   identityProviders:
     - atlassian
-
-  sync:
-    mode: poll
-    # Required whatever the mode: the full reconcile is the source of truth, and
-    # webhooks only make it faster (docs/adr/0038 §4).
-    reconcileInterval: 6h
-    backfill:
-      since: "2026-01-01T00:00:00Z"
-
-  # The live face: reads the CURRENT state of a page when retrieval's snapshot
-  # is not good enough. GET only, path-allowlisted by the driver, and refused
-  # outside the scope above.
-  api:
-    enabled: true

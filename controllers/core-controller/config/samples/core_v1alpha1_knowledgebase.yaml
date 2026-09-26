@@ -1,14 +1,19 @@
 # The SNC engagement as a knowledge base.
 #
-# Only the Confluence connection exists today; the Slack and Drive members are
-# shown commented out because composition is the point of this resource — the
-# same knowledge base answering from several sources in one retrieval, including
-# two channels from the same provider.
+# Only the Confluence corpus exists today; the Slack and Drive members are shown
+# commented out because composition is the point of this resource — the same
+# knowledge base answering from several sources in one retrieval, including two
+# channels of one Slack workspace, which are two Corpora over ONE Connection
+# (ADR 0043).
 #
 # Note what is ABSENT: there is no allowedRoles here. Like a Skill (ADR 0011),
 # a KnowledgeBase carries no RBAC of its own — its audience is derived from its
 # members, by UNION rather than intersection, so one restricted member cannot
 # hide the whole client's knowledge base from everyone else.
+#
+# Roles could not live here even if we wanted them to: a chunk is stamped once,
+# at ingest, and two knowledge bases selecting the same corpus would have no
+# single value to write (ADR 0043 §2).
 apiVersion: core.controller-agent.dev/v1alpha1
 kind: KnowledgeBase
 metadata:
@@ -32,10 +37,10 @@ spec:
   aliases:
     - Southern National
 
-  connectionRefs:
+  corpusRefs:
     - snc-confluence
-    # - snc-slack-eng
-    # - snc-slack-general
+    # - snc-slack-eng           # both of these are Corpora over ONE
+    # - snc-slack-general       # Connection: one Slack app, one credential
     # - snc-drive
     # - platform-announcements   # shared across several knowledge bases
 

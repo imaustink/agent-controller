@@ -57,7 +57,7 @@ type KnowledgeBaseReconciler struct {
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=knowledgebases/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=connections,verbs=get;list;watch
 
-// Reconcile resolves a KnowledgeBase's connectionRefs and aggregates what its
+// Reconcile resolves a KnowledgeBase's corpusRefs and aggregates what its
 // members report, so one read of the knowledge base answers "what is in here,
 // and how much of it is current?".
 //
@@ -129,7 +129,7 @@ func (r *KnowledgeBaseReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if len(missing) > 0 {
 		condition.Status = metav1.ConditionFalse
 		condition.Reason = "RefsMissing"
-		condition.Message = fmt.Sprintf("connectionRefs not found: %v", missing)
+		condition.Message = fmt.Sprintf("corpusRefs not found: %v", missing)
 		log.Info("KnowledgeBase references missing Corpora",
 			"knowledgeBase", kb.Name, "missing", missing)
 	}

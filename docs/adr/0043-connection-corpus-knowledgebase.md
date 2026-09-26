@@ -1,6 +1,6 @@
 # 0043. `Connection`, `Corpus`, `KnowledgeBase`: credentials, selection, composition
 
-Status: proposed
+Status: accepted
 
 ## Context
 

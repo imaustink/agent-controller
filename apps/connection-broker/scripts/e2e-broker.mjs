@@ -18,7 +18,7 @@
  */
 import { findEnvFile, getAccessToken, loadEnv } from "./lib/atlassian-auth.mjs";
 import { ConfluenceDriver } from "../dist/drivers/confluence.js";
-import { StaticConnectionRegistry } from "../dist/registry.js";
+import { StaticCorpusRegistry } from "../dist/registry.js";
 import { createBrokerServer } from "../dist/server.js";
 import { HttpResourceSource } from "../dist/sync/http-source.js";
 import { QdrantCorpusWriter } from "../dist/sync/corpus-writer.js";
@@ -27,11 +27,12 @@ import { OpenAIEmbedder, EMBEDDING_DIMENSIONS } from "../dist/embedder.js";
 import { syncConnection } from "../dist/sync/worker.js";
 
 const SPACE = process.argv[2] ?? "SNC";
-const CONNECTION = `${SPACE.toLowerCase()}-confluence`;
+const CORPUS = `${SPACE.toLowerCase()}-confluence`;
+const CONNECTION = "bitovi-confluence";
 const SITE = "https://wiki.at.bitovi.com/wiki";
 const CLOUD_ID = "2a2bce9e-5780-4e10-a848-ee82abca0056";
 const QDRANT = process.env.QDRANT_URL ?? "http://localhost:6333";
-const COLLECTION = `e2e-broker-${CONNECTION}`;
+const COLLECTION = `e2e-broker-${CORPUS}`;
 const ORCHESTRATOR_TOKEN = "orchestrator-secret";
 const SYNC_TOKEN = "sync-secret";
 
@@ -54,9 +55,13 @@ await fetch(`${QDRANT}/collections/${COLLECTION}`, { method: "DELETE" });
 
 // The real registry is CRD-backed; a static one stands in so this runs without
 // a cluster. Everything downstream of it is exactly what ships.
-const registry = new StaticConnectionRegistry([
+//
+// One Corpus over one Connection (ADR 0043). The binding carries both names
+// because data is addressed by corpus and webhooks arrive per connection.
+const registry = new StaticCorpusRegistry([
   {
-    name: CONNECTION,
+    name: CORPUS,
+    connection: CONNECTION,
     driver: new ConfluenceDriver({ siteBaseUrl: SITE, cloudId: CLOUD_ID }),
     scope: { space: SPACE },
     allowedRoles: ["reader"],
@@ -67,7 +72,7 @@ const registry = new StaticConnectionRegistry([
 const server = createBrokerServer({
   auth: {
     orchestratorToken: ORCHESTRATOR_TOKEN,
-    syncTokens: new Map([[CONNECTION, SYNC_TOKEN]]),
+    syncTokens: new Map([[CORPUS, SYNC_TOKEN]]),
   },
   registry,
 });
@@ -84,7 +89,7 @@ const writer = new QdrantCorpusWriter(
   { allowedRoles: ["reader"], vectorSize: EMBEDDING_DIMENSIONS },
 );
 
-const target = { connection: CONNECTION, label: `${SPACE} Confluence`, collection: COLLECTION };
+const target = { connection: CORPUS, label: `${SPACE} Confluence`, collection: COLLECTION };
 
 console.log("\n1. first sync (over the broker's HTTP API)");
 let first;
@@ -127,7 +132,7 @@ const sourceId = JSON.parse(
   ).json()).result.points[0].payload.descriptor,
 ).sourceId;
 
-const probe = await fetch(`${baseUrl}/connections/${CONNECTION}/probe`, {
+const probe = await fetch(`${baseUrl}/corpora/${CORPUS}/probe`, {
   method: "POST",
   headers: {
     "content-type": "application/json",
@@ -148,25 +153,25 @@ console.log("\n4. authorization boundaries");
 const cases = [
   [
     "a sync token cannot probe on behalf of a user",
-    `${baseUrl}/connections/${CONNECTION}/probe`,
+    `${baseUrl}/corpora/${CORPUS}/probe`,
     { method: "POST", headers: { authorization: `Bearer ${SYNC_TOKEN}`, "content-type": "application/json" }, body: "{}" },
     403,
   ],
   [
     "the orchestrator cannot list (that spends the service credential)",
-    `${baseUrl}/connections/${CONNECTION}/resources`,
+    `${baseUrl}/corpora/${CORPUS}/resources`,
     { headers: { authorization: `Bearer ${ORCHESTRATOR_TOKEN}` } },
     403,
   ],
   [
     "an unknown token reaches nothing",
-    `${baseUrl}/connections/${CONNECTION}/resources`,
+    `${baseUrl}/corpora/${CORPUS}/resources`,
     { headers: { authorization: "Bearer nonsense" } },
     401,
   ],
   [
     "no token at all reaches nothing",
-    `${baseUrl}/connections/${CONNECTION}/resources`,
+    `${baseUrl}/corpora/${CORPUS}/resources`,
     {},
     401,
   ],

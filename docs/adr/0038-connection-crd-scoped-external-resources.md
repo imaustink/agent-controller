@@ -1,6 +1,17 @@
 # 0038. `Connection`: a scoped subset of an external system, kept in sync and callable
 
-Status: proposed
+Status: partly superseded by [0043](0043-connection-corpus-knowledgebase.md)
+
+> **The tier this ADR calls a `Connection` is now a `Corpus`.** ADR 0043 split
+> the credential and the address out into a resource that kept the name
+> `Connection`, so wherever this document says "a Connection" and means one
+> space, one channel or one folder, read "a Corpus".
+>
+> Everything else here stands unchanged: the provider-driver interface, the
+> scope check, reconcile-as-source-of-truth, the GET face and the broker
+> execution model. The one exception is §4's webhook handling — a delivery now
+> arrives per Connection and fans out to the Corpora over it, and the driver
+> reports which subset changed rather than being handed one (0043 §4).
 
 ## Context
 
