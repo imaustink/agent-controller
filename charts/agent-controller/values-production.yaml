@@ -25,8 +25,8 @@ agent-orchestrator:
   fullnameOverride: agent-orchestrator
 
   image:
-    repository: blackmarket/agent-controller
-    tag: agent-orchestrator
+    repository: ghcr.io/imaustink/agent-controller/agent-orchestrator
+    tag: latest
     pullPolicy: Always
 
   imagePullSecrets:
@@ -157,9 +157,9 @@ agent-orchestrator:
   # enabled (see charts/agent-orchestrator/templates/rbac.yaml).
   #
   # Executor sidecars for all 4 runtimes: this repo's release.yml CI
-  # builds+pushes blackmarket/agent-controller:localtool-executor-<runtime> on
+  # builds+pushes ghcr.io/imaustink/agent-controller/localtool-executor-<runtime> on
   # every merge to main, so point the chart's default `<runtime>:latest`
-  # images at those public tags instead of leaving runtimes empty.
+  # images at those public GHCR packages instead of leaving runtimes empty.
   # Requires unprivileged user namespaces enabled on every node (bubblewrap
   # per-invocation sandboxing, see charts/agent-orchestrator's own
   # values.yaml comment + docs/adr/0014) — the sidecar's
@@ -169,13 +169,13 @@ agent-orchestrator:
     enabled: true
     runtimes:
       - name: node
-        image: blackmarket/agent-controller:localtool-executor-node
+        image: ghcr.io/imaustink/agent-controller/localtool-executor-node:latest
       - name: python
-        image: blackmarket/agent-controller:localtool-executor-python
+        image: ghcr.io/imaustink/agent-controller/localtool-executor-python:latest
       - name: go
-        image: blackmarket/agent-controller:localtool-executor-go
+        image: ghcr.io/imaustink/agent-controller/localtool-executor-go:latest
       - name: shell
-        image: blackmarket/agent-controller:localtool-executor-shell
+        image: ghcr.io/imaustink/agent-controller/localtool-executor-shell:latest
     pullPolicy: Always
 
   # Agent delegation (Agent CRs, e.g. opencode-swe-agent) only runs over NATS
@@ -221,12 +221,12 @@ core-controller:
   fullnameOverride: core-controller
 
   image:
-    repository: blackmarket/agent-controller
-    tag: core-controller
+    repository: ghcr.io/imaustink/agent-controller/core-controller
+    tag: latest
     pullPolicy: Always
 
   # Every tool/agent image here (recipe-scraper, claude-code-swe-agent, etc.)
-  # is also pushed to Docker Hub under a mutable per-image tag, same
+  # is also pushed to GHCR under a mutable ":latest" tag, same
   # as core-controller's own image above -- so the Jobs core-controller
   # launches need "Always" too, or a node that already pulled a tag once will
   # keep running that stale digest through every later push+redeploy.
@@ -252,8 +252,8 @@ integration-gateway:
   enabled: true
 
   image:
-    repository: blackmarket/agent-controller
-    tag: integration-gateway
+    repository: ghcr.io/imaustink/agent-controller/integration-gateway
+    tag: latest
     pullPolicy: Always
 
   imagePullSecrets:

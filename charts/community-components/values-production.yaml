@@ -24,7 +24,7 @@ imagePullSecrets:
 
 recipeScraper:
   enabled: true
-  image: blackmarket/agent-controller:recipe-scraper
+  image: ghcr.io/imaustink/agent-controller/recipe-scraper:latest
   serviceAccountName: recipe-scraper
   openai:
     secretName: agent-orchestrator-secrets
@@ -35,7 +35,7 @@ recipeScraper:
 # searxngBaseUrl already matches that release's name ("agent-controller").
 webSearch:
   enabled: true
-  image: blackmarket/agent-controller:web-search
+  image: ghcr.io/imaustink/agent-controller/web-search:latest
   serviceAccountName: web-search
 
 # web-fetch: fetches a single URL and returns its main readable content as
@@ -44,7 +44,7 @@ webSearch:
 # without this one. No external dependency (SSRF-guarded).
 webFetch:
   enabled: true
-  image: blackmarket/agent-controller:web-fetch
+  image: ghcr.io/imaustink/agent-controller/web-fetch:latest
   serviceAccountName: web-fetch
 
 # image-gen: generate/edit images, store them in AWS S3, return presigned URLs.
@@ -56,7 +56,7 @@ webFetch:
 # agent-orchestrator-secrets. s3.secretName defaults to image-gen-s3.
 imageGen:
   enabled: true
-  image: blackmarket/agent-controller:image-gen
+  image: ghcr.io/imaustink/agent-controller/image-gen:latest
   serviceAccountName: image-gen
   openai:
     secretName: agent-orchestrator-secrets
@@ -70,12 +70,12 @@ imageGen:
 # before flipping this off elsewhere if that trade-off isn't acceptable.
 kubectlReadonly:
   enabled: true
-  image: blackmarket/agent-controller:kubectl-readonly
+  image: ghcr.io/imaustink/agent-controller/kubectl-readonly:latest
   serviceAccountName: kubectl-readonly
 
 recipePublisher:
   enabled: true
-  image: blackmarket/agent-controller:recipe-publisher
+  image: ghcr.io/imaustink/agent-controller/recipe-publisher:latest
   serviceAccountName: recipe-publisher
   mealieBaseUrl: "https://recipes.kurpuis.com"
   ingredientParser: "nlp"
@@ -96,7 +96,7 @@ recipePublisher:
 # key is retired as part of that cutover; ANTHROPIC_API_KEY remains PAT-based.
 opencodeSweAgent:
   enabled: false
-  image: blackmarket/agent-controller:opencode-swe-agent
+  image: ghcr.io/imaustink/agent-controller/opencode-swe-agent:latest
   serviceAccountName: opencode-swe-agent
   secretName: opencode-swe-secrets
   secretKey: GITHUB_TOKEN
@@ -148,7 +148,7 @@ opencodeSweAgent:
 # authorization from GitHub OAuth availability.
 claudeCodeSweAgent:
   enabled: true
-  image: blackmarket/agent-controller:claude-code-swe-agent
+  image: ghcr.io/imaustink/agent-controller/claude-code-swe-agent:latest
   serviceAccountName: claude-code-swe-agent
   secretName: claude-code-swe-secrets
   secretKey: GITHUB_TOKEN
@@ -198,7 +198,7 @@ claudeCodeSweAgent:
 # change.
 githubTool:
   enabled: true
-  image: blackmarket/agent-controller:github
+  image: ghcr.io/imaustink/agent-controller/github:latest
   serviceAccountName: github-tool
   identityLink:
     enabled: true
@@ -280,7 +280,7 @@ githubTool:
 #       192.168.1.235 192.168.1.184 192.168.1.218)"
 sshTool:
   enabled: true
-  image: blackmarket/agent-controller:ssh
+  image: ghcr.io/imaustink/agent-controller/ssh:latest
   serviceAccountName: ssh-tool
   allowedHosts: "austinkurpuis@166.113.38.187,austinkurpuis@192.168.1.43,admin@192.168.1.71,pi@192.168.1.235,pi@192.168.1.184,pi@192.168.1.218"
   allowedCommands: "*"

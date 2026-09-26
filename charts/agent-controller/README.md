@@ -45,13 +45,13 @@ charts/agent-controller/
 - Your own images for `agent-orchestrator.image`/`core-controller.image` (and,
   for `community-components`, `recipeScraper`/`recipePublisher`/`webSearch`/
   `opencodeSweAgent`). Every chart default is a bare `<name>:latest` with no
-  registry prefix, which resolves against Docker Hub and 404s. `.github/workflows/release.yml`
-  publishes every image publicly as a tag of the single Docker Hub repository
-  `blackmarket/agent-controller` — `blackmarket/agent-controller:<name>`
-  (tracks main) or `blackmarket/agent-controller:<name>-<commit sha>` (pinned)
-  — so set e.g. `image.repository: blackmarket/agent-controller` and
-  `image.tag: agent-orchestrator`, or `image: blackmarket/agent-controller:recipe-scraper`
-  for `community-components` (which is what `values-production.yaml` does).
+  registry prefix, which resolves against Docker Hub and 404s.
+  `.github/workflows/release.yml` publishes every image publicly to GHCR as
+  `ghcr.io/imaustink/agent-controller/<name>`, tagged `latest` (tracks main)
+  and `<commit sha>` (pinned) — so set e.g. `image.repository:
+  ghcr.io/imaustink/agent-controller/agent-orchestrator`, or `image:
+  ghcr.io/imaustink/agent-controller/recipe-scraper:latest` for
+  `community-components` (which is what `values-production.yaml` does).
 
 ## Fetching dependencies
 
