@@ -105,6 +105,12 @@ export function knowledgeBaseTools(
   for (const ref of kb.corpusRefs) {
     const connection = connections.get(ref);
     if (!connection?.apiEnabled) continue;
+    // A Corpus with no identity provider cannot serve a per-user read, and the
+    // GET face has no service-credential mode by design (docs/adr/0040):
+    // reading live on the ingestion credential would answer a different
+    // question, permissively. So no tool, rather than one that can only fail
+    // after the model has committed to using it.
+    if (!connection.identityProviders?.length) continue;
     tools.push(connectionGetTool(connection));
   }
 
@@ -125,12 +131,40 @@ export function connectionGetTool(connection: CorpusDescriptor): ToolDescriptor 
     description:
       `Read the current state of a resource in ${label} (${connection.provider}). ` +
       `${connection.description}` +
-      "\n\nInput: The id or path of a resource inside this connection's scope. " +
-      "Requests outside that scope are refused." +
+      `\n\nInput: A path inside this corpus's scope, in the form this provider ` +
+      `serves: ${getFacePaths(connection.provider)}. Anything else, or anything ` +
+      "outside the scope, is refused." +
       "\nOutput: The resource as the source returns it now, for the calling user.",
     allowedRoles: connection.allowedRoles,
     hidden: true,
+    corpusGetExec: {
+      corpusId: connection.id,
+      label,
+      identityProviders: connection.identityProviders,
+    },
   };
+}
+
+/**
+ * What this provider's GET face actually serves.
+ *
+ * Spelled out in the tool's own input description rather than left to trial:
+ * the broker allowlists these paths, so a model guessing at a wider API spends
+ * a turn being refused for no reason.
+ *
+ * PARITY: `getFacePaths` in `engines/temporal/internal/catalog`.
+ */
+function getFacePaths(provider: string): string {
+  switch (provider) {
+    case "confluence":
+      return "`pages/<id>` or `pages/<id>/children`";
+    case "slack":
+      return "`threads/<ts>`";
+    case "gdrive":
+      return "`files/<id>` or `folders/<id>/children`";
+    default:
+      return "a resource path";
+  }
 }
 
 /**

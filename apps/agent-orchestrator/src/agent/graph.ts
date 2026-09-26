@@ -28,6 +28,7 @@ import type { BestEffortResponder } from "./best-effort-responder.js";
 import type { CapabilityNeedChecker } from "./capability-need-checker.js";
 import type { DelegateSelector } from "./delegate-selector.js";
 import type { ResponseComposer } from "./response-composer.js";
+import type { CorpusReader } from "../knowledge-base/reader.js";
 import type { KnowledgeBaseSearcher } from "../knowledge-base/searcher.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
@@ -537,6 +538,12 @@ export interface AgentGraphDeps {
    * never have been selected in the first place.
    */
   knowledgeBaseSearcher?: KnowledgeBaseSearcher;
+  /**
+   * Reads one resource live from a Corpus (docs/adr/0038 §5). Absent when
+   * knowledge bases are not configured, in which case the tool is not
+   * generated either.
+   */
+  corpusReader?: CorpusReader;
   /**
    * Resolves identity from Open WebUI's per-request signed
    * `X-OpenWebUI-User-Jwt` header (`OpenWebUiForwardedUserResolver`) rather
@@ -2066,6 +2073,25 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         } catch (err) {
           return { jobId: runId, error: agentTurnErrorMessage(err) };
         }
+      }
+
+      // A Corpus's live GET face (docs/adr/0038 §5). Same shape as the search
+      // below — in-process, no continuation state — but it answers a different
+      // question: what the source says RIGHT NOW, rather than what we indexed.
+      if (tool.corpusGetExec) {
+        if (!deps.corpusReader) {
+          return { error: `tool ${tool.id} reads a corpus but knowledge bases are not configured` };
+        }
+        if (!state.identity) {
+          // Fail closed: this read runs AS someone, and there is nobody to run
+          // it as.
+          return { error: `tool ${tool.id} requires a resolved caller identity` };
+        }
+        const read = await deps.corpusReader.read(tool, input, state.identity.subject);
+        return {
+          result: read.result,
+          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: read.result }],
+        };
       }
 
       // A knowledge base's generated search (docs/adr/0039 §3) has nothing to

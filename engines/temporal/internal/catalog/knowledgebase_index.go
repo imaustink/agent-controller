@@ -182,6 +182,14 @@ func knowledgeBaseTools(kb KnowledgeBaseDescriptor, connections map[string]Corpu
 		if !ok || !conn.APIEnabled {
 			continue
 		}
+		// A Corpus with no identity provider cannot serve a per-user read, and
+		// the GET face has no service-credential mode by design (ADR 0040):
+		// reading live on the ingestion credential would answer a different
+		// question, permissively. So no tool, rather than one that can only
+		// fail after the model has committed to using it.
+		if len(conn.IdentityProviders) == 0 {
+			continue
+		}
 		tools = append(tools, corpusGetTool(conn))
 	}
 	return tools
@@ -196,10 +204,35 @@ func corpusGetTool(conn CorpusDescriptor) ToolDescriptor {
 		Description: fmt.Sprintf(
 			"Read the current state of a resource in %s (%s). %s",
 			conn.Label(), conn.Provider, conn.Description),
-		Input: "The id or path of a resource inside this corpus's scope. Requests " +
-			"outside that scope are refused.",
+		Input: fmt.Sprintf(
+			"A path inside this corpus's scope, in the form this provider serves: %s. "+
+				"Anything else, or anything outside the scope, is refused.",
+			getFacePaths(conn.Provider)),
 		Output:       "The resource as the source returns it now, for the calling user.",
 		AllowedRoles: conn.AllowedRoles,
+		CorpusGetExec: &CorpusGetExecSpec{
+			CorpusID:          conn.ID,
+			Label:             conn.Label(),
+			IdentityProviders: conn.IdentityProviders,
+		},
+	}
+}
+
+// getFacePaths tells the model what this provider's GET face actually serves.
+//
+// Spelled out in the tool's own input description rather than left to be
+// discovered by trial: the broker allowlists these paths, so a model guessing
+// at a wider API spends a turn being refused for no reason.
+func getFacePaths(provider string) string {
+	switch provider {
+	case "confluence":
+		return "`pages/<id>` or `pages/<id>/children`"
+	case "slack":
+		return "`threads/<ts>`"
+	case "gdrive":
+		return "`files/<id>` or `folders/<id>/children`"
+	default:
+		return "a resource path"
 	}
 }
 

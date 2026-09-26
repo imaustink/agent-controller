@@ -103,6 +103,20 @@ export interface ToolDescriptor {
    */
   knowledgeBaseExec?: KnowledgeBaseExecSpec;
   /**
+   * A Corpus's live GET face (docs/adr/0038 §5), and what dispatching it needs.
+   *
+   * Present or the tool is not generated at all. A catalog entry with no way
+   * to run it is worse than a missing one: the planner can pick it, and the
+   * turn fails after the model has already committed to an approach.
+   *
+   * PARITY: `CorpusGetExecSpec` in `engines/temporal/internal/catalog`.
+   */
+  corpusGetExec?: {
+    corpusId: string;
+    label?: string;
+    identityProviders?: string[];
+  };
+  /**
    * Job launch template (container tools, ADR 0010). Set for tools launched
    * as k8s Jobs; absent for LocalTools/agent-backed tools.
    */

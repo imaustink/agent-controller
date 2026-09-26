@@ -151,6 +151,25 @@ export interface WebhookRequest {
   rawBody: string;
 }
 
+/** A read of the live source, made as the calling user (ADR 0038 §5). */
+export interface ApiRequest {
+  /**
+   * The path the caller asked for, relative to the provider — `pages/12345`,
+   * `conversations.info`. Never a full URL: a caller that supplied the host
+   * could point this driver at anything the credential can reach.
+   */
+  path: string;
+  /** Query parameters, allowlisted per driver like the path is. */
+  query?: Record<string, string>;
+}
+
+export interface ApiResponse {
+  /** The source's answer, already narrowed to what the allowlist permits. */
+  body: unknown;
+  /** Where a human can see the same thing, for a citation. */
+  url?: string;
+}
+
 export interface Driver {
   readonly provider: string;
 
@@ -200,4 +219,31 @@ export interface Driver {
    * decide.
    */
   parseWebhook?(request: WebhookRequest, secret: string): WebhookEvent | undefined;
+
+  /**
+   * Reads the CURRENT state of one resource, as the calling user.
+   *
+   * The live face a Corpus exposes when the indexed snapshot is not good
+   * enough — the model decides when to spend it (ADR 0040), rather than every
+   * retrieval paying for hydration it may not need.
+   *
+   * Four constraints, and each one is load-bearing:
+   *
+   *   - GET ONLY. There is no authorization story for a write here and no
+   *     appetite to invent one: a tool that can mutate a client's Confluence
+   *     is a different risk class from one that can read it.
+   *   - The DELEGATED credential, always. This answers "what may this user
+   *     see", and answering it with the ingestion credential would answer a
+   *     different question, permissively.
+   *   - Inside the Corpus's scope. Same boundary `fetch` enforces: a path or
+   *     id outside it is refused however it was obtained.
+   *   - Path ALLOWLISTED by the driver. A caller-supplied path reaches a URL,
+   *     and a provider API is far larger than the part a knowledge base needs.
+   *     The allowlist is what stops the GET face becoming a general proxy onto
+   *     the credential.
+   *
+   * Optional: a provider without a useful live read simply does not implement
+   * it, and no GET tool is generated for its Corpora.
+   */
+  api?(scope: Scope, credentials: Credentials, request: ApiRequest): Promise<ApiResponse>;
 }

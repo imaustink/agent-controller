@@ -391,6 +391,31 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		// resolves the caller's delegated credential INSIDE the activity and
 		// never lets it back out, because an activity result is persisted to
 		// event history (see AuthorizeActivities' doc comment).
+		// The live GET face (ADR 0038 §5). Placed beside the search branch and
+		// before the identity gate for the same reason: this resolves the
+		// caller's delegated credential INSIDE the activity and never lets it
+		// back out, where the gate below resolves a Tool CR's providers into
+		// secretEnv for a Job.
+		if tool.CorpusGetExec != nil {
+			note("Reading from " + tool.CorpusGetExec.Label + "…")
+			var read activities.ReadCorpusOutput
+			if err := workflow.ExecuteActivity(actx, activities.ReadCorpusActivityName,
+				activities.ReadCorpusInput{
+					Caller: in.Caller,
+					Tool:   tool,
+					Path:   plan.ToolInput,
+				}).Get(ctx, &read); err != nil {
+				return "", meta, nil, err
+			}
+			meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
+
+			if read.NeedsLink {
+				note(plan.ToolID + " needs a linked account")
+				return read.Result, meta, nil, nil
+			}
+			return read.Result, meta, nil, nil
+		}
+
 		if tool.KnowledgeBaseExec != nil {
 			note("Searching " + tool.KnowledgeBaseExec.DisplayName + "…")
 			var found activities.SearchKnowledgeBaseOutput

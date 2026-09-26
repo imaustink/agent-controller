@@ -11,8 +11,9 @@ import {
   type ProbeResult,
   type Scope,
 } from "./types.js";
+import { matchPath } from "./path-allowlist.js";
 import type { FetchLike } from "./confluence.js";
-import type { WebhookEvent, WebhookRequest } from "./types.js";
+import type { ApiRequest, ApiResponse, WebhookEvent, WebhookRequest } from "./types.js";
 import { hmacHex, signaturesMatch, withinReplayWindow } from "./webhook-signature.js";
 
 export interface SlackDriverOptions {
@@ -190,6 +191,49 @@ export class SlackDriver implements Driver {
       // A channel has no version. Slack edits are rare and carry no monotonic
       // marker, so claiming one would be inventing a guarantee.
       version: undefined,
+    };
+  }
+
+  /**
+   * The live GET face (ADR 0038 §5).
+   *
+   * One path: re-read a thread. Slack's API is enormous and almost none of it
+   * is a read a knowledge base needs — the channel is already the retrieval
+   * unit, and anything wider would be a proxy onto the workspace rather than a
+   * live view of what was indexed.
+   */
+  async api(scope: Scope, credentials: Credentials, request: ApiRequest): Promise<ApiResponse> {
+    this.validateScope(scope);
+    if (!credentials.delegated) {
+      throw new Error("the slack GET face requires the calling user's delegated token");
+    }
+
+    const ts = matchPath(request.path, [/^threads\/([0-9.]+)$/]);
+    if (!ts) {
+      throw new PermissionDeniedError(
+        `slack GET face does not serve ${request.path}; it serves threads/<ts>`,
+      );
+    }
+
+    // No autoJoin here, deliberately: this runs as the USER, and the join path
+    // exists for ingestion. A user who cannot see the channel gets a denial,
+    // which is the answer rather than a problem to work around.
+    const body = (await this.call("conversations.replies", credentials.delegated, {
+      channel: scope.channel!,
+      ts,
+      limit: String(this.pageSize),
+    })) as { messages?: SlackMessage[] };
+
+    const messages = body.messages ?? [];
+    return {
+      body: {
+        messages: messages.map((message) => ({
+          ts: message.ts,
+          user: message.user,
+          text: renderText(message.text ?? ""),
+        })),
+      },
+      url: this.messageUrl(scope.channel!, ts),
     };
   }
 

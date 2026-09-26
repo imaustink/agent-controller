@@ -45,6 +45,26 @@ type ToolDescriptor struct {
 	// selects a dispatch path — here, retrieval in-process rather than any kind
 	// of launch — and carries what that path needs.
 	KnowledgeBaseExec *KnowledgeBaseExecSpec `json:"knowledgeBaseExec,omitempty"`
+
+	// CorpusGetExec marks a Corpus's live GET face (ADR 0038 §5) and carries
+	// what dispatching it needs.
+	//
+	// Present or the tool is not generated at all. A catalog entry with no way
+	// to run it is worse than a missing one: the planner can pick it, and the
+	// turn fails after the model has already committed to an approach.
+	CorpusGetExec *CorpusGetExecSpec `json:"corpusGetExec,omitempty"`
+}
+
+// CorpusGetExecSpec is everything the GET face needs at call time.
+type CorpusGetExecSpec struct {
+	// CorpusID is which corpus to read through — the broker resolves scope and
+	// credentials from it, so neither travels in a tool descriptor.
+	CorpusID string `json:"corpusId"`
+	Label    string `json:"label,omitempty"`
+	// IdentityProviders whose delegated credential this read needs. Empty means
+	// it cannot serve a caller at all, which is why such a Corpus generates no
+	// GET tool.
+	IdentityProviders []string `json:"identityProviders,omitempty"`
 }
 
 // KnowledgeBaseExecMember is one member connection, as the search path needs it.
