@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SlackDriver } from "./slack.js";
+import { renderText, SlackDriver } from "./slack.js";
 import { PermanentError, PermissionDeniedError, TransientError } from "./types.js";
 import type { FetchLike } from "./confluence.js";
 
@@ -371,5 +371,72 @@ describe("system messages", () => {
 
     const doc = await driver(http).fetch(SCOPE, { service: "x" }, "1.1");
     expect(doc.markdown).toContain("has joined the channel");
+  });
+});
+
+
+describe("renderText", () => {
+  it("keeps the label AND the url from a Slack link", () => {
+    // Found against a real channel: this went into the vector as written, so
+    // the URL dominated the embedding and the word a human would search for
+    // was buried inside the markup.
+    expect(renderText("<https://github.com/org/repo/pull/259|PR>")).toBe(
+      "[PR](https://github.com/org/repo/pull/259)",
+    );
+  });
+
+  it("renders a bare link as the url", () => {
+    expect(renderText("<https://example.com/x>")).toBe("https://example.com/x");
+  });
+
+  it("falls back to the url when the label is empty", () => {
+    expect(renderText("<https://example.com/x|>")).toBe("https://example.com/x");
+  });
+
+  it("strips the markup from mentions", () => {
+    // The id is all there is without a users.info lookup, but the brackets are
+    // markup either way.
+    expect(renderText("<@U123ABC> shipped it")).toBe("@U123ABC shipped it");
+    expect(renderText("<@U123ABC|austin> shipped it")).toBe("@austin shipped it");
+  });
+
+  it("strips the markup from channel and group references", () => {
+    expect(renderText("see <#C123ABC|general>")).toBe("see #general");
+    expect(renderText("see <#C123ABC>")).toBe("see #C123ABC");
+    expect(renderText("<!here> please")).toBe("@here please");
+    expect(renderText("<!subteam^S123|@platform> please")).toBe("@platform please");
+  });
+
+  it("unescapes the three characters Slack escapes", () => {
+    expect(renderText("a &lt; b &amp;&amp; c &gt; d")).toBe("a < b && c > d");
+  });
+
+  it("parses entities BEFORE unescaping, not after", () => {
+    // Slack escapes what a person typed but leaves its own entity brackets
+    // literal. Unescaping first turns a quoted "&lt;http://x|y&gt;" into an
+    // entity we would then mangle.
+    expect(renderText("he wrote &lt;https://x.test|y&gt; in chat")).toBe(
+      "he wrote <https://x.test|y> in chat",
+    );
+  });
+
+  it("leaves ordinary prose alone", () => {
+    expect(renderText("Deploy 4.2 finished in 3m12s")).toBe("Deploy 4.2 finished in 3m12s");
+  });
+});
+
+describe("rendering reaches the title too", () => {
+  it("does not put raw markup in a resource title", async () => {
+    // The title is what a citation renders and what the planner reads.
+    const http = vi.fn().mockResolvedValue(
+      respond({
+        ok: true,
+        messages: [message("1.1", { text: "<@U1> opened <https://x.test/1|the PR>" })],
+      }),
+    );
+
+    const { resources } = await driver(http).list(SCOPE, { service: "x" }, undefined);
+
+    expect(resources[0]!.title).toBe("@U1 opened [the PR](https://x.test/1)");
   });
 });

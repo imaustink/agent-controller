@@ -369,7 +369,53 @@ function isNotInChannel(err: unknown): boolean {
   return err instanceof PermissionDeniedError && err.message.includes("not_in_channel");
 }
 
-const firstLine = (text: string): string => text.split("\n")[0]?.slice(0, 120).trim() ?? "";
+const firstLine = (text: string): string =>
+  renderText(text).split("\n")[0]?.slice(0, 120).trim() ?? "";
+
+/**
+ * Turns Slack's mrkdwn into text worth embedding.
+ *
+ * Found by running against a real channel: a message linking a pull request
+ * arrived as `<https://github.com/org/repo/pull/259|PR>` and went into the
+ * vector as written. The URL dominates the embedding, the word a human would
+ * search for is buried inside the markup, and the same happens to every
+ * mention and channel reference. It is the Confluence macro-parameter problem
+ * in a different syntax.
+ *
+ * ORDER MATTERS here, and subtly. Slack escapes `&`, `<` and `>` in whatever a
+ * person typed, but the angle brackets around its OWN entities are literal. So
+ * entities are parsed first and the escapes undone afterwards — do it the other
+ * way and a message quoting "a <b|c> d" becomes an entity we then mangle.
+ */
+export function renderText(text: string): string {
+  return (
+    text
+      // <url|label> — keep both: the label is what a person searches for, the
+      // URL is evidence a model may want to cite.
+      .replace(/<(https?:\/\/[^|>]+)\|([^>]*)>/g, (_m, url: string, label: string) =>
+        label.trim() ? `[${label}](${url})` : url,
+      )
+      // <url> — nothing to show but the URL itself.
+      .replace(/<(https?:\/\/[^|>]+)>/g, "$1")
+      // <mailto:a@b|a@b>
+      .replace(/<mailto:([^|>]+)(?:\|[^>]*)?>/g, "$1")
+      // <@U123|name> and <@U123>. Without a users.info lookup the id is all
+      // there is; the brackets are markup and go regardless.
+      .replace(/<@([UW][A-Z0-9]+)\|([^>]+)>/g, "@$2")
+      .replace(/<@([UW][A-Z0-9]+)>/g, "@$1")
+      // <#C123|general> and <#C123>
+      .replace(/<#(C[A-Z0-9]+)\|([^>]+)>/g, "#$2")
+      .replace(/<#(C[A-Z0-9]+)>/g, "#$1")
+      // <!here>, <!channel>, <!subteam^S123|@team>
+      .replace(/<!subteam\^[A-Z0-9]+(?:\|([^>]+))?>/g, (_m, handle: string | undefined) => handle ?? "@team")
+      .replace(/<!([a-z]+)(?:\|[^>]*)?>/g, "@$1")
+      // Only now the escapes, and only the three Slack actually applies.
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&amp;/g, "&")
+      .trim()
+  );
+}
 
 /**
  * Whether a message is something a person wrote, rather than something Slack
@@ -397,11 +443,12 @@ function isProse(message: SlackMessage): boolean {
 /**
  * One message as Markdown.
  *
- * Deliberately minimal — enough for chunking to have seams, without resolving
- * user ids to names, which would need a second API call per distinct author and
- * a cache the broker has nowhere to put.
+ * Author ids are still ids: resolving them to names needs a users.info per
+ * distinct author and a cache the broker has nowhere to put. That is a real
+ * cost to retrieval — an opaque `@U0C14S3U61W` embeds as noise where a name
+ * would help — and it is deliberately deferred rather than unnoticed.
  */
 function renderMessage(message: SlackMessage): string {
-  const author = message.user ? `<@${message.user}>` : "unknown";
-  return `**${author}**: ${message.text ?? ""}`.trim();
+  const author = message.user ? `@${message.user}` : "unknown";
+  return `**${author}**: ${renderText(message.text ?? "")}`.trim();
 }

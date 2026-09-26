@@ -120,7 +120,8 @@ console.log(`  --- first 300 chars ---\n  ${doc.markdown.slice(0, 300).replace(/
 const messageCount = (doc.markdown.match(/\*\*<@/g) ?? []).length;
 ok(`${messageCount} message(s) rendered in the thread`);
 
-const rawMentions = doc.markdown.match(/<@U[A-Z0-9]+>/g) ?? [];
+// Post-rendering the brackets are gone, but the id is still an id.
+const rawMentions = doc.markdown.match(/@[UW][A-Z0-9]{6,}/g) ?? [];
 if (rawMentions.length > 0) {
   warn(`${rawMentions.length} unresolved author/mention id(s), e.g. ${rawMentions[0]}`);
   warn("these embed as opaque tokens; resolving them costs one users.info per author");
