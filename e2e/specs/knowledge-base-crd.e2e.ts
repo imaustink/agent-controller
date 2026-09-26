@@ -204,6 +204,77 @@ describe("the chart grants the controller what it watches", () => {
   });
 });
 
+describe("every process that watches these kinds is granted them", () => {
+  /**
+   * The namespaced Role bound to a Deployment's ServiceAccount.
+   *
+   * Four processes in this feature watch these kinds, and the chart Role for
+   * three of them has shipped missing one: core-controller's ClusterRole
+   * twice, the broker's Role, and the orchestrator's. Every one is the same
+   * hand-copied hop, and every one crashloops rather than degrading — which is
+   * loud, but the cause sits several screens into a log about something else.
+   */
+  async function roleFor(app: string): Promise<{
+    rules: { apiGroups: string[]; resources: string[] }[];
+  }> {
+    const serviceAccount = (
+      await kubectl([
+        "get",
+        "deploy",
+        "-l",
+        `app.kubernetes.io/name=${app}`,
+        "-o",
+        "jsonpath={.items[0].spec.template.spec.serviceAccountName}",
+      ])
+    ).trim();
+    expect(serviceAccount, `no ${app} Deployment in the cluster`).not.toBe("");
+
+    const bindings = await kubectlJson<{
+      items: { roleRef: { name: string }; subjects?: { kind: string; name: string }[] }[];
+    }>(["get", "rolebinding", "-o", "json"]);
+
+    const binding = bindings.items.find((b) =>
+      (b.subjects ?? []).some((s) => s.kind === "ServiceAccount" && s.name === serviceAccount),
+    );
+    expect(binding, `nothing binds a Role to ${serviceAccount}`).toBeDefined();
+
+    return kubectlJson(["get", "role", binding!.roleRef.name, "-o", "json"]);
+  }
+
+  const grantedKinds = (role: { rules: { apiGroups: string[]; resources: string[] }[] }) =>
+    new Set(
+      role.rules
+        .filter((rule) => rule.apiGroups.includes("core.controller-agent.dev"))
+        .flatMap((rule) => rule.resources),
+    );
+
+  it("grants the connection-broker connections and corpora", async () => {
+    // It resolves a Corpus's scope against the Connection holding its
+    // credential, and loads Connections first so a Corpus never binds to one
+    // it has not seen.
+    const granted = grantedKinds(await roleFor("connection-broker"));
+
+    expect([...granted]).toContain("connections");
+    expect([...granted]).toContain("corpora");
+  });
+
+  it("lets the broker report a sync back onto the Corpus", async () => {
+    // Without corpora/status the sync succeeds and records nothing, so the
+    // Corpus shows no lastSyncTime however many times it ran.
+    const granted = grantedKinds(await roleFor("connection-broker"));
+
+    expect([...granted]).toContain("corpora/status");
+  });
+
+  it("grants the orchestrator all three kinds it derives a skill from", async () => {
+    const granted = grantedKinds(await roleFor("agent-orchestrator"));
+
+    for (const kind of ["connections", "corpora", "knowledgebases"]) {
+      expect([...granted], `the orchestrator cannot watch ${kind}`).toContain(kind);
+    }
+  });
+});
+
 describe("reconciling a Corpus", () => {
   beforeAll(async () => {
     await kubectlApplyStdin(connectionManifest());
