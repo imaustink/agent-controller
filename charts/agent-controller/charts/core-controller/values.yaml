@@ -93,3 +93,23 @@ tolerations: []
 
 podAnnotations: {}
 podLabels: {}
+
+# The sync CronJob a Corpus reconciles into (ADR 0043).
+#
+# Off by default, matching the connection-broker's own default: without the
+# broker there is nothing for the Job to call.
+corpusSync:
+  enabled: false
+  # Must be the broker's SERVICE, which under the umbrella chart is
+  # `<release>-connection-broker`. The controller binary defaults to
+  # `http://connection-broker:8080`, which resolves only when the release
+  # happens to be named that — and a Job that cannot resolve the host fails
+  # with `Could not resolve host`, while the Corpus reports healthy and stays
+  # empty.
+  brokerUrl: "http://agent-controller-connection-broker:8080"
+  # Keyed BY CORPUS NAME, because a sync worker is trusted for exactly one
+  # corpus and a shared token would let any of them drive another's ingestion
+  # credential.
+  tokenSecret: connection-broker-sync-tokens
+  # Any image with a shell and curl. Empty takes the binary's default.
+  kickImage: ""

@@ -337,6 +337,12 @@ agent-orchestrator:
     # a shorter fixture.
     callerToolTopK: 3
 
+core-controller:
+  corpusSync:
+    enabled: true
+    brokerUrl: "http://agent-controller-connection-broker:8080"
+    tokenSecret: e2e-connection-broker-sync-tokens
+
 # Both engines are told where the broker is. ADR 0036 keeps them in parity, so
 # a knowledge-base behaviour proven on one engine and never wired on the other
 # is exactly the asymmetry this suite exists to catch.

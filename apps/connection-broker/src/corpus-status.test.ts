@@ -42,6 +42,15 @@ describe("record", () => {
 
     expect(patch).toHaveBeenCalledWith(
       expect.objectContaining({ plural: "corpora", name: "globex-confluence", namespace: "clients" }),
+      // A MERGE patch, said explicitly. The client defaults this endpoint to
+      // json-patch, which expects an array of operations, and the API server
+      // rejects `{ status: {...} }` under that type with a 400 this writer
+      // catches — so every sync succeeded and silently never recorded it, and
+      // the Corpus showed no lastSyncTime however many times it ran.
+      // Whatever setHeaderOptions produces — asserted as "an options object was
+      // passed" rather than by shape, since the shape is the client's middleware
+      // config and pinning it here would just restate the library.
+      expect.anything(),
     );
     // Total indexed material, not just what this pass touched — an unchanged
     // chunk is still in the corpus.

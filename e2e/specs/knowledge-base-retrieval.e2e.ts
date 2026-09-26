@@ -30,7 +30,15 @@ requireMinikubeContext();
 const CONNECTION = "e2e-fake-atlassian";
 const CORPUS = "alpha-docs";
 const KB = "e2e-alpha";
-const COLLECTION = `corpus_${CORPUS.replace(/-/g, "_")}`;
+/**
+ * Read from the Corpus, not computed.
+ *
+ * The controller decides the collection name and reports it; recomputing the
+ * scheme here would be a second implementation that agrees with itself and
+ * drifts silently — and it did, on the first run: the real name carries the
+ * NAMESPACE, which this spec had guessed away.
+ */
+let COLLECTION = "";
 
 const FULL_USER = "kb-full";
 const LIMITED_USER = "kb-limited";
@@ -128,6 +136,11 @@ beforeAll(async () => {
     },
     { timeoutMs: 120_000 },
   );
+
+  COLLECTION = (
+    await kubectl(["get", "corpus", CORPUS, "-o", "jsonpath={.status.collection}"])
+  ).trim();
+  expect(COLLECTION, "the corpus reports no collection").not.toBe("");
 
   await syncNow();
 }, 600_000);

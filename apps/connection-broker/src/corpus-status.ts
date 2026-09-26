@@ -1,16 +1,39 @@
+import { PatchStrategy, setHeaderOptions } from "@kubernetes/client-node";
+
 import type { SyncReport } from "./sync/worker.js";
 
 /** The slice of the custom-objects API needed to patch a status subresource. */
 export interface StatusPatcherApi {
-  patchNamespacedCustomObjectStatus(args: {
-    group: string;
-    version: string;
-    namespace: string;
-    plural: string;
-    name: string;
-    body: unknown;
-  }): Promise<unknown>;
+  patchNamespacedCustomObjectStatus(
+    args: {
+      group: string;
+      version: string;
+      namespace: string;
+      plural: string;
+      name: string;
+      body: unknown;
+    },
+    options?: unknown,
+  ): Promise<unknown>;
 }
+
+/**
+ * A merge patch, said explicitly.
+ *
+ * The client defaults this endpoint to `application/json-patch+json`, which
+ * expects an ARRAY of operations. Sending `{ status: {...} }` under that type
+ * is rejected by the API server with
+ * `cannot unmarshal object into Go value of type []handlers.jsonPatchOp` — a
+ * 400 this writer catches and reports, so every sync succeeded and silently
+ * never recorded that it had. A Corpus showed no `lastSyncTime` however many
+ * times it synced, which reads as "the sync never ran".
+ *
+ * It has to go through `setHeaderOptions`. The second parameter is
+ * `ConfigurationOptions`, which is middleware and server config — a bare
+ * `{ headers }` object type-checks against it and is silently ignored, which
+ * is how the first attempt at this fix looked exactly like the bug.
+ */
+const MERGE_PATCH = setHeaderOptions("Content-Type", PatchStrategy.MergePatch);
 
 export interface CorpusStatusWriterOptions {
   api: StatusPatcherApi;
@@ -59,14 +82,17 @@ export class CorpusStatusWriter {
     if (report.full) status.lastReconcileTime = at;
 
     try {
-      await this.options.api.patchNamespacedCustomObjectStatus({
-        group: this.options.group,
-        version: this.options.version,
-        namespace: this.options.namespace,
-        plural: this.options.plural,
-        name: corpus,
-        body: { status },
-      });
+      await this.options.api.patchNamespacedCustomObjectStatus(
+        {
+          group: this.options.group,
+          version: this.options.version,
+          namespace: this.options.namespace,
+          plural: this.options.plural,
+          name: corpus,
+          body: { status },
+        },
+        MERGE_PATCH,
+      );
     } catch (err) {
       this.options.onError?.(corpus, err);
     }

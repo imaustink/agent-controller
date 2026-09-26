@@ -84,9 +84,15 @@ upsert e2e-connection-broker-secrets \
   --from-literal=orchestratorToken="$CONNECTION_BROKER_TOKEN"
 # alpha-docs is the corpus the knowledge-base specs create; see
 # e2e/specs/knowledge-base-*.e2e.ts.
+# Keys are the ENV VAR NAMES the broker reads: every key in this Secret is
+# mounted verbatim via envFrom, and the broker matches SYNC_TOKEN_<CORPUS>,
+# lowercasing and turning underscores back into hyphens. A key named for the
+# corpus alone becomes an env var the broker never looks at, and the sync then
+# fails with "unrecognized bearer token" — which reads as a wrong VALUE rather
+# than a wrong NAME.
 upsert e2e-connection-broker-sync-tokens \
-  --from-literal=alpha-docs="e2e-sync-token-alpha" \
-  --from-literal=beta-docs="e2e-sync-token-beta"
+  --from-literal=SYNC_TOKEN_ALPHA_DOCS="e2e-sync-token-alpha" \
+  --from-literal=SYNC_TOKEN_BETA_DOCS="e2e-sync-token-beta"
 # The credential the fake Confluence accepts for INGESTION. Its user-facing
 # counterparts are seeded per-test into the identity-link store, because which
 # caller holds which is the thing under test.
