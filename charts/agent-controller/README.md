@@ -51,9 +51,7 @@ charts/agent-controller/
   (tracks main) or `blackmarket/agent-controller:<name>-<commit sha>` (pinned)
   — so set e.g. `image.repository: blackmarket/agent-controller` and
   `image.tag: agent-orchestrator`, or `image: blackmarket/agent-controller:recipe-scraper`
-  for `community-components`. (The same images also go to a private
-  self-hosted registry, `registry.kurpuis.com:5000`, which is what
-  `values-production.yaml` pulls from.)
+  for `community-components` (which is what `values-production.yaml` does).
 
 ## Fetching dependencies
 

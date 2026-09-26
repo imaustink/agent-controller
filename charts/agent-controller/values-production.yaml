@@ -25,8 +25,8 @@ agent-orchestrator:
   fullnameOverride: agent-orchestrator
 
   image:
-    repository: registry.kurpuis.com:5000/agent-orchestrator
-    tag: latest
+    repository: blackmarket/agent-controller
+    tag: agent-orchestrator
     pullPolicy: Always
 
   imagePullSecrets:
@@ -156,10 +156,10 @@ agent-orchestrator:
   # the Role needs the `localtools` grant that only ships when this is
   # enabled (see charts/agent-orchestrator/templates/rbac.yaml).
   #
-  # Executor sidecars for all 4 runtimes: this repo's publish.yml CI now
-  # builds+pushes registry.kurpuis.com:5000/localtool-executor-<runtime> on
+  # Executor sidecars for all 4 runtimes: this repo's release.yml CI
+  # builds+pushes blackmarket/agent-controller:localtool-executor-<runtime> on
   # every merge to main, so point the chart's default `<runtime>:latest`
-  # images at our private registry instead of leaving runtimes empty.
+  # images at those public tags instead of leaving runtimes empty.
   # Requires unprivileged user namespaces enabled on every node (bubblewrap
   # per-invocation sandboxing, see charts/agent-orchestrator's own
   # values.yaml comment + docs/adr/0014) — the sidecar's
@@ -169,13 +169,13 @@ agent-orchestrator:
     enabled: true
     runtimes:
       - name: node
-        image: registry.kurpuis.com:5000/localtool-executor-node:latest
+        image: blackmarket/agent-controller:localtool-executor-node
       - name: python
-        image: registry.kurpuis.com:5000/localtool-executor-python:latest
+        image: blackmarket/agent-controller:localtool-executor-python
       - name: go
-        image: registry.kurpuis.com:5000/localtool-executor-go:latest
+        image: blackmarket/agent-controller:localtool-executor-go
       - name: shell
-        image: registry.kurpuis.com:5000/localtool-executor-shell:latest
+        image: blackmarket/agent-controller:localtool-executor-shell
     pullPolicy: Always
 
   # Agent delegation (Agent CRs, e.g. opencode-swe-agent) only runs over NATS
@@ -221,12 +221,12 @@ core-controller:
   fullnameOverride: core-controller
 
   image:
-    repository: registry.kurpuis.com:5000/core-controller
-    tag: latest
+    repository: blackmarket/agent-controller
+    tag: core-controller
     pullPolicy: Always
 
   # Every tool/agent image here (recipe-scraper, claude-code-swe-agent, etc.)
-  # is also pushed to registry.kurpuis.com under a mutable ":latest" tag, same
+  # is also pushed to Docker Hub under a mutable per-image tag, same
   # as core-controller's own image above -- so the Jobs core-controller
   # launches need "Always" too, or a node that already pulled a tag once will
   # keep running that stale digest through every later push+redeploy.
@@ -252,8 +252,8 @@ integration-gateway:
   enabled: true
 
   image:
-    repository: registry.kurpuis.com:5000/integration-gateway
-    tag: latest
+    repository: blackmarket/agent-controller
+    tag: integration-gateway
     pullPolicy: Always
 
   imagePullSecrets:

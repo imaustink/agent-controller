@@ -170,20 +170,9 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Docker login
-        run: |
-          echo "$REGISTRY_PASSWORD" | docker login registry.kurpuis.com:5000 \
-            -u "$REGISTRY_USERNAME" --password-stdin
-        env:
-          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
-          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
-
-      # Public copy on Docker Hub. It is one repository, so every image lives
-      # under it as a tag: `blackmarket/agent-controller:<image>` (mutable,
-      # tracks main) plus `<image>-<sha>` (immutable, for pinning). The
-      # private registry above stays the one the homelab deploy pulls from:
-      # its Jobs/Deployments use pullPolicy Always, which would run straight
-      # into Docker Hub's anonymous pull rate limit.
+      # Docker Hub is one repository, so every image lives under it as a tag:
+      # `blackmarket/agent-controller:<image>` (mutable, tracks main) plus
+      # `<image>-<sha>` (immutable, for pinning).
       - name: Docker Hub login
         run: |
           echo "$DOCKERHUB_TOKEN" | docker login docker.io \
@@ -200,7 +189,6 @@ jobs:
           push: true
           build-args: ${{ matrix.build_args }}
           tags: |
-            registry.kurpuis.com:5000/${{ matrix.image }}:latest
             docker.io/blackmarket/agent-controller:${{ matrix.image }}
             docker.io/blackmarket/agent-controller:${{ matrix.image }}-${{ github.sha }}
           # GitHub Actions cache backend, scoped per image so unrelated images
@@ -217,8 +205,7 @@ jobs:
     # something under charts/ changes on main. Runs on a GitHub-hosted
     # runner (not the arc-runner-set-agent-controller self-hosted runner
     # used by publish-images) -- this job only needs outbound internet to
-    # ghcr.io and a GITHUB_TOKEN, not access to the internal cluster or
-    # registry.kurpuis.com.
+    # ghcr.io and a GITHUB_TOKEN, not access to the internal cluster.
     #
     # Charts are pushed under their Chart.yaml `version` -- OCI tags are
     # mutable, so pushing again at the same version overwrites that tag
