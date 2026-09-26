@@ -215,10 +215,11 @@ export class SlackDriver implements Driver {
    * halves matter: the signature proves Slack sent it, the timestamp stops a
    * captured delivery being replayed forever to make this broker spend a
    * client's credential on demand.
+   *
+   * It reports which CHANNEL changed rather than filtering to one: a Slack app
+   * is one Connection serving many Corpora (ADR 0043 §4).
    */
-  parseWebhook(request: WebhookRequest, secret: string, scope: Scope): WebhookEvent | undefined {
-    this.validateScope(scope);
-
+  parseWebhook(request: WebhookRequest, secret: string): WebhookEvent | undefined {
     const timestamp = request.headers["x-slack-request-timestamp"];
     const provided = request.headers["x-slack-signature"];
     if (!provided) throw new PermissionDeniedError("slack webhook carried no signature");
@@ -246,13 +247,13 @@ export class SlackDriver implements Driver {
     if (body.type === "url_verification") return undefined;
 
     const event = body.event;
-    // An event for a channel this connection does not cover is verified but
-    // irrelevant — not an error, and emphatically not a reason to sync.
-    if (!event?.channel || event.channel !== scope.channel) return undefined;
+    // No channel means nothing routable. Verified, but not something to act on.
+    if (!event?.channel) return undefined;
 
-    // The THREAD is the indexed unit, so a reply names its parent.
+    // The THREAD is the indexed unit, so a reply names its parent. Which
+    // Corpora cover this channel is the broker's to decide (ADR 0043 §4).
     const sourceId = event.thread_ts ?? event.ts;
-    return { sourceIds: sourceId ? [sourceId] : [] };
+    return { scopeKey: event.channel, sourceIds: sourceId ? [sourceId] : [] };
   }
 
   private toRef(scope: Scope, message: SlackMessage) {

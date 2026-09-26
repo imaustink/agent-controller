@@ -117,6 +117,17 @@ export interface Credentials {
 /** A provider's change notification, once verified and understood. */
 export interface WebhookEvent {
   /**
+   * WHICH subset this delivery is about — a channel id, a space key, a folder
+   * id — so the broker can route it to the Corpora that cover it (ADR 0043 §4).
+   *
+   * Reported rather than filtered against, because one Connection serves many
+   * Corpora and a driver no longer knows which subsets exist. Absent means the
+   * provider said something changed without saying where, which escalates to a
+   * full pass rather than to nothing.
+   */
+  scopeKey?: string;
+
+  /**
    * The resources this notification says changed.
    *
    * EMPTY is meaningful and common: Drive's push notifications name a channel
@@ -182,9 +193,11 @@ export interface Driver {
    * credential on demand, so an implementation MUST throw rather than return
    * for anything it cannot verify.
    *
-   * Returning `undefined` means "verified, but not about anything we index" —
-   * a Slack event for another channel, a Drive sync ping. Distinct from
-   * throwing, which means the request was not trustworthy.
+   * Returning `undefined` means "verified, but not something to act on" — a
+   * Slack URL-verification handshake, a Drive sync ping. Distinct from
+   * throwing, which means the request was not trustworthy, and from reporting a
+   * scopeKey nothing covers, which is the ordinary case and is the broker's to
+   * decide.
    */
-  parseWebhook?(request: WebhookRequest, secret: string, scope: Scope): WebhookEvent | undefined;
+  parseWebhook?(request: WebhookRequest, secret: string): WebhookEvent | undefined;
 }

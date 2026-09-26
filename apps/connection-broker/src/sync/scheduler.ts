@@ -1,4 +1,4 @@
-import type { ConnectionBinding } from "../registry.js";
+import type { CorpusBinding } from "../registry.js";
 import { syncConnection, type CorpusWriter, type ResourceSource, type SyncReport } from "./worker.js";
 
 export interface SyncSchedulerOptions {
@@ -12,7 +12,7 @@ export interface SyncSchedulerOptions {
    * connection's own token — is the mirror of `writerFor` below, for the same
    * reason: the per-connection identity has to be honoured, not shared.
    */
-  sourceFor: (binding: ConnectionBinding) => ResourceSource;
+  sourceFor: (binding: CorpusBinding) => ResourceSource;
   /**
    * A writer for one connection, not one shared writer.
    *
@@ -20,23 +20,23 @@ export interface SyncSchedulerOptions {
    * stamp one connection's roles onto another's chunks — silently widening or
    * narrowing who can retrieve a whole client's material.
    */
-  writerFor: (binding: ConnectionBinding) => CorpusWriter;
-  /** Which connections to sync, and where each one's chunks go. */
-  targets: () => { binding: ConnectionBinding; collection: string; intervalMs: number }[];
+  writerFor: (binding: CorpusBinding) => CorpusWriter;
+  /** Which corpora to sync, and where each one's chunks go. */
+  targets: () => { binding: CorpusBinding; collection: string; intervalMs: number }[];
   onReport?: (report: SyncReport) => void;
-  onError?: (connection: string, err: unknown) => void;
+  onError?: (corpus: string, err: unknown) => void;
   now?: () => number;
 }
 
 /**
- * Runs each Connection's reconcile pass on its own interval.
+ * Runs each Corpus's reconcile pass on its own interval.
  *
  * The reconcile IS the source of truth (ADR 0038 §4), not a backstop for
  * webhooks: Drive push channels expire, Slack drops events with no replay, and
  * a Confluence webhook can be disabled by a space admin. A corpus that is only
  * correct if no event was ever missed is a corpus nobody can trust.
  *
- * Passes never overlap for one connection. A pass that outruns its interval
+ * Passes never overlap for one corpus. A pass that outruns its interval
  * would otherwise start a second reconcile over the same corpus, and two
  * concurrent passes can each conclude the other's freshly written chunks are
  * absent — which, on a full pass, means deleting them.
@@ -70,8 +70,8 @@ export class SyncScheduler {
    * sent an event would otherwise never be noticed, and a corpus that is
    * correct only if no event was missed is one nobody can trust (ADR 0038 §4).
    */
-  async onWebhook(connection: string, sourceIds: string[]): Promise<SyncReport | undefined> {
-    return this.runOnce(connection, sourceIds.length > 0 ? sourceIds : undefined);
+  async onWebhook(corpus: string, sourceIds: string[]): Promise<SyncReport | undefined> {
+    return this.runOnce(corpus, sourceIds.length > 0 ? sourceIds : undefined);
   }
 
   /**
@@ -81,12 +81,12 @@ export class SyncScheduler {
    * `onlySourceIds` narrows it to a partial pass, which reconcile will not let
    * delete anything it did not examine.
    */
-  async runOnce(connection: string, onlySourceIds?: string[]): Promise<SyncReport | undefined> {
-    if (this.running.has(connection)) return undefined;
-    const target = this.options.targets().find((candidate) => candidate.binding.name === connection);
+  async runOnce(corpus: string, onlySourceIds?: string[]): Promise<SyncReport | undefined> {
+    if (this.running.has(corpus)) return undefined;
+    const target = this.options.targets().find((candidate) => candidate.binding.name === corpus);
     if (!target) return undefined;
 
-    this.running.add(connection);
+    this.running.add(corpus);
     try {
       const report = await syncConnection(
         this.options.sourceFor(target.binding),
@@ -101,24 +101,24 @@ export class SyncScheduler {
       this.options.onReport?.(report);
       return report;
     } catch (err) {
-      this.options.onError?.(connection, err);
+      this.options.onError?.(corpus, err);
       return undefined;
     } finally {
-      this.running.delete(connection);
+      this.running.delete(corpus);
     }
   }
 
-  private schedule(connection: string, delayMs: number): void {
+  private schedule(corpus: string, delayMs: number): void {
     if (this.stopped) return;
     const timer = setTimeout(() => {
-      void this.runOnce(connection).finally(() => {
-        // Re-read the interval each time so a Connection edited mid-flight
-        // takes effect without a restart, and a Connection that has gone away
-        // stops rescheduling itself.
-        const target = this.options.targets().find((candidate) => candidate.binding.name === connection);
-        if (target) this.schedule(connection, target.intervalMs);
+      void this.runOnce(corpus).finally(() => {
+        // Re-read the interval each time so a Corpus edited mid-flight takes
+        // effect without a restart, and a Corpus that has gone away stops
+        // rescheduling itself.
+        const target = this.options.targets().find((candidate) => candidate.binding.name === corpus);
+        if (target) this.schedule(corpus, target.intervalMs);
       });
     }, delayMs);
-    this.timers.set(connection, timer);
+    this.timers.set(corpus, timer);
   }
 }

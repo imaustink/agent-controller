@@ -10,8 +10,8 @@
  */
 import * as k8s from "@kubernetes/client-node";
 import { createBrokerServer } from "./server.js";
-import { CrdConnectionRegistry } from "./crd-connection-registry.js";
-import { collectionOf, reconcileIntervalMs, type ConnectionCustomResource } from "./connection-resource.js";
+import { CrdCorpusRegistry } from "./crd-corpus-registry.js";
+import { collectionOf, reconcileIntervalMs, type CorpusCustomResource } from "./corpus-resource.js";
 import { EMBEDDING_DIMENSIONS, OpenAIEmbedder } from "./embedder.js";
 import { QdrantCorpusWriter } from "./sync/corpus-writer.js";
 import { HttpResourceSource } from "./sync/http-source.js";
@@ -39,34 +39,36 @@ async function main(): Promise<void> {
   const kubeConfig = new k8s.KubeConfig();
   kubeConfig.loadFromDefault();
 
-  const registry = CrdConnectionRegistry.fromKubeConfig(
+  const registry = CrdCorpusRegistry.fromKubeConfig(
     namespace,
     group,
     version,
     kubeConfig,
-    (connection, err) => {
-      // Reported, never fatal: one malformed Connection must not stop the
-      // broker serving every other client's.
-      console.error(`connection ${connection} could not be bound:`, err);
+    (corpus: string, err: unknown) => {
+      // Reported, never fatal: one malformed Corpus must not stop the broker
+      // serving every other client's.
+      console.error(`corpus ${corpus} could not be bound:`, err);
     },
   );
 
   await registry.loadAll();
   registry.watch();
-  console.log(`bound ${registry.list().length} connection(s) in ${namespace}`);
+  console.log(`bound ${registry.list().length} corpus/corpora in ${namespace}`);
 
-  // Sync tokens are per connection, so a leaked one reaches one client's source
-  // rather than every client's. They arrive as SYNC_TOKEN_<CONNECTION>.
+  // Sync tokens are per CORPUS, so a leaked one reaches one client's subset
+  // rather than a whole workspace. They arrive as SYNC_TOKEN_<CORPUS>.
   const syncTokens = new Map<string, string>();
   for (const [key, value] of Object.entries(process.env)) {
     const match = /^SYNC_TOKEN_(.+)$/.exec(key);
     if (match && value) syncTokens.set(match[1]!.toLowerCase().replace(/_/g, "-"), value);
   }
 
-  // Webhook signing secrets, one per connection, as WEBHOOK_SECRET_<CONNECTION>.
-  // Separate from the sync tokens on purpose: this one is shared with a third
-  // party, and a secret the provider also holds must not also be the thing that
-  // authorizes our own worker.
+  // Webhook signing secrets, one per CONNECTION, as WEBHOOK_SECRET_<CONNECTION>
+  // — a provider signs per integration, not per subset (ADR 0043 §4).
+  //
+  // Separate from the sync tokens on purpose, and not only because the tiers
+  // differ: this secret is shared with a third party, and a secret the provider
+  // also holds must not also be the thing that authorizes our own worker.
   const webhookSecrets = new Map<string, string>();
   for (const [key, value] of Object.entries(process.env)) {
     const match = /^WEBHOOK_SECRET_(.+)$/.exec(key);
@@ -83,11 +85,11 @@ async function main(): Promise<void> {
     registry,
     webhooks: {
       secretFor: (connection) => webhookSecrets.get(connection),
-      onChange: (connection, sourceIds) => {
+      onChange: (corpus, sourceIds) => {
         // Fire and forget: a provider's delivery must be acknowledged promptly
         // or it gets retried and eventually the endpoint gets disabled. The
         // pass reports through the scheduler's own callbacks.
-        void scheduler?.onWebhook(connection, sourceIds);
+        void scheduler?.onWebhook(corpus, sourceIds);
       },
     },
   });
@@ -114,7 +116,7 @@ async function main(): Promise<void> {
  * a broker whose sources are empty.
  */
 function startSync(
-  registry: CrdConnectionRegistry,
+  registry: CrdCorpusRegistry,
   syncTokens: Map<string, string>,
   port: number,
 ): SyncScheduler | undefined {
@@ -171,11 +173,11 @@ function startSync(
     targets: () =>
       registry
         .listResources()
-        .flatMap((cr: ConnectionCustomResource) => {
+        .flatMap((cr: CorpusCustomResource) => {
           const binding = registry.get(cr.metadata.name);
           const collection = collectionOf(cr);
           const intervalMs = reconcileIntervalMs(cr);
-          // A connection with no collection has not been reconciled by the
+          // A corpus with no collection has not been reconciled by the
           // controller yet, and one with no interval is not meant to be
           // indexed. Both are ordinary states, not errors.
           if (!binding || !collection || !intervalMs) return [];
@@ -198,7 +200,7 @@ function startSync(
         `sync ${report.connection}: indexed=${report.indexed} removed=${report.removed} ` +
           `unchanged=${report.unchanged} failed=${report.failed.length} full=${report.full}`,
       ),
-    onError: (connection, err) => console.error(`sync ${connection} failed:`, err),
+    onError: (corpus, err) => console.error(`sync ${corpus} failed:`, err),
   });
   scheduler.start();
   return scheduler;

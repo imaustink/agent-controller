@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { createBrokerServer, DELEGATED_TOKEN_HEADER } from "./server.js";
-import { StaticConnectionRegistry } from "./registry.js";
+import { StaticCorpusRegistry } from "./registry.js";
 import {
   PermissionDeniedError,
   TransientError,
@@ -34,7 +34,7 @@ describe("broker server", () => {
         orchestratorToken: "orch",
         syncTokens: new Map([["snc-confluence", "sync"]]),
       },
-      registry: new StaticConnectionRegistry([
+      registry: new StaticCorpusRegistry([
         { name: "snc-confluence", driver: d, scope: { space: "SNC" }, serviceToken: "service-cred" },
       ]),
     });
@@ -52,11 +52,11 @@ describe("broker server", () => {
   });
 
   it("rejects an unauthenticated caller", async () => {
-    expect((await call("/connections/snc-confluence/resources")).status).toBe(401);
+    expect((await call("/corpora/snc-confluence/resources")).status).toBe(401);
   });
 
   it("lets a sync worker list with the SERVICE credential", async () => {
-    const res = await call("/connections/snc-confluence/resources", {
+    const res = await call("/corpora/snc-confluence/resources", {
       headers: { authorization: "Bearer sync" },
     });
 
@@ -67,7 +67,7 @@ describe("broker server", () => {
   it("refuses to let the orchestrator list", async () => {
     // Listing is ingestion; a request-path caller driving it would gain
     // corpus-wide enumeration under the ingestion credential.
-    const res = await call("/connections/snc-confluence/resources", {
+    const res = await call("/corpora/snc-confluence/resources", {
       headers: { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "user" },
     });
 
@@ -76,7 +76,7 @@ describe("broker server", () => {
   });
 
   it("refuses an orchestrator fetch with no delegated token", async () => {
-    const res = await call("/connections/snc-confluence/resources/1", {
+    const res = await call("/corpora/snc-confluence/resources/1", {
       headers: { authorization: "Bearer orch" },
     });
 
@@ -85,7 +85,7 @@ describe("broker server", () => {
   });
 
   it("passes ONLY the delegated token to the driver for an orchestrator read", async () => {
-    await call("/connections/snc-confluence/resources/1", {
+    await call("/corpora/snc-confluence/resources/1", {
       headers: { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "user-token" },
     });
 
@@ -95,14 +95,14 @@ describe("broker server", () => {
   });
 
   it("scopes a sync worker to its own connection", async () => {
-    const res = await call("/connections/other/resources", {
+    const res = await call("/corpora/other/resources", {
       headers: { authorization: "Bearer sync" },
     });
     expect(res.status).toBe(403);
   });
 
   it("probes with the calling user's token", async () => {
-    const res = await call("/connections/snc-confluence/probe", {
+    const res = await call("/corpora/snc-confluence/probe", {
       method: "POST",
       headers: {
         authorization: "Bearer orch",
@@ -124,7 +124,7 @@ describe("broker server", () => {
         probe: vi.fn().mockRejectedValue(new PermissionDeniedError("403 from source")),
       }),
     );
-    const denied = await call("/connections/snc-confluence/probe", {
+    const denied = await call("/corpora/snc-confluence/probe", {
       method: "POST",
       headers: { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "u" },
       body: "{}",
@@ -133,7 +133,7 @@ describe("broker server", () => {
 
     server.close();
     start(fakeDriver({ probe: vi.fn().mockRejectedValue(new TransientError("429")) }));
-    const busy = await call("/connections/snc-confluence/probe", {
+    const busy = await call("/corpora/snc-confluence/probe", {
       method: "POST",
       headers: { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "u" },
       body: "{}",
@@ -144,14 +144,14 @@ describe("broker server", () => {
   });
 
   it("404s an unknown connection", async () => {
-    const res = await call("/connections/nope/resources", {
+    const res = await call("/corpora/nope/resources", {
       headers: { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "u" },
     });
     expect([403, 404]).toContain(res.status);
   });
 
   it("404s an unknown route", async () => {
-    const res = await call("/connections/snc-confluence/secrets", {
+    const res = await call("/corpora/snc-confluence/secrets", {
       headers: { authorization: "Bearer orch" },
     });
     expect(res.status).toBe(404);

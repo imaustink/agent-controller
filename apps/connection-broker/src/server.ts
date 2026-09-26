@@ -12,8 +12,9 @@ import {
   PermissionDeniedError,
   TransientError,
   type Credentials,
+  type Scope,
 } from "./drivers/types.js";
-import type { ConnectionRegistry } from "./registry.js";
+import type { CorpusRegistry } from "./registry.js";
 
 /**
  * The broker's HTTP surface (docs/adr/0038 §3).
@@ -22,13 +23,18 @@ import type { ConnectionRegistry } from "./registry.js";
  * rather than by the route — so a new route cannot accidentally hand a
  * request-path caller the ingestion credential.
  *
- *   GET  /connections/:name/resources          — incremental listing (sync only)
- *   GET  /connections/:name/resources/:id      — one document
- *   POST /connections/:name/probe              — per-user authorization (ADR 0040)
+ *   GET  /corpora/:name/resources              — incremental listing (sync only)
+ *   GET  /corpora/:name/resources/:id          — one document
+ *   POST /corpora/:name/probe                  — per-user authorization (ADR 0040)
+ *   POST /connections/:name/webhook            — provider change notification
+ *
+ * Data is addressed by CORPUS and webhooks by CONNECTION, which is not an
+ * inconsistency: a provider signs and delivers per integration, so one delivery
+ * fans out to every Corpus over that Connection (ADR 0043 §4).
  */
 export interface ServerOptions {
   auth: AuthConfig;
-  registry: ConnectionRegistry;
+  registry: CorpusRegistry;
   /**
    * Webhook support, absent when this broker does not index.
    *
@@ -39,11 +45,11 @@ export interface ServerOptions {
   webhooks?: {
     secretFor: (connection: string) => string | undefined;
     /**
-     * Schedules a pass for the named resources. An EMPTY list means "something
-     * changed, we do not know what", which must escalate to a full pass rather
-     * than be dropped.
+     * Schedules a pass for the named resources on one CORPUS. An EMPTY list
+     * means "something changed, we do not know what", which must escalate to a
+     * full pass rather than be dropped.
      */
-    onChange: (connection: string, sourceIds: string[]) => void;
+    onChange: (corpus: string, sourceIds: string[]) => void;
   };
 }
 
@@ -83,7 +89,7 @@ async function handle(
   // Handled before the bearer path so an unsigned request cannot fall through
   // into it.
   if (route.kind === "webhook") {
-    await handleWebhook(options, route.connection, req, res);
+    await handleWebhook(options, route.name, req, res);
     return;
   }
 
@@ -93,16 +99,16 @@ async function handle(
     const caller = authenticate(options.auth, header(req, "authorization"));
     const operation: Operation =
       route.kind === "probe" ? "probe" : route.id ? "fetch" : "list";
-    ({ credential } = authorize(caller, operation, route.connection, delegated));
+    ({ credential } = authorize(caller, operation, route.name, delegated));
   } catch (err) {
     if (err instanceof UnauthorizedError) return send(res, 401, { error: err.message });
     if (err instanceof ForbiddenError) return send(res, 403, { error: err.message });
     throw err;
   }
 
-  const binding = options.registry.get(route.connection);
+  const binding = options.registry.get(route.name);
   if (!binding) {
-    send(res, 404, { error: `no such connection: ${route.connection}` });
+    send(res, 404, { error: `no such corpus: ${route.name}` });
     return;
   }
 
@@ -149,7 +155,8 @@ async function handle(
 }
 
 interface Route {
-  connection: string;
+  /** A corpus name for data routes; a CONNECTION name for a webhook. */
+  name: string;
   kind: "resources" | "probe" | "webhook";
   id?: string;
 }
@@ -173,17 +180,30 @@ async function handleWebhook(
   res: ServerResponse,
 ): Promise<void> {
   const webhooks = options.webhooks;
-  const binding = options.registry.get(connection);
 
-  // Deliberately the same answer for "unknown connection", "webhooks off" and
-  // "no secret configured": a distinguishable response here would let an
-  // unauthenticated caller enumerate which connections exist.
-  if (!webhooks || !binding || !binding.driver.parseWebhook) {
+  // Every Corpus drawing from this Connection is a candidate; which of them the
+  // delivery is actually about is decided below, from the scope key the driver
+  // reports.
+  const candidates = options.registry.list().filter((binding) => binding.connection === connection);
+
+  // Deliberately the same answer for "unknown connection", "webhooks off",
+  // "nothing indexed from it" and "no secret configured": a distinguishable
+  // response here would let an unauthenticated caller enumerate what exists.
+  if (!webhooks || candidates.length === 0) {
     send(res, 404, { error: "not found" });
     return;
   }
   const secret = webhooks.secretFor(connection);
   if (!secret) {
+    send(res, 404, { error: "not found" });
+    return;
+  }
+
+  // Any Corpus over this Connection can verify the signature — they all share
+  // one driver type and one secret — so the first is enough to decide whether
+  // the request is trustworthy at all.
+  const verifier = candidates[0]!.driver;
+  if (!verifier.parseWebhook) {
     send(res, 404, { error: "not found" });
     return;
   }
@@ -194,11 +214,10 @@ async function handleWebhook(
 
   let event;
   try {
-    event = binding.driver.parseWebhook(
-      { headers: req.headers as Record<string, string | undefined>, rawBody },
-      secret,
-      binding.scope,
-    );
+    event = verifier.parseWebhook({
+      headers: req.headers as Record<string, string | undefined>,
+      rawBody,
+    }, secret);
   } catch (err) {
     if (err instanceof PermissionDeniedError) {
       return send(res, 401, { error: "signature verification failed" });
@@ -206,25 +225,55 @@ async function handleWebhook(
     throw err;
   }
 
-  // Verified, but not about anything this connection indexes.
+  // Verified, but not something this provider wants us to act on — a Slack URL
+  // handshake, a retry of an event type we ignore.
   if (!event) return send(res, 200, { ok: true, acted: false });
 
-  webhooks.onChange(connection, event.sourceIds);
-  send(res, 202, { ok: true, acted: true, resources: event.sourceIds.length });
+  const targets = candidates.filter((binding) => coversScope(binding.scope, event.scopeKey));
+
+  // Verified, and about a subset nobody indexed. The ORDINARY case: most events
+  // in a workspace concern channels no Corpus covers. Answered 200 because
+  // providers disable endpoints that keep returning errors.
+  if (targets.length === 0) return send(res, 200, { ok: true, acted: false });
+
+  for (const target of targets) webhooks.onChange(target.name, event.sourceIds);
+  send(res, 202, { ok: true, acted: true, corpora: targets.length, resources: event.sourceIds.length });
+}
+
+/**
+ * Whether a Corpus's scope is the subset a delivery named.
+ *
+ * An absent scope key means the provider told us something changed without
+ * saying where — every Corpus over the Connection is a candidate, and each
+ * escalates to a full pass rather than nothing, because a deletion whose event
+ * never arrived would otherwise never be noticed.
+ */
+function coversScope(scope: Scope, scopeKey: string | undefined): boolean {
+  if (!scopeKey) return true;
+  return scope.space === scopeKey || scope.channel === scopeKey || scope.folderID === scopeKey;
 }
 
 function parseRoute(pathname: string): Route | undefined {
   const parts = pathname.split("/").filter(Boolean);
-  if (parts[0] !== "connections" || !parts[1]) return undefined;
-  const connection = decodeURIComponent(parts[1]);
+  if (!parts[1]) return undefined;
+  const name = decodeURIComponent(parts[1]);
 
-  if (parts[2] === "probe" && parts.length === 3) return { connection, kind: "probe" };
-  if (parts[2] === "webhook" && parts.length === 3) return { connection, kind: "webhook" };
-  if (parts[2] === "resources") {
-    if (parts.length === 3) return { connection, kind: "resources" };
-    if (parts.length === 4) {
-      return { connection, kind: "resources", id: decodeURIComponent(parts[3]!) };
+  // Data is addressed by CORPUS: a scope, a role list, a collection.
+  if (parts[0] === "corpora") {
+    if (parts[2] === "probe" && parts.length === 3) return { name, kind: "probe" };
+    if (parts[2] === "resources") {
+      if (parts.length === 3) return { name, kind: "resources" };
+      if (parts.length === 4) {
+        return { name, kind: "resources", id: decodeURIComponent(parts[3]!) };
+      }
     }
+    return undefined;
+  }
+
+  // Webhooks are addressed by CONNECTION, because that is what a provider
+  // signs and delivers per — one Slack app, one Confluence site (ADR 0043 §4).
+  if (parts[0] === "connections" && parts[2] === "webhook" && parts.length === 3) {
+    return { name, kind: "webhook" };
   }
   return undefined;
 }

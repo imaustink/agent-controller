@@ -334,10 +334,12 @@ export class ConfluenceDriver implements Driver {
    * precisely because a webhook only ever triggers a PARTIAL pass over pages
    * the source is then re-read for. A replayed notification costs a redundant
    * fetch, not a wrong corpus.
+   *
+   * It reports which SPACE changed rather than filtering to one: a Connection
+   * serves many Corpora and this driver no longer knows which spaces are
+   * indexed (ADR 0043 §4).
    */
-  parseWebhook(request: WebhookRequest, secret: string, scope: Scope): WebhookEvent | undefined {
-    this.validateScope(scope);
-
+  parseWebhook(request: WebhookRequest, secret: string): WebhookEvent | undefined {
     const provided = request.headers["x-hub-signature"];
     if (!provided) throw new PermissionDeniedError("confluence webhook carried no signature");
 
@@ -353,17 +355,14 @@ export class ConfluenceDriver implements Driver {
       throw new PermissionDeniedError("confluence webhook body was not JSON");
     }
 
-    const spaceKey = body.page?.spaceKey ?? body.space?.spaceKey;
-    // A different space is verified but irrelevant. Refusing to act on it is
-    // the same boundary assertInScope enforces on the read path, applied before
-    // we spend a credential rather than after.
-    if (spaceKey && spaceKey !== scope.space) return undefined;
-
     const pageId = body.page?.id;
     // No page id means "something in this space changed, we do not know what".
     // An empty list is how that is expressed; the caller escalates to a full
     // pass rather than doing nothing.
-    return { sourceIds: pageId === undefined ? [] : [String(pageId)] };
+    return {
+      scopeKey: body.page?.spaceKey ?? body.space?.spaceKey,
+      sourceIds: pageId === undefined ? [] : [String(pageId)],
+    };
   }
 
   /**
