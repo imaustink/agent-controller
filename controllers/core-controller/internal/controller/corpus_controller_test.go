@@ -18,6 +18,10 @@ package controller
 
 import (
 	"context"
+	"testing"
+	"time"
+
+	batchv1 "k8s.io/api/batch/v1"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -222,3 +226,191 @@ var _ = Describe("Corpus Controller", func() {
 		})
 	})
 })
+
+// The periodic reconcile is a Kubernetes object rather than a timer inside a
+// process. It used to be a setTimeout loop in the broker, which meant a pod
+// restarting more often than the interval could reconcile far less than
+// configured — or never — with nothing to show for it (ADR 0038 §4).
+var _ = Describe("Corpus sync CronJob", func() {
+	ctx := context.Background()
+
+	reconcileCorpus := func(name string) {
+		r := &CorpusReconciler{
+			Client:          k8sClient,
+			Scheme:          k8sClient.Scheme(),
+			SyncKickImage:   "curlimages/curl:8.11.1",
+			BrokerURL:       "http://connection-broker:8080",
+			SyncTokenSecret: "connection-broker-sync-tokens",
+		}
+		_, err := r.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: name, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	cronJob := func(corpus string) (*batchv1.CronJob, error) {
+		var cj batchv1.CronJob
+		err := k8sClient.Get(ctx,
+			types.NamespacedName{Name: SyncCronJobName(corpus), Namespace: "default"}, &cj)
+		return &cj, err
+	}
+
+	syncing := func(connectionRef, name string, interval time.Duration) *corev1alpha1.Corpus {
+		corpus := corpusFor(connectionRef, name)
+		corpus.Spec.Sync = &corev1alpha1.CorpusSync{
+			Mode:              corev1alpha1.CorpusSyncPoll,
+			ReconcileInterval: &metav1.Duration{Duration: interval},
+		}
+		return corpus
+	}
+
+	It("creates a CronJob the Corpus owns", func() {
+		conn := confluenceConnection("cron-src")
+		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, conn) }()
+
+		corpus := syncing("cron-src", "cron-owned", 6*time.Hour)
+		Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, corpus) }()
+
+		reconcileCorpus("cron-owned")
+
+		cj, err := cronJob("cron-owned")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cj.Spec.Schedule).To(Equal("0 */6 * * *"))
+
+		// Owned, so deleting the Corpus takes it along. Nothing else cleans
+		// these up, and an orphan would go on kicking a corpus that is gone.
+		Expect(cj.OwnerReferences).To(HaveLen(1))
+		Expect(cj.OwnerReferences[0].Name).To(Equal("cron-owned"))
+		Expect(*cj.OwnerReferences[0].Controller).To(BeTrue())
+	})
+
+	It("forbids concurrent passes", func() {
+		conn := confluenceConnection("cron-conc")
+		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, conn) }()
+
+		corpus := syncing("cron-conc", "cron-forbid", time.Hour)
+		Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, corpus) }()
+
+		reconcileCorpus("cron-forbid")
+
+		cj, err := cronJob("cron-forbid")
+		Expect(err).NotTo(HaveOccurred())
+		// Two concurrent full passes can each conclude the other's freshly
+		// written chunks are absent, and a full pass deletes what it believes
+		// absent.
+		Expect(cj.Spec.ConcurrencyPolicy).To(Equal(batchv1.ForbidConcurrent))
+	})
+
+	It("creates no CronJob for a Corpus that indexes nothing", func() {
+		conn := confluenceConnection("cron-none-src")
+		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, conn) }()
+
+		corpus := corpusFor("cron-none-src", "cron-none")
+		corpus.Spec.Sync = &corev1alpha1.CorpusSync{Mode: corev1alpha1.CorpusSyncNone}
+		Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, corpus) }()
+
+		reconcileCorpus("cron-none")
+
+		_, err := cronJob("cron-none")
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("removes the CronJob when sync is turned off", func() {
+		// Leaving it would keep reconciling something the operator switched off.
+		conn := confluenceConnection("cron-off-src")
+		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, conn) }()
+
+		corpus := syncing("cron-off-src", "cron-off", time.Hour)
+		Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, corpus) }()
+		reconcileCorpus("cron-off")
+		Expect(cronJob("cron-off")).Error().NotTo(HaveOccurred())
+
+		var stored corev1alpha1.Corpus
+		Expect(k8sClient.Get(ctx,
+			types.NamespacedName{Name: "cron-off", Namespace: "default"}, &stored)).To(Succeed())
+		stored.Spec.Sync = &corev1alpha1.CorpusSync{Mode: corev1alpha1.CorpusSyncNone}
+		Expect(k8sClient.Update(ctx, &stored)).To(Succeed())
+
+		reconcileCorpus("cron-off")
+		_, err := cronJob("cron-off")
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("updates the schedule when the interval changes", func() {
+		conn := confluenceConnection("cron-edit-src")
+		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, conn) }()
+
+		corpus := syncing("cron-edit-src", "cron-edit", 6*time.Hour)
+		Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, corpus) }()
+		reconcileCorpus("cron-edit")
+
+		var stored corev1alpha1.Corpus
+		Expect(k8sClient.Get(ctx,
+			types.NamespacedName{Name: "cron-edit", Namespace: "default"}, &stored)).To(Succeed())
+		stored.Spec.Sync.ReconcileInterval = &metav1.Duration{Duration: 30 * time.Minute}
+		Expect(k8sClient.Update(ctx, &stored)).To(Succeed())
+
+		reconcileCorpus("cron-edit")
+		cj, err := cronJob("cron-edit")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cj.Spec.Schedule).To(Equal("*/30 * * * *"))
+	})
+})
+
+// cronSchedule is a plain unit test: cron cannot express every interval
+// honestly, and what it does with the ones it cannot is the interesting part.
+func TestCronSchedule(t *testing.T) {
+	corpus := func(d time.Duration, mode corev1alpha1.CorpusSyncMode) *corev1alpha1.Corpus {
+		c := &corev1alpha1.Corpus{}
+		c.Spec.Sync = &corev1alpha1.CorpusSync{Mode: mode}
+		if d > 0 {
+			c.Spec.Sync.ReconcileInterval = &metav1.Duration{Duration: d}
+		}
+		return c
+	}
+
+	cases := []struct {
+		name string
+		in   *corev1alpha1.Corpus
+		want string
+		ok   bool
+	}{
+		{"six hours", corpus(6*time.Hour, corev1alpha1.CorpusSyncPoll), "0 */6 * * *", true},
+		{"thirty minutes", corpus(30*time.Minute, corev1alpha1.CorpusSyncPoll), "*/30 * * * *", true},
+		// Rounded DOWN, so it reconciles more often than asked rather than
+		// less: cron cannot say "every 90 minutes" and pretending otherwise
+		// produces a schedule that drifts from what the CR claims.
+		{"ninety minutes", corpus(90*time.Minute, corev1alpha1.CorpusSyncPoll), "0 */1 * * *", true},
+		{"a week clamps to daily", corpus(7*24*time.Hour, corev1alpha1.CorpusSyncPoll), "0 0 * * *", true},
+		{"mode none", corpus(time.Hour, corev1alpha1.CorpusSyncNone), "", false},
+		{"no interval", corpus(0, corev1alpha1.CorpusSyncPoll), "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := cronSchedule(tc.in)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("cronSchedule = %q, %v; want %q, %v", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestEnvSuffixMatchesTheBrokersConvention(t *testing.T) {
+	// The broker reads SYNC_TOKEN_<CORPUS>, upper-cased with dashes as
+	// underscores. A mismatch here means the kick Job authenticates with an
+	// unset variable and every scheduled pass 401s.
+	if got := envSuffix("snc-confluence"); got != "SNC_CONFLUENCE" {
+		t.Fatalf("envSuffix = %q", got)
+	}
+}

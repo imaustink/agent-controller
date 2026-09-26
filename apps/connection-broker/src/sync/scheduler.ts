@@ -23,7 +23,12 @@ export interface SyncSchedulerOptions {
   writerFor: (binding: CorpusBinding) => CorpusWriter;
   /** Which corpora to sync, and where each one's chunks go. */
   targets: () => { binding: CorpusBinding; collection: string; intervalMs: number }[];
-  onReport?: (report: SyncReport) => void;
+  /**
+   * Called for every completed pass, whatever triggered it. This is where a
+   * Corpus's status is written back — see CorpusStatusWriter for why that
+   * mattering is not obvious.
+   */
+  onReport?: (corpus: string, report: SyncReport) => void | Promise<void>;
   onError?: (corpus: string, err: unknown) => void;
   now?: () => number;
 }
@@ -98,7 +103,7 @@ export class SyncScheduler {
         },
         onlySourceIds ? { onlySourceIds } : {},
       );
-      this.options.onReport?.(report);
+      await this.options.onReport?.(corpus, report);
       return report;
     } catch (err) {
       this.options.onError?.(corpus, err);

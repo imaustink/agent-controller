@@ -26,6 +26,7 @@ import type { CorpusRegistry } from "./registry.js";
  *   GET  /corpora/:name/resources              — incremental listing (sync only)
  *   GET  /corpora/:name/resources/:id          — one document
  *   POST /corpora/:name/probe                  — per-user authorization (ADR 0040)
+ *   POST /corpora/:name/sync                   — run a reconcile now (sync only)
  *   POST /connections/:name/webhook            — provider change notification
  *
  * Data is addressed by CORPUS and webhooks by CONNECTION, which is not an
@@ -42,6 +43,13 @@ export interface ServerOptions {
    * without one cannot receive webhooks, which is a configuration state rather
    * than an error — it simply stays on its reconcile interval.
    */
+  /**
+   * Runs a full reconcile for one corpus, for the CronJob that triggers it.
+   *
+   * Absent when this deployment does not index, in which case the route
+   * reports not-found rather than accepting a kick it cannot act on.
+   */
+  runSync?: (corpus: string) => Promise<{ indexed: number; removed: number; full: boolean } | undefined>;
   webhooks?: {
     secretFor: (connection: string) => string | undefined;
     /**
@@ -97,6 +105,8 @@ async function handle(
   const delegated = header(req, DELEGATED_TOKEN_HEADER);
   try {
     const caller = authenticate(options.auth, header(req, "authorization"));
+    // A sync kick spends the SERVICE credential, exactly as listing does, so
+    // it authorizes as a list: only this corpus's sync worker may ask for one.
     const operation: Operation =
       route.kind === "probe" ? "probe" : route.id ? "fetch" : "list";
     ({ credential } = authorize(caller, operation, route.name, delegated));
@@ -117,6 +127,17 @@ async function handle(
     credential === "service" ? { service: binding.serviceToken } : { delegated };
 
   try {
+    if (route.kind === "sync") {
+      if (!options.runSync) return send(res, 404, { error: "this broker does not index" });
+      const report = await options.runSync(route.name);
+      // A pass already running is not a failure: the CronJob fired while the
+      // previous one was still going, which Forbid concurrency should prevent
+      // and a restart can still produce. 409 lets the Job surface it without
+      // looking like an error.
+      if (!report) return send(res, 409, { error: "a pass is already running" });
+      return send(res, 200, report);
+    }
+
     if (route.kind === "probe") {
       const body = await readJson(req);
       const result = await binding.driver.probe(
@@ -157,7 +178,7 @@ async function handle(
 interface Route {
   /** A corpus name for data routes; a CONNECTION name for a webhook. */
   name: string;
-  kind: "resources" | "probe" | "webhook";
+  kind: "resources" | "probe" | "sync" | "webhook";
   id?: string;
 }
 
@@ -261,6 +282,7 @@ function parseRoute(pathname: string): Route | undefined {
   // Data is addressed by CORPUS: a scope, a role list, a collection.
   if (parts[0] === "corpora") {
     if (parts[2] === "probe" && parts.length === 3) return { name, kind: "probe" };
+    if (parts[2] === "sync" && parts.length === 3) return { name, kind: "sync" };
     if (parts[2] === "resources") {
       if (parts.length === 3) return { name, kind: "resources" };
       if (parts.length === 4) {

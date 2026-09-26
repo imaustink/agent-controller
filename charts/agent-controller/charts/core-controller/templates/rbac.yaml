@@ -28,6 +28,14 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  # A Corpus owns a CronJob that triggers its periodic reconcile (ADR 0038 §4,
+  # ADR 0043). Kept in step with config/rbac/role.yaml BY HAND: `make
+  # manifests` regenerates that file from the kubebuilder markers and never
+  # touches this one, so a kind added there without a matching line here
+  # deploys a controller that cannot manage what it creates.
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
   - apiGroups: ["batch"]
     resources: ["jobs/status"]
     verbs: ["get"]

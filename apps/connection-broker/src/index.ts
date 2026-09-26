@@ -17,6 +17,8 @@ import { QdrantCorpusWriter } from "./sync/corpus-writer.js";
 import { HttpResourceSource } from "./sync/http-source.js";
 import { SyncScheduler } from "./sync/scheduler.js";
 import { QdrantHttpClient } from "./sync/qdrant-client.js";
+import { CorpusStatusWriter } from "./corpus-status.js";
+import { CORPUS_PLURAL } from "./crd-corpus-registry.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -75,6 +77,19 @@ async function main(): Promise<void> {
     if (match && value) webhookSecrets.set(match[1]!.toLowerCase().replace(/_/g, "-"), value);
   }
 
+  const status = new CorpusStatusWriter({
+    api: kubeConfig.makeApiClient(k8s.CustomObjectsApi) as never,
+    namespace,
+    group,
+    version,
+    plural: CORPUS_PLURAL,
+    onError: (corpus, err) =>
+      // Reported, never fatal: the pass already happened and the chunks are
+      // indexed. Failing it because the bookkeeping did not land would throw
+      // away real work to protect a timestamp.
+      console.error(`could not publish sync status for ${corpus}:`, err),
+  });
+
   // Declared before the server so the webhook route can reach it, and left
   // undefined when this deployment does not index — in which case the route
   // reports not-found rather than accepting notifications it cannot act on.
@@ -83,6 +98,14 @@ async function main(): Promise<void> {
   const server = createBrokerServer({
     auth: { orchestratorToken: required("ORCHESTRATOR_TOKEN"), syncTokens },
     registry,
+    // The CronJob the controller creates per Corpus kicks this rather than
+    // re-implementing a pass: the broker already holds the drivers, the
+    // credentials, the writer and the embedder, and a second code path for one
+    // job is how the two drift.
+    runSync: async (corpus) => {
+      const report = await scheduler?.runOnce(corpus);
+      return report && { indexed: report.indexed, removed: report.removed, full: report.full };
+    },
     webhooks: {
       secretFor: (connection) => webhookSecrets.get(connection),
       onChange: (corpus, sourceIds) => {
@@ -95,7 +118,7 @@ async function main(): Promise<void> {
   });
   server.listen(port, () => console.log(`connection-broker listening on ${port}`));
 
-  scheduler = startSync(registry, syncTokens, port);
+  scheduler = startSync(registry, syncTokens, port, status);
 
   const shutdown = () => {
     scheduler?.stop();
@@ -119,6 +142,7 @@ function startSync(
   registry: CrdCorpusRegistry,
   syncTokens: Map<string, string>,
   port: number,
+  status: CorpusStatusWriter,
 ): SyncScheduler | undefined {
   const qdrantUrl = process.env.QDRANT_URL;
   const openaiKey = process.env.OPENAI_API_KEY;
@@ -195,11 +219,16 @@ function startSync(
           }
           return [{ binding, collection, intervalMs }];
         }),
-    onReport: (report) =>
+    onReport: async (corpus, report) => {
       console.log(
-        `sync ${report.connection}: indexed=${report.indexed} removed=${report.removed} ` +
+        `sync ${corpus}: indexed=${report.indexed} removed=${report.removed} ` +
           `unchanged=${report.unchanged} failed=${report.failed.length} full=${report.full}`,
-      ),
+      );
+      // Publishing this is what makes staleness measurable. Without it every
+      // syncing Corpus reports stale forever, because "has never reconciled"
+      // is stale by definition.
+      await status.record(corpus, report);
+    },
     onError: (corpus, err) => console.error(`sync ${corpus} failed:`, err),
   });
   scheduler.start();
