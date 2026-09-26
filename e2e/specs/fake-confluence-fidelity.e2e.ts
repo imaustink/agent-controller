@@ -116,8 +116,10 @@ describe("ingestion, on the service credential", () => {
     const page = await driver().list(ALPHA, { service: SERVICE }, undefined);
 
     // Built from the configured SITE, never the API host.
-    expect(page.resources[0].url).toContain("https://fake.atlassian.net/wiki/spaces/");
-    expect(page.resources[0].url).not.toContain("127.0.0.1");
+    const first = page.resources[0];
+    expect(first, "list returned nothing to check a citation on").toBeDefined();
+    expect(first!.url).toContain("https://fake.atlassian.net/wiki/spaces/");
+    expect(first!.url).not.toContain("127.0.0.1");
   });
 
   it("refuses a page outside the corpus's space", async () => {
@@ -180,7 +182,8 @@ describe("live search", () => {
   it("strips the highlight sentinels Confluence wraps matches in", async () => {
     const hits = await driver().searchAsUser({ delegated: USER_FULL }, ALPHA, "deploys");
 
-    expect(hits[0].excerpt ?? "").not.toContain("@@@hl@@@");
+    expect(hits[0], "search returned nothing to check an excerpt on").toBeDefined();
+    expect(hits[0]!.excerpt ?? "").not.toContain("@@@hl@@@");
   });
 });
 

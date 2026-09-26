@@ -12,7 +12,7 @@
 ############################
 # Build stage
 ############################
-FROM node:20-bookworm-slim AS build
+FROM node:22-bookworm-slim AS build
 WORKDIR /repo
 
 COPY package.json package-lock.json* ./
@@ -27,7 +27,7 @@ RUN npm run build --workspace=connection-broker && npm prune --omit=dev
 ############################
 # Runtime stage
 ############################
-FROM node:20-bookworm-slim AS runtime
+FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
