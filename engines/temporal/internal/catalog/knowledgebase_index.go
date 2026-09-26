@@ -204,9 +204,7 @@ func corpusGetTool(conn CorpusDescriptor) ToolDescriptor {
 		Description: fmt.Sprintf(
 			"Read the current state of a resource in %s (%s). %s",
 			conn.Label(), conn.Provider, conn.Description),
-		Input: "The id of a resource in this corpus — the same id a search result cites. " +
-			"Ids outside this corpus's scope are refused, and the read runs as the asking " +
-			"user, so anything they cannot see is refused too.",
+		Input:        "The id of a page or resource, as a search result cites it. Reads it LIVE and as the asking user, so it can follow a reference out of this corpus into anything that person has access to — and refuses anything they do not.",
 		Output:       "The resource as the source returns it now, for the calling user.",
 		AllowedRoles: conn.AllowedRoles,
 		CorpusGetExec: &CorpusGetExecSpec{

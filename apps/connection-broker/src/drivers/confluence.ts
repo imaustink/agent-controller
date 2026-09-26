@@ -299,6 +299,27 @@ export class ConfluenceDriver implements Driver {
     };
   }
 
+  /**
+   * Reads any page the CALLER can see (see Driver.readAsUser).
+   *
+   * No space assertion: Confluence applies this user's own permissions, and a
+   * page they cannot read comes back 404 whichever space it is in.
+   */
+  async readAsUser(credentials: Credentials, id: string): Promise<Document> {
+    const token = requireDelegated(credentials, "confluence");
+    const apiBase = await this.apiBaseFor(token);
+
+    const page = (await this.request(
+      `${apiBase}/api/v2/pages/${encodeURIComponent(id)}?body-format=storage`,
+      token,
+    )) as ConfluencePage;
+
+    return {
+      ...this.toRef(page, []),
+      markdown: storageToMarkdown(page.body?.storage?.value ?? ""),
+    };
+  }
+
   async probe(scope: Scope, credentials: Credentials, id?: string): Promise<ProbeResult> {
     this.validateScope(scope);
     if (!id) throw new Error("confluence probes are per resource and need a page id");
@@ -494,6 +515,21 @@ export class ConfluenceDriver implements Driver {
  * request with no Authorization header that the source would reject as a 401 —
  * which the error classifier would then read as a permission denial.
  */
+/**
+ * The delegated credential, for a read bounded by identity rather than scope.
+ *
+ * Refuses the service credential outright. Falling back to it would turn a
+ * "what may this person see" read into a "what may the ingestion account see"
+ * one — and that account is scoped to nothing, so the fallback would be the
+ * widest possible read at exactly the moment the narrowest was intended.
+ */
+function requireDelegated(credentials: Credentials, provider: string): string {
+  if (!credentials.delegated) {
+    throw new Error(`a ${provider} user read requires the calling user's delegated token`);
+  }
+  return credentials.delegated;
+}
+
 function requireToken(token: string | undefined): string {
   if (!token) throw new Error("no credential supplied for a confluence request");
   return token;

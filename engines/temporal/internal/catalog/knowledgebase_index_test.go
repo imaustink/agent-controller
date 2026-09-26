@@ -335,7 +335,7 @@ func TestGeneratedToolDescriptorsDescribeThemselves(t *testing.T) {
 	require.Contains(t, search.Output, "withheld")
 
 	get := decodeTool(t, mustGet(t, h.tools, "corpus:globex-confluence/get"))
-	require.Contains(t, get.Input, "outside this corpus's scope are refused")
+	require.Contains(t, get.Input, "as the asking user")
 }
 
 func mustGet(t *testing.T, store *recordingStore, id string) vectorstore.Record {

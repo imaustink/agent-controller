@@ -24,7 +24,8 @@ import type { CorpusRegistry } from "./registry.js";
  * request-path caller the ingestion credential.
  *
  *   GET  /corpora/:name/resources              — incremental listing (sync only)
- *   GET  /corpora/:name/resources/:id          — one document
+ *   GET  /corpora/:name/resources/:id          — one document, SCOPE-bounded (sync)
+ *   GET  /corpora/:name/documents/:id          — one document, IDENTITY-bounded (read)
  *   POST /corpora/:name/probe                  — per-user authorization (ADR 0040)
  *   POST /corpora/:name/sync                   — run a reconcile now (sync only)
  *   POST /connections/:name/webhook            — provider change notification
@@ -107,8 +108,11 @@ async function handle(
     const caller = authenticate(options.auth, header(req, "authorization"));
     // A sync kick spends the SERVICE credential, exactly as listing does, so
     // it authorizes as a list: only this corpus's sync worker may ask for one.
+    // A user read authorizes exactly as a fetch does: the orchestrator may,
+    // with a delegated token, and a sync worker may not — it has no user to
+    // read as, and this read is nothing but the user's access.
     const operation: Operation =
-      route.kind === "probe" ? "probe" : route.id ? "fetch" : "list";
+      route.kind === "probe" ? "probe" : route.kind === "documents" || route.id ? "fetch" : "list";
     ({ credential } = authorize(caller, operation, route.name, delegated));
   } catch (err) {
     if (err instanceof UnauthorizedError) return send(res, 401, { error: err.message });
@@ -127,6 +131,17 @@ async function handle(
     credential === "service" ? { service: binding.serviceToken } : { delegated };
 
   try {
+    if (route.kind === "documents") {
+      if (!binding.driver.readAsUser) {
+        return send(res, 404, { error: `${binding.driver.provider} has no user read` });
+      }
+      // Note what is NOT passed: the scope. This read is bounded by who is
+      // asking, not by what the corpus covers, so handing the driver a scope
+      // would only invite it to enforce one.
+      const document = await binding.driver.readAsUser(credentials, route.id!);
+      return send(res, 200, document);
+    }
+
     if (route.kind === "sync") {
       if (!options.runSync) return send(res, 404, { error: "this broker does not index" });
       const report = await options.runSync(route.name);
@@ -178,7 +193,7 @@ async function handle(
 interface Route {
   /** A corpus name for data routes; a CONNECTION name for a webhook. */
   name: string;
-  kind: "resources" | "probe" | "sync" | "webhook";
+  kind: "resources" | "documents" | "probe" | "sync" | "webhook";
   id?: string;
 }
 
@@ -283,6 +298,13 @@ function parseRoute(pathname: string): Route | undefined {
   if (parts[0] === "corpora") {
     if (parts[2] === "probe" && parts.length === 3) return { name, kind: "probe" };
     if (parts[2] === "sync" && parts.length === 3) return { name, kind: "sync" };
+    // Two reads, deliberately on different paths. `resources` is the
+    // ingestion read and stays inside the Corpus's scope; `documents` is the
+    // user read and is bounded by the caller's own access instead. Same driver,
+    // different question — and a URL that says which one was asked.
+    if (parts[2] === "documents" && parts.length === 4) {
+      return { name, kind: "documents", id: decodeURIComponent(parts[3]!) };
+    }
     if (parts[2] === "resources") {
       if (parts.length === 3) return { name, kind: "resources" };
       if (parts.length === 4) {

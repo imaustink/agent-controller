@@ -33,17 +33,18 @@ const ok = (body: unknown) =>
   ({ ok: true, status: 200, json: async () => body, text: async () => "" }) as Response;
 
 describe("read", () => {
-  it("calls the broker's fetch route with the CALLER's token", async () => {
+  it("calls the broker's USER-read route with the caller's token", async () => {
     const http = vi
       .fn()
       .mockResolvedValue(ok({ markdown: "Auth notes", url: "https://wiki/x", title: "Auth" }));
 
     const result = await reader(http as unknown as typeof fetch).read(tool, "12345", "openwebui:42");
 
-    // An id, not a path: the driver's own scope check is what bounds this, so
-    // there is no provider path for anything to have to validate.
+    // /documents/ rather than /resources/: the first is bounded by who is
+    // asking, the second by the corpus's scope. Same driver, different
+    // question, and the URL says which one was asked.
     expect(http.mock.calls[0]![0]).toBe(
-      "http://broker.test/corpora/globex-confluence/resources/12345",
+      "http://broker.test/corpora/globex-confluence/documents/12345",
     );
     // The orchestrator holds no third-party credential: it forwards one it did
     // not mint and cannot widen.
@@ -61,7 +62,7 @@ describe("read", () => {
     const http = vi.fn().mockResolvedValue(ok({ markdown: "" }));
     await reader(http as unknown as typeof fetch).read(tool, "../../admin", "s");
 
-    expect(http.mock.calls[0]![0]).toContain("/resources/..%2F..%2Fadmin");
+    expect(http.mock.calls[0]![0]).toContain("/documents/..%2F..%2Fadmin");
   });
 
   it("asks for a link rather than falling back to the ingestion credential", async () => {

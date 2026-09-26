@@ -22,11 +22,15 @@ export interface CorpusReadResult {
  *
  * Takes an ID, never a path. An earlier version accepted a provider path and
  * matched it against per-driver regexes, which answered the wrong question —
- * "does this look like a page read" rather than "is this in the corpus" — and
- * put pattern matching on model-supplied text at the centre of a security
- * boundary. An id goes to the driver's existing fetch, which already refuses
- * anything outside the corpus's scope, and the read runs on the caller's own
- * token so the source applies their permissions too.
+ * "does this look like a page read" rather than "may this person read it" —
+ * and put pattern matching on model-supplied text at the centre of a security
+ * boundary.
+ *
+ * The bound is IDENTITY, not the corpus's scope. Material cites other spaces,
+ * and an agent that can read a page but not the page it references is not much
+ * use. Running as the caller means the source returns exactly what they would
+ * see by opening it themselves. The scope check stays on the ingestion path,
+ * which has no user to be bounded by.
  *
  * The escape hatch retrieval needs and deliberately does not take on itself: an
  * indexed chunk is a snapshot, and when the model decides the snapshot is not
@@ -70,7 +74,7 @@ export class CorpusReader {
 
     const endpoint =
       `${this.options.brokerUrl.replace(/\/+$/, "")}` +
-      `/corpora/${encodeURIComponent(exec.corpusId)}/resources/${encodeURIComponent(sourceId)}`;
+      `/corpora/${encodeURIComponent(exec.corpusId)}/documents/${encodeURIComponent(sourceId)}`;
 
     let response: Response;
     try {

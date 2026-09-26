@@ -201,4 +201,30 @@ export interface Driver {
    */
   parseWebhook?(request: WebhookRequest, secret: string): WebhookEvent | undefined;
 
+  /**
+   * Reads one resource as the calling user, bounded by THEIR access rather
+   * than by the corpus's scope.
+   *
+   * This is the one read that deliberately leaves the scope behind, so it is
+   * worth saying why rather than letting it look like an oversight.
+   *
+   * A knowledge base's material cites other pages, and those citations lead
+   * out of whatever space was indexed. An agent that can read a page but not
+   * the page it references is not much use, and the alternative — indexing
+   * every space so the links resolve — is both enormous and wrong.
+   *
+   * What bounds it instead is identity. The read runs on the caller's own
+   * delegated token, so the source returns exactly what that person would see
+   * by opening it themselves: it grants no access they lack, it only lets the
+   * agent act with the access they already have.
+   *
+   * The scope check stays on `fetch`, which is the INGESTION path — a sync
+   * pass has no user, runs on a shared credential, and must never wander
+   * outside the subset its Corpus declares.
+   *
+   * A separate method rather than a flag on `fetch`, because "passing a
+   * delegated token silently disables the scope check" is exactly the kind of
+   * implicit behaviour nobody notices until it is wrong.
+   */
+  readAsUser?(credentials: Credentials, id: string): Promise<Document>;
 }

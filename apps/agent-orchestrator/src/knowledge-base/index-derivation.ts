@@ -131,9 +131,7 @@ export function connectionGetTool(connection: CorpusDescriptor): ToolDescriptor 
     description:
       `Read the current state of a resource in ${label} (${connection.provider}). ` +
       `${connection.description}` +
-      "\n\nInput: The id of a resource in this corpus — the same id a search " +
-      "result cites. Ids outside this corpus's scope are refused, and the read " +
-      "runs as the asking user, so anything they cannot see is refused too." +
+      "\n\nInput: The id of a page or resource, as a search result cites it. Reads it LIVE and as the asking user, so it can follow a reference out of this corpus into anything that person has access to — and refuses anything they do not." +
       "\nOutput: The resource as the source returns it now, for the calling user.",
     allowedRoles: connection.allowedRoles,
     hidden: true,

@@ -165,6 +165,36 @@ export class SlackDriver implements Driver {
     };
   }
 
+  /**
+   * Reads any thread the CALLER can see (see Driver.readAsUser).
+   *
+   * The channel comes from the id rather than the scope: a Slack thread ts is
+   * only meaningful with its channel, so this takes `<channel>/<ts>` — which
+   * is what retrieval cites for a Slack passage.
+   */
+  async readAsUser(credentials: Credentials, id: string): Promise<Document> {
+    const token = requireDelegatedSlack(credentials);
+    const [channel, ts] = splitThreadID(id);
+
+    const body = (await this.call("conversations.replies", token, {
+      channel,
+      ts,
+      limit: String(this.pageSize),
+    })) as { messages?: SlackMessage[] };
+
+    const messages = body.messages ?? [];
+    if (messages.length === 0) {
+      throw new PermissionDeniedError(`slack thread ${id} returned no messages`);
+    }
+    const parent = messages[0]!;
+    return {
+      ...this.toRef({ channel }, parent),
+      markdown: [parent, ...messages.slice(1).filter(isProse)]
+        .map((message) => renderMessage(message))
+        .join("\n\n"),
+    };
+  }
+
   async probe(scope: Scope, credentials: Credentials, _id?: string): Promise<ProbeResult> {
     this.validateScope(scope);
     if (!credentials.delegated) {
@@ -351,6 +381,29 @@ const PERMANENT = new Set([
   "missing_scope",
   "not_allowed_token_type",
 ]);
+
+function requireDelegatedSlack(credentials: Credentials): string {
+  if (!credentials.delegated) {
+    throw new Error("a slack user read requires the calling user's delegated token");
+  }
+  return credentials.delegated;
+}
+
+/**
+ * Splits `<channel>/<ts>` into its parts.
+ *
+ * A thread ts means nothing without its channel, so a Slack citation carries
+ * both. An id with no channel cannot be resolved at all and is refused rather
+ * than guessed at against the corpus's own channel — guessing would read a
+ * DIFFERENT thread that happens to share a timestamp.
+ */
+function splitThreadID(id: string): [channel: string, ts: string] {
+  const slash = id.indexOf("/");
+  if (slash <= 0) {
+    throw new PermissionDeniedError(`slack read needs <channel>/<ts>, got ${id}`);
+  }
+  return [id.slice(0, slash), id.slice(slash + 1)];
+}
 
 function requireToken(token: string | undefined): string {
   if (!token) throw new Error("no credential supplied for a slack request");

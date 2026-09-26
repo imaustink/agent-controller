@@ -46,11 +46,16 @@ type ReadCorpusOutput struct {
 //
 // It takes an ID, never a path. An earlier version accepted a provider path
 // and matched it against per-driver regexes, which answered the wrong
-// question — "does this look like a page read" rather than "is this in the
-// corpus" — and put pattern matching on model-supplied text at the centre of
-// a security boundary. An id goes straight to the driver's existing fetch,
-// which already refuses anything outside the corpus's scope, and the read runs
-// on the caller's own token so the source applies their permissions too.
+// question — "does this look like a page read" rather than "may this person
+// read it" — and put pattern matching on model-supplied text at the centre of
+// a security boundary.
+//
+// The bound is IDENTITY, not the corpus's scope. Material cites other spaces,
+// and an agent that can read a page but not the page it references is not much
+// use. Running as the caller means the source returns exactly what they would
+// see by opening it themselves — no access they lack, just their own access
+// used on their behalf. The scope check stays on the ingestion path, which has
+// no user to be bounded by.
 //
 // The credential is resolved INSIDE the activity and never leaves it, for the
 // reason AuthorizeActivities states: an activity result is persisted to
@@ -102,7 +107,7 @@ func (a *KnowledgeBaseActivities) readThroughBroker(
 	ctx context.Context,
 	corpus, sourceID, delegated string,
 ) (body string, citation string, err error) {
-	endpoint := fmt.Sprintf("%s/corpora/%s/resources/%s",
+	endpoint := fmt.Sprintf("%s/corpora/%s/documents/%s",
 		strings.TrimRight(a.BrokerURL, "/"), url.PathEscape(corpus), url.PathEscape(sourceID))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)

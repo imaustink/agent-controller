@@ -111,6 +111,24 @@ export class GDriveDriver implements Driver {
     return { ...toRef(file), markdown: await this.readContent(file, token) };
   }
 
+  /**
+   * Reads any file the CALLER can see (see Driver.readAsUser).
+   *
+   * No parent walk: Drive applies this user's own permissions, so a file they
+   * cannot open comes back 404 wherever it lives. Skipping the walk also
+   * removes the per-read cost of climbing a folder chain that is no longer
+   * being used to decide anything.
+   */
+  async readAsUser(credentials: Credentials, id: string): Promise<Document> {
+    const token = requireDelegatedDrive(credentials);
+
+    const file = (await this.call(`/files/${encodeURIComponent(id)}`, token, {
+      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents",
+    })) as DriveFile;
+
+    return { ...toRef(file), markdown: await this.readContent(file, token) };
+  }
+
   async probe(scope: Scope, credentials: Credentials, id?: string): Promise<ProbeResult> {
     this.validateScope(scope);
     if (!id) throw new Error("gdrive probes are per resource and need a file id");
@@ -258,6 +276,13 @@ function toRef(file: DriveFile) {
     // authority, and under-inclusion is the only direction that hurts.
     acl: { principals: [], permissive: true },
   };
+}
+
+function requireDelegatedDrive(credentials: Credentials): string {
+  if (!credentials.delegated) {
+    throw new Error("a gdrive user read requires the calling user's delegated token");
+  }
+  return credentials.delegated;
 }
 
 function requireToken(token: string | undefined): string {
