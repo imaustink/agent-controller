@@ -114,8 +114,16 @@ export class SlackDriver implements Driver {
     // Thread parents only: a reply is fetched as part of its thread, and
     // indexing it separately would both duplicate it and strand it from the
     // context that makes it meaningful.
+    //
+    // System messages are dropped here too. Found by running this against a
+    // real channel: "<@U0C35PG2PK5> has joined the channel" was the first
+    // indexed document, because a join event is a message like any other as far
+    // as conversations.history is concerned. A busy channel is mostly these,
+    // and each one is a chunk of machine chatter embedded as though somebody
+    // had written it.
     const parents = messages.filter(
-      (message) => !message.thread_ts || message.thread_ts === message.ts,
+      (message) =>
+        isProse(message) && (!message.thread_ts || message.thread_ts === message.ts),
     );
 
     return {
@@ -146,7 +154,14 @@ export class SlackDriver implements Driver {
       ...this.toRef(scope, parent),
       // The whole thread as one document. A question and its answer belong
       // together; splitting them is what makes chat corpora useless.
-      markdown: messages.map((message) => renderMessage(message)).join("\n\n"),
+      //
+      // System messages are filtered out of the BODY as well as out of listing:
+      // a thread whose replies include three join events should not carry them
+      // into the chunk. The parent survives regardless — it is what this
+      // document is, and dropping it would leave a thread with no opening.
+      markdown: [parent, ...messages.slice(1).filter(isProse)]
+        .map((message) => renderMessage(message))
+        .join("\n\n"),
     };
   }
 
@@ -355,6 +370,29 @@ function isNotInChannel(err: unknown): boolean {
 }
 
 const firstLine = (text: string): string => text.split("\n")[0]?.slice(0, 120).trim() ?? "";
+
+/**
+ * Whether a message is something a person wrote, rather than something Slack
+ * emitted about the channel.
+ *
+ * Joins, leaves, topic and purpose changes, pins and channel renames all arrive
+ * through conversations.history as ordinary messages carrying a `subtype`. A
+ * plain human message has no subtype at all, which makes the test a presence
+ * check rather than a denylist — a denylist would silently start indexing
+ * whatever subtype Slack adds next.
+ *
+ * `bot_message` and `thread_broadcast` are the deliberate exceptions: both are
+ * real content. A bot posting a deploy summary or an alert is often exactly
+ * what somebody later searches for.
+ */
+const PROSE_SUBTYPES = new Set(["bot_message", "thread_broadcast"]);
+
+function isProse(message: SlackMessage): boolean {
+  if (message.subtype !== undefined && !PROSE_SUBTYPES.has(message.subtype)) return false;
+  // A message with no text is a file share or an attachment-only post; there is
+  // nothing to embed, and an empty chunk is worse than no chunk.
+  return (message.text ?? "").trim().length > 0;
+}
 
 /**
  * One message as Markdown.

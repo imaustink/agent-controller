@@ -282,3 +282,94 @@ describe("auto join", () => {
     expect(new URL(joinCall![0] as string).searchParams.get("channel")).toBe("C123ABC");
   });
 });
+
+
+describe("system messages", () => {
+  /** What conversations.history actually returns for a join. */
+  const joined = (ts: string) =>
+    message(ts, { subtype: "channel_join", text: "<@U1> has joined the channel" });
+
+  it("does not index a join as a document", async () => {
+    // Found against a real channel: this was the FIRST indexed document,
+    // because a join event is a message like any other to Slack. A busy
+    // channel is mostly these.
+    const http = vi.fn().mockResolvedValue(
+      respond({ ok: true, messages: [joined("1.1"), message("2.2")] }),
+    );
+
+    const { resources } = await driver(http).list(SCOPE, { service: "x" }, undefined);
+
+    expect(resources.map((r) => r.id)).toEqual(["2.2"]);
+  });
+
+  it.each(["channel_join", "channel_leave", "channel_topic", "channel_purpose", "channel_name"])(
+    "drops %s",
+    async (subtype) => {
+      const http = vi.fn().mockResolvedValue(
+        respond({ ok: true, messages: [message("1.1", { subtype, text: "something" })] }),
+      );
+      const { resources } = await driver(http).list(SCOPE, { service: "x" }, undefined);
+      expect(resources).toEqual([]);
+    },
+  );
+
+  it("KEEPS a bot message, which is real content", async () => {
+    // A bot posting a deploy summary or an alert is often exactly what
+    // somebody later searches for.
+    const http = vi.fn().mockResolvedValue(
+      respond({
+        ok: true,
+        messages: [message("1.1", { subtype: "bot_message", text: "Deploy 4.2 finished" })],
+      }),
+    );
+
+    const { resources } = await driver(http).list(SCOPE, { service: "x" }, undefined);
+    expect(resources).toHaveLength(1);
+  });
+
+  it("drops a message with no text, which would embed as an empty chunk", async () => {
+    const http = vi.fn().mockResolvedValue(
+      respond({ ok: true, messages: [message("1.1", { text: "   " }), message("2.2")] }),
+    );
+    const { resources } = await driver(http).list(SCOPE, { service: "x" }, undefined);
+    expect(resources.map((r) => r.id)).toEqual(["2.2"]);
+  });
+
+  it("tests for the PRESENCE of a subtype rather than denylisting known ones", async () => {
+    // A denylist silently starts indexing whatever subtype Slack adds next.
+    const http = vi.fn().mockResolvedValue(
+      respond({ ok: true, messages: [message("1.1", { subtype: "some_future_subtype" })] }),
+    );
+    const { resources } = await driver(http).list(SCOPE, { service: "x" }, undefined);
+    expect(resources).toEqual([]);
+  });
+
+  it("strips system messages out of a thread body but keeps its parent", async () => {
+    const http = vi.fn().mockResolvedValue(
+      respond({
+        ok: true,
+        messages: [
+          message("1.1", { text: "How do we rotate the key?" }),
+          joined("1.2"),
+          message("1.3", { user: "U2", text: "Run the rotate script." }),
+        ],
+      }),
+    );
+
+    const doc = await driver(http).fetch(SCOPE, { service: "x" }, "1.1");
+
+    expect(doc.markdown).toContain("How do we rotate the key?");
+    expect(doc.markdown).toContain("Run the rotate script.");
+    expect(doc.markdown).not.toContain("has joined the channel");
+  });
+
+  it("keeps the parent even when it is itself a system message", async () => {
+    // Dropping it would leave a thread with no opening. Listing already
+    // prevents such a thread from being indexed at all; this is about not
+    // producing a headless document if one is fetched directly.
+    const http = vi.fn().mockResolvedValue(respond({ ok: true, messages: [joined("1.1")] }));
+
+    const doc = await driver(http).fetch(SCOPE, { service: "x" }, "1.1");
+    expect(doc.markdown).toContain("has joined the channel");
+  });
+});

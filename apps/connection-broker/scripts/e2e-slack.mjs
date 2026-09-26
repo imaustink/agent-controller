@@ -78,9 +78,26 @@ ok(`first: id=${first.id} version=${first.version}`);
 ok(`title: ${JSON.stringify(first.title)}`);
 ok(`citation url: ${first.url}`);
 ok(`acl: ${JSON.stringify(first.acl)}`);
-if (!first.url?.startsWith(env.SLACK_WORKSPACE_URL)) {
-  fail("citation", new Error(`citation is not on the configured workspace: ${first.url}`));
+
+// Deliberately NOT asserted against SLACK_WORKSPACE_URL. The first version of
+// this check did exactly that, and it can never fail: the same variable builds
+// the URL and then validates it. It passed happily while every citation pointed
+// at example.slack.com, because that placeholder was still in the env file.
+//
+// So the check is that the citation is somewhere a person could actually go.
+if (/example\.slack\.com|example\.com/.test(first.url ?? "")) {
+  fail(
+    "citation",
+    new Error(
+      `citations point at ${first.url} — SLACK_WORKSPACE_URL is still the ` +
+        `placeholder from .env.example, so every citation is unopenable`,
+    ),
+  );
 }
+if (!/^https:\/\/[a-z0-9-]+\.slack\.com\/archives\//.test(first.url ?? "")) {
+  fail("citation", new Error(`citation does not look like a Slack permalink: ${first.url}`));
+}
+ok("citation is a resolvable Slack permalink");
 
 // The assumption most likely to be wrong: `list` should return thread PARENTS,
 // not every message. A reply is fetched as part of its thread, and indexing it
@@ -102,12 +119,37 @@ console.log(`  --- first 300 chars ---\n  ${doc.markdown.slice(0, 300).replace(/
 
 const messageCount = (doc.markdown.match(/\*\*<@/g) ?? []).length;
 ok(`${messageCount} message(s) rendered in the thread`);
+
+const rawMentions = doc.markdown.match(/<@U[A-Z0-9]+>/g) ?? [];
+if (rawMentions.length > 0) {
+  warn(`${rawMentions.length} unresolved author/mention id(s), e.g. ${rawMentions[0]}`);
+  warn("these embed as opaque tokens; resolving them costs one users.info per author");
+}
 if (messageCount < 2) {
   // Not fatal — the channel may have no replies — but it means the part of the
   // driver that exists to keep a question with its answer went unexercised.
   warn("this thread has no replies, so thread assembly was not really tested");
   warn("re-run against a channel with a real back-and-forth to cover it");
 }
+
+// System messages are the Slack equivalent of Confluence's macro parameters:
+// machine chatter that arrives as an ordinary message and gets embedded as
+// though somebody wrote it. A real channel is mostly these.
+const systemish = page.resources.filter((r) =>
+  /has joined the channel|has left the channel|set the channel (topic|purpose)|renamed the channel/.test(
+    r.title ?? "",
+  ),
+);
+if (systemish.length > 0) {
+  fail(
+    "system messages",
+    new Error(
+      `${systemish.length} of ${page.resources.length} indexed threads are system ` +
+        `messages, e.g. ${JSON.stringify(systemish[0].title)}`,
+    ),
+  );
+}
+ok(`none of ${page.resources.length} threads is a join/leave/topic event`);
 
 // Anything that survived rendering but looks like raw Slack markup.
 const leaked = doc.markdown.match(/<#C[A-Z0-9]+\||<https?:[^>]*\||&amp;|&lt;/g) ?? [];
