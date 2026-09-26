@@ -58,6 +58,9 @@ export class GDriveDriver implements Driver {
   private readonly pageSize: number;
   private readonly apiOrigin: string;
 
+  /** Scoped folder id -> that folder and everything beneath it. */
+  private readonly folderTrees = new Map<string, string[]>();
+
   constructor(options: GDriveDriverOptions = {}) {
     this.http = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
     this.pageSize = options.pageSize ?? 100;
@@ -80,12 +83,31 @@ export class GDriveDriver implements Driver {
     return "resource";
   }
 
+  /**
+   * Lists the folder's indexable files, RECURSIVELY.
+   *
+   * Drive has no "in parents, at any depth" operator, so the tree is
+   * enumerated first and every folder in it named as a parent in one query.
+   * That keeps the cursor a plain Drive pageToken, which is what the
+   * incremental contract above expects.
+   *
+   * This used to ask for `'<id>' in parents`, which is ONE level, while the
+   * Corpus CRD's folderID field documents the contents as synced recursively.
+   * The driver disagreed with itself as much as with the docs: `fetch` walks a
+   * parent chain sixteen levels deep and will happily serve a nested file, so
+   * a document in a subfolder was readable and could never be INDEXED — it
+   * simply never appeared, with nothing to indicate it had been skipped. Found
+   * against a live folder, where two of two nested documents were missing.
+   */
   async list(scope: Scope, credentials: Credentials, since: Cursor): Promise<ListPage> {
     this.validateScope(scope);
     const token = requireToken(credentials.service);
 
+    const folders = await this.descendantFolders(scope.folderID!, token);
+    const parents = folders.map((id) => `'${id}' in parents`).join(" or ");
+
     const body = (await this.call("/files", token, {
-      q: `'${scope.folderID}' in parents and trashed = false`,
+      q: `(${parents}) and trashed = false`,
       fields: "nextPageToken,files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents)",
       pageSize: String(this.pageSize),
       ...(since ? { pageToken: since } : {}),
@@ -97,6 +119,66 @@ export class GDriveDriver implements Driver {
       resources: files.map((file) => toRef(file)),
       cursor: body.nextPageToken,
     };
+  }
+
+  /**
+   * The scoped folder and every folder beneath it.
+   *
+   * Breadth-first and depth-bounded by the same constant the scope walk uses,
+   * so the two agree about how deep a corpus reaches: a file the walk would
+   * reject as too deep is not one this should list.
+   *
+   * Cached for the driver's lifetime — one instance per corpus binding, so the
+   * tree is enumerated once per sync rather than once per page.
+   *
+   * Refuses rather than truncates past MAX_TREE_FOLDERS. Quietly dropping
+   * folders would under-index a client's corpus and look like an empty
+   * subfolder, which is precisely the failure this method exists to fix.
+   */
+  private async descendantFolders(root: string, token: string): Promise<string[]> {
+    const cached = this.folderTrees.get(root);
+    if (cached) return cached;
+
+    const all = [root];
+    let frontier = [root];
+
+    for (let depth = 0; depth < MAX_FOLDER_DEPTH && frontier.length > 0; depth += 1) {
+      const next: string[] = [];
+      for (const parent of frontier) {
+        let pageToken: string | undefined;
+        // Bounded: a provider that always returns a nextPageToken — whether
+        // through a bug or a test double — would otherwise spin here forever,
+        // and a sync that hangs is harder to diagnose than one that stops.
+        for (let page = 0; page < MAX_TREE_PAGES; page += 1) {
+          const body = (await this.call("/files", token, {
+            q: `'${parent}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+            fields: "nextPageToken,files(id)",
+            pageSize: String(this.pageSize),
+            ...(pageToken ? { pageToken } : {}),
+          })) as { files?: { id: string }[]; nextPageToken?: string };
+
+          for (const folder of body.files ?? []) {
+            // A shortcut or a cycle would otherwise loop until the depth bound.
+            if (all.includes(folder.id)) continue;
+            all.push(folder.id);
+            next.push(folder.id);
+          }
+          pageToken = body.nextPageToken;
+          if (!pageToken) break;
+        }
+      }
+
+      if (all.length > MAX_TREE_FOLDERS) {
+        throw new PermanentError(
+          `gdrive folder ${root} contains more than ${MAX_TREE_FOLDERS} folders; ` +
+            "scope this Corpus to a narrower folder",
+        );
+      }
+      frontier = next;
+    }
+
+    this.folderTrees.set(root, all);
+    return all;
   }
 
   async fetch(scope: Scope, credentials: Credentials, id: string): Promise<Document> {
@@ -324,6 +406,19 @@ export class GDriveDriver implements Driver {
  * Generous for real hierarchies and finite for hostile ones.
  */
 const MAX_FOLDER_DEPTH = 16;
+
+/**
+ * How many folders one Corpus may span.
+ *
+ * Every folder becomes an `'<id>' in parents` term in a single query, and
+ * Drive's query strings are not unbounded. The cap keeps that query sane and
+ * gives an operator a clear error instead of a request Drive rejects for
+ * reasons that do not mention size.
+ */
+const MAX_TREE_FOLDERS = 200;
+
+/** Pages of subfolders to read per parent before giving up on the walk. */
+const MAX_TREE_PAGES = 50;
 
 function toRef(file: DriveFile) {
   return {

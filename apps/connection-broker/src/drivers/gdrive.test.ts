@@ -217,3 +217,92 @@ describe("searchAsUser", () => {
     ).rejects.toThrow(/delegated token/);
   });
 });
+
+describe("recursive listing", () => {
+  /** Answers folder-enumeration queries and the file query separately. */
+  function tree(children: Record<string, { id: string }[]>, files: unknown[]) {
+    return vi.fn(async (url: string) => {
+      const q = decodeURIComponent(new URL(String(url)).searchParams.get("q") ?? "");
+      const folderQuery = q.includes("mimeType = 'application/vnd.google-apps.folder'");
+      if (folderQuery) {
+        const parent = /'([^']+)' in parents/.exec(q)?.[1] ?? "";
+        return respond({ files: children[parent] ?? [] });
+      }
+      return respond({ files });
+    }) as unknown as FetchLike;
+  }
+
+  it("lists files in SUBFOLDERS, not just direct children", async () => {
+    // Found live: two of two nested documents were missing. `fetch` walks a
+    // parent chain sixteen deep and would happily serve them, so they were
+    // readable and could never be indexed — absent with nothing to say so.
+    const http = tree(
+      { F1: [{ id: "SUB" }], SUB: [] },
+      [
+        { id: "top", name: "Top", mimeType: "text/plain", parents: ["F1"] },
+        { id: "nested", name: "Nested", mimeType: "text/plain", parents: ["SUB"] },
+      ],
+    );
+
+    const page = await driver(http).list({ folderID: "F1" }, { service: "t" }, undefined);
+
+    expect(page.resources.map((r) => r.id)).toEqual(["top", "nested"]);
+
+    // Every folder in the tree is named as a parent, since Drive has no
+    // "at any depth" operator.
+    const fileQuery = (http as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .map((c: unknown[]) => decodeURIComponent(new URL(String(c[0])).searchParams.get("q") ?? ""))
+      .find((q: string) => !q.includes("google-apps.folder"))!;
+    expect(fileQuery).toContain("'F1' in parents");
+    expect(fileQuery).toContain("'SUB' in parents");
+  });
+
+  it("enumerates the tree once per sync, not once per page", async () => {
+    const http = tree({ F1: [{ id: "SUB" }], SUB: [] }, []);
+    const d = driver(http);
+
+    await d.list({ folderID: "F1" }, { service: "t" }, undefined);
+    const afterFirst = (http as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+    await d.list({ folderID: "F1" }, { service: "t" }, "page-2");
+    const afterSecond = (http as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // The second page costs exactly one call: the file query.
+    expect(afterSecond - afterFirst).toBe(1);
+  });
+
+  it("does not loop on a cycle", async () => {
+    // A shortcut can point back up the tree.
+    const http = tree({ F1: [{ id: "SUB" }], SUB: [{ id: "F1" }] }, []);
+
+    const page = await driver(http).list({ folderID: "F1" }, { service: "t" }, undefined);
+
+    expect(page.resources).toEqual([]);
+  });
+
+  it("refuses a tree too wide to express, rather than truncating it", async () => {
+    // Quietly dropping folders would under-index a client's corpus and look
+    // like an empty subfolder — the exact failure the recursion fixes.
+    const many = Array.from({ length: 250 }, (_, i) => ({ id: `f${i}` }));
+    const http = tree({ F1: many }, []);
+
+    await expect(
+      driver(http).list({ folderID: "F1" }, { service: "t" }, undefined),
+    ).rejects.toThrow(/narrower folder/);
+  });
+
+  it("stops walking rather than spinning when a page token never clears", async () => {
+    // A provider that always returns a nextPageToken would otherwise hang the
+    // sync, which is harder to diagnose than a sync that stops.
+    const http = vi.fn(async (url: string) => {
+      const q = decodeURIComponent(new URL(String(url)).searchParams.get("q") ?? "");
+      if (q.includes("google-apps.folder")) {
+        return respond({ files: [], nextPageToken: "never-ends" });
+      }
+      return respond({ files: [] });
+    }) as unknown as FetchLike;
+
+    await expect(
+      driver(http).list({ folderID: "F1" }, { service: "t" }, undefined),
+    ).resolves.toBeDefined();
+  });
+});

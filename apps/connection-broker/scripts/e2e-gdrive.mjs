@@ -58,6 +58,24 @@ const service = { service: binding.serviceToken };
 // genuine privilege difference — see the closing note.
 const delegated = { delegated: token };
 
+/**
+ * Asks Drive directly, bypassing the driver.
+ *
+ * Used only to establish GROUND TRUTH about what is in the folder. Anything
+ * the driver is being tested on goes through the driver.
+ */
+async function driveQuery(accessToken, q) {
+  const url =
+    "https://www.googleapis.com/drive/v3/files" +
+    `?q=${encodeURIComponent(q)}&fields=${encodeURIComponent("files(id,name,mimeType)")}&pageSize=100`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!res.ok) {
+    warn(`ground-truth query failed (${res.status}); some checks will be skipped`);
+    return [];
+  }
+  return (await res.json()).files ?? [];
+}
+
 console.log("\n1. driver.list — the folder's indexable files");
 let page;
 try {
@@ -73,13 +91,41 @@ for (const resource of page.resources.slice(0, 5)) {
   console.log(`    - ${resource.title ?? "(untitled)"}  [${resource.id}]`);
 }
 
-// The CRD's folderID doc says contents sync RECURSIVELY, but list asks for
-// `'<id>' in parents`, which is one level. If a subfolder was set up as
-// .env.example instructs, its file should be here — and if it is not, the
-// field doc is writing a cheque the driver does not cash.
-const subfolders = page.resources.filter((r) => r.mimeType === "application/vnd.google-apps.folder");
-if (subfolders.length > 0) {
-  warn(`${subfolders.length} subfolder(s) appear as resources; check they are not indexed as files`);
+// Does the corpus actually reach a SUBFOLDER's files?
+//
+// The CRD's folderID doc says contents sync recursively; `list` asks for
+// `'<id>' in parents`, which is one level. This cannot be settled from
+// `page.resources` — the driver filters folders out before returning — so ask
+// Drive directly and compare against what the driver listed.
+const subfolders = await driveQuery(
+  token,
+  `'${env.GDRIVE_FOLDER_ID}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+);
+if (subfolders.length === 0) {
+  warn("no subfolder in the scoped folder, so RECURSION went untested");
+  warn("put a file inside a subfolder as .env.example describes and re-run");
+} else {
+  const nested = (
+    await Promise.all(
+      subfolders.map((folder) =>
+        driveQuery(token, `'${folder.id}' in parents and trashed = false`),
+      ),
+    )
+  ).flat();
+
+  const listed = new Set(page.resources.map((r) => r.id));
+  const missed = nested.filter((file) => !listed.has(file.id));
+
+  if (missed.length === 0 && nested.length > 0) {
+    ok(`recursion holds: ${nested.length} file(s) in subfolders are all listed`);
+  } else if (nested.length > 0) {
+    // Not a harness failure — a documented behaviour that does not match the
+    // code. Reported precisely so the fix can be to either one.
+    warn(`${missed.length} of ${nested.length} file(s) in subfolders are NOT listed`);
+    warn("`list` queries `'<id>' in parents`, which is ONE level, but the CRD's");
+    warn("folderID doc says contents sync RECURSIVELY — one of the two is wrong");
+    for (const file of missed.slice(0, 3)) warn(`  ${file.name} [${file.id}]`);
+  }
 }
 
 console.log("\n2. driver.fetch — export vs download");
@@ -102,13 +148,23 @@ if (empty.length > 0) {
   for (const { resource } of empty) warn(`  ${resource.title} (${resource.mimeType ?? "?"})`);
 }
 
-const kinds = new Set(fetched.map(({ resource }) => resource.mimeType).filter(Boolean));
-if (![...kinds].some((m) => m.startsWith("application/vnd.google-apps"))) {
-  warn("no Google-native doc among the fetched files: the EXPORT path was not exercised");
-}
-if (![...kinds].some((m) => m && !m.startsWith("application/vnd.google-apps"))) {
-  warn("no binary/plain file among the fetched files: the DOWNLOAD path was not exercised");
-}
+// Which read path each file took.
+//
+// A ResourceRef carries no mimeType — the driver does not put one there — so
+// an earlier version of this check compared `resource.mimeType` against
+// undefined and BOTH warnings fired at once, on files that are plainly one or
+// the other. A check that can never pass is worth no more than one that can
+// never fail. The citation URL is real evidence: Drive gives native docs a
+// docs.google.com/<kind>/ link and everything else a drive.google.com/file/
+// one.
+const native = fetched.filter(({ resource }) => /docs\.google\.com\/(document|spreadsheets|presentation)\//.test(resource.url));
+const binary = fetched.filter(({ resource }) => /drive\.google\.com\/file\//.test(resource.url));
+
+if (native.length > 0) ok(`${native.length} Google-native doc(s): the EXPORT path ran`);
+else warn("no Google-native doc among the fetched files: the EXPORT path was not exercised");
+
+if (binary.length > 0) ok(`${binary.length} plain/binary file(s): the DOWNLOAD path ran`);
+else warn("no plain/binary file among the fetched files: the DOWNLOAD path was not exercised");
 
 console.log("\n3. scope enforcement — the parent-chain walk");
 // The least-validated code in this driver. A file id that is real but lives
