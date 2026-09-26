@@ -298,9 +298,10 @@ if (hits) {
       ok(`the first hit reads back as the USER: ${doc.markdown.length} chars`);
     } catch (e) {
       if (/missing_scope/.test(String(e?.message ?? e))) {
-        warn("the user token cannot read a thread: needs `channels:history`");
-        warn("(and `groups:history` for private channels) as USER Token Scopes");
-        warn("without it every kb:<name>/read against Slack refuses, though search works");
+        warn("the user token can SEARCH but cannot READ a thread.");
+        warn("add `channels:history` (and `groups:history` for private channels)");
+        warn("as USER Token Scopes — search and read need different scopes here,");
+        warn("so this is a half-working corpus: lookup answers, every read refuses.");
       } else {
         fail("readAsUser", e);
       }

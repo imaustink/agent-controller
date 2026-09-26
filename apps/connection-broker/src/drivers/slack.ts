@@ -196,9 +196,12 @@ export class SlackDriver implements Driver {
    * - `search.messages` refuses a BOT token outright with
    *   `not_allowed_token_type`. This is user-token-only by Slack's design,
    *   which suits us: search must run as the caller anyway (ADR 0040).
-   * - It needs `search:read` on the user token. Without it every variant
-   *   returns `missing_scope`, so a workspace that has not granted it simply
-   *   has no live search and keeps vector search.
+   * - It needs a search scope on the USER token. Slack has split the old
+   *   single `search:read` into a granular set — `search:read.public`,
+   *   `.private`, and others — so an app configured before the split still
+   *   reports `search:read` and works, while a new one must pick the granular
+   *   scope. Without either, every variant returns `missing_scope`, and that
+   *   corpus simply has no live search and keeps its indexed passages.
    * - `in:` matches a channel NAME, not an id.
    *
    * That last one is the awkward part, and it is why the results are filtered
