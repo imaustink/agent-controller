@@ -202,6 +202,16 @@ jobs:
       - name: e2e/specs/rbac-parity.e2e.ts
         run: npm run e2e -w e2e -- specs/rbac-parity.e2e.ts
 
+      # The other spec that needs neither. The broker's routes and the four
+      # clients that call them live in three packages and two languages, and
+      # nothing but agreement makes them work — agreement that has broken
+      # twice, silently, in releases that looked complete. Both times the unit
+      # tests asserted the URL each client BUILT, so a rename moved the server
+      # and left the client behind with nothing going red. This drives the
+      # real clients against the real server; see the spec's header.
+      - name: e2e/specs/broker-contract.e2e.ts
+        run: npm run e2e -w e2e -- specs/broker-contract.e2e.ts
+
   core-controller:
     name: Go core-controller (lint, test, build)
     runs-on: ubuntu-latest
