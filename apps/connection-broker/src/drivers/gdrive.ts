@@ -1,0 +1,353 @@
+import {
+  PermanentError,
+  PermissionDeniedError,
+  TransientError,
+  type Credentials,
+  type Cursor,
+  type Document,
+  type Driver,
+  type ListPage,
+  type ProbeGranularity,
+  type ProbeResult,
+  type Scope,
+  type SearchHit,
+} from "./types.js";
+import type { FetchLike } from "./confluence.js";
+
+export interface GDriveDriverOptions {
+  fetch?: FetchLike;
+  pageSize?: number;
+  apiOrigin?: string;
+}
+
+interface DriveFile {
+  id: string;
+  name?: string;
+  mimeType?: string;
+  modifiedTime?: string;
+  version?: string;
+  webViewLink?: string;
+  trashed?: boolean;
+  parents?: string[];
+  permissions?: { type?: string; emailAddress?: string; domain?: string }[];
+}
+
+/** Google Docs formats have no bytes to download; they export instead. */
+const EXPORTABLE: Record<string, string> = {
+  "application/vnd.google-apps.document": "text/plain",
+  "application/vnd.google-apps.presentation": "text/plain",
+  "application/vnd.google-apps.spreadsheet": "text/csv",
+};
+
+/** Formats worth indexing as text without conversion. */
+const PLAIN_TEXT = new Set(["text/plain", "text/markdown", "text/csv", "application/json"]);
+
+/**
+ * Google Drive driver (docs/adr/0038).
+ *
+ * Scope is ONE folder, and the scope check is the reason this driver looks the
+ * way it does: Drive has no "is this file under that folder" query, only a
+ * file's immediate `parents`. So membership is asserted by walking parents
+ * upward, and the walk is bounded — an unbounded one is a denial of service
+ * against ourselves on a deep or cyclic hierarchy.
+ */
+export class GDriveDriver implements Driver {
+  readonly provider = "gdrive";
+
+  private readonly http: FetchLike;
+  private readonly pageSize: number;
+  private readonly apiOrigin: string;
+
+  constructor(options: GDriveDriverOptions = {}) {
+    this.http = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
+    this.pageSize = options.pageSize ?? 100;
+    this.apiOrigin = (options.apiOrigin ?? "https://www.googleapis.com/drive/v3").replace(/\/+$/, "");
+  }
+
+  validateScope(scope: Scope): void {
+    if (!scope.folderID) throw new Error("a gdrive connection must be scoped to a folder");
+    if (scope.space || scope.channel) {
+      throw new Error("a gdrive connection must set scope.folderID and nothing else");
+    }
+    // The folder id is interpolated into a query string, where an apostrophe
+    // would terminate the quoted term and let the rest be read as query syntax.
+    if (!/^[A-Za-z0-9_-]+$/.test(scope.folderID)) {
+      throw new Error(`illegal gdrive folder id: ${scope.folderID}`);
+    }
+  }
+
+  probeGranularity(): ProbeGranularity {
+    return "resource";
+  }
+
+  async list(scope: Scope, credentials: Credentials, since: Cursor): Promise<ListPage> {
+    this.validateScope(scope);
+    const token = requireToken(credentials.service);
+
+    const body = (await this.call("/files", token, {
+      q: `'${scope.folderID}' in parents and trashed = false`,
+      fields: "nextPageToken,files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents)",
+      pageSize: String(this.pageSize),
+      ...(since ? { pageToken: since } : {}),
+    })) as { files?: DriveFile[]; nextPageToken?: string };
+
+    const files = (body.files ?? []).filter((file) => this.indexable(file));
+
+    return {
+      resources: files.map((file) => toRef(file)),
+      cursor: body.nextPageToken,
+    };
+  }
+
+  async fetch(scope: Scope, credentials: Credentials, id: string): Promise<Document> {
+    this.validateScope(scope);
+    const token = requireToken(credentials.delegated ?? credentials.service);
+
+    const file = (await this.call(`/files/${encodeURIComponent(id)}`, token, {
+      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents",
+    })) as DriveFile;
+
+    await this.assertInScope(file, scope, token);
+
+    return { ...toRef(file), markdown: await this.readContent(file, token) };
+  }
+
+  /**
+   * Reads any file the CALLER can see (see Driver.readAsUser).
+   *
+   * No parent walk: Drive applies this user's own permissions, so a file they
+   * cannot open comes back 404 wherever it lives. Skipping the walk also
+   * removes the per-read cost of climbing a folder chain that is no longer
+   * being used to decide anything.
+   */
+  async readAsUser(credentials: Credentials, id: string): Promise<Document> {
+    const token = requireDelegatedDrive(credentials);
+
+    const file = (await this.call(`/files/${encodeURIComponent(id)}`, token, {
+      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents",
+    })) as DriveFile;
+
+    return { ...toRef(file), markdown: await this.readContent(file, token) };
+  }
+
+  /**
+   * Live full-text search, as the caller, inside the corpus's folder.
+   *
+   * Two Drive-specific wrinkles shape this.
+   *
+   * `fullText contains '...'` is a Drive query literal in SINGLE quotes, and
+   * the folder id already taught this driver that lesson: an apostrophe in the
+   * caller's words would close the literal and let the rest parse as query
+   * syntax. Escaped rather than stripped — the words are the question.
+   *
+   * `'<id>' in parents` is ONE level, and the corpus is recursive. A file in a
+   * subfolder is in the corpus but not in that result set, so the query cannot
+   * express the bound on its own. Rather than walk every subfolder up front —
+   * unbounded work for one search — this searches the user's whole Drive and
+   * then keeps only what the existing parent-chain walk says is inside. The
+   * walk is the same code the fetch path enforces scope with, so search cannot
+   * drift from it.
+   */
+  async searchAsUser(
+    credentials: Credentials,
+    scope: Scope,
+    query: string,
+    limit = 10,
+  ): Promise<SearchHit[]> {
+    this.validateScope(scope);
+    if (!credentials.delegated) {
+      throw new Error("a gdrive search requires the calling user's delegated token");
+    }
+
+    const trimmed = query.trim();
+    if (trimmed.length === 0) return [];
+
+    const escaped = trimmed.replace(/['\\]/g, "\\$&");
+    const body = (await this.call("/files", credentials.delegated, {
+      q: `fullText contains '${escaped}' and trashed = false`,
+      fields: "files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents)",
+      // Over-fetched on purpose: the scope filter below removes most of these,
+      // and asking for exactly `limit` would return a short page of hits that
+      // happen to be in the folder rather than the best ones that are.
+      pageSize: String(Math.min(limit * 10, 100)),
+    })) as { files?: DriveFile[] };
+
+    const candidates = (body.files ?? []).filter((file) => this.indexable(file));
+
+    const hits: SearchHit[] = [];
+    for (const file of candidates) {
+      if (hits.length >= limit) break;
+      // The same walk fetch enforces scope with. Run as the CALLER, so a file
+      // whose parent chain they cannot see is not in their corpus either.
+      try {
+        await this.assertInScope(file, scope, credentials.delegated);
+        hits.push(toRef(file));
+      } catch {
+        // A walk that cannot complete is not evidence the file is inside.
+        // Dropping the candidate is the safe direction here: over-inclusion
+        // would put another folder's file in a client's knowledge base.
+      }
+    }
+    return hits;
+  }
+
+  async probe(scope: Scope, credentials: Credentials, id?: string): Promise<ProbeResult> {
+    this.validateScope(scope);
+    if (!id) throw new Error("gdrive probes are per resource and need a file id");
+    if (!credentials.delegated) {
+      throw new Error("a gdrive probe requires the calling user's delegated token");
+    }
+
+    // Metadata only: reaching 200 under the USER's token is the authorization
+    // decision, and the body is the model's to request separately (ADR 0040).
+    const file = (await this.call(`/files/${encodeURIComponent(id)}`, credentials.delegated, {
+      fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents",
+    })) as DriveFile;
+
+    await this.assertInScope(file, scope, credentials.delegated);
+
+    const ref = toRef(file);
+    return { allowed: true, title: ref.title, url: ref.url, version: ref.version };
+  }
+
+  /** Files whose bytes are worth indexing as text. */
+  private indexable(file: DriveFile): boolean {
+    const mime = file.mimeType ?? "";
+    // Folders are traversed, not indexed; anything binary would embed as noise.
+    if (mime === "application/vnd.google-apps.folder") return false;
+    return mime in EXPORTABLE || PLAIN_TEXT.has(mime);
+  }
+
+  private async readContent(file: DriveFile, token: string): Promise<string> {
+    const mime = file.mimeType ?? "";
+    const exportAs = EXPORTABLE[mime];
+
+    const path = exportAs
+      ? `/files/${encodeURIComponent(file.id)}/export`
+      : `/files/${encodeURIComponent(file.id)}`;
+    const params: Record<string, string> = exportAs ? { mimeType: exportAs } : { alt: "media" };
+
+    const text = await this.callText(path, token, params);
+    return text.trim();
+  }
+
+  /**
+   * Asserts a file is inside this connection's folder.
+   *
+   * Drive offers no "descendant of" predicate, so this walks `parents` upward.
+   * It is the only thing stopping a file id from reaching another client's
+   * folder, so it fails CLOSED: absent parents, a broken chain, or a walk that
+   * runs past its budget are all refusals.
+   *
+   * The depth bound is not cosmetic. Drive permits a file to have several
+   * parents and, through shortcuts and shared drives, cycles are reachable —
+   * an unbounded walk there is a denial of service we would be running against
+   * ourselves, with the caller's credential.
+   */
+  private async assertInScope(file: DriveFile, scope: Scope, token: string): Promise<void> {
+    const target = scope.folderID!;
+    const seen = new Set<string>();
+    let frontier = file.parents ?? [];
+
+    for (let depth = 0; depth < MAX_FOLDER_DEPTH; depth += 1) {
+      if (frontier.length === 0) break;
+      if (frontier.includes(target)) return;
+
+      const next: string[] = [];
+      for (const parent of frontier) {
+        if (seen.has(parent)) continue;
+        seen.add(parent);
+        const folder = (await this.call(`/files/${encodeURIComponent(parent)}`, token, {
+          fields: "id,parents",
+        }).catch(() => undefined)) as DriveFile | undefined;
+        next.push(...(folder?.parents ?? []));
+      }
+      frontier = next;
+    }
+
+    throw new PermissionDeniedError(
+      `file ${file.id} is not inside folder ${target}, or its parentage could not be confirmed`,
+    );
+  }
+
+  private async call(path: string, token: string, params: Record<string, string>): Promise<unknown> {
+    const response = await this.request(path, token, params);
+    return response.json();
+  }
+
+  private async callText(
+    path: string,
+    token: string,
+    params: Record<string, string>,
+  ): Promise<string> {
+    const response = await this.request(path, token, params);
+    // `alt=media` and `export` return bytes, not JSON.
+    return (await response.text?.()) ?? "";
+  }
+
+  private async request(
+    path: string,
+    token: string,
+    params: Record<string, string>,
+  ): Promise<{ ok: boolean; status: number; json: () => Promise<unknown>; text?: () => Promise<string> }> {
+    const url = `${this.apiOrigin}${path}?${new URLSearchParams(params).toString()}`;
+
+    let response;
+    try {
+      response = await this.http(url, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      });
+    } catch (cause) {
+      throw new TransientError(`gdrive request failed: ${String(cause)}`);
+    }
+
+    if (response.ok) return response;
+
+    // 403 is overloaded in Drive: it covers both "you may not" and "you have
+    // exhausted your quota", and the two must not be blurred (ADR 0040).
+    if (response.status === 403) {
+      const detail = (await response.text?.()) ?? "";
+      if (/rateLimitExceeded|userRateLimitExceeded|quotaExceeded/i.test(detail)) {
+        throw new TransientError(`gdrive rate limited: ${detail.slice(0, 200)}`);
+      }
+      throw new PermissionDeniedError(`gdrive returned 403: ${detail.slice(0, 200)}`);
+    }
+    if (response.status === 404) throw new PermissionDeniedError("gdrive returned 404");
+    if (response.status === 401) throw new PermanentError("gdrive rejected the credential");
+    throw new TransientError(`gdrive returned ${response.status}`);
+  }
+}
+
+/**
+ * How far up the parent chain the scope check will walk.
+ *
+ * Generous for real hierarchies and finite for hostile ones.
+ */
+const MAX_FOLDER_DEPTH = 16;
+
+function toRef(file: DriveFile) {
+  return {
+    id: file.id,
+    title: file.name ?? file.id,
+    url: file.webViewLink ?? `https://drive.google.com/file/d/${file.id}/view`,
+    // Drive's own monotonic revision counter.
+    version: file.version,
+    updatedAt: file.modifiedTime,
+    // Drive permissions need a separate call per file and enumerate people
+    // rather than groups. Permissive rather than guessed: the probe is the
+    // authority, and under-inclusion is the only direction that hurts.
+    acl: { principals: [], permissive: true },
+  };
+}
+
+function requireDelegatedDrive(credentials: Credentials): string {
+  if (!credentials.delegated) {
+    throw new Error("a gdrive user read requires the calling user's delegated token");
+  }
+  return credentials.delegated;
+}
+
+function requireToken(token: string | undefined): string {
+  if (!token) throw new Error("no credential supplied for a gdrive request");
+  return token;
+}

@@ -1,0 +1,323 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: corpora.core.controller-agent.dev
+spec:
+  group: core.controller-agent.dev
+  names:
+    kind: Corpus
+    listKind: CorpusList
+    plural: corpora
+    singular: corpus
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.provider
+      name: Provider
+      type: string
+    - jsonPath: .status.resources
+      name: Resources
+      type: integer
+    - jsonPath: .status.lastReconcileTime
+      name: Last Reconcile
+      type: date
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Connection is the Schema for the connections API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of Connection
+            properties:
+              allowedRoles:
+                description: |-
+                  allowedRoles gates retrieval and invocation (RBAC filter) — a caller must
+                  hold at least one. Every chunk this Corpus contributes is written with
+                  these roles and filtered on them at read time, which is what lets one
+                  knowledge base safely mix Corpora of differing sensitivity.
+
+                  It lives HERE rather than on the Connection or the KnowledgeBase because
+                  a chunk is stamped once, at ingest (ADR 0043 §2): roles on the Connection
+                  would be workspace-wide, and roles on the view would have no single value
+                  to write when two knowledge bases disagree about the same channel.
+                items:
+                  type: string
+                minItems: 1
+                type: array
+              api:
+                description: api exposes the live, scope-enforced GET face (ADR 0038
+                  §5).
+                properties:
+                  enabled:
+                    default: false
+                    description: |-
+                      enabled turns the live face on. Default false: a Corpus that only
+                      feeds a knowledge base needs no callable surface.
+                    type: boolean
+                  methods:
+                    default:
+                    - GET
+                    description: |-
+                      methods the live face may issue. v1alpha1 allows GET only — writes need
+                      an authorization story this API does not yet have, and this field exists
+                      so that story has somewhere to land.
+                    items:
+                      description: CorpusAPIMethod is an HTTP method the live face
+                        may issue.
+                      enum:
+                      - GET
+                      type: string
+                    type: array
+                type: object
+              connectionRef:
+                description: |-
+                  connectionRef names the Connection (same namespace) this Corpus draws
+                  from — the authenticated route to the system, holding the provider, the
+                  address and the credential (ADR 0043).
+
+                  One Connection serves many Corpora: a Slack workspace with ten indexed
+                  channels is one Connection and ten Corpora, and rotating the credential
+                  touches one object rather than ten.
+                minLength: 1
+                type: string
+              description:
+                description: |-
+                  description is fed to the orchestrator's embedder and tells the planner
+                  what this corpus holds.
+                minLength: 1
+                type: string
+              displayName:
+                description: |-
+                  displayName is what citations render (e.g. "#globex-eng"). Two Corpora of
+                  the same provider inside one KnowledgeBase need distinct values, or a
+                  cited answer cannot say which channel it came from. Defaults to
+                  metadata.name.
+                type: string
+              scope:
+                description: scope bounds the resources this Corpus reaches. See CorpusScope.
+                properties:
+                  channel:
+                    description: |-
+                      channel is a Slack channel id (e.g. "C6RQKL5BK"). An id, not a name:
+                      names are mutable and a renamed channel must not silently re-point a
+                      connection at different material.
+                    minLength: 1
+                    type: string
+                  folderID:
+                    description: folderID is a Google Drive folder id. Contents are
+                      synced recursively.
+                    minLength: 1
+                    type: string
+                  space:
+                    description: space is a Confluence space key (e.g. "GLOBEX").
+                    minLength: 1
+                    type: string
+                type: object
+              sync:
+                description: sync selects how this Corpus learns that its resources
+                  changed.
+                properties:
+                  backfill:
+                    description: backfill bounds the initial historical read.
+                    properties:
+                      since:
+                        description: |-
+                          since is the oldest resource to ingest on first sync. Omitted means
+                          everything the provider will give us, which for a long-lived Slack
+                          channel can be a great deal.
+                        format: date-time
+                        type: string
+                    type: object
+                  mode:
+                    description: mode selects the change-notification strategy.
+                    enum:
+                    - webhook
+                    - poll
+                    - none
+                    type: string
+                  reconcileInterval:
+                    description: |-
+                      reconcileInterval is how often a full reconcile pass runs. Required even
+                      for mode "webhook" (see the type doc); ignored for mode "none".
+                    type: string
+                required:
+                - mode
+                type: object
+              tier:
+                description: |-
+                  tier is an operator-defined cost/trust classification (e.g. "standard",
+                  "privileged"), as on Tool.
+                type: string
+            required:
+            - allowedRoles
+            - connectionRef
+            - description
+            - scope
+            type: object
+            x-kubernetes-validations:
+            - message: 'a Corpus must be scoped to exactly one unit: a space, a channel,
+                or a folderID'
+              rule: '[has(self.scope.space), has(self.scope.channel), has(self.scope.folderID)].filter(x,
+                x).size() == 1'
+            - message: 'sync.reconcileInterval is required unless sync.mode is none:
+                webhooks are lossy and the reconcile pass is the source of truth'
+              rule: '!has(self.sync) || self.sync.mode == ''none'' || has(self.sync.reconcileInterval)'
+          status:
+            description: status defines the observed state of Connection
+            properties:
+              collection:
+                description: |-
+                  collection is the vector-store collection this Corpus owns. Storage
+                  is per-Corpus rather than per-KnowledgeBase so that a Corpus
+                  shared by several knowledge bases is embedded once, and recomposing a
+                  knowledge base costs no re-indexing (ADR 0039 §1).
+                type: string
+              conditions:
+                description: |-
+                  conditions represent the current state of the Connection resource.
+                  This controller uses "Ready" to report spec validity and "Synced" to
+                  report whether the corpus is current.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              identityProviders:
+                description: |-
+                  identityProviders is copied from the referenced Connection, for the same
+                  reason as provider. Empty means this Corpus can be ingested but not
+                  probed, so it cannot answer for a caller whose access differs from the
+                  ingestion credential's (ADR 0040).
+                items:
+                  type: string
+                type: array
+              lastReconcileTime:
+                description: |-
+                  lastReconcileTime is the last successful FULL reconcile. Because the
+                  reconcile pass is the source of truth (ADR 0038 §4), this — not
+                  lastSyncTime — is how stale the corpus may actually be.
+                format: date-time
+                type: string
+              lastSyncTime:
+                description: |-
+                  lastSyncTime is the last successful sync of any kind, including a
+                  webhook-triggered partial one.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: observedGeneration is the .metadata.generation this status
+                  reflects.
+                format: int64
+                type: integer
+              provider:
+                description: |-
+                  provider is copied from the referenced Connection by the controller.
+
+                  Published into status rather than joined across resources by every
+                  consumer: both engines watch Corpora to build their catalogs, and making
+                  each of them resolve a Connection would spread ADR 0043's split across
+                  two engines instead of keeping it in one controller.
+                type: string
+              resources:
+                description: resources is how many resources were indexed as of the
+                  last sync.
+                format: int64
+                type: integer
+              webhook:
+                description: webhook reports the provider-side subscription, when
+                  mode is "webhook".
+                properties:
+                  expiresAt:
+                    description: expiresAt is when the provider will stop delivering
+                      unless renewed.
+                    format: date-time
+                    type: string
+                  registered:
+                    description: registered is true while a provider subscription
+                      is believed live.
+                    type: boolean
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

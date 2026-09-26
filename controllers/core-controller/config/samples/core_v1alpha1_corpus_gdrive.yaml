@@ -1,0 +1,39 @@
+# One Google Drive folder as a Corpus (ADR 0043), drawn through the Drive
+# Connection that holds the credential.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Corpus
+metadata:
+  labels:
+    app.kubernetes.io/name: core-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: globex-drive-delivery
+spec:
+  connectionRef: bitovi-gdrive
+
+  displayName: "GLOBEX delivery drive"
+  description: >-
+    The GLOBEX engagement's delivery folder: statements of work, architecture
+    decks and the handover documents that were never wiki pages.
+
+  allowedRoles:
+    - reader
+
+  # The security boundary, and the one value worth understanding here: the
+  # folder id bounds the corpus, and the driver enforces it by walking a
+  # candidate's PARENT CHAIN back to this id rather than trusting the listing
+  # that produced it. An id, not a path: folder names are mutable and duplicable.
+  scope:
+    folderID: 1AbCdEfGhIjKlMnOpQrStUvWxYz012345
+
+  sync:
+    # Drive push notifications need a public HTTPS endpoint and expire on a
+    # clock, so this corpus reconciles on a schedule instead. That is the
+    # honest default here: a webhook mode whose channel has silently lapsed is
+    # worse than a poll, because it looks live.
+    mode: poll
+    reconcileInterval: 6h
+
+  # A file is the indexed unit, and the GET face reads one back live when the
+  # retrieval snapshot is not good enough.
+  api:
+    enabled: true

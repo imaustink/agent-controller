@@ -1,4 +1,4 @@
-// Package corpus searches the per-Connection collections a KnowledgeBase
+// Package corpus searches the per-Corpus collections a KnowledgeBase
 // composes (agent-controller ADR 0039).
 //
 // The catalog collections answer "which capability fits this turn?". A corpus
@@ -25,11 +25,11 @@ import (
 // be cited, and an uncited claim about a client's material is not an acceptable
 // answer.
 type Chunk struct {
-	// ConnectionID is the member Connection this came from, and
-	// ConnectionLabel is what a citation renders (two Slack channels in one
+	// CorpusID is the member Corpus this came from, and
+	// CorpusLabel is what a citation renders (two Slack channels in one
 	// knowledge base are distinguishable only by this).
-	ConnectionID    string `json:"connectionId"`
-	ConnectionLabel string `json:"connectionLabel,omitempty"`
+	CorpusID    string `json:"connectionId"`
+	CorpusLabel string `json:"connectionLabel,omitempty"`
 
 	SourceURL string `json:"sourceUrl"`
 	SourceID  string `json:"sourceId"`
@@ -52,6 +52,26 @@ type Chunk struct {
 	Version string `json:"version,omitempty"`
 
 	Text string `json:"text"`
+
+	// ACLPrincipals is the MIRROR of the source's read restrictions, captured
+	// at ingest — provider-shaped strings like "user:<accountId>" or
+	// "group:<id>" (ADR 0040).
+	//
+	// It exists to make retrieval cheaper, never to decide access. It is a
+	// snapshot of permissions that may have changed a second after it was
+	// taken, and the source is asked again, per user, before anything here is
+	// shown. Treating it as authoritative would mean serving a permission
+	// decision from a cache nobody revalidated.
+	ACLPrincipals []string `json:"aclPrincipals,omitempty"`
+
+	// ACLPermissive marks a chunk whose effective permissions the driver could
+	// not resolve, so ACLPrincipals is not a usable exclusion set.
+	//
+	// Set deliberately rather than inferred from an empty list, because the two
+	// mean opposite things: an empty list on a non-permissive chunk is "nobody
+	// is specially granted", while permissive is "we do not know, so do not use
+	// this to exclude anyone".
+	ACLPermissive bool `json:"aclPermissive,omitempty"`
 }
 
 // Hit is a chunk with the score it matched at.
@@ -153,7 +173,7 @@ func prune(hits []Hit, limit int) []Hit {
 		if key == "" {
 			// No hash to dedupe on: fall back to source identity so a chunk is
 			// not silently dropped for being unhashed.
-			key = hit.Chunk.ConnectionID + "\x00" + hit.Chunk.SourceID
+			key = hit.Chunk.CorpusID + "\x00" + hit.Chunk.SourceID
 		}
 		existing, seen := best[key]
 		if !seen || betterThan(hit, existing) {
@@ -177,8 +197,8 @@ func betterThan(a, b Hit) bool {
 	if a.Score != b.Score {
 		return a.Score > b.Score
 	}
-	if a.Chunk.ConnectionID != b.Chunk.ConnectionID {
-		return a.Chunk.ConnectionID < b.Chunk.ConnectionID
+	if a.Chunk.CorpusID != b.Chunk.CorpusID {
+		return a.Chunk.CorpusID < b.Chunk.CorpusID
 	}
 	return a.Chunk.SourceID < b.Chunk.SourceID
 }

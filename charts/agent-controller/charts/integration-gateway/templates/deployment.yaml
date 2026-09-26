@@ -110,6 +110,19 @@ spec:
               value: {{ .Values.identityLink.redisUrl | quote }}
             - name: GITHUB_OAUTH_REDIRECT_URI
               value: {{ .Values.identityLink.githubOauthRedirectUri | quote }}
+            {{- if .Values.identityLink.atlassianClientId }}
+            - name: ATLASSIAN_CLIENT_ID
+              value: {{ .Values.identityLink.atlassianClientId | quote }}
+            {{- if .Values.identityLink.atlassianScopes }}
+            - name: ATLASSIAN_SCOPES
+              value: {{ .Values.identityLink.atlassianScopes | quote }}
+            {{- end }}
+            - name: ATLASSIAN_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.atlassianClientSecretKey }}
+            {{- end }}
             {{- end }}
             - name: GITHUB_WEBHOOK_SECRET
               valueFrom:

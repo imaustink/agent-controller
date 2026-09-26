@@ -112,6 +112,19 @@ export interface IdentityLinkPort {
    * conflated again.
    */
   getLinkedLogin?(provider: string, subject: string): Promise<string | undefined>;
+  /**
+   * The provider-side ACCOUNT ID a subject has linked, for providers that have
+   * no login to report (Atlassian, Google).
+   *
+   * Separate from `getLinkedLogin` because the two are not interchangeable: a
+   * GitHub login is what principal resolution reads (docs/adr/0029), while an
+   * account id is provenance that nothing keys on. Folding them together would
+   * invite keying on whichever happened to come back.
+   *
+   * Read for one purpose: the ACL mirror's pre-filter needs to know which
+   * provider-side principal the caller acts as.
+   */
+  getLinkedAccountId?(provider: string, subject: string): Promise<string | undefined>;
 }
 
 export interface IdentityLinkGatewayClientOptions {
@@ -151,10 +164,32 @@ export class IdentityLinkGatewayClient implements IdentityLinkPort {
       { headers: { authorization: `Bearer ${this.options.token}` } },
     );
     if (res.status === 404) return undefined;
+    // See getToken: an unconfigured provider is not an error here.
+    if (res.status === 400) return undefined;
     if (!res.ok) {
       throw new Error(`identity-link identity lookup (${provider}) failed: ${res.status} ${await res.text()}`);
     }
     return ((await res.json()) as { githubLogin?: string }).githubLogin;
+  }
+
+  /**
+   * The same endpoint as `getLinkedLogin`, reading the other field.
+   *
+   * The gateway has always returned `accountId` for a non-GitHub link; nothing
+   * on this side could read it, so an Atlassian link looked identity-less.
+   */
+  async getLinkedAccountId(provider: string, subject: string): Promise<string | undefined> {
+    const res = await this.fetchImpl(
+      `${this.baseUrl}/identity-link/${provider}/identity?subject=${encodeURIComponent(subject)}`,
+      { headers: { authorization: `Bearer ${this.options.token}` } },
+    );
+    if (res.status === 404) return undefined;
+    // See getToken: an unconfigured provider is not an error here.
+    if (res.status === 400) return undefined;
+    if (!res.ok) {
+      throw new Error(`identity-link identity lookup (${provider}) failed: ${res.status} ${await res.text()}`);
+    }
+    return ((await res.json()) as { accountId?: string }).accountId;
   }
 
   async poll(provider: string, subject: string, deviceCode: string): Promise<IdentityLinkPollStatus> {
@@ -184,6 +219,16 @@ export class IdentityLinkGatewayClient implements IdentityLinkPort {
       { headers: { authorization: `Bearer ${this.options.token}` } },
     );
     if (res.status === 404) return undefined;
+    if (res.status === 400) {
+      // The gateway does not have this provider configured. A statement about
+      // deployment rather than a fault, and for a LOOKUP it means the same
+      // thing as no link: there is nothing here to return.
+      //
+      // Erroring instead takes down every knowledge-base search touching a
+      // provider the gateway has not been set up for, rather than degrading to
+      // an ask — which is the thing a caller can actually act on.
+      return undefined;
+    }
     if (!res.ok) {
       throw new Error(`identity-link token lookup (${provider}) failed: ${res.status} ${await res.text()}`);
     }

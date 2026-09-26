@@ -46,7 +46,7 @@ func Render(in RenderInput) string {
 
 	for i, chunk := range in.Outcome.Chunks {
 		fmt.Fprintf(&b, "### %d. %s\n", i+1, displayTitle(chunk))
-		fmt.Fprintf(&b, "Source: %s", chunk.Chunk.ConnectionLabel)
+		fmt.Fprintf(&b, "Source: %s", chunk.Chunk.CorpusLabel)
 		if chunk.Stale {
 			// Readable, but the source moved on after indexing. Worth saying
 			// rather than silently presenting an old passage as current.

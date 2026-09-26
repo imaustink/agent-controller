@@ -95,7 +95,22 @@ function atlassianConfig(env: NodeJS.ProcessEnv): OAuthProviderConfig | undefine
   const clientSecret = env.ATLASSIAN_CLIENT_SECRET;
   if (!clientId || !clientSecret) return undefined;
 
-  const scopes = (env.ATLASSIAN_SCOPES ?? "read:confluence-content.all offline_access")
+  // GRANULAR scopes. The default used to be the classic set, which no longer
+  // works at all: Atlassian removed the v1 content endpoints those scopes
+  // reach, and they now answer `410 Gone`. A deployment that set the client id
+  // and secret without also setting ATLASSIAN_SCOPES would link successfully
+  // and then fail every read, which is the worst shape a default can have.
+  //
+  // Classic and granular cannot be mixed on one app, so overriding this means
+  // overriding all of it.
+  // `search:confluence` is separate from the read scopes and easy to miss: a
+  // token without it reads pages perfectly well and fails every live lookup,
+  // which looks like a broken feature rather than a missing permission.
+  const scopes = (
+    env.ATLASSIAN_SCOPES ??
+    "read:page:confluence read:space:confluence read:content-details:confluence " +
+      "search:confluence offline_access"
+  )
     .split(/[\s,]+/)
     .filter(Boolean);
 

@@ -13,24 +13,27 @@ import (
 )
 
 type fakeResolver struct {
-	token     string
-	err       error
-	askedFor  []string
-	callCount int
+	token      string
+	principals []string
+	err        error
+	askedFor   []string
+	callCount  int
 }
 
-func (f *fakeResolver) DelegatedToken(_ context.Context, _ activities.Caller, providers []string) (string, error) {
+func (f *fakeResolver) DelegatedToken(
+	_ context.Context, _ activities.Caller, providers []string,
+) (activities.DelegatedCredential, error) {
 	f.callCount++
 	f.askedFor = providers
-	return f.token, f.err
+	return activities.DelegatedCredential{Token: f.token, Principals: f.principals}, f.err
 }
 
 func searchTool(members ...catalog.KnowledgeBaseExecMember) catalog.ToolDescriptor {
 	return catalog.ToolDescriptor{
-		ID: "kb:snc/search",
+		ID: "kb:globex/search",
 		KnowledgeBaseExec: &catalog.KnowledgeBaseExecSpec{
-			KnowledgeBaseID:           "snc",
-			DisplayName:               "SNC",
+			KnowledgeBaseID:           "globex",
+			DisplayName:               "GLOBEX",
 			Operation:                 "search",
 			Members:                   members,
 			DisclosePartialVisibility: true,
@@ -72,7 +75,7 @@ func TestSearchRejectsAToolWithNoExecutionSpec(t *testing.T) {
 	_, err := activitiesWith(&fakeResolver{}).SearchKnowledgeBase(context.Background(),
 		activities.SearchKnowledgeBaseInput{
 			Caller: activities.Caller{Subject: "s", Roles: []string{"reader"}},
-			Tool:   catalog.ToolDescriptor{ID: "kb:snc/search"},
+			Tool:   catalog.ToolDescriptor{ID: "kb:globex/search"},
 		})
 
 	require.Error(t, err)
@@ -81,7 +84,7 @@ func TestSearchRejectsAToolWithNoExecutionSpec(t *testing.T) {
 func TestSearchDoesNotSilentlyRunASearchForANonSearchOperation(t *testing.T) {
 	resolver := &fakeResolver{token: "t"}
 	tool := searchTool(member("c", []string{"reader"}, "coll"))
-	tool.ID = "kb:snc/fetch"
+	tool.ID = "kb:globex/fetch"
 	tool.KnowledgeBaseExec.Operation = "fetch"
 
 	out, err := activitiesWith(resolver).SearchKnowledgeBase(context.Background(),

@@ -1,0 +1,675 @@
+import {
+  PermanentError,
+  PermissionDeniedError,
+  TransientError,
+  type Credentials,
+  type Cursor,
+  type Document,
+  type Driver,
+  type ListPage,
+  type ProbeGranularity,
+  type ProbeResult,
+  type Scope,
+  type SearchHit,
+} from "./types.js";
+import type { FetchLike } from "./confluence.js";
+import type { WebhookEvent, WebhookRequest } from "./types.js";
+import { hmacHex, signaturesMatch, withinReplayWindow } from "./webhook-signature.js";
+
+export interface SlackDriverOptions {
+  fetch?: FetchLike;
+  /** Messages per page; Slack caps this around 200 and recommends far less. */
+  pageSize?: number;
+  apiOrigin?: string;
+  /** The workspace domain, for citation permalinks when Slack does not supply one. */
+  workspaceUrl?: string;
+  /**
+   * Join the scoped channel automatically when a read is refused for want of
+   * membership.
+   *
+   * Off unless a Connection asks for it. Joining is a WRITE — it changes
+   * workspace state and posts a visible "joined the channel" event — so it is
+   * an operator's decision rather than a default, and it needs the extra
+   * `channels:join` scope on the bot token.
+   */
+  autoJoin?: boolean;
+}
+
+/** A `search.messages` match. Carries its own channel, which is what bounds a hit. */
+interface SlackSearchMatch {
+  ts: string;
+  text?: string;
+  thread_ts?: string;
+  permalink?: string;
+  channel?: { id?: string; name?: string };
+}
+
+interface SlackMessage {
+  ts: string;
+  text?: string;
+  user?: string;
+  thread_ts?: string;
+  subtype?: string;
+  permalink?: string;
+}
+
+/**
+ * Slack driver (docs/adr/0038).
+ *
+ * Scope is ONE channel. The difference from Confluence that shapes this whole
+ * file: Slack authorizes at the CHANNEL, not the message. Membership is the
+ * access unit and there is no per-message permission to check, so one probe
+ * settles every candidate from this connection — cheaper than the per-resource
+ * case rather than harder (ADR 0040).
+ *
+ * A "resource" here is a THREAD, not a message. A single message is rarely a
+ * useful retrieval unit — the answer to a question usually lives in the replies
+ * — and indexing per message would also multiply the corpus by the chattiness
+ * of the channel.
+ */
+export class SlackDriver implements Driver {
+  readonly provider = "slack";
+
+  private readonly http: FetchLike;
+  private readonly pageSize: number;
+  private readonly apiOrigin: string;
+  private readonly workspaceUrl: string | undefined;
+  private readonly autoJoin: boolean;
+
+  /**
+   * Slack user id -> display name, or null for "asked, and Slack would not say".
+   *
+   * A driver instance is built per corpus binding and lives for the sync, so a
+   * channel's authors are resolved once rather than once per thread. Caching
+   * the FAILURE matters as much as caching the hit: without it a workspace
+   * whose token lacks `users:read` would issue a doomed lookup for every
+   * message in the corpus.
+   */
+  private readonly userNames = new Map<string, string | null>();
+
+  /** Channel id -> name, for search's `in:` term. Null means "asked, no answer". */
+  private readonly channelNames = new Map<string, string | null>();
+
+  constructor(options: SlackDriverOptions = {}) {
+    this.http = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
+    this.pageSize = options.pageSize ?? 100;
+    this.apiOrigin = (options.apiOrigin ?? "https://slack.com/api").replace(/\/+$/, "");
+    this.workspaceUrl = options.workspaceUrl?.replace(/\/+$/, "");
+    this.autoJoin = options.autoJoin ?? false;
+  }
+
+  validateScope(scope: Scope): void {
+    if (!scope.channel) throw new Error("a slack connection must be scoped to a channel");
+    if (scope.space || scope.folderID) {
+      throw new Error("a slack connection must set scope.channel and nothing else");
+    }
+    // A channel id reaches a query parameter, so it is constrained rather than
+    // trusted. Slack ids are uppercase alphanumerics.
+    if (!/^[A-Z0-9]+$/.test(scope.channel)) {
+      throw new Error(`illegal slack channel id: ${scope.channel}`);
+    }
+  }
+
+  /**
+   * One probe per CONNECTION, not per message.
+   *
+   * Answering "resource" here would issue a probe per thread to ask a question
+   * Slack answers once per channel, turning a cheap authorization model into
+   * the most expensive one in the system.
+   */
+  probeGranularity(): ProbeGranularity {
+    return "connection";
+  }
+
+  async list(scope: Scope, credentials: Credentials, since: Cursor): Promise<ListPage> {
+    this.validateScope(scope);
+    const token = requireToken(credentials.service);
+
+    const body = (await this.callJoining("conversations.history", token, scope, {
+      channel: scope.channel!,
+      limit: String(this.pageSize),
+      // Slack's cursor for "changed since" is a message timestamp. Carried
+      // opaquely like any other driver's.
+      ...(since ? { oldest: since, inclusive: "false" } : {}),
+    })) as { messages?: SlackMessage[]; has_more?: boolean };
+
+    const messages = body.messages ?? [];
+
+    // Thread parents only: a reply is fetched as part of its thread, and
+    // indexing it separately would both duplicate it and strand it from the
+    // context that makes it meaningful.
+    //
+    // System messages are dropped here too. Found by running this against a
+    // real channel: "<@U0C35PG2PK5> has joined the channel" was the first
+    // indexed document, because a join event is a message like any other as far
+    // as conversations.history is concerned. A busy channel is mostly these,
+    // and each one is a chunk of machine chatter embedded as though somebody
+    // had written it.
+    const parents = messages.filter(
+      (message) =>
+        isProse(message) && (!message.thread_ts || message.thread_ts === message.ts),
+    );
+
+    return {
+      resources: parents.map((message) => this.toRef(scope, message)),
+      // Slack pages backwards through time; the oldest ts on this page is where
+      // the next page resumes. An empty page ends the walk.
+      cursor: body.has_more && messages.length > 0 ? messages[messages.length - 1]!.ts : undefined,
+    };
+  }
+
+  async fetch(scope: Scope, credentials: Credentials, id: string): Promise<Document> {
+    this.validateScope(scope);
+    const token = requireToken(credentials.delegated ?? credentials.service);
+
+    const body = (await this.callJoining("conversations.replies", token, scope, {
+      channel: scope.channel!,
+      ts: id,
+      limit: String(this.pageSize),
+    })) as { messages?: SlackMessage[] };
+
+    const messages = body.messages ?? [];
+    if (messages.length === 0) {
+      throw new PermissionDeniedError(`slack thread ${id} returned no messages`);
+    }
+
+    const parent = messages[0]!;
+    return {
+      ...this.toRef(scope, parent),
+      // The whole thread as one document. A question and its answer belong
+      // together; splitting them is what makes chat corpora useless.
+      //
+      // System messages are filtered out of the BODY as well as out of listing:
+      // a thread whose replies include three join events should not carry them
+      // into the chunk. The parent survives regardless — it is what this
+      // document is, and dropping it would leave a thread with no opening.
+      markdown: await this.renderThread(token, [parent, ...messages.slice(1).filter(isProse)]),
+    };
+  }
+
+  /**
+   * Live message search, as the caller, inside the corpus's channel.
+   *
+   * Three things were established against the live workspace rather than
+   * assumed (a bot token cannot do this at all):
+   *
+   * - `search.messages` refuses a BOT token outright with
+   *   `not_allowed_token_type`. This is user-token-only by Slack's design,
+   *   which suits us: search must run as the caller anyway (ADR 0040).
+   * - It needs `search:read` on the user token. Without it every variant
+   *   returns `missing_scope`, so a workspace that has not granted it simply
+   *   has no live search and keeps vector search.
+   * - `in:` matches a channel NAME, not an id.
+   *
+   * That last one is the awkward part, and it is why the results are filtered
+   * again below. Our scope deliberately stores the channel ID, because names
+   * are mutable and a rename must not silently re-point a corpus. But the only
+   * bound Slack's query language offers is the mutable name — so the `in:`
+   * term is treated as an OPTIMIZATION that keeps the result set small, and
+   * the id comparison afterwards is the actual security boundary. If the name
+   * we resolve is stale, or another channel is renamed into it, the filter
+   * still holds.
+   */
+  async searchAsUser(
+    credentials: Credentials,
+    scope: Scope,
+    query: string,
+    limit = 10,
+  ): Promise<SearchHit[]> {
+    this.validateScope(scope);
+    const token = requireDelegatedSlack(credentials);
+
+    const trimmed = query.trim();
+    if (trimmed.length === 0) return [];
+
+    const channel = scope.channel!;
+    const name = await this.channelName(token, channel);
+
+    // Slack has no quoting to escape into — the query is a term language, not
+    // a structured one — but a caller's own `in:` would widen the search past
+    // this channel, so operators are stripped from the user's words.
+    const terms = trimmed.replace(/\b(in|from|with|during|before|after|on):\S*/gi, " ").trim();
+    if (terms.length === 0) return [];
+
+    const query_ = name ? `in:#${name} ${terms}` : terms;
+    const body = (await this.call("search.messages", token, {
+      query: query_,
+      count: String(Math.min(limit, 20)),
+    })) as { messages?: { matches?: SlackSearchMatch[] } };
+
+    return (body.messages?.matches ?? [])
+      // THE bound. See the note above: `in:` is by name and names move.
+      .filter((match) => match.channel?.id === channel)
+      .map((match) => this.toSearchHit(channel, match))
+      .slice(0, limit);
+  }
+
+  /**
+   * The channel's name, for the `in:` term. Cached, and never fatal.
+   *
+   * A failure here costs a wider search that the id filter still narrows, so
+   * it degrades rather than throwing — the same shape as name resolution.
+   */
+  private async channelName(token: string, channel: string): Promise<string | undefined> {
+    if (this.channelNames.has(channel)) return this.channelNames.get(channel) ?? undefined;
+    try {
+      const body = (await this.call("conversations.info", token, { channel })) as {
+        channel?: { name?: string };
+      };
+      this.channelNames.set(channel, body.channel?.name ?? null);
+    } catch {
+      this.channelNames.set(channel, null);
+    }
+    return this.channelNames.get(channel) ?? undefined;
+  }
+
+  /**
+   * A match as a citable hit.
+   *
+   * The id is `<channel>/<ts>` — what the read face takes — and the thread
+   * parent is preferred over the matched message where Slack tells us one,
+   * since the read face indexes threads and a reply's own ts would fetch a
+   * one-message thread rather than the conversation the answer is in.
+   */
+  private toSearchHit(channel: string, match: SlackSearchMatch): SearchHit {
+    const ts = match.thread_ts ?? match.ts;
+    return {
+      id: `${channel}/${ts}`,
+      title: firstLine(match.text ?? "") || `message ${ts}`,
+      url: match.permalink ?? this.messageUrl(channel, ts),
+      version: ts,
+      excerpt: renderText(match.text ?? "").slice(0, 300) || undefined,
+    };
+  }
+
+  /** The shared tail of both read paths: resolve who spoke, then render. */
+  private async renderThread(token: string, messages: readonly SlackMessage[]): Promise<string> {
+    const names = await this.resolveNames(token, referencedUserIDs(messages));
+    return messages.map((message) => renderMessage(message, names)).join("\n\n");
+  }
+
+  /**
+   * Reads any thread the CALLER can see (see Driver.readAsUser).
+   *
+   * The channel comes from the id rather than the scope: a Slack thread ts is
+   * only meaningful with its channel, so this takes `<channel>/<ts>` — which
+   * is what retrieval cites for a Slack passage.
+   */
+  async readAsUser(credentials: Credentials, id: string): Promise<Document> {
+    const token = requireDelegatedSlack(credentials);
+    const [channel, ts] = splitThreadID(id);
+
+    const body = (await this.call("conversations.replies", token, {
+      channel,
+      ts,
+      limit: String(this.pageSize),
+    })) as { messages?: SlackMessage[] };
+
+    const messages = body.messages ?? [];
+    if (messages.length === 0) {
+      throw new PermissionDeniedError(`slack thread ${id} returned no messages`);
+    }
+    const parent = messages[0]!;
+    return {
+      ...this.toRef({ channel }, parent),
+      markdown: await this.renderThread(token, [parent, ...messages.slice(1).filter(isProse)]),
+    };
+  }
+
+  async probe(scope: Scope, credentials: Credentials, _id?: string): Promise<ProbeResult> {
+    this.validateScope(scope);
+    if (!credentials.delegated) {
+      throw new Error("a slack probe requires the calling user's delegated token");
+    }
+
+    // The channel IS the access unit. If this user can see the channel, they
+    // can see every message in it, so no message id is needed or used.
+    //
+    // Deliberately NOT the joining path. A probe asks whether this USER may
+    // read something; joining on their behalf would change the answer instead
+    // of reporting it, add them to a channel they never asked to join, and
+    // announce it to everyone in that channel.
+    const body = (await this.call("conversations.info", credentials.delegated, {
+      channel: scope.channel!,
+    })) as { channel?: { name?: string; is_archived?: boolean } };
+
+    const name = body.channel?.name ?? scope.channel!;
+    return {
+      allowed: true,
+      title: `#${name}`,
+      url: this.channelUrl(scope.channel!),
+      // A channel has no version. Slack edits are rare and carry no monotonic
+      // marker, so claiming one would be inventing a guarantee.
+      version: undefined,
+    };
+  }
+
+  /**
+   * A read that may first have to join the channel.
+   *
+   * LAZY on purpose: the join is attempted only after Slack has actually
+   * refused for want of membership, so the ordinary path stays read-only and a
+   * connection whose channel we are already in never writes anything.
+   *
+   * Retried exactly ONCE. If the read still fails after a successful join, the
+   * refusal is about something else and repeating would spin against Slack with
+   * a credential that is not going to start working.
+   */
+  private async callJoining(
+    method: string,
+    token: string,
+    scope: Scope,
+    params: Record<string, string>,
+  ): Promise<unknown> {
+    try {
+      return await this.call(method, token, params);
+    } catch (err) {
+      if (!this.autoJoin || !isNotInChannel(err)) throw err;
+
+      // Only ever the channel this connection is SCOPED to. The id comes from
+      // the Connection CR, never from a caller, so this cannot be steered into
+      // joining anything else.
+      await this.call("conversations.join", token, { channel: scope.channel! });
+      return this.call(method, token, params);
+    }
+  }
+
+  /**
+   * Verifies a Slack Events API delivery.
+   *
+   * Slack signs `v0:<timestamp>:<body>` with the app's signing secret. Both
+   * halves matter: the signature proves Slack sent it, the timestamp stops a
+   * captured delivery being replayed forever to make this broker spend a
+   * client's credential on demand.
+   *
+   * It reports which CHANNEL changed rather than filtering to one: a Slack app
+   * is one Connection serving many Corpora (ADR 0043 §4).
+   */
+  parseWebhook(request: WebhookRequest, secret: string): WebhookEvent | undefined {
+    const timestamp = request.headers["x-slack-request-timestamp"];
+    const provided = request.headers["x-slack-signature"];
+    if (!provided) throw new PermissionDeniedError("slack webhook carried no signature");
+    if (!withinReplayWindow(timestamp, Date.now())) {
+      throw new PermissionDeniedError("slack webhook timestamp is outside the replay window");
+    }
+
+    const expected = `v0=${hmacHex(secret, `v0:${timestamp}:${request.rawBody}`)}`;
+    if (!signaturesMatch(provided, expected)) {
+      throw new PermissionDeniedError("slack webhook signature did not verify");
+    }
+
+    let body: {
+      type?: string;
+      challenge?: string;
+      event?: { channel?: string; ts?: string; thread_ts?: string };
+    };
+    try {
+      body = JSON.parse(request.rawBody);
+    } catch {
+      throw new PermissionDeniedError("slack webhook body was not JSON");
+    }
+
+    // The one-time URL verification handshake. Verified, but about nothing.
+    if (body.type === "url_verification") return undefined;
+
+    const event = body.event;
+    // No channel means nothing routable. Verified, but not something to act on.
+    if (!event?.channel) return undefined;
+
+    // The THREAD is the indexed unit, so a reply names its parent. Which
+    // Corpora cover this channel is the broker's to decide (ADR 0043 §4).
+    const sourceId = event.thread_ts ?? event.ts;
+    return { scopeKey: event.channel, sourceIds: sourceId ? [sourceId] : [] };
+  }
+
+  private toRef(scope: Scope, message: SlackMessage) {
+    return {
+      id: message.ts,
+      title: firstLine(message.text ?? "") || `Thread ${message.ts}`,
+      url: message.permalink ?? this.messageUrl(scope.channel!, message.ts),
+      // Slack's ts IS the version: any edit produces a new one on the message
+      // that changed.
+      version: message.ts,
+      updatedAt: new Date(Number(message.ts.split(".")[0]) * 1000).toISOString(),
+      // Channel membership governs, and this driver does not enumerate members.
+      // Permissive rather than guessed: the probe is the authority, and
+      // under-inclusion is the only direction that hurts (ADR 0040).
+      acl: { principals: [], permissive: true },
+    };
+  }
+
+  private channelUrl(channel: string): string {
+    return this.workspaceUrl ? `${this.workspaceUrl}/archives/${channel}` : `slack://channel/${channel}`;
+  }
+
+  private messageUrl(channel: string, ts: string): string {
+    // Slack permalinks strip the dot from the timestamp.
+    return `${this.channelUrl(channel)}/p${ts.replace(".", "")}`;
+  }
+
+  /**
+   * Slack answers 200 with `ok: false` for most failures, so the HTTP status is
+   * not the answer. The error STRING is, and it distinguishes the cases that
+   * must not be blurred (ADR 0040).
+   */
+  /**
+   * Resolves author and mention ids to display names, BEST EFFORT.
+   *
+   * An opaque `@U0C14S3U61W` is noise in an embedding and worse in a citation
+   * the agent reads back to someone. But a name is a nicety and the message is
+   * the point, so every failure here degrades to the raw id rather than
+   * propagating: `users.info` needs the `users:read` scope, and this driver
+   * classifies `missing_scope` as PERMANENT, so a workspace that never granted
+   * it would otherwise see every fetch fail over decoration.
+   */
+  private async resolveNames(token: string, ids: Iterable<string>): Promise<Map<string, string>> {
+    const wanted = [...new Set(ids)].filter((id) => !this.userNames.has(id));
+
+    // Sequential on purpose: this is a per-author cost paid once, and Slack
+    // rate-limits users.info per workspace rather than per connection.
+    for (const id of wanted) {
+      try {
+        const body = (await this.call("users.info", token, { user: id })) as {
+          user?: { profile?: { display_name?: string; real_name?: string }; name?: string };
+        };
+        const profile = body.user?.profile;
+        const name = profile?.display_name || profile?.real_name || body.user?.name;
+        this.userNames.set(id, name && name.length > 0 ? name : null);
+      } catch {
+        this.userNames.set(id, null);
+      }
+    }
+
+    const resolved = new Map<string, string>();
+    for (const id of ids) {
+      const name = this.userNames.get(id);
+      if (name) resolved.set(id, name);
+    }
+    return resolved;
+  }
+
+  private async call(
+    method: string,
+    token: string,
+    params: Record<string, string>,
+  ): Promise<unknown> {
+    const url = `${this.apiOrigin}/${method}?${new URLSearchParams(params).toString()}`;
+
+    let response;
+    try {
+      response = await this.http(url, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      });
+    } catch (cause) {
+      throw new TransientError(`slack request failed: ${String(cause)}`);
+    }
+
+    if (response.status === 429) {
+      throw new TransientError("slack rate limited this request");
+    }
+    if (!response.ok) {
+      throw new TransientError(`slack returned ${response.status}`);
+    }
+
+    const body = (await response.json()) as { ok?: boolean; error?: string };
+    if (body.ok) return body;
+
+    const error = body.error ?? "unknown_error";
+    if (DENIALS.has(error)) throw new PermissionDeniedError(`slack: ${error}`);
+    if (PERMANENT.has(error)) throw new PermanentError(`slack: ${error}`);
+    throw new TransientError(`slack: ${error}`);
+  }
+}
+
+/** This caller may not read it. Drop the candidate. */
+const DENIALS = new Set([
+  "channel_not_found", // Slack's answer for "not a member", indistinguishable by design.
+  "not_in_channel",
+  "is_archived",
+  "thread_not_found",
+  "message_not_found",
+]);
+
+/** Retrying cannot help: the app or token is wrong, not busy. */
+const PERMANENT = new Set([
+  "invalid_auth",
+  "account_inactive",
+  "token_revoked",
+  "missing_scope",
+  "not_allowed_token_type",
+]);
+
+function requireDelegatedSlack(credentials: Credentials): string {
+  if (!credentials.delegated) {
+    throw new Error("a slack user read requires the calling user's delegated token");
+  }
+  return credentials.delegated;
+}
+
+/**
+ * Splits `<channel>/<ts>` into its parts.
+ *
+ * A thread ts means nothing without its channel, so a Slack citation carries
+ * both. An id with no channel cannot be resolved at all and is refused rather
+ * than guessed at against the corpus's own channel — guessing would read a
+ * DIFFERENT thread that happens to share a timestamp.
+ */
+function splitThreadID(id: string): [channel: string, ts: string] {
+  const slash = id.indexOf("/");
+  if (slash <= 0) {
+    throw new PermissionDeniedError(`slack read needs <channel>/<ts>, got ${id}`);
+  }
+  return [id.slice(0, slash), id.slice(slash + 1)];
+}
+
+function requireToken(token: string | undefined): string {
+  if (!token) throw new Error("no credential supplied for a slack request");
+  return token;
+}
+
+/**
+ * Whether Slack refused because we are not in the channel.
+ *
+ * Matched on the error string Slack returns, which is carried verbatim into the
+ * message. `channel_not_found` is deliberately NOT treated as joinable: Slack
+ * returns it both for a channel that does not exist and for a private one we
+ * cannot see, and attempting to join either is a request that cannot succeed.
+ */
+function isNotInChannel(err: unknown): boolean {
+  return err instanceof PermissionDeniedError && err.message.includes("not_in_channel");
+}
+
+const firstLine = (text: string): string =>
+  renderText(text).split("\n")[0]?.slice(0, 120).trim() ?? "";
+
+/**
+ * Turns Slack's mrkdwn into text worth embedding.
+ *
+ * Found by running against a real channel: a message linking a pull request
+ * arrived as `<https://github.com/org/repo/pull/259|PR>` and went into the
+ * vector as written. The URL dominates the embedding, the word a human would
+ * search for is buried inside the markup, and the same happens to every
+ * mention and channel reference. It is the Confluence macro-parameter problem
+ * in a different syntax.
+ *
+ * ORDER MATTERS here, and subtly. Slack escapes `&`, `<` and `>` in whatever a
+ * person typed, but the angle brackets around its OWN entities are literal. So
+ * entities are parsed first and the escapes undone afterwards — do it the other
+ * way and a message quoting "a <b|c> d" becomes an entity we then mangle.
+ */
+export function renderText(text: string, names?: ReadonlyMap<string, string>): string {
+  return (
+    text
+      // <url|label> — keep both: the label is what a person searches for, the
+      // URL is evidence a model may want to cite.
+      .replace(/<(https?:\/\/[^|>]+)\|([^>]*)>/g, (_m, url: string, label: string) =>
+        label.trim() ? `[${label}](${url})` : url,
+      )
+      // <url> — nothing to show but the URL itself.
+      .replace(/<(https?:\/\/[^|>]+)>/g, "$1")
+      // <mailto:a@b|a@b>
+      .replace(/<mailto:([^|>]+)(?:\|[^>]*)?>/g, "$1")
+      // <@U123|name> and <@U123>. Without a users.info lookup the id is all
+      // there is; the brackets are markup and go regardless.
+      .replace(/<@([UW][A-Z0-9]+)\|([^>]+)>/g, "@$2")
+      .replace(/<@([UW][A-Z0-9]+)>/g, (_whole, id: string) => `@${names?.get(id) ?? id}`)
+      // <#C123|general> and <#C123>
+      .replace(/<#(C[A-Z0-9]+)\|([^>]+)>/g, "#$2")
+      .replace(/<#(C[A-Z0-9]+)>/g, "#$1")
+      // <!here>, <!channel>, <!subteam^S123|@team>
+      .replace(/<!subteam\^[A-Z0-9]+(?:\|([^>]+))?>/g, (_m, handle: string | undefined) => handle ?? "@team")
+      .replace(/<!([a-z]+)(?:\|[^>]*)?>/g, "@$1")
+      // Only now the escapes, and only the three Slack actually applies.
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&amp;/g, "&")
+      .trim()
+  );
+}
+
+/**
+ * Whether a message is something a person wrote, rather than something Slack
+ * emitted about the channel.
+ *
+ * Joins, leaves, topic and purpose changes, pins and channel renames all arrive
+ * through conversations.history as ordinary messages carrying a `subtype`. A
+ * plain human message has no subtype at all, which makes the test a presence
+ * check rather than a denylist — a denylist would silently start indexing
+ * whatever subtype Slack adds next.
+ *
+ * `bot_message` and `thread_broadcast` are the deliberate exceptions: both are
+ * real content. A bot posting a deploy summary or an alert is often exactly
+ * what somebody later searches for.
+ */
+const PROSE_SUBTYPES = new Set(["bot_message", "thread_broadcast"]);
+
+function isProse(message: SlackMessage): boolean {
+  if (message.subtype !== undefined && !PROSE_SUBTYPES.has(message.subtype)) return false;
+  // A message with no text is a file share or an attachment-only post; there is
+  // nothing to embed, and an empty chunk is worse than no chunk.
+  return (message.text ?? "").trim().length > 0;
+}
+
+/**
+ * One message as Markdown.
+ *
+ * `names` is what SlackDriver.resolveNames could resolve; anything missing
+ * falls back to the raw id, which is ugly but never wrong.
+ */
+function renderMessage(message: SlackMessage, names?: ReadonlyMap<string, string>): string {
+  const author = message.user ? `@${names?.get(message.user) ?? message.user}` : "unknown";
+  return `**${author}**: ${renderText(message.text ?? "", names)}`.trim();
+}
+
+/** Every user id a rendered thread would otherwise expose: authors and mentions. */
+export function referencedUserIDs(messages: readonly SlackMessage[]): string[] {
+  const ids: string[] = [];
+  for (const message of messages) {
+    if (message.user) ids.push(message.user);
+    // Bare `<@U123>` only. The `<@U123|name>` form already carries its name.
+    for (const match of (message.text ?? "").matchAll(/<@([UW][A-Z0-9]+)>/g)) {
+      if (match[1]) ids.push(match[1]);
+    }
+  }
+  return ids;
+}

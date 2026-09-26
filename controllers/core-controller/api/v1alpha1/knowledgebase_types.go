@@ -71,7 +71,7 @@ type KnowledgeBaseSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Description string `json:"description"`
 
-	// displayName is the human name for this knowledge base (e.g. "SNC").
+	// displayName is the human name for this knowledge base (e.g. "GLOBEX").
 	// Defaults to metadata.name.
 	// +optional
 	DisplayName string `json:"displayName,omitempty"`
@@ -83,9 +83,9 @@ type KnowledgeBaseSpec struct {
 	// +listType=set
 	Aliases []string `json:"aliases,omitempty"`
 
-	// connectionRefs names the Connection CRs (same namespace) composing this
+	// corpusRefs names the Corpus CRs (same namespace) composing this
 	// knowledge base. Repeats of one provider are expected and supported; give
-	// them distinct Connection displayNames so citations can tell them apart.
+	// them distinct Corpus displayNames so citations can tell them apart.
 	//
 	// An explicit list rather than a label selector: which sources compose a
 	// client's knowledge base is worth reviewing in a diff, and a mistyped
@@ -93,7 +93,7 @@ type KnowledgeBaseSpec struct {
 	// +required
 	// +kubebuilder:validation:MinItems=1
 	// +listType=set
-	ConnectionRefs []string `json:"connectionRefs"`
+	CorpusRefs []string `json:"corpusRefs"`
 
 	// chunk sets default chunking. See KnowledgeBaseChunking.
 	// +optional
@@ -120,8 +120,8 @@ type KnowledgeBaseSpec struct {
 	// what any given caller actually sees (ADR 0039 §4).
 }
 
-// KnowledgeBaseConnectionStatus is one member Connection's contribution.
-type KnowledgeBaseConnectionStatus struct {
+// KnowledgeBaseCorpusStatus is one member Corpus's contribution.
+type KnowledgeBaseCorpusStatus struct {
 	// name of the member Connection.
 	// +required
 	Name string `json:"name"`
@@ -146,21 +146,21 @@ type KnowledgeBaseStatus struct {
 	// +listType=map
 	// +listMapKey=name
 	// +optional
-	PerConnection []KnowledgeBaseConnectionStatus `json:"perConnection,omitempty"`
+	PerCorpus []KnowledgeBaseCorpusStatus `json:"perCorpus,omitempty"`
 
-	// staleConnections are members whose last full reconcile is older than
+	// staleCorpora are members whose last full reconcile is older than
 	// their own reconcileInterval allows — the corpus is answerable but some of
 	// it is out of date, which a cited answer should be able to admit.
 	// +optional
 	// +listType=set
-	StaleConnections []string `json:"staleConnections,omitempty"`
+	StaleCorpora []string `json:"staleCorpora,omitempty"`
 
-	// missingConnections are connectionRefs with no matching Connection CR.
+	// missingCorpora are corpusRefs with no matching Corpus CR.
 	// Surfaced rather than ignored: a dangling ref means the knowledge base
 	// silently answers from less than it claims to cover.
 	// +optional
 	// +listType=set
-	MissingConnections []string `json:"missingConnections,omitempty"`
+	MissingCorpora []string `json:"missingCorpora,omitempty"`
 
 	// observedGeneration is the .metadata.generation this status reflects.
 	// +optional

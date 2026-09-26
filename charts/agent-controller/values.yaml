@@ -257,3 +257,9 @@ searxng:
 # list, it does not append to it.
 # ---------------------------------------------------------------------------
 extraManifests: []
+
+# Connection broker (apps/connection-broker). Off by default: it is only needed
+# once Connection CRs exist, and it is the process that will hold every client's
+# third-party credentials, so it should be turned on deliberately.
+connection-broker:
+  enabled: false

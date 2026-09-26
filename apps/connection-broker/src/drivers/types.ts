@@ -114,6 +114,43 @@ export interface Credentials {
   delegated?: string;
 }
 
+/** A provider's change notification, once verified and understood. */
+export interface WebhookEvent {
+  /**
+   * WHICH subset this delivery is about — a channel id, a space key, a folder
+   * id — so the broker can route it to the Corpora that cover it (ADR 0043 §4).
+   *
+   * Reported rather than filtered against, because one Connection serves many
+   * Corpora and a driver no longer knows which subsets exist. Absent means the
+   * provider said something changed without saying where, which escalates to a
+   * full pass rather than to nothing.
+   */
+  scopeKey?: string;
+
+  /**
+   * The resources this notification says changed.
+   *
+   * EMPTY is meaningful and common: Drive's push notifications name a channel
+   * rather than a file, and Slack's events can arrive for things this
+   * connection does not index. An empty list means "something changed, we do
+   * not know what", which callers turn into a full pass rather than into
+   * nothing.
+   */
+  sourceIds: string[];
+}
+
+/** The raw request a provider delivered, before any interpretation. */
+export interface WebhookRequest {
+  headers: Record<string, string | undefined>;
+  /**
+   * The body EXACTLY as received.
+   *
+   * Signatures are computed over the bytes, so a parsed-and-restringified body
+   * verifies against nothing. This has to arrive unmodified from the socket.
+   */
+  rawBody: string;
+}
+
 export interface Driver {
   readonly provider: string;
 
@@ -142,4 +179,91 @@ export interface Driver {
    * failure meant, and guessing is how a leak gets introduced.
    */
   probe(scope: Scope, credentials: Credentials, id?: string): Promise<ProbeResult>;
+
+  /**
+   * Verifies a provider's change notification and says what it refers to.
+   *
+   * Optional: a provider without push notifications simply does not implement
+   * it, and that connection stays on its reconcile interval — which is the
+   * source of truth regardless (ADR 0038 §4). Webhooks only make it faster.
+   *
+   * This runs on an endpoint reachable WITHOUT a bearer token, because the
+   * provider is the caller. The signature is therefore the only thing standing
+   * between a stranger and the ability to make this broker spend a client's
+   * credential on demand, so an implementation MUST throw rather than return
+   * for anything it cannot verify.
+   *
+   * Returning `undefined` means "verified, but not something to act on" — a
+   * Slack URL-verification handshake, a Drive sync ping. Distinct from
+   * throwing, which means the request was not trustworthy, and from reporting a
+   * scopeKey nothing covers, which is the ordinary case and is the broker's to
+   * decide.
+   */
+  parseWebhook?(request: WebhookRequest, secret: string): WebhookEvent | undefined;
+
+  /**
+   * Reads one resource as the calling user, bounded by THEIR access rather
+   * than by the corpus's scope.
+   *
+   * This is the one read that deliberately leaves the scope behind, so it is
+   * worth saying why rather than letting it look like an oversight.
+   *
+   * A knowledge base's material cites other pages, and those citations lead
+   * out of whatever space was indexed. An agent that can read a page but not
+   * the page it references is not much use, and the alternative — indexing
+   * every space so the links resolve — is both enormous and wrong.
+   *
+   * What bounds it instead is identity. The read runs on the caller's own
+   * delegated token, so the source returns exactly what that person would see
+   * by opening it themselves: it grants no access they lack, it only lets the
+   * agent act with the access they already have.
+   *
+   * The scope check stays on `fetch`, which is the INGESTION path — a sync
+   * pass has no user, runs on a shared credential, and must never wander
+   * outside the subset its Corpus declares.
+   *
+   * A separate method rather than a flag on `fetch`, because "passing a
+   * delegated token silently disables the scope check" is exactly the kind of
+   * implicit behaviour nobody notices until it is wrong.
+   */
+  readAsUser?(credentials: Credentials, id: string): Promise<Document>;
+
+  /**
+   * Searches the SOURCE as the calling user, bounded by the corpus's scope.
+   *
+   * The deliberate asymmetry with `readAsUser` is the whole design, so it is
+   * worth stating plainly: search is bounded by scope AND identity, a read is
+   * bounded by identity alone.
+   *
+   * They differ because discovery and retrieval are different acts. A read
+   * follows a citation the user is already looking at, so leaving the scope
+   * behind lets an agent follow a link out of the indexed space — useful, and
+   * safe, because the caller's own token decides what comes back. Search has no
+   * such anchor: an unbounded one turns "what does this knowledge base know"
+   * into "everything this person can see anywhere", which is a different
+   * question and not the one a knowledge base was asked. Verified against the
+   * live tenant: dropping the space term returns pages from ANOTHER client's
+   * space, so the bound is doing real work rather than decoration.
+   *
+   * This complements vector search rather than replacing it. The index answers
+   * "what do we know about X" over a snapshot; this answers "what is there NOW",
+   * which is what a stale snapshot cannot.
+   *
+   * Optional: a provider whose search needs a scope or token type we do not
+   * hold simply does not implement it, and that corpus keeps vector search.
+   *
+   * MUST throw the classified errors, for the same reason `probe` must.
+   */
+  searchAsUser?(credentials: Credentials, scope: Scope, query: string, limit?: number): Promise<SearchHit[]>;
+}
+
+/**
+ * One live search result.
+ *
+ * A `ResourceRef` plus the provider's own `excerpt`, which is worth carrying:
+ * it is the source's answer to "why did this match", and it lets an agent
+ * decide whether a hit is worth a read rather than reading all of them.
+ */
+export interface SearchHit extends ResourceRef {
+  excerpt?: string;
 }

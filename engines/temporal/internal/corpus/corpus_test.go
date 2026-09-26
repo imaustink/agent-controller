@@ -55,12 +55,12 @@ func (f *fakeStore) GetByIDsUnfiltered(context.Context, []string) ([]vectorstore
 
 func chunkHit(connectionID, sourceID, hash string, score float32) vectorstore.Hit {
 	payload, err := json.Marshal(corpus.Chunk{
-		ConnectionID:    connectionID,
-		ConnectionLabel: "#" + connectionID,
-		SourceURL:       fmt.Sprintf("https://example.test/%s/%s", connectionID, sourceID),
-		SourceID:        sourceID,
-		ContentHash:     hash,
-		Text:            "…" + sourceID + "…",
+		CorpusID:    connectionID,
+		CorpusLabel: "#" + connectionID,
+		SourceURL:   fmt.Sprintf("https://example.test/%s/%s", connectionID, sourceID),
+		SourceID:    sourceID,
+		ContentHash: hash,
+		Text:        "…" + sourceID + "…",
 	})
 	if err != nil {
 		panic(err)
@@ -70,11 +70,11 @@ func chunkHit(connectionID, sourceID, hash string, score float32) vectorstore.Hi
 
 func TestSearchMergesMembersByScore(t *testing.T) {
 	confluence := &fakeStore{hits: []vectorstore.Hit{
-		chunkHit("snc-confluence", "page-1", "hash-a", 0.91),
-		chunkHit("snc-confluence", "page-2", "hash-b", 0.42),
+		chunkHit("globex-confluence", "page-1", "hash-a", 0.91),
+		chunkHit("globex-confluence", "page-2", "hash-b", 0.42),
 	}}
 	slack := &fakeStore{hits: []vectorstore.Hit{
-		chunkHit("snc-slack-eng", "msg-1", "hash-c", 0.77),
+		chunkHit("globex-slack-eng", "msg-1", "hash-c", 0.77),
 	}}
 
 	hits, skipped, err := corpus.Search(context.Background(),
@@ -105,15 +105,15 @@ func TestSearchPassesCallerRolesToEveryMember(t *testing.T) {
 func TestSearchDeduplicatesTheSamePassageReachedTwice(t *testing.T) {
 	// The same document in a Drive folder and linked into a synced Confluence
 	// space: one fact, two connections, one content hash.
-	drive := &fakeStore{hits: []vectorstore.Hit{chunkHit("snc-drive", "doc-7", "same-hash", 0.55)}}
-	confluence := &fakeStore{hits: []vectorstore.Hit{chunkHit("snc-confluence", "page-9", "same-hash", 0.81)}}
+	drive := &fakeStore{hits: []vectorstore.Hit{chunkHit("globex-drive", "doc-7", "same-hash", 0.55)}}
+	confluence := &fakeStore{hits: []vectorstore.Hit{chunkHit("globex-confluence", "page-9", "same-hash", 0.81)}}
 
 	hits, _, err := corpus.Search(context.Background(),
 		[]vectorstore.Store{drive, confluence}, "q", []string{"reader"}, 10)
 
 	require.NoError(t, err)
 	require.Len(t, hits, 1, "a cited answer must not list two URLs for one fact")
-	require.Equal(t, "snc-confluence", hits[0].Chunk.ConnectionID, "the better-scoring copy wins")
+	require.Equal(t, "globex-confluence", hits[0].Chunk.CorpusID, "the better-scoring copy wins")
 }
 
 func TestSearchIsDeterministicAcrossRuns(t *testing.T) {

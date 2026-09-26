@@ -23,11 +23,11 @@ type Indexer struct {
 	agents map[string]AgentDescriptor
 	skills map[string]SkillDescriptor // as decoded, pre-derivation
 
-	// Connections and knowledge bases are mirrored the same way, and for the
+	// Corpora and knowledge bases are mirrored the same way, and for the
 	// same reason: a KnowledgeBase's derived skill (ADR 0039 §2) is a function
 	// of BOTH, so either changing has to re-derive every knowledge base that
 	// references it.
-	connections    map[string]ConnectionDescriptor
+	connections    map[string]CorpusDescriptor
 	knowledgeBases map[string]KnowledgeBaseDescriptor
 
 	reindexDelay time.Duration
@@ -42,7 +42,7 @@ func NewIndexer(stores vectorstore.Collections) *Indexer {
 		tools:          map[string]ToolDescriptor{},
 		agents:         map[string]AgentDescriptor{},
 		skills:         map[string]SkillDescriptor{},
-		connections:    map[string]ConnectionDescriptor{},
+		connections:    map[string]CorpusDescriptor{},
 		knowledgeBases: map[string]KnowledgeBaseDescriptor{},
 		reindexDelay:   defaultReindexDelay,
 	}

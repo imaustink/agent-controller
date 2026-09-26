@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { chunkDocument, hashChunk } from "./chunk.js";
 import type { Document } from "../drivers/types.js";
 
-const connection = { id: "snc-confluence", label: "SNC Confluence" };
+const connection = { id: "globex-confluence", label: "GLOBEX Confluence" };
 
 function doc(markdown: string, over: Partial<Document> = {}): Document {
   return {
@@ -108,7 +108,7 @@ describe("chunkDocument", () => {
       expect(chunk.sourceUrl).toBe("https://wiki/page-1");
       expect(chunk.sourceId).toBe("page-1");
       expect(chunk.version).toBe("v7");
-      expect(chunk.connectionLabel).toBe("SNC Confluence");
+      expect(chunk.connectionLabel).toBe("GLOBEX Confluence");
     }
   });
 

@@ -10,7 +10,11 @@ import {
   type ProbeGranularity,
   type ProbeResult,
   type Scope,
+  type SearchHit,
+  type WebhookEvent,
+  type WebhookRequest,
 } from "./types.js";
+import { hmacHex, signaturesMatch } from "./webhook-signature.js";
 
 /** Minimal HTTP surface, injectable so the driver is testable without a tenant. */
 export type FetchLike = (url: string, init?: { headers?: Record<string, string> }) => Promise<{
@@ -146,6 +150,17 @@ export class ConfluenceDriver implements Driver {
    * just as it does on the site.
    */
   private async apiBaseFor(token: string): Promise<string> {
+    // An API token addresses the site directly. There is no OAuth gateway in
+    // front of it and no cloudId to resolve — `/oauth/token/accessible-resources`
+    // is an OAuth endpoint and does not answer for Basic auth at all, so
+    // routing this through the gateway would fail before the first real call.
+    //
+    // The cross-tenant check the gateway path needs is moot here for the same
+    // reason it is needed there: a Bearer token may reach several sites and
+    // has to be pinned to one, while an API token is issued against exactly
+    // the site in `siteBaseUrl` and can reach no other.
+    if (isApiToken(token)) return this.siteBaseUrl.replace(/\/+$/, "");
+
     if (!this.cloudId) this.cloudId = await this.resolveCloudId(token);
     return `${this.gatewayOrigin}/ex/confluence/${this.cloudId}/wiki`;
   }
@@ -296,6 +311,27 @@ export class ConfluenceDriver implements Driver {
     };
   }
 
+  /**
+   * Reads any page the CALLER can see (see Driver.readAsUser).
+   *
+   * No space assertion: Confluence applies this user's own permissions, and a
+   * page they cannot read comes back 404 whichever space it is in.
+   */
+  async readAsUser(credentials: Credentials, id: string): Promise<Document> {
+    const token = requireDelegated(credentials, "confluence");
+    const apiBase = await this.apiBaseFor(token);
+
+    const page = (await this.request(
+      `${apiBase}/api/v2/pages/${encodeURIComponent(id)}?body-format=storage`,
+      token,
+    )) as ConfluencePage;
+
+    return {
+      ...this.toRef(page, []),
+      markdown: storageToMarkdown(page.body?.storage?.value ?? ""),
+    };
+  }
+
   async probe(scope: Scope, credentials: Credentials, id?: string): Promise<ProbeResult> {
     this.validateScope(scope);
     if (!id) throw new Error("confluence probes are per resource and need a page id");
@@ -320,6 +356,46 @@ export class ConfluenceDriver implements Driver {
 
     const ref = this.toRef(page, []);
     return { allowed: true, title: ref.title, url: ref.url, version: ref.version };
+  }
+
+  /**
+   * Verifies a Confluence webhook delivery.
+   *
+   * Atlassian signs the raw body with the secret configured on the webhook and
+   * sends it as `X-Hub-Signature: sha256=<hex>`. There is no timestamp to bind,
+   * so unlike Slack this cannot rule out replay — which is survivable here
+   * precisely because a webhook only ever triggers a PARTIAL pass over pages
+   * the source is then re-read for. A replayed notification costs a redundant
+   * fetch, not a wrong corpus.
+   *
+   * It reports which SPACE changed rather than filtering to one: a Connection
+   * serves many Corpora and this driver no longer knows which spaces are
+   * indexed (ADR 0043 §4).
+   */
+  parseWebhook(request: WebhookRequest, secret: string): WebhookEvent | undefined {
+    const provided = request.headers["x-hub-signature"];
+    if (!provided) throw new PermissionDeniedError("confluence webhook carried no signature");
+
+    const expected = `sha256=${hmacHex(secret, request.rawBody)}`;
+    if (!signaturesMatch(provided, expected)) {
+      throw new PermissionDeniedError("confluence webhook signature did not verify");
+    }
+
+    let body: { page?: { id?: number | string; spaceKey?: string }; space?: { spaceKey?: string } };
+    try {
+      body = JSON.parse(request.rawBody);
+    } catch {
+      throw new PermissionDeniedError("confluence webhook body was not JSON");
+    }
+
+    const pageId = body.page?.id;
+    // No page id means "something in this space changed, we do not know what".
+    // An empty list is how that is expressed; the caller escalates to a full
+    // pass rather than doing nothing.
+    return {
+      scopeKey: body.page?.spaceKey ?? body.space?.spaceKey,
+      sourceIds: pageId === undefined ? [] : [String(pageId)],
+    };
   }
 
   /**
@@ -400,13 +476,63 @@ export class ConfluenceDriver implements Driver {
     );
   }
 
+  /**
+   * Live CQL search, as the caller, inside the corpus's space.
+   *
+   * Every clause here was verified against the live tenant rather than read off
+   * the docs (scripts/probe-confluence-search.mjs), which matters because this
+   * driver previously shipped against v1 endpoints that had been 410 Gone for
+   * months:
+   *
+   * - `/rest/api/search` is ALIVE. The v1 deprecation took `/rest/api/content`
+   *   with it but not this, and v2 has no text search to migrate to.
+   * - It needs the `search:confluence` scope, which the sync path never asked
+   *   for. Without it the call fails on a token that reads pages perfectly well.
+   * - `type = page` is load-bearing. Unconstrained, the top hit on a real space
+   *   was a FOLDER, and folders, blogposts and attachments carry ids the read
+   *   tool cannot serve — the agent would be handed references that always fail.
+   * - The space term does real work: dropping it returned pages from another
+   *   client's space on this same tenant.
+   */
+  async searchAsUser(
+    credentials: Credentials,
+    scope: Scope,
+    query: string,
+    limit = 10,
+  ): Promise<SearchHit[]> {
+    this.validateScope(scope);
+    if (!credentials.delegated) {
+      throw new Error("a confluence search requires the calling user's delegated token");
+    }
+
+    const trimmed = query.trim();
+    if (trimmed.length === 0) return [];
+
+    // CQL string literals are double-quoted, so a quote or backslash in the
+    // user's words would end the literal and let the rest be read as query
+    // syntax — against a term the CALLER supplies. Escaped, not stripped: the
+    // words are the user's question and mangling them changes the search.
+    const escaped = trimmed.replace(/["\\]/g, "\\$&");
+    const cql = `space = "${scope.space}" AND type = page AND text ~ "${escaped}"`;
+
+    const apiBase = await this.apiBaseFor(credentials.delegated);
+    const url = `${apiBase}/rest/api/search?cql=${encodeURIComponent(cql)}&limit=${Math.min(limit, 25)}`;
+    const body = (await this.request(url, credentials.delegated)) as {
+      results?: ConfluenceSearchResult[];
+    };
+
+    return (body.results ?? [])
+      .map((result) => toSearchHit(result, this.siteBaseUrl))
+      .filter((hit): hit is SearchHit => hit !== undefined);
+  }
+
   private async request(url: string, token: string | undefined): Promise<unknown> {
     if (!token) throw new Error("no credential supplied for a confluence request");
 
     let response;
     try {
       response = await this.http(url, {
-        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        headers: { Authorization: authorization(token), Accept: "application/json" },
       });
     } catch (cause) {
       // A network failure is not an answer about permissions.
@@ -451,6 +577,21 @@ export class ConfluenceDriver implements Driver {
  * request with no Authorization header that the source would reject as a 401 —
  * which the error classifier would then read as a permission denial.
  */
+/**
+ * The delegated credential, for a read bounded by identity rather than scope.
+ *
+ * Refuses the service credential outright. Falling back to it would turn a
+ * "what may this person see" read into a "what may the ingestion account see"
+ * one — and that account is scoped to nothing, so the fallback would be the
+ * widest possible read at exactly the moment the narrowest was intended.
+ */
+function requireDelegated(credentials: Credentials, provider: string): string {
+  if (!credentials.delegated) {
+    throw new Error(`a ${provider} user read requires the calling user's delegated token`);
+  }
+  return credentials.delegated;
+}
+
 function requireToken(token: string | undefined): string {
   if (!token) throw new Error("no credential supplied for a confluence request");
   return token;
@@ -506,10 +647,70 @@ function nextCursor(next: string | undefined): Cursor {
   }
 }
 
+/** A `/rest/api/search` hit. The page lives under `content`; the rest is search metadata. */
+interface ConfluenceSearchResult {
+  content?: { id?: string; type?: string; title?: string };
+  title?: string;
+  excerpt?: string;
+  /** Site-relative, like `_links.webui` — `/spaces/BITOVI/pages/997064705/Title`. */
+  url?: string;
+  lastModified?: string;
+}
+
+/**
+ * A search hit as a ResourceRef, or undefined for one we cannot cite.
+ *
+ * A hit with no content id is dropped rather than passed on with a blank id:
+ * the id is what the read tool is handed, so an unusable one is a reference
+ * that always fails, which is worse for the agent than one fewer result.
+ *
+ * No `acl` is set. These come from a search run as the USER, so they are
+ * already filtered by what that person can see — the mirror's pre-filter
+ * exists for the INDEX, where the reader is not the one who fetched.
+ */
+function toSearchHit(result: ConfluenceSearchResult, siteBaseUrl: string): SearchHit | undefined {
+  const id = result.content?.id;
+  if (!id) return undefined;
+
+  const base = siteBaseUrl.replace(/\/+$/, "");
+  return {
+    id,
+    title: result.content?.title ?? result.title ?? id,
+    url: result.url ? `${base}${result.url}` : `${base}/pages/${id}`,
+    updatedAt: result.lastModified,
+    // Confluence marks matched terms with @@@hl@@@ sentinels; they are noise
+    // to a model, which reads the words rather than the highlighting.
+    excerpt: result.excerpt?.replace(/@@@(end)?hl@@@/g, "").trim() || undefined,
+  };
+}
+
+/**
+ * Whether this credential is an Atlassian API token rather than an OAuth
+ * access token.
+ *
+ * The convention is `email:token`, which is exactly what Atlassian's own docs
+ * tell you to base64 for Basic auth — so an operator pastes the two halves
+ * they already have rather than learning a format of ours.
+ *
+ * Detected on the separator plus an `@` in the first half. An OAuth access
+ * token is a JWT or an opaque string and contains neither, so the two shapes
+ * cannot be confused for one another.
+ */
+export function isApiToken(token: string): boolean {
+  const separator = token.indexOf(":");
+  return separator > 0 && token.slice(0, separator).includes("@");
+}
+
+/** The Authorization header for whichever credential shape this is. */
+function authorization(token: string): string {
+  if (!isApiToken(token)) return `Bearer ${token}`;
+  return `Basic ${Buffer.from(token, "utf8").toString("base64")}`;
+}
+
 /**
  * The human URL for a page, for citations.
  *
- * `_links.webui` is a site-relative path (`/spaces/SNC/pages/123/Title`), so it
+ * `_links.webui` is a site-relative path (`/spaces/GLOBEX/pages/123/Title`), so it
  * is appended to the configured site base — which already carries `/wiki`.
  */
 function citationUrl(page: ConfluencePage, siteBaseUrl: string): string {
@@ -523,7 +724,7 @@ function citationUrl(page: ConfluencePage, siteBaseUrl: string): string {
  * parser dependency into a security-sensitive service.
  */
 export function storageToMarkdown(storage: string): string {
-  return storage
+  return dropNonProse(storage)
     .replace(/<h([1-6])[^>]*>(.*?)<\/h\1>/gis, (_m, level: string, text: string) =>
       `\n${"#".repeat(Number(level))} ${stripTags(text)}\n`,
     )
@@ -535,8 +736,52 @@ export function storageToMarkdown(storage: string): string {
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
+    // Storage format is indented XML, so stripping tags leaves the indentation
+    // behind as runs of spaces on every line. Harmless to read, but it is
+    // embedded and it counts against the chunk budget.
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+/**
+ * Removes the elements whose CONTENT is machine configuration rather than
+ * writing, before tag-stripping turns that content into prose.
+ *
+ * Found by running the converter against a real page: a panel macro put
+ * `#E3FCEF` — its background colour — at the top of the extracted text, which
+ * then got embedded as though it were something the client had written. Macro
+ * parameters, attachment and page references, and layout ids are all like this:
+ * they sit inside elements, so removing the tags alone promotes them to body
+ * text. Every one of them costs vector quality and chunk budget.
+ *
+ * Whole elements are dropped, content included, rather than being filtered
+ * afterwards. There is no way to tell `#E3FCEF` from a legitimate mention of a
+ * colour once the markup is gone.
+ */
+function dropNonProse(storage: string): string {
+  return (
+    storage
+      // Macro configuration: colours, ids, widths, sort orders.
+      .replace(/<ac:parameter\b[^>]*>[\s\S]*?<\/ac:parameter>/gi, "")
+      // Task bookkeeping. The task BODY is writing and must survive; its id and
+      // status are not, and tag-stripping alone turns them into a stray "11"
+      // and "incomplete" sitting in the middle of a sentence.
+      .replace(/<ac:task-(id|status)\b[^>]*>[\s\S]*?<\/ac:task-\1>/gi, "")
+      // Editor placeholder text — prompts from the template, never authored.
+      .replace(/<ac:placeholder\b[^>]*>[\s\S]*?<\/ac:placeholder>/gi, "")
+      // Resource references — attachment filenames, space keys, user keys.
+      .replace(/<ri:[^>]*\/>/gi, "")
+      .replace(/<ri:[^>]*>[\s\S]*?<\/ri:[^>]*>/gi, "")
+      // ADF macro configuration. NOT ac:layout-section or ac:layout-cell, which
+      // look like structure but CONTAIN the page body — dropping those would
+      // silently empty every page that uses a layout, which is most of them.
+      .replace(/<ac:(adf-attribute|adf-parameter)\b[^>]*>[\s\S]*?<\/ac:\1>/gi, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+  );
 }
 
 const stripTags = (html: string): string => html.replace(/<[^>]+>/g, "").trim();

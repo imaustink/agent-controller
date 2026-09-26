@@ -38,7 +38,12 @@ export interface KnowledgeBaseExecMember {
 export interface KnowledgeBaseExecSpec {
   knowledgeBaseId: string;
   displayName: string;
-  operation: "search" | "fetch";
+  /**
+   * What this tool does. "search" is the INDEX, "lookup" is the live source.
+   *
+   * "fetch" is legacy: no such tool is generated (docs/adr/0040).
+   */
+  operation: "search" | "read" | "lookup" | "fetch";
   members: KnowledgeBaseExecMember[];
   disclosePartialVisibility: boolean;
 }

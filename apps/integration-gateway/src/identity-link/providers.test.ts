@@ -43,6 +43,16 @@ describe("loadOAuthProviders", () => {
     expect(partial.has("atlassian")).toBe(false);
   });
 
+  it("asks for search:confluence by default, which the read scopes do not imply", () => {
+    // A token with the read scopes but not this one reads pages perfectly well
+    // and fails every live lookup — a missing permission that presents as a
+    // broken feature.
+    const atlassian = loadOAuthProviders(atlassianEnv).get("atlassian");
+
+    expect(atlassian?.scopes).toContain("search:confluence");
+    expect(atlassian?.scopes).toContain("read:page:confluence");
+  });
+
   it("forces offline_access on, since without it no refresh token is issued at all", () => {
     const atlassian = loadOAuthProviders({
       ...atlassianEnv,

@@ -25,16 +25,16 @@ import (
 	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 )
 
-// TestConnectionIsStale is a plain (non-envtest) unit test of the staleness
+// TestCorpusIsStale is a plain (non-envtest) unit test of the staleness
 // rule a KnowledgeBase reports its members against.
-func TestConnectionIsStale(t *testing.T) {
+func TestCorpusIsStale(t *testing.T) {
 	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
 	hourly := &metav1.Duration{Duration: time.Hour}
 
-	withSync := func(mode corev1alpha1.ConnectionSyncMode, interval *metav1.Duration, lastReconcile *time.Time) *corev1alpha1.Connection {
-		conn := &corev1alpha1.Connection{
-			Spec: corev1alpha1.ConnectionSpec{
-				Sync: &corev1alpha1.ConnectionSync{Mode: mode, ReconcileInterval: interval},
+	withSync := func(mode corev1alpha1.CorpusSyncMode, interval *metav1.Duration, lastReconcile *time.Time) *corev1alpha1.Corpus {
+		conn := &corev1alpha1.Corpus{
+			Spec: corev1alpha1.CorpusSpec{
+				Sync: &corev1alpha1.CorpusSync{Mode: mode, ReconcileInterval: interval},
 			},
 		}
 		if lastReconcile != nil {
@@ -50,37 +50,37 @@ func TestConnectionIsStale(t *testing.T) {
 
 	tests := []struct {
 		name string
-		conn *corev1alpha1.Connection
+		conn *corev1alpha1.Corpus
 		want bool
 	}{
 		{
 			name: "no sync block indexes nothing, so cannot be stale",
-			conn: &corev1alpha1.Connection{},
+			conn: &corev1alpha1.Corpus{},
 			want: false,
 		},
 		{
 			name: "mode none indexes nothing, so cannot be stale",
-			conn: withSync(corev1alpha1.ConnectionSyncNone, nil, nil),
+			conn: withSync(corev1alpha1.CorpusSyncNone, nil, nil),
 			want: false,
 		},
 		{
 			name: "syncing but never reconciled is stale by definition",
-			conn: withSync(corev1alpha1.ConnectionSyncPoll, hourly, nil),
+			conn: withSync(corev1alpha1.CorpusSyncPoll, hourly, nil),
 			want: true,
 		},
 		{
 			name: "reconciled just now is fresh",
-			conn: withSync(corev1alpha1.ConnectionSyncPoll, hourly, at(-time.Minute)),
+			conn: withSync(corev1alpha1.CorpusSyncPoll, hourly, at(-time.Minute)),
 			want: false,
 		},
 		{
 			name: "one missed pass is within the grace factor",
-			conn: withSync(corev1alpha1.ConnectionSyncPoll, hourly, at(-90*time.Minute)),
+			conn: withSync(corev1alpha1.CorpusSyncPoll, hourly, at(-90*time.Minute)),
 			want: false,
 		},
 		{
 			name: "past two intervals is stale",
-			conn: withSync(corev1alpha1.ConnectionSyncPoll, hourly, at(-150*time.Minute)),
+			conn: withSync(corev1alpha1.CorpusSyncPoll, hourly, at(-150*time.Minute)),
 			want: true,
 		},
 		{
@@ -88,8 +88,8 @@ func TestConnectionIsStale(t *testing.T) {
 			// staleness is judged on lastReconcileTime instead: a lossy stream
 			// can make a corpus look current while it quietly is not.
 			name: "webhook mode is judged on reconciles, not on webhook syncs",
-			conn: func() *corev1alpha1.Connection {
-				conn := withSync(corev1alpha1.ConnectionSyncWebhook, hourly, at(-150*time.Minute))
+			conn: func() *corev1alpha1.Corpus {
+				conn := withSync(corev1alpha1.CorpusSyncWebhook, hourly, at(-150*time.Minute))
 				conn.Status.LastSyncTime = &metav1.Time{Time: now.Add(-time.Minute)}
 				return conn
 			}(),
@@ -99,8 +99,8 @@ func TestConnectionIsStale(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := connectionIsStale(tt.conn, now); got != tt.want {
-				t.Errorf("connectionIsStale() = %v, want %v", got, tt.want)
+			if got := corpusIsStale(tt.conn, now); got != tt.want {
+				t.Errorf("corpusIsStale() = %v, want %v", got, tt.want)
 			}
 		})
 	}

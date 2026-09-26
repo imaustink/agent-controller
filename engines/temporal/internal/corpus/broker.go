@@ -26,7 +26,7 @@ const DefaultCandidateMultiplier = 3
 //
 // The orchestrator deliberately holds no third-party credential of its own: it
 // forwards the user's delegated token per request and the broker refuses to let
-// it spend a connection's service credential at all (the broker's auth.ts).
+// it spend a corpus's service credential at all (the broker's auth.ts).
 // So this type carries a token it did not mint and cannot widen.
 type BrokerProber struct {
 	// BaseURL of the connection-broker Service.
@@ -66,7 +66,7 @@ func (b *BrokerProber) Probe(ctx context.Context, req ProbeRequest) (ProbeResult
 		return ProbeResult{}, err
 	}
 
-	endpoint := strings.TrimRight(b.BaseURL, "/") + "/connections/" + url.PathEscape(req.ConnectionID) + "/probe"
+	endpoint := strings.TrimRight(b.BaseURL, "/") + "/connections/" + url.PathEscape(req.CorpusID) + "/probe"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return ProbeResult{}, err
@@ -116,6 +116,11 @@ type RetrieveOutcome struct {
 	// Denied is how many candidates the source refused — expected, and a
 	// measure of the mirror's optimism rather than a problem.
 	Denied int
+	// PreFiltered is how many candidates the ACL mirror excluded before any
+	// probe was made. Purely a saving: reported so the mirror's usefulness is
+	// measurable, and so a suspiciously large number is visible rather than
+	// looking like a thin corpus.
+	PreFiltered int
 	// Undetermined names sources whose probe failed transiently, and
 	// SkippedCorpora counts member collections that could not be searched at
 	// all. Both are surfaced because an answer quietly missing evidence is

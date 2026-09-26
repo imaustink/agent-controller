@@ -1,4 +1,5 @@
 import { authorize, PermissionDeniedError, TransientProbeError, type AuthorizedChunk, type Granularity, type ProbeRequest, type ProbeResult, type Prober } from "./probe.js";
+import { preFilter } from "./prefilter.js";
 import { searchCorpus } from "./search.js";
 import type { CorpusStore } from "./types.js";
 
@@ -25,6 +26,12 @@ export interface RetrieveOutcome {
    */
   undetermined: string[];
   skippedCorpora: number;
+  /**
+   * Candidates the ACL mirror excluded before any probe was made. Purely a
+   * saving: reported so the mirror's usefulness is measurable, and so a
+   * suspiciously large number is visible rather than looking like a thin corpus.
+   */
+  preFiltered: number;
 }
 
 /**
@@ -36,25 +43,35 @@ export interface RetrieveOutcome {
  * deliberately biased toward over-inclusion. The source decides what may be
  * SEEN, per user, at query time. ADR 0040's governing rule is that the first is
  * never allowed to stand in for the second.
+ *
+ * `callerPrincipals` are the caller's PROVIDER-side identities, a different
+ * thing from `callerRoles`: roles gate which corpora may be searched at all,
+ * principals only pre-filter within the results. Empty is legitimate and simply
+ * skips the pre-filter — see `preFilter` for why that direction is the safe one.
  */
 export async function retrieve(
   stores: CorpusStore[],
   prober: Prober,
   query: string,
   callerRoles: string[],
+  callerPrincipals: string[],
   limit: number,
   multiplier = DEFAULT_CANDIDATE_MULTIPLIER,
 ): Promise<RetrieveOutcome> {
   const factor = Number.isInteger(multiplier) && multiplier >= 1 ? multiplier : DEFAULT_CANDIDATE_MULTIPLIER;
 
   const { hits, skipped } = await searchCorpus(stores, query, callerRoles, limit * factor);
-  const authorized = await authorize(prober, hits);
+  // Cheap exclusion before the expensive question. This can only reduce the
+  // number of probes, never widen what is returned.
+  const { kept, dropped } = preFilter(hits, callerPrincipals);
+  const authorized = await authorize(prober, kept);
 
   return {
     chunks: authorized.chunks.slice(0, limit),
     denied: authorized.denied,
     undetermined: authorized.undetermined,
     skippedCorpora: skipped,
+    preFiltered: dropped,
   };
 }
 

@@ -23,13 +23,13 @@ function member(
 
 function searchTool(...members: KnowledgeBaseExecMember[]): ToolDescriptor {
   return {
-    id: "kb:snc/search",
-    name: "Search SNC",
-    description: "Search the SNC knowledge base.",
+    id: "kb:globex/search",
+    name: "Search GLOBEX",
+    description: "Search the GLOBEX knowledge base.",
     allowedRoles: ["reader"],
     knowledgeBaseExec: {
-      knowledgeBaseId: "snc",
-      displayName: "SNC",
+      knowledgeBaseId: "globex",
+      displayName: "GLOBEX",
       operation: "search",
       members,
       disclosePartialVisibility: true,
@@ -43,7 +43,7 @@ const resolver = (token: string | undefined): DelegatedCredentialResolver & { as
     asked,
     async delegatedToken(_subject, providers) {
       asked.push(providers);
-      return token;
+      return token === undefined ? undefined : { token };
     },
   };
 };
@@ -81,7 +81,7 @@ describe("KnowledgeBaseSearcher", () => {
 
   it("rejects a tool with no execution spec", async () => {
     const { searcher } = searcherWith(resolver("t"));
-    const bare: ToolDescriptor = { id: "kb:snc/search", name: "x", description: "y", allowedRoles: [] };
+    const bare: ToolDescriptor = { id: "kb:globex/search", name: "x", description: "y", allowedRoles: [] };
 
     await expect(searcher.search(bare, "q", reader)).rejects.toThrow(/execution spec/);
   });
@@ -90,7 +90,7 @@ describe("KnowledgeBaseSearcher", () => {
     const credentials = resolver("t");
     const { searcher, openCorpus } = searcherWith(credentials);
     const tool = searchTool(member("c", ["reader"], "coll"));
-    tool.id = "kb:snc/fetch";
+    tool.id = "kb:globex/fetch";
     tool.knowledgeBaseExec!.operation = "fetch";
 
     const out = await searcher.search(tool, "some-source-id", reader);

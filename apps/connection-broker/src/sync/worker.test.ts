@@ -4,7 +4,7 @@ import type { IndexedChunk } from "./reconcile.js";
 import type { Chunk } from "./chunk.js";
 import type { Document, ResourceRef } from "../drivers/types.js";
 
-const target = { connection: "snc-confluence", label: "SNC Confluence", collection: "coll" };
+const target = { connection: "globex-confluence", label: "GLOBEX Confluence", collection: "coll" };
 
 function doc(id: string, markdown: string): Document {
   return { id, title: id, url: `https://wiki/${id}`, version: "v1", markdown };

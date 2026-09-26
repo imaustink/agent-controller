@@ -85,26 +85,29 @@ func newIndexerHarness() *indexerHarness {
 	}
 }
 
-func confluenceConnectionDescriptor() catalog.ConnectionDescriptor {
-	return catalog.ConnectionDescriptor{
-		ID: "snc-confluence", Provider: "confluence", DisplayName: "SNC Confluence",
-		Description: "The SNC space.", AllowedRoles: []string{"reader", "writer"},
-		Collection: "conn_default_snc-confluence", APIEnabled: true,
+func confluenceConnectionDescriptor() catalog.CorpusDescriptor {
+	return catalog.CorpusDescriptor{
+		ID: "globex-confluence", Provider: "confluence", DisplayName: "GLOBEX Confluence",
+		Description: "The GLOBEX space.", AllowedRoles: []string{"reader", "writer"},
+		Collection: "conn_default_globex-confluence", APIEnabled: true,
+		// A readable member: the read face has no service-credential mode, so a
+		// corpus without this contributes no read tool (ADR 0040).
+		IdentityProviders: []string{"atlassian"},
 	}
 }
 
-func leadsConnectionDescriptor() catalog.ConnectionDescriptor {
-	return catalog.ConnectionDescriptor{
-		ID: "snc-slack-private", Provider: "slack", DisplayName: "#snc-leads",
+func leadsConnectionDescriptor() catalog.CorpusDescriptor {
+	return catalog.CorpusDescriptor{
+		ID: "globex-slack-private", Provider: "slack", DisplayName: "#globex-leads",
 		Description: "Leads-only channel.", AllowedRoles: []string{"lead"},
-		Collection: "conn_default_snc-slack-private",
+		Collection: "conn_default_globex-slack-private",
 	}
 }
 
 func indexedKnowledgeBase() catalog.KnowledgeBaseDescriptor {
 	return catalog.KnowledgeBaseDescriptor{
-		ID: "snc", DisplayName: "SNC", Description: "The SNC engagement.",
-		ConnectionRefs:            []string{"snc-confluence", "snc-slack-private"},
+		ID: "globex", DisplayName: "GLOBEX", Description: "The GLOBEX engagement.",
+		CorpusRefs:                []string{"globex-confluence", "globex-slack-private"},
 		DisclosePartialVisibility: true,
 	}
 }
@@ -120,19 +123,19 @@ func TestUpsertKnowledgeBaseIndexesASkillAndItsTools(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
-	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	skill, ok := h.skills.get("kb:snc")
+	skill, ok := h.skills.get("kb:globex")
 	require.True(t, ok, "the derived skill is what competes for the turn")
 	require.False(t, skill.Hidden, "it is meant to be found")
 	require.ElementsMatch(t, []string{"lead", "reader", "writer"}, skill.Roles)
 
 	require.ElementsMatch(t, []string{
-		"kb:snc/search", "conn:snc-confluence/get",
+		"kb:globex/search", "kb:globex/read", "kb:globex/lookup",
 	}, h.tools.ids())
-	require.NotContains(t, h.tools.ids(), "kb:snc/fetch",
+	require.NotContains(t, h.tools.ids(), "kb:globex/fetch",
 		"fetch has no dispatch path, so no fetch tool is generated")
 }
 
@@ -140,65 +143,74 @@ func TestGeneratedToolsAreHiddenFromOpenRetrieval(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
 	// Referenceable by the skill that declares them, never returned by open
 	// retrieval — otherwise every client's scoped tooling competes in front of
 	// every caller (ADR 0039 §2).
-	for _, id := range []string{"kb:snc/search", "conn:snc-confluence/get"} {
+	for _, id := range []string{"kb:globex/search", "kb:globex/read"} {
 		rec, ok := h.tools.get(id)
 		require.True(t, ok, id)
 		require.True(t, rec.Hidden, "%s must not be retrievable on its own", id)
 	}
 }
 
-func TestConnectionGetToolCarriesItsOwnRolesNotTheUnion(t *testing.T) {
+func TestReadToolIsUnionToInvokeAndPerMemberToRead(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
-	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	get, ok := h.tools.get("conn:snc-confluence/get")
+	read, ok := h.tools.get("kb:globex/read")
 	require.True(t, ok)
-	// The GET face is one source's capability, not the composition's: granting
-	// it the knowledge base's union would let a `lead`-only caller read a source
-	// they have no role for.
-	require.ElementsMatch(t, []string{"reader", "writer"}, get.Roles)
+	// Union to INVOKE, over the members this tool can actually SERVE. One tool
+	// covers every readable member, so restricting it to any single member's
+	// roles would make it uncallable for the rest — but the leads channel has
+	// no API face, so a `lead`-only caller could read nothing through it, and
+	// granting them invoke access would offer a tool that always refuses.
+	//
+	// Which member a caller may read is then checked per read, in the activity:
+	// the same split search uses per point (ADR 0039 s4).
+	require.ElementsMatch(t, []string{"reader", "writer"}, read.Roles)
 
-	search, ok := h.tools.get("kb:snc/search")
+	search, ok := h.tools.get("kb:globex/search")
 	require.True(t, ok)
 	require.ElementsMatch(t, []string{"lead", "reader", "writer"}, search.Roles)
 }
 
-func TestConnectionWithoutAnApiFaceContributesNoGetTool(t *testing.T) {
+func TestConnectionWithoutAnApiFaceContributesNoReadTool(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
 	conn := confluenceConnectionDescriptor()
 	conn.APIEnabled = false
-	require.NoError(t, h.ix.UpsertConnection(ctx, conn))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, conn))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	_, ok := h.tools.get("conn:snc-confluence/get")
+	_, ok := h.tools.get("kb:globex/read")
 	require.False(t, ok)
 }
 
-func TestTurningOffTheApiFaceRemovesTheGetTool(t *testing.T) {
+func TestTurningOffTheApiFaceRemovesTheReadTool(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
-	_, ok := h.tools.get("conn:snc-confluence/get")
+	// The read tool belongs to the KNOWLEDGE BASE now, not to a member, so it
+	// appears with the knowledge base rather than with the corpus.
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+	_, ok := h.tools.get("kb:globex/read")
 	require.True(t, ok)
 
 	off := confluenceConnectionDescriptor()
 	off.APIEnabled = false
-	require.NoError(t, h.ix.UpsertConnection(ctx, off))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, off))
+	require.NoError(t, h.ix.ReindexSkills(ctx))
 
-	_, ok = h.tools.get("conn:snc-confluence/get")
+	_, ok = h.tools.get("kb:globex/read")
 	require.False(t, ok, "a withdrawn capability must not linger as a callable tool")
 }
 
@@ -206,38 +218,41 @@ func TestDeleteKnowledgeBaseRemovesTheDerivedSkillByItsDerivedId(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
-	require.NoError(t, h.ix.DeleteKnowledgeBase(ctx, "snc"))
+	require.NoError(t, h.ix.DeleteKnowledgeBase(ctx, "globex"))
 
-	// Deleting by CR name would leave `kb:snc` selectable, pointing at tools
+	// Deleting by CR name would leave `kb:globex` selectable, pointing at tools
 	// that no longer exist.
-	_, ok := h.skills.get("kb:snc")
+	_, ok := h.skills.get("kb:globex")
 	require.False(t, ok)
 
-	_, ok = h.tools.get("kb:snc/search")
+	_, ok = h.tools.get("kb:globex/search")
 	require.False(t, ok)
-	_, ok = h.tools.get("kb:snc/fetch")
+	_, ok = h.tools.get("kb:globex/fetch")
 	require.False(t, ok)
 }
 
-func TestDeleteConnectionRemovesItsGetToolAndLeavesTheKnowledgeBaseWorking(t *testing.T) {
+func TestDeleteConnectionLeavesTheKnowledgeBaseWorking(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
-	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	require.NoError(t, h.ix.DeleteConnection(ctx, "snc-confluence"))
-	_, ok := h.tools.get("conn:snc-confluence/get")
+	require.NoError(t, h.ix.DeleteCorpus(ctx, "globex-confluence"))
+	require.NoError(t, h.ix.ReindexSkills(ctx))
+
+	// The only member that could serve a read is gone, so the read tool goes
+	// with it rather than staying as an option that always fails.
+	_, ok := h.tools.get("kb:globex/read")
 	require.False(t, ok)
 
 	// The knowledge base keeps answering over its remaining member: a vanished
 	// connection is a dangling ref, which contributes nothing rather than
 	// failing the whole skill closed.
-	require.NoError(t, h.ix.ReindexSkills(ctx))
-	skill, ok := h.skills.get("kb:snc")
+	skill, ok := h.skills.get("kb:globex")
 	require.True(t, ok)
 	require.ElementsMatch(t, []string{"lead"}, skill.Roles)
 }
@@ -246,17 +261,17 @@ func TestReindexRederivesKnowledgeBasesAgainstCurrentConnections(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	before, _ := h.skills.get("kb:snc")
+	before, _ := h.skills.get("kb:globex")
 	require.ElementsMatch(t, []string{"reader", "writer"}, before.Roles)
 
 	// A member arriving after the knowledge base was indexed must widen it.
-	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.ReindexSkills(ctx))
 
-	after, _ := h.skills.get("kb:snc")
+	after, _ := h.skills.get("kb:globex")
 	require.ElementsMatch(t, []string{"lead", "reader", "writer"}, after.Roles)
 }
 
@@ -264,14 +279,14 @@ func TestGeneratedToolsCarryTheirExecutionSpec(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
-	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
+	search := decodeTool(t, mustGet(t, h.tools, "kb:globex/search"))
 	require.NotNil(t, search.KnowledgeBaseExec)
 	require.Equal(t, "search", search.KnowledgeBaseExec.Operation)
-	require.Equal(t, "snc", search.KnowledgeBaseExec.KnowledgeBaseID)
+	require.Equal(t, "globex", search.KnowledgeBaseExec.KnowledgeBaseID)
 
 	// Membership is snapshotted at index time, so the executing side works from
 	// exactly what the planner was offered.
@@ -280,13 +295,13 @@ func TestGeneratedToolsCarryTheirExecutionSpec(t *testing.T) {
 	for _, m := range search.KnowledgeBaseExec.Members {
 		byID[m.ID] = m
 	}
-	require.Equal(t, "conn_default_snc-confluence", byID["snc-confluence"].Collection)
-	require.Equal(t, []string{"reader", "writer"}, byID["snc-confluence"].AllowedRoles)
+	require.Equal(t, "conn_default_globex-confluence", byID["globex-confluence"].Collection)
+	require.Equal(t, []string{"reader", "writer"}, byID["globex-confluence"].AllowedRoles)
 
 	// No fetch tool is generated: its whole-document read has no dispatch path
 	// yet (ADR 0040 defers the source adapter), so the planner is never offered
 	// a call that would silently degrade into a similarity search.
-	_, ok := h.tools.get("kb:snc/fetch")
+	_, ok := h.tools.get("kb:globex/fetch")
 	require.False(t, ok)
 }
 
@@ -294,30 +309,30 @@ func TestExecutionSpecRecordsEachProvidersProbeUnit(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
-	require.NoError(t, h.ix.UpsertConnection(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
+	search := decodeTool(t, mustGet(t, h.tools, "kb:globex/search"))
 	byID := map[string]catalog.KnowledgeBaseExecMember{}
 	for _, m := range search.KnowledgeBaseExec.Members {
 		byID[m.ID] = m
 	}
 
 	// Slack authorizes a channel, so one probe settles every candidate from it.
-	require.Equal(t, "connection", byID["snc-slack-private"].Granularity)
+	require.Equal(t, "connection", byID["globex-slack-private"].Granularity)
 	// Confluence authorizes a page — the finer unit, and the safe default.
-	require.Equal(t, "resource", byID["snc-confluence"].Granularity)
+	require.Equal(t, "resource", byID["globex-confluence"].Granularity)
 }
 
 func TestExecutionSpecOmitsADanglingMember(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
+	search := decodeTool(t, mustGet(t, h.tools, "kb:globex/search"))
 	require.Len(t, search.KnowledgeBaseExec.Members, 1,
 		"a member that does not resolve contributes nothing to search either")
 }
@@ -326,16 +341,16 @@ func TestGeneratedToolDescriptorsDescribeThemselves(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	require.NoError(t, h.ix.UpsertConnection(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
 
-	search := decodeTool(t, mustGet(t, h.tools, "kb:snc/search"))
-	require.Equal(t, "kb:snc/search", search.ID)
-	require.Contains(t, search.Description, "SNC")
+	search := decodeTool(t, mustGet(t, h.tools, "kb:globex/search"))
+	require.Equal(t, "kb:globex/search", search.ID)
+	require.Contains(t, search.Description, "GLOBEX")
 	require.Contains(t, search.Output, "withheld")
 
-	get := decodeTool(t, mustGet(t, h.tools, "conn:snc-confluence/get"))
-	require.Contains(t, get.Input, "outside that scope are refused")
+	get := decodeTool(t, mustGet(t, h.tools, "kb:globex/read"))
+	require.Contains(t, get.Input, "as the asking user")
 }
 
 func mustGet(t *testing.T, store *recordingStore, id string) vectorstore.Record {
@@ -343,4 +358,64 @@ func mustGet(t *testing.T, store *recordingStore, id string) vectorstore.Record 
 	rec, ok := store.get(id)
 	require.True(t, ok, "expected %s to be indexed", id)
 	return rec
+}
+
+
+func TestLookupToolIsDistinctFromTheIndexedSearch(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+
+	searchRec, ok := h.tools.get("kb:globex/search")
+	require.True(t, ok)
+	lookupRec, ok := h.tools.get("kb:globex/lookup")
+	require.True(t, ok)
+	search := decodeTool(t, searchRec)
+	lookup := decodeTool(t, lookupRec)
+
+	// Both are chosen by embedding, so the text a planner sees must actually
+	// distinguish them. Sharing the verb is how the near-identical-description
+	// problem of ADR 0039 §5 gets reproduced one level down.
+	require.NotEqual(t, search.Description, lookup.Description)
+	require.Contains(t, lookup.Description, "instead of the search index")
+	require.NotContains(t, lookup.Description, "Search the")
+
+	require.Equal(t, "lookup", lookup.KnowledgeBaseExec.Operation,
+		"dispatch fails closed on an unrecognised operation")
+}
+
+func TestLookupToolIsOmittedWhenNoMemberCanServeIt(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	// A corpus with no API face cannot answer a live search any more than a
+	// live read, so offering the tool would offer something that always fails.
+	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, catalog.KnowledgeBaseDescriptor{
+		ID:         "leadsonly",
+		CorpusRefs: []string{leadsConnectionDescriptor().ID},
+	}))
+
+	require.NotContains(t, h.tools.ids(), "kb:leadsonly/lookup")
+	require.NotContains(t, h.tools.ids(), "kb:leadsonly/read")
+}
+
+func TestDeleteKnowledgeBaseRemovesEveryToolItOwns(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+	require.NotEmpty(t, h.tools.ids())
+
+	require.NoError(t, h.ix.DeleteKnowledgeBase(ctx, "globex"))
+
+	// The delete path used to spell its ids out by hand and had drifted: the
+	// read tool survived deletion, staying in the catalog for the planner to
+	// find while pointing at a skill that no longer existed.
+	require.Empty(t, h.tools.ids(), "every generated tool goes with the knowledge base")
+	_, ok := h.skills.get("kb:globex")
+	require.False(t, ok)
 }

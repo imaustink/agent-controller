@@ -37,6 +37,17 @@ export interface AppConfig {
    */
   knowledgeBasesEnabled: boolean;
   /**
+   * The connection-broker Service, which holds every Corpus's credentials and
+   * answers the per-user probes retrieval depends on (docs/adr/0040).
+   *
+   * Unset means a knowledge base can be indexed but never searched or read:
+   * there is nothing to probe through, and probing on the ingestion credential
+   * would answer a different question, permissively.
+   */
+  connectionBrokerUrl: string | undefined;
+  /** Authenticates THIS orchestrator to the broker. Never a corpus credential. */
+  connectionBrokerToken: string | undefined;
+  /**
    * Max consumer-supplied tools that may reach the action planner
    * (docs/adr/0035 §3). Doubles as the threshold below which the caller-tool
    * index is skipped ENTIRELY: with this many tools or fewer there is nothing to
@@ -268,6 +279,8 @@ export const config: AppConfig = {
   agentsQdrantCollection: process.env.AGENT_QDRANT_AGENTS_COLLECTION ?? "agents",
   callerToolsQdrantCollection: process.env.AGENT_QDRANT_CALLER_TOOLS_COLLECTION ?? "caller_tools",
   knowledgeBasesEnabled: process.env.AGENT_KNOWLEDGE_BASES_ENABLED === "true",
+  connectionBrokerUrl: process.env.AGENT_CONNECTION_BROKER_URL,
+  connectionBrokerToken: process.env.AGENT_CONNECTION_BROKER_TOKEN,
   callerToolTopK: num(process.env.AGENT_CALLER_TOOL_TOP_K, 5),
   agentEngine: process.env.AGENT_ENGINE === "temporal" ? "temporal" : "langgraph",
   temporalEngineUrl: process.env.AGENT_TEMPORAL_ENGINE_URL,
