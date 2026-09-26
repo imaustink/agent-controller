@@ -6,6 +6,7 @@ import {
   corpusGetToolId,
   connectionLabel,
   knowledgeBaseLabel,
+  knowledgeBaseLookupToolId,
   knowledgeBaseReadToolId,
   knowledgeBaseSearchToolId,
   type CorpusDescriptor,
@@ -78,7 +79,7 @@ export function knowledgeBaseTools(
   roles: string[],
 ): ToolDescriptor[] {
   const label = knowledgeBaseLabel(kb);
-  const exec = (operation: "search" | "read"): KnowledgeBaseExecSpec => ({
+  const exec = (operation: "search" | "read" | "lookup"): KnowledgeBaseExecSpec => ({
     knowledgeBaseId: kb.id,
     displayName: label,
     operation,
@@ -120,6 +121,7 @@ export function knowledgeBaseTools(
 
   if (readable.length > 0) {
     tools.push(knowledgeBaseReadTool(kb, readable, exec("read")));
+    tools.push(knowledgeBaseLookupTool(kb, readable, exec("lookup")));
   }
 
   return tools;
@@ -162,6 +164,47 @@ export function knowledgeBaseReadTool(
   };
 }
 
+
+/**
+ * The LIVE search face, paired with the read face.
+ *
+ * Named "lookup" rather than "search" deliberately. Two tools whose ids and
+ * descriptions both say "search" is the near-identical-description problem
+ * docs/adr/0039 §5 warns about, here self-inflicted: the planner chooses by
+ * embedding, so the verb is the one word that has to differ.
+ *
+ * The description separates them by WHEN each is right — the index is the
+ * default, this is for when the index may be behind — rather than by
+ * semantic-vs-lexical, which is an implementation detail a planner cannot act
+ * on.
+ *
+ * PARITY: `knowledgeBaseLookupTool` in `engines/temporal/internal/catalog`.
+ */
+export function knowledgeBaseLookupTool(
+  kb: KnowledgeBaseDescriptor,
+  readable: CorpusDescriptor[],
+  exec: ToolDescriptor["knowledgeBaseExec"],
+): ToolDescriptor {
+  const label = knowledgeBaseLabel(kb);
+  const roles = [...new Set(readable.flatMap((connection) => connection.allowedRoles))].sort();
+
+  return {
+    id: knowledgeBaseLookupToolId(kb.id),
+    name: `Look up in ${label}`,
+    description:
+      `Look up documents in ${label} by keyword, asking the sources directly instead ` +
+      "of the search index. Use when something may be too new or too recently changed " +
+      "to be indexed, or when a keyword search found nothing and you know the material exists." +
+      "\n\nInput: Keywords to match. This is a literal keyword search in the source, not " +
+      "a question — short distinctive terms work, whole sentences do not." +
+      "\nOutput: Matching documents with their titles, URLs and a `<corpus>/<id>` " +
+      "reference that can be read in full. Only what the asking user may see, and only " +
+      "from inside this knowledge base.",
+    allowedRoles: roles,
+    hidden: true,
+    knowledgeBaseExec: exec,
+  };
+}
 
 /**
  * Snapshots the member data the search path needs.

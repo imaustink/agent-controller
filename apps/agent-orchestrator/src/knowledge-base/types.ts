@@ -26,8 +26,34 @@ export const knowledgeBaseSearchToolId = (name: string) =>
 export const knowledgeBaseReadToolId = (name: string) =>
   `${KNOWLEDGE_BASE_ID_PREFIX}${name}/read`;
 
+/**
+ * The LIVE search a KnowledgeBase generates.
+ *
+ * "lookup", not "search": the planner picks by embedding, and two tools whose
+ * ids and descriptions both say "search" reproduce the near-identical
+ * description problem of docs/adr/0039 §5 one level down.
+ */
+export const knowledgeBaseLookupToolId = (name: string) =>
+  `${KNOWLEDGE_BASE_ID_PREFIX}${name}/lookup`;
+
 export const knowledgeBaseFetchToolId = (name: string) =>
   `${KNOWLEDGE_BASE_ID_PREFIX}${name}/fetch`;
+/**
+ * Every tool id a knowledge base owns, generated or not.
+ *
+ * One list, because the delete path used to spell them out by hand and had
+ * already drifted: the read tool survived deletion, staying in the catalog for
+ * the planner to find while pointing at a skill that no longer existed. The
+ * fetch id is listed although no fetch tool is generated — it is how a record
+ * written by an older build gets cleaned up.
+ */
+export const knowledgeBaseToolIds = (name: string) => [
+  knowledgeBaseSearchToolId(name),
+  knowledgeBaseReadToolId(name),
+  knowledgeBaseLookupToolId(name),
+  knowledgeBaseFetchToolId(name),
+];
+
 /** A Corpus's scope-enforced GET face (docs/adr/0038 §5). */
 export const corpusGetToolId = (name: string) => `${CORPUS_ID_PREFIX}${name}/get`;
 

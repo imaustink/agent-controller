@@ -21,7 +21,7 @@ import {
 } from "./knowledge-base/crd-registry.js";
 import { deriveKnowledgeBaseIndex } from "./knowledge-base/index-derivation.js";
 import {
-  knowledgeBaseFetchToolId,
+  knowledgeBaseToolIds,
   knowledgeBaseSearchToolId,
   knowledgeBaseSkillId,
   corpusGetToolId,
@@ -39,6 +39,7 @@ import { IdentityLinkGatewayClient } from "./identity-link/gateway-client.js";
 import { ClaudeAuthGatewayClient } from "./identity-link/claude-auth-gateway-client.js";
 import { ClaudeRemoteGatewayClient } from "./identity-link/claude-remote-gateway-client.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
+import { CorpusLookup } from "./knowledge-base/lookup.js";
 import { CorpusReader } from "./knowledge-base/reader.js";
 import { KnowledgeBaseSearcher } from "./knowledge-base/searcher.js";
 import { LinkedCredentials } from "./knowledge-base/linked-credentials.js";
@@ -398,7 +399,7 @@ async function main(): Promise<void> {
           .delete([knowledgeBaseSkillId(event.id)])
           .catch((err) => console.error(`failed to remove knowledge base "${event.id}":`, err));
         void vectorStore
-          .delete([knowledgeBaseSearchToolId(event.id), knowledgeBaseFetchToolId(event.id)])
+          .delete(knowledgeBaseToolIds(event.id))
           .catch((err) => console.error(`failed to remove knowledge base tools "${event.id}":`, err));
       } else {
         knowledgeBasesById.set(event.descriptor.id, event.descriptor);
@@ -731,6 +732,15 @@ async function main(): Promise<void> {
         })
       : undefined;
 
+  const corpusLookup =
+    config.knowledgeBasesEnabled && config.connectionBrokerUrl && identityLinkGateway
+      ? new CorpusLookup({
+          brokerUrl: config.connectionBrokerUrl,
+          brokerToken: config.connectionBrokerToken ?? "",
+          credentials: new LinkedCredentials(identityLinkGateway),
+        })
+      : undefined;
+
   if (config.knowledgeBasesEnabled && !knowledgeBaseSearcher) {
     // Not fatal — a deployment may index without serving — but worth saying,
     // because the symptom is otherwise a knowledge base that fills up fine and
@@ -769,6 +779,7 @@ async function main(): Promise<void> {
     ...(identityLinkGateway ? { identityLinkGateway } : {}),
     ...(knowledgeBaseSearcher ? { knowledgeBaseSearcher } : {}),
     ...(corpusReader ? { corpusReader } : {}),
+    ...(corpusLookup ? { corpusLookup } : {}),
     ...(claudeAuthGateway ? { claudeAuthGateway } : {}),
     ...(claudeRemoteGateway ? { claudeRemoteGateway } : {}),
     // Same client, passed a second time under its non-IdentityLinkPort

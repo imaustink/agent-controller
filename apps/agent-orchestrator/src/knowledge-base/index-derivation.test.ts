@@ -53,6 +53,7 @@ describe("deriveKnowledgeBaseIndex", () => {
     expect(skills[0].effectiveRoles).toEqual(["lead", "reader", "writer"]);
 
     expect(tools.map((t) => t.id).sort()).toEqual([
+      "kb:globex/lookup",
       "kb:globex/read",
       "kb:globex/search",
     ]);
@@ -122,5 +123,38 @@ describe("deriveKnowledgeBaseIndex", () => {
     expect(skills[0].effectiveRoles).toEqual([]);
     // null would mean unrestricted — visible to every resolved identity.
     expect(skills[0].effectiveRoles).not.toBeNull();
+  });
+});
+
+describe("the live lookup tool", () => {
+  it("reads differently from the indexed search, because both are picked by embedding", () => {
+    const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
+
+    const search = tools.find((t) => t.id === "kb:globex/search")!;
+    const lookup = tools.find((t) => t.id === "kb:globex/lookup")!;
+
+    // Two tools that both say "search" would reproduce the near-identical
+    // description problem of ADR 0039 §5 one level down, self-inflicted.
+    expect(lookup.description).not.toEqual(search.description);
+    expect(lookup.description).toContain("instead of the search index");
+    expect(lookup.name).not.toContain("Search");
+    expect(lookup.knowledgeBaseExec?.operation).toBe("lookup");
+  });
+
+  it("is omitted when no member can serve it", () => {
+    // A corpus with no API face can no more answer a live search than a live
+    // read, so offering the tool would offer something that always fails.
+    const onlyLeads = new Map([...connections()].filter(([id]) => id === "globex-slack-private"));
+    const { tools } = deriveKnowledgeBaseIndex(
+      [{ ...globexKb(), corpusRefs: ["globex-slack-private"] }],
+      onlyLeads,
+    );
+
+    expect(tools.map((t) => t.id)).not.toContain("kb:globex/lookup");
+  });
+
+  it("is hidden, like every other generated tool", () => {
+    const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
+    expect(tools.find((t) => t.id === "kb:globex/lookup")!.hidden).toBe(true);
   });
 });
