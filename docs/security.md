@@ -88,6 +88,35 @@ sandbox would require re-adding `CAP_SYS_ADMIN`, which is a worse trade than
 dropping all capabilities and letting the locked-down container be the boundary
 (the standard approach for throwaway, untrusted-content containers).
 
+### No Kubernetes API token in a tool pod
+
+Every ServiceAccount in `charts/community-components` sets
+`automountServiceAccountToken: false`, with one exception. A tool pod parses
+hostile input by design — sections 1 and 2 above are entirely about that — and
+a projected API token it never uses is an authenticated foothold sitting at
+`/var/run/secrets/kubernetes.io/serviceaccount` for anything that subverts the
+container. `recipe-scraper` has no more use for the Kubernetes API than it has
+for the host's clock.
+
+The exception is **kubectl-readonly**, where the token is the tool: it is a
+`kubectl` invocation, and it is the one component bound to a ClusterRole that
+can `get/list/watch` Secrets cluster-wide. Anything that subverts that
+container can use its token against the API server directly, bypassing the
+tool's own allowlist — which is why it ships disabled, and why trimming the
+ClusterRole (dropping `secrets`) is the better lever than relying on the
+allowlist alone. See
+[tools/kubectl-readonly/README.md](../tools/kubectl-readonly/README.md).
+
+**This is the threat a sandboxed runtime does not address.** Reading a Secret
+with a mounted token is an authorized API call, not a container escape, so
+gVisor or Kata would not have stopped it. A `runtimeClassName` can be set per
+Tool/Agent or cluster-wide ([ADR 0043](adr/0043-runtimeclass-passthrough-isolation-is-the-operators-choice.md))
+and is worth having, but it defends a different and lower-probability path
+than the one this section closes.
+
+A component that genuinely needs the API should set its `automount` back to
+true and carry a Role scoped to what it needs — not inherit one by default.
+
 ## 4. Resource & cost exhaustion
 
 Because extraction touches paid APIs and can pull large media:

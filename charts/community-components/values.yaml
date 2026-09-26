@@ -5,6 +5,17 @@
 # agent-controller chart (which owns the Tool/Skill/Agent/ToolRun/AgentRun/
 # LocalTool CRDs, from charts/agent-controller/charts/core-controller/crds/).
 # `helm uninstall` on this release cleanly removes every CR it created.
+#
+# ServiceAccount tokens: every `serviceAccount.automount` below is `false`
+# except kubectl-readonly's, which is the only component here that talks to the
+# Kubernetes API. A tool pod parses hostile input by design -- docs/security.md
+# is largely about SSRF and prompt injection -- and an API token it never uses
+# is an authenticated foothold sitting at
+# /var/run/secrets/kubernetes.io/serviceaccount for anything that subverts it.
+# Note this is the threat a sandboxed runtime does NOT address: reading a
+# Secret with a mounted token is an authorized API call, not a container
+# escape. If you add a component that genuinely needs the API, set its
+# automount back to true and give it a Role scoped to what it needs.
 
 enabled: true
 
@@ -44,7 +55,7 @@ recipeScraper:
   serviceAccount:
     create: true
     annotations: {}
-    automount: true
+    automount: false
   # Secret (must already exist) supplying the tool's OPENAI_API_KEY.
   openai:
     secretName: agent-orchestrator-secrets
@@ -63,7 +74,7 @@ webSearch:
   serviceAccount:
     create: true
     annotations: {}
-    automount: true
+    automount: false
   # Not a secret -- <agent-controller release name>-searxng, ClusterIP,
   # same namespace as this release. Defaults to the minikube demo release
   # name; override to match your own agent-controller release name.
@@ -83,7 +94,7 @@ webFetch:
   serviceAccount:
     create: true
     annotations: {}
-    automount: true
+    automount: false
 
 # image-gen: generates an image from a prompt, or edits an existing image given
 # its URL. Uploads the result to an S3-compatible object store and returns a
@@ -98,7 +109,7 @@ imageGen:
   serviceAccount:
     create: true
     annotations: {}
-    automount: true
+    automount: false
   # App-level tuning (see tools/image-gen/README.md).
   model: gpt-image-1
   size: "1024x1024"
@@ -138,6 +149,15 @@ kubectlReadonly:
   serviceAccount:
     create: true
     annotations: {}
+    # The one exemption from this chart's automount: false default (see the
+    # header): this tool IS a kubectl invocation, so the projected token is
+    # how it works, not an unused credential. That makes it the component
+    # where the token matters most -- it is the one bound to a ClusterRole
+    # that can read Secrets cluster-wide, and anything that subverts this
+    # container can use that token against the API server directly, bypassing
+    # the tool's own allowlist. Keep this tool disabled unless you want that
+    # trade, and prefer trimming the ClusterRole (dropping `secrets`) over
+    # relying on the allowlist alone.
     automount: true
 
 # recipe-publisher: publishes/updates a recipe on a Mealie instance.
@@ -151,7 +171,7 @@ recipePublisher:
   serviceAccount:
     create: true
     annotations: {}
-    automount: true
+    automount: false
   # Target Mealie instance (not a secret) + which ingredient parser to use.
   # No default on purpose -- must be set to your own Mealie instance, never
   # inherited from this repo's demo config.
@@ -179,7 +199,7 @@ signozQuery:
   serviceAccount:
     create: true
     annotations: {}
-    automount: true
+    automount: false
   # Target SigNoz Query Service instance (not a secret).
   baseUrl: "http://signoz.monitoring.svc.cluster.local:8080"
   # Leave secretName empty ("") to omit secretEnv entirely (unauthenticated
@@ -215,7 +235,7 @@ opencodeSweAgent:
   serviceAccount:
     create: true
     annotations: {}
-    automount: true
+    automount: false
   # Two independent secrets in one k8s Secret: a fine-grained GitHub PAT for
   # git/gh operations, and an Anthropic API key for the opencode model.
   secretName: opencode-swe-secrets
@@ -293,7 +313,7 @@ claudeCodeSweAgent:
   serviceAccount:
     create: true
     annotations: {}
-    automount: true
+    automount: false
   secretName: claude-code-swe-secrets
   # Key holding the GITHUB_TOKEN PAT. Not needed -- and not wired onto the
   # Agent CR at all -- when a full GitHub App configuration or identityLink
@@ -412,7 +432,7 @@ githubTool:
   serviceAccount:
     create: true
     annotations: {}
-    automount: true
+    automount: false
   # Secret (must already exist) supplying whichever shared credential is in
   # effect -- the GITHUB_TOKEN PAT or the three GITHUB_APP_* keys. Ignored
   # entirely when identityLink.enabled below.
@@ -470,7 +490,7 @@ glyphTool:
   serviceAccount:
     create: true
     annotations: {}
-    automount: true
+    automount: false
   # Target Glyph instance (not a secret) -- fixed, trusted config the tool
   # appends `/api/v1` to. No default on purpose: must be your own instance,
   # never inherited from this repo's demo config.
@@ -511,7 +531,7 @@ sshTool:
   serviceAccount:
     create: true
     annotations: {}
-    automount: true
+    automount: false
   # Two INDEPENDENT, individually optional features for resolving/restricting
   # a caller-supplied target -- at least one must be set or the Tool render
   # fails (see templates/tool-ssh.yaml's `fail` guard):
@@ -619,7 +639,7 @@ stubAgent:
   serviceAccount:
     create: true
     annotations: {}
-    automount: true
+    automount: false
   # Which identityProviders the stub declares. Set these to match whichever
   # agent it stands in for, or the identity gate takes a different path than
   # production and the suite stops testing it (see agent-stub.yaml).
