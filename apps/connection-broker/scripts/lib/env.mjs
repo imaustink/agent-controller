@@ -7,6 +7,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Where credentials live, in preference order.
@@ -19,31 +20,45 @@ import { join } from "node:path";
  */
 const CANDIDATE_PATHS = ["apps/connection-broker/.env", "tools/recipe-scraper/.env"];
 
+/** This file is `<repo>/apps/connection-broker/scripts/lib/env.mjs`. */
+const OWN_REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "..", "..");
+
 /**
- * Finds the env file, checking the MAIN checkout as well as the cwd.
+ * Finds the env file, anchored to the checkout this SCRIPT lives in.
  *
- * A git worktree is a separate copy of the repo and `.env` is gitignored, so a
- * harness run from a worktree finds nothing — which is a confusing way to learn
- * that your credentials live somewhere else.
+ * Resolving the candidates against the cwd looks right until you run a harness
+ * from the directory its `.env` is in: `apps/connection-broker/.env` becomes
+ * `apps/connection-broker/apps/connection-broker/.env`, misses, and falls
+ * through to another checkout's file — which then fails on missing KEYS rather
+ * than a missing file, so the error names the wrong problem entirely.
+ *
+ * The script's own repo comes first: a worktree that has credentials should use
+ * them rather than reach into the main checkout behind your back. The main
+ * checkout stays as a fallback because `.env` is gitignored and so does not
+ * travel into a fresh worktree.
  */
 export function findEnvFile(explicit) {
-  const candidates = explicit ? [explicit] : [...CANDIDATE_PATHS];
+  if (explicit) return existsSync(explicit) ? explicit : reportMissing([explicit]);
 
-  if (!explicit) {
-    try {
-      // The parent of the shared git dir is the main checkout.
-      const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
-        encoding: "utf8",
-      }).trim();
-      for (const path of CANDIDATE_PATHS) candidates.push(join(common, "..", path));
-    } catch {
-      // Not a git checkout; the cwd-relative candidates are all there is.
-    }
+  const roots = [OWN_REPO_ROOT];
+  try {
+    // The parent of the shared git dir is the main checkout.
+    const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+      encoding: "utf8",
+      cwd: OWN_REPO_ROOT,
+    }).trim();
+    roots.push(join(common, ".."));
+  } catch {
+    // Not a checkout; this script's own repo is all there is.
   }
 
-  const found = candidates.find((candidate) => existsSync(candidate));
-  if (found) return found;
+  const candidates = roots.flatMap((root) => CANDIDATE_PATHS.map((path) => join(root, path)));
 
+  const found = candidates.find((candidate) => existsSync(candidate));
+  return found ?? reportMissing(candidates);
+}
+
+function reportMissing(candidates) {
   console.error("Could not find an env file with the harness credentials. Looked in:");
   for (const candidate of candidates) console.error(`  ${candidate}`);
   console.error("\nSee apps/connection-broker/.env.example for the keys each harness needs.");

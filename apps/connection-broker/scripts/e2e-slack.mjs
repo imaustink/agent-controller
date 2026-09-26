@@ -117,14 +117,19 @@ try {
 ok(`markdown length: ${doc.markdown.length}`);
 console.log(`  --- first 300 chars ---\n  ${doc.markdown.slice(0, 300).replace(/\n/g, "\n  ")}`);
 
-const messageCount = (doc.markdown.match(/\*\*<@/g) ?? []).length;
+// `**<@` was the PRE-renderText shape and matched nothing once the brackets
+// were stripped, so this reported "0 message(s)" and passed anyway. An
+// assertion that cannot fail is worse than no assertion: it reads as coverage.
+const messageCount = (doc.markdown.match(/^\*\*@/gm) ?? []).length;
+if (messageCount === 0) fail("driver.fetch", new Error("no messages rendered in the thread"));
 ok(`${messageCount} message(s) rendered in the thread`);
 
 // Post-rendering the brackets are gone, but the id is still an id.
 const rawMentions = doc.markdown.match(/@[UW][A-Z0-9]{6,}/g) ?? [];
 if (rawMentions.length > 0) {
   warn(`${rawMentions.length} unresolved author/mention id(s), e.g. ${rawMentions[0]}`);
-  warn("these embed as opaque tokens; resolving them costs one users.info per author");
+  warn("the driver resolves these via users.info; an id surviving means the token");
+  warn("lacks `users:read`, or Slack declined — the read still succeeds either way");
 }
 if (messageCount < 2) {
   // Not fatal — the channel may have no replies — but it means the part of the
