@@ -44,12 +44,16 @@ charts/agent-controller/
   values file you actually install with.
 - Your own images for `agent-orchestrator.image`/`core-controller.image` (and,
   for `community-components`, `recipeScraper`/`recipePublisher`/`webSearch`/
-  `opencodeSweAgent`). `.github/workflows/publish.yml` currently only pushes
-  these to a private self-hosted registry (`registry.kurpuis.com:5000`), and
-  every chart default is a bare `<name>:latest` with no registry prefix — that
-  resolves against Docker Hub and 404s for anyone without access to that
-  registry. Build and push your own images and override the `image`/
-  `image.repository` values accordingly.
+  `opencodeSweAgent`). Every chart default is a bare `<name>:latest` with no
+  registry prefix, which resolves against Docker Hub and 404s. `.github/workflows/release.yml`
+  publishes every image publicly as a tag of the single Docker Hub repository
+  `blackmarket/agent-controller` — `blackmarket/agent-controller:<name>`
+  (tracks main) or `blackmarket/agent-controller:<name>-<commit sha>` (pinned)
+  — so set e.g. `image.repository: blackmarket/agent-controller` and
+  `image.tag: agent-orchestrator`, or `image: blackmarket/agent-controller:recipe-scraper`
+  for `community-components`. (The same images also go to a private
+  self-hosted registry, `registry.kurpuis.com:5000`, which is what
+  `values-production.yaml` pulls from.)
 
 ## Fetching dependencies
 
