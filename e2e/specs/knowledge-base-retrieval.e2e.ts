@@ -282,3 +282,53 @@ describe("a caller with no linked account", () => {
     expect(text).not.toContain("release branch");
   }, 300_000);
 });
+
+/**
+ * WHICH engine served those turns.
+ *
+ * The chart defaults agentEngine=temporal, so every assertion above already
+ * runs through the Go worker — but nothing said so, and a spec that proves a
+ * behaviour on an engine nobody can name is proving it about a system it
+ * cannot identify. If that default ever flips, these tests would silently
+ * start covering the LangGraph path instead and still pass, leaving the Go
+ * knowledge-base path with no end-to-end coverage at all.
+ *
+ * Asserted from the worker's own execution log rather than from config: what
+ * matters is that the Go activity RAN, not that a value was set.
+ */
+describe("the Go engine is what served them", () => {
+  it("ran SearchKnowledgeBase as a Temporal activity for this spec's turns", async () => {
+    const log = await kubectl([
+      "logs",
+      "deploy/agent-controller-temporal-engine-worker",
+      "--tail=2000",
+    ]);
+
+    // The workflow id carries the chat subject, so this is THIS spec's turn
+    // and not a leftover from another run.
+    const ours = log
+      .split("\n")
+      .filter((line) => line.includes(`conversation-e2e-chat-${FULL_USER}`));
+
+    expect(ours.length, "no Temporal workflow ran for this spec's caller").toBeGreaterThan(0);
+    expect(
+      ours.some((line) => line.includes("ActivityType SearchKnowledgeBase")),
+      "the knowledge-base activity never executed on the Go worker",
+    ).toBe(true);
+  });
+
+  it("registered the knowledge-base activities at startup", async () => {
+    // The worker registers them only when it is told where the broker is, and
+    // logs that it has DISABLED them otherwise — a deployment missing that
+    // config fails every knowledge-base turn as an unregistered activity,
+    // which names neither the broker nor the config.
+    const log = await kubectl([
+      "logs",
+      "deploy/agent-controller-temporal-engine-worker",
+      "--tail=4000",
+    ]);
+
+    expect(log).toContain("knowledge-base activities enabled");
+    expect(log).not.toContain("knowledge-base activities disabled");
+  });
+});
