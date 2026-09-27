@@ -228,6 +228,19 @@ jobs:
       - name: e2e/specs/values-duplicate-keys.e2e.ts
         run: npm run e2e -w e2e -- specs/values-duplicate-keys.e2e.ts
 
+      # The fifth. Same contract as the Confluence fidelity spec, and the only
+      # place auto-join (the one WRITE a driver performs) and a SECOND identity
+      # are exercised at all.
+      - name: e2e/specs/fake-slack-fidelity.e2e.ts
+        run: npm run e2e -w e2e -- specs/fake-slack-fidelity.e2e.ts
+
+      # The sixth. Pins every Drive behaviour that was found broken against a
+      # real Drive — recursion, shortcuts and their target's version, PDF
+      # extraction — each of which failed by quietly holding LESS than the
+      # corpus claimed.
+      - name: e2e/specs/fake-gdrive-fidelity.e2e.ts
+        run: npm run e2e -w e2e -- specs/fake-gdrive-fidelity.e2e.ts
+
   core-controller:
     name: Go core-controller (lint, test, build)
     runs-on: ubuntu-latest
