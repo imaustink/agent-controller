@@ -92,12 +92,19 @@ upsert e2e-connection-broker-secrets \
 # than a wrong NAME.
 upsert e2e-connection-broker-sync-tokens \
   --from-literal=SYNC_TOKEN_ALPHA_DOCS="e2e-sync-token-alpha" \
-  --from-literal=SYNC_TOKEN_BETA_DOCS="e2e-sync-token-beta"
+  --from-literal=SYNC_TOKEN_BETA_DOCS="e2e-sync-token-beta" \
+  --from-literal=SYNC_TOKEN_ENG_CHAT="e2e-sync-token-eng" \
+  --from-literal=SYNC_TOKEN_DELIVERY_DRIVE="e2e-sync-token-drive"
 # The credential the fake Confluence accepts for INGESTION. Its user-facing
 # counterparts are seeded per-test into the identity-link store, because which
 # caller holds which is the thing under test.
 upsert e2e-connection-alpha \
   --from-literal=token="e2e-service-token"
+# The Slack and Drive equivalents, one Secret per Connection.
+upsert e2e-connection-slack \
+  --from-literal=token="e2e-slack-bot"
+upsert e2e-connection-gdrive \
+  --from-literal=token="e2e-gdrive-service"
 
 # The gateway's own secret, referenced by values-e2e.yaml via
 # `secrets.existingSecret`. The name deliberately avoids the chart's own

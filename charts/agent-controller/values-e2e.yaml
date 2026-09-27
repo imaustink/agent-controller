@@ -386,6 +386,8 @@ connection-broker:
   # Nothing production-shaped changes: this is the Data Center/Server seam.
   apiOrigins:
     atlassian: "http://fake-confluence.controller-agent.svc.cluster.local"
+    slack: "http://fake-slack.controller-agent.svc.cluster.local/api"
+    gdrive: "http://fake-gdrive.controller-agent.svc.cluster.local"
   embeddings:
     # The key name the orchestrator's secret actually uses. Getting this wrong
     # is not a runtime error — the Pod never starts, with
