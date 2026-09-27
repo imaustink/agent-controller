@@ -43,6 +43,16 @@ describe("loadOAuthProviders", () => {
     expect(partial.has("atlassian")).toBe(false);
   });
 
+  it("asks for search:confluence by default, which the read scopes do not imply", () => {
+    // A token with the read scopes but not this one reads pages perfectly well
+    // and fails every live lookup — a missing permission that presents as a
+    // broken feature.
+    const atlassian = loadOAuthProviders(atlassianEnv).get("atlassian");
+
+    expect(atlassian?.scopes).toContain("search:confluence");
+    expect(atlassian?.scopes).toContain("read:page:confluence");
+  });
+
   it("forces offline_access on, since without it no refresh token is issued at all", () => {
     const atlassian = loadOAuthProviders({
       ...atlassianEnv,
@@ -79,4 +89,28 @@ describe("loadOAuthProviders", () => {
     const registry = loadOAuthProviders({ ...githubEnv, ...atlassianEnv });
     expect([...registry.keys()].sort()).toEqual(["atlassian", "github"]);
   });
+
+  it("registers google when its credentials are present", () => {
+    // Without this provider a Corpus declaring identityProviders: [google] can
+    // never be linked, so per-user Drive reads are unreachable however well
+    // the driver works.
+    const google = loadOAuthProviders({
+      GOOGLE_CLIENT_ID: "g-client",
+      GOOGLE_CLIENT_SECRET: "g-secret",
+    } as NodeJS.ProcessEnv).get("google");
+
+    expect(google?.kind).toBe("authcode");
+    expect(google?.scopes).toContain("https://www.googleapis.com/auth/drive.readonly");
+    // Google issues a refresh token only on first consent otherwise, so a
+    // re-link would yield a credential that dies in an hour with nothing to
+    // renew it.
+    expect(google?.authorizeParams).toMatchObject({ access_type: "offline", prompt: "consent" });
+    // Unlike Atlassian, Google's refresh token stays valid until revoked.
+    expect(google?.rotatesRefreshToken).toBe(false);
+  });
+
+  it("leaves google unregistered when its credentials are absent", () => {
+    expect(loadOAuthProviders({} as NodeJS.ProcessEnv).has("google")).toBe(false);
+  });
+
 });

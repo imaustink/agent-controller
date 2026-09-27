@@ -18,19 +18,14 @@ spec:
     - jsonPath: .spec.provider
       name: Provider
       type: string
-    - jsonPath: .status.resources
-      name: Resources
+    - jsonPath: .status.corpora
+      name: Corpora
       type: integer
-    - jsonPath: .status.lastReconcileTime
-      name: Last Reconcile
-      type: date
-    - jsonPath: .status.conditions[?(@.type=='Ready')].status
-      name: Ready
-      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Connection is the Schema for the connections API
+        description: Connection is an authenticated route to one external system (ADR
+          0043).
         properties:
           apiVersion:
             description: |-
@@ -50,76 +45,67 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of Connection
+            description: |-
+              ConnectionSpec is an authenticated route to one external system (ADR 0043).
+
+              One per Slack workspace, Confluence site or Drive account — NOT one per
+              channel or space. What to index from it is a Corpus, and many Corpora share
+              one Connection, so rotating a credential is one edit rather than ten.
             properties:
-              allowedRoles:
+              allowedScopes:
                 description: |-
-                  allowedRoles gates retrieval and invocation (RBAC filter) — a caller must
-                  hold at least one. Every chunk this Connection contributes to a
-                  KnowledgeBase is written with these roles and filtered on them at read
-                  time, which is what lets one corpus safely mix Connections of differing
-                  sensitivity.
-                items:
-                  type: string
-                minItems: 1
-                type: array
-              api:
-                description: api configures the live face.
+                  allowedScopes caps which subsets this Connection's Corpora may reach.
+                  See ConnectionAllowedScopes.
                 properties:
-                  enabled:
-                    default: false
-                    description: |-
-                      enabled turns the live face on. Default false: a Connection that only
-                      feeds a knowledge base needs no callable surface.
-                    type: boolean
-                  methods:
-                    default:
-                    - GET
-                    description: |-
-                      methods the live face may issue. v1alpha1 allows GET only — writes need
-                      an authorization story this API does not yet have, and this field exists
-                      so that story has somewhere to land.
+                  channels:
+                    description: channels are Slack channel ids.
                     items:
-                      description: ConnectionAPIMethod is an HTTP method the live
-                        face may issue.
-                      enum:
-                      - GET
+                      type: string
+                    type: array
+                  folderIDs:
+                    description: folderIDs are Google Drive folder ids.
+                    items:
+                      type: string
+                    type: array
+                  spaces:
+                    description: spaces are Confluence space keys.
+                    items:
                       type: string
                     type: array
                 type: object
-              description:
+              autoJoin:
                 description: |-
-                  description is fed to the orchestrator's embedder for the generated
-                  `conn:<name>/get` tool, and tells the planner what this connection holds.
-                minLength: 1
-                type: string
+                  autoJoin lets the ingestion credential add itself to a scoped Slack
+                  channel when a read is refused for want of membership.
+
+                  Off by default, because joining is a WRITE: it changes workspace state
+                  and posts a visible "joined the channel" event. Turning it on also
+                  requires the `channels:join` scope on the bot token, which is the one
+                  scope here that is not read-only.
+
+                  It lives on the Connection rather than the Corpus because it is a
+                  property of the credential — what that token is permitted to do — not of
+                  any one channel. It never applies to a retrieval probe: joining on a
+                  caller's behalf would change the answer rather than report it.
+                type: boolean
               displayName:
                 description: |-
-                  displayName is what citations render (e.g. "#snc-eng"). Two Connections
-                  of the same provider inside one KnowledgeBase need distinct values, or a
-                  cited answer cannot say which channel it came from. Defaults to
-                  metadata.name.
+                  displayName names the system for operators (e.g. "Bitovi Slack").
+                  Citations render a Corpus's displayName, not this one.
                 type: string
               identityProviders:
                 description: |-
                   identityProviders names the IdentityProvider CRs whose per-user delegated
-                  credential this connection needs for RETRIEVAL (ADR 0032's mechanism,
-                  required here by ADR 0040).
+                  credential this system needs for RETRIEVAL (ADR 0032's mechanism,
+                  required by ADR 0040).
 
-                  The two credential paths coexist on one Connection by design rather than
-                  by accident. Ingestion runs with total visibility so the index can be
-                  built once and shared; retrieval must not, so every candidate is probed
-                  live against the source with the asking user's own token before it can be
-                  ranked, prompted or cited.
-
-                  A connection with no identityProviders can still be ingested, but it
-                  cannot serve a user whose access differs from the service credential's —
-                  there would be nothing to probe with, and probing with the ingestion
-                  credential would answer a different question, permissively.
+                  On the Connection rather than the Corpus because it describes how a HUMAN
+                  authenticates to the system, which cannot differ between two channels of
+                  one workspace. The controller copies it into each Corpus's status so
+                  consumers need not join across resources.
                 items:
                   type: string
                 type: array
-                x-kubernetes-list-type: set
               provider:
                 description: |-
                   provider selects the driver that knows how to list, fetch, watch and
@@ -130,32 +116,10 @@ spec:
                 - slack
                 - gdrive
                 type: string
-              scope:
-                description: scope bounds the resources this Connection reaches. See
-                  ConnectionScope.
-                properties:
-                  channel:
-                    description: |-
-                      channel is a Slack channel id (e.g. "C6RQKL5BK"). An id, not a name:
-                      names are mutable and a renamed channel must not silently re-point a
-                      connection at different material.
-                    minLength: 1
-                    type: string
-                  folderID:
-                    description: folderID is a Google Drive folder id. Contents are
-                      synced recursively.
-                    minLength: 1
-                    type: string
-                  space:
-                    description: space is a Confluence space key (e.g. "SNC").
-                    minLength: 1
-                    type: string
-                type: object
               secretEnv:
                 description: |-
                   secretEnv are environment variables sourced from Secret keys in the same
                   namespace (never literal values), resolved by the connection-broker.
-                  Two Connections over the same system share one Secret.
 
                   This is the INGESTION credential, and it stays a shared service one: a
                   scheduled reconcile has no calling user, so a per-user sync is incoherent
@@ -230,79 +194,20 @@ spec:
                 required:
                 - baseURL
                 type: object
-              sync:
-                description: |-
-                  sync configures how this Connection is kept current. Omitted means no
-                  indexing at all — a live-face-only Connection.
-                properties:
-                  backfill:
-                    description: backfill bounds the initial historical read.
-                    properties:
-                      since:
-                        description: |-
-                          since is the oldest resource to ingest on first sync. Omitted means
-                          everything the provider will give us, which for a long-lived Slack
-                          channel can be a great deal.
-                        format: date-time
-                        type: string
-                    type: object
-                  mode:
-                    description: mode selects the change-notification strategy.
-                    enum:
-                    - webhook
-                    - poll
-                    - none
-                    type: string
-                  reconcileInterval:
-                    description: |-
-                      reconcileInterval is how often a full reconcile pass runs. Required even
-                      for mode "webhook" (see the type doc); ignored for mode "none".
-                    type: string
-                required:
-                - mode
-                type: object
-              tier:
-                description: |-
-                  tier is an operator-defined cost/trust classification (e.g. "standard",
-                  "privileged"), as on Tool.
-                type: string
             required:
-            - allowedRoles
-            - description
             - provider
-            - scope
             type: object
             x-kubernetes-validations:
-            - message: a confluence Connection must set scope.space and nothing else
-              rule: self.provider != 'confluence' || (has(self.scope.space) && !has(self.scope.channel)
-                && !has(self.scope.folderID))
-            - message: a slack Connection must set scope.channel and nothing else
-              rule: self.provider != 'slack' || (has(self.scope.channel) && !has(self.scope.space)
-                && !has(self.scope.folderID))
-            - message: a gdrive Connection must set scope.folderID and nothing else
-              rule: self.provider != 'gdrive' || (has(self.scope.folderID) && !has(self.scope.space)
-                && !has(self.scope.channel))
-            - message: 'sync.reconcileInterval is required unless sync.mode is none:
-                webhooks are lossy and the reconcile pass is the source of truth'
-              rule: '!has(self.sync) || self.sync.mode == ''none'' || has(self.sync.reconcileInterval)'
             - message: a confluence Connection must set site.baseURL; citations cannot
                 be built without it
               rule: self.provider != 'confluence' || has(self.site)
+            - message: autoJoin is only meaningful for a slack Connection
+              rule: '!has(self.autoJoin) || !self.autoJoin || self.provider == ''slack'''
           status:
-            description: status defines the observed state of Connection
+            description: ConnectionStatus defines the observed state of Connection.
             properties:
-              collection:
-                description: |-
-                  collection is the vector-store collection this Connection owns. Storage
-                  is per-Connection rather than per-KnowledgeBase so that a Connection
-                  shared by several knowledge bases is embedded once, and recomposing a
-                  knowledge base costs no re-indexing (ADR 0039 §1).
-                type: string
               conditions:
-                description: |-
-                  conditions represent the current state of the Connection resource.
-                  This controller uses "Ready" to report spec validity and "Synced" to
-                  report whether the corpus is current.
+                description: conditions follow the usual Ready/Degraded convention.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -361,45 +266,21 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              lastReconcileTime:
+              corpora:
                 description: |-
-                  lastReconcileTime is the last successful FULL reconcile. Because the
-                  reconcile pass is the source of truth (ADR 0038 §4), this — not
-                  lastSyncTime — is how stale the corpus may actually be.
-                format: date-time
-                type: string
-              lastSyncTime:
-                description: |-
-                  lastSyncTime is the last successful sync of any kind, including a
-                  webhook-triggered partial one.
-                format: date-time
-                type: string
+                  corpora is how many Corpora currently reference this Connection.
+
+                  Published because it is what makes deletion refusable: removing a
+                  credential should not destroy indexed material as a side effect
+                  (ADR 0043 §4).
+                format: int64
+                type: integer
               observedGeneration:
-                description: observedGeneration is the .metadata.generation this status
-                  reflects.
                 format: int64
                 type: integer
-              resources:
-                description: resources is how many resources were indexed as of the
-                  last sync.
-                format: int64
-                type: integer
-              webhook:
-                description: webhook reports the provider-side subscription, when
-                  mode is "webhook".
-                properties:
-                  expiresAt:
-                    description: expiresAt is when the provider will stop delivering
-                      unless renewed.
-                    format: date-time
-                    type: string
-                  registered:
-                    description: registered is true while a provider subscription
-                      is believed live.
-                    type: boolean
-                type: object
             type: object
         required:
+        - metadata
         - spec
         type: object
     served: true

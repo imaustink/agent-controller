@@ -18,6 +18,17 @@
 # planner) is created out-of-band by a human — see that script.
 
 temporal-engine:
+  # Knowledge bases (docs/adr/0039), served out of the connection-broker.
+  #
+  # ADR 0036 keeps the engines in parity, so a knowledge-base behaviour
+  # proven on one engine and never wired on the other is exactly the
+  # asymmetry this suite exists to catch — hence both, not one.
+  knowledgeBases:
+    enabled: true
+    brokerUrl: "http://agent-controller-connection-broker:8080"
+    brokerTokenSecret:
+      name: e2e-connection-broker-secrets
+      key: orchestratorToken
   # Points the worker/gateway at `e2e/manifests/temporal-dev-server.yaml`
   # (applied by `e2e/scripts/up.sh` before this release is deployed) instead of
   # the production default (a real `temporalio/helm-charts` release's frontend
@@ -239,6 +250,15 @@ integration-gateway:
     # Points at fake-github so nothing dangles at a real host. No spec completes
     # the redirect: the flow only has to start, which is where the subject is
     # decided and where the prompt is emitted.
+    # Atlassian, so the gateway BUILDS that provider at all.
+    #
+    # No OAuth dance ever runs here — e2e seeds the credential directly
+    # (support/credential-store.ts) — but loadOAuthProviders only registers a
+    # provider whose client id AND secret are present, and the identity-link
+    # API answers "Unsupported identity provider" for anything unregistered.
+    # Both engines read that as "nothing linked", so every knowledge-base turn
+    # asks the caller to link an account that is already linked.
+    atlassianClientId: "e2e-atlassian-placeholder"
     githubOauthRedirectUri: "http://fake-github.controller-agent.svc.cluster.local/identity-link/github/callback"
 
   claudeAuth:
@@ -280,6 +300,17 @@ integration-gateway:
     existingSecret: e2e-integration-gateway-secrets
 
 agent-orchestrator:
+  # Knowledge bases (docs/adr/0039), served out of the connection-broker.
+  #
+  # ADR 0036 keeps the engines in parity, so a knowledge-base behaviour
+  # proven on one engine and never wired on the other is exactly the
+  # asymmetry this suite exists to catch — hence both, not one.
+  knowledgeBases:
+    enabled: true
+    brokerUrl: "http://agent-controller-connection-broker:8080"
+    brokerTokenSecret:
+      name: e2e-connection-broker-secrets
+      key: orchestratorToken
   # The orchestrator's CLIENT side of the identity-link channel. Enabling it
   # only on the gateway (the server side) leaves the orchestrator with no
   # gateway configured at all -- `hasIdentityLinkGateway: false` in its
@@ -336,3 +367,37 @@ agent-orchestrator:
     # with fewer tools -- which is fewer real embedding calls per test, not just
     # a shorter fixture.
     callerToolTopK: 3
+
+core-controller:
+  corpusSync:
+    enabled: true
+    brokerUrl: "http://agent-controller-connection-broker:8080"
+    tokenSecret: e2e-connection-broker-sync-tokens
+
+# Both engines are told where the broker is. ADR 0036 keeps them in parity, so
+# a knowledge-base behaviour proven on one engine and never wired on the other
+# is exactly the asymmetry this suite exists to catch.
+connection-broker:
+  enabled: true
+  qdrant:
+    url: "http://agent-controller-qdrant:6333"
+  # Pointed at the in-cluster stand-in (e2e/manifests/fake-confluence.yaml),
+  # the same way integration-gateway reaches fake-github through githubApiUrl.
+  # Nothing production-shaped changes: this is the Data Center/Server seam.
+  apiOrigins:
+    atlassian: "http://fake-confluence.controller-agent.svc.cluster.local"
+    slack: "http://fake-slack.controller-agent.svc.cluster.local/api"
+    gdrive: "http://fake-gdrive.controller-agent.svc.cluster.local"
+  embeddings:
+    # The key name the orchestrator's secret actually uses. Getting this wrong
+    # is not a runtime error — the Pod never starts, with
+    # CreateContainerConfigError and a message naming the key, which is at
+    # least honest but easy to miss behind a rollout timeout.
+    apiKeySecret:
+      name: agent-orchestrator-secrets
+      key: OPENAI_API_KEY
+  orchestratorTokenSecret:
+    name: e2e-connection-broker-secrets
+    key: orchestratorToken
+  syncTokenSecret:
+    name: e2e-connection-broker-sync-tokens

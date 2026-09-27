@@ -1,11 +1,12 @@
 import type { SkillAccess } from "../skills/types.js";
 import {
-  connectionGetToolId,
+  knowledgeBaseLookupToolId,
+  knowledgeBaseReadToolId,
   connectionLabel,
   knowledgeBaseLabel,
   knowledgeBaseSearchToolId,
   knowledgeBaseSkillId,
-  type ConnectionDescriptor,
+  type CorpusDescriptor,
   type KnowledgeBaseDescriptor,
 } from "./types.js";
 
@@ -40,21 +41,35 @@ import {
  */
 export function deriveKnowledgeBaseSkill(
   kb: KnowledgeBaseDescriptor,
-  connections: ReadonlyMap<string, ConnectionDescriptor>,
+  connections: ReadonlyMap<string, CorpusDescriptor>,
 ): SkillAccess {
-  const resolved: ConnectionDescriptor[] = [];
+  const resolved: CorpusDescriptor[] = [];
   const roles = new Set<string>();
-  const getToolIds: string[] = [];
+  // WHETHER any member can serve a per-user read — not one id each. The live
+  // faces are one per knowledge base now, with the corpus travelling in the
+  // input, so a member with an API face contributes its ROLES and nothing to
+  // this list.
+  let readable = false;
 
-  for (const ref of kb.connectionRefs) {
+  for (const ref of kb.corpusRefs) {
     const connection = connections.get(ref);
     if (!connection) continue;
     resolved.push(connection);
     for (const role of connection.allowedRoles) roles.add(role);
-    if (connection.apiEnabled) getToolIds.push(connectionGetToolId(connection.id));
+    if (connection.apiEnabled && connection.identityProviders?.length) readable = true;
   }
 
-  getToolIds.sort();
+  // A skill can only reach the tools it lists, so this is what decides whether
+  // the planner can call them at all.
+  //
+  // It listed `corpus:<member>/get` per member — an id nothing has generated
+  // since the per-member read tools were collapsed into one — and omitted both
+  // faces that ARE generated. The effect was a knowledge base that could
+  // search and could never read or look anything up, with the skill pointing
+  // at a tool that did not exist.
+  const liveToolIds = readable
+    ? [knowledgeBaseReadToolId(kb.id), knowledgeBaseLookupToolId(kb.id)]
+    : [];
 
   return {
     skill: {
@@ -62,10 +77,7 @@ export function deriveKnowledgeBaseSkill(
       name: knowledgeBaseLabel(kb),
       description: knowledgeBaseEmbeddingDescription(kb),
       markdown: knowledgeBaseMarkdown(kb, resolved),
-      toolIds: [
-        knowledgeBaseSearchToolId(kb.id),
-        ...getToolIds,
-      ],
+      toolIds: [knowledgeBaseSearchToolId(kb.id), ...liveToolIds],
       agentIds: [],
     },
     // Never null: null means unrestricted, and a knowledge base whose members
@@ -95,16 +107,16 @@ export function deriveKnowledgeBaseSkill(
  * reconciled — counts as unavailable rather than visible, since there is
  * nothing to search.
  */
-export function visibleConnections(
+export function visibleCorpora(
   kb: KnowledgeBaseDescriptor,
-  connections: ReadonlyMap<string, ConnectionDescriptor>,
+  connections: ReadonlyMap<string, CorpusDescriptor>,
   callerRoles: string[],
-): { visible: ConnectionDescriptor[]; withheld: number } {
+): { visible: CorpusDescriptor[]; withheld: number } {
   const held = new Set(callerRoles);
-  const visible: ConnectionDescriptor[] = [];
+  const visible: CorpusDescriptor[] = [];
   let withheld = 0;
 
-  for (const ref of kb.connectionRefs) {
+  for (const ref of kb.corpusRefs) {
     const connection = connections.get(ref);
     // Dangling: a misconfiguration is the controller's to report in status,
     // not an access disclosure to this caller.
@@ -125,7 +137,7 @@ export function visibleConnections(
 }
 
 /** The collection names of some connections, in order. */
-export const collectionsOf = (connections: ConnectionDescriptor[]): string[] =>
+export const collectionsOf = (connections: CorpusDescriptor[]): string[] =>
   connections.map((connection) => connection.collection!).filter(Boolean);
 
 /**
@@ -153,7 +165,7 @@ function knowledgeBaseEmbeddingDescription(kb: KnowledgeBaseDescriptor): string 
  */
 function knowledgeBaseMarkdown(
   kb: KnowledgeBaseDescriptor,
-  members: ConnectionDescriptor[],
+  members: CorpusDescriptor[],
 ): string {
   const parts: string[] = [];
 

@@ -1,0 +1,34 @@
+# Bitovi's Google Drive as ONE Connection (ADR 0043).
+#
+# Every indexed folder is a Corpus over this object, sharing this credential —
+# the same shape as the Slack workspace next door.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Connection
+metadata:
+  labels:
+    app.kubernetes.io/name: core-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: bitovi-gdrive
+spec:
+  provider: gdrive
+
+  # Drive files are addressed by id against a single global API host, so there
+  # are no site coordinates to carry. Unlike Slack, citation links come back
+  # from Drive itself as webViewLink, so no baseURL is needed for those either.
+
+  # No autoJoin analogue: Drive has no membership to acquire. A service
+  # credential either had the folder shared with it or did not, and there is no
+  # self-service equivalent of joining a public channel. Sharing is the
+  # operator's step, out of band.
+
+  secretEnv:
+    - name: SERVICE_TOKEN
+      secretRef:
+        name: bitovi-gdrive
+        key: accessToken
+
+  # Retrieval probes run as the ASKING USER (ADR 0040). Drive authorizes the
+  # FILE, so this is the per-resource case: one probe per candidate, which is
+  # why the gdrive driver reports "resource" granularity and Slack does not.
+  identityProviders:
+    - google

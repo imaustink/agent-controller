@@ -25,7 +25,25 @@ const defaultKnowledgeBaseLimit = 6
 // returned to the workflow would be durable plaintext for the workflow's whole
 // retention. This one never leaves the activity.
 type DelegatedCredentialResolver interface {
-	DelegatedToken(ctx context.Context, caller Caller, providers []string) (string, error)
+	DelegatedToken(ctx context.Context, caller Caller, providers []string) (DelegatedCredential, error)
+}
+
+// DelegatedCredential is the caller's own credential for a provider, plus the
+// identities that credential represents at that provider.
+//
+// Principals are carried alongside the token rather than derived later because
+// only the credential store knows them: they are provider-shaped
+// ("user:<accountId>", "group:<id>"), not the cluster-side Subject or Roles.
+// They feed the ACL mirror's pre-filter and nothing else — a missing or partial
+// set costs probes, never correctness (see corpus.PreFilter, which is written
+// to be safe against exactly that).
+type DelegatedCredential struct {
+	Token string
+	// Principals may legitimately be empty, or cover only some kinds — group
+	// membership in particular needs a provider call that may not have
+	// happened. PreFilter degrades accordingly rather than excluding on a kind
+	// it cannot evaluate.
+	Principals []string
 }
 
 // KnowledgeBaseActivities executes the generated search tool (ADR 0039 §3).
@@ -97,10 +115,11 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 		}, nil
 	}
 
-	token, err := a.Credentials.DelegatedToken(ctx, in.Caller, providersOf(visible))
+	credential, err := a.Credentials.DelegatedToken(ctx, in.Caller, providersOf(visible))
 	if err != nil {
 		return SearchKnowledgeBaseOutput{}, err
 	}
+	token := credential.Token
 	if token == "" {
 		// Without the caller's own credential nothing can be probed, and
 		// probing on the ingestion credential would answer a different
@@ -120,7 +139,8 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 	}
 
 	outcome, err := corpus.Retrieve(ctx, stores, a.prober(token, visible), in.Query,
-		in.Caller.Roles, knowledgeBaseLimit(in.Limit), corpus.DefaultCandidateMultiplier)
+		in.Caller.Roles, credential.Principals,
+		knowledgeBaseLimit(in.Limit), corpus.DefaultCandidateMultiplier)
 	if err != nil {
 		return SearchKnowledgeBaseOutput{}, err
 	}

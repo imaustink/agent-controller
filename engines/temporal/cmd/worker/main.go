@@ -168,6 +168,36 @@ func main() {
 		w.RegisterActivityWithOptions(retrieval.ResolveSkillTools, activity.RegisterOptions{Name: activities.ResolveSkillToolsActivityName})
 		w.RegisterActivityWithOptions(retrieval.ResolveAgent, activity.RegisterOptions{Name: activities.ResolveAgentActivityName})
 		w.RegisterActivityWithOptions(retrieval.ResolveAgentTools, activity.RegisterOptions{Name: activities.ResolveAgentToolsActivityName})
+		// Knowledge bases (ADR 0039, 0040, 0043). Registered here because they
+		// need the same Qdrant client: a corpus is a per-Corpus collection
+		// alongside the catalog ones.
+		//
+		// These were previously dispatched by the workflow and registered by
+		// nobody, which is a failure mode worth naming: the planner could pick
+		// a knowledge-base tool and the turn died on "activity not registered",
+		// AFTER the model had committed to an approach. A tool in the catalog
+		// with no runnable activity behind it is worse than a missing one.
+		if brokerURL := os.Getenv("CONNECTION_BROKER_URL"); brokerURL != "" {
+			kb := &activities.KnowledgeBaseActivities{
+				Corpora:     vectorstore.NewCorpora(qdrantClient, embedder, llm.DefaultEmbedDims),
+				Credentials: &activities.LinkedCredentials{Links: links},
+				BrokerURL:   brokerURL,
+				BrokerToken: os.Getenv("CONNECTION_BROKER_TOKEN"),
+			}
+			w.RegisterActivityWithOptions(kb.SearchKnowledgeBase,
+				activity.RegisterOptions{Name: activities.SearchKnowledgeBaseActivityName})
+			w.RegisterActivityWithOptions(kb.ReadCorpus,
+				activity.RegisterOptions{Name: activities.ReadCorpusActivityName})
+			w.RegisterActivityWithOptions(kb.LookupCorpus,
+				activity.RegisterOptions{Name: activities.LookupCorpusActivityName})
+			log.Printf("knowledge-base activities enabled: broker=%s", brokerURL)
+		} else {
+			// Not an error: a deployment may index nothing. But it is worth
+			// saying, because the symptom otherwise is a knowledge base that
+			// indexes fine and cannot be asked anything.
+			log.Printf("CONNECTION_BROKER_URL not set; knowledge-base activities disabled")
+		}
+
 		log.Printf("retrieval activities enabled: qdrant=%s:%d", qdrantHost, qdrantPort)
 	} else {
 		log.Printf("QDRANT_HOST not set; retrieval activities disabled")

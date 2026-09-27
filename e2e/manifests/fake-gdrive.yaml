@@ -1,0 +1,223 @@
+# In-cluster stand-in for Google Drive's API.
+#
+# Same reasoning and shape as the other two fakes, reached through the
+# broker's `GDRIVE_API_ORIGIN` seam.
+#
+# The fixture is built around the four things that were found broken against a
+# real Drive, so a regression in any of them turns a spec red rather than
+# quietly shrinking a corpus:
+#
+#   RECURSION. `'<id>' in parents` is ONE level while a corpus is recursive.
+#   A file in a subfolder was readable by fetch and could never be indexed —
+#   two of two nested documents were missing live.
+#
+#   SHORTCUTS. A live Drive had 54, pointing at ordinary Docs, and every one
+#   was skipped because a shortcut's own mime type is not indexable. Its
+#   VERSION also never changes when its target is edited, so a corpus keyed on
+#   it goes stale with the reconcile seeing nothing wrong.
+#
+#   PDFs. Dropped silently before extraction existed.
+#
+#   A SECOND IDENTITY, so "withheld from this caller" is distinguishable from
+#   "broken for everyone".
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fake-gdrive
+  labels: { app: fake-gdrive, e2e: "true" }
+data:
+  server.js: |
+    const http = require("node:http");
+
+    const SERVICE = "e2e-gdrive-service";
+    const USER_FULL = "e2e-gdrive-user-full";
+    const USER_LIMITED = "e2e-gdrive-user-limited";
+
+    // A minimal, REAL PDF. Extraction is the one path here with a parser
+    // behind it, so a stub string would test nothing.
+    const PDF = [
+      "%PDF-1.4",
+      "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj",
+      "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj",
+      "3 0 obj<</Type/Page/Parent 2 0 R/Resources<</Font<</F1 4 0 R>>>>/MediaBox[0 0 612 792]/Contents 5 0 R>>endobj",
+      "4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj",
+      "5 0 obj<</Length 74>>stream",
+      "BT /F1 18 Tf 72 700 Td (Statement of Work: the delivery agreement) Tj ET",
+      "endstream",
+      "endobj",
+      "trailer<</Root 1 0 R>>",
+    ].join("\n");
+
+    const FILES = {
+      FROOT: { id: "FROOT", name: "Delivery", mimeType: "application/vnd.google-apps.folder", parents: [] },
+      FSUB: { id: "FSUB", name: "Nested", mimeType: "application/vnd.google-apps.folder", parents: ["FROOT"] },
+      FOTHER: { id: "FOTHER", name: "Another client", mimeType: "application/vnd.google-apps.folder", parents: [] },
+
+      doc1: {
+        id: "doc1", name: "Runbook", parents: ["FROOT"], version: "3",
+        mimeType: "application/vnd.google-apps.document",
+        body: "Deploys run from the release branch. Roll back with the previous image tag.",
+      },
+      // One level DOWN. Absent from a listing that asks only for direct
+      // children, which is exactly how it was missing live.
+      nested1: {
+        id: "nested1", name: "Nested brief", parents: ["FSUB"], version: "1",
+        mimeType: "application/vnd.google-apps.document",
+        body: "The nested brief nobody could index.",
+      },
+      pdf1: {
+        id: "pdf1", name: "SOW.pdf", parents: ["FROOT"], version: "2",
+        mimeType: "application/pdf", size: String(PDF.length), body: PDF,
+      },
+      // Points at a doc OUTSIDE the corpus, the way a real shortcut does.
+      // Indexed under the SHORTCUT's id, because that is what lives here.
+      short1: {
+        id: "short1", name: "Shortcut to notes", parents: ["FROOT"], version: "1",
+        mimeType: "application/vnd.google-apps.shortcut",
+        shortcutDetails: { targetId: "target1", targetMimeType: "application/vnd.google-apps.document" },
+      },
+      target1: {
+        id: "target1", name: "Meeting notes", parents: ["FELSEWHERE"], version: "9",
+        mimeType: "application/vnd.google-apps.document",
+        body: "Notes from the weekly sync.",
+      },
+      // A shortcut to something unindexable: following one must not mean
+      // indexing whatever is on the other end.
+      short2: {
+        id: "short2", name: "Shortcut to recording", parents: ["FROOT"], version: "1",
+        mimeType: "application/vnd.google-apps.shortcut",
+        shortcutDetails: { targetId: "vid1", targetMimeType: "video/mp4" },
+      },
+      vid1: { id: "vid1", name: "Recording.mp4", parents: ["FELSEWHERE"], version: "1", mimeType: "video/mp4" },
+
+      // Another client's material, for the scope bound.
+      other1: {
+        id: "other1", name: "Other runbook", parents: ["FOTHER"], version: "1",
+        mimeType: "application/vnd.google-apps.document",
+        body: "Deploys for somebody else entirely.",
+      },
+      // Visible only to the full user, though the corpus indexes it.
+      secret1: {
+        id: "secret1", name: "Rates", parents: ["FROOT"], version: "1",
+        mimeType: "application/vnd.google-apps.document",
+        body: "Day rates for the engagement.",
+      },
+    };
+
+    const HIDDEN_FROM_LIMITED = new Set(["secret1"]);
+
+    const requests = [];
+
+    function json(res, status, body) {
+      res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    }
+    function bearer(req) {
+      const h = req.headers.authorization ?? "";
+      return h.startsWith("Bearer ") ? h.slice(7) : "";
+    }
+    function canRead(token, file) {
+      if (token === SERVICE || token === USER_FULL) return true;
+      return !HIDDEN_FROM_LIMITED.has(file.id);
+    }
+    function meta(file) {
+      const { body, ...rest } = file;
+      return {
+        ...rest,
+        webViewLink: `https://drive.google.com/file/d/${file.id}/view`,
+        modifiedTime: "2026-01-01T00:00:00.000Z",
+        trashed: false,
+      };
+    }
+
+    http.createServer((req, res) => {
+      req.on("data", () => {});
+      req.on("end", () => {
+        const url = new URL(req.url, "http://fake-gdrive");
+        const token = bearer(req);
+        requests.push({ path: url.pathname, query: url.search, token });
+
+        if (url.pathname === "/healthz") return json(res, 200, { ok: true });
+        if (url.pathname === "/_e2e/requests") return json(res, 200, requests);
+        if (url.pathname === "/_e2e/reset") { requests.length = 0; return json(res, 200, { ok: true }); }
+
+        if (![SERVICE, USER_FULL, USER_LIMITED].includes(token)) {
+          return json(res, 401, { error: { message: "unauthorized" } });
+        }
+
+        // Listing: `q` carries the parent terms and an optional fullText.
+        if (url.pathname === "/files" || url.pathname === "/drive/v3/files") {
+          const q = url.searchParams.get("q") ?? "";
+          const parents = [...q.matchAll(/'([^']+)' in parents/g)].map((m) => m[1]);
+          const folderOnly = q.includes("mimeType = 'application/vnd.google-apps.folder'");
+          const text = /fullText contains '((?:[^'\\]|\\.)*)'/.exec(q)?.[1]?.replace(/\\(.)/g, "$1");
+
+          let files = Object.values(FILES).filter((f) => canRead(token, f));
+          if (parents.length > 0) files = files.filter((f) => (f.parents ?? []).some((p) => parents.includes(p)));
+          if (folderOnly) files = files.filter((f) => f.mimeType === "application/vnd.google-apps.folder");
+          else if (parents.length > 0) files = files.filter((f) => f.mimeType !== "application/vnd.google-apps.folder");
+          if (text) {
+            files = files.filter((f) =>
+              `${f.name} ${f.body ?? ""}`.toLowerCase().includes(text.toLowerCase()),
+            );
+          }
+          return json(res, 200, { files: files.map(meta) });
+        }
+
+        const byId = /^(?:\/drive\/v3)?\/files\/([^/]+)(\/export)?$/.exec(url.pathname);
+        if (byId) {
+          const file = FILES[byId[1]];
+          if (!file) return json(res, 404, { error: { message: "File not found" } });
+          // Drive answers 404 for a file this caller may not see, not 403.
+          if (!canRead(token, file)) return json(res, 404, { error: { message: "File not found" } });
+
+          // Google-native docs EXPORT; everything else downloads.
+          if (byId[2] === "/export" || url.searchParams.get("alt") === "media") {
+            const body = file.body ?? "";
+            const type = file.mimeType === "application/pdf" ? "application/pdf" : "text/plain";
+            return res.writeHead(200, { "content-type": type }).end(body, "latin1");
+          }
+          return json(res, 200, meta(file));
+        }
+
+        json(res, 404, { error: { message: `unstubbed ${url.pathname}` } });
+      });
+    }).listen(Number(process.env.PORT ?? 8080), () => console.log("fake-gdrive listening"));
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-gdrive
+  labels: { app: fake-gdrive, e2e: "true" }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: fake-gdrive }
+  template:
+    metadata:
+      labels: { app: fake-gdrive, e2e: "true" }
+    spec:
+      containers:
+        - name: server
+          image: node:22-alpine
+          command: ["node", "/srv/server.js"]
+          ports: [{ containerPort: 8080, name: http }]
+          volumeMounts: [{ name: script, mountPath: /srv }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+      volumes:
+        - name: script
+          configMap: { name: fake-gdrive }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-gdrive
+  labels: { app: fake-gdrive, e2e: "true" }
+spec:
+  selector: { app: fake-gdrive }
+  ports: [{ port: 80, targetPort: http, name: http }]

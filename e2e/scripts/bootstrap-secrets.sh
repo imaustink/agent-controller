@@ -40,6 +40,13 @@ upsert() {
 }
 
 rand() { openssl rand -hex 32; }
+# Fixed, and for the same reason as the two below it: the orchestrator presents
+# this to the broker on every probe and every user read, and the broker checks
+# it. Two independently-generated values would 401 every retrieval, which
+# surfaces as "the knowledge base found nothing" rather than as an auth error —
+# the exact silence that hid a routing bug in this path once already.
+CONNECTION_BROKER_TOKEN="e2e-connection-broker-token"
+
 # Fixed, not random: this exact value must appear on BOTH sides of the
 # orchestrator<->gateway identity-link channel (the gateway's
 # GATEWAY_IDENTITY_LINK_TOKEN and the orchestrator's
@@ -67,6 +74,38 @@ upsert recipe-publisher-secrets --from-literal=MEALIE_API_TOKEN="e2e-not-a-real-
 upsert agent-controller-openwebui-google-oauth --from-literal=client-secret="e2e-not-a-real-secret"
 upsert searxng-secrets --from-literal=secret-key="$(rand)"
 
+# The connection-broker's two halves of auth.
+#
+# orchestratorToken is what a retrieval caller presents; the sync-tokens secret
+# is keyed BY CORPUS NAME, because a sync worker is trusted for exactly one
+# corpus and a single shared token would let any of them drive any other's
+# ingestion credential.
+upsert e2e-connection-broker-secrets \
+  --from-literal=orchestratorToken="$CONNECTION_BROKER_TOKEN"
+# alpha-docs is the corpus the knowledge-base specs create; see
+# e2e/specs/knowledge-base-*.e2e.ts.
+# Keys are the ENV VAR NAMES the broker reads: every key in this Secret is
+# mounted verbatim via envFrom, and the broker matches SYNC_TOKEN_<CORPUS>,
+# lowercasing and turning underscores back into hyphens. A key named for the
+# corpus alone becomes an env var the broker never looks at, and the sync then
+# fails with "unrecognized bearer token" — which reads as a wrong VALUE rather
+# than a wrong NAME.
+upsert e2e-connection-broker-sync-tokens \
+  --from-literal=SYNC_TOKEN_ALPHA_DOCS="e2e-sync-token-alpha" \
+  --from-literal=SYNC_TOKEN_BETA_DOCS="e2e-sync-token-beta" \
+  --from-literal=SYNC_TOKEN_ENG_CHAT="e2e-sync-token-eng" \
+  --from-literal=SYNC_TOKEN_DELIVERY_DRIVE="e2e-sync-token-drive"
+# The credential the fake Confluence accepts for INGESTION. Its user-facing
+# counterparts are seeded per-test into the identity-link store, because which
+# caller holds which is the thing under test.
+upsert e2e-connection-alpha \
+  --from-literal=token="e2e-service-token"
+# The Slack and Drive equivalents, one Secret per Connection.
+upsert e2e-connection-slack \
+  --from-literal=token="e2e-slack-bot"
+upsert e2e-connection-gdrive \
+  --from-literal=token="e2e-gdrive-service"
+
 # The gateway's own secret, referenced by values-e2e.yaml via
 # `secrets.existingSecret`. The name deliberately avoids the chart's own
 # generated name (agent-controller-integration-gateway): Helm refuses to adopt
@@ -80,7 +119,8 @@ upsert e2e-integration-gateway-secrets \
   --from-literal=IDENTITY_LINK_STATE_SECRET="$(rand)" \
   --from-literal=GITHUB_APP_CLIENT_SECRET="e2e-not-a-real-secret" \
   --from-literal=GATEWAY_SENDER_ASSERTION_SECRET="$SENDER_ASSERTION_SECRET" \
-  --from-literal=GITHUB_TOKEN="e2e-not-a-real-token"
+  --from-literal=GITHUB_TOKEN="e2e-not-a-real-token" \
+  --from-literal=ATLASSIAN_CLIENT_SECRET="e2e-not-a-real-secret"
 
 # The HS256 secret a chat turn's forwarded-user JWT is signed with. Fixed, and
 # read back out of the cluster by e2e/support/chat.ts rather than duplicated

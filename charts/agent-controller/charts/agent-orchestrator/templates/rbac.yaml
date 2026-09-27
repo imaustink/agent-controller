@@ -21,6 +21,16 @@ rules:
   - apiGroups: ["core.controller-agent.dev"]
     resources: ["tools", "skills", "agents", "integrationroutes", "identityproviders"]
     verbs: ["get", "list", "watch"]
+  {{- if .Values.knowledgeBases.enabled }}
+  # Knowledge bases (docs/adr/0039, 0043). The orchestrator derives a skill and
+  # its tools from these, so it WATCHES them — and with knowledgeBases enabled
+  # and these missing it does not degrade, it crashloops on a 403 at startup.
+  # That is the fourth time in this feature that a hand-copied chart Role has
+  # lagged the kinds a process watches.
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["connections", "corpora", "knowledgebases"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
   - apiGroups: ["core.controller-agent.dev"]
     resources: ["toolruns"]
     verbs: ["create", "get", "list", "watch", "delete"]

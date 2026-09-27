@@ -1,5 +1,5 @@
 /**
- * Knowledge bases (docs/adr/0039) and the scoped Connections they compose
+ * Knowledge bases (docs/adr/0039) and the scoped Corpora they compose
  * (docs/adr/0038).
  *
  * PARITY: `engines/temporal/internal/catalog/knowledgebase.go` and
@@ -17,15 +17,45 @@
  * so its id must not be able to collide with one.
  */
 export const KNOWLEDGE_BASE_ID_PREFIX = "kb:";
-export const CONNECTION_ID_PREFIX = "conn:";
+export const CORPUS_ID_PREFIX = "corpus:";
 
 export const knowledgeBaseSkillId = (name: string) => `${KNOWLEDGE_BASE_ID_PREFIX}${name}`;
 export const knowledgeBaseSearchToolId = (name: string) =>
   `${KNOWLEDGE_BASE_ID_PREFIX}${name}/search`;
+/** The live read a KnowledgeBase generates: one per base, not one per member. */
+export const knowledgeBaseReadToolId = (name: string) =>
+  `${KNOWLEDGE_BASE_ID_PREFIX}${name}/read`;
+
+/**
+ * The LIVE search a KnowledgeBase generates.
+ *
+ * "lookup", not "search": the planner picks by embedding, and two tools whose
+ * ids and descriptions both say "search" reproduce the near-identical
+ * description problem of docs/adr/0039 §5 one level down.
+ */
+export const knowledgeBaseLookupToolId = (name: string) =>
+  `${KNOWLEDGE_BASE_ID_PREFIX}${name}/lookup`;
+
 export const knowledgeBaseFetchToolId = (name: string) =>
   `${KNOWLEDGE_BASE_ID_PREFIX}${name}/fetch`;
-/** A Connection's scope-enforced GET face (docs/adr/0038 §5). */
-export const connectionGetToolId = (name: string) => `${CONNECTION_ID_PREFIX}${name}/get`;
+/**
+ * Every tool id a knowledge base owns, generated or not.
+ *
+ * One list, because the delete path used to spell them out by hand and had
+ * already drifted: the read tool survived deletion, staying in the catalog for
+ * the planner to find while pointing at a skill that no longer existed. The
+ * fetch id is listed although no fetch tool is generated — it is how a record
+ * written by an older build gets cleaned up.
+ */
+export const knowledgeBaseToolIds = (name: string) => [
+  knowledgeBaseSearchToolId(name),
+  knowledgeBaseReadToolId(name),
+  knowledgeBaseLookupToolId(name),
+  knowledgeBaseFetchToolId(name),
+];
+
+/** A Corpus's scope-enforced GET face (docs/adr/0038 §5). */
+export const corpusGetToolId = (name: string) => `${CORPUS_ID_PREFIX}${name}/get`;
 
 /**
  * One scoped external resource subset — this Confluence space, this Slack
@@ -36,7 +66,7 @@ export const connectionGetToolId = (name: string) => `${CONNECTION_ID_PREFIX}${n
  * orchestrator needs is which collection to search, who may see it, and how to
  * name it in a citation.
  */
-export interface ConnectionDescriptor {
+export interface CorpusDescriptor {
   id: string;
   provider: string;
   /** What a citation renders; two Slack channels differ only by this. */
@@ -47,7 +77,7 @@ export interface ConnectionDescriptor {
    * Read from `Connection.status`, not recomputed. The controller assigns it
    * (namespace-qualified, since collections are global while CR names are only
    * unique per namespace) and publishing it keeps one source of truth.
-   * Absent until the Connection has been reconciled.
+   * Absent until the Corpus has been reconciled.
    */
   collection?: string;
   /** Whether this connection contributes a GET tool to knowledge bases including it. */
@@ -61,13 +91,13 @@ export interface ConnectionDescriptor {
   identityProviders: string[];
 }
 
-/** Composes Connections into a queryable corpus (docs/adr/0039). */
+/** Composes Corpora into a queryable corpus (docs/adr/0039). */
 export interface KnowledgeBaseDescriptor {
   id: string;
   displayName?: string;
   description: string;
   aliases: string[];
-  connectionRefs: string[];
+  corpusRefs: string[];
   /**
    * Makes a search report how many member connections this caller could not
    * see, so the agent can distinguish "nothing exists" from "nothing you may
@@ -77,7 +107,7 @@ export interface KnowledgeBaseDescriptor {
 }
 
 /** What a citation renders for a connection. */
-export const connectionLabel = (connection: ConnectionDescriptor) =>
+export const connectionLabel = (connection: CorpusDescriptor) =>
   connection.displayName || connection.id;
 
 /** The human name for a knowledge base. */
@@ -102,7 +132,7 @@ export interface CorpusChunk {
   /**
    * sha256 over the normalized chunk text. Doubles as the point id
    * (docs/adr/0039 §7) — which is what makes a re-sync re-embed only what
-   * changed — and is how the same document reached through two Connections is
+   * changed — and is how the same document reached through two Corpora is
    * de-duplicated at merge.
    */
   contentHash: string;
@@ -114,6 +144,29 @@ export interface CorpusChunk {
    */
   version?: string;
   text: string;
+
+  /**
+   * The MIRROR of the source's read restrictions, captured at ingest —
+   * provider-shaped strings like `user:<accountId>` or `group:<id>`
+   * (docs/adr/0040).
+   *
+   * It exists to make retrieval cheaper, never to decide access. It is a
+   * snapshot of permissions that may have changed a second after it was taken,
+   * and the source is asked again, per user, before any of it is shown.
+   *
+   * PARITY: `ACLPrincipals` on `corpus.Chunk`.
+   */
+  aclPrincipals?: string[];
+  /**
+   * Marks a chunk whose effective permissions the driver could not resolve, so
+   * `aclPrincipals` is not a usable exclusion set.
+   *
+   * Set deliberately rather than inferred from an empty list, because the two
+   * mean opposite things: empty on a non-permissive chunk is "nobody is
+   * specially granted", while permissive is "we do not know, so do not exclude
+   * anyone on this".
+   */
+  aclPermissive?: boolean;
 }
 
 export interface CorpusQueryFilter {

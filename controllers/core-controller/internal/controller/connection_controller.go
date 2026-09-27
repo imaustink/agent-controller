@@ -19,34 +19,27 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 )
 
 const connectionConditionReady = "Ready"
 
-// ConnectionCollectionName is the vector-store collection a Connection owns.
-//
-// Storage is per-Connection rather than per-KnowledgeBase (ADR 0039 §1), so a
-// Connection shared by several knowledge bases is embedded once and recomposing
-// a knowledge base costs no re-indexing.
-//
-// Namespace and name both appear because collections are global in the vector
-// store while Connection names are only unique per namespace. Without the
-// namespace, two same-named Connections in different namespaces would silently
-// share one collection — a cross-tenant leak of exactly the kind ADR 0039 §1
-// argues the per-collection split exists to prevent.
-func ConnectionCollectionName(namespace, name string) string {
-	return fmt.Sprintf("conn_%s_%s", namespace, name)
-}
+// connectionFinalizer holds a Connection open while Corpora still draw from it.
+const connectionFinalizer = "core.controller-agent.dev/corpora-exist"
 
 // ConnectionReconciler reconciles a Connection object
 type ConnectionReconciler struct {
@@ -57,26 +50,21 @@ type ConnectionReconciler struct {
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=connections,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=connections/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=connections/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=corpora,verbs=get;list;watch
 
-// Reconcile assigns a Connection its vector-store collection and reports
-// readiness.
+// Reconcile counts what draws from this Connection, and refuses to let it
+// vanish underneath them.
 //
-// Deliberately narrow, for two reasons.
+// A Connection holds an address and a credential (ADR 0043); the material lives
+// in the Corpora that reference it. Deleting one while Corpora remain would
+// strand them — every sync and probe failing with no credential to run on — so
+// deletion BLOCKS instead of cascading.
 //
-// The spec's own invariants — provider/scope agreement, and a reconcile
-// interval whenever sync is enabled — are CEL rules on the CRD (ADR 0038), so
-// they are rejected at admission and never reach a reconcile. Re-checking them
-// here would duplicate an enforcement that already fails closed.
-//
-// And credential presence is deliberately NOT validated. This controller holds
-// no RBAC on Secrets at all: it injects secretEnv into a Job by reference and
-// lets the kubelet resolve it, so no secret value ever enters the controller.
-// Confirming that a referenced Secret exists would mean granting read over
-// Secrets cluster-wide, which is a real privilege increase to buy a nicety —
-// a missing credential surfaces as a failed sync instead.
-//
-// Syncing itself belongs to the connection-broker and its sync worker, neither
-// of which exists yet; this reconciler does not schedule work it cannot run.
+// Blocking rather than cascading is the deliberate half. Cascading would
+// destroy indexed material as a side effect of removing a credential, and those
+// are two decisions a person should get to make separately: rotating a
+// credential and discarding a client's corpus are not the same intent, and one
+// of them is not reversible.
 func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -88,19 +76,45 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	collection := ConnectionCollectionName(connection.Namespace, connection.Name)
-	if connection.Status.Collection != collection {
-		log.Info("Assigned Connection a vector-store collection",
-			"connection", connection.Name, "collection", collection)
+	dependents, err := r.dependentCorpora(ctx, &connection)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-	connection.Status.Collection = collection
-	connection.Status.ObservedGeneration = connection.Generation
 
+	if !connection.DeletionTimestamp.IsZero() {
+		if len(dependents) > 0 {
+			// Deliberately does not requeue on a timer: removing the last
+			// Corpus triggers a watch, which is the only event that can change
+			// this answer.
+			log.Info("Refusing to delete Connection while Corpora reference it",
+				"connection", connection.Name, "corpora", len(dependents))
+			connection.Status.Corpora = int64(len(dependents))
+			meta.SetStatusCondition(&connection.Status.Conditions, metav1.Condition{
+				Type:    connectionConditionReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  "CorporaExist",
+				Message: fmt.Sprintf("deletion blocked: %d corpus/corpora still draw from this connection (%v); delete them first", len(dependents), dependents),
+			})
+			return ctrl.Result{}, r.Status().Update(ctx, &connection)
+		}
+
+		controllerutil.RemoveFinalizer(&connection, connectionFinalizer)
+		return ctrl.Result{}, r.Update(ctx, &connection)
+	}
+
+	if controllerutil.AddFinalizer(&connection, connectionFinalizer) {
+		if err := r.Update(ctx, &connection); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	connection.Status.Corpora = int64(len(dependents))
+	connection.Status.ObservedGeneration = connection.Generation
 	meta.SetStatusCondition(&connection.Status.Conditions, metav1.Condition{
 		Type:               connectionConditionReady,
 		Status:             metav1.ConditionTrue,
 		Reason:             "Accepted",
-		Message:            fmt.Sprintf("scoped %s connection; indexes into %s", connection.Spec.Provider, collection),
+		Message:            fmt.Sprintf("%s connection serving %d corpus/corpora", connection.Spec.Provider, len(dependents)),
 		ObservedGeneration: connection.Generation,
 	})
 
@@ -110,10 +124,47 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{}, nil
 }
 
+// dependentCorpora names the Corpora drawing from this Connection, sorted so a
+// status message does not churn between reconciles.
+func (r *ConnectionReconciler) dependentCorpora(
+	ctx context.Context,
+	connection *corev1alpha1.Connection,
+) ([]string, error) {
+	var corpora corev1alpha1.CorpusList
+	if err := r.List(ctx, &corpora, client.InNamespace(connection.Namespace)); err != nil {
+		return nil, err
+	}
+
+	var names []string
+	for _, corpus := range corpora.Items {
+		if corpus.Spec.ConnectionRef == connection.Name {
+			names = append(names, corpus.Name)
+		}
+	}
+	slices.Sort(names)
+	return names, nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha1.Connection{}).
+		// Owns() is wrong here: a Corpus is not owned by its Connection (it
+		// outlives one being replaced, and deleting the Connection must not
+		// garbage-collect it). The count and the deletion block both change
+		// when a Corpus appears or goes, so watch them plainly.
+		Watches(&corev1alpha1.Corpus{}, handler.EnqueueRequestsFromMapFunc(connectionForCorpus)).
 		Named("connection").
 		Complete(r)
+}
+
+// connectionForCorpus maps a Corpus back to the Connection it draws from.
+func connectionForCorpus(_ context.Context, obj client.Object) []reconcile.Request {
+	corpus, ok := obj.(*corev1alpha1.Corpus)
+	if !ok || corpus.Spec.ConnectionRef == "" {
+		return nil
+	}
+	return []reconcile.Request{{
+		NamespacedName: types.NamespacedName{Namespace: corpus.Namespace, Name: corpus.Spec.ConnectionRef},
+	}}
 }

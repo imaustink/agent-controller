@@ -28,6 +28,8 @@ import type { BestEffortResponder } from "./best-effort-responder.js";
 import type { CapabilityNeedChecker } from "./capability-need-checker.js";
 import type { DelegateSelector } from "./delegate-selector.js";
 import type { ResponseComposer } from "./response-composer.js";
+import type { CorpusReader } from "../knowledge-base/reader.js";
+import type { CorpusLookup } from "../knowledge-base/lookup.js";
 import type { KnowledgeBaseSearcher } from "../knowledge-base/searcher.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
@@ -537,6 +539,18 @@ export interface AgentGraphDeps {
    * never have been selected in the first place.
    */
   knowledgeBaseSearcher?: KnowledgeBaseSearcher;
+  /**
+   * Reads one resource live from a Corpus (docs/adr/0038 §5). Absent when
+   * knowledge bases are not configured, in which case the tool is not
+   * generated either.
+   */
+  corpusReader?: CorpusReader;
+  /**
+   * Searches a Corpus's sources live, bounded by scope AND identity. Absent
+   * when knowledge bases are not configured, in which case the tool is not
+   * generated either.
+   */
+  corpusLookup?: CorpusLookup;
   /**
    * Resolves identity from Open WebUI's per-request signed
    * `X-OpenWebUI-User-Jwt` header (`OpenWebUiForwardedUserResolver`) rather
@@ -2066,6 +2080,63 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         } catch (err) {
           return { jobId: runId, error: agentTurnErrorMessage(err) };
         }
+      }
+
+      // A Corpus's live GET face (docs/adr/0038 §5). Same shape as the search
+      // below — in-process, no continuation state — but it answers a different
+      // question: what the source says RIGHT NOW, rather than what we indexed.
+      if (tool.knowledgeBaseExec?.operation === "read") {
+        if (!deps.corpusReader) {
+          return { error: `tool ${tool.id} reads a corpus but knowledge bases are not configured` };
+        }
+        if (!state.identity) {
+          // Fail closed: this read runs AS someone, and there is nobody to run
+          // it as.
+          return { error: `tool ${tool.id} requires a resolved caller identity` };
+        }
+        const read = await deps.corpusReader.read(tool, input, {
+          subject: state.identity.subject,
+          roles: state.identity.roles,
+        });
+        return {
+          result: read.result,
+          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: read.result }],
+        };
+      }
+
+      // The LIVE search face. Beside the read branch, and for the same reason:
+      // it runs as the caller, against the sources rather than the index.
+      if (tool.knowledgeBaseExec?.operation === "lookup") {
+        if (!deps.corpusLookup) {
+          return { error: `tool ${tool.id} searches a corpus but knowledge bases are not configured` };
+        }
+        if (!state.identity) {
+          // Fail closed: this search runs AS someone, and there is nobody to
+          // run it as.
+          return { error: `tool ${tool.id} requires a resolved caller identity` };
+        }
+        const found = await deps.corpusLookup.lookup(tool, input, {
+          subject: state.identity.subject,
+          roles: state.identity.roles,
+        });
+        return {
+          result: found.result,
+          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: found.result }],
+        };
+      }
+
+      // Everything else carrying an exec spec is the INDEXED search. Guarded
+      // on the operation rather than left as a catch-all: an unrecognised
+      // operation reaching here would run a vector search over whatever the
+      // model typed and return plausible passages, which looks like an answer
+      // and is not one. Failing closed makes a missing branch obvious instead
+      // of silently wrong.
+      if (tool.knowledgeBaseExec && tool.knowledgeBaseExec.operation !== "search") {
+        return {
+          error:
+            `tool ${tool.id} declares knowledge-base operation ` +
+            `"${tool.knowledgeBaseExec.operation}", which has no dispatch path`,
+        };
       }
 
       // A knowledge base's generated search (docs/adr/0039 §3) has nothing to

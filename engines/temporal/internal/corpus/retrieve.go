@@ -18,12 +18,19 @@ import (
 // Over-fetching is what keeps that affordable without starving the answer: ask
 // for `limit * multiplier` candidates so probe drops have slack to come out of,
 // then return at most `limit`.
+//
+// callerPrincipals are the caller's PROVIDER-side identities (an Atlassian
+// account id, group ids), which are a different thing from callerRoles: roles
+// gate which corpora may be searched at all, principals only pre-filter within
+// the results. Empty is legitimate and simply skips the pre-filter — see
+// PreFilter for why that direction is the safe one.
 func Retrieve(
 	ctx context.Context,
 	stores []vectorstore.Store,
 	prober Prober,
 	query string,
 	callerRoles []string,
+	callerPrincipals []string,
 	limit int,
 	multiplier int,
 ) (RetrieveOutcome, error) {
@@ -35,6 +42,11 @@ func Retrieve(
 	if err != nil {
 		return RetrieveOutcome{}, err
 	}
+
+	// Cheap exclusion before the expensive question. This can only reduce the
+	// number of probes, never widen what is returned: everything surviving is
+	// still asked about at the source (ADR 0040).
+	candidates, preFiltered := PreFilter(candidates, callerPrincipals)
 
 	authorized, err := Authorize(ctx, prober, candidates)
 	if err != nil {
@@ -49,6 +61,7 @@ func Retrieve(
 	return RetrieveOutcome{
 		Chunks:         chunks,
 		Denied:         authorized.Denied,
+		PreFiltered:    preFiltered,
 		Undetermined:   authorized.Undetermined,
 		SkippedCorpora: skipped,
 	}, nil

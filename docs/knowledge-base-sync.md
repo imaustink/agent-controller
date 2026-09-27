@@ -6,7 +6,7 @@ Status: generalized into [ADR 0038](adr/0038-connection-crd-scoped-external-reso
 
 ## Goal
 
-> Pick a client (e.g. SNC), give a knowledge base access to that client's Slack
+> Pick a client (e.g. GLOBEX), give a knowledge base access to that client's Slack
 > channels, Drive folder and Confluence space, and ask questions about the
 > project — **with citations**.
 
@@ -26,8 +26,8 @@ Acceptance criteria:
 Read the two ADRs first; this document records only what is specific to the
 knowledge-base use case and what was learned scoping it.
 
-SNC becomes five `Connection` CRs — `snc-confluence`, `snc-slack-eng`,
-`snc-slack-general`, `snc-drive`, plus the shared `platform-announcements` —
+GLOBEX becomes five `Connection` CRs — `globex-confluence`, `globex-slack-eng`,
+`globex-slack-general`, `globex-drive`, plus the shared `platform-announcements` —
 and one `KnowledgeBase` CR composing them. That is criteria 1, 2 and 4.
 
 | First draft | Now |
@@ -111,7 +111,7 @@ later grows.
 1. Is a Slack bot token with history and Events API scope obtainable on client
    channels, or does it need an admin-installed app?
 2. Who may read a client knowledge base? Per-point roles enforce whatever is
-   decided, but "which humans may ask about SNC" is a policy question nobody has
+   decided, but "which humans may ask about GLOBEX" is a policy question nobody has
    answered.
 3. Where does the one-off PDF go? ADR 0039 flags a `manual` provider as required
    before this replaces Open WebUI's knowledge bases for non-engineers.

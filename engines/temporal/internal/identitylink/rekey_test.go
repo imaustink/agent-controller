@@ -1,6 +1,7 @@
 package identitylink_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -66,4 +67,47 @@ func TestRekey_NonClaudeProviderNeverCallsOut(t *testing.T) {
 	moved, err := client.Rekey(t.Context(), identitylink.ProviderGitHub, "openwebui:alice", "github:alice")
 	require.NoError(t, err)
 	require.False(t, moved)
+}
+
+// A provider the gateway has not been configured for answers 400. It is a
+// statement about deployment, not a fault, and for a lookup it means the same
+// as no link — found against the real gateway, where propagating it took down
+// every knowledge-base search touching an unconfigured provider.
+func TestLookupsTreatAnUnconfiguredProviderAsNotLinked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Unsupported identity provider: atlassian"}`))
+	}))
+	defer server.Close()
+
+	client := identitylink.New(identitylink.Options{BaseURL: server.URL, Token: "t"})
+
+	token, err := client.Token(context.Background(), "atlassian", "s")
+	if err != nil || token != nil {
+		t.Fatalf("Token = %v, %v; want nil, nil", token, err)
+	}
+
+	accountID, err := client.LinkedAccountID(context.Background(), "atlassian", "s")
+	if err != nil || accountID != "" {
+		t.Fatalf("LinkedAccountID = %q, %v; want \"\", nil", accountID, err)
+	}
+
+	login, err := client.LinkedLogin(context.Background(), "atlassian", "s")
+	if err != nil || login != "" {
+		t.Fatalf("LinkedLogin = %q, %v; want \"\", nil", login, err)
+	}
+}
+
+func TestLookupsStillRaiseAGenuineFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := identitylink.New(identitylink.Options{BaseURL: server.URL, Token: "t"})
+
+	// "Could not find out" must stay distinct from "nothing linked" (ADR 0031).
+	if _, err := client.Token(context.Background(), "github", "s"); err == nil {
+		t.Fatal("a 500 must not read as an absent link")
+	}
 }

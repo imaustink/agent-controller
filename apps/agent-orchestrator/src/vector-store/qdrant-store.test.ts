@@ -185,11 +185,11 @@ describe("QdrantToolStore", () => {
     const client = {
       retrieve: vi.fn().mockResolvedValue([
         {
-          id: toQdrantPointId("kb:snc/search"),
+          id: toQdrantPointId("kb:globex/search"),
           payload: {
-            id: "kb:snc/search",
-            name: "Search SNC",
-            description: "Search the SNC knowledge base.",
+            id: "kb:globex/search",
+            name: "Search GLOBEX",
+            description: "Search the GLOBEX knowledge base.",
             allowedRoles: ["reader"],
             hidden: true,
             jobTemplate: null,
@@ -200,13 +200,13 @@ describe("QdrantToolStore", () => {
     } as unknown as QdrantClient;
     const store = new QdrantToolStore({ url: "http://q", collection: "tools", vectorSize: 3 }, fakeEmbedder(), client);
 
-    const results = await store.getByIds(["kb:snc/search"], { callerRoles: ["reader"] });
+    const results = await store.getByIds(["kb:globex/search"], { callerRoles: ["reader"] });
 
     expect(results).toHaveLength(1);
     expect(results[0].tool.hidden).toBe(true);
     // No hidden exclusion on the retrieve path.
     expect(client.retrieve).toHaveBeenCalledWith("tools", {
-      ids: [toQdrantPointId("kb:snc/search")],
+      ids: [toQdrantPointId("kb:globex/search")],
       with_payload: true,
     });
   });

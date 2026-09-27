@@ -1,6 +1,15 @@
-# 0039. `KnowledgeBase`: composing Connections into a corpus the agent can query
+# 0039. `KnowledgeBase`: composing Corpora into a corpus the agent can query
 
-Status: proposed
+Status: partly superseded by [0043](0043-connection-corpus-knowledgebase.md)
+
+> **Members are now `Corpus` resources, not `Connection`s,** and
+> `spec.connectionRefs` is `spec.corpusRefs`. ADR 0043 moved the credential and
+> the address onto a separate `Connection`; the member tier — the thing with a
+> scope, a role list and one vector collection — kept every property this
+> document gives it and changed only its name.
+>
+> §1's per-member collections, §4's union-to-invoke, and §5's disambiguation
+> all stand as written.
 
 ## Context
 
@@ -8,7 +17,7 @@ Status: proposed
 subset of an external system — a Confluence space, a Slack channel, a Drive
 folder — into a `Connection` that stays in sync. That is deliberately one
 source. What people ask questions against is a **client engagement**, which
-spans several: for SNC, a Confluence space, a Drive folder, and *two* Slack
+spans several: for GLOBEX, a Confluence space, a Drive folder, and *two* Slack
 channels.
 
 The composition is many-to-many and expected to churn:
@@ -32,25 +41,25 @@ is what the agent queries.
 apiVersion: core.controller-agent.dev/v1alpha1
 kind: KnowledgeBase
 metadata:
-  name: snc
+  name: globex
 spec:
-  displayName: "SNC"
+  displayName: "GLOBEX"
   # Embedded for retrieval. This is SUBJECT MATTER, not a tool contract (§2),
   # and it is what the planner tells twenty client knowledge bases apart by.
   description: >-
-    The SNC client engagement: platform migration work, their Confluence space,
-    the #snc-eng and #snc-general Slack channels, and the shared delivery
+    The GLOBEX client engagement: platform migration work, their Confluence space,
+    the #globex-eng and #globex-general Slack channels, and the shared delivery
     folder. Covers architecture decisions, meeting notes, and delivery status.
-  aliases: ["Southern National", "SNC migration", "Project Harbor"]
+  aliases: ["Southern National", "GLOBEX migration", "Project Harbor"]
 
   # No allowedRoles: like a Skill (ADR 0011), a KnowledgeBase carries no RBAC
   # of its own — its audience is derived from its members, by union (§4).
 
   connectionRefs:
-    - snc-confluence
-    - snc-slack-eng
-    - snc-slack-general
-    - snc-drive
+    - globex-confluence
+    - globex-slack-eng
+    - globex-slack-general
+    - globex-drive
     - platform-announcements      # shared across several knowledge bases
 
   chunk: { maxTokens: 800, overlap: 100 }
@@ -58,8 +67,8 @@ spec:
 status:
   documents: 5312
   perConnection:
-    - { name: snc-slack-eng, documents: 4120, lastSyncTime: "..." }
-  staleConnections: ["snc-drive"]
+    - { name: globex-slack-eng, documents: 4120, lastSyncTime: "..." }
+  staleConnections: ["globex-drive"]
   conditions: [...]
 ```
 
@@ -131,7 +140,7 @@ compete in the existing selection rather than building a parallel one.
 
 - **`kb:<name>/search`** — semantic search across member Connections. An
   optional `connections: [...]` argument narrows to specific members ("what did
-  #snc-eng say about the migration"), which is why same-provider repeats need
+  #globex-eng say about the migration"), which is why same-provider repeats need
   distinct `displayName`s. Returns chunks with `sourceUrl`, originating
   Connection and `updatedAt`.
 - **`kb:<name>/fetch`** — the full document behind a chunk. A chunk is
@@ -198,7 +207,7 @@ this, in order of how often they apply:
    one rather than guessing. Candidates come from role-filtered retrieval, so
    the offered list never names a knowledge base the caller cannot see. This is
    a good question to put to a human precisely because §2 made the choice one
-   between *subjects* — "SNC or Acme?" is answerable in a way "`kb:snc/search`
+   between *subjects* — "GLOBEX or Acme?" is answerable in a way "`kb:globex/search`
    or `kb:acme/search`?" never was.
 3. **Discriminating text.** `spec.description` and `spec.aliases` carry the
    client's real name, project codenames, systems involved, and what people
@@ -247,7 +256,7 @@ Connections costs one CR and no embedding. A new *source* still costs a
 backfill.
 
 **One knowledge base per turn, for now.** Skills are singular per turn, so
-"compare how we handled auth for SNC and Acme" cannot span two knowledge bases.
+"compare how we handled auth for GLOBEX and Acme" cannot span two knowledge bases.
 Today the explicit answer is that this is a knowledge base too — compose the
 cross-client Connections deliberately, which is better than implicit
 cross-client retrieval anyway.
@@ -261,6 +270,22 @@ enforced at the store rather than at selection (§4), so loading two knowledge
 bases in one turn would not create a cross-client leak. The singular-skill
 constraint is not what makes tenancy safe here, which is why relaxing it is
 safe.
+
+**The sharper limit is a knowledge base plus a *procedure*.** Two knowledge
+bases in one turn has a deliberate answer above; "follow the deploy runbook and
+check the client's Confluence" does not. Knowledge is orthogonal to procedure,
+and modelling it as a skill makes the two compete for a slot that only one can
+hold. Selection is also per turn, so a knowledge base the conversation has been
+using is re-won from scratch each turn and silently lost on any turn that picks
+a procedure — which is not how a person uses a knowledge base.
+
+The fix is to stop modelling knowledge as a skill: make KnowledgeBase a
+first-class object retrieved *alongside* skill selection and attached without
+consuming the slot. We are not doing that here. It trades away the two
+properties §2 buys for free — subject matter competing instead of tool
+contracts, and scoped API tools staying out of the global catalog — so a
+replacement has to re-earn both, and doing that before the mid-loop acquisition
+change lands means guessing how the two interact. Revisit when it does.
 
 **`vectorstore.Collections` becomes dynamic.** It goes from a fixed three-field
 struct to a fixed catalog plus a per-Connection registry. Contained —

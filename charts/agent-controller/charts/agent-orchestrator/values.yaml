@@ -470,3 +470,20 @@ redis:
 nats:
   enabled: false
 
+# Knowledge bases (docs/adr/0039), served out of the connection-broker.
+#
+# Off by default and on deliberately, matching the broker's own default: the
+# two are useless apart, and turning this on while the broker is disabled
+# produces an orchestrator that offers knowledge-base tools and cannot answer
+# with them.
+knowledgeBases:
+  enabled: false
+  # The in-cluster broker Service. The default assumes the umbrella chart's
+  # release name, the same assumption identityLink.gatewayUrl already makes.
+  brokerUrl: "http://agent-controller-connection-broker:8080"
+  # Must hold the SAME value as the broker's own orchestratorTokenSecret, or
+  # every probe and every user read 401s — and a 401 from the broker surfaces
+  # as a knowledge base that finds nothing rather than as an auth failure.
+  brokerTokenSecret:
+    name: connection-broker-auth
+    key: orchestratorToken

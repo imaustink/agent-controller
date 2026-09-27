@@ -109,6 +109,15 @@ type Port interface {
 	// turn then succeeded 0.3s later off the same record (ADR 0031).
 	LinkedLogin(ctx context.Context, provider, subject string) (string, error)
 
+	// LinkedAccountID answers the same question as LinkedLogin for a provider
+	// that has no login to report — its own account id.
+	//
+	// Separate from LinkedLogin because the two are not interchangeable: a
+	// GitHub login is the thing principal resolution reads (ADR 0029), while an
+	// account id is provenance that nothing keys on. Folding them into one
+	// accessor would invite keying on whichever happened to come back.
+	LinkedAccountID(ctx context.Context, provider, subject string) (string, error)
+
 	// Poll advances a device flow.
 	Poll(ctx context.Context, provider, subject, deviceCode string) (string, error)
 
@@ -284,6 +293,16 @@ func (c *Client) Token(ctx context.Context, provider, subject string) (*Token, e
 
 	var out Token
 	status, err := c.do(ctx, http.MethodGet, path, nil, &out)
+	if status == http.StatusBadRequest {
+		// The gateway does not have this provider configured. That is a
+		// statement about deployment rather than a fault, and for a LOOKUP it
+		// means the same thing as no link: there is nothing here to return.
+		//
+		// Erroring instead takes down every knowledge-base search touching a
+		// provider the gateway has not been set up for, rather than degrading
+		// to an ask — which is the thing a caller can actually act on.
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -303,6 +322,11 @@ func (c *Client) LinkedLogin(ctx context.Context, provider, subject string) (str
 	status, err := c.do(ctx, http.MethodGet,
 		"/identity-link/"+url.PathEscape(provider)+"/identity?subject="+url.QueryEscape(subject),
 		nil, &out)
+	if status == http.StatusBadRequest {
+		// See Token: a provider the gateway has not been configured for is not
+		// an error here.
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}
@@ -310,6 +334,32 @@ func (c *Client) LinkedLogin(ctx context.Context, provider, subject string) (str
 		return "", nil
 	}
 	return out.GitHubLogin, nil
+}
+
+// LinkedAccountID reads the provider-side account id the gateway reports for a
+// non-GitHub link.
+//
+// The gateway has always returned this; nothing here could read it, so an
+// Atlassian link looked identity-less to the engine.
+func (c *Client) LinkedAccountID(ctx context.Context, provider, subject string) (string, error) {
+	var out struct {
+		AccountID string `json:"accountId"`
+	}
+	status, err := c.do(ctx, http.MethodGet,
+		"/identity-link/"+url.PathEscape(provider)+"/identity?subject="+url.QueryEscape(subject),
+		nil, &out)
+	if status == http.StatusBadRequest {
+		// See Token: a provider the gateway has not been configured for is not
+		// an error here.
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if status == http.StatusNotFound {
+		return "", nil
+	}
+	return out.AccountID, nil
 }
 
 func (c *Client) Poll(ctx context.Context, provider, subject, deviceCode string) (string, error) {

@@ -1,3 +1,5 @@
+import { parseFragment } from "parse5";
+
 import {
   PermanentError,
   PermissionDeniedError,
@@ -10,7 +12,11 @@ import {
   type ProbeGranularity,
   type ProbeResult,
   type Scope,
+  type SearchHit,
+  type WebhookEvent,
+  type WebhookRequest,
 } from "./types.js";
+import { hmacHex, signaturesMatch } from "./webhook-signature.js";
 
 /** Minimal HTTP surface, injectable so the driver is testable without a tenant. */
 export type FetchLike = (url: string, init?: { headers?: Record<string, string> }) => Promise<{
@@ -22,6 +28,13 @@ export type FetchLike = (url: string, init?: { headers?: Record<string, string> 
    * double need not supply one, and never called on success.
    */
   text?: () => Promise<string>;
+  /**
+   * Raw bytes, for content that is not text at all — a PDF from Drive.
+   *
+   * Optional for the same reason `text` is: most drivers never read bytes, and
+   * a test double should not have to pretend it can.
+   */
+  arrayBuffer?: () => Promise<ArrayBuffer>;
 }>;
 
 export interface ConfluenceDriverOptions {
@@ -146,6 +159,17 @@ export class ConfluenceDriver implements Driver {
    * just as it does on the site.
    */
   private async apiBaseFor(token: string): Promise<string> {
+    // An API token addresses the site directly. There is no OAuth gateway in
+    // front of it and no cloudId to resolve — `/oauth/token/accessible-resources`
+    // is an OAuth endpoint and does not answer for Basic auth at all, so
+    // routing this through the gateway would fail before the first real call.
+    //
+    // The cross-tenant check the gateway path needs is moot here for the same
+    // reason it is needed there: a Bearer token may reach several sites and
+    // has to be pinned to one, while an API token is issued against exactly
+    // the site in `siteBaseUrl` and can reach no other.
+    if (isApiToken(token)) return this.siteBaseUrl.replace(/\/+$/, "");
+
     if (!this.cloudId) this.cloudId = await this.resolveCloudId(token);
     return `${this.gatewayOrigin}/ex/confluence/${this.cloudId}/wiki`;
   }
@@ -296,6 +320,27 @@ export class ConfluenceDriver implements Driver {
     };
   }
 
+  /**
+   * Reads any page the CALLER can see (see Driver.readAsUser).
+   *
+   * No space assertion: Confluence applies this user's own permissions, and a
+   * page they cannot read comes back 404 whichever space it is in.
+   */
+  async readAsUser(credentials: Credentials, id: string): Promise<Document> {
+    const token = requireDelegated(credentials, "confluence");
+    const apiBase = await this.apiBaseFor(token);
+
+    const page = (await this.request(
+      `${apiBase}/api/v2/pages/${encodeURIComponent(id)}?body-format=storage`,
+      token,
+    )) as ConfluencePage;
+
+    return {
+      ...this.toRef(page, []),
+      markdown: storageToMarkdown(page.body?.storage?.value ?? ""),
+    };
+  }
+
   async probe(scope: Scope, credentials: Credentials, id?: string): Promise<ProbeResult> {
     this.validateScope(scope);
     if (!id) throw new Error("confluence probes are per resource and need a page id");
@@ -320,6 +365,46 @@ export class ConfluenceDriver implements Driver {
 
     const ref = this.toRef(page, []);
     return { allowed: true, title: ref.title, url: ref.url, version: ref.version };
+  }
+
+  /**
+   * Verifies a Confluence webhook delivery.
+   *
+   * Atlassian signs the raw body with the secret configured on the webhook and
+   * sends it as `X-Hub-Signature: sha256=<hex>`. There is no timestamp to bind,
+   * so unlike Slack this cannot rule out replay — which is survivable here
+   * precisely because a webhook only ever triggers a PARTIAL pass over pages
+   * the source is then re-read for. A replayed notification costs a redundant
+   * fetch, not a wrong corpus.
+   *
+   * It reports which SPACE changed rather than filtering to one: a Connection
+   * serves many Corpora and this driver no longer knows which spaces are
+   * indexed (ADR 0043 §4).
+   */
+  parseWebhook(request: WebhookRequest, secret: string): WebhookEvent | undefined {
+    const provided = request.headers["x-hub-signature"];
+    if (!provided) throw new PermissionDeniedError("confluence webhook carried no signature");
+
+    const expected = `sha256=${hmacHex(secret, request.rawBody)}`;
+    if (!signaturesMatch(provided, expected)) {
+      throw new PermissionDeniedError("confluence webhook signature did not verify");
+    }
+
+    let body: { page?: { id?: number | string; spaceKey?: string }; space?: { spaceKey?: string } };
+    try {
+      body = JSON.parse(request.rawBody);
+    } catch {
+      throw new PermissionDeniedError("confluence webhook body was not JSON");
+    }
+
+    const pageId = body.page?.id;
+    // No page id means "something in this space changed, we do not know what".
+    // An empty list is how that is expressed; the caller escalates to a full
+    // pass rather than doing nothing.
+    return {
+      scopeKey: body.page?.spaceKey ?? body.space?.spaceKey,
+      sourceIds: pageId === undefined ? [] : [String(pageId)],
+    };
   }
 
   /**
@@ -400,13 +485,63 @@ export class ConfluenceDriver implements Driver {
     );
   }
 
+  /**
+   * Live CQL search, as the caller, inside the corpus's space.
+   *
+   * Every clause here was verified against the live tenant rather than read off
+   * the docs (scripts/probe-confluence-search.mjs), which matters because this
+   * driver previously shipped against v1 endpoints that had been 410 Gone for
+   * months:
+   *
+   * - `/rest/api/search` is ALIVE. The v1 deprecation took `/rest/api/content`
+   *   with it but not this, and v2 has no text search to migrate to.
+   * - It needs the `search:confluence` scope, which the sync path never asked
+   *   for. Without it the call fails on a token that reads pages perfectly well.
+   * - `type = page` is load-bearing. Unconstrained, the top hit on a real space
+   *   was a FOLDER, and folders, blogposts and attachments carry ids the read
+   *   tool cannot serve — the agent would be handed references that always fail.
+   * - The space term does real work: dropping it returned pages from another
+   *   client's space on this same tenant.
+   */
+  async searchAsUser(
+    credentials: Credentials,
+    scope: Scope,
+    query: string,
+    limit = 10,
+  ): Promise<SearchHit[]> {
+    this.validateScope(scope);
+    if (!credentials.delegated) {
+      throw new Error("a confluence search requires the calling user's delegated token");
+    }
+
+    const trimmed = query.trim();
+    if (trimmed.length === 0) return [];
+
+    // CQL string literals are double-quoted, so a quote or backslash in the
+    // user's words would end the literal and let the rest be read as query
+    // syntax — against a term the CALLER supplies. Escaped, not stripped: the
+    // words are the user's question and mangling them changes the search.
+    const escaped = trimmed.replace(/["\\]/g, "\\$&");
+    const cql = `space = "${scope.space}" AND type = page AND text ~ "${escaped}"`;
+
+    const apiBase = await this.apiBaseFor(credentials.delegated);
+    const url = `${apiBase}/rest/api/search?cql=${encodeURIComponent(cql)}&limit=${Math.min(limit, 25)}`;
+    const body = (await this.request(url, credentials.delegated)) as {
+      results?: ConfluenceSearchResult[];
+    };
+
+    return (body.results ?? [])
+      .map((result) => toSearchHit(result, this.siteBaseUrl))
+      .filter((hit): hit is SearchHit => hit !== undefined);
+  }
+
   private async request(url: string, token: string | undefined): Promise<unknown> {
     if (!token) throw new Error("no credential supplied for a confluence request");
 
     let response;
     try {
       response = await this.http(url, {
-        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        headers: { Authorization: authorization(token), Accept: "application/json" },
       });
     } catch (cause) {
       // A network failure is not an answer about permissions.
@@ -451,6 +586,21 @@ export class ConfluenceDriver implements Driver {
  * request with no Authorization header that the source would reject as a 401 —
  * which the error classifier would then read as a permission denial.
  */
+/**
+ * The delegated credential, for a read bounded by identity rather than scope.
+ *
+ * Refuses the service credential outright. Falling back to it would turn a
+ * "what may this person see" read into a "what may the ingestion account see"
+ * one — and that account is scoped to nothing, so the fallback would be the
+ * widest possible read at exactly the moment the narrowest was intended.
+ */
+function requireDelegated(credentials: Credentials, provider: string): string {
+  if (!credentials.delegated) {
+    throw new Error(`a ${provider} user read requires the calling user's delegated token`);
+  }
+  return credentials.delegated;
+}
+
 function requireToken(token: string | undefined): string {
   if (!token) throw new Error("no credential supplied for a confluence request");
   return token;
@@ -506,10 +656,70 @@ function nextCursor(next: string | undefined): Cursor {
   }
 }
 
+/** A `/rest/api/search` hit. The page lives under `content`; the rest is search metadata. */
+interface ConfluenceSearchResult {
+  content?: { id?: string; type?: string; title?: string };
+  title?: string;
+  excerpt?: string;
+  /** Site-relative, like `_links.webui` — `/spaces/BITOVI/pages/997064705/Title`. */
+  url?: string;
+  lastModified?: string;
+}
+
+/**
+ * A search hit as a ResourceRef, or undefined for one we cannot cite.
+ *
+ * A hit with no content id is dropped rather than passed on with a blank id:
+ * the id is what the read tool is handed, so an unusable one is a reference
+ * that always fails, which is worse for the agent than one fewer result.
+ *
+ * No `acl` is set. These come from a search run as the USER, so they are
+ * already filtered by what that person can see — the mirror's pre-filter
+ * exists for the INDEX, where the reader is not the one who fetched.
+ */
+function toSearchHit(result: ConfluenceSearchResult, siteBaseUrl: string): SearchHit | undefined {
+  const id = result.content?.id;
+  if (!id) return undefined;
+
+  const base = siteBaseUrl.replace(/\/+$/, "");
+  return {
+    id,
+    title: result.content?.title ?? result.title ?? id,
+    url: result.url ? `${base}${result.url}` : `${base}/pages/${id}`,
+    updatedAt: result.lastModified,
+    // Confluence marks matched terms with @@@hl@@@ sentinels; they are noise
+    // to a model, which reads the words rather than the highlighting.
+    excerpt: result.excerpt?.replace(/@@@(end)?hl@@@/g, "").trim() || undefined,
+  };
+}
+
+/**
+ * Whether this credential is an Atlassian API token rather than an OAuth
+ * access token.
+ *
+ * The convention is `email:token`, which is exactly what Atlassian's own docs
+ * tell you to base64 for Basic auth — so an operator pastes the two halves
+ * they already have rather than learning a format of ours.
+ *
+ * Detected on the separator plus an `@` in the first half. An OAuth access
+ * token is a JWT or an opaque string and contains neither, so the two shapes
+ * cannot be confused for one another.
+ */
+export function isApiToken(token: string): boolean {
+  const separator = token.indexOf(":");
+  return separator > 0 && token.slice(0, separator).includes("@");
+}
+
+/** The Authorization header for whichever credential shape this is. */
+function authorization(token: string): string {
+  if (!isApiToken(token)) return `Bearer ${token}`;
+  return `Basic ${Buffer.from(token, "utf8").toString("base64")}`;
+}
+
 /**
  * The human URL for a page, for citations.
  *
- * `_links.webui` is a site-relative path (`/spaces/SNC/pages/123/Title`), so it
+ * `_links.webui` is a site-relative path (`/spaces/GLOBEX/pages/123/Title`), so it
  * is appended to the configured site base — which already carries `/wiki`.
  */
 function citationUrl(page: ConfluencePage, siteBaseUrl: string): string {
@@ -518,25 +728,112 @@ function citationUrl(page: ConfluencePage, siteBaseUrl: string): string {
 }
 
 /**
- * Confluence storage format is XHTML. This is a deliberately small conversion —
- * enough structure for chunking to have something to cut on, without taking a
- * parser dependency into a security-sensitive service.
+ * Confluence storage format is XHTML, converted with a real parser.
+ *
+ * This was hand-rolled regexes, deliberately, to avoid "taking a parser
+ * dependency into a security-sensitive service". That reasoning was wrong, and
+ * it is worth saying why rather than quietly reversing it.
+ *
+ * It weighed supply-chain risk and ignored parser-correctness risk, which is
+ * the one that actually applies to untrusted input from every client wiki we
+ * index. In a memory-safe runtime a parser bug is not a read of adjacent
+ * memory; it is WRONG OUTPUT — silently corrupt or missing content in a corpus
+ * an agent will answer from. The hand-rolled version had already produced that
+ * failure twice: it embedded `#E3FCEF`, a macro's background colour, as though
+ * a client had written it, and an early revision dropped `ac:layout-cell`,
+ * which contains the page body, and would have emptied every page using a
+ * layout. `.replace(/<[^>]+>/g, "")` also mishandles any attribute containing
+ * `>`, and the entity pass decoded four entities, so `&mdash;` and every
+ * numeric entity reached the index as literal text.
+ *
+ * parse5 is the WHATWG HTML parser — two packages, no native bindings — and it
+ * decodes entities, recovers from unclosed tags and keeps `ac:`/`ri:` elements
+ * as ordinary named nodes.
  */
 export function storageToMarkdown(storage: string): string {
-  return storage
-    .replace(/<h([1-6])[^>]*>(.*?)<\/h\1>/gis, (_m, level: string, text: string) =>
-      `\n${"#".repeat(Number(level))} ${stripTags(text)}\n`,
-    )
-    .replace(/<li[^>]*>(.*?)<\/li>/gis, (_m, text: string) => `- ${stripTags(text)}\n`)
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
+  const text = renderChildren(parseFragment(storage));
+  return text
+    // Storage format is indented XML, so structural whitespace survives as
+    // runs of spaces. Harmless to read, but it is embedded and counts against
+    // the chunk budget.
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+/**
+ * Elements whose CONTENT is machine configuration rather than writing.
+ *
+ * Dropped whole, content included: once the markup is gone there is no way to
+ * tell `#E3FCEF` from a legitimate mention of a colour. Every one of these is
+ * properly closed in storage format, so removing the subtree removes exactly
+ * itself.
+ */
+const DROP_SUBTREE = new Set([
+  // Macro configuration: colours, ids, widths, sort orders.
+  "ac:parameter",
+  // Task bookkeeping. The task BODY is writing and survives; its id and status
+  // would otherwise land as a stray "11" and "incomplete" mid-sentence.
+  "ac:task-id",
+  "ac:task-status",
+  // Editor prompts from the template, never authored.
+  "ac:placeholder",
+  // ADF macro configuration.
+  "ac:adf-attribute",
+  "ac:adf-parameter",
+  "style",
+  "script",
+]);
+
+/**
+ * Elements that are removed but whose CHILDREN are kept.
+ *
+ * `ri:` elements — attachment filenames, space and user keys — are written
+ * self-closing (`<ri:attachment ri:filename="x.pdf"/>`), and HTML5 does not
+ * allow unknown elements to self-close. So the parser treats everything that
+ * FOLLOWS one as its content, and dropping the subtree would take the rest of
+ * the page with it. Unwrapping removes the reference and keeps the document.
+ *
+ * `ac:layout-section` and `ac:layout-cell` are deliberately absent from both
+ * lists: they look structural and contain the page body.
+ */
+function isUnwrapped(tagName: string): boolean {
+  return tagName.startsWith("ri:");
+}
+
+interface Parse5Node {
+  nodeName: string;
+  tagName?: string;
+  value?: string;
+  childNodes?: Parse5Node[];
+}
+
+function renderChildren(node: Parse5Node): string {
+  return (node.childNodes ?? []).map(renderNode).join("");
+}
+
+function renderNode(node: Parse5Node): string {
+  // Comments carry no prose, and their content is frequently old markup.
+  if (node.nodeName === "#comment") return "";
+  if (node.nodeName === "#text") return node.value ?? "";
+
+  const tag = node.tagName ?? "";
+  if (DROP_SUBTREE.has(tag)) return "";
+  if (isUnwrapped(tag)) return renderChildren(node);
+
+  const heading = /^h([1-6])$/.exec(tag);
+  if (heading) return `\n${"#".repeat(Number(heading[1]))} ${inline(node)}\n`;
+  if (tag === "li") return `- ${inline(node)}\n`;
+  if (tag === "p") return `${renderChildren(node)}\n\n`;
+  if (tag === "br") return "\n";
+
+  return renderChildren(node);
+}
+
+/** A heading or list item on ONE line, however it was marked up inside. */
+function inline(node: Parse5Node): string {
+  return renderChildren(node).replace(/\s+/g, " ").trim();
 }
 
 const stripTags = (html: string): string => html.replace(/<[^>]+>/g, "").trim();

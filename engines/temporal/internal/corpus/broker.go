@@ -26,7 +26,7 @@ const DefaultCandidateMultiplier = 3
 //
 // The orchestrator deliberately holds no third-party credential of its own: it
 // forwards the user's delegated token per request and the broker refuses to let
-// it spend a connection's service credential at all (the broker's auth.ts).
+// it spend a corpus's service credential at all (the broker's auth.ts).
 // So this type carries a token it did not mint and cannot widen.
 type BrokerProber struct {
 	// BaseURL of the connection-broker Service.
@@ -66,7 +66,9 @@ func (b *BrokerProber) Probe(ctx context.Context, req ProbeRequest) (ProbeResult
 		return ProbeResult{}, err
 	}
 
-	endpoint := strings.TrimRight(b.BaseURL, "/") + "/connections/" + url.PathEscape(req.ConnectionID) + "/probe"
+	// `/corpora/`, not `/connections/`. Data is addressed by CORPUS; the
+	// `/connections/` prefix survives only for webhooks (ADR 0043).
+	endpoint := strings.TrimRight(b.BaseURL, "/") + "/corpora/" + url.PathEscape(req.CorpusID) + "/probe"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return ProbeResult{}, err
@@ -97,7 +99,15 @@ func (b *BrokerProber) Probe(ctx context.Context, req ProbeRequest) (ProbeResult
 		}
 		return result, nil
 
-	case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound:
+	// 403 is the ONLY denial. The broker answers a driver's PermissionDenied
+	// with 403 and nothing else, so treating another status as "this caller may
+	// not see it" turns a fault into a silent, total and invisible drop.
+	//
+	// 404 used to be read as a denial and hid exactly that: the endpoint above
+	// named a route that no longer exists, so every probe 404'd, every
+	// candidate was "denied", and retrieval reported nothing found —
+	// indistinguishable from an empty corpus.
+	case resp.StatusCode == http.StatusForbidden:
 		return ProbeResult{}, &PermissionDenied{Err: fmt.Errorf("broker returned %d", resp.StatusCode)}
 
 	default:
@@ -116,6 +126,11 @@ type RetrieveOutcome struct {
 	// Denied is how many candidates the source refused — expected, and a
 	// measure of the mirror's optimism rather than a problem.
 	Denied int
+	// PreFiltered is how many candidates the ACL mirror excluded before any
+	// probe was made. Purely a saving: reported so the mirror's usefulness is
+	// measurable, and so a suspiciously large number is visible rather than
+	// looking like a thin corpus.
+	PreFiltered int
 	// Undetermined names sources whose probe failed transiently, and
 	// SkippedCorpora counts member collections that could not be searched at
 	// all. Both are surfaced because an answer quietly missing evidence is

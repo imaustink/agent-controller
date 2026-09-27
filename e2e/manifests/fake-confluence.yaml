@@ -1,0 +1,271 @@
+# In-cluster stand-in for Atlassian's Confluence API.
+#
+# Deployed only into the minikube e2e environment and reached via the
+# connection-broker's `gatewayOrigin` override — a driver option whose own
+# comment says "exists for tests; production never sets it". No production code
+# path knows this exists.
+#
+# Why stub at all, when every other component here runs for real: a corpus has
+# to be synced FROM somewhere, and a real tenant is the one dependency this
+# suite cannot make deterministic — it needs a paid third party, a credential
+# no CI job holds, and its content changes under us. That is exactly the line
+# README.md draws around fake-github.
+#
+# What stays real is everything that matters: the driver's own HTTP calls, the
+# storage-format conversion, chunking, embedding, Qdrant, the per-user probe,
+# and every authorization decision. This serves the seven endpoints the
+# Confluence driver actually calls, in the shapes the live tenant returned when
+# those calls were verified against it.
+#
+# The fixture is shaped for the assertions, not for realism:
+#
+#   ALPHA (space 1001)  page 101  readable by everyone
+#                       page 102  readable ONLY by the full-access user
+#   BETA  (space 1002)  page 201  a second client, to prove corpus isolation
+#
+# 102 is the point of the whole thing. It is INDEXED — ingestion runs on the
+# service credential and deliberately ignores permissions — so a caller who
+# cannot see it must be kept from it by the probe at query time, which is the
+# guarantee ADR 0040 exists to provide and the one that cannot be checked
+# without a source that says no to somebody.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fake-confluence
+  labels: { app: fake-confluence, e2e: "true" }
+data:
+  server.js: |
+    const http = require("node:http");
+
+    const CLOUD_ID = "e2e-cloud-id";
+
+    // Bearer values the broker will present. The service credential is what
+    // the sync CronJob spends; the two user tokens are what a probe or a live
+    // read spends, and they differ deliberately.
+    const SERVICE = "e2e-service-token";
+    const USER_FULL = "e2e-user-full";
+    const USER_LIMITED = "e2e-user-limited";
+
+    const SPACES = {
+      ALPHA: { id: "1001", key: "ALPHA", name: "Alpha Client" },
+      BETA: { id: "1002", key: "BETA", name: "Beta Client" },
+    };
+
+    const PAGES = {
+      101: {
+        id: "101",
+        spaceId: "1001",
+        title: "Alpha Runbook",
+        version: 3,
+        // Real storage format, including a macro whose CONTENT is
+        // configuration rather than prose — the shape that once embedded
+        // `#E3FCEF` as though a client had written it.
+        storage:
+          '<ac:structured-macro ac:name="panel">' +
+          '<ac:parameter ac:name="bgColor">#E3FCEF</ac:parameter>' +
+          "<ac:rich-text-body><p>Deploys run from the release branch.</p>" +
+          "<p>Roll back with the previous image tag.</p></ac:rich-text-body>" +
+          "</ac:structured-macro>",
+        readableBy: [SERVICE, USER_FULL, USER_LIMITED],
+      },
+      102: {
+        id: "102",
+        spaceId: "1001",
+        title: "Alpha Incident Postmortem",
+        version: 7,
+        storage:
+          "<h2>Postmortem</h2><p>The outage began when the queue backed up.</p>",
+        // NOT readable by the limited user. Indexed all the same.
+        readableBy: [SERVICE, USER_FULL],
+      },
+      201: {
+        id: "201",
+        spaceId: "1002",
+        title: "Beta Runbook",
+        version: 1,
+        storage: "<p>Beta deploys are manual and require two approvers.</p>",
+        readableBy: [SERVICE, USER_FULL, USER_LIMITED],
+      },
+    };
+
+    const requests = [];
+
+    function json(res, status, body) {
+      res
+        .writeHead(status, { "content-type": "application/json" })
+        .end(JSON.stringify(body));
+    }
+
+    function bearer(req) {
+      const header = req.headers.authorization ?? "";
+      return header.startsWith("Bearer ") ? header.slice(7) : "";
+    }
+
+    /** What this credential may read. The whole point of the fixture. */
+    function canRead(token, page) {
+      return page.readableBy.includes(token);
+    }
+
+    function pageBody(page, withStorage) {
+      const base = {
+        id: page.id,
+        status: "current",
+        title: page.title,
+        spaceId: page.spaceId,
+        version: { number: page.version },
+        _links: { webui: `/spaces/${page.spaceId}/pages/${page.id}/${page.title.replace(/ /g, "+")}` },
+      };
+      return withStorage
+        ? { ...base, body: { storage: { value: page.storage, representation: "storage" } } }
+        : base;
+    }
+
+    http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const url = new URL(req.url, "http://fake-confluence");
+        const token = bearer(req);
+        requests.push({ method: req.method, path: url.pathname, query: url.search, token });
+
+        // Introspection, namespaced so it can never collide with a real route.
+        if (url.pathname === "/_e2e/requests") return json(res, 200, requests);
+        if (url.pathname === "/_e2e/reset") {
+          requests.length = 0;
+          return json(res, 200, { ok: true });
+        }
+        if (url.pathname === "/healthz") return json(res, 200, { ok: true });
+
+        // An unrecognised credential is rejected the way Atlassian rejects one,
+        // so a broker sending the wrong token fails loudly rather than reading
+        // somebody else's material.
+        if (![SERVICE, USER_FULL, USER_LIMITED].includes(token)) {
+          return json(res, 401, { message: "unauthorized" });
+        }
+
+        if (url.pathname === "/oauth/token/accessible-resources") {
+          return json(res, 200, [
+            { id: CLOUD_ID, url: "https://fake.atlassian.net", name: "fake" },
+          ]);
+        }
+
+        const prefix = `/ex/confluence/${CLOUD_ID}/wiki`;
+        if (!url.pathname.startsWith(prefix)) return json(res, 404, { message: "not found" });
+        const path = url.pathname.slice(prefix.length);
+
+        // spaceIdFor: the key -> id lookup the scope check is built on.
+        if (path === "/api/v2/spaces") {
+          const key = url.searchParams.get("keys");
+          const space = SPACES[key];
+          return json(res, 200, { results: space ? [space] : [] });
+        }
+
+        // list: pages in a space.
+        if (path === "/api/v2/pages") {
+          const spaceId = url.searchParams.get("space-id");
+          const results = Object.values(PAGES)
+            .filter((page) => page.spaceId === spaceId)
+            .filter((page) => canRead(token, page))
+            .map((page) => pageBody(page, false));
+          return json(res, 200, { results, _links: {} });
+        }
+
+        // fetch / readAsUser / probe, by id.
+        const byId = /^\/api\/v2\/pages\/(\d+)$/.exec(path);
+        if (byId) {
+          const page = PAGES[byId[1]];
+          if (!page) return json(res, 404, { message: "no such page" });
+          // The authorization decision the probe exists to ask for.
+          if (!canRead(token, page)) return json(res, 404, { message: "no such page" });
+          const withStorage = url.searchParams.get("body-format") === "storage";
+          return json(res, 200, pageBody(page, withStorage));
+        }
+
+        // The ACL mirror's read restrictions.
+        const restrictions = /^\/rest\/api\/content\/(\d+)\/restriction\/byOperation\/read$/.exec(path);
+        if (restrictions) {
+          const page = PAGES[restrictions[1]];
+          if (!page) return json(res, 404, { message: "no such page" });
+          // Page 102 is restricted to a named user; everything else is open.
+          // Over-inclusion is the safe direction (ADR 0040), so the mirror is
+          // allowed to be optimistic and the probe settles it.
+          const restricted = page.id === "102";
+          return json(res, 200, {
+            restrictions: {
+              user: { results: restricted ? [{ accountId: "full-access-account" }] : [] },
+              group: { results: [] },
+            },
+          });
+        }
+
+        // searchAsUser: CQL, bounded to a space.
+        if (path === "/rest/api/search") {
+          const cql = url.searchParams.get("cql") ?? "";
+          const space = /space\s*=\s*"([^"]+)"/.exec(cql)?.[1];
+          const term = /text\s*~\s*"([^"]*)"/.exec(cql)?.[1] ?? "";
+          const spaceId = SPACES[space]?.id;
+
+          const results = Object.values(PAGES)
+            .filter((page) => page.spaceId === spaceId)
+            .filter((page) => canRead(token, page))
+            .filter((page) =>
+              term === "" ||
+              `${page.title} ${page.storage}`.toLowerCase().includes(term.toLowerCase()),
+            )
+            .map((page) => ({
+              content: { id: page.id, type: "page", title: page.title },
+              title: page.title,
+              excerpt: `@@@hl@@@${term}@@@endhl@@@ appears here`,
+              url: `/spaces/${page.spaceId}/pages/${page.id}`,
+              lastModified: "2026-01-01T00:00:00.000Z",
+            }));
+          return json(res, 200, { results });
+        }
+
+        json(res, 404, { message: `unstubbed: ${path}` });
+      });
+    }).listen(Number(process.env.PORT ?? 8080), () =>
+      // PORT so the fidelity specs can run several fakes side by side; the
+      // cluster leaves it unset and takes 8080, which the Service targets.
+      console.log("fake-confluence listening"),
+    );
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-confluence
+  labels: { app: fake-confluence, e2e: "true" }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: fake-confluence }
+  template:
+    metadata:
+      labels: { app: fake-confluence, e2e: "true" }
+    spec:
+      containers:
+        - name: server
+          image: node:22-alpine
+          command: ["node", "/srv/server.js"]
+          ports: [{ containerPort: 8080, name: http }]
+          volumeMounts:
+            - { name: script, mountPath: /srv }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+      volumes:
+        - name: script
+          configMap: { name: fake-confluence }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-confluence
+  labels: { app: fake-confluence, e2e: "true" }
+spec:
+  selector: { app: fake-confluence }
+  ports: [{ port: 80, targetPort: http, name: http }]

@@ -82,11 +82,11 @@ spec:
                     minimum: 0
                     type: integer
                 type: object
-              connectionRefs:
+              corpusRefs:
                 description: |-
-                  connectionRefs names the Connection CRs (same namespace) composing this
+                  corpusRefs names the Corpus CRs (same namespace) composing this
                   knowledge base. Repeats of one provider are expected and supported; give
-                  them distinct Connection displayNames so citations can tell them apart.
+                  them distinct Corpus displayNames so citations can tell them apart.
 
                   An explicit list rather than a label selector: which sources compose a
                   client's knowledge base is worth reviewing in a diff, and a mistyped
@@ -119,11 +119,11 @@ spec:
                 type: boolean
               displayName:
                 description: |-
-                  displayName is the human name for this knowledge base (e.g. "SNC").
+                  displayName is the human name for this knowledge base (e.g. "GLOBEX").
                   Defaults to metadata.name.
                 type: string
             required:
-            - connectionRefs
+            - corpusRefs
             - description
             type: object
             x-kubernetes-validations:
@@ -199,9 +199,9 @@ spec:
                 description: documents across every member Connection.
                 format: int64
                 type: integer
-              missingConnections:
+              missingCorpora:
                 description: |-
-                  missingConnections are connectionRefs with no matching Connection CR.
+                  missingCorpora are corpusRefs with no matching Corpus CR.
                   Surfaced rather than ignored: a dangling ref means the knowledge base
                   silently answers from less than it claims to cover.
                 items:
@@ -213,11 +213,10 @@ spec:
                   reflects.
                 format: int64
                 type: integer
-              perConnection:
+              perCorpus:
                 description: perConnection breaks that down by member.
                 items:
-                  description: KnowledgeBaseConnectionStatus is one member Connection's
-                    contribution.
+                  description: KnowledgeBaseCorpusStatus is one member Corpus's contribution.
                   properties:
                     documents:
                       description: documents contributed by this Connection as of
@@ -240,9 +239,9 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
-              staleConnections:
+              staleCorpora:
                 description: |-
-                  staleConnections are members whose last full reconcile is older than
+                  staleCorpora are members whose last full reconcile is older than
                   their own reconcileInterval allows — the corpus is answerable but some of
                   it is out of date, which a cited answer should be able to admit.
                 items:

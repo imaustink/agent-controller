@@ -23,7 +23,29 @@ export type CorpusStoreFactory = (collection: string) => Promise<CorpusStore | u
  * never reaches durable workflow history.
  */
 export interface DelegatedCredentialResolver {
-  delegatedToken(subject: string, providers: string[]): Promise<string | undefined>;
+  delegatedToken(subject: string, providers: string[]): Promise<DelegatedCredential | undefined>;
+}
+
+/**
+ * The caller's own credential for a provider, plus the identities it represents
+ * THERE.
+ *
+ * Principals are carried alongside the token because only the credential store
+ * knows them: they are provider-shaped (`user:<accountId>`, `group:<id>`), not
+ * the cluster-side subject or roles. They feed the ACL mirror's pre-filter and
+ * nothing else — a missing or partial set costs probes, never correctness.
+ *
+ * PARITY: `DelegatedCredential` in
+ * `engines/temporal/internal/temporal/activities/knowledgebase.go`.
+ */
+export interface DelegatedCredential {
+  token: string;
+  /**
+   * May legitimately be empty, or cover only some kinds — group membership in
+   * particular needs a provider call that may not have happened. `preFilter`
+   * degrades accordingly rather than excluding on a kind it cannot evaluate.
+   */
+  principals?: string[];
 }
 
 export interface KnowledgeBaseSearcherOptions {
@@ -83,14 +105,15 @@ export class KnowledgeBaseSearcher {
     if (visible.length === 0) {
       return {
         result: render({
-          outcome: { chunks: [], denied: 0, undetermined: [], skippedCorpora: 0 },
+          outcome: { chunks: [], denied: 0, undetermined: [], skippedCorpora: 0, preFiltered: 0 },
           withheld,
           disclose: exec.disclosePartialVisibility,
         }),
       };
     }
 
-    const token = await this.options.credentials.delegatedToken(caller.subject, providersOf(visible));
+    const credential = await this.options.credentials.delegatedToken(caller.subject, providersOf(visible));
+    const token = credential?.token;
     if (!token) {
       // Probing on the ingestion credential would answer a different question,
       // permissively (docs/adr/0040), so an ask is the only honest response.
@@ -117,7 +140,14 @@ export class KnowledgeBaseSearcher {
       granularities: granularitiesOf(visible),
     });
 
-    const outcome = await retrieve(stores, prober, query, caller.roles, this.options.limit ?? DEFAULT_LIMIT);
+    const outcome = await retrieve(
+      stores,
+      prober,
+      query,
+      caller.roles,
+      credential?.principals ?? [],
+      this.options.limit ?? DEFAULT_LIMIT,
+    );
 
     return {
       result: render({

@@ -391,6 +391,65 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		// resolves the caller's delegated credential INSIDE the activity and
 		// never lets it back out, because an activity result is persisted to
 		// event history (see AuthorizeActivities' doc comment).
+		// The live GET face (ADR 0038 §5). Placed beside the search branch and
+		// before the identity gate for the same reason: this resolves the
+		// caller's delegated credential INSIDE the activity and never lets it
+		// back out, where the gate below resolves a Tool CR's providers into
+		// secretEnv for a Job.
+		if tool.KnowledgeBaseExec != nil && tool.KnowledgeBaseExec.Operation == "read" {
+			note("Reading from " + tool.KnowledgeBaseExec.DisplayName + "…")
+			var read activities.ReadCorpusOutput
+			if err := workflow.ExecuteActivity(actx, activities.ReadCorpusActivityName,
+				activities.ReadCorpusInput{
+					Caller:   in.Caller,
+					Tool:     tool,
+					SourceID: plan.ToolInput,
+				}).Get(ctx, &read); err != nil {
+				return "", meta, nil, err
+			}
+			meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
+
+			if read.NeedsLink {
+				note(plan.ToolID + " needs a linked account")
+				return read.Result, meta, nil, nil
+			}
+			return read.Result, meta, nil, nil
+		}
+
+		// The LIVE search face. Beside the read branch, and before the generic
+		// search branch, for the same reason: it resolves the caller's
+		// delegated credential inside the activity and never lets it back out.
+		if tool.KnowledgeBaseExec != nil && tool.KnowledgeBaseExec.Operation == "lookup" {
+			note("Looking up in " + tool.KnowledgeBaseExec.DisplayName + "…")
+			var found activities.LookupCorpusOutput
+			if err := workflow.ExecuteActivity(actx, activities.LookupCorpusActivityName,
+				activities.LookupCorpusInput{
+					Caller: in.Caller,
+					Tool:   tool,
+					Query:  plan.ToolInput,
+				}).Get(ctx, &found); err != nil {
+				return "", meta, nil, err
+			}
+			meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
+
+			if found.NeedsLink {
+				note(plan.ToolID + " needs a linked account")
+			}
+			return found.Result, meta, nil, nil
+		}
+
+		// Everything else with an exec spec is the INDEXED search. Guarded on
+		// the operation rather than left as a catch-all: an unrecognised
+		// operation reaching here would run a vector search over whatever the
+		// model typed and return plausible passages, which looks like an answer
+		// and is not one. Failing closed makes a missing dispatch branch
+		// obvious instead of silently wrong.
+		if tool.KnowledgeBaseExec != nil && tool.KnowledgeBaseExec.Operation != "search" {
+			return "", meta, nil, fmt.Errorf(
+				"tool %s declares knowledge-base operation %q, which has no dispatch path",
+				tool.ID, tool.KnowledgeBaseExec.Operation)
+		}
+
 		if tool.KnowledgeBaseExec != nil {
 			note("Searching " + tool.KnowledgeBaseExec.DisplayName + "…")
 			var found activities.SearchKnowledgeBaseOutput

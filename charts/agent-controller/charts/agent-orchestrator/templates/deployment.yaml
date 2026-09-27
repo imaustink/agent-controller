@@ -218,6 +218,22 @@ spec:
               value: {{ .Values.identityLink.defaultFlow | quote }}
             {{- end }}
             {{- end }}
+            {{- if .Values.knowledgeBases.enabled }}
+            # Knowledge bases (docs/adr/0039). Without these three the
+            # orchestrator generates no knowledge-base tools at all and every
+            # search refuses with "knowledge bases are not configured" — which
+            # is what a deployment running the connection-broker but never told
+            # about it looked like, since nothing wired the two together.
+            - name: AGENT_KNOWLEDGE_BASES_ENABLED
+              value: "true"
+            - name: AGENT_CONNECTION_BROKER_URL
+              value: {{ .Values.knowledgeBases.brokerUrl | quote }}
+            - name: AGENT_CONNECTION_BROKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.knowledgeBases.brokerTokenSecret.name }}
+                  key: {{ .Values.knowledgeBases.brokerTokenSecret.key }}
+            {{- end }}
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:

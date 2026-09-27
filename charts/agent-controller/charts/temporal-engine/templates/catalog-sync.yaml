@@ -19,6 +19,19 @@ rules:
   - apiGroups: ["core.controller-agent.dev"]
     resources: ["tools", "skills", "agents"]
     verbs: ["get", "list", "watch"]
+  {{- if .Values.knowledgeBases.enabled }}
+  # Knowledge bases (docs/adr/0039, 0043). A KnowledgeBase derives the Skill
+  # that is actually selected, and a Corpus contributes its members — so this
+  # process has to watch both, plus the Connection they resolve through.
+  #
+  # Without them the informers this env enables cannot list, and the catalog
+  # this engine SERVES TURNS FROM simply never gains a knowledge-base skill:
+  # every turn answers "no existing skill or agent matched this request" while
+  # the other engine's catalog has it.
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["connections", "corpora", "knowledgebases"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -76,6 +89,13 @@ spec:
           env:
             - name: CATALOG_NAMESPACE
               value: {{ .Values.catalog.namespace | default .Release.Namespace | quote }}
+            {{- if .Values.knowledgeBases.enabled }}
+            # Gates the Corpus/KnowledgeBase informers (internal/catalog/watch.go).
+            # Unset, this process indexes tools, skills and agents and silently
+            # ignores every knowledge base in the cluster.
+            - name: AGENT_KNOWLEDGE_BASES_ENABLED
+              value: "true"
+            {{- end }}
             {{- include "temporal-engine.qdrantEnv" . | nindent 12 }}
             - name: OPENAI_BASE_URL
               value: {{ .Values.llm.baseURL | quote }}

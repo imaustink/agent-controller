@@ -88,6 +88,20 @@ function caveats(outcome: RetrieveOutcome, withheld: number, disclose: boolean):
       `- ${withheld} source(s) in this knowledge base are outside your access, so there may be more you cannot see.`,
     );
   }
+  // Candidates the SOURCE refused for this caller.
+  //
+  // Reported for the same reason `withheld` is, and gated on the same flag,
+  // because the leak is the same shape: saying "12 passages were refused"
+  // admits the material exists. What is not acceptable is the silence — with
+  // every candidate denied, the answer read "No passages matched", which is
+  // indistinguishable from an empty corpus. That hid a routing bug in this
+  // very prober for as long as it existed: every probe 404'd, every candidate
+  // was counted denied, and nothing anywhere said so.
+  if (disclose && outcome.denied > 0) {
+    lines.push(
+      `- ${outcome.denied} passage(s) matched but the source did not confirm your access to them.`,
+    );
+  }
   if (outcome.undetermined.length > 0) {
     lines.push(
       `- ${outcome.undetermined.length} source(s) could not be checked just now, so evidence may be missing that nobody was able to confirm either way.`,

@@ -6,6 +6,8 @@ import { K8sSecretClaudeTokenStore } from "./claude-auth/k8s-secret-store.js";
 import { decodeEncryptionKey } from "./credential-store/field-encryption.js";
 import type { SecretApiLike, WatchLike } from "./credential-store/secret-record-store.js";
 import { GithubReplyClient } from "./github-client.js";
+import { OAuthAuthCodeLinker } from "./identity-link/oauth-authcode-linker.js";
+import { loadOAuthProviders } from "./identity-link/providers.js";
 import { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
 import { K8sSecretIdentityLinkStore } from "./identity-link/k8s-secret-store.js";
 import {
@@ -199,6 +201,7 @@ async function main(): Promise<void> {
 
   let identityLinkStore: K8sSecretIdentityLinkStore | undefined;
   let identityLinkLinker: GithubDeviceFlowLinker | undefined;
+  let identityLinkAuthCodeLinkers: ReadonlyMap<string, OAuthAuthCodeLinker> | undefined;
   if (identityLinkEnabled) {
     identityLinkStore = new K8sSecretIdentityLinkStore(decodeEncryptionKey(config.identityLinkEncryptionKey), {
       namespace: config.credentialNamespace,
@@ -226,6 +229,54 @@ async function main(): Promise<void> {
       // githubBaseUrl does (e2e's fake-github serves both from one address).
       apiBaseUrl: config.githubApiUrl,
     });
+
+    // The generic authorization-code providers (Atlassian, and anything else
+    // providers.ts learns to build). Until now loadOAuthProviders was written,
+    // tested and never called, and createServer's
+    // `identityLinkAuthCodeLinkers` was never passed — so every non-GitHub
+    // link attempt answered "Unsupported identity provider", and the
+    // deployment had no ATLASSIAN_* env because nothing would have read it.
+    //
+    // That made the per-user delegated path (docs/adr/0040) unreachable in
+    // production for Confluence and Drive, which is the path a knowledge
+    // base's live read and live lookup BOTH run on — neither has a
+    // service-credential fallback, by design.
+    //
+    // The redirect URI is derived rather than configured per provider: the
+    // callback route is `/identity-link/:provider/callback` for all of them,
+    // so a second knob would only be a second thing to get out of step with
+    // the route. It does still have to match what is registered with the
+    // provider, which is why startup says what it derived.
+    if (config.publicUrl) {
+      const linkers = new Map<string, OAuthAuthCodeLinker>();
+      for (const [name, providerConfig] of loadOAuthProviders()) {
+        linkers.set(
+          name,
+          new OAuthAuthCodeLinker({
+            config: providerConfig,
+            store: identityLinkStore,
+            stateSecret: config.identityLinkStateSecret,
+            redirectUri: `${config.publicUrl.replace(/\/+$/, "")}/identity-link/${name}/callback`,
+          }),
+        );
+      }
+      if (linkers.size > 0) {
+        identityLinkAuthCodeLinkers = linkers;
+        for (const [name] of linkers) {
+          console.error(
+            `identity-link provider "${name}" enabled; its app must register ` +
+              `${config.publicUrl.replace(/\/+$/, "")}/identity-link/${name}/callback`,
+          );
+        }
+      }
+    } else if (loadOAuthProviders().size > 0) {
+      // Configured but unusable, which is worth saying loudly: the symptom is
+      // otherwise a link button that reports an unsupported provider.
+      console.error(
+        "WARNING: OAuth identity-link providers are configured but GATEWAY_PUBLIC_URL is " +
+          "unset, so no redirect URI can be derived and none of them are enabled.",
+      );
+    }
   }
 
   // Session page (issue #81) is opt-in: only enabled once a public base URL
@@ -283,6 +334,7 @@ async function main(): Promise<void> {
     githubTriggerLabel: config.githubTriggerLabel,
     githubReviewLabel: config.githubReviewLabel,
     ...(identityLinkLinker ? { identityLinkLinker, identityLinkToken: config.identityLinkToken } : {}),
+    ...(identityLinkAuthCodeLinkers ? { identityLinkAuthCodeLinkers } : {}),
     ...(sessionPageStore ? { sessionPageStore, publicBaseUrl: config.publicUrl } : {}),
     ...(claudeAuthFlows && claudeTokenStore ? { claudeAuthFlows, claudeAuthStore: claudeTokenStore } : {}),
     ...(claudeLoginFlows ? { claudeLoginFlows } : {}),

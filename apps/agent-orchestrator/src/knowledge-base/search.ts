@@ -5,7 +5,7 @@ export interface CorpusSearchOutcome {
   /**
    * Member collections that could not be consulted. Returned rather than
    * swallowed so an answer can say part of the knowledge base was missed —
-   * distinct from `withheld` in `visibleConnections`, which counts sources this
+   * distinct from `withheld` in `visibleCorpora`, which counts sources this
    * caller may not read.
    */
   skipped: number;

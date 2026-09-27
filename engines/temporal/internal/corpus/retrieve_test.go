@@ -29,7 +29,7 @@ func TestRetrieveReturnsOnlyWhatTheSourceConfirmed(t *testing.T) {
 	}
 
 	outcome, err := corpus.Retrieve(context.Background(),
-		[]vectorstore.Store{store}, prober, "q", []string{"reader"}, 5, 3)
+		[]vectorstore.Store{store}, prober, "q", []string{"reader"}, nil, 5, 3)
 
 	require.NoError(t, err)
 	require.Len(t, outcome.Chunks, 1)
@@ -54,7 +54,7 @@ func TestRetrieveOverFetchesSoProbeDropsDoNotStarveTheAnswer(t *testing.T) {
 	}
 
 	outcome, err := corpus.Retrieve(context.Background(),
-		[]vectorstore.Store{store}, prober, "q", []string{"reader"}, 4, 3)
+		[]vectorstore.Store{store}, prober, "q", []string{"reader"}, nil, 4, 3)
 
 	require.NoError(t, err)
 	require.Len(t, outcome.Chunks, 4, "capped at the requested limit")
@@ -68,7 +68,7 @@ func TestRetrieveDefaultsAnAbsurdMultiplier(t *testing.T) {
 	}}
 
 	outcome, err := corpus.Retrieve(context.Background(),
-		[]vectorstore.Store{store}, prober, "q", []string{"reader"}, 2, 0)
+		[]vectorstore.Store{store}, prober, "q", []string{"reader"}, nil, 2, 0)
 
 	require.NoError(t, err)
 	require.Len(t, outcome.Chunks, 1)
@@ -82,7 +82,7 @@ func TestRetrieveCarriesBothKindsOfMissingEvidence(t *testing.T) {
 	}}
 
 	outcome, err := corpus.Retrieve(context.Background(),
-		[]vectorstore.Store{healthy, broken}, prober, "q", []string{"reader"}, 5, 3)
+		[]vectorstore.Store{healthy, broken}, prober, "q", []string{"reader"}, nil, 5, 3)
 
 	require.NoError(t, err)
 	// A corpus that could not be searched and a source that could not be
@@ -112,13 +112,13 @@ func TestBrokerProberSendsTheDelegatedTokenAndReadsTheProbe(t *testing.T) {
 	}
 
 	result, err := prober.Probe(context.Background(),
-		corpus.ProbeRequest{ConnectionID: "snc-confluence", SourceID: "page-1"})
+		corpus.ProbeRequest{CorpusID: "globex-confluence", SourceID: "page-1"})
 
 	require.NoError(t, err)
 	require.Equal(t, "Auth design", result.Title)
 	require.Equal(t, "Bearer orch-token", gotAuth, "the orchestrator authenticates itself")
 	require.Equal(t, "user-token", gotDelegated, "and forwards the user's own credential")
-	require.Equal(t, "/connections/snc-confluence/probe", gotPath)
+	require.Equal(t, "/corpora/globex-confluence/probe", gotPath)
 	require.Equal(t, "page-1", gotBody["sourceId"])
 }
 
@@ -127,8 +127,15 @@ func TestBrokerProberClassifiesBrokerStatuses(t *testing.T) {
 		status int
 		denied bool
 	}{
+		// 403 is the ONLY denial: it is what the broker answers a driver's
+		// PermissionDenied with, and nothing else.
 		{http.StatusForbidden, true},
-		{http.StatusNotFound, true},
+		// 404 is NOT a denial, and reading it as one hid a real bug for as
+		// long as it existed — this prober asked for a route that had been
+		// renamed, so every probe 404'd, every candidate was dropped as
+		// "denied", and retrieval reported nothing found. A missing corpus or
+		// route is a fault to surface, not a permission to respect.
+		{http.StatusNotFound, false},
 		{http.StatusTooManyRequests, false},
 		{http.StatusServiceUnavailable, false},
 		{http.StatusInternalServerError, false},
@@ -138,7 +145,7 @@ func TestBrokerProberClassifiesBrokerStatuses(t *testing.T) {
 		}))
 
 		prober := &corpus.BrokerProber{BaseURL: server.URL, Token: "t", DelegatedToken: "u"}
-		_, err := prober.Probe(context.Background(), corpus.ProbeRequest{ConnectionID: "c", SourceID: "s"})
+		_, err := prober.Probe(context.Background(), corpus.ProbeRequest{CorpusID: "c", SourceID: "s"})
 
 		var denied *corpus.PermissionDenied
 		var transient *corpus.Transient
@@ -155,7 +162,7 @@ func TestBrokerProberClassifiesBrokerStatuses(t *testing.T) {
 func TestBrokerProberRefusesToProbeWithoutADelegatedCredential(t *testing.T) {
 	prober := &corpus.BrokerProber{BaseURL: "http://unused", Token: "t"}
 
-	_, err := prober.Probe(context.Background(), corpus.ProbeRequest{ConnectionID: "c", SourceID: "s"})
+	_, err := prober.Probe(context.Background(), corpus.ProbeRequest{CorpusID: "c", SourceID: "s"})
 
 	// Nothing to answer the question with; the broker would refuse it anyway.
 	var denied *corpus.PermissionDenied
@@ -168,7 +175,7 @@ func TestBrokerProberTreatsAnUnreachableBrokerAsTransient(t *testing.T) {
 	server.Close() // nothing is listening now
 
 	prober := &corpus.BrokerProber{BaseURL: url, Token: "t", DelegatedToken: "u"}
-	_, err := prober.Probe(context.Background(), corpus.ProbeRequest{ConnectionID: "c", SourceID: "s"})
+	_, err := prober.Probe(context.Background(), corpus.ProbeRequest{CorpusID: "c", SourceID: "s"})
 
 	var transient *corpus.Transient
 	require.ErrorAs(t, err, &transient)

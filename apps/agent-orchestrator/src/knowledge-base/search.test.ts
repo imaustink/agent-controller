@@ -46,10 +46,10 @@ class FakeStore implements CorpusStore {
 describe("searchCorpus", () => {
   it("merges members by score", async () => {
     const confluence = new FakeStore([
-      hit("snc-confluence", "page-1", "hash-a", 0.91),
-      hit("snc-confluence", "page-2", "hash-b", 0.42),
+      hit("globex-confluence", "page-1", "hash-a", 0.91),
+      hit("globex-confluence", "page-2", "hash-b", 0.42),
     ]);
-    const slack = new FakeStore([hit("snc-slack-eng", "msg-1", "hash-c", 0.77)]);
+    const slack = new FakeStore([hit("globex-slack-eng", "msg-1", "hash-c", 0.77)]);
 
     const { hits, skipped } = await searchCorpus(
       [confluence, slack],
@@ -78,14 +78,14 @@ describe("searchCorpus", () => {
   it("de-duplicates the same passage reached through two connections", async () => {
     // A document in a Drive folder that is also linked into a synced Confluence
     // space: one fact, two connections, one content hash.
-    const drive = new FakeStore([hit("snc-drive", "doc-7", "same-hash", 0.55)]);
-    const confluence = new FakeStore([hit("snc-confluence", "page-9", "same-hash", 0.81)]);
+    const drive = new FakeStore([hit("globex-drive", "doc-7", "same-hash", 0.55)]);
+    const confluence = new FakeStore([hit("globex-confluence", "page-9", "same-hash", 0.81)]);
 
     const { hits } = await searchCorpus([drive, confluence], "q", ["reader"], 10);
 
     // A cited answer must not list two URLs for one fact.
     expect(hits).toHaveLength(1);
-    expect(hits[0].chunk.connectionId).toBe("snc-confluence");
+    expect(hits[0].chunk.connectionId).toBe("globex-confluence");
   });
 
   it("is deterministic across runs", async () => {

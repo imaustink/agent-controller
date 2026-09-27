@@ -202,6 +202,45 @@ jobs:
       - name: e2e/specs/rbac-parity.e2e.ts
         run: npm run e2e -w e2e -- specs/rbac-parity.e2e.ts
 
+      # The other spec that needs neither. The broker's routes and the four
+      # clients that call them live in three packages and two languages, and
+      # nothing but agreement makes them work — agreement that has broken
+      # twice, silently, in releases that looked complete. Both times the unit
+      # tests asserted the URL each client BUILT, so a rename moved the server
+      # and left the client behind with nothing going red. This drives the
+      # real clients against the real server; see the spec's header.
+      - name: e2e/specs/broker-contract.e2e.ts
+        run: npm run e2e -w e2e -- specs/broker-contract.e2e.ts
+
+      # The third. Every cluster spec that indexes a corpus rests on the fake
+      # Confluence answering what the real driver asks; if it has drifted,
+      # those specs pass against a fiction. This drives the production driver
+      # against the manifest's own server, so drift fails here in seconds
+      # rather than turning a cluster suite green over nothing.
+      - name: e2e/specs/fake-confluence-fidelity.e2e.ts
+        run: npm run e2e -w e2e -- specs/fake-confluence-fidelity.e2e.ts
+
+      # The fourth, and the cheapest. YAML discards a duplicate mapping key
+      # silently, so appending a block to a values file that already has that
+      # key deletes everything under the first one — which shipped here, and
+      # surfaced three layers away as an orchestrator claiming a variable was
+      # unset that was plainly set.
+      - name: e2e/specs/values-duplicate-keys.e2e.ts
+        run: npm run e2e -w e2e -- specs/values-duplicate-keys.e2e.ts
+
+      # The fifth. Same contract as the Confluence fidelity spec, and the only
+      # place auto-join (the one WRITE a driver performs) and a SECOND identity
+      # are exercised at all.
+      - name: e2e/specs/fake-slack-fidelity.e2e.ts
+        run: npm run e2e -w e2e -- specs/fake-slack-fidelity.e2e.ts
+
+      # The sixth. Pins every Drive behaviour that was found broken against a
+      # real Drive — recursion, shortcuts and their target's version, PDF
+      # extraction — each of which failed by quietly holding LESS than the
+      # corpus claimed.
+      - name: e2e/specs/fake-gdrive-fidelity.e2e.ts
+        run: npm run e2e -w e2e -- specs/fake-gdrive-fidelity.e2e.ts
+
   core-controller:
     name: Go core-controller (lint, test, build)
     runs-on: ubuntu-latest

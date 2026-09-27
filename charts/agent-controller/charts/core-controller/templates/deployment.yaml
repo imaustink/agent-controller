@@ -59,6 +59,24 @@ spec:
             - name: AGENT_IMAGE_PULL_POLICY
               value: {{ .Values.runJob.imagePullPolicy | quote }}
             {{- end }}
+            {{- if .Values.corpusSync.enabled }}
+            # What the sync CronJob a Corpus reconciles into will curl
+            # (ADR 0043). The binary's own default is `http://connection-broker`,
+            # which is the Service name only when the release is called
+            # `connection-broker` — under the umbrella chart it is
+            # `<release>-connection-broker`, so every sync Job failed to
+            # resolve the host. Nothing reported it as a configuration problem:
+            # the Corpus reconciled, the CronJob existed, and the corpus simply
+            # stayed empty.
+            - name: CONNECTION_BROKER_URL
+              value: {{ .Values.corpusSync.brokerUrl | quote }}
+            - name: CORPUS_SYNC_TOKEN_SECRET
+              value: {{ .Values.corpusSync.tokenSecret | quote }}
+            {{- if .Values.corpusSync.kickImage }}
+            - name: CORPUS_SYNC_KICK_IMAGE
+              value: {{ .Values.corpusSync.kickImage | quote }}
+            {{- end }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

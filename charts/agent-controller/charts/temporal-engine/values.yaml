@@ -165,3 +165,13 @@ gateway:
       memory: 32Mi
     limits:
       memory: 128Mi
+
+# Knowledge bases (docs/adr/0039), served out of the connection-broker. Off by
+# default, matching the broker's own default: the two are useless apart.
+knowledgeBases:
+  enabled: false
+  brokerUrl: "http://agent-controller-connection-broker:8080"
+  # Must hold the SAME value as the broker's orchestratorTokenSecret.
+  brokerTokenSecret:
+    name: connection-broker-auth
+    key: orchestratorToken

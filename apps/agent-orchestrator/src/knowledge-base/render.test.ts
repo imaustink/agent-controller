@@ -10,8 +10,8 @@ function authorized(title: string, url: string, text: string): AuthorizedChunk {
     score: 0.9,
     stale: false,
     chunk: {
-      connectionId: "snc-confluence",
-      connectionLabel: "SNC Confluence",
+      connectionId: "globex-confluence",
+      connectionLabel: "GLOBEX Confluence",
       sourceId: "page-1",
       contentHash: "h",
       // Deliberately wrong: the mirror's copy must never reach a citation.

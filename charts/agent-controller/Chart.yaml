@@ -84,3 +84,12 @@ dependencies:
   # pin to (searxng/searxng-helm-chart was archived May 2025). It's a
   # first-party template instead: templates/searxng.yaml, same reasoning
   # already applied to Redis (see agent-orchestrator/templates/redis.yaml).
+  # Holds the credentials for the external systems a Connection CR names, and
+  # answers the per-user authorization probes retrieval depends on (ADR 0038,
+  # ADR 0040). A separate Deployment from agent-orchestrator on purpose:
+  # third-party credentials and outbound egress stay out of the pod holding
+  # cluster RBAC. Off by default.
+  - name: connection-broker
+    version: "0.1.0"
+    repository: "file://charts/connection-broker"
+    condition: connection-broker.enabled

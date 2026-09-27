@@ -15,6 +15,7 @@ rules:
 - apiGroups:
   - batch
   resources:
+  - cronjobs
   - jobs
   verbs:
   - create
@@ -36,6 +37,7 @@ rules:
   - agentruns
   - agents
   - connections
+  - corpora
   - identityproviders
   - integrationroutes
   - knowledgebases
@@ -57,6 +59,7 @@ rules:
   - agentruns/finalizers
   - agents/finalizers
   - connections/finalizers
+  - corpora/finalizers
   - identityproviders/finalizers
   - integrationroutes/finalizers
   - knowledgebases/finalizers
@@ -72,6 +75,7 @@ rules:
   - agentruns/status
   - agents/status
   - connections/status
+  - corpora/status
   - identityproviders/status
   - integrationroutes/status
   - knowledgebases/status

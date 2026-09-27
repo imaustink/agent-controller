@@ -8,14 +8,14 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
-// Corpora is the per-Connection half of the vector store.
+// Corpora is the per-Corpus half of the vector store.
 //
 // The three catalog collections (tools/skills/agents) are fixed and opened once
 // at startup. Corpus collections are not: there is one per Connection CR
 // (ADR 0039 §1), they appear and disappear with those CRs, and which ones a
 // query touches is decided per request by the KnowledgeBase being searched.
 //
-// Storage is per-Connection rather than per-KnowledgeBase so that a Connection
+// Storage is per-Corpus rather than per-KnowledgeBase so that a Connection
 // shared by several knowledge bases is embedded once, and composing or
 // recomposing a knowledge base is a metadata change that costs no re-indexing.
 // The price is a fan-out at query time, which the caller performs across the
@@ -113,7 +113,7 @@ func (c *Corpora) Resolve(ctx context.Context, collections []string) ([]Store, i
 	return stores, skipped, nil
 }
 
-// Forget drops a collection's cached Store, so a Connection that goes away
+// Forget drops a collection's cached Store, so a Corpus that goes away
 // stops holding one.
 //
 // It deliberately does NOT delete the collection. A collection may be reachable
