@@ -101,6 +101,13 @@ export interface AgentOrchestratorChannel {
       idleTimeoutMs?: number;
       onProgress?: (stage: string | undefined, message: string) => void;
       onToolCall?: (call: { callId: string; tool: string; input: string }) => void;
+      /**
+       * Resolves (with the reason) when the run is known to have died without
+       * saying so on NATS -- e.g. its pod was OOM-killed. Ends the wait at once
+       * with an {@link AgentTurnFailedError} (code `run_failed`) instead of
+       * idling out as "went silent". See `AgentRunLauncherPort.whenFailed`.
+       */
+      runFailed?: Promise<string>;
     },
   ): Promise<AgentTurnResult>;
   /**
@@ -250,6 +257,7 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
       idleTimeoutMs?: number;
       onProgress?: (stage: string | undefined, message: string) => void;
       onToolCall?: (call: { callId: string; tool: string; input: string }) => void;
+      runFailed?: Promise<string>;
     } = {},
   ): Promise<AgentTurnResult> {
     const { up } = agentSubjects(agentRunId, this.subjectPrefix);
@@ -265,6 +273,16 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
 
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
+    // Same shape as the idle timeout: unsubscribing ends the `for await`
+    // below, and the post-loop check says why.
+    let runFailedReason: string | undefined;
+    opts.runFailed?.then(
+      (reason) => {
+        runFailedReason = reason;
+        sub.unsubscribe();
+      },
+      () => {},
+    );
     // `tool_call`s dispatched to us and not yet answered (docs/adr/0028).
     const owedToolResults = new Set<string>();
     const armIdleTimer = () => {
@@ -348,6 +366,9 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
           default:
             break; // opencode_event/opencode_response/session_idle/session_ended (ADR 0026) irrelevant here -- see subscribeLive/forwardOpencodeRequest
         }
+      }
+      if (runFailedReason !== undefined) {
+        throw new AgentTurnFailedError("run_failed", runFailedReason);
       }
       if (timedOut) {
         throw new AgentTurnTimeoutError(

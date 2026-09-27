@@ -50,6 +50,8 @@ const (
 type ToolRunReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// PodReader: same as AgentRunReconciler.PodReader.
+	PodReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=toolruns,verbs=get;list;watch;create;update;patch;delete
@@ -58,6 +60,7 @@ type ToolRunReconciler struct {
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=tools,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list
 
 // Reconcile is the ONLY place in the system that creates a k8s Job (ADR 0010 —
 // this replaces the JS orchestrator's K8sJobLauncher, which is left in place
@@ -138,6 +141,9 @@ func (r *ToolRunReconciler) syncJobStatus(ctx context.Context, run *toolv1alpha1
 	}
 
 	phase, message := jobPhase(&job, run.Status.Message)
+	if phase == toolv1alpha1.ToolRunPhaseFailed {
+		message = failedRunMessage(ctx, r.PodReader, &job, run.Status.Phase, run.Status.Message)
+	}
 
 	if phase == run.Status.Phase && job.Status.StartTime == nil {
 		return ctrl.Result{}, nil

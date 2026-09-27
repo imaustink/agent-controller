@@ -120,6 +120,19 @@ claudeCodeSweAgent:
   githubAppInstallationIdSecretKey: GITHUB_APP_INSTALLATION_ID
   githubAppSlug: e2e-bot
   model: ""
+  # The pre-OOM-fix sizing, not the chart default: e2e runs are short chat
+  # turns on a 6GB minikube (scripts/dev-up.sh), where a 2Gi request per run
+  # could leave pods unschedulable.
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+      ephemeral-storage: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+      ephemeral-storage: "8Gi"
+  goMemLimit: "1536MiB"
   identityLink:
     enabled: true
     # Claude only, which is NOT production's shape: production declares

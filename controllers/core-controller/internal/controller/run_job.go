@@ -17,14 +17,18 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 )
@@ -305,12 +309,114 @@ func jobPhase(job *batchv1.Job, currentMessage string) (toolv1alpha1.ToolRunPhas
 	case job.Status.Succeeded > 0:
 		return toolv1alpha1.ToolRunPhaseSucceeded, "Job completed successfully"
 	case job.Status.Failed > 0:
-		return toolv1alpha1.ToolRunPhaseFailed, "Job failed (see Job/Pod events for detail)"
+		return toolv1alpha1.ToolRunPhaseFailed, genericJobFailedMessage
 	case job.Status.Active == 0 && job.Status.StartTime == nil:
 		return toolv1alpha1.ToolRunPhasePending, currentMessage
 	default:
 		return toolv1alpha1.ToolRunPhaseRunning, currentMessage
 	}
+}
+
+const genericJobFailedMessage = "Job failed (see Job/Pod events for detail)"
+
+// failedRunMessage is the status message for a run whose Job has failed: the
+// concrete cause when describeJobFailure can find one, else the generic
+// message. It is derived once, on the transition to Failed, and kept after
+// that -- the Job's pod is TTL-deleted minutes later, and re-deriving it then
+// would silently downgrade the message back to the generic one.
+//
+// podReader should be uncached (mgr.GetAPIReader()): listing pods through the
+// manager's cached client would start a cluster-wide pod informer just to read
+// one pod on the rare failure path. Nil skips the pod lookup.
+func failedRunMessage(ctx context.Context, podReader client.Reader, job *batchv1.Job, previousPhase toolv1alpha1.ToolRunPhase, previousMessage string) string {
+	if previousPhase == toolv1alpha1.ToolRunPhaseFailed {
+		return previousMessage
+	}
+	var pods []corev1.Pod
+	if podReader != nil {
+		var list corev1.PodList
+		if err := podReader.List(ctx, &list, client.InNamespace(job.Namespace), client.MatchingLabels{"job-name": job.Name}); err != nil {
+			// Best effort: the Job's own Failed condition may still say something.
+			logf.FromContext(ctx).Error(err, "listing pods of failed Job", "job", job.Name)
+		} else {
+			pods = list.Items
+		}
+	}
+	if detail := describeJobFailure(job, pods); detail != "" {
+		return "Job failed: " + detail
+	}
+	return genericJobFailedMessage
+}
+
+// describeJobFailure explains why a failed Job failed, from its pods'
+// termination state and the Job's own Failed condition -- e.g. `container
+// "run" was OOMKilled (exit code 137, memory limit 4Gi)`. Without it the cause
+// lived only in pod status and events, both gone within minutes of the Job's
+// TTL, so an OOM kill was indistinguishable from any other crash. Returns ""
+// when nothing specific is known.
+func describeJobFailure(job *batchv1.Job, pods []corev1.Pod) string {
+	var parts []string
+	for i := range pods {
+		pod := &pods[i]
+		if pod.Status.Reason != "" {
+			// Pod-level failures: Evicted (node pressure or an
+			// ephemeral-storage limit), DeadlineExceeded, ...
+			part := "pod " + pod.Status.Reason
+			if pod.Status.Message != "" {
+				part += ": " + pod.Status.Message
+			}
+			parts = append(parts, part)
+		}
+		limits := map[string]corev1.ResourceList{}
+		for _, c := range pod.Spec.InitContainers {
+			limits[c.Name] = c.Resources.Limits
+		}
+		for _, c := range pod.Spec.Containers {
+			limits[c.Name] = c.Resources.Limits
+		}
+		statuses := append(append([]corev1.ContainerStatus{}, pod.Status.InitContainerStatuses...), pod.Status.ContainerStatuses...)
+		for _, cs := range statuses {
+			term := cs.State.Terminated
+			if term == nil {
+				term = cs.LastTerminationState.Terminated
+			}
+			if term == nil || (term.ExitCode == 0 && term.Reason != "OOMKilled") {
+				continue
+			}
+			reason := term.Reason
+			if reason == "" {
+				reason = "terminated"
+			}
+			detail := fmt.Sprintf("exit code %d", term.ExitCode)
+			if term.Signal != 0 {
+				detail += fmt.Sprintf(", signal %d", term.Signal)
+			}
+			if reason == "OOMKilled" {
+				if mem, ok := limits[cs.Name][corev1.ResourceMemory]; ok {
+					detail += ", memory limit " + mem.String()
+				}
+			}
+			parts = append(parts, fmt.Sprintf("container %q was %s (%s)", cs.Name, reason, detail))
+		}
+	}
+	for _, cond := range job.Status.Conditions {
+		if cond.Type != batchv1.JobFailed || cond.Status != corev1.ConditionTrue {
+			continue
+		}
+		// BackoffLimitExceeded only restates "a pod failed" (backoffLimit is
+		// 0), so it's worth reporting only when no pod explained the failure.
+		if cond.Reason == "BackoffLimitExceeded" && len(parts) > 0 {
+			continue
+		}
+		part := cond.Reason
+		if cond.Message != "" {
+			part += ": " + cond.Message
+		}
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 func toCoreResourceRequirements(spec toolv1alpha1.ResourceRequirements) (corev1.ResourceRequirements, error) {
