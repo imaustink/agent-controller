@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -319,33 +320,63 @@ func jobPhase(job *batchv1.Job, currentMessage string) (toolv1alpha1.ToolRunPhas
 
 const genericJobFailedMessage = "Job failed (see Job/Pod events for detail)"
 
+// podListRetryWindow is how long after a Job fails a run is held back from
+// Failed while its pods can't be listed. See failedRunMessage.
+const podListRetryWindow = time.Minute
+
 // failedRunMessage is the status message for a run whose Job has failed: the
 // concrete cause when describeJobFailure can find one, else the generic
-// message. It is derived once, on the transition to Failed, and kept after
-// that -- the Job's pod is TTL-deleted minutes later, and re-deriving it then
-// would silently downgrade the message back to the generic one.
+// message. It is derived once, on the transition to Failed: both run
+// reconcilers return early for a terminal run, so whatever is recorded then is
+// final. (The previousPhase guard is a backstop for that, not the mechanism.)
+//
+// Because there is only that one chance, a pod List error returns an error --
+// requeueing the reconcile with backoff instead of recording Failed -- rather
+// than locking in the generic message while the pod, which outlives the Job by
+// its TTL, could still say it was OOMKilled. Only within podListRetryWindow of
+// the Job's failure, though: a persistent error (e.g. missing RBAC) must not
+// hold the run in Running forever, so past the window it falls back to what
+// the Job's own conditions say.
 //
 // podReader should be uncached (mgr.GetAPIReader()): listing pods through the
 // manager's cached client would start a cluster-wide pod informer just to read
 // one pod on the rare failure path. Nil skips the pod lookup.
-func failedRunMessage(ctx context.Context, podReader client.Reader, job *batchv1.Job, previousPhase toolv1alpha1.ToolRunPhase, previousMessage string) string {
+func failedRunMessage(ctx context.Context, podReader client.Reader, job *batchv1.Job, previousPhase toolv1alpha1.ToolRunPhase, previousMessage string) (string, error) {
 	if previousPhase == toolv1alpha1.ToolRunPhaseFailed {
-		return previousMessage
+		return previousMessage, nil
 	}
 	var pods []corev1.Pod
 	if podReader != nil {
 		var list corev1.PodList
 		if err := podReader.List(ctx, &list, client.InNamespace(job.Namespace), client.MatchingLabels{"job-name": job.Name}); err != nil {
-			// Best effort: the Job's own Failed condition may still say something.
-			logf.FromContext(ctx).Error(err, "listing pods of failed Job", "job", job.Name)
+			if failedAt := jobFailedAt(job); !failedAt.IsZero() && time.Since(failedAt) < podListRetryWindow {
+				return "", fmt.Errorf("listing pods of failed Job %q: %w", job.Name, err)
+			}
+			// Out of retries: the Job's own Failed condition may still say something.
+			logf.FromContext(ctx).Error(err, "Could not list Pods of failed Job", "job", job.Name)
 		} else {
 			pods = list.Items
 		}
 	}
 	if detail := describeJobFailure(job, pods); detail != "" {
-		return "Job failed: " + detail
+		return "Job failed: " + detail, nil
 	}
-	return genericJobFailedMessage
+	return genericJobFailedMessage, nil
+}
+
+// jobFailedAt is when the Job was marked failed, from its Failed (or, on
+// Kubernetes versions that set it first, FailureTarget) condition; zero if it
+// carries neither, in which case failedRunMessage doesn't hold the run back.
+func jobFailedAt(job *batchv1.Job) time.Time {
+	var at time.Time
+	for _, cond := range job.Status.Conditions {
+		if (cond.Type == batchv1.JobFailed || cond.Type == batchv1.JobFailureTarget) && cond.Status == corev1.ConditionTrue {
+			if t := cond.LastTransitionTime.Time; at.IsZero() || t.Before(at) {
+				at = t
+			}
+		}
+	}
+	return at
 }
 
 // describeJobFailure explains why a failed Job failed, from its pods'

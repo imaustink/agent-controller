@@ -18,14 +18,18 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 )
@@ -135,9 +139,9 @@ func TestFailedRunMessage(t *testing.T) {
 		other.Status.ContainerStatuses[0].Name = "elsewhere"
 		reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(oomPod("run-1"), other).Build()
 
-		got := failedRunMessage(ctx, reader, failedJob(backoffExceeded), toolv1alpha1.ToolRunPhaseRunning, "")
+		got, err := failedRunMessage(ctx, reader, failedJob(backoffExceeded), toolv1alpha1.ToolRunPhaseRunning, "")
 		want := `Job failed: container "run" was OOMKilled (exit code 137, memory limit 4Gi)`
-		if got != want {
+		if err != nil || got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	})
@@ -146,15 +150,51 @@ func TestFailedRunMessage(t *testing.T) {
 		// The pod is gone (TTL) by now; re-deriving would downgrade the message.
 		reader := fake.NewClientBuilder().WithScheme(scheme).Build()
 		recorded := `Job failed: container "run" was OOMKilled (exit code 137, memory limit 4Gi)`
-		got := failedRunMessage(ctx, reader, failedJob(backoffExceeded), toolv1alpha1.ToolRunPhaseFailed, recorded)
-		if got != recorded {
+		got, err := failedRunMessage(ctx, reader, failedJob(backoffExceeded), toolv1alpha1.ToolRunPhaseFailed, recorded)
+		if err != nil || got != recorded {
 			t.Errorf("got %q, want the previously recorded %q", got, recorded)
 		}
 	})
 
 	t.Run("falls back to the generic message with no reader and no Job condition", func(t *testing.T) {
-		if got := failedRunMessage(ctx, nil, failedJob(), toolv1alpha1.ToolRunPhaseRunning, ""); got != genericJobFailedMessage {
-			t.Errorf("got %q, want %q", got, genericJobFailedMessage)
+		if got, err := failedRunMessage(ctx, nil, failedJob(), toolv1alpha1.ToolRunPhaseRunning, ""); err != nil || got != genericJobFailedMessage {
+			t.Errorf("got %q, %v; want %q", got, err, genericJobFailedMessage)
+		}
+	})
+
+	// A reader whose pod List always fails, standing in for a transient API
+	// error on the one reconcile that records the run as Failed.
+	failingReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(oomPod("run-1")).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+				return errors.New("apiserver unavailable")
+			},
+		}).Build()
+	failedAgo := func(d time.Duration) batchv1.JobCondition {
+		c := backoffExceeded
+		c.LastTransitionTime = metav1.NewTime(time.Now().Add(-d))
+		return c
+	}
+
+	t.Run("retries a pod List error shortly after the Job failed instead of recording the generic message", func(t *testing.T) {
+		got, err := failedRunMessage(ctx, failingReader, failedJob(failedAgo(5*time.Second)), toolv1alpha1.ToolRunPhaseRunning, "")
+		if err == nil {
+			t.Fatalf("got message %q and no error; want an error so the reconcile requeues while the pod still exists", got)
+		}
+	})
+
+	t.Run("stops retrying past the window and falls back to the Job condition", func(t *testing.T) {
+		got, err := failedRunMessage(ctx, failingReader, failedJob(failedAgo(podListRetryWindow+time.Second)), toolv1alpha1.ToolRunPhaseRunning, "")
+		want := "Job failed: BackoffLimitExceeded: Job has reached the specified backoff limit"
+		if err != nil || got != want {
+			t.Errorf("got %q, %v; want %q", got, err, want)
+		}
+	})
+
+	t.Run("does not hold the run back when the Job carries no failure time", func(t *testing.T) {
+		got, err := failedRunMessage(ctx, failingReader, failedJob(), toolv1alpha1.ToolRunPhaseRunning, "")
+		if err != nil || got != genericJobFailedMessage {
+			t.Errorf("got %q, %v; want %q", got, err, genericJobFailedMessage)
 		}
 	})
 }

@@ -221,7 +221,10 @@ func (r *AgentRunReconciler) syncJobStatus(ctx context.Context, run *toolv1alpha
 
 	phase, message := jobPhase(&job, run.Status.Message)
 	if phase == toolv1alpha1.ToolRunPhaseFailed {
-		message = failedRunMessage(ctx, r.PodReader, &job, run.Status.Phase, run.Status.Message)
+		var err error
+		if message, err = failedRunMessage(ctx, r.PodReader, &job, run.Status.Phase, run.Status.Message); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	if phase == run.Status.Phase && job.Status.StartTime == nil {
