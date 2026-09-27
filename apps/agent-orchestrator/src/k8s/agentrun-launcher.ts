@@ -85,7 +85,20 @@ export interface AgentRunLauncherPort {
    * could publish before a late subscription exists.
    */
   launch(template: AgentRunTemplate, name: string, options: AgentLaunchOptions): Promise<LaunchedAgentRun>;
+  /**
+   * Resolves with the run's status message once the controller marks the
+   * AgentRun `Failed` (its pod was OOM-killed, evicted, exited non-zero...),
+   * and never settles otherwise -- including after `signal` aborts. Feeds
+   * `awaitReply`'s `runFailed`: a pod killed outright can't send a `failed`
+   * up-message, so without this the turn only ended at the idle timeout, as
+   * "went silent", with the actual cause nowhere in sight. Optional so fakes
+   * that never exercise it needn't implement it.
+   */
+  whenFailed?(name: string, namespace: string, signal: AbortSignal): Promise<string>;
 }
+
+/** How often {@link AgentRunLauncher.whenFailed} re-reads the AgentRun CR. */
+export const AGENTRUN_FAILURE_POLL_MS = 10_000;
 
 /**
  * Minimal slice of k8s CoreV1Api this launcher needs to back per-invocation
@@ -119,10 +132,47 @@ export class AgentRunLauncher implements AgentRunLauncherPort {
         plural: string;
         body: unknown;
       }): Promise<{ metadata?: { uid?: string } }>;
+      /** Only `whenFailed` reads a single run back; fakes that never call it may omit this. */
+      getNamespacedCustomObject?(request: {
+        group: string;
+        version: string;
+        namespace: string;
+        plural: string;
+        name: string;
+      }): Promise<unknown>;
     },
     /** Absent in callers/tests that never launch with `options.secretEnv` (today's default). Real instances constructed via `fromKubeConfig` always pass one. */
     private readonly secretApi?: SecretApiLike,
+    private readonly failurePollMs: number = AGENTRUN_FAILURE_POLL_MS,
   ) {}
+
+  /**
+   * Polls rather than watches: it runs only while a turn is waiting, one run
+   * at a time, and a poll can't silently stall the way a dropped watch
+   * connection can. Every read error (the CR not created yet -- the caller
+   * starts this before `launch` -- already reclaimed, or a transient API
+   * failure) just means "not failed as far as we know"; the NATS idle timeout
+   * still bounds the wait.
+   */
+  async whenFailed(name: string, namespace: string, signal: AbortSignal): Promise<string> {
+    const get = this.api.getNamespacedCustomObject?.bind(this.api);
+    while (get && !signal.aborted) {
+      try {
+        const run = (await get({ group: this.group, version: this.version, namespace, plural: AGENTRUN_PLURAL, name })) as {
+          status?: { phase?: string; message?: string };
+        };
+        if (run?.status?.phase === "Failed") return run.status.message || `agent run ${name} failed`;
+      } catch {
+        // see above
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, this.failurePollMs);
+        timer.unref?.();
+        signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+      });
+    }
+    return new Promise<never>(() => {});
+  }
 
   static fromKubeConfig(group: string, version: string, kubeConfig: k8s.KubeConfig): AgentRunLauncher {
     return new AgentRunLauncher(

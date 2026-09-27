@@ -1187,6 +1187,54 @@ describe("buildAgentGraph checkIntegrationRoute (IntegrationRoute-forced dispatc
     expect(agentRunLauncher.launch).toHaveBeenCalled();
   });
 
+  it("ends a delegated turn with the controller's reason when the AgentRun goes Failed (e.g. its pod was OOM-killed)", async () => {
+    const codingAgent: AgentDescriptor = {
+      id: "claude-code-swe-agent",
+      name: "claude-code-swe-agent",
+      description: "Does software engineering tasks",
+      allowedRoles: ["reader"],
+      agentRunTemplate: { namespace: "agents", agentRef: "claude-code-swe-agent" },
+    };
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: codingAgent }]),
+    };
+    // A channel that, like the real one, ends the wait when runFailed resolves.
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn((_runId: string, opts?: { runFailed?: Promise<string> }) =>
+        (opts?.runFailed ?? new Promise<string>(() => {})).then((reason) => {
+          throw new AgentTurnFailedError("run_failed", reason);
+        }),
+      ),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const oom = 'Job failed: container "run" was OOMKilled (exit code 137, memory limit 4Gi)';
+    const whenFailed = vi.fn().mockResolvedValue(oom);
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "agents" }),
+      whenFailed,
+    };
+    const deps = baseDeps({
+      agentStore,
+      agentChannel,
+      agentRunLauncher,
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+
+    const final = await buildAgentGraph(deps).invoke({
+      request: "lint the repo",
+      authToken: "tok",
+      forcedAgentId: "claude-code-swe-agent",
+    });
+
+    expect(final.error).toBe(`agent failed (run_failed): ${oom}`);
+    const [runId] = vi.mocked(agentChannel.awaitReply).mock.calls[0]!;
+    expect(whenFailed).toHaveBeenCalledWith(runId, "agents", expect.any(AbortSignal));
+  });
+
   it("returns only the agent's final message (NOT the progress narration) for a non-streaming caller, e.g. a GitHub triage comment", async () => {
     // Regression: the triage relay is fire-and-forget (no progressListener),
     // and it used to get the entire narration trail prepended -- turning the

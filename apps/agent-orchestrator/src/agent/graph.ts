@@ -1159,6 +1159,30 @@ function agentAwaitReplyIdleTimeoutMs(deps: Pick<AgentGraphDeps, "agentIdleTimeo
 }
 
 /**
+ * `agentChannel.awaitReply`, also ended by the AgentRun going `Failed`
+ * (`AgentRunLauncherPort.whenFailed`). A pod the kernel OOM-kills never gets to
+ * publish `failed`, so NATS alone saw only silence: the turn sat out the full
+ * idle window and then reported "went silent", while the real cause -- which
+ * the controller now records on the run -- was never surfaced.
+ */
+function awaitAgentReply(
+  deps: AgentGraphDeps,
+  channel: AgentOrchestratorChannel,
+  runId: string,
+  namespace: string,
+  opts: Omit<NonNullable<Parameters<AgentOrchestratorChannel["awaitReply"]>[1]>, "runFailed">,
+): Promise<AgentTurnResult> {
+  const stop = new AbortController();
+  const runFailed = deps.agentRunLauncher?.whenFailed?.(runId, namespace, stop.signal);
+  const reply = channel.awaitReply(runId, { ...opts, ...(runFailed ? { runFailed } : {}) });
+  void reply.then(
+    () => stop.abort(),
+    () => stop.abort(),
+  );
+  return reply;
+}
+
+/**
  * Silence window for a RE-ATTACHED wait — one resuming a run a previous turn
  * was cut off from, rather than one it launched.
  *
@@ -1523,7 +1547,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       }
 
       try {
-        const awaitReply = deps.agentChannel.awaitReply(state.activeAgentRunId, {
+        const awaitReply = awaitAgentReply(deps, deps.agentChannel, state.activeAgentRunId, found.agent.agentRunTemplate.namespace, {
           idleTimeoutMs: state.activeAgentRunAwaitingReply
             ? REATTACH_IDLE_TIMEOUT_MS
             : agentAwaitReplyIdleTimeoutMs(deps),
@@ -1786,7 +1810,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       try {
         // Subscribe BEFORE creating the AgentRun CR so a fast-replying agent
         // can never publish before our subscription exists.
-        const awaitReply = deps.agentChannel.awaitReply(runId, {
+        const awaitReply = awaitAgentReply(deps, deps.agentChannel, runId, agent.agentRunTemplate.namespace, {
           idleTimeoutMs: agentAwaitReplyIdleTimeoutMs(deps),
           onProgress:
             state.progressListener || state.remoteControlUrlListener
@@ -2040,7 +2064,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         const runId = randomUUID();
         const callbackUrl = `${deps.callbackBaseUrl}/callback/${randomUUID()}`;
         try {
-          const awaitReply = deps.agentChannel.awaitReply(runId, {
+          const awaitReply = awaitAgentReply(deps, deps.agentChannel, runId, tool.agentRunTemplate.namespace, {
             idleTimeoutMs: agentAwaitReplyIdleTimeoutMs(deps),
             onProgress:
               state.progressListener || state.remoteControlUrlListener

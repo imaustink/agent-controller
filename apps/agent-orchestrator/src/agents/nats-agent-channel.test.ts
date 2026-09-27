@@ -417,6 +417,35 @@ describe("NatsAgentChannel.awaitReply timing", () => {
     expect(await settled).toBeInstanceOf(AgentTurnFailedError);
   });
 
+  it("fails the turn at once when runFailed resolves -- a killed pod, which can't say so on NATS", async () => {
+    const { channel, nc } = makeChannel();
+    let markFailed!: (reason: string) => void;
+    const runFailed = new Promise<string>((resolve) => (markFailed = resolve));
+    const settled = channel.awaitReply(RUN, { idleTimeoutMs: IDLE_MS, runFailed }).catch((err: unknown) => err);
+    await flush();
+
+    publishUp(nc, RUN, { type: "progress", message: "running golangci-lint" });
+    await flush();
+    markFailed('Job failed: container "run" was OOMKilled (exit code 137, memory limit 4Gi)');
+    await flush();
+
+    // No idle window elapsed: the failure, not silence, ended the wait.
+    const err = await settled;
+    expect(err).toBeInstanceOf(AgentTurnFailedError);
+    expect((err as AgentTurnFailedError).code).toBe("run_failed");
+    expect((err as Error).message).toMatch(/OOMKilled/);
+  });
+
+  it("returns the reply when it arrives before any run failure", async () => {
+    const { channel, nc } = makeChannel();
+    const pending = channel.awaitReply(RUN, { idleTimeoutMs: IDLE_MS, runFailed: new Promise<string>(() => {}) });
+    await flush();
+
+    publishUp(nc, RUN, { type: "reply", message: "done", final: true });
+
+    expect((await pending).message).toBe("done");
+  });
+
   it("collects narration and streams it to onProgress", async () => {
     const { channel, nc } = makeChannel();
     const seen: Array<[string | undefined, string]> = [];

@@ -209,8 +209,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.ToolRunReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		PodReader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "toolrun")
 		os.Exit(1)
@@ -226,6 +227,7 @@ func main() {
 		Client:     mgr.GetClient(),
 		Scheme:     mgr.GetScheme(),
 		NatsConfig: agentNatsConfigFromEnv(),
+		PodReader:  mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "agentrun")
 		os.Exit(1)

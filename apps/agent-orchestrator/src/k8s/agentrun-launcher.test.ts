@@ -270,4 +270,50 @@ describe("AgentRunLauncher", () => {
     ).rejects.toThrow(/SecretApiLike/);
     expect(createNamespacedCustomObject).not.toHaveBeenCalled();
   });
+
+  describe("whenFailed", () => {
+    const settled = async (p: Promise<unknown>) => {
+      let done = false;
+      void p.then(() => (done = true));
+      await new Promise((r) => setTimeout(r, 30));
+      return done;
+    };
+
+    it("resolves with the controller's status message once the run goes Failed, polling through a not-yet-created CR", async () => {
+      const oom = 'Job failed: container "run" was OOMKilled (exit code 137, memory limit 4Gi)';
+      const getNamespacedCustomObject = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("agentruns.core.controller-agent.dev \"run-1\" not found"))
+        .mockResolvedValueOnce({ status: { phase: "Running" } })
+        .mockResolvedValue({ status: { phase: "Failed", message: oom } });
+      const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject: vi.fn(), getNamespacedCustomObject };
+      const launcher = new AgentRunLauncher("core.controller-agent.dev", "v1alpha1", api, undefined, 1);
+
+      await expect(launcher.whenFailed("run-1", "default", new AbortController().signal)).resolves.toBe(oom);
+      expect(getNamespacedCustomObject).toHaveBeenCalledTimes(3);
+      expect(getNamespacedCustomObject).toHaveBeenLastCalledWith({
+        group: "core.controller-agent.dev",
+        version: "v1alpha1",
+        namespace: "default",
+        plural: "agentruns",
+        name: "run-1",
+      });
+    });
+
+    it("never settles for a run that succeeds, and stops polling once aborted", async () => {
+      const getNamespacedCustomObject = vi.fn().mockResolvedValue({ status: { phase: "Succeeded" } });
+      const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject: vi.fn(), getNamespacedCustomObject };
+      const launcher = new AgentRunLauncher("core.controller-agent.dev", "v1alpha1", api, undefined, 1);
+      const stop = new AbortController();
+
+      const failed = launcher.whenFailed("run-1", "default", stop.signal);
+      expect(await settled(failed)).toBe(false);
+      stop.abort();
+      await new Promise((r) => setTimeout(r, 10));
+      const calls = getNamespacedCustomObject.mock.calls.length;
+      await new Promise((r) => setTimeout(r, 20));
+      expect(getNamespacedCustomObject.mock.calls.length).toBe(calls);
+      expect(await settled(failed)).toBe(false);
+    });
+  });
 });

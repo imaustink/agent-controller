@@ -48,6 +48,10 @@ type AgentRunReconciler struct {
 	// deliberately no "keep forever" setting, since that is the behaviour that
 	// let credential-bearing Secrets accumulate indefinitely.
 	Retention time.Duration
+	// PodReader reads a failed Job's pods to record why it failed (OOMKilled,
+	// Evicted, ...) -- see failedRunMessage. Uncached (mgr.GetAPIReader()) on
+	// purpose; nil falls back to the Job's own conditions.
+	PodReader client.Reader
 }
 
 // AgentNatsConfig is the NATS connection config injected into every agent Job.
@@ -66,6 +70,7 @@ type AgentNatsConfig struct {
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agents,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list
 
 // Reconcile mirrors ToolRunReconciler exactly, but for Agent invocations:
 // resolves the referenced Agent, launches the same hardened one-shot Job
@@ -215,6 +220,12 @@ func (r *AgentRunReconciler) syncJobStatus(ctx context.Context, run *toolv1alpha
 	}
 
 	phase, message := jobPhase(&job, run.Status.Message)
+	if phase == toolv1alpha1.ToolRunPhaseFailed {
+		var err error
+		if message, err = failedRunMessage(ctx, r.PodReader, &job, run.Status.Phase, run.Status.Message); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	if phase == run.Status.Phase && job.Status.StartTime == nil {
 		return ctrl.Result{}, nil

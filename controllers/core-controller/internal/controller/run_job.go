@@ -17,14 +17,19 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 )
@@ -305,12 +310,144 @@ func jobPhase(job *batchv1.Job, currentMessage string) (toolv1alpha1.ToolRunPhas
 	case job.Status.Succeeded > 0:
 		return toolv1alpha1.ToolRunPhaseSucceeded, "Job completed successfully"
 	case job.Status.Failed > 0:
-		return toolv1alpha1.ToolRunPhaseFailed, "Job failed (see Job/Pod events for detail)"
+		return toolv1alpha1.ToolRunPhaseFailed, genericJobFailedMessage
 	case job.Status.Active == 0 && job.Status.StartTime == nil:
 		return toolv1alpha1.ToolRunPhasePending, currentMessage
 	default:
 		return toolv1alpha1.ToolRunPhaseRunning, currentMessage
 	}
+}
+
+const genericJobFailedMessage = "Job failed (see Job/Pod events for detail)"
+
+// podListRetryWindow is how long after a Job fails a run is held back from
+// Failed while its pods can't be listed. See failedRunMessage.
+const podListRetryWindow = time.Minute
+
+// failedRunMessage is the status message for a run whose Job has failed: the
+// concrete cause when describeJobFailure can find one, else the generic
+// message. It is derived once, on the transition to Failed: both run
+// reconcilers return early for a terminal run, so whatever is recorded then is
+// final. (The previousPhase guard is a backstop for that, not the mechanism.)
+//
+// Because there is only that one chance, a pod List error returns an error --
+// requeueing the reconcile with backoff instead of recording Failed -- rather
+// than locking in the generic message while the pod, which outlives the Job by
+// its TTL, could still say it was OOMKilled. Only within podListRetryWindow of
+// the Job's failure, though: a persistent error (e.g. missing RBAC) must not
+// hold the run in Running forever, so past the window it falls back to what
+// the Job's own conditions say.
+//
+// podReader should be uncached (mgr.GetAPIReader()): listing pods through the
+// manager's cached client would start a cluster-wide pod informer just to read
+// one pod on the rare failure path. Nil skips the pod lookup.
+func failedRunMessage(ctx context.Context, podReader client.Reader, job *batchv1.Job, previousPhase toolv1alpha1.ToolRunPhase, previousMessage string) (string, error) {
+	if previousPhase == toolv1alpha1.ToolRunPhaseFailed {
+		return previousMessage, nil
+	}
+	var pods []corev1.Pod
+	if podReader != nil {
+		var list corev1.PodList
+		if err := podReader.List(ctx, &list, client.InNamespace(job.Namespace), client.MatchingLabels{"job-name": job.Name}); err != nil {
+			if failedAt := jobFailedAt(job); !failedAt.IsZero() && time.Since(failedAt) < podListRetryWindow {
+				return "", fmt.Errorf("listing pods of failed Job %q: %w", job.Name, err)
+			}
+			// Out of retries: the Job's own Failed condition may still say something.
+			logf.FromContext(ctx).Error(err, "Could not list Pods of failed Job", "job", job.Name)
+		} else {
+			pods = list.Items
+		}
+	}
+	if detail := describeJobFailure(job, pods); detail != "" {
+		return "Job failed: " + detail, nil
+	}
+	return genericJobFailedMessage, nil
+}
+
+// jobFailedAt is when the Job was marked failed, from its Failed (or, on
+// Kubernetes versions that set it first, FailureTarget) condition; zero if it
+// carries neither, in which case failedRunMessage doesn't hold the run back.
+func jobFailedAt(job *batchv1.Job) time.Time {
+	var at time.Time
+	for _, cond := range job.Status.Conditions {
+		if (cond.Type == batchv1.JobFailed || cond.Type == batchv1.JobFailureTarget) && cond.Status == corev1.ConditionTrue {
+			if t := cond.LastTransitionTime.Time; at.IsZero() || t.Before(at) {
+				at = t
+			}
+		}
+	}
+	return at
+}
+
+// describeJobFailure explains why a failed Job failed, from its pods'
+// termination state and the Job's own Failed condition -- e.g. `container
+// "run" was OOMKilled (exit code 137, memory limit 4Gi)`. Without it the cause
+// lived only in pod status and events, both gone within minutes of the Job's
+// TTL, so an OOM kill was indistinguishable from any other crash. Returns ""
+// when nothing specific is known.
+func describeJobFailure(job *batchv1.Job, pods []corev1.Pod) string {
+	var parts []string
+	for i := range pods {
+		pod := &pods[i]
+		if pod.Status.Reason != "" {
+			// Pod-level failures: Evicted (node pressure or an
+			// ephemeral-storage limit), DeadlineExceeded, ...
+			part := "pod " + pod.Status.Reason
+			if pod.Status.Message != "" {
+				part += ": " + pod.Status.Message
+			}
+			parts = append(parts, part)
+		}
+		limits := map[string]corev1.ResourceList{}
+		for _, c := range pod.Spec.InitContainers {
+			limits[c.Name] = c.Resources.Limits
+		}
+		for _, c := range pod.Spec.Containers {
+			limits[c.Name] = c.Resources.Limits
+		}
+		statuses := append(append([]corev1.ContainerStatus{}, pod.Status.InitContainerStatuses...), pod.Status.ContainerStatuses...)
+		for _, cs := range statuses {
+			term := cs.State.Terminated
+			if term == nil {
+				term = cs.LastTerminationState.Terminated
+			}
+			if term == nil || (term.ExitCode == 0 && term.Reason != "OOMKilled") {
+				continue
+			}
+			reason := term.Reason
+			if reason == "" {
+				reason = "terminated"
+			}
+			detail := fmt.Sprintf("exit code %d", term.ExitCode)
+			if term.Signal != 0 {
+				detail += fmt.Sprintf(", signal %d", term.Signal)
+			}
+			if reason == "OOMKilled" {
+				if mem, ok := limits[cs.Name][corev1.ResourceMemory]; ok {
+					detail += ", memory limit " + mem.String()
+				}
+			}
+			parts = append(parts, fmt.Sprintf("container %q was %s (%s)", cs.Name, reason, detail))
+		}
+	}
+	for _, cond := range job.Status.Conditions {
+		if cond.Type != batchv1.JobFailed || cond.Status != corev1.ConditionTrue {
+			continue
+		}
+		// BackoffLimitExceeded only restates "a pod failed" (backoffLimit is
+		// 0), so it's worth reporting only when no pod explained the failure.
+		if cond.Reason == "BackoffLimitExceeded" && len(parts) > 0 {
+			continue
+		}
+		part := cond.Reason
+		if cond.Message != "" {
+			part += ": " + cond.Message
+		}
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 func toCoreResourceRequirements(spec toolv1alpha1.ResourceRequirements) (corev1.ResourceRequirements, error) {

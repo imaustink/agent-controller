@@ -39,6 +39,11 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs/status"]
     verbs: ["get"]
+  # A failed run Job's pods, read once to record why it failed (OOMKilled,
+  # Evicted, ...) in the run's status message -- run_job.go failedRunMessage.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
   - apiGroups: ["core.controller-agent.dev"]
     resources: ["tools", "skills", "agents", "toolruns", "agentruns", "localtools", "integrationroutes", "identityproviders", "connections", "corpora", "knowledgebases"]
     verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]

@@ -99,14 +99,7 @@ spec:
       {{- end }}
   {{- end }}
   resources:
-    requests:
-      cpu: "500m"
-      memory: "512Mi"
-      ephemeral-storage: "2Gi"
-    limits:
-      cpu: "2"
-      memory: "2Gi"
-      ephemeral-storage: "8Gi"
+    {{- toYaml .Values.claudeCodeSweAgent.resources | nindent 4 }}
   orchestratorPrompt: |
     Delegate to this agent for any software-engineering request AND for any
     question that requires actually looking at a GitHub repository's
@@ -186,8 +179,15 @@ spec:
         name: {{ .Values.claudeCodeSweAgent.secretName }}
         key: {{ .Values.claudeCodeSweAgent.githubAppInstallationIdSecretKey }}
     {{- end }}
-  {{- if or .Values.claudeCodeSweAgent.identityLink.enabled .Values.claudeCodeSweAgent.githubAppSlug .Values.claudeCodeSweAgent.model .Values.claudeCodeSweAgent.remoteControl.enabled }}
+  {{- if or .Values.claudeCodeSweAgent.identityLink.enabled .Values.claudeCodeSweAgent.githubAppSlug .Values.claudeCodeSweAgent.model .Values.claudeCodeSweAgent.remoteControl.enabled .Values.claudeCodeSweAgent.goMemLimit }}
   env:
+    {{- if .Values.claudeCodeSweAgent.goMemLimit }}
+    # Inherited by every Go tool Claude runs in the repo (go build/test,
+    # golangci-lint...), which otherwise size their heap to the NODE's memory
+    # and GC far too late for the container's limit.
+    - name: GOMEMLIMIT
+      value: {{ .Values.claudeCodeSweAgent.goMemLimit | quote }}
+    {{- end }}
     {{- if .Values.claudeCodeSweAgent.identityLink.enabled }}
     - name: GITHUB_IDENTITY_DELEGATION
       value: "true"

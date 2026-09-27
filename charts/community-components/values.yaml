@@ -316,6 +316,27 @@ claudeCodeSweAgent:
   # Claude Code model id/alias (e.g. "sonnet", "claude-sonnet-5"). Empty uses
   # the CLI's own default.
   model: ""
+  # The run pod's resources. Memory is the binding constraint: the limit covers
+  # the agent, the `claude` CLI, AND every build/test/lint process Claude runs
+  # in the cloned repo (tsc, go build, golangci-lint...). At the old 2Gi limit
+  # a golangci-lint run alone reached 1.4Gi RSS and the kernel OOM-killed the
+  # whole container -- which the orchestrator only sees as the agent going
+  # silent. The request is kept high enough that the scheduler won't pack a
+  # run onto a node without room for it to grow toward the limit.
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+      ephemeral-storage: "8Gi"
+  # GOMEMLIMIT for Go tools run inside the pod: a soft heap target, so they GC
+  # hard before the container's memory limit rather than after it. ~75% of
+  # resources.limits.memory, leaving room for claude/node and non-Go
+  # processes -- keep the two in step. Go syntax (GiB/MiB). "" omits it.
+  goMemLimit: "3GiB"
   # Per-user identity linking. `providers` may list "github" (docs/adr/0022,
   # same semantics as opencodeSweAgent.identityLink above -- a per-user
   # GitHub token gates/attributes writes) AND/OR "claude" (docs/adr/0027 --
