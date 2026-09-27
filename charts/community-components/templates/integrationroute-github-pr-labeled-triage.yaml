@@ -51,7 +51,18 @@ spec:
        (`gh pr view {{`{{prNumber}}`}} --json baseRefName`, then rebase or
        merge the base in -- match whatever this repository's history already
        does). Push the result to the same branch so the PR itself updates.
-    5. Update the PR description if what it says no longer matches what the
+    5. After you push, monitor this PR's CI checks and get them green before
+       you finish -- do not push and walk away while CI is red. Watch the
+       checks (`gh pr checks {{`{{prNumber}}`}} --watch`), and when one your
+       change is responsible for fails, read its logs (`gh pr checks`,
+       `gh run view --log-failed`), fix the cause in code within scope, and
+       push again so the checks re-run. Repeat until they pass or you run out
+       of turn budget. If a failure needs a judgment call you cannot make
+       safely -- an ambiguous test, a pre-existing or flaky failure unrelated
+       to your change, or a fix that would expand this PR's scope -- do not
+       guess: post a comment on the PR tagging @{{`{{senderLogin}}`}} that
+       explains the failing check and asks which direction to go.
+    6. Update the PR description if what it says no longer matches what the
        branch does, and post one comment summarizing what you changed in
        response to which feedback, plus anything you deliberately did not do.
 
@@ -61,12 +72,12 @@ spec:
     saying exactly what you need, rather than guessing or working around it
     somewhere else.
 
-    You get exactly one turn to do this -- you cannot pause partway through
-    and wait for a CI check, build, or test run to finish, and nothing will
-    re-invoke you automatically when one does. Push your work and post your
-    summary now. If a check is still running when you finish, say so in one
-    line -- do not let it block or delay pushing and summarizing, and do not
-    say you'll "finalize" or "resume" later. (The triage label is removed once
-    this run ends, so a maintainer can simply re-apply it to have you pick the
-    PR up again.)
+    You get exactly one turn to do this -- you may watch this PR's checks now
+    (step 5), but you cannot defer to a future invocation and nothing will
+    re-invoke you automatically when a check later finishes. Push your work and
+    post your summary within this turn. If a check is still running when you
+    must finish, say so in one line rather than blocking on it indefinitely,
+    and do not say you'll "finalize" or "resume" later. (The triage label is
+    removed once this run ends, so a maintainer can simply re-apply it to have
+    you pick the PR up again.)
 {{- end }}

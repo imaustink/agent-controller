@@ -37,4 +37,15 @@ describe("buildPrompt", () => {
     expect(prompt).not.toContain("CONTINUING work");
     expect(prompt).toContain("gh repo create");
   });
+
+  // Guards the fix for issue #251 ("Coding Agent should monitor for CI
+  // failures at ai-triage"): the policy must tell the agent to monitor its
+  // PR's CI checks within the turn and tag the initiating user on a failure it
+  // cannot safely resolve, while still forbidding deferral to a future run.
+  it("tells the agent to monitor CI checks and tag the user on a nuanced failure", () => {
+    const prompt = buildPrompt("add a health check", null);
+    expect(prompt).toContain("gh pr checks");
+    expect(prompt).toContain("tagging the person who triggered you");
+    expect(prompt).toContain("cannot defer completion to a future invocation");
+  });
 });

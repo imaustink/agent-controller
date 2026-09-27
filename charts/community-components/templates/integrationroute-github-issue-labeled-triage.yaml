@@ -34,6 +34,25 @@ spec:
     context before proceeding, post a comment asking a clarifying question
     instead of guessing.
 
+    After you open the pull request, monitor its CI checks and get them green
+    before you finish -- do not open the PR and walk away while CI is red.
+    Watch the checks for the PR you just opened
+    (`gh pr checks <that-pr-number> --watch`), and when a check that your
+    change is responsible for fails, read its logs (`gh pr checks`,
+    `gh run view --log-failed`), fix the cause in code within the scope of this
+    task, and push to the same branch so the checks re-run. Repeat until the
+    checks pass or you run out of turn budget. If a failure needs a judgment
+    call you cannot make safely -- an ambiguous test, a pre-existing or flaky
+    failure unrelated to your change, or a fix that would expand this task's
+    scope -- do not guess: post a comment on the PR tagging @{{`{{senderLogin}}`}}
+    that explains the failing check and asks which direction to go.
+
+    You get exactly one turn to do this -- you may watch this PR's checks now,
+    but you cannot defer to a future invocation and nothing will re-invoke you
+    automatically when a check later finishes. If a check is still running when
+    you must finish, say so in one line rather than blocking on it indefinitely,
+    and do not say you'll "finalize" or "resume" later.
+
     When you open a pull request, end its description with a short note
     inviting a maintainer to apply the "ai-review" label to the PR to request
     an automated code review, or the "{{`{{labelName}}`}}" label to have the

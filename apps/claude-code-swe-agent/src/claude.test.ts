@@ -72,4 +72,34 @@ describe("buildPrompt", () => {
       });
     }
   });
+
+  // Guards the fix for issue #251 ("Coding Agent should monitor for CI
+  // failures at ai-triage"): the fixed policy must tell the agent to monitor
+  // its PR's CI checks within the turn, fix failures its change caused, and --
+  // when a failure needs a judgment call it cannot make safely -- comment on
+  // the PR tagging the initiating user rather than guessing. It must still
+  // forbid deferring completion to a future invocation.
+  describe("CI monitoring guardrails (issue #251)", () => {
+    for (const marker of [
+      null,
+      { repo: "acme/widgets", branch: "feature/x", pr: "9", session: "ses_1" },
+    ] as const) {
+      const label = marker ? "on a continuation turn" : "on a fresh turn";
+
+      it(`tells the agent to monitor CI checks on its PR ${label}`, () => {
+        const prompt = buildPrompt("do the thing", marker);
+        expect(prompt).toContain("gh pr checks");
+      });
+
+      it(`tells the agent to tag the initiating user on a nuanced failure ${label}`, () => {
+        const prompt = buildPrompt("do the thing", marker);
+        expect(prompt).toContain("tagging the person who triggered you");
+      });
+
+      it(`still forbids deferring completion to a future invocation ${label}`, () => {
+        const prompt = buildPrompt("do the thing", marker);
+        expect(prompt).toContain("cannot defer completion to a future invocation");
+      });
+    }
+  });
 });

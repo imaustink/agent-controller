@@ -384,7 +384,9 @@ GitHub Issues adapter, actionable ONLY on an explicit label application:
 - **`issues.labeled` → two triggers on one event, split by label (ADR 0024).**
   The gateway acts on a labeled issue when the label is either the **trigger
   label** (`GATEWAY_GITHUB_TRIGGER_LABEL`, e.g. `"ai-triage"`) — triage the
-  issue: investigate and open a PR — or the **review label**
+  issue: investigate, open a PR, then monitor that PR's CI checks within the
+  turn and fix what its change broke (tagging the initiating user on any
+  failure it can't safely resolve) — or the **review label**
   (`GATEWAY_GITHUB_REVIEW_LABEL`, e.g. `"ai-review"`, the same label PR review
   uses) — review the proposal/spec in the issue, changing nothing. Either way
   the gateway calls `/invoke` with an `event` descriptor (`{ source: "github",
@@ -415,8 +417,10 @@ GitHub Issues adapter, actionable ONLY on an explicit label application:
     the same label issue triage uses) — pick the PR back up: read the reviews,
     comments and failing checks on it, address that feedback in code, sync the
     branch with its base (resolving conflicts), push to the PR's own branch,
-    and summarize. "Triage this" means the same thing on both kinds; what got
-    labeled decides whether that is *open* a PR or *update* one.
+    monitor the CI checks within the turn and get them green (tagging the
+    initiating user on any failure it can't safely resolve), and summarize.
+    "Triage this" means the same thing on both kinds; what got labeled decides
+    whether that is *open* a PR or *update* one.
 
   Both send an `event` descriptor of `{ source: "github", event:
   "pull_request", action: "labeled", owner, repo, prNumber, title, body,
