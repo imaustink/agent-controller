@@ -1,0 +1,253 @@
+# In-cluster stand-in for Slack's Web API.
+#
+# Same reasoning and shape as fake-confluence: a corpus has to be synced FROM
+# somewhere, and a real workspace is the one dependency this suite cannot make
+# deterministic. Reached through the broker's `SLACK_API_ORIGIN` seam.
+#
+# The fixture exists to make three things observable that no other fake here
+# can express:
+#
+#   AUTO-JOIN. #eng refuses the bot with `not_in_channel` until it calls
+#   conversations.join, which is the one WRITE any driver performs. The refusal
+#   is real, the join is recorded, and the second read succeeds — so a spec can
+#   assert the lazy join happened rather than that a flag was set.
+#
+#   A SECOND IDENTITY. Slack tokens differ in what they can see, so the deny
+#   path stops being "only as tested as the one account we had". #leads is
+#   visible to one user and not the other.
+#
+#   TOKEN TYPE. search.messages refuses a BOT token with
+#   `not_allowed_token_type` — verified against the real workspace — which is
+#   why live lookup is user-token-only by Slack's design rather than by scope.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fake-slack
+  labels: { app: fake-slack, e2e: "true" }
+data:
+  server.js: |
+    const http = require("node:http");
+
+    const BOT = "e2e-slack-bot";
+    const USER_FULL = "e2e-slack-user-full";
+    const USER_LIMITED = "e2e-slack-user-limited";
+
+    const CHANNELS = {
+      CENG: { id: "CENG", name: "eng" },
+      CLEADS: { id: "CLEADS", name: "leads" },
+    };
+
+    // Who can see what. The bot sees both once joined; the limited user never
+    // sees #leads, which is what makes the probe load-bearing.
+    const VISIBLE = {
+      [BOT]: ["CENG", "CLEADS"],
+      [USER_FULL]: ["CENG", "CLEADS"],
+      [USER_LIMITED]: ["CENG"],
+    };
+
+    // Channels the bot has been invited to. #eng starts NOT joined, so the
+    // first read is refused and the driver must join.
+    const joined = new Set(["CLEADS"]);
+
+    const USERS = {
+      UADA: { id: "UADA", profile: { display_name: "ada" } },
+      UGRACE: { id: "UGRACE", profile: { display_name: "grace" } },
+    };
+
+    const MESSAGES = {
+      CENG: [
+        {
+          ts: "1700000001.000100",
+          user: "UADA",
+          text: "Deploys go out from the release branch. Roll back with the previous image tag.",
+          reply_count: 2,
+        },
+        {
+          ts: "1700000002.000200",
+          user: "UGRACE",
+          text: "Reminder: <@UADA> owns the deploy rota this week.",
+        },
+      ],
+      CLEADS: [
+        {
+          ts: "1700000003.000300",
+          user: "UGRACE",
+          text: "Compensation review opens next Monday.",
+        },
+        // Deliberately shares a term with #eng, so a bounded search has
+        // something real to EXCLUDE. Without it the bound is untestable: a
+        // scoped search returning only scoped hits proves nothing when no
+        // other channel could have matched anyway.
+        {
+          ts: "1700000004.000400",
+          user: "UGRACE",
+          text: "Deploys are frozen during the compensation review.",
+        },
+      ],
+    };
+
+    // Replies, keyed by parent ts. A thread is the indexed unit.
+    const REPLIES = {
+      "1700000001.000100": [
+        { ts: "1700000001.000101", user: "UGRACE", text: "Do we need a change ticket first?" },
+        { ts: "1700000001.000102", user: "UADA", text: "Only for a schema migration." },
+        // A join event, which must never be indexed as prose.
+        { ts: "1700000001.000103", user: "UADA", subtype: "channel_join", text: "has joined the channel" },
+      ],
+    };
+
+    const requests = [];
+
+    function ok(res, body) {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, ...body }));
+    }
+    function err(res, error) {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error }));
+    }
+
+    function bearer(req) {
+      const header = req.headers.authorization ?? "";
+      return header.startsWith("Bearer ") ? header.slice(7) : "";
+    }
+
+    function canSee(token, channel) {
+      return (VISIBLE[token] ?? []).includes(channel);
+    }
+
+    http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const url = new URL(req.url, "http://fake-slack");
+        const token = bearer(req);
+        const params = new URLSearchParams(url.search);
+        requests.push({ path: url.pathname, token, query: url.search });
+
+        if (url.pathname === "/healthz") return ok(res, {});
+        if (url.pathname === "/_e2e/requests") {
+          return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(requests));
+        }
+        if (url.pathname === "/_e2e/joined") {
+          return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify([...joined]));
+        }
+        if (url.pathname === "/_e2e/reset") {
+          requests.length = 0;
+          joined.clear();
+          joined.add("CLEADS");
+          return ok(res, {});
+        }
+
+        if (![BOT, USER_FULL, USER_LIMITED].includes(token)) return err(res, "invalid_auth");
+
+        const channel = params.get("channel");
+        const method = url.pathname.replace("/api/", "");
+
+        if (method === "conversations.info") {
+          if (!canSee(token, channel)) return err(res, "channel_not_found");
+          return ok(res, { channel: CHANNELS[channel] });
+        }
+
+        if (method === "conversations.join") {
+          // The one WRITE. Only a bot token may perform it.
+          if (token !== BOT) return err(res, "not_allowed_token_type");
+          if (!CHANNELS[channel]) return err(res, "channel_not_found");
+          joined.add(channel);
+          return ok(res, { channel: CHANNELS[channel] });
+        }
+
+        if (method === "conversations.history" || method === "conversations.replies") {
+          if (!canSee(token, channel)) return err(res, "channel_not_found");
+          // Membership is the access unit. A bot outside the channel is
+          // refused exactly as Slack refuses it, which is what the lazy join
+          // exists to recover from.
+          if (token === BOT && !joined.has(channel)) return err(res, "not_in_channel");
+
+          if (method === "conversations.history") {
+            return ok(res, { messages: MESSAGES[channel] ?? [], has_more: false });
+          }
+          const ts = params.get("ts");
+          const parent = (MESSAGES[channel] ?? []).find((m) => m.ts === ts);
+          if (!parent) return err(res, "thread_not_found");
+          return ok(res, { messages: [parent, ...(REPLIES[ts] ?? [])] });
+        }
+
+        if (method === "users.info") {
+          const user = USERS[params.get("user")];
+          return user ? ok(res, { user }) : err(res, "user_not_found");
+        }
+
+        if (method === "search.messages") {
+          // Verified against the real workspace: a bot token cannot search at
+          // all, whatever scopes it holds.
+          if (token === BOT) return err(res, "not_allowed_token_type");
+
+          const query = params.get("query") ?? "";
+          // `in:#name` is how Slack bounds a search, and the NAME is mutable —
+          // which is why the driver filters the results by channel id after.
+          const wanted = /in:#(\S+)/.exec(query)?.[1];
+          const terms = query.replace(/in:#\S+/g, "").trim().toLowerCase();
+
+          const matches = [];
+          for (const [id, msgs] of Object.entries(MESSAGES)) {
+            if (!canSee(token, id)) continue;
+            if (wanted && CHANNELS[id].name !== wanted) continue;
+            for (const m of msgs) {
+              if (terms && !m.text.toLowerCase().includes(terms)) continue;
+              matches.push({
+                ts: m.ts,
+                text: m.text,
+                user: m.user,
+                channel: { id, name: CHANNELS[id].name },
+                permalink: `https://fake.slack.com/archives/${id}/p${m.ts.replace(".", "")}`,
+              });
+            }
+          }
+          return ok(res, { messages: { total: matches.length, matches } });
+        }
+
+        err(res, `unstubbed_method_${method}`);
+      });
+    }).listen(Number(process.env.PORT ?? 8080), () =>
+      // PORT so the fidelity specs can run several fakes side by side; the
+      // cluster leaves it unset and takes 8080, which the Service targets.
+      console.log("fake-slack listening"),
+    );
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-slack
+  labels: { app: fake-slack, e2e: "true" }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: fake-slack }
+  template:
+    metadata:
+      labels: { app: fake-slack, e2e: "true" }
+    spec:
+      containers:
+        - name: server
+          image: node:22-alpine
+          command: ["node", "/srv/server.js"]
+          ports: [{ containerPort: 8080, name: http }]
+          volumeMounts: [{ name: script, mountPath: /srv }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+      volumes:
+        - name: script
+          configMap: { name: fake-slack }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-slack
+  labels: { app: fake-slack, e2e: "true" }
+spec:
+  selector: { app: fake-slack }
+  ports: [{ port: 80, targetPort: http, name: http }]

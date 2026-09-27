@@ -224,7 +224,11 @@ data:
 
         json(res, 404, { message: `unstubbed: ${path}` });
       });
-    }).listen(8080, () => console.log("fake-confluence on :8080"));
+    }).listen(Number(process.env.PORT ?? 8080), () =>
+      // PORT so the fidelity specs can run several fakes side by side; the
+      // cluster leaves it unset and takes 8080, which the Service targets.
+      console.log("fake-confluence listening"),
+    );
 ---
 apiVersion: apps/v1
 kind: Deployment
