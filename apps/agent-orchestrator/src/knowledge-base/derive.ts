@@ -1,6 +1,7 @@
 import type { SkillAccess } from "../skills/types.js";
 import {
-  corpusGetToolId,
+  knowledgeBaseLookupToolId,
+  knowledgeBaseReadToolId,
   connectionLabel,
   knowledgeBaseLabel,
   knowledgeBaseSearchToolId,
@@ -44,17 +45,31 @@ export function deriveKnowledgeBaseSkill(
 ): SkillAccess {
   const resolved: CorpusDescriptor[] = [];
   const roles = new Set<string>();
-  const getToolIds: string[] = [];
+  // WHETHER any member can serve a per-user read — not one id each. The live
+  // faces are one per knowledge base now, with the corpus travelling in the
+  // input, so a member with an API face contributes its ROLES and nothing to
+  // this list.
+  let readable = false;
 
   for (const ref of kb.corpusRefs) {
     const connection = connections.get(ref);
     if (!connection) continue;
     resolved.push(connection);
     for (const role of connection.allowedRoles) roles.add(role);
-    if (connection.apiEnabled) getToolIds.push(corpusGetToolId(connection.id));
+    if (connection.apiEnabled && connection.identityProviders?.length) readable = true;
   }
 
-  getToolIds.sort();
+  // A skill can only reach the tools it lists, so this is what decides whether
+  // the planner can call them at all.
+  //
+  // It listed `corpus:<member>/get` per member — an id nothing has generated
+  // since the per-member read tools were collapsed into one — and omitted both
+  // faces that ARE generated. The effect was a knowledge base that could
+  // search and could never read or look anything up, with the skill pointing
+  // at a tool that did not exist.
+  const liveToolIds = readable
+    ? [knowledgeBaseReadToolId(kb.id), knowledgeBaseLookupToolId(kb.id)]
+    : [];
 
   return {
     skill: {
@@ -62,10 +77,7 @@ export function deriveKnowledgeBaseSkill(
       name: knowledgeBaseLabel(kb),
       description: knowledgeBaseEmbeddingDescription(kb),
       markdown: knowledgeBaseMarkdown(kb, resolved),
-      toolIds: [
-        knowledgeBaseSearchToolId(kb.id),
-        ...getToolIds,
-      ],
+      toolIds: [knowledgeBaseSearchToolId(kb.id), ...liveToolIds],
       agentIds: [],
     },
     // Never null: null means unrestricted, and a knowledge base whose members

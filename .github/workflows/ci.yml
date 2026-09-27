@@ -220,6 +220,14 @@ jobs:
       - name: e2e/specs/fake-confluence-fidelity.e2e.ts
         run: npm run e2e -w e2e -- specs/fake-confluence-fidelity.e2e.ts
 
+      # The fourth, and the cheapest. YAML discards a duplicate mapping key
+      # silently, so appending a block to a values file that already has that
+      # key deletes everything under the first one — which shipped here, and
+      # surfaced three layers away as an orchestrator claiming a variable was
+      # unset that was plainly set.
+      - name: e2e/specs/values-duplicate-keys.e2e.ts
+        run: npm run e2e -w e2e -- specs/values-duplicate-keys.e2e.ts
+
   core-controller:
     name: Go core-controller (lint, test, build)
     runs-on: ubuntu-latest

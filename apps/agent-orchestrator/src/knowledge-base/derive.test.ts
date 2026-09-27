@@ -94,15 +94,37 @@ describe("deriveKnowledgeBaseSkill", () => {
     expect(effectiveRoles).not.toBeNull();
   });
 
-  it("generates search, and GET only for api-enabled members", () => {
+  it("lists the indexed search and BOTH live faces", () => {
     const { skill } = deriveKnowledgeBaseSkill(globexKb(), globexConnections());
 
-    // No `kb:globex/fetch`: whole-document fetch has no dispatch path yet, so the
+    // A skill can only reach the tools it lists, so this decides what the
+    // planner may call at all.
+    //
+    // This used to assert `corpus:globex-confluence/get` — one id per
+    // api-enabled member — and kept asserting it after those tools were
+    // collapsed into one per knowledge base. The test pinned an id nothing
+    // generated, which is how a knowledge base that could search and could
+    // never read or look anything up passed a full suite.
+    //
+    // No `kb:globex/fetch`: whole-document fetch has no dispatch path, so the
     // skill never steers the planner toward an unimplemented tool.
     expect(skill.toolIds).toEqual([
       "kb:globex/search",
-      "corpus:globex-confluence/get", // the only member with api.enabled
+      "kb:globex/read",
+      "kb:globex/lookup",
     ]);
+  });
+
+  it("lists no live face when no member can serve one", () => {
+    // Offering them would offer tools that always refuse: the live faces run
+    // as the CALLER and have no service-credential mode (docs/adr/0040).
+    const noApi = new Map(
+      [...globexConnections()].map(([id, c]) => [id, { ...c, apiEnabled: false }]),
+    );
+
+    const { skill } = deriveKnowledgeBaseSkill(globexKb(), noApi);
+
+    expect(skill.toolIds).toEqual(["kb:globex/search"]);
   });
 
   it("is deterministic, so an unchanged knowledge base does not churn the index", () => {

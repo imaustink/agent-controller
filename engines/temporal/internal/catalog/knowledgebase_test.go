@@ -213,9 +213,13 @@ func TestDeriveKnowledgeBaseSkill(t *testing.T) {
 
 		// No kb:globex/fetch: whole-document fetch has no dispatch path yet, so the
 		// skill never steers the planner toward an unimplemented tool.
+		// A skill can only reach the tools it LISTS, so this decides what the
+		// planner may call. The lookup id was generated, hidden and absent
+		// from here, which left the live search uncallable in both engines.
 		require.Equal(t, []string{
 			"kb:globex/search",
-			"kb:globex/read", // one read tool, because a member can serve one
+			"kb:globex/read",   // one read tool, because a member can serve one
+			"kb:globex/lookup", // and the live search beside it
 		}, skill.ToolIDs)
 	})
 

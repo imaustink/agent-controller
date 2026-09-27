@@ -270,8 +270,11 @@ func DeriveKnowledgeBaseSkill(kb KnowledgeBaseDescriptor, connections map[string
 		roles = append(roles, role)
 	}
 	sort.Strings(roles)
+	// BOTH live faces. A skill can only reach the tools it lists, so omitting
+	// the lookup id left it generated, hidden and uncallable — a knowledge base
+	// that could search its index and never ask the source what was there now.
 	if readable {
-		toolIDs = append(toolIDs, KnowledgeBaseReadToolID(kb.ID))
+		toolIDs = append(toolIDs, KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseLookupToolID(kb.ID))
 	}
 
 	skill := SkillDescriptor{
