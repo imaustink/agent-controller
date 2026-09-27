@@ -251,7 +251,18 @@ describe("retrieval, as the asking user", () => {
       { timeoutMs: 180_000 },
     );
 
-    expect(text.toLowerCase()).toMatch(/could not see|did not confirm|outside your access/);
+    // Matched on MEANING, not on the render template's wording. The caveat
+    // reaches the caller through a model that paraphrases: it answered "one
+    // passage was withheld due to access restrictions", which is the guarantee
+    // intact and none of the exact phrases this once required. Pinning the
+    // template made a faithful relay look like a failure.
+    //
+    // Still fails on an answer that discloses NOTHING, which is the property
+    // worth having (docs/adr/0040): a partial answer the caller believes is
+    // complete is the outcome a knowledge base exists to prevent.
+    expect(text.toLowerCase()).toMatch(
+      /withheld|could not see|did not confirm|outside your access|access restriction|not have access to (some|one|all)/,
+    );
   }, 300_000);
 });
 

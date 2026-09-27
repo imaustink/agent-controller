@@ -112,7 +112,8 @@ upsert e2e-integration-gateway-secrets \
   --from-literal=IDENTITY_LINK_STATE_SECRET="$(rand)" \
   --from-literal=GITHUB_APP_CLIENT_SECRET="e2e-not-a-real-secret" \
   --from-literal=GATEWAY_SENDER_ASSERTION_SECRET="$SENDER_ASSERTION_SECRET" \
-  --from-literal=GITHUB_TOKEN="e2e-not-a-real-token"
+  --from-literal=GITHUB_TOKEN="e2e-not-a-real-token" \
+  --from-literal=ATLASSIAN_CLIENT_SECRET="e2e-not-a-real-secret"
 
 # The HS256 secret a chat turn's forwarded-user JWT is signed with. Fixed, and
 # read back out of the cluster by e2e/support/chat.ts rather than duplicated
