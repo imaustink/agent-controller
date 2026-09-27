@@ -76,7 +76,6 @@ type SearchKnowledgeBaseOutput struct {
 	// knowledge base's sources require. The turn then asks them to, rather than
 	// answering from a corpus it could not check.
 	NeedsLink bool `json:"needsLink,omitempty"`
-
 }
 
 // SearchKnowledgeBase probes and renders one knowledge-base search.

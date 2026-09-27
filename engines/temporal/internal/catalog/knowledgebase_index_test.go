@@ -360,7 +360,6 @@ func mustGet(t *testing.T, store *recordingStore, id string) vectorstore.Record 
 	return rec
 }
 
-
 func TestLookupToolIsDistinctFromTheIndexedSearch(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
