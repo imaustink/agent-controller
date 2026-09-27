@@ -3,10 +3,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { createHmac } from "node:crypto";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createBrokerServer, DELEGATED_TOKEN_HEADER } from "../../apps/connection-broker/src/server.js";
 import { StaticCorpusRegistry } from "../../apps/connection-broker/src/registry.js";
+import { SlackDriver } from "../../apps/connection-broker/src/drivers/slack.js";
 import { HttpResourceSource } from "../../apps/connection-broker/src/sync/http-source.js";
 import { BrokerProber } from "../../apps/agent-orchestrator/src/knowledge-base/retrieve.js";
 import { CorpusReader } from "../../apps/agent-orchestrator/src/knowledge-base/reader.js";
@@ -281,5 +283,188 @@ describe("the Go engine addresses the same routes", () => {
       .find((line) => line.includes("StatusForbidden"));
     expect(denialLine).toBeDefined();
     expect(denialLine).not.toContain("StatusNotFound");
+  });
+});
+
+/**
+ * Webhook delivery, end to end through the real server.
+ *
+ * The only entry point a STRANGER can reach: it is authenticated by the
+ * provider's signature rather than by any token of ours, so the signature is
+ * the whole boundary between the internet and a broker that spends a client's
+ * credential on demand. Nothing else in this suite drives it.
+ *
+ * The fan-out is the other half. A provider signs and delivers per
+ * integration, so one delivery reaches however many Corpora cover what
+ * changed (ADR 0043 §4) — and must never reach a Corpus on a different
+ * Connection, even when the channel id happens to match.
+ */
+describe("webhook delivery", () => {
+  const SIGNING_SECRET = "e2e-webhook-secret";
+  const CONNECTION = "bitovi-slack";
+
+  /** Signed exactly as Slack signs, over the bytes as sent. */
+  function sign(rawBody: string, timestamp = Math.floor(Date.now() / 1000)) {
+    const mac = createHmac("sha256", SIGNING_SECRET)
+      .update(`v0:${timestamp}:${rawBody}`, "utf8")
+      .digest("hex");
+    return {
+      "x-slack-request-timestamp": String(timestamp),
+      "x-slack-signature": `v0=${mac}`,
+      "content-type": "application/json",
+    };
+  }
+
+  /** Two Corpora over ONE Connection, plus one over another. */
+  function slackServer(onChange: (corpus: string, ids: string[]) => void) {
+    const driver = {
+      provider: "slack",
+      validateScope: () => {},
+      list: vi.fn(),
+      fetch: vi.fn(),
+      probeGranularity: () => "connection" as const,
+      probe: vi.fn(),
+      parseWebhook: new SlackDriver({}).parseWebhook!.bind(new SlackDriver({})),
+    };
+
+    const corpus = (name: string, connection: string, channel: string) => ({
+      name,
+      connection,
+      driver: driver as never,
+      scope: { channel },
+      allowedRoles: ["reader"],
+      serviceToken: "bot",
+    });
+
+    return createBrokerServer({
+      auth: { orchestratorToken: "orch", syncTokens: new Map() },
+      registry: new StaticCorpusRegistry([
+        corpus("eng-a", CONNECTION, "CENG"),
+        corpus("eng-b", CONNECTION, "CENG"),
+        corpus("leads", CONNECTION, "CLEADS"),
+        // Same channel id, DIFFERENT Connection: a delivery signed by one
+        // workspace must not reach another's corpus.
+        corpus("other-workspace", "someone-else-slack", "CENG"),
+      ]),
+      webhooks: {
+        secretFor: (connection) => (connection === CONNECTION ? SIGNING_SECRET : undefined),
+        onChange,
+      },
+    });
+  }
+
+  let hookServer: Server;
+  let hookUrl: string;
+  let changes: { corpus: string; ids: string[] }[];
+
+  beforeEach(async () => {
+    changes = [];
+    hookServer = slackServer((corpus, ids) => changes.push({ corpus, ids }));
+    await new Promise<void>((resolve) => hookServer.listen(0, () => resolve()));
+    hookUrl = `http://127.0.0.1:${(hookServer.address() as AddressInfo).port}/connections/${CONNECTION}/webhook`;
+  });
+
+  afterEach(() => hookServer?.close());
+
+  const deliver = (body: unknown, headers?: Record<string, string>) => {
+    const raw = JSON.stringify(body);
+    return fetch(hookUrl, { method: "POST", headers: headers ?? sign(raw), body: raw });
+  };
+
+  const message = (channel: string) => ({
+    type: "event_callback",
+    event: { type: "message", channel, ts: "1700000001.000100" },
+  });
+
+  it("fans one delivery out to every Corpus covering that channel", async () => {
+    const res = await deliver(message("CENG"));
+
+    expect(res.status).toBe(202);
+    expect(changes.map((c) => c.corpus).sort()).toEqual(["eng-a", "eng-b"]);
+  });
+
+  it("never crosses to a Corpus on a different Connection", async () => {
+    // `other-workspace` scopes the SAME channel id. Routing by channel alone
+    // would deliver another workspace's event into a client's corpus.
+    await deliver(message("CENG"));
+
+    expect(changes.map((c) => c.corpus)).not.toContain("other-workspace");
+  });
+
+  it("leaves Corpora covering another channel alone", async () => {
+    await deliver(message("CLEADS"));
+
+    expect(changes.map((c) => c.corpus)).toEqual(["leads"]);
+  });
+
+  it("refuses a forged signature", async () => {
+    const raw = JSON.stringify(message("CENG"));
+    const res = await fetch(hookUrl, {
+      method: "POST",
+      headers: {
+        "x-slack-request-timestamp": String(Math.floor(Date.now() / 1000)),
+        "x-slack-signature": "v0=0000000000000000000000000000000000000000000000000000000000000000",
+        "content-type": "application/json",
+      },
+      body: raw,
+    });
+
+    expect(res.status).toBe(401);
+    expect(changes).toEqual([]);
+  });
+
+  it("refuses a replayed delivery, however well signed", async () => {
+    // A captured delivery is valid forever without this, and replaying it
+    // makes the broker spend a client's credential on demand.
+    const old = Math.floor(Date.now() / 1000) - 60 * 60;
+    const raw = JSON.stringify(message("CENG"));
+
+    const res = await fetch(hookUrl, { method: "POST", headers: sign(raw, old), body: raw });
+
+    expect(res.status).toBe(401);
+    expect(changes).toEqual([]);
+  });
+
+  it("refuses a body that was re-serialised after signing", async () => {
+    // The signature covers BYTES. A proxy that reformats JSON breaks it, and
+    // so does an attacker editing a captured payload.
+    const raw = JSON.stringify(message("CENG"));
+    const headers = sign(raw);
+
+    const res = await fetch(hookUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(JSON.parse(raw)) + " ",
+    });
+
+    expect(res.status).toBe(401);
+  });
+
+  it("answers a URL-verification handshake without acting", async () => {
+    const res = await deliver({ type: "url_verification", challenge: "abc" });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ acted: false });
+    expect(changes).toEqual([]);
+  });
+
+  it("accepts an event about a channel nobody indexes", async () => {
+    // The ORDINARY case — most events in a workspace concern channels no
+    // Corpus covers. Erroring would make the provider disable the endpoint.
+    const res = await deliver(message("CNOBODY"));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ acted: false });
+  });
+
+  it("is refused for a Connection with no signing secret", async () => {
+    const raw = JSON.stringify(message("CENG"));
+    const res = await fetch(
+      hookUrl.replace(CONNECTION, "someone-else-slack"),
+      { method: "POST", headers: sign(raw), body: raw },
+    );
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(changes).toEqual([]);
   });
 });
