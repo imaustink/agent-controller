@@ -18,6 +18,17 @@
 # planner) is created out-of-band by a human — see that script.
 
 temporal-engine:
+  # Knowledge bases (docs/adr/0039), served out of the connection-broker.
+  #
+  # ADR 0036 keeps the engines in parity, so a knowledge-base behaviour
+  # proven on one engine and never wired on the other is exactly the
+  # asymmetry this suite exists to catch — hence both, not one.
+  knowledgeBases:
+    enabled: true
+    brokerUrl: "http://agent-controller-connection-broker:8080"
+    brokerTokenSecret:
+      name: e2e-connection-broker-secrets
+      key: orchestratorToken
   # Points the worker/gateway at `e2e/manifests/temporal-dev-server.yaml`
   # (applied by `e2e/scripts/up.sh` before this release is deployed) instead of
   # the production default (a real `temporalio/helm-charts` release's frontend
@@ -280,6 +291,17 @@ integration-gateway:
     existingSecret: e2e-integration-gateway-secrets
 
 agent-orchestrator:
+  # Knowledge bases (docs/adr/0039), served out of the connection-broker.
+  #
+  # ADR 0036 keeps the engines in parity, so a knowledge-base behaviour
+  # proven on one engine and never wired on the other is exactly the
+  # asymmetry this suite exists to catch — hence both, not one.
+  knowledgeBases:
+    enabled: true
+    brokerUrl: "http://agent-controller-connection-broker:8080"
+    brokerTokenSecret:
+      name: e2e-connection-broker-secrets
+      key: orchestratorToken
   # The orchestrator's CLIENT side of the identity-link channel. Enabling it
   # only on the gateway (the server side) leaves the orchestrator with no
   # gateway configured at all -- `hasIdentityLinkGateway: false` in its
@@ -346,28 +368,6 @@ core-controller:
 # Both engines are told where the broker is. ADR 0036 keeps them in parity, so
 # a knowledge-base behaviour proven on one engine and never wired on the other
 # is exactly the asymmetry this suite exists to catch.
-agent-orchestrator:
-  knowledgeBases:
-    enabled: true
-    brokerUrl: "http://agent-controller-connection-broker:8080"
-    brokerTokenSecret:
-      name: e2e-connection-broker-secrets
-      key: orchestratorToken
-
-temporal-engine:
-  knowledgeBases:
-    enabled: true
-    brokerUrl: "http://agent-controller-connection-broker:8080"
-    brokerTokenSecret:
-      name: e2e-connection-broker-secrets
-      key: orchestratorToken
-
-# The connection-broker, and the knowledge-base pipeline that needs it.
-#
-# Off in the default values, deliberately — it is the process that holds every
-# client's third-party credentials. On here because the knowledge-base specs
-# cannot exercise anything without it, and a corpus that is never synced makes
-# every retrieval assertion vacuous.
 connection-broker:
   enabled: true
   qdrant:
