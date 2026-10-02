@@ -1,0 +1,65 @@
+# An MCPServer is an authenticated route to ONE Model Context Protocol server
+# (ADR 0045). The mcp-broker — the only component that speaks MCP — discovers
+# this server's tools into status.discoveredTools and materializes each EXPOSED
+# one as a derived MCPTool. The agent loop never sees MCP.
+#
+# Creating one is a PRIVILEGED operation: it introduces an externally-controlled
+# call path reachable by agents. Gate create/update via k8s RBAC.
+#
+# Two things are easy to get wrong:
+#
+#   exposure is default-DENY. A tool the server advertises is callable only
+#   because an entry below names it. An empty exposure exposes nothing, however
+#   many tools tools/list returns — which is the safe default, not a mistake.
+#
+#   identityProviders is the INVOCATION credential, resolved per call so a
+#   proxied tool runs as the user who asked. It is separate from secretEnv (the
+#   shared DISCOVERY credential used only for tools/list). If a caller's token
+#   cannot be resolved or has expired the call fails closed — it never falls
+#   back to the discovery credential.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: MCPServer
+metadata:
+  labels:
+    app.kubernetes.io/name: core-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: github-mcp
+spec:
+  # Only streamable-http is supported today: it is stateless per call, which is
+  # what lets each tools/call carry the caller's own token without a shared
+  # session. stdio and session-bound sse are deferred to a second auth mode.
+  transport: streamable-http
+  url: https://api.githubcopilot.com/mcp/
+  displayName: GitHub MCP
+
+  # The shared service credential the broker uses to LIST tools. Referenced from
+  # a Secret key in this namespace, never a literal. Omit for a server that
+  # needs no credential to enumerate its tools.
+  secretEnv:
+    - name: GITHUB_MCP_TOKEN
+      secretRef:
+        name: github-mcp-discovery
+        key: token
+
+  # The per-user delegated credential the broker presents on tools/call, named
+  # by IdentityProvider CR. A caller who has not linked this identity cannot
+  # invoke the server's tools.
+  identityProviders:
+    - github
+
+  # Default-deny exposure map: only these advertised tools become callable
+  # MCPTools, each with the roles the operator assigns here (never roles the
+  # server claims for itself).
+  exposure:
+    - remoteToolName: search_issues
+      allowedRoles:
+        - engineering
+        - support
+    - remoteToolName: get_pull_request
+      allowedRoles:
+        - engineering
+    # Listed but withdrawn for now; the role assignment stays on record.
+    - remoteToolName: create_issue
+      expose: false
+      allowedRoles:
+        - engineering

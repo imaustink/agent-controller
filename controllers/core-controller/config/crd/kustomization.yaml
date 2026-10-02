@@ -9,6 +9,8 @@ resources:
 - bases/core.controller-agent.dev_agentruns.yaml
 - bases/core.controller-agent.dev_connections.yaml
 - bases/core.controller-agent.dev_knowledgebases.yaml
+- bases/core.controller-agent.dev_mcpservers.yaml
+- bases/core.controller-agent.dev_mcptools.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
