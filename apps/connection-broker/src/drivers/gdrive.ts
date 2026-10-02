@@ -80,8 +80,19 @@ function effectiveMime(file: DriveFile): string {
  */
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
 
-/** Formats worth indexing as text without conversion. */
-const PLAIN_TEXT = new Set(["text/plain", "text/markdown", "text/csv", "application/json"]);
+/**
+ * Formats worth indexing as text without conversion — downloaded with alt=media
+ * and used verbatim. XML included: it is already text, so it needs no parser
+ * (unlike the zipped Office formats), and skipping it dropped real content.
+ */
+const PLAIN_TEXT = new Set([
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "application/json",
+  "text/xml",
+  "application/xml",
+]);
 
 /**
  * Google Drive driver (docs/adr/0038).
