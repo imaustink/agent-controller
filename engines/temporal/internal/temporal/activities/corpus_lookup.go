@@ -32,6 +32,8 @@ type LookupCorpusOutput struct {
 	// account, so the turn can ask instead of reporting an empty result that
 	// looks like "nothing found".
 	NeedsLink bool `json:"needsLink,omitempty"`
+	// LinkProviders are the providers to link when NeedsLink.
+	LinkProviders []string `json:"linkProviders,omitempty"`
 }
 
 // LookupCorpus searches the SOURCES live, as the calling user.
@@ -74,11 +76,12 @@ func (a *KnowledgeBaseActivities) LookupCorpus(
 	// whose Atlassian account can see a space may still not reach it through a
 	// corpus the operator scoped to other roles.
 	var (
-		hits      []lookupHit
-		unlinked  []string
-		refused   []string
-		searched  int
-		anyMember bool
+		hits          []lookupHit
+		unlinked      []string
+		unlinkedProvs = map[string]struct{}{}
+		refused       []string
+		searched      int
+		anyMember     bool
 	)
 	for _, member := range exec.Members {
 		if !holdsAnyRole(in.Caller.Roles, member.AllowedRoles) {
@@ -92,6 +95,9 @@ func (a *KnowledgeBaseActivities) LookupCorpus(
 		}
 		if credential.Token == "" {
 			unlinked = append(unlinked, member.Label)
+			for _, p := range member.IdentityProviders {
+				unlinkedProvs[p] = struct{}{}
+			}
 			continue
 		}
 
@@ -123,12 +129,15 @@ func (a *KnowledgeBaseActivities) LookupCorpus(
 	// Only ask for a link when nothing could be searched at all. Asking while
 	// two of three members answered would interrupt a turn that succeeded.
 	if searched == 0 && len(unlinked) > 0 {
+		providers := sortedKeys(unlinkedProvs)
+		base := fmt.Sprintf(
+			"I need you to link the account behind %s before I can search it live — "+
+				"this runs as you, not as the ingestion credential.",
+			strings.Join(unlinked, ", "))
 		return LookupCorpusOutput{
-			NeedsLink: true,
-			Result: fmt.Sprintf(
-				"I need you to link the account behind %s before I can search it live — "+
-					"this runs as you, not as the ingestion credential.",
-				strings.Join(unlinked, ", ")),
+			NeedsLink:     true,
+			LinkProviders: providers,
+			Result:        a.startLinks(ctx, in.Caller, providers, base),
 		}, nil
 	}
 
