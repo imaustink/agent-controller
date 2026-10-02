@@ -1,35 +1,19 @@
-import { cp, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
- * Copies the selected Claude Code skills from the image's read-only bundle
- * (`CLAUDE_SKILLS_DIR`, baked in by the Dockerfile at a pinned upstream
- * commit) into `$HOME/.claude/skills`, where the CLI discovers user-level
- * skills. Copied rather than symlinked: the files are tiny and a copy can't
- * be tripped up by how the CLI resolves links.
- *
- * Throws on a name that isn't in the bundle -- a typo in the Helm value
- * should fail the run loudly, not silently run without the skill.
+ * Names of the Claude Code skills installed under `$HOME/.claude/skills`.
+ * They're put there before this process starts, by the Agent CR's
+ * `install-claude-skills` init container (see the community-components
+ * chart's `claudeCodeSweAgent.skills`); a missing directory just means none.
  */
-export async function installSkills(opts: { sourceDir: string; homeDir: string; names: string[] }): Promise<string[]> {
-  if (opts.names.length === 0) return [];
-  let available: string[];
+export async function listInstalledSkills(homeDir: string): Promise<string[]> {
   try {
-    available = await readdir(opts.sourceDir);
+    const entries = await readdir(join(homeDir, ".claude", "skills"), { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   } catch {
-    throw new Error(`CLAUDE_SKILLS is set but the skills bundle ${opts.sourceDir} is missing from this image`);
+    return [];
   }
-  const unknown = opts.names.filter((name) => !available.includes(name));
-  if (unknown.length > 0) {
-    throw new Error(
-      `Unknown Claude Code skill(s) in CLAUDE_SKILLS: ${unknown.join(", ")} (available: ${available.sort().join(", ")})`,
-    );
-  }
-  const skillsDir = join(opts.homeDir, ".claude", "skills");
-  for (const name of opts.names) {
-    await cp(join(opts.sourceDir, name), join(skillsDir, name), { recursive: true });
-  }
-  return opts.names;
 }
 
 /**

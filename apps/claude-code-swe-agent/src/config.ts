@@ -98,14 +98,6 @@ export interface AgentToolConfig {
    */
   homeDir: string;
   /**
-   * Claude Code skills to install into `$HOME/.claude/skills` for this run
-   * (`CLAUDE_SKILLS`, comma-separated), picked from the bundle the image
-   * bakes in at `skillsSourceDir`. Empty installs none.
-   */
-  skills: string[];
-  /** Where the image's read-only skills bundle lives (`CLAUDE_SKILLS_DIR`). */
-  skillsSourceDir: string;
-  /**
    * When true, run turns via `claude --bg --remote-control` (see
    * claude-runner.ts's `runClaudeTurnRemoteControlled`) instead of the default
    * one-shot `claude -p`. Requires a separate Go/Helm phase's init container
@@ -188,11 +180,6 @@ export function loadToolConfig(env: NodeJS.ProcessEnv = process.env): AgentToolC
     githubApiUrl: env.GITHUB_API_URL ?? "https://api.github.com",
     workdir: env.SWE_WORKDIR ?? `/tmp/swe-${randomUUID()}`,
     homeDir: env.SWE_HOME ?? "/tmp/home",
-    skills: (env.CLAUDE_SKILLS ?? "")
-      .split(",")
-      .map((name) => name.trim())
-      .filter(Boolean),
-    skillsSourceDir: env.CLAUDE_SKILLS_DIR ?? "/opt/claude-skills",
     remoteControlEnabled: env.CLAUDE_REMOTE_CONTROL === "true",
     remoteControlIdleTimeoutMs: positiveInt(env.CLAUDE_REMOTE_CONTROL_IDLE_TIMEOUT_MS),
     remoteControlIdleStatusGraceMs: positiveInt(env.CLAUDE_REMOTE_CONTROL_IDLE_STATUS_GRACE_MS),

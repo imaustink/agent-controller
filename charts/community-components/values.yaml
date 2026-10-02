@@ -316,17 +316,23 @@ claudeCodeSweAgent:
   # Claude Code model id/alias (e.g. "sonnet", "claude-sonnet-5"). Empty uses
   # the CLI's own default.
   model: ""
-  # Claude Code skills to install for each run, by directory name under
-  # mattpocock/skills' skills/engineering/ (the image bakes in all of them at a
-  # pinned commit -- see the Dockerfile's MATT_SKILLS_SHA). An unknown name
-  # fails the run. Start a request with `/<skill> ...` to invoke one, e.g.
-  # "/implement the spec in acme/widgets#42"; `implement` can ONLY be invoked
-  # that way (it sets disable-model-invocation), and it calls tdd and
-  # code-review itself, so keep those alongside it. [] installs none.
+  # Claude Code skills, installed into the run's ~/.claude/skills by an init
+  # container that downloads `repo` at `ref` from GitHub and copies just the
+  # `names` directories found under `path`. Keep `ref` a commit SHA: a skill
+  # is instructions the agent follows, so a moving branch would change its
+  # behaviour with no chart change. An unknown name fails the run. Start a
+  # request with `/<skill> ...` to invoke one, e.g. "/implement the spec in
+  # acme/widgets#42"; `implement` can ONLY be invoked that way (it sets
+  # disable-model-invocation), and it calls tdd and code-review itself, so
+  # keep those alongside it. `names: []` skips the init container entirely.
   skills:
-    - implement
-    - tdd
-    - code-review
+    repo: mattpocock/skills
+    ref: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
+    path: skills/engineering
+    names:
+      - implement
+      - tdd
+      - code-review
   # The run pod's resources. Memory is the binding constraint: the limit covers
   # the agent, the `claude` CLI, AND every build/test/lint process Claude runs
   # in the cloned repo (tsc, go build, golangci-lint...). At the old 2Gi limit

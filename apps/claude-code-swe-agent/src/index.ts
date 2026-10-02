@@ -28,7 +28,7 @@ import {
 } from "./identityDelegation.js";
 import { GH_READ_TOKEN_ENV, GH_WRITE_TOKEN_ENV, installGhShim } from "./ghShim.js";
 import { clip } from "./security/redact.js";
-import { installSkills, splitSkillInvocation } from "./skills.js";
+import { listInstalledSkills, splitSkillInvocation } from "./skills.js";
 
 const toolConfig = loadToolConfig();
 
@@ -52,11 +52,7 @@ async function handler(session: AgentSession): Promise<AgentReply> {
 
   await ensureDir(toolConfig.homeDir);
   await ensureDir(toolConfig.workdir);
-  const installedSkills = await installSkills({
-    sourceDir: toolConfig.skillsSourceDir,
-    homeDir: toolConfig.homeDir,
-    names: toolConfig.skills,
-  });
+  const installedSkills = await listInstalledSkills(toolConfig.homeDir);
 
   if (toolConfig.remoteControlEnabled) {
     // A separate Go/Helm phase's init container is responsible for seeding
