@@ -18,8 +18,13 @@ metadata:
   labels:
     {{- include "temporal-engine.labels" . | nindent 4 }}
 rules:
+  # localtools is NOT optional here: RunWatch (internal/catalog/watch.go) watches
+  # LocalToolGVR unconditionally, so without this grant the informer's initial
+  # LIST 403s, WaitForCacheSync fails and catalog-sync crashloops. (The
+  # agent-orchestrator gates its localtools grant behind localTool.enabled
+  # because its watch is gated; this watcher's is not.)
   - apiGroups: ["core.controller-agent.dev"]
-    resources: ["tools", "skills", "agents"]
+    resources: ["tools", "skills", "agents", "localtools"]
     verbs: ["get", "list", "watch"]
   {{- if and .Values.knowledgeBases.enabled (eq $kbNs $catalogNs) }}
   # Knowledge bases (docs/adr/0039, 0043). A KnowledgeBase derives the Skill
