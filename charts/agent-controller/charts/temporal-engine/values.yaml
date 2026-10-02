@@ -170,6 +170,11 @@ gateway:
 # default, matching the broker's own default: the two are useless apart.
 knowledgeBases:
   enabled: false
+  # Namespace the KnowledgeBase/Corpus CRs live in. Empty = the catalog
+  # namespace. Set this (or the umbrella chart's global.knowledgeBaseNamespace)
+  # to read knowledge bases from a dedicated namespace; catalog-sync then watches
+  # them there and its KB read Role/RoleBinding move there too. Must already exist.
+  namespace: ""
   brokerUrl: "http://agent-controller-connection-broker:8080"
   # Must hold the SAME value as the broker's orchestratorTokenSecret.
   brokerTokenSecret:

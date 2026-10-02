@@ -31,3 +31,15 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 http://{{ .Release.Name }}-temporal-engine-gateway-callback.{{ .Release.Namespace }}.svc:8081
 {{- end -}}
 {{- end }}
+
+{{/*
+Namespace the catalog-sync watches Corpus/KnowledgeBase CRs in. Precedence:
+knowledgeBases.namespace, then the umbrella chart's global.knowledgeBaseNamespace,
+then the catalog namespace (catalog.namespace, else the release namespace).
+Mirrors agent-orchestrator's KNOWLEDGE_BASE_NAMESPACE so both engines can read
+knowledge bases from a namespace of their own.
+*/}}
+{{- define "temporal-engine.knowledgeBaseNamespace" -}}
+{{- $g := .Values.global | default dict -}}
+{{- .Values.knowledgeBases.namespace | default $g.knowledgeBaseNamespace | default (.Values.catalog.namespace | default .Release.Namespace) -}}
+{{- end -}}

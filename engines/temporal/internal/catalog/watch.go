@@ -35,13 +35,37 @@ func knowledgeBasesEnabled() bool {
 	return os.Getenv("AGENT_KNOWLEDGE_BASES_ENABLED") == "true"
 }
 
-// RunWatch starts shared dynamic informers on the Tool/Skill/Agent CRs in
-// namespace and feeds every event into the indexer. The initial informer
-// list doubles as the startup full sync. Blocks until ctx is done.
-func RunWatch(ctx context.Context, client dynamic.Interface, namespace string, ix *Indexer) error {
-	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(client, resyncPeriod, namespace, nil)
+// watchGroup is one namespace's worth of watches, so the KB CRs can be watched
+// in a namespace of their own while the rest of the catalog stays put.
+type watchGroup struct {
+	namespace string
+	watches   []watchSpec
+}
 
-	watches := []watchSpec{
+// planWatchGroups decides which namespace each CR kind is watched in.
+//
+// Corpus/KnowledgeBase CRs go in kbNamespace when it is set and differs from the
+// catalog namespace — matching the agent-orchestrator's KNOWLEDGE_BASE_NAMESPACE,
+// so a deployment can keep its knowledge bases in a namespace of their own.
+// kbNamespace == "" (or equal to namespace) means "same namespace", which keeps
+// a single informer factory and is byte-identical to the old behavior. kb is
+// empty when knowledge bases are disabled, so it collapses to one group too.
+func planWatchGroups(namespace, kbNamespace string, catalog, kb []watchSpec) []watchGroup {
+	if len(kb) == 0 {
+		return []watchGroup{{namespace, catalog}}
+	}
+	if kbNamespace == "" || kbNamespace == namespace {
+		return []watchGroup{{namespace, append(append([]watchSpec{}, catalog...), kb...)}}
+	}
+	return []watchGroup{{namespace, catalog}, {kbNamespace, kb}}
+}
+
+// RunWatch starts shared dynamic informers on the catalog CRs and feeds every
+// event into the indexer. Tool/Skill/Agent/LocalTool are watched in namespace;
+// Corpus/KnowledgeBase in kbNamespace (which may be the same). The initial
+// informer list doubles as the startup full sync. Blocks until ctx is done.
+func RunWatch(ctx context.Context, client dynamic.Interface, namespace, kbNamespace string, ix *Indexer) error {
+	catalogWatches := []watchSpec{
 		{ToolGVR,
 			func(ctx context.Context, obj *unstructured.Unstructured) error {
 				tool, err := DecodeTool(obj)
@@ -90,8 +114,9 @@ func RunWatch(ctx context.Context, client dynamic.Interface, namespace string, i
 	// Corpora and KnowledgeBases (ADR 0038, 0039). Neither is retrievable in
 	// its own right: a Corpus contributes a corpus and a scoped GET tool,
 	// and a KnowledgeBase derives the Skill that is actually selected.
+	var kbWatches []watchSpec
 	if knowledgeBasesEnabled() {
-		watches = append(watches, []watchSpec{
+		kbWatches = []watchSpec{
 			{CorpusGVR,
 				func(ctx context.Context, obj *unstructured.Unstructured) error {
 					conn, err := DecodeCorpus(obj)
@@ -112,25 +137,38 @@ func RunWatch(ctx context.Context, client dynamic.Interface, namespace string, i
 				},
 				ix.DeleteKnowledgeBase,
 			},
-		}...)
-	}
-
-	for _, w := range watches {
-		informer := factory.ForResource(w.gvr).Informer()
-		if _, err := informer.AddEventHandler(eventHandler(ctx, w.gvr, w.upsert, w.delete)); err != nil {
-			return fmt.Errorf("add %s event handler: %w", w.gvr.Resource, err)
 		}
 	}
 
-	factory.Start(ctx.Done())
-	if err := waitForCacheSync(ctx, factory.WaitForCacheSync(ctx.Done())); err != nil {
-		return err
+	groups := planWatchGroups(namespace, kbNamespace, catalogWatches, kbWatches)
+
+	// One informer factory per group namespace. A factory is pinned to a single
+	// namespace, so a distinct KB namespace needs a second one.
+	factories := make([]dynamicinformer.DynamicSharedInformerFactory, len(groups))
+	for i, g := range groups {
+		factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(client, resyncPeriod, g.namespace, nil)
+		for _, w := range g.watches {
+			informer := factory.ForResource(w.gvr).Informer()
+			if _, err := informer.AddEventHandler(eventHandler(ctx, w.gvr, w.upsert, w.delete)); err != nil {
+				return fmt.Errorf("add %s event handler: %w", w.gvr.Resource, err)
+			}
+		}
+		factories[i] = factory
 	}
-	resources := make([]string, 0, len(watches))
-	for _, w := range watches {
-		resources = append(resources, w.gvr.Resource)
+
+	for _, factory := range factories {
+		factory.Start(ctx.Done())
 	}
-	log.Printf("catalog watch established: namespace=%s resources=%s", namespace, strings.Join(resources, ","))
+	for i, factory := range factories {
+		if err := waitForCacheSync(ctx, factory.WaitForCacheSync(ctx.Done())); err != nil {
+			return err
+		}
+		resources := make([]string, 0, len(groups[i].watches))
+		for _, w := range groups[i].watches {
+			resources = append(resources, w.gvr.Resource)
+		}
+		log.Printf("catalog watch established: namespace=%s resources=%s", groups[i].namespace, strings.Join(resources, ","))
+	}
 
 	<-ctx.Done()
 	return nil
