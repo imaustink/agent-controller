@@ -9,7 +9,15 @@ description: >-
   one release. Install the community-components chart afterward to populate
   the catalog with Tool/Skill/Agent CRs.
 type: application
-version: 0.5.0
+# 0.5.1: no template change — forces a NEW immutable OCI chart tag so Argo
+# detects a real revision and re-renders. The connection-broker subchart and the
+# core-controller ClusterRole RBAC (cronjobs + connections/corpora/knowledgebases)
+# shipped in 0.5.0, but 0.5.0 was republished mutably under the same tag, so Argo
+# served a cached pre-RBAC render and never re-applied the updated ClusterRole —
+# leaving a new core-controller binary running under stale RBAC (403 → cache
+# never syncs → manager crashloop). Bump the chart version for any RBAC- or
+# template-affecting change so the pin in gitops changes too.
+version: 0.5.1
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:
