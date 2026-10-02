@@ -80,8 +80,23 @@ export interface BrokerProberOptions {
   baseUrl: string;
   /** Authenticates THIS orchestrator to the broker. */
   token: string;
-  /** The calling user's own credential, resolved per turn. */
+  /**
+   * The calling user's own credential, resolved per turn. Used when no
+   * per-connection token is supplied, and by single-connection callers (the
+   * document reader and live lookup) that only ever touch one provider.
+   */
   delegatedToken?: string;
+  /**
+   * The caller's own credential PER CONNECTION, keyed by connectionId.
+   *
+   * A knowledge base can span providers, and each connection must be probed with
+   * the token for ITS provider — probing a Slack channel with an Atlassian token
+   * is not a denial, it is the wrong question, and it silently drops results the
+   * caller can actually see. The searcher resolves one token per provider and
+   * maps each member connection to the right one; this is where that mapping is
+   * spent. Falls back to `delegatedToken` for any connection not in the map.
+   */
+  delegatedTokens?: ReadonlyMap<string, string>;
   /** Per-connection probe unit, taken from the catalog rather than guessed. */
   granularities?: ReadonlyMap<string, Granularity>;
   fetchImpl?: typeof fetch;
@@ -111,7 +126,11 @@ export class BrokerProber implements Prober {
   }
 
   async probe(request: ProbeRequest): Promise<ProbeResult> {
-    const { baseUrl, token, delegatedToken } = this.options;
+    const { baseUrl, token } = this.options;
+    // The token for THIS connection's provider, falling back to the single
+    // delegated token for callers that carry only one.
+    const delegatedToken =
+      this.options.delegatedTokens?.get(request.connectionId) ?? this.options.delegatedToken;
     if (!delegatedToken) {
       // Nothing to answer the question with, and the broker would refuse anyway.
       throw new PermissionDeniedError("no delegated credential for this caller");

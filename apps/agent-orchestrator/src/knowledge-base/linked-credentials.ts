@@ -19,24 +19,47 @@ export class LinkedCredentials implements DelegatedCredentialResolver {
   /**
    * Returns the FIRST provider's credential this caller holds.
    *
-   * First, not all: the probe path carries one delegated token per turn, so a
-   * knowledge base spanning two providers can only be served by one of them
-   * today — a mixed Confluence-and-Slack base will probe Slack candidates with
-   * an Atlassian token and drop them. A real limitation, belonging to the
-   * prober's shape rather than here. Providers are tried in the order the
-   * knowledge base declares, so the choice is deterministic.
+   * For the single-resource paths — the document reader and the live lookup —
+   * which address ONE connection, and so one provider, per call. The
+   * multi-member search path uses `delegatedTokens` instead, because a knowledge
+   * base can span providers and each must be probed with its own token.
+   *
+   * Providers are tried in the order given, so the choice is deterministic.
    */
   async delegatedToken(subject: string, providers: string[]): Promise<DelegatedCredential | undefined> {
     for (const provider of providers) {
-      // Deliberately NOT caught. A lookup that failed is unknown, and reporting
-      // it as absent tells a caller to link an account they already linked — on
-      // every turn, while the same record works moments later (docs/adr/0031).
-      const token = await this.links.getToken(provider, subject);
-      if (!token?.token) continue;
-
-      return { token: token.token, principals: await this.principals(provider, subject) };
+      const credential = await this.resolveOne(provider, subject);
+      if (credential) return credential;
     }
     return undefined;
+  }
+
+  /**
+   * Returns a credential PER PROVIDER the caller has linked, keyed by provider.
+   *
+   * All of them, not the first: the probe path can now carry one token per
+   * connection, so a knowledge base spanning Confluence, Drive and Slack serves
+   * every source the caller has linked the account for — and the searcher turns
+   * the ones they have NOT linked into an honest "link this to see more" rather
+   * than probing them with the wrong provider's token and dropping them. A
+   * provider the caller has not linked is simply absent from the map.
+   */
+  async delegatedTokens(subject: string, providers: string[]): Promise<Map<string, DelegatedCredential>> {
+    const resolved = new Map<string, DelegatedCredential>();
+    for (const provider of providers) {
+      const credential = await this.resolveOne(provider, subject);
+      if (credential) resolved.set(provider, credential);
+    }
+    return resolved;
+  }
+
+  private async resolveOne(provider: string, subject: string): Promise<DelegatedCredential | undefined> {
+    // Deliberately NOT caught. A lookup that failed is unknown, and reporting
+    // it as absent tells a caller to link an account they already linked — on
+    // every turn, while the same record works moments later (docs/adr/0031).
+    const token = await this.links.getToken(provider, subject);
+    if (!token?.token) return undefined;
+    return { token: token.token, principals: await this.principals(provider, subject) };
   }
 
   /**

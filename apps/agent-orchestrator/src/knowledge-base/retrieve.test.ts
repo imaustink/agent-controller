@@ -150,6 +150,53 @@ describe("BrokerProber", () => {
     await expect(prober.probe({ connectionId: "c", sourceId: "s" })).rejects.toBeInstanceOf(expected);
   });
 
+  it("probes each connection with its own provider's token", async () => {
+    const seen: Array<{ url: string; delegated: string }> = [];
+    const http = vi.fn(async (url: string, init: RequestInit) => {
+      seen.push({
+        url: String(url),
+        delegated: String((init.headers as Record<string, string>)["x-delegated-token"]),
+      });
+      return { ok: true, status: 200, json: async () => ({ allowed: true, title: "t", url: "u" }) } as unknown as Response;
+    });
+    const prober = new BrokerProber({
+      baseUrl: "http://broker",
+      token: "orch",
+      delegatedTokens: new Map([
+        ["conf", "atlassian-token"],
+        ["chan", "slack-token"],
+      ]),
+      fetchImpl: http as unknown as typeof fetch,
+    });
+
+    await prober.probe({ connectionId: "conf", sourceId: "p1" });
+    await prober.probe({ connectionId: "chan" });
+
+    // The whole point: a Slack channel is probed with the Slack token, not the
+    // Atlassian one — probing it with the wrong token is a silent drop, not a denial.
+    expect(seen[0]!.delegated).toBe("atlassian-token");
+    expect(seen[1]!.delegated).toBe("slack-token");
+  });
+
+  it("falls back to the single delegated token for a connection not in the map", async () => {
+    const http = vi.fn(
+      async () =>
+        ({ ok: true, status: 200, json: async () => ({ allowed: true, title: "t", url: "u" }) }) as unknown as Response,
+    );
+    const prober = new BrokerProber({
+      baseUrl: "http://broker",
+      token: "orch",
+      delegatedToken: "fallback",
+      delegatedTokens: new Map([["other", "x"]]),
+      fetchImpl: http as unknown as typeof fetch,
+    });
+
+    await prober.probe({ connectionId: "conf", sourceId: "p" });
+
+    const init = http.mock.calls[0]![1] as RequestInit;
+    expect((init.headers as Record<string, string>)["x-delegated-token"]).toBe("fallback");
+  });
+
   it("refuses to probe without a delegated credential", async () => {
     const prober = new BrokerProber({ baseUrl: "http://broker", token: "t" });
     await expect(prober.probe({ connectionId: "c", sourceId: "s" })).rejects.toBeInstanceOf(

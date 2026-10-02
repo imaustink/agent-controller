@@ -44,7 +44,10 @@ function reader(fetchImpl: typeof fetch, ...credential: [{ token: string } | und
   return new CorpusReader({
     brokerUrl: "http://broker.test/",
     brokerToken: "orchestrator-secret",
-    credentials: { delegatedToken: vi.fn().mockResolvedValue(resolved) },
+    credentials: {
+      delegatedToken: vi.fn().mockResolvedValue(resolved),
+      delegatedTokens: vi.fn().mockResolvedValue(new Map()),
+    },
     fetchImpl,
   });
 }

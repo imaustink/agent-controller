@@ -41,7 +41,10 @@ function lookup(fetchImpl: typeof fetch, ...credential: [{ token: string } | und
   return new CorpusLookup({
     brokerUrl: "http://broker.test/",
     brokerToken: "orchestrator-secret",
-    credentials: { delegatedToken: vi.fn().mockResolvedValue(resolved) },
+    credentials: {
+      delegatedToken: vi.fn().mockResolvedValue(resolved),
+      delegatedTokens: vi.fn().mockResolvedValue(new Map()),
+    },
     fetchImpl,
   });
 }
@@ -135,6 +138,7 @@ describe("lookup", () => {
         delegatedToken: vi.fn(async (_subject: string, providers: string[]) =>
           providers.includes("atlassian") ? { token: "user-token" } : undefined,
         ),
+        delegatedTokens: vi.fn().mockResolvedValue(new Map()),
       },
       fetchImpl: http as unknown as typeof fetch,
     });
