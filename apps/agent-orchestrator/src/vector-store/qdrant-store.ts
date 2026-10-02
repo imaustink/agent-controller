@@ -1,5 +1,5 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
-import type { JobTemplate, LocalToolSpec, ToolDescriptor } from "../tool-descriptor.js";
+import type { JobTemplate, LocalToolSpec, MCPExecSpec, ToolDescriptor } from "../tool-descriptor.js";
 import type { AgentRunTemplate } from "../agents/types.js";
 import { toQdrantPointId } from "./qdrant-id.js";
 import type { Embedder, ToolQueryFilter, ToolSearchResult, VectorStore } from "./types.js";
@@ -34,6 +34,15 @@ interface ToolPayload {
   localExec: LocalToolSpec | null;
   /** Agent-backed tool template (Tool.spec.agentRef); null otherwise. */
   agentRunTemplate: AgentRunTemplate | null;
+  /** MCP proxy spec (MCPTools, ADR 0045); null otherwise. Carried like localExec so a retrieved MCP tool can be dispatched. */
+  mcpExec: MCPExecSpec | null;
+  /**
+   * External identities the caller must have linked (ADR 0022/0045). Carried in
+   * the payload so a tool retrieved via RAG keeps its identity requirement —
+   * notably the delegated token an `mcpExec` tool is dispatched under, which is
+   * resolved from this at call time.
+   */
+  identityProviders: string[] | null;
   tier: string | null;
 }
 
@@ -86,6 +95,8 @@ export class QdrantToolStore implements VectorStore {
           jobTemplate: tool.jobTemplate ?? null,
           localExec: tool.localExec ?? null,
           agentRunTemplate: tool.agentRunTemplate ?? null,
+          mcpExec: tool.mcpExec ?? null,
+          identityProviders: tool.identityProviders ?? null,
           tier: tool.tier ?? null,
         } satisfies ToolPayload,
       })),
@@ -122,6 +133,8 @@ export class QdrantToolStore implements VectorStore {
         jobTemplate: payload.jobTemplate ?? undefined,
         localExec: payload.localExec ?? undefined,
         agentRunTemplate: payload.agentRunTemplate ?? undefined,
+        mcpExec: payload.mcpExec ?? undefined,
+        identityProviders: payload.identityProviders ?? undefined,
         tier: payload.tier ?? undefined,
       };
       return { tool, score: point.score };
@@ -151,6 +164,8 @@ export class QdrantToolStore implements VectorStore {
         jobTemplate: payload.jobTemplate ?? undefined,
         localExec: payload.localExec ?? undefined,
         agentRunTemplate: payload.agentRunTemplate ?? undefined,
+        mcpExec: payload.mcpExec ?? undefined,
+        identityProviders: payload.identityProviders ?? undefined,
         tier: payload.tier ?? undefined,
       };
       results.push({ tool, score: 1 });
