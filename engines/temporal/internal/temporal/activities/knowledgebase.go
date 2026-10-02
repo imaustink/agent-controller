@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/controller-agent/temporal-engine/internal/catalog"
 	"github.com/controller-agent/temporal-engine/internal/corpus"
@@ -25,7 +26,26 @@ const defaultKnowledgeBaseLimit = 6
 // returned to the workflow would be durable plaintext for the workflow's whole
 // retention. This one never leaves the activity.
 type DelegatedCredentialResolver interface {
+	// DelegatedToken is the first linked provider's credential — for
+	// single-connection callers (the document reader, the live lookup) that only
+	// ever touch one provider.
 	DelegatedToken(ctx context.Context, caller Caller, providers []string) (DelegatedCredential, error)
+	// DelegatedTokens is a credential per linked provider, keyed by provider
+	// name. The multi-member search uses this so a knowledge base spanning
+	// providers probes each source with the token for ITS provider, and asks for
+	// the rest.
+	DelegatedTokens(ctx context.Context, caller Caller, providers []string) (map[string]DelegatedCredential, error)
+}
+
+// CorpusResolver opens the Stores for a set of member collections, skipping any
+// that cannot be opened and reporting how many were skipped.
+//
+// An interface so the activity can be exercised without a live vector store;
+// *vectorstore.Corpora is the production implementation.
+//
+// PARITY: the TS searcher's injected `openCorpus` factory.
+type CorpusResolver interface {
+	Resolve(ctx context.Context, collections []string) ([]vectorstore.Store, int, error)
 }
 
 // DelegatedCredential is the caller's own credential for a provider, plus the
@@ -52,7 +72,7 @@ type DelegatedCredential struct {
 // nothing to launch: a knowledge base's search is a vector query plus a probe,
 // both of which are network calls this engine already performs from activities.
 type KnowledgeBaseActivities struct {
-	Corpora     *vectorstore.Corpora
+	Corpora     CorpusResolver
 	Credentials DelegatedCredentialResolver
 	BrokerURL   string
 	BrokerToken string
@@ -115,31 +135,49 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 		}, nil
 	}
 
-	credential, err := a.Credentials.DelegatedToken(ctx, in.Caller, providersOf(visible))
+	tokens, err := a.Credentials.DelegatedTokens(ctx, in.Caller, providersOf(visible))
 	if err != nil {
 		return SearchKnowledgeBaseOutput{}, err
 	}
-	token := credential.Token
-	if token == "" {
-		// Without the caller's own credential nothing can be probed, and
-		// probing on the ingestion credential would answer a different
-		// question, permissively (ADR 0040). Asking for a link is the only
-		// honest response.
-		return SearchKnowledgeBaseOutput{
-			NeedsLink: true,
-			Result: fmt.Sprintf(
-				"I need you to link the account behind %s before I can search it — every result has to be "+
-					"checked against your own access to the source.", exec.DisplayName),
-		}, nil
+	if len(tokens) == 0 {
+		// Without the caller's own credential nothing can be probed, and probing
+		// on the ingestion credential would answer a different question,
+		// permissively (ADR 0040). Asking for a link is the only honest response.
+		return needsLinkAsk(exec.DisplayName, providersToLink(visible, tokens)), nil
 	}
 
-	stores, skipped, err := a.Corpora.Resolve(ctx, collectionsOf(visible))
+	// Each member's connection must be probed with the token for ITS provider. A
+	// member whose provider the caller has not linked is NOT probed on another
+	// provider's token — that is the wrong question and silently drops results —
+	// it becomes an honest "link this to see more" instead.
+	var servable, notLinked []catalog.KnowledgeBaseExecMember
+	tokenByConnection := make(map[string]string)
+	principals := map[string]struct{}{}
+	for _, member := range visible {
+		provider := firstLinked(member.IdentityProviders, tokens)
+		if provider == "" {
+			notLinked = append(notLinked, member)
+			continue
+		}
+		credential := tokens[provider]
+		servable = append(servable, member)
+		tokenByConnection[member.ID] = credential.Token
+		for _, principal := range credential.Principals {
+			principals[principal] = struct{}{}
+		}
+	}
+
+	if len(servable) == 0 {
+		return needsLinkAsk(exec.DisplayName, providersToLink(visible, tokens)), nil
+	}
+
+	stores, skipped, err := a.Corpora.Resolve(ctx, collectionsOf(servable))
 	if err != nil {
 		return SearchKnowledgeBaseOutput{}, err
 	}
 
-	outcome, err := corpus.Retrieve(ctx, stores, a.prober(token, visible), in.Query,
-		in.Caller.Roles, credential.Principals,
+	outcome, err := corpus.Retrieve(ctx, stores, a.prober(tokenByConnection, servable), in.Query,
+		in.Caller.Roles, sortedKeys(principals),
 		knowledgeBaseLimit(in.Limit), corpus.DefaultCandidateMultiplier)
 	if err != nil {
 		return SearchKnowledgeBaseOutput{}, err
@@ -153,11 +191,30 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 			Outcome:  outcome,
 			Withheld: withheld,
 			Disclose: exec.DisclosePartialVisibility,
+			// Members whose provider the caller has not linked: served sources are
+			// real, and this says what more a link would add rather than hiding it.
+			Unlinked: &corpus.Unlinked{Providers: providersToLink(notLinked, tokens), Sources: len(notLinked)},
 		}),
 	}, nil
 }
 
-func (a *KnowledgeBaseActivities) prober(token string, members []catalog.KnowledgeBaseExecMember) corpus.Prober {
+// needsLinkAsk is the honest response when the caller has linked none of the
+// providers a search needs: ask, naming which, rather than answer on a
+// credential that is not theirs (ADR 0040).
+func needsLinkAsk(displayName string, providers []string) SearchKnowledgeBaseOutput {
+	which := ""
+	if len(providers) > 0 {
+		which = " (" + strings.Join(providers, ", ") + ")"
+	}
+	return SearchKnowledgeBaseOutput{
+		NeedsLink: true,
+		Result: fmt.Sprintf(
+			"I need you to link the account behind %s%s before I can search it — every result has to be "+
+				"checked against your own access to the source.", displayName, which),
+	}
+}
+
+func (a *KnowledgeBaseActivities) prober(tokens map[string]string, members []catalog.KnowledgeBaseExecMember) corpus.Prober {
 	granularities := make(map[string]corpus.Granularity, len(members))
 	for _, member := range members {
 		if member.Granularity == string(corpus.GranularityConnection) {
@@ -167,11 +224,23 @@ func (a *KnowledgeBaseActivities) prober(token string, members []catalog.Knowled
 		granularities[member.ID] = corpus.GranularityResource
 	}
 	return &corpus.BrokerProber{
-		BaseURL:        a.BrokerURL,
-		Token:          a.BrokerToken,
-		DelegatedToken: token,
-		Granularities:  granularities,
+		BaseURL:         a.BrokerURL,
+		Token:           a.BrokerToken,
+		DelegatedTokens: tokens,
+		Granularities:   granularities,
 	}
+}
+
+// firstLinked returns the first of a member's identity providers the caller has
+// linked, or "" when they have linked none of them — the member is then a
+// "link this to see more" rather than probed on the wrong provider's token.
+func firstLinked(providers []string, linked map[string]DelegatedCredential) string {
+	for _, provider := range providers {
+		if _, ok := linked[provider]; ok {
+			return provider
+		}
+	}
+	return ""
 }
 
 // visibleMembers is the source-level access filter (ADR 0039 §4): which members
@@ -227,9 +296,29 @@ func providersOf(members []catalog.KnowledgeBaseExecMember) []string {
 			set[provider] = struct{}{}
 		}
 	}
+	return sortedKeys(set)
+}
+
+// providersToLink is the providers these members need that the caller has not
+// linked, sorted — the set a "link this to see more" ask names.
+func providersToLink(members []catalog.KnowledgeBaseExecMember, linked map[string]DelegatedCredential) []string {
+	set := map[string]struct{}{}
+	for _, member := range members {
+		for _, provider := range member.IdentityProviders {
+			if _, ok := linked[provider]; !ok {
+				set[provider] = struct{}{}
+			}
+		}
+	}
+	return sortedKeys(set)
+}
+
+// sortedKeys returns a set's members as a sorted slice, so a fan-out built from
+// a map is deterministic rather than at the mercy of map iteration order.
+func sortedKeys(set map[string]struct{}) []string {
 	out := make([]string, 0, len(set))
-	for provider := range set {
-		out = append(out, provider)
+	for key := range set {
+		out = append(out, key)
 	}
 	sort.Strings(out)
 	return out

@@ -17,6 +17,19 @@ type RenderInput struct {
 	// withheld count only — never the transient-failure or staleness warnings,
 	// which are about evidence nobody could check rather than about access.
 	Disclose bool
+	// Unlinked names members the caller could consult but whose provider they
+	// have not linked, so nothing in them could be probed as them. Distinct from
+	// Withheld (outside their access) and from Outcome.Denied (the source refused
+	// this candidate): these are sources a link would ADD, which is why the
+	// caveat is an action the caller can take rather than a gated disclosure.
+	Unlinked *Unlinked
+}
+
+// Unlinked is the set of members a link would add to an answer: how many, and
+// which providers the caller would have to link to reach them.
+type Unlinked struct {
+	Providers []string
+	Sources   int
 }
 
 // Render turns a probed search into the Markdown the planner reads.
@@ -104,6 +117,20 @@ func writeCaveats(b *strings.Builder, in RenderInput) {
 		lines = append(lines, fmt.Sprintf(
 			"%d source(s) could not be searched at all, so this answer covers less than the knowledge base does.",
 			in.Outcome.SkippedCorpora))
+	}
+	// An account the caller has not linked, not an access denial: say what
+	// linking would add. Ungated, because it is an action the caller can take,
+	// not a disclosure of material they may not see.
+	if in.Unlinked != nil && in.Unlinked.Sources > 0 {
+		if len(in.Unlinked.Providers) > 0 {
+			lines = append(lines, fmt.Sprintf(
+				"%d source(s) need an account you have not linked (%s); link it and ask again to include them.",
+				in.Unlinked.Sources, strings.Join(in.Unlinked.Providers, ", ")))
+		} else {
+			lines = append(lines, fmt.Sprintf(
+				"%d source(s) could not be checked against your own access, so they were left out.",
+				in.Unlinked.Sources))
+		}
 	}
 
 	if len(lines) == 0 {

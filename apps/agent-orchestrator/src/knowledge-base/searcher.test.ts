@@ -45,6 +45,33 @@ const resolver = (token: string | undefined): DelegatedCredentialResolver & { as
       asked.push(providers);
       return token === undefined ? undefined : { token };
     },
+    async delegatedTokens(_subject, providers) {
+      asked.push(providers);
+      const map = new Map<string, { token: string }>();
+      if (token !== undefined) for (const provider of providers) map.set(provider, { token });
+      return map;
+    },
+  };
+};
+
+/** Resolves tokens only for the named providers, to exercise partial linking. */
+const partialResolver = (
+  linked: Record<string, string>,
+): DelegatedCredentialResolver & { asked: string[][] } => {
+  const asked: string[][] = [];
+  return {
+    asked,
+    async delegatedToken(_subject, providers) {
+      asked.push(providers);
+      for (const provider of providers) if (linked[provider]) return { token: linked[provider]! };
+      return undefined;
+    },
+    async delegatedTokens(_subject, providers) {
+      asked.push(providers);
+      const map = new Map<string, { token: string }>();
+      for (const provider of providers) if (linked[provider]) map.set(provider, { token: linked[provider]! });
+      return map;
+    },
   };
 };
 
@@ -160,6 +187,64 @@ describe("KnowledgeBaseSearcher", () => {
 
     // Unopenable and failed-mid-query are the same gap to the reader.
     expect(out.result).toContain("could not be searched at all");
+  });
+
+  it("serves the linked providers of a mixed base and names the one to link", async () => {
+    const credentials = partialResolver({ atlassian: "at" });
+    const { searcher, openCorpus } = searcherWith(credentials);
+
+    const out = await searcher.search(
+      searchTool(
+        member("conf", ["reader"], "coll-conf"),
+        member("drive", ["reader"], "coll-drive", { identityProviders: ["google"] }),
+      ),
+      "q",
+      reader,
+    );
+
+    // Confluence is linked, so it is searched; Drive is not, so it becomes an
+    // honest "link google to see more" rather than a silent drop.
+    expect(openCorpus).toHaveBeenCalledTimes(1);
+    expect(openCorpus).toHaveBeenCalledWith("coll-conf");
+    expect(out.needsLink).toBeUndefined();
+    expect(out.result).toContain("have not linked (google)");
+  });
+
+  it("searches every member when all providers are linked", async () => {
+    const credentials = partialResolver({ atlassian: "at", google: "g", slack: "s" });
+    const { searcher, openCorpus } = searcherWith(credentials);
+
+    const out = await searcher.search(
+      searchTool(
+        member("conf", ["reader"], "coll-conf"),
+        member("drive", ["reader"], "coll-drive", { identityProviders: ["google"] }),
+        member("chan", ["reader"], "coll-chan", { identityProviders: ["slack"], granularity: "connection" }),
+      ),
+      "q",
+      reader,
+    );
+
+    expect(openCorpus).toHaveBeenCalledTimes(3);
+    // Nothing left unlinked, so no "link this to see more" caveat.
+    expect(out.result).not.toContain("have not linked");
+  });
+
+  it("asks, naming the providers, when the caller has linked none of them", async () => {
+    const credentials = partialResolver({});
+    const { searcher, openCorpus } = searcherWith(credentials);
+
+    const out = await searcher.search(
+      searchTool(
+        member("conf", ["reader"], "coll-conf"),
+        member("drive", ["reader"], "coll-drive", { identityProviders: ["google"] }),
+      ),
+      "q",
+      reader,
+    );
+
+    expect(out.needsLink).toBe(true);
+    expect(out.result).toContain("atlassian, google");
+    expect(openCorpus).not.toHaveBeenCalled();
   });
 });
 

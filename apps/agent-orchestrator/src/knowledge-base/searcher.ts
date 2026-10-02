@@ -23,7 +23,17 @@ export type CorpusStoreFactory = (collection: string) => Promise<CorpusStore | u
  * never reaches durable workflow history.
  */
 export interface DelegatedCredentialResolver {
+  /**
+   * The first linked provider's credential — for single-connection callers (the
+   * document reader, the live lookup) that only ever touch one provider.
+   */
   delegatedToken(subject: string, providers: string[]): Promise<DelegatedCredential | undefined>;
+  /**
+   * A credential per linked provider, keyed by provider name. The multi-member
+   * search uses this so a knowledge base spanning providers probes each source
+   * with the token for ITS provider, and asks for the rest.
+   */
+  delegatedTokens(subject: string, providers: string[]): Promise<Map<string, DelegatedCredential>>;
 }
 
 /**
@@ -112,22 +122,40 @@ export class KnowledgeBaseSearcher {
       };
     }
 
-    const credential = await this.options.credentials.delegatedToken(caller.subject, providersOf(visible));
-    const token = credential?.token;
-    if (!token) {
+    const tokens = await this.options.credentials.delegatedTokens(caller.subject, providersOf(visible));
+    if (tokens.size === 0) {
       // Probing on the ingestion credential would answer a different question,
       // permissively (docs/adr/0040), so an ask is the only honest response.
-      return {
-        needsLink: true,
-        result:
-          `I need you to link the account behind ${exec.displayName} before I can search it — ` +
-          "every result has to be checked against your own access to the source.",
-      };
+      return needsLinkAsk(exec.displayName, providersToLink(visible, tokens));
+    }
+
+    // Each member's connection must be probed with the token for ITS provider.
+    // A member whose provider the caller has not linked is NOT probed on another
+    // provider's token — that is the wrong question and silently drops results —
+    // it becomes an honest "link this to see more" instead.
+    const servable: KnowledgeBaseExecMember[] = [];
+    const notLinked: KnowledgeBaseExecMember[] = [];
+    const tokenByConnection = new Map<string, string>();
+    const principals = new Set<string>();
+    for (const member of visible) {
+      const provider = (member.identityProviders ?? []).find((p) => tokens.has(p));
+      if (!provider) {
+        notLinked.push(member);
+        continue;
+      }
+      const credential = tokens.get(provider)!;
+      servable.push(member);
+      tokenByConnection.set(member.id, credential.token);
+      for (const principal of credential.principals ?? []) principals.add(principal);
+    }
+
+    if (servable.length === 0) {
+      return needsLinkAsk(exec.displayName, providersToLink(visible, tokens));
     }
 
     const stores: CorpusStore[] = [];
     let skipped = 0;
-    for (const member of visible) {
+    for (const member of servable) {
       const store = await this.options.openCorpus(member.collection);
       if (store) stores.push(store);
       else skipped += 1;
@@ -136,8 +164,8 @@ export class KnowledgeBaseSearcher {
     const prober = new BrokerProber({
       baseUrl: this.options.brokerUrl,
       token: this.options.brokerToken,
-      delegatedToken: token,
-      granularities: granularitiesOf(visible),
+      delegatedTokens: tokenByConnection,
+      granularities: granularitiesOf(servable),
     });
 
     const outcome = await retrieve(
@@ -145,7 +173,7 @@ export class KnowledgeBaseSearcher {
       prober,
       query,
       caller.roles,
-      credential?.principals ?? [],
+      [...principals],
       this.options.limit ?? DEFAULT_LIMIT,
     );
 
@@ -156,9 +184,37 @@ export class KnowledgeBaseSearcher {
         outcome: { ...outcome, skippedCorpora: outcome.skippedCorpora + skipped },
         withheld,
         disclose: exec.disclosePartialVisibility,
+        // Members whose provider the caller has not linked: served sources are
+        // real, and this says what more a link would add rather than hiding it.
+        unlinked: { providers: providersToLink(notLinked, tokens), sources: notLinked.length },
       }),
     };
   }
+}
+
+/**
+ * The honest response when the caller has linked none of the providers a search
+ * needs: ask, naming which, rather than answer on a credential that is not
+ * theirs (docs/adr/0040).
+ */
+function needsLinkAsk(displayName: string, providers: string[]): SearchResult {
+  const which = providers.length > 0 ? ` (${providers.join(", ")})` : "";
+  return {
+    needsLink: true,
+    result:
+      `I need you to link the account behind ${displayName}${which} before I can search it — ` +
+      "every result has to be checked against your own access to the source.",
+  };
+}
+
+/** The providers these members need that the caller has not linked, sorted. */
+function providersToLink(
+  members: KnowledgeBaseExecMember[],
+  linked: ReadonlyMap<string, unknown>,
+): string[] {
+  return [
+    ...new Set(members.flatMap((member) => member.identityProviders ?? []).filter((p) => !linked.has(p))),
+  ].sort();
 }
 
 /**

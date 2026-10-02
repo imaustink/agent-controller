@@ -36,7 +36,20 @@ type BrokerProber struct {
 	// source.
 	Token string
 	// DelegatedToken is the calling user's own credential, resolved per turn.
+	// Used when no per-connection token is supplied, and by single-connection
+	// callers (the document reader and live lookup) that only ever touch one
+	// provider.
 	DelegatedToken string
+	// DelegatedTokens is the caller's own credential PER CONNECTION, keyed by the
+	// member id a probe is addressed by (ProbeRequest.CorpusID).
+	//
+	// A knowledge base can span providers, and each connection must be probed
+	// with the token for ITS provider — probing a Slack channel with an Atlassian
+	// token is not a denial, it is the wrong question, and it silently drops
+	// results the caller can actually see. The searcher resolves one token per
+	// provider and maps each member to the right one; this is where that mapping
+	// is spent. Falls back to DelegatedToken for any connection not in the map.
+	DelegatedTokens map[string]string
 	// Granularities maps a connection to the unit its provider authorizes at,
 	// taken from the catalog rather than guessed.
 	Granularities map[string]Granularity
@@ -55,7 +68,13 @@ func (b *BrokerProber) Granularity(connectionID string) Granularity {
 }
 
 func (b *BrokerProber) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, error) {
-	if b.DelegatedToken == "" {
+	// The token for THIS connection's provider, falling back to the single
+	// delegated token for callers that carry only one.
+	delegated := b.DelegatedToken
+	if token, ok := b.DelegatedTokens[req.CorpusID]; ok {
+		delegated = token
+	}
+	if delegated == "" {
 		// Probing without the user's own credential cannot answer the question
 		// being asked, and the broker would refuse it anyway.
 		return ProbeResult{}, &PermissionDenied{Err: fmt.Errorf("no delegated credential for this caller")}
@@ -75,7 +94,7 @@ func (b *BrokerProber) Probe(ctx context.Context, req ProbeRequest) (ProbeResult
 	}
 	httpReq.Header.Set("content-type", "application/json")
 	httpReq.Header.Set("authorization", "Bearer "+b.Token)
-	httpReq.Header.Set("x-delegated-token", b.DelegatedToken)
+	httpReq.Header.Set("x-delegated-token", delegated)
 
 	client := b.HTTPClient
 	if client == nil {

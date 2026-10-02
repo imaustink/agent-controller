@@ -232,6 +232,87 @@ describe("getValidToken", () => {
   });
 });
 
+describe("Slack's non-standard OAuth shape", () => {
+  function slack() {
+    return loadOAuthProviders({
+      SLACK_CLIENT_ID: "slk-client",
+      SLACK_CLIENT_SECRET: "slk-secret",
+    } as NodeJS.ProcessEnv).get("slack")!;
+  }
+
+  function slackLinkerWith(fetchImpl: typeof fetch, store = new FakeStore()) {
+    return {
+      store,
+      linker: new OAuthAuthCodeLinker({
+        config: slack(),
+        store,
+        stateSecret: STATE_SECRET,
+        redirectUri: "https://gw.example/identity-link/slack/callback",
+        fetchImpl,
+        now: () => NOW,
+      }),
+    };
+  }
+
+  it("requests the user scope through user_scope, not scope", () => {
+    const { linker } = slackLinkerWith(vi.fn());
+    const url = new URL(linker.startAuthCode("openwebui:42").authorizeUrl);
+
+    expect(url.origin + url.pathname).toBe("https://slack.com/oauth/v2/authorize");
+    // search:read is a USER scope; sent as `scope` Slack rejects it as a bot scope.
+    expect(url.searchParams.get("user_scope")).toBe("search:read");
+    expect(url.searchParams.get("scope")).toBeNull();
+  });
+
+  it("form-encodes the exchange and stores the user token from authed_user", async () => {
+    const http = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ ok: true, access_token: "xoxb-bot", authed_user: { access_token: "xoxp-user" } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ ok: true, user_id: "U123" }));
+    const { linker, store } = slackLinkerWith(http as unknown as typeof fetch);
+    const state = new URL(linker.startAuthCode("openwebui:42").authorizeUrl).searchParams.get("state")!;
+
+    const result = await linker.completeAuthCode(state, "the-code");
+
+    expect(result).toEqual({ subject: "openwebui:42" });
+    const [, init] = http.mock.calls[0]!;
+    expect((init as RequestInit).headers).toMatchObject({
+      "content-type": "application/x-www-form-urlencoded",
+    });
+    const stored = await store.get("slack", "openwebui:42");
+    // The USER token, never the bot token that sits at the top level.
+    expect(stored?.token).toBe("xoxp-user");
+    expect(stored?.accountId).toBe("U123");
+  });
+
+  it("treats ok:false at HTTP 200 as a failed exchange, not an empty token", async () => {
+    const http = vi.fn().mockResolvedValue(jsonResponse({ ok: false, error: "invalid_code" }));
+    const { linker } = slackLinkerWith(http as unknown as typeof fetch);
+    const state = new URL(linker.startAuthCode("s").authorizeUrl).searchParams.get("state")!;
+
+    // Slack returns HTTP 200 on failure; reading it as a success would store an
+    // empty token and look like a broken feature.
+    expect(await linker.completeAuthCode(state, "bad")).toBeUndefined();
+  });
+
+  it("keeps a non-expiring user token fresh instead of re-prompting every turn", async () => {
+    const http = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ ok: true, authed_user: { access_token: "xoxp-user" } }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, user_id: "U1" }));
+    const { linker, store } = slackLinkerWith(http as unknown as typeof fetch);
+    const state = new URL(linker.startAuthCode("s").authorizeUrl).searchParams.get("state")!;
+    await linker.completeAuthCode(state, "code");
+
+    // Slack sends no expires_in for a default user token, but it does not expire;
+    // treating a missing expiry as stale is what would re-prompt on every turn.
+    expect(await linker.getValidToken("s")).toEqual({ token: "xoxp-user" });
+    expect(Date.parse((await store.get("slack", "s"))!.expiresAt)).toBeGreaterThan(NOW);
+  });
+});
+
 describe("construction", () => {
   it("refuses a device-flow provider", () => {
     const github = loadOAuthProviders({ GITHUB_OAUTH_CLIENT_ID: "gh" } as NodeJS.ProcessEnv).get("github")!;

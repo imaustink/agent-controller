@@ -140,6 +140,46 @@ func TestStillReturnsTheTokenWhenPrincipalsCannotBeResolved(t *testing.T) {
 	}
 }
 
+func TestDelegatedTokensReturnsACredentialPerLinkedProvider(t *testing.T) {
+	links := &stubLinks{
+		tokens: map[string]identitylink.Token{
+			"atlassian/s": {Value: "at-1"},
+			"slack/s":     {Value: "sl-1"},
+		},
+	}
+	resolver := &activities.LinkedCredentials{Links: links}
+
+	got, err := resolver.DelegatedTokens(context.Background(),
+		activities.Caller{Subject: "s"}, []string{"atlassian", "google", "slack"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d credentials, want 2: %+v", len(got), got)
+	}
+	if got["atlassian"].Token != "at-1" || got["slack"].Token != "sl-1" {
+		t.Fatalf("tokens = %+v", got)
+	}
+	// google was not linked, so it is simply absent — the searcher turns that
+	// into an ask for that provider rather than a whole-search failure.
+	if _, ok := got["google"]; ok {
+		t.Fatal("an unlinked provider must be absent, not present")
+	}
+}
+
+func TestDelegatedTokensPropagatesALookupFailure(t *testing.T) {
+	resolver := &activities.LinkedCredentials{Links: &stubLinks{tokenErr: errors.New("gateway down")}}
+
+	_, err := resolver.DelegatedTokens(context.Background(),
+		activities.Caller{Subject: "s"}, []string{"atlassian"})
+
+	// Same rule as DelegatedToken (ADR 0031): "could not find out" must never be
+	// read as "nothing linked".
+	if err == nil {
+		t.Fatal("a failed lookup must not read as an absent link")
+	}
+}
+
 func TestFallsBackToALoginForGitHubShapedLinks(t *testing.T) {
 	links := &stubLinks{
 		tokens: map[string]identitylink.Token{"github/s": {Value: "gh"}},

@@ -84,6 +84,35 @@ describe("delegatedToken", () => {
   });
 });
 
+describe("delegatedTokens", () => {
+  it("returns a credential per linked provider, keyed by provider", async () => {
+    const getToken = vi.fn(async (provider: string) =>
+      provider === "atlassian" ? { token: "at-1" } : provider === "slack" ? { token: "sl-1" } : undefined,
+    );
+    const resolver = new LinkedCredentials(
+      links({ getToken, getLinkedAccountId: vi.fn().mockResolvedValue("acc") }),
+    );
+
+    const got = await resolver.delegatedTokens("s", ["atlassian", "google", "slack"]);
+
+    expect([...got.keys()].sort()).toEqual(["atlassian", "slack"]);
+    expect(got.get("atlassian")?.token).toBe("at-1");
+    expect(got.get("slack")?.token).toBe("sl-1");
+    // google was not linked, so it is simply absent — the searcher turns that
+    // into an ask for that provider rather than a whole-search failure.
+    expect(got.has("google")).toBe(false);
+  });
+
+  it("propagates a genuine lookup failure rather than reporting it as unlinked", async () => {
+    const resolver = new LinkedCredentials(
+      links({ getToken: vi.fn().mockRejectedValue(new Error("gateway down")) }),
+    );
+    // Same rule as delegatedToken (ADR 0031): "could not find out" must never be
+    // read as "nothing linked".
+    await expect(resolver.delegatedTokens("s", ["atlassian"])).rejects.toThrow(/gateway down/);
+  });
+});
+
 describe("a provider the gateway has not been configured for", () => {
   /** What the deployed gateway actually answers: 400 Unsupported identity provider. */
   const unsupported = () =>

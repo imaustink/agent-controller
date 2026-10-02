@@ -64,6 +64,38 @@ export interface OAuthProviderConfig {
    * doc comment in `store.ts`).
    */
   identity?: { url: string; field: string };
+  /**
+   * The authorize-URL parameter scopes go in. Standard OAuth uses `scope`
+   * (the default). Slack is the exception: a USER token — the only kind that can
+   * search as the caller — is requested through `user_scope`, and `scope` is
+   * reserved for bot scopes this flow never asks for.
+   */
+  scopeParam?: string;
+  /**
+   * How the token request is encoded. Standard providers take JSON (the
+   * default). Slack's `oauth.v2.access` accepts ONLY
+   * `application/x-www-form-urlencoded` and rejects a JSON body.
+   */
+  tokenRequestEncoding?: "json" | "form";
+  /**
+   * Read the user token from `authed_user.access_token` rather than the top
+   * level. Slack returns the BOT token at the top level and the user token —
+   * the one that searches as the caller — nested under `authed_user`.
+   */
+  userTokenFromAuthedUser?: boolean;
+  /**
+   * The provider signals failure with HTTP 200 and `{ ok: false, error }` in the
+   * body instead of a non-2xx status. Slack does this; without checking it, a
+   * failed exchange reads as an empty token rather than an error.
+   */
+  resultOkInBody?: boolean;
+  /**
+   * The issued token does not expire, so a missing `expires_in` means
+   * "never" rather than "already expired". True for default Slack user tokens
+   * (token rotation is opt-in and out of scope here); false everywhere a missing
+   * expiry should force a refresh.
+   */
+  tokensDoNotExpire?: boolean;
 }
 
 /** GitHub's Device Flow, unchanged — its endpoints and behaviour are what they were. */
@@ -169,6 +201,52 @@ function googleConfig(env: NodeJS.ProcessEnv): OAuthProviderConfig | undefined {
 }
 
 /**
+ * Slack, for per-user channel reads (docs/adr/0038, 0040).
+ *
+ * Slack authorizes at the CHANNEL, so the probe's question is "is this user in
+ * the channel", answered by a USER token with `search:read`. Three things make
+ * Slack unlike the standard 3LO providers above, and each is carried as a config
+ * flag the generic linker honours rather than a Slack fork:
+ *
+ *   - the user scope is requested through `user_scope`, not `scope`;
+ *   - the token exchange is form-encoded (JSON is rejected) and reports failure
+ *     as `ok:false` at HTTP 200;
+ *   - the user token comes back under `authed_user`, not at the top level.
+ *
+ * Default Slack user tokens do not expire (token rotation is an opt-in app
+ * setting, deliberately out of scope here), so no refresh path is exercised —
+ * `rotatesRefreshToken` stays false and `tokensDoNotExpire` keeps a missing
+ * `expires_in` from being read as an immediate expiry.
+ */
+function slackConfig(env: NodeJS.ProcessEnv): OAuthProviderConfig | undefined {
+  const clientId = env.SLACK_CLIENT_ID;
+  const clientSecret = env.SLACK_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return undefined;
+
+  // `search:read` is a USER scope and the only one the probe needs. A narrower
+  // or bot-shaped scope would answer a different question than "what may THIS
+  // user read", which is the whole point of the delegated path.
+  const scopes = (env.SLACK_SCOPES ?? "search:read").split(/[\s,]+/).filter(Boolean);
+
+  return {
+    name: "slack",
+    kind: "authcode",
+    clientId,
+    clientSecret,
+    authorizeUrl: "https://slack.com/oauth/v2/authorize",
+    tokenUrl: "https://slack.com/api/oauth.v2.access",
+    scopes,
+    scopeParam: "user_scope",
+    tokenRequestEncoding: "form",
+    resultOkInBody: true,
+    userTokenFromAuthedUser: true,
+    rotatesRefreshToken: false,
+    tokensDoNotExpire: true,
+    identity: { url: "https://slack.com/api/auth.test", field: "user_id" },
+  };
+}
+
+/**
  * Builds the provider registry from the environment.
  *
  * A provider whose credentials are absent is simply not registered, rather than
@@ -178,7 +256,7 @@ function googleConfig(env: NodeJS.ProcessEnv): OAuthProviderConfig | undefined {
  */
 export function loadOAuthProviders(env: NodeJS.ProcessEnv = process.env): Map<string, OAuthProviderConfig> {
   const registry = new Map<string, OAuthProviderConfig>();
-  for (const build of [githubConfig, atlassianConfig, googleConfig]) {
+  for (const build of [githubConfig, atlassianConfig, googleConfig, slackConfig]) {
     const config = build(env);
     if (config) registry.set(config.name, config);
   }

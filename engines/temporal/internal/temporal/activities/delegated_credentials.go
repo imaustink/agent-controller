@@ -19,45 +19,87 @@ type LinkedCredentials struct {
 	Links identitylink.Port
 }
 
-// DelegatedToken returns the first provider's credential this caller holds.
+// DelegatedToken returns the first linked provider's credential this caller
+// holds.
 //
-// FIRST, not all: the probe path carries ONE delegated token per turn, so a
-// knowledge base spanning two providers can only be served by one of them
-// today. That is a real limitation rather than a rounding error — a mixed
-// Confluence-and-Slack knowledge base will silently probe Slack candidates with
-// an Atlassian token and drop them — and it belongs to the prober's shape, not
-// here. Providers are tried in the order the knowledge base declares them, so
-// the choice is at least deterministic and operator-visible.
+// For the single-resource paths — the document reader and the live lookup —
+// which address ONE connection, and so one provider, per call. The multi-member
+// search path uses DelegatedTokens instead, because a knowledge base can span
+// providers and each must be probed with its own token.
+//
+// Providers are tried in the order the knowledge base declares them, so the
+// choice is deterministic.
 func (c *LinkedCredentials) DelegatedToken(
 	ctx context.Context,
 	caller Caller,
 	providers []string,
 ) (DelegatedCredential, error) {
 	for _, provider := range providers {
-		subject := credentialSubject(caller, provider)
-
-		token, err := c.Links.Token(ctx, provider, subject)
+		credential, err := c.resolveOne(ctx, caller, provider)
 		if err != nil {
-			// NOT swallowed into "nothing linked". A lookup that failed is
-			// unknown, and reporting it as absent tells a caller to link an
-			// account they already linked — on every turn, while the same
-			// record works 0.3s later (ADR 0031's exact failure).
-			return DelegatedCredential{}, fmt.Errorf(
-				"credential lookup failed for %s@%s: %w", provider, subject, err)
+			return DelegatedCredential{}, err
 		}
-		if token == nil || token.Value == "" {
-			continue
+		if credential.Token != "" {
+			return credential, nil
 		}
-
-		return DelegatedCredential{
-			Token:      token.Value,
-			Principals: c.principals(ctx, provider, subject),
-		}, nil
 	}
 
 	// Nothing linked for any provider. Empty rather than an error: the activity
 	// turns this into an ask, which is the honest response.
 	return DelegatedCredential{}, nil
+}
+
+// DelegatedTokens returns a credential PER PROVIDER the caller has linked, keyed
+// by provider name.
+//
+// All of them, not the first: the probe path can now carry one token per
+// connection, so a knowledge base spanning Confluence, Drive and Slack serves
+// every source the caller has linked the account for — and the searcher turns
+// the ones they have NOT linked into an honest "link this to see more" rather
+// than probing them with the wrong provider's token and dropping them. A
+// provider the caller has not linked is simply absent from the map; a genuine
+// lookup failure still propagates (ADR 0031), never read as an absent link.
+func (c *LinkedCredentials) DelegatedTokens(
+	ctx context.Context,
+	caller Caller,
+	providers []string,
+) (map[string]DelegatedCredential, error) {
+	resolved := make(map[string]DelegatedCredential, len(providers))
+	for _, provider := range providers {
+		credential, err := c.resolveOne(ctx, caller, provider)
+		if err != nil {
+			return nil, err
+		}
+		if credential.Token != "" {
+			resolved[provider] = credential
+		}
+	}
+	return resolved, nil
+}
+
+// resolveOne returns this caller's credential for one provider, or a zero
+// credential when they have not linked it.
+//
+// A lookup that FAILED is returned as an error, never as an absent link: the
+// two mean opposite things, and reporting a failure as absent tells a caller to
+// link an account they already linked — on every turn, while the same record
+// works 0.3s later (ADR 0031's exact failure).
+func (c *LinkedCredentials) resolveOne(ctx context.Context, caller Caller, provider string) (DelegatedCredential, error) {
+	subject := credentialSubject(caller, provider)
+
+	token, err := c.Links.Token(ctx, provider, subject)
+	if err != nil {
+		return DelegatedCredential{}, fmt.Errorf(
+			"credential lookup failed for %s@%s: %w", provider, subject, err)
+	}
+	if token == nil || token.Value == "" {
+		return DelegatedCredential{}, nil
+	}
+
+	return DelegatedCredential{
+		Token:      token.Value,
+		Principals: c.principals(ctx, provider, subject),
+	}, nil
 }
 
 // principals is the provider-side identity this credential acts as, for the ACL

@@ -15,6 +15,14 @@ export interface RenderInput {
    * evidence nobody could check rather than about access.
    */
   disclose: boolean;
+  /**
+   * Members the caller could consult but whose provider they have not linked, so
+   * nothing in them could be probed as them. Distinct from `withheld` (outside
+   * their access) and from `denied` (the source refused this candidate): these
+   * are sources a link would ADD, which is why the caveat is an action, not a
+   * gated disclosure.
+   */
+  unlinked?: { providers: string[]; sources: number };
 }
 
 /**
@@ -33,12 +41,12 @@ export interface RenderInput {
  *
  * PARITY: `Render` in `engines/temporal/internal/corpus/render.go`.
  */
-export function render({ outcome, withheld, disclose }: RenderInput): string {
+export function render({ outcome, withheld, disclose, unlinked }: RenderInput): string {
   const parts: string[] = [];
 
   if (outcome.chunks.length === 0) {
     parts.push("No passages in this knowledge base matched.");
-    parts.push(...caveats(outcome, withheld, disclose));
+    parts.push(...caveats(outcome, withheld, disclose, unlinked));
     return parts.join("\n") + "\n";
   }
 
@@ -67,7 +75,7 @@ export function render({ outcome, withheld, disclose }: RenderInput): string {
   for (const chunk of outcome.chunks) {
     parts.push(`- [${displayTitle(chunk)}](${chunk.url})`);
   }
-  parts.push(...caveats(outcome, withheld, disclose));
+  parts.push(...caveats(outcome, withheld, disclose, unlinked));
 
   return parts.join("\n") + "\n";
 }
@@ -80,7 +88,12 @@ export function render({ outcome, withheld, disclose }: RenderInput): string {
  * again), and an unreachable corpus (an operational problem, not a permissions
  * one).
  */
-function caveats(outcome: RetrieveOutcome, withheld: number, disclose: boolean): string[] {
+function caveats(
+  outcome: RetrieveOutcome,
+  withheld: number,
+  disclose: boolean,
+  unlinked?: { providers: string[]; sources: number },
+): string[] {
   const lines: string[] = [];
 
   if (disclose && withheld > 0) {
@@ -110,6 +123,16 @@ function caveats(outcome: RetrieveOutcome, withheld: number, disclose: boolean):
   if (outcome.skippedCorpora > 0) {
     lines.push(
       `- ${outcome.skippedCorpora} source(s) could not be searched at all, so this answer covers less than the knowledge base does.`,
+    );
+  }
+  // An account the caller has not linked, not an access denial: say what linking
+  // would add. Ungated, because it is an action the caller can take, not a
+  // disclosure of material they may not see.
+  if (unlinked && unlinked.sources > 0) {
+    lines.push(
+      unlinked.providers.length > 0
+        ? `- ${unlinked.sources} source(s) need an account you have not linked (${unlinked.providers.join(", ")}); link it and ask again to include them.`
+        : `- ${unlinked.sources} source(s) could not be checked against your own access, so they were left out.`,
     );
   }
 

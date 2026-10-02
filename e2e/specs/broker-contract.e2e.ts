@@ -113,6 +113,10 @@ const DELEGATED = "user-token";
 
 const credentials = {
   delegatedToken: async () => ({ token: DELEGATED, principals: [] }),
+  // The reader/lookup paths exercised here only call delegatedToken; this
+  // satisfies the multi-member search method on the same resolver interface.
+  delegatedTokens: async (_subject: string, providers: string[]) =>
+    new Map(providers.map((provider) => [provider, { token: DELEGATED, principals: [] }])),
 };
 
 describe("the sync worker's client", () => {
