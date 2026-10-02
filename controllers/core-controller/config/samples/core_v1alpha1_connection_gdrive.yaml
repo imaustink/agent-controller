@@ -21,11 +21,23 @@ spec:
   # self-service equivalent of joining a public channel. Sharing is the
   # operator's step, out of band.
 
+  # The INGESTION credential. Put a GCP SERVICE-ACCOUNT KEY (the downloaded JSON)
+  # in this Secret key: the gdrive driver signs a JWT with it and mints + refreshes
+  # a drive.readonly access token itself, so ingestion is self-sustaining like the
+  # Confluence/Slack credentials next door. Grant that service account read on the
+  # folder(s) you scope (sharing is the operator's out-of-band step above).
+  #
+  # A raw access token (e.g. `gcloud auth print-access-token`) is still accepted
+  # for back-compat, but it expires in ~1h with nothing to refresh it and ingestion
+  # then fails until someone pastes a new one — do not rely on it. Prefer the key.
+  #
+  # On EKS the keyless end-state is Google Workload Identity Federation via IRSA
+  # (no stored key); the key path above is the portable interim.
   secretEnv:
     - name: SERVICE_TOKEN
       secretRef:
         name: bitovi-gdrive
-        key: accessToken
+        key: serviceAccountKey
 
   # Retrieval probes run as the ASKING USER (ADR 0040). Drive authorizes the
   # FILE, so this is the per-resource case: one probe per candidate, which is

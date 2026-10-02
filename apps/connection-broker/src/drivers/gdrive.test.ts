@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { generateKeyPairSync } from "node:crypto";
 import { GDriveDriver } from "./gdrive.js";
 import { PermanentError, PermissionDeniedError, TransientError } from "./types.js";
 import type { FetchLike } from "./confluence.js";
@@ -26,6 +27,37 @@ const file = (overrides: Record<string, unknown> = {}) => ({
 });
 
 const driver = (http: FetchLike) => new GDriveDriver({ fetch: http });
+
+describe("ingestion credential", () => {
+  it("mints and uses an access token when the service credential is an SA key", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const key = JSON.stringify({
+      type: "service_account",
+      client_email: "svc@p.iam.gserviceaccount.com",
+      private_key: privateKey,
+    });
+    const tokenFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ access_token: "ya29.minted", expires_in: 3600 }),
+    });
+    const http = vi.fn().mockResolvedValue(respond({ files: [file()] }));
+    const d = new GDriveDriver({ fetch: http, tokenFetch });
+
+    await d.list(SCOPE, { service: key }, undefined);
+
+    // The key was exchanged for a token, and Drive was called with the MINTED
+    // token — never the key, and no human-pasted access token in sight.
+    expect(tokenFetch).toHaveBeenCalledOnce();
+    const auths = http.mock.calls.map(([, init]) => (init as { headers: Record<string, string> }).headers.Authorization);
+    expect(auths.length).toBeGreaterThan(0);
+    expect(auths.every((h) => h === "Bearer ya29.minted")).toBe(true);
+  });
+});
 
 describe("scope validation", () => {
   const d = driver(vi.fn());

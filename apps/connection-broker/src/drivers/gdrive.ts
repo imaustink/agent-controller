@@ -13,11 +13,20 @@ import {
   type SearchHit,
 } from "./types.js";
 import type { FetchLike } from "./confluence.js";
+import { GoogleServiceCredential, type TokenFetch } from "./google-auth.js";
 
 export interface GDriveDriverOptions {
   fetch?: FetchLike;
   pageSize?: number;
   apiOrigin?: string;
+  /**
+   * POST-capable fetch for the Google token endpoint, when the ingestion
+   * credential is a service-account key (minted + refreshed by the driver).
+   * Defaults to the global fetch; injected in tests.
+   */
+  tokenFetch?: TokenFetch;
+  /** Injectable clock, for the token cache in tests. */
+  now?: () => number;
 }
 
 interface DriveFile {
@@ -89,6 +98,8 @@ export class GDriveDriver implements Driver {
   private readonly http: FetchLike;
   private readonly pageSize: number;
   private readonly apiOrigin: string;
+  /** Mints + refreshes the ingestion token when the service credential is an SA key. */
+  private readonly serviceCreds: GoogleServiceCredential;
 
   /** Scoped folder id -> that folder and everything beneath it. */
   private readonly folderTrees = new Map<string, string[]>();
@@ -97,6 +108,7 @@ export class GDriveDriver implements Driver {
     this.http = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
     this.pageSize = options.pageSize ?? 100;
     this.apiOrigin = (options.apiOrigin ?? "https://www.googleapis.com/drive/v3").replace(/\/+$/, "");
+    this.serviceCreds = new GoogleServiceCredential(options.tokenFetch, undefined, options.now);
   }
 
   validateScope(scope: Scope): void {
@@ -133,7 +145,8 @@ export class GDriveDriver implements Driver {
    */
   async list(scope: Scope, credentials: Credentials, since: Cursor): Promise<ListPage> {
     this.validateScope(scope);
-    const token = requireToken(credentials.service);
+    // Ingestion: an SA key is minted + refreshed here; a raw token is used as-is.
+    const token = await this.serviceCreds.bearer(credentials.service);
 
     const folders = await this.descendantFolders(scope.folderID!, token);
     const parents = folders.map((id) => `'${id}' in parents`).join(" or ");
@@ -270,7 +283,11 @@ export class GDriveDriver implements Driver {
 
   async fetch(scope: Scope, credentials: Credentials, id: string): Promise<Document> {
     this.validateScope(scope);
-    const token = requireToken(credentials.delegated ?? credentials.service);
+    // A user read runs on their delegated token; a sync read falls back to the
+    // service credential (minted/refreshed from an SA key when it is one).
+    const token = credentials.delegated
+      ? requireToken(credentials.delegated)
+      : await this.serviceCreds.bearer(credentials.service);
 
     const file = (await this.call(`/files/${encodeURIComponent(id)}`, token, {
       fields: "id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size,shortcutDetails",
