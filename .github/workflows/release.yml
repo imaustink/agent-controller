@@ -67,6 +67,10 @@ jobs:
               - 'package-lock.json'
               - 'packages/github-app-auth/**'
               - 'apps/integration-gateway/**'
+            connection-broker:
+              - 'package.json'
+              - 'package-lock.json'
+              - 'apps/connection-broker/**'
             recipe-scraper:
               - 'package.json'
               - 'package-lock.json'
