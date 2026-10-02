@@ -217,11 +217,12 @@ jobs:
     # used by publish-images) -- this job only needs outbound internet to
     # ghcr.io and a GITHUB_TOKEN, not access to the internal cluster.
     #
-    # Charts are pushed under their Chart.yaml `version` -- OCI tags are
-    # mutable, so pushing again at the same version overwrites that tag
-    # rather than creating a new one. Bump `version` in the relevant
-    # Chart.yaml before merging if you want a new immutable release tag to
-    # show up.
+    # OCI chart tags are MUTABLE: pushing the same Chart.yaml `version` again
+    # overwrites that tag, and Argo (pinned to it) then caches the first render
+    # and never re-applies later template changes -- the stale-ClusterRole
+    # crashloop from PR #257. To make a reused tag impossible, this job bumps
+    # each chart's patch version, commits it back to main (the version stays the
+    # source of truth, in git, as clean sequential semver), and publishes THAT.
     #
     # Install with:
     #   helm install agent-controller oci://ghcr.io/imaustink/charts/agent-controller --version <version>
@@ -230,8 +231,41 @@ jobs:
     runs-on: ubuntu-latest
     # Guard so a fork that somehow re-targets this job cannot publish under our package namespace.
     if: github.repository == 'imaustink/agent-controller' && needs.changes.outputs.charts == 'true'
+    # contents: write to push the version bump back to main; packages: write to
+    # push the chart to GHCR (this job's override replaces the workflow default).
+    permissions:
+      contents: write
+      packages: write
+    # Serialize release runs so two can't read the same version and both bump to
+    # it. Queue rather than cancel, so no release is dropped.
+    concurrency:
+      group: chart-release
+      cancel-in-progress: false
     steps:
+      # ref: main (not the triggering SHA) + full history so the bump is computed
+      # from, and pushed onto, the current branch tip -- a fast-forward under the
+      # concurrency serialization above.
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Bump chart patch versions
+        # Edit only here; the commit + push happens after packaging has
+        # validated the build (below), and before the OCI push.
+        run: |
+          set -euo pipefail
+          for chart in charts/agent-controller charts/community-components; do
+            f="$chart/Chart.yaml"
+            base=$(awk '/^version:/{print $2; exit}' "$f")
+            major=${base%%.*}; rest=${base#*.}; minor=${rest%%.*}; patch=${rest#*.}
+            case "$patch" in
+              *[!0-9]* | "") echo "::error::$f version '$base' is not X.Y.Z"; exit 1 ;;
+            esac
+            new="${major}.${minor}.$((patch + 1))"
+            sed -i "s/^version:.*/version: ${new}/" "$f"
+            echo "${chart#charts/}: ${base} -> ${new}"
+          done
 
       - name: Sync core-controller CRDs into the Helm chart
         # charts/agent-controller/charts/core-controller/crds/*.yaml is
@@ -259,10 +293,30 @@ jobs:
           helm dependency update charts/agent-controller
 
       - name: Package charts
+        # Uses the bumped versions now in each Chart.yaml. Done before the git
+        # push so a chart that fails to build aborts the job without having
+        # committed a version to main.
         run: |
           mkdir -p /tmp/charts
           helm package charts/agent-controller -d /tmp/charts
           helm package charts/community-components -d /tmp/charts
+
+      - name: Commit the version bump back to main
+        # git BEFORE the OCI push: the version is claimed in git first, so a
+        # push that loses a race fails the job before any tag is written — a
+        # reused/overwritten OCI tag (the bug this prevents) is impossible. A
+        # failure AFTER this leaves an unpublished version (a harmless gap in the
+        # sequence), never an overwrite.
+        #
+        # [skip ci] so this commit — which only touches Chart.yaml under charts/
+        # — does not re-trigger this workflow and loop.
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add charts/agent-controller/Chart.yaml charts/community-components/Chart.yaml
+          git commit -m "chore(release): bump chart versions [skip ci]"
+          git push origin HEAD:main
 
       - name: Push charts to GHCR
         run: |
