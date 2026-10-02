@@ -55,10 +55,14 @@ func main() {
 	}
 
 	namespace := getenv("CATALOG_NAMESPACE", "controller-agent")
-	log.Printf("catalog-sync starting: namespace=%s qdrant=%s:%d", namespace, qdrantHost, qdrantPort)
+	// Knowledge bases may live in a namespace of their own, separate from the
+	// rest of the catalog. Defaults to the catalog namespace, so single-namespace
+	// deployments are unchanged.
+	kbNamespace := getenv("KNOWLEDGE_BASE_NAMESPACE", namespace)
+	log.Printf("catalog-sync starting: namespace=%s kbNamespace=%s qdrant=%s:%d", namespace, kbNamespace, qdrantHost, qdrantPort)
 
 	indexer := catalog.NewIndexer(collections)
-	if err := catalog.RunWatch(ctx, dynamicClient, namespace, indexer); err != nil {
+	if err := catalog.RunWatch(ctx, dynamicClient, namespace, kbNamespace, indexer); err != nil {
 		log.Fatalf("catalog watch exited: %v", err)
 	}
 }

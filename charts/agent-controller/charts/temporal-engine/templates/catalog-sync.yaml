@@ -1,4 +1,6 @@
 {{- if and .Values.catalogSync.enabled .Values.qdrant.host }}
+{{- $catalogNs := .Values.catalog.namespace | default .Release.Namespace }}
+{{- $kbNs := include "temporal-engine.knowledgeBaseNamespace" . }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -12,14 +14,14 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ .Release.Name }}-catalog-reader
-  namespace: {{ .Values.catalog.namespace | default .Release.Namespace }}
+  namespace: {{ $catalogNs }}
   labels:
     {{- include "temporal-engine.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["core.controller-agent.dev"]
     resources: ["tools", "skills", "agents"]
     verbs: ["get", "list", "watch"]
-  {{- if .Values.knowledgeBases.enabled }}
+  {{- if and .Values.knowledgeBases.enabled (eq $kbNs $catalogNs) }}
   # Knowledge bases (docs/adr/0039, 0043). A KnowledgeBase derives the Skill
   # that is actually selected, and a Corpus contributes its members — so this
   # process has to watch both, plus the Connection they resolve through.
@@ -28,6 +30,9 @@ rules:
   # this engine SERVES TURNS FROM simply never gains a knowledge-base skill:
   # every turn answers "no existing skill or agent matched this request" while
   # the other engine's catalog has it.
+  #
+  # Only here when the KB namespace is the catalog namespace; a distinct KB
+  # namespace gets its own Role/RoleBinding below.
   - apiGroups: ["core.controller-agent.dev"]
     resources: ["connections", "corpora", "knowledgebases"]
     verbs: ["get", "list", "watch"]
@@ -49,6 +54,41 @@ subjects:
     name: {{ .Release.Name }}-temporal-engine-catalog-sync
     namespace: {{ .Release.Namespace }}
 ---
+{{- if and .Values.knowledgeBases.enabled (ne $kbNs $catalogNs) }}
+# When knowledge bases live in a namespace of their own
+# (knowledgeBases.namespace or global.knowledgeBaseNamespace), the KB CR read
+# grant has to be a Role THERE — catalog-sync watches Corpus/KnowledgeBase in
+# that namespace and its informers cannot list without it. Still namespaced; the
+# subject SA stays in the release namespace, and that namespace must exist.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-catalog-reader-kb
+  namespace: {{ $kbNs }}
+  labels:
+    {{- include "temporal-engine.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["connections", "corpora", "knowledgebases"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-catalog-reader-kb
+  namespace: {{ $kbNs }}
+  labels:
+    {{- include "temporal-engine.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-catalog-reader-kb
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-temporal-engine-catalog-sync
+    namespace: {{ .Release.Namespace }}
+---
+{{- end }}
 {{- if .Values.catalogSync.image.tag }}
 apiVersion: apps/v1
 kind: Deployment
@@ -95,6 +135,11 @@ spec:
             # ignores every knowledge base in the cluster.
             - name: AGENT_KNOWLEDGE_BASES_ENABLED
               value: "true"
+            # Namespace the Corpus/KnowledgeBase informers watch — may differ
+            # from CATALOG_NAMESPACE so knowledge bases live in their own
+            # namespace (watch.go splits to a second informer factory).
+            - name: KNOWLEDGE_BASE_NAMESPACE
+              value: {{ $kbNs | quote }}
             {{- end }}
             {{- include "temporal-engine.qdrantEnv" . | nindent 12 }}
             - name: OPENAI_BASE_URL
