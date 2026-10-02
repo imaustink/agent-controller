@@ -136,6 +136,19 @@ spec:
                   name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
                   key: {{ .Values.secrets.googleClientSecretKey }}
             {{- end }}
+            {{- if .Values.identityLink.slackClientId }}
+            - name: SLACK_CLIENT_ID
+              value: {{ .Values.identityLink.slackClientId | quote }}
+            {{- if .Values.identityLink.slackScopes }}
+            - name: SLACK_SCOPES
+              value: {{ .Values.identityLink.slackScopes | quote }}
+            {{- end }}
+            - name: SLACK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (include "integration-gateway.fullname" .) }}
+                  key: {{ .Values.secrets.slackClientSecretKey }}
+            {{- end }}
             {{- end }}
             - name: GITHUB_WEBHOOK_SECRET
               valueFrom:
