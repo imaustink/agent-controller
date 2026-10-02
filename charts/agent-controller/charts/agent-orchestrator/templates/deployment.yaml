@@ -75,6 +75,11 @@ spec:
           env:
             - name: AGENT_NAMESPACE
               value: {{ include "agent-orchestrator.toolNamespace" . | quote }}
+            # Namespace the KnowledgeBase/Corpus CRs are read from — may differ
+            # from AGENT_NAMESPACE so knowledge bases live in their own namespace
+            # (the same one the connection-broker is pointed at).
+            - name: KNOWLEDGE_BASE_NAMESPACE
+              value: {{ include "agent-orchestrator.knowledgeBaseNamespace" . | quote }}
             - name: AGENT_QDRANT_URL
               value: {{ include "agent-orchestrator.qdrantUrl" . | quote }}
             - name: AGENT_QDRANT_COLLECTION

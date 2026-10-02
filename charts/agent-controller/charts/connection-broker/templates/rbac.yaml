@@ -13,6 +13,10 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "connection-broker.fullname" . }}
+  # The KB namespace, which may differ from the release namespace. The broker
+  # only ever reads CRs and Secrets here, so its reach stays one namespace wide
+  # — not cluster-wide — even when that namespace is not its own.
+  namespace: {{ include "connection-broker.knowledgeBaseNamespace" . }}
   labels: {{- include "connection-broker.labels" . | nindent 4 }}
 rules:
   # Watching these is what makes a CR created after startup take effect without
@@ -43,6 +47,9 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "connection-broker.fullname" . }}
+  # Bound in the KB namespace alongside the Role; the subject SA still lives in
+  # the release namespace.
+  namespace: {{ include "connection-broker.knowledgeBaseNamespace" . }}
   labels: {{- include "connection-broker.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io

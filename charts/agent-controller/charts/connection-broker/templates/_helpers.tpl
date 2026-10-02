@@ -30,3 +30,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Namespace the broker reads Corpus/Connection CRs and their credential Secrets
+from. Precedence: this subchart's knowledgeBaseNamespace, then the umbrella
+chart's global.knowledgeBaseNamespace, then the release namespace. Lets the
+broker be pointed at a dedicated KB namespace separate from where the release
+is installed, without ever reading across namespaces.
+*/}}
+{{- define "connection-broker.knowledgeBaseNamespace" -}}
+{{- $g := .Values.global | default dict -}}
+{{- .Values.knowledgeBaseNamespace | default $g.knowledgeBaseNamespace | default .Release.Namespace -}}
+{{- end -}}

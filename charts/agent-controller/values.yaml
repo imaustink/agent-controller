@@ -8,6 +8,19 @@
 # The Tool/Skill/Agent catalog itself is a separate top-level chart --
 # see ../community-components -- installed as its own release after this one.
 
+# Helm global: one place to put the namespace that KnowledgeBase/Corpus/
+# Connection CRs live in, when you want them separate from where this release is
+# installed. Both the agent-orchestrator (which reads KnowledgeBase/Corpus to
+# generate search tools) and the connection-broker (which reads Corpus/Connection
+# + their credential Secrets) are pointed at it, and each gets a namespaced
+# Role/RoleBinding there — never a ClusterRole, and the broker never reads
+# outside this one namespace. Empty = the release namespace (unchanged behavior).
+# The namespace must already exist. Per-subchart overrides:
+# agent-orchestrator.knowledgeBases.namespace and
+# connection-broker.knowledgeBaseNamespace.
+global:
+  knowledgeBaseNamespace: ""
+
 # ---------------------------------------------------------------------------
 # Parent orchestrator (charts/agent-orchestrator). Bundles an optional Qdrant
 # under agent-orchestrator.qdrant.* (off by default).

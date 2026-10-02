@@ -136,3 +136,14 @@ stable regardless of release name). Otherwise use config.redisUrl as-is.
 {{- .Values.config.redisUrl }}
 {{- end }}
 {{- end }}
+
+{{/*
+Namespace the orchestrator reads KnowledgeBase/Corpus CRs from. Precedence:
+knowledgeBases.namespace, then the umbrella chart's global.knowledgeBaseNamespace,
+then toolNamespace. Separate from toolNamespace so knowledge bases can live in
+their own namespace while tools/agents and Jobs stay where they are.
+*/}}
+{{- define "agent-orchestrator.knowledgeBaseNamespace" -}}
+{{- $g := .Values.global | default dict -}}
+{{- .Values.knowledgeBases.namespace | default $g.knowledgeBaseNamespace | default (include "agent-orchestrator.toolNamespace" .) -}}
+{{- end -}}

@@ -276,13 +276,13 @@ async function main(): Promise<void> {
   // has no executor yet, so indexing one before the broker exists lets the
   // planner select a knowledge base and then fail at dispatch.
   const connectionRegistry = CrdConnectionRegistry.fromKubeConfig(
-    config.namespace,
+    config.knowledgeBaseNamespace,
     config.crdGroup,
     config.crdVersion,
     kubeConfig,
   );
   const knowledgeBaseRegistry = CrdKnowledgeBaseRegistry.fromKubeConfig(
-    config.namespace,
+    config.knowledgeBaseNamespace,
     config.crdGroup,
     config.crdVersion,
     kubeConfig,

@@ -20,6 +20,14 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# Namespace the broker watches for Corpus/Connection CRs and reads their
+# credential Secrets from. Empty = the release namespace. Set this (or the
+# umbrella chart's global.knowledgeBaseNamespace) to keep knowledge bases in a
+# namespace separate from where the release is installed. The broker's Role and
+# RoleBinding are created in this namespace; it must exist, and the broker never
+# reads outside it.
+knowledgeBaseNamespace: ""
+
 serviceAccount:
   # This app DOES talk to the k8s API: it watches Connection CRs and reads the
   # Secrets they name, so the token is mounted and rbac.yaml grants exactly
