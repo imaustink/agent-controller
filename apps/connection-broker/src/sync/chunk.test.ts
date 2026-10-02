@@ -4,6 +4,9 @@ import type { Document } from "../drivers/types.js";
 
 const connection = { id: "globex-confluence", label: "GLOBEX Confluence" };
 
+/** Mirrors the chunker's own cheap token estimate (length / 4). */
+const approx = (text: string): number => Math.ceil(text.length / 4);
+
 function doc(markdown: string, over: Partial<Document> = {}): Document {
   return {
     id: "page-1",
@@ -73,14 +76,39 @@ describe("chunkDocument", () => {
     expect(chunks[1]!.text).toContain("bravo");
   });
 
-  it("keeps an oversized single paragraph whole rather than severing a sentence", () => {
-    const huge = "y".repeat(8000);
+  it("force-splits a seam-less oversized paragraph so no chunk exceeds the cap", () => {
+    const huge = "y".repeat(8000); // ~2000 tokens, no line or space to split on
     const chunks = chunkDocument(connection, doc(`# S\n\n${huge}`), { maxTokens: 100, overlap: 0 });
 
-    // An oversized chunk retrieves worse than a right-sized one; a severed
-    // sentence is worse than both.
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]!.text).toContain(huge);
+    // A chunk over the model's input cap fails the whole corpus embed, so the
+    // blob is cut by length rather than kept whole.
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) expect(approx(c.text)).toBeLessThanOrEqual(120); // cap + small heading
+    // No content dropped: every character survives across the pieces.
+    const totalYs = chunks.reduce((n, c) => n + (c.text.match(/y/g)?.length ?? 0), 0);
+    expect(totalYs).toBe(8000);
+  });
+
+  it("splits a big line-delimited blob (e.g. a spreadsheet) on line seams, under the cap", () => {
+    const row = "alpha\tbeta\tgamma";
+    const huge = Array(2000).fill(row).join("\n"); // one paragraph, no blank lines
+    const chunks = chunkDocument(connection, doc(huge), { maxTokens: 100, overlap: 0 });
+
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) expect(approx(c.text)).toBeLessThanOrEqual(110);
+    // Rows are kept intact and all of them survive.
+    const totalRows = chunks.reduce((n, c) => n + (c.text.match(/alpha\tbeta\tgamma/g)?.length ?? 0), 0);
+    expect(totalRows).toBe(2000);
+  });
+
+  it("clamps a configured maxTokens above the model cap", () => {
+    // 100k chars ~ 25k tokens in one paragraph; a maxTokens of 50k must still be
+    // clamped so no chunk exceeds the model's 8192-token input limit.
+    const huge = "z".repeat(100_000);
+    const chunks = chunkDocument(connection, doc(huge), { maxTokens: 50_000, overlap: 0 });
+
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) expect(approx(c.text)).toBeLessThanOrEqual(8192);
   });
 
   it("repeats the heading onto every piece of a split section", () => {

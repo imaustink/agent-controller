@@ -46,6 +46,19 @@ export interface Chunk {
 const DEFAULT_MAX_TOKENS = 800;
 const DEFAULT_OVERLAP = 100;
 
+/**
+ * Hard ceiling on the effective chunk target, kept well under the embedding
+ * model's 8192-token per-input cap (text-embedding-3-small) to leave room for
+ * the heading and overlap a chunk also carries.
+ *
+ * This is a CAP, not a suggestion: a single chunk over the model's input limit
+ * 400s the embed, and the request batcher (embedder.ts) cannot rescue a lone
+ * over-cap input — so it fails the whole corpus. A configured `maxTokens` above
+ * this is clamped, and any piece still over budget is force-split below, even if
+ * that severs a sentence: an un-embeddable chunk is worse than a split one.
+ */
+const MAX_CHUNK_TOKENS = 6000;
+
 /** Rough token estimate. Deliberately cheap: chunk sizing does not need a tokenizer's precision. */
 const approxTokens = (text: string): number => Math.ceil(text.length / 4);
 
@@ -66,7 +79,9 @@ export function chunkDocument(
   document: Document,
   options: ChunkOptions = {},
 ): Chunk[] {
-  const maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
+  // Clamped to the model cap: a larger configured target cannot be allowed to
+  // emit a chunk the embedder will reject (see MAX_CHUNK_TOKENS).
+  const maxTokens = Math.min(options.maxTokens ?? DEFAULT_MAX_TOKENS, MAX_CHUNK_TOKENS);
   const overlap = options.overlap ?? DEFAULT_OVERLAP;
 
   const sections = splitOnHeadings(document.markdown);
@@ -164,18 +179,72 @@ function splitOnParagraphs(section: string, maxTokens: number, overlap: number):
   };
 
   for (const paragraph of body) {
-    const candidate = [...current, paragraph].join("\n\n");
-    if (current.length > 0 && approxTokens(candidate) > maxTokens) flush();
-
-    // A single paragraph over budget on its own cannot be split further here
-    // without cutting mid-sentence, so it is kept whole: an oversized chunk
-    // retrieves worse than a right-sized one, but a severed sentence is worse
-    // than both.
-    current.push(paragraph);
+    // A single paragraph over budget has no blank-line seam to split on, but it
+    // still must not exceed the model's input cap — so it is force-split on the
+    // next seams down (lines, then words, then a hard character cut). A severed
+    // sentence retrieves worse than a clean one, but a chunk that cannot be
+    // embedded at all fails the entire corpus, so this is the lesser evil. A
+    // paragraph within budget is one unit, unchanged.
+    const units = approxTokens(paragraph) > maxTokens ? forceSplit(paragraph, maxTokens) : [paragraph];
+    for (const unit of units) {
+      const candidate = [...current, unit].join("\n\n");
+      if (current.length > 0 && approxTokens(candidate) > maxTokens) flush();
+      current.push(unit);
+    }
   }
   if (current.length > 0) chunks.push(withHeading(current.join("\n\n")));
 
   return chunks.length > 0 ? chunks : [section];
+}
+
+/**
+ * Last-resort split of a seam-less over-budget paragraph: lines, then words,
+ * then a hard character cut. Every returned piece is at most `maxTokens`.
+ *
+ * Only reached when the structural passes left a paragraph over budget — a big
+ * spreadsheet extracts to one blank-line-free blob of rows, which this breaks on
+ * newlines; a single unbroken run with no line or space is cut by length. Line
+ * and word splits rejoin losslessly; the character cut is the final guarantee
+ * that no chunk can exceed the embedding model's input cap.
+ */
+function forceSplit(text: string, maxTokens: number): string[] {
+  if (approxTokens(text) <= maxTokens) return [text];
+
+  for (const sep of ["\n", " "]) {
+    if (!text.includes(sep)) continue;
+    const parts = text.split(sep);
+    if (parts.length < 2) continue;
+
+    const out: string[] = [];
+    let buf = "";
+    for (const part of parts) {
+      if (approxTokens(part) > maxTokens) {
+        // One line/word longer than the cap on its own — recurse to the next,
+        // finer seam (and ultimately the character cut).
+        if (buf) {
+          out.push(buf);
+          buf = "";
+        }
+        out.push(...forceSplit(part, maxTokens));
+        continue;
+      }
+      const candidate = buf ? buf + sep + part : part;
+      if (buf && approxTokens(candidate) > maxTokens) {
+        out.push(buf);
+        buf = part;
+      } else {
+        buf = candidate;
+      }
+    }
+    if (buf) out.push(buf);
+    return out;
+  }
+
+  // An unbroken run with no line or space: the only remaining seam is length.
+  const windowChars = Math.max(1, maxTokens * 4);
+  const windows: string[] = [];
+  for (let i = 0; i < text.length; i += windowChars) windows.push(text.slice(i, i + windowChars));
+  return windows;
 }
 
 /** The trailing paragraphs of a chunk, up to roughly `overlap` tokens. */
