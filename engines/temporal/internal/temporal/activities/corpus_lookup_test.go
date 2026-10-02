@@ -236,3 +236,15 @@ func (r *perMemberResolver) DelegatedToken(
 	}
 	return activities.DelegatedCredential{}, nil
 }
+
+func (r *perMemberResolver) DelegatedTokens(
+	_ context.Context, _ activities.Caller, providers []string,
+) (map[string]activities.DelegatedCredential, error) {
+	out := map[string]activities.DelegatedCredential{}
+	for _, provider := range providers {
+		if token, ok := r.tokens[provider]; ok {
+			out[provider] = activities.DelegatedCredential{Token: token}
+		}
+	}
+	return out, nil
+}

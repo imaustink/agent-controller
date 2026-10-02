@@ -42,6 +42,29 @@ func TestRenderCitesTheProbesTitleAndUrl(t *testing.T) {
 	require.NotContains(t, out, "STALE MIRROR TITLE")
 }
 
+func TestRenderNamesAnAccountTheCallerCouldLinkToSeeMore(t *testing.T) {
+	out := corpus.Render(corpus.RenderInput{
+		Outcome: corpus.RetrieveOutcome{
+			Chunks: []corpus.AuthorizedChunk{authorized("Auth design", "https://wiki/auth", "text")},
+		},
+		Disclose: true,
+		Unlinked: &corpus.Unlinked{Providers: []string{"google"}, Sources: 2},
+	})
+
+	// An action, not a gated disclosure: these are sources a link would ADD.
+	require.Contains(t, out, "2 source(s) need an account you have not linked (google)")
+}
+
+func TestRenderStatesAnUnlinkableSourceWithoutAProviderName(t *testing.T) {
+	out := corpus.Render(corpus.RenderInput{
+		Outcome:  corpus.RetrieveOutcome{},
+		Disclose: false,
+		Unlinked: &corpus.Unlinked{Providers: nil, Sources: 1},
+	})
+
+	require.Contains(t, out, "could not be checked against your own access")
+}
+
 func TestRenderLabelsChunkTextUntrusted(t *testing.T) {
 	out := corpus.Render(corpus.RenderInput{
 		Outcome: corpus.RetrieveOutcome{
