@@ -14,6 +14,7 @@ import {
 } from "./types.js";
 import type { FetchLike } from "./confluence.js";
 import { GoogleServiceCredential, type TokenFetch } from "./google-auth.js";
+import { extractDocxText, extractXlsxText } from "./ooxml.js";
 
 export interface GDriveDriverOptions {
   fetch?: FetchLike;
@@ -56,6 +57,17 @@ const PDF_MIME = "application/pdf";
 const SHORTCUT_MIME = "application/vnd.google-apps.shortcut";
 
 /**
+ * Office Open XML formats, mapped to the extractor that reads them. `.xlsm`
+ * (macro-enabled) is structurally a `.xlsx`, so it uses the spreadsheet path.
+ * These are downloaded as bytes (alt=media) and parsed by ./ooxml.
+ */
+const OOXML: Record<string, "docx" | "xlsx"> = {
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.ms-excel.sheet.macroEnabled.12": "xlsx",
+};
+
+/**
  * What a file effectively IS, following a shortcut.
  *
  * Drive folders are routinely organised with shortcuts — a live Drive had 54
@@ -79,6 +91,8 @@ function effectiveMime(file: DriveFile): string {
  * file costs one metadata read rather than a transfer and a parse.
  */
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
+/** Same ceiling for Office files, refused before download to bound unzip cost. */
+const MAX_OFFICE_BYTES = 25 * 1024 * 1024;
 
 /**
  * Formats worth indexing as text without conversion — downloaded with alt=media
@@ -422,7 +436,7 @@ export class GDriveDriver implements Driver {
     const mime = effectiveMime(file);
     // Folders are traversed, not indexed; anything binary would embed as noise.
     if (mime === "application/vnd.google-apps.folder") return false;
-    return mime in EXPORTABLE || PLAIN_TEXT.has(mime) || mime === PDF_MIME;
+    return mime in EXPORTABLE || PLAIN_TEXT.has(mime) || mime === PDF_MIME || mime in OOXML;
   }
 
   private async readContent(file: DriveFile, token: string): Promise<string> {
@@ -439,6 +453,8 @@ export class GDriveDriver implements Driver {
 
     const mime = file.mimeType ?? "";
     if (mime === PDF_MIME) return this.readPdf(file, token);
+    const office = OOXML[mime];
+    if (office) return this.readOffice(file, token, office);
 
     const exportAs = EXPORTABLE[mime];
 
@@ -503,6 +519,41 @@ export class GDriveDriver implements Driver {
       // A PDF we cannot parse is not a PDF we should retry: encrypted,
       // truncated or malformed does not improve on a second pass.
       throw new PermanentError(`gdrive file ${file.id} could not be parsed as a PDF: ${String(cause)}`);
+    }
+  }
+
+  /**
+   * Extracts text from an Office Open XML file (.docx / .xlsx / .xlsm).
+   *
+   * Same shape as readPdf: oversized files are refused before download, bytes
+   * are fetched once, and an unparseable file is PERMANENT (a corrupt or
+   * password-protected doc does not improve on retry) rather than a silent skip.
+   * Parsing lives in ./ooxml (fflate to unzip, parse5 to read the XML).
+   */
+  private async readOffice(file: DriveFile, token: string, kind: "docx" | "xlsx"): Promise<string> {
+    const size = Number(file.size ?? 0);
+    if (size > MAX_OFFICE_BYTES) {
+      throw new PermanentError(
+        `gdrive file ${file.id} is ${Math.round(size / 1024 / 1024)}MB, over the ` +
+          `${Math.round(MAX_OFFICE_BYTES / 1024 / 1024)}MB limit for Office extraction`,
+      );
+    }
+
+    const bytes = await this.callBytes(`/files/${encodeURIComponent(file.id)}`, token, { alt: "media" });
+
+    // Lazy, like unpdf: a broker that indexes no Office files never loads fflate.
+    const { unzipSync } = await import("fflate");
+    let entries: Record<string, Uint8Array>;
+    try {
+      entries = unzipSync(new Uint8Array(bytes));
+    } catch (cause) {
+      throw new PermanentError(`gdrive file ${file.id} is not a readable ${kind} (unzip failed): ${String(cause)}`);
+    }
+
+    try {
+      return kind === "docx" ? extractDocxText(entries) : extractXlsxText(entries);
+    } catch (cause) {
+      throw new PermanentError(`gdrive file ${file.id} could not be parsed as ${kind}: ${String(cause)}`);
     }
   }
 

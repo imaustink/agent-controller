@@ -34,6 +34,19 @@ describe("file types", () => {
     const { resources } = await driver(http).list(SCOPE, { service: "t" }, undefined);
     expect(resources.map((r) => r.id)).toContain("X");
   });
+
+  it("indexes Office formats (docx/xlsx/xlsm), which the extractor parses", async () => {
+    const offices = [
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-excel.sheet.macroEnabled.12",
+    ];
+    const http = vi.fn().mockResolvedValue(
+      respond({ files: offices.map((mimeType, i) => file({ id: `O${i}`, mimeType })) }),
+    );
+    const { resources } = await driver(http).list(SCOPE, { service: "t" }, undefined);
+    expect(resources.map((r) => r.id)).toEqual(["O0", "O1", "O2"]);
+  });
 });
 
 describe("Shared Drive support", () => {
