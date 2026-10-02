@@ -28,6 +28,24 @@ const file = (overrides: Record<string, unknown> = {}) => ({
 
 const driver = (http: FetchLike) => new GDriveDriver({ fetch: http });
 
+describe("Shared Drive support", () => {
+  it("sends supportsAllDrives on every call and includeItemsFromAllDrives on list queries", async () => {
+    const http = vi.fn().mockResolvedValue(respond({ files: [file()] }));
+
+    await driver(http).list(SCOPE, { service: "t" }, undefined);
+
+    const urls = http.mock.calls.map(([u]) => String(u));
+    // Without supportsAllDrives the API refuses Shared Drive items outright, so
+    // it must be on every request (the get/export/media ones too).
+    expect(urls.every((u) => u.includes("supportsAllDrives=true"))).toBe(true);
+    // The folder-walk and file LIST queries must also opt into Shared Drive
+    // results, or a Shared-Drive folder lists as empty.
+    const listUrls = urls.filter((u) => /\/files\?/.test(u));
+    expect(listUrls.length).toBeGreaterThan(0);
+    expect(listUrls.every((u) => u.includes("includeItemsFromAllDrives=true"))).toBe(true);
+  });
+});
+
 describe("ingestion credential", () => {
   it("mints and uses an access token when the service credential is an SA key", async () => {
     const { privateKey } = generateKeyPairSync("rsa", {

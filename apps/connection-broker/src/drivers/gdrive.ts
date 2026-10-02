@@ -155,6 +155,10 @@ export class GDriveDriver implements Driver {
       q: `(${parents}) and trashed = false`,
       fields: "nextPageToken,files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size,shortcutDetails)",
       pageSize: String(this.pageSize),
+      // Return Shared Drive items too, not just My Drive (paired with
+      // supportsAllDrives in request). A folder in a Shared Drive otherwise
+      // lists as empty however much the credential can see.
+      includeItemsFromAllDrives: "true",
       ...(since ? { pageToken: since } : {}),
     })) as { files?: DriveFile[]; nextPageToken?: string };
 
@@ -254,6 +258,9 @@ export class GDriveDriver implements Driver {
             q: `'${parent}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
             fields: "nextPageToken,files(id)",
             pageSize: String(this.pageSize),
+            // Shared Drive subfolders too, else descendantFolders finds none and
+            // the whole corpus indexes empty.
+            includeItemsFromAllDrives: "true",
             ...(pageToken ? { pageToken } : {}),
           })) as { files?: { id: string }[]; nextPageToken?: string };
 
@@ -356,6 +363,9 @@ export class GDriveDriver implements Driver {
       // and asking for exactly `limit` would return a short page of hits that
       // happen to be in the folder rather than the best ones that are.
       pageSize: String(Math.min(limit * 10, 100)),
+      // The user's own search must reach Shared Drive files too, or live
+      // retrieval silently never finds anything in a Shared-Drive corpus.
+      includeItemsFromAllDrives: "true",
     })) as { files?: DriveFile[] };
 
     const candidates = (body.files ?? []).filter((file) => this.indexable(file));
@@ -556,7 +566,11 @@ export class GDriveDriver implements Driver {
     token: string,
     params: Record<string, string>,
   ): Promise<Awaited<ReturnType<FetchLike>>> {
-    const url = `${this.apiOrigin}${path}?${new URLSearchParams(params).toString()}`;
+    // supportsAllDrives on EVERY call (get/list/export/media): without it the
+    // Drive API refuses to act on Shared Drive items at all, even when the
+    // credential has access. List calls additionally set includeItemsFromAllDrives
+    // where the query is built. Harmless on My-Drive-only content.
+    const url = `${this.apiOrigin}${path}?${new URLSearchParams({ supportsAllDrives: "true", ...params }).toString()}`;
 
     let response;
     try {
