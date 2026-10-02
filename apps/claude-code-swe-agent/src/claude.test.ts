@@ -31,6 +31,13 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("gh repo create");
   });
 
+  it("puts an invoked skill at the very start, where the CLI expands it", () => {
+    const prompt = buildPrompt("the spec in #42", null, "implement");
+    expect(prompt.startsWith("/implement You are an autonomous")).toBe(true);
+    expect(prompt).toContain("## Task\nthe spec in #42");
+    expect(buildPrompt("the spec in #42", null)).toBe(prompt.slice("/implement ".length));
+  });
+
   it("embeds the caller instruction as data under the Task heading", () => {
     const prompt = buildPrompt("add a health check", null);
     expect(prompt).toContain("## Task");
