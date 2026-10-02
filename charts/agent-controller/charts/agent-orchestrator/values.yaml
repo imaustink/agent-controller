@@ -478,6 +478,12 @@ nats:
 # with them.
 knowledgeBases:
   enabled: false
+  # Namespace the KnowledgeBase/Corpus CRs live in. Empty = the same namespace
+  # as tools/agents (toolNamespace). Set this (or the umbrella chart's
+  # global.knowledgeBaseNamespace) to read knowledge bases from a dedicated
+  # namespace; the orchestrator's KB read Role/RoleBinding then move there and
+  # that namespace must exist.
+  namespace: ""
   # The in-cluster broker Service. The default assumes the umbrella chart's
   # release name, the same assumption identityLink.gatewayUrl already makes.
   brokerUrl: "http://agent-controller-connection-broker:8080"

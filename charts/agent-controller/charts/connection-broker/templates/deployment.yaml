@@ -31,10 +31,12 @@ spec:
           env:
             - name: PORT
               value: {{ .Values.service.port | quote }}
+            # The namespace the broker watches for Corpus/Connection CRs and
+            # reads their credential Secrets from. Defaults to the release
+            # namespace; set knowledgeBaseNamespace (or global.knowledgeBaseNamespace)
+            # to point it at a dedicated KB namespace instead.
             - name: NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
+              value: {{ include "connection-broker.knowledgeBaseNamespace" . | quote }}
             # Refused at startup rather than on the first request: a broker
             # without this accepts nothing and looks like a networking fault.
             - name: ORCHESTRATOR_TOKEN

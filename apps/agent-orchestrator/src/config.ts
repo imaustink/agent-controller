@@ -4,6 +4,14 @@ import { randomUUID } from "node:crypto";
 export interface AppConfig {
   /** k8s namespace tool/sub-agent Jobs are launched into. */
   namespace: string;
+  /**
+   * k8s namespace the KnowledgeBase/Corpus CRs are read from. Lets a deployment
+   * keep its knowledge bases in a namespace separate from the one tools/agents
+   * and Jobs live in (`namespace`), which the connection-broker is pointed at
+   * too. Defaults to `namespace` when unset, so existing single-namespace
+   * deployments are unchanged.
+   */
+  knowledgeBaseNamespace: string;
   /** API group for the Tool/Skill/ToolRun CRDs (ADR 0010), e.g. `core.controller-agent.dev`. */
   crdGroup: string;
   /** API version for the Tool/Skill/ToolRun CRDs (ADR 0010), e.g. `v1alpha1`. */
@@ -269,6 +277,8 @@ function num(raw: string | undefined, fallback: number): number {
 
 export const config: AppConfig = {
   namespace: process.env.AGENT_NAMESPACE ?? "default",
+  knowledgeBaseNamespace:
+    process.env.KNOWLEDGE_BASE_NAMESPACE || process.env.AGENT_NAMESPACE || "default",
   crdGroup: process.env.AGENT_CRD_GROUP ?? "core.controller-agent.dev",
   crdVersion: process.env.AGENT_CRD_VERSION ?? "v1alpha1",
   qdrantUrl: process.env.AGENT_QDRANT_URL ?? "http://localhost:6333",
