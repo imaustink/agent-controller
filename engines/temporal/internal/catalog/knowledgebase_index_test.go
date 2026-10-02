@@ -418,3 +418,28 @@ func TestDeleteKnowledgeBaseRemovesEveryToolItOwns(t *testing.T) {
 	_, ok := h.skills.get("kb:globex")
 	require.False(t, ok)
 }
+
+// An MCPTool (ADR 0045) unions into the Tools collection like any other tool;
+// a hidden exposure stays referenceable-by-id but out of retrieval, carried as
+// Record.Hidden — the same visibility a knowledge base's scoped tools get.
+func TestUpsertToolCarriesHiddenFlag(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	require.NoError(t, h.ix.UpsertTool(ctx, catalog.ToolDescriptor{
+		ID: "mcp:github/search_issues", Description: "search", AllowedRoles: []string{"eng"},
+		MCPExec: &catalog.MCPExecSpec{ServerRef: "github-mcp", RemoteToolName: "search_issues"},
+	}))
+	require.NoError(t, h.ix.UpsertTool(ctx, catalog.ToolDescriptor{
+		ID: "mcp:github/secret_op", Description: "secret", AllowedRoles: []string{"eng"}, Hidden: true,
+		MCPExec: &catalog.MCPExecSpec{ServerRef: "github-mcp", RemoteToolName: "secret_op"},
+	}))
+
+	visible, ok := h.tools.get("mcp:github/search_issues")
+	require.True(t, ok)
+	require.False(t, visible.Hidden, "an un-hidden MCP tool is retrievable")
+
+	hidden, ok := h.tools.get("mcp:github/secret_op")
+	require.True(t, ok)
+	require.True(t, hidden.Hidden, "a hidden MCP tool is referenceable but not retrievable")
+}

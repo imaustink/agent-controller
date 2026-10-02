@@ -53,7 +53,15 @@ func (ix *Indexer) UpsertTool(ctx context.Context, tool ToolDescriptor) error {
 	ix.tools[tool.ID] = tool
 	ix.mu.Unlock()
 
-	if err := upsertOne(ctx, ix.stores.Tools, tool.ID, tool.EmbeddingText(), tool.AllowedRoles, false, tool); err != nil {
+	// A hidden tool (a hidden MCPTool exposure, ADR 0045 §4) stays referenceable
+	// by id but out of retrieval, the same Record.Hidden a knowledge base's
+	// scoped tools get via upsertHidden.
+	rec, err := record(tool.ID, tool.EmbeddingText(), tool.AllowedRoles, false, tool)
+	if err != nil {
+		return err
+	}
+	rec.Hidden = tool.Hidden
+	if err := ix.stores.Tools.Upsert(ctx, []vectorstore.Record{rec}); err != nil {
 		return err
 	}
 	ix.scheduleSkillReindex()

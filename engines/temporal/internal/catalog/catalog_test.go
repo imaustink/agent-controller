@@ -88,6 +88,39 @@ func TestDecodeLocalTool(t *testing.T) {
 	require.Empty(t, tool.AgentRef, "a LocalTool is never agent-backed")
 }
 
+// DecodeMCPTool reads an MCPTool CR (ADR 0045) into a ToolDescriptor whose
+// MCPExec marker selects the broker-proxy dispatch path — the same shape every
+// other tool kind produces, so a skill's toolRefs reference it transparently.
+func TestDecodeMCPTool(t *testing.T) {
+	tool, err := catalog.DecodeMCPTool(&unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "core.controller-agent.dev/v1alpha1",
+		"kind":       "MCPTool",
+		"metadata":   map[string]any{"name": "mcp-github-search-issues"},
+		"spec": map[string]any{
+			"serverRef":         "github-mcp",
+			"remoteToolName":    "search_issues",
+			"description":       "Search GitHub issues",
+			"inputSchema":       `{"type":"object"}`,
+			"allowedRoles":      []any{"engineering", "support"},
+			"hidden":            true,
+			"tier":              "standard",
+			"identityProviders": []any{"github"},
+		},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, "mcp-github-search-issues", tool.ID)
+	require.Equal(t, "Search GitHub issues", tool.Description)
+	require.Equal(t, []string{"engineering", "support"}, tool.AllowedRoles)
+	require.True(t, tool.Hidden)
+	require.Equal(t, []string{"github"}, tool.IdentityProviders)
+	require.NotNil(t, tool.MCPExec)
+	require.Equal(t, "github-mcp", tool.MCPExec.ServerRef)
+	require.Equal(t, "search_issues", tool.MCPExec.RemoteToolName)
+	require.Equal(t, `{"type":"object"}`, tool.MCPExec.InputSchema)
+	require.Empty(t, tool.AgentRef, "an MCPTool is never agent-backed")
+	require.Nil(t, tool.LocalExec, "an MCPTool is not a LocalTool")
+}
+
 // Agent.spec.toolRefs scopes what the sub-agent's OWN loop may call (upstream
 // ADR 0028), which is a different question from skillRefs' prompt material.
 func TestDecodeAgentToolRefs(t *testing.T) {

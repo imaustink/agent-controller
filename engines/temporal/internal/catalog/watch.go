@@ -35,6 +35,16 @@ func knowledgeBasesEnabled() bool {
 	return os.Getenv("AGENT_KNOWLEDGE_BASES_ENABLED") == "true"
 }
 
+// mcpEnabled gates the MCPTool watch, off unless explicitly turned on, for the
+// same reason knowledgeBasesEnabled exists: an MCPTool descriptor carries no
+// image, no agentRef and no localExec — only an mcpExec that dispatches through
+// the mcp-broker. Indexing one before the broker is deployed lets the planner
+// select it and then fail at dispatch, a confusing runtime error rather than a
+// clean "not configured" (ADR 0045).
+func mcpEnabled() bool {
+	return os.Getenv("AGENT_MCP_ENABLED") == "true"
+}
+
 // watchGroup is one namespace's worth of watches, so the KB CRs can be watched
 // in a namespace of their own while the rest of the catalog stays put.
 type watchGroup struct {
@@ -111,9 +121,15 @@ func RunWatch(ctx context.Context, client dynamic.Interface, namespace, kbNamesp
 		},
 	}
 
-	// Corpora and KnowledgeBases (ADR 0038, 0039). Neither is retrievable in
-	// its own right: a Corpus contributes a corpus and a scoped GET tool,
-	// and a KnowledgeBase derives the Skill that is actually selected.
+	// Corpora, KnowledgeBases (ADR 0038, 0039) and MCPTools (ADR 0045) are all
+	// watched in the KB namespace, which may differ from the catalog namespace.
+	// Neither a Corpus nor a KnowledgeBase is retrievable in its own right; an
+	// MCPTool unions into the SAME Tools collection as container Tools and
+	// LocalTools — a skill's toolRefs reference any kind transparently,
+	// distinguished only by ToolDescriptor.MCPExec. MCPTools live beside the
+	// Connection/Corpus CRs (one catalog namespace, ADR 0045), so they are
+	// watched here rather than in the catalog group, which is where the broker
+	// writes them.
 	var kbWatches []watchSpec
 	if knowledgeBasesEnabled() {
 		kbWatches = []watchSpec{
@@ -138,6 +154,25 @@ func RunWatch(ctx context.Context, client dynamic.Interface, namespace, kbNamesp
 				ix.DeleteKnowledgeBase,
 			},
 		}
+	}
+
+	// MCPTools (ADR 0045), gated independently of knowledge bases: a deployment
+	// may run MCP servers without any knowledge base, or vice versa. Off until
+	// the mcp-broker is present to dispatch to, for the same reason the KB gate
+	// exists — an indexed tool whose dispatch path is absent is a confusing
+	// runtime error rather than a clean "not configured".
+	if mcpEnabled() {
+		kbWatches = append(kbWatches, watchSpec{
+			MCPToolGVR,
+			func(ctx context.Context, obj *unstructured.Unstructured) error {
+				tool, err := DecodeMCPTool(obj)
+				if err != nil {
+					return err
+				}
+				return ix.UpsertTool(ctx, tool)
+			},
+			ix.DeleteTool,
+		})
 	}
 
 	groups := planWatchGroups(namespace, kbNamespace, catalogWatches, kbWatches)

@@ -69,6 +69,20 @@ type localToolSpec struct {
 	TimeoutSeconds int32              `json:"timeoutSeconds,omitempty"`
 }
 
+// mcpToolSpec mirrors controllers/core-controller/api/v1alpha1.MCPToolSpec
+// (ADR 0045) — catalog fields plus the proxy coordinates the engine forwards to
+// the mcp-broker. These objects are broker-written and owned by an MCPServer.
+type mcpToolSpec struct {
+	ServerRef         string   `json:"serverRef"`
+	RemoteToolName    string   `json:"remoteToolName"`
+	Description       string   `json:"description"`
+	InputSchema       string   `json:"inputSchema,omitempty"`
+	AllowedRoles      []string `json:"allowedRoles"`
+	Hidden            bool     `json:"hidden,omitempty"`
+	Tier              string   `json:"tier,omitempty"`
+	IdentityProviders []string `json:"identityProviders,omitempty"`
+}
+
 type skillSpec struct {
 	Description      string   `json:"description"`
 	Input            string   `json:"input,omitempty"`
@@ -144,6 +158,32 @@ func DecodeLocalTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 			SecretEnv:      secretEnv,
 			Network:        spec.Network,
 			TimeoutSeconds: spec.TimeoutSeconds,
+		},
+	}, nil
+}
+
+// DecodeMCPTool reads an MCPTool CR (ADR 0045) into the same ToolDescriptor
+// shape every other tool kind produces, so a skill's toolRefs reference it
+// transparently — MCPExec is the marker that distinguishes it, as LocalExec
+// marks a LocalTool and AgentRef an agent-backed Tool. The IdentityProviders it
+// carries are resolved into the caller's own delegated token at dispatch, never
+// baked in here.
+func DecodeMCPTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
+	var spec mcpToolSpec
+	if err := decodeSpec(obj, &spec); err != nil {
+		return ToolDescriptor{}, err
+	}
+	return ToolDescriptor{
+		ID:                obj.GetName(),
+		Description:       spec.Description,
+		AllowedRoles:      spec.AllowedRoles,
+		Tier:              spec.Tier,
+		Hidden:            spec.Hidden,
+		IdentityProviders: spec.IdentityProviders,
+		MCPExec: &MCPExecSpec{
+			ServerRef:      spec.ServerRef,
+			RemoteToolName: spec.RemoteToolName,
+			InputSchema:    spec.InputSchema,
 		},
 	}, nil
 }

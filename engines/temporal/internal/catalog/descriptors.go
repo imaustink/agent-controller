@@ -17,6 +17,7 @@ var (
 	SkillGVR     = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "skills"}
 	AgentGVR     = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "agents"}
 	LocalToolGVR = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "localtools"}
+	MCPToolGVR   = schema.GroupVersionResource{Group: Group, Version: Version, Resource: "mcptools"}
 )
 
 type ToolDescriptor struct {
@@ -27,6 +28,12 @@ type ToolDescriptor struct {
 	AllowedRoles []string `json:"allowedRoles"`
 	Tier         string   `json:"tier,omitempty"`
 	AgentRef     string   `json:"agentRef,omitempty"` // set = agent-backed tool
+
+	// Hidden keeps a tool REFERENCEABLE by id (a Skill's/Agent's refs, an
+	// MCPServer exposure marked hidden) but out of semantic retrieval
+	// (ADR 0008). Container Tools and LocalTools leave it false; a knowledge
+	// base's scoped tools and hidden MCPTools set it.
+	Hidden bool `json:"hidden,omitempty"`
 
 	// IdentityProviders names the external identities the caller must have
 	// linked before this Tool may be launched (upstream ADR 0032 §2). Only
@@ -45,6 +52,26 @@ type ToolDescriptor struct {
 	// selects a dispatch path — here, retrieval in-process rather than any kind
 	// of launch — and carries what that path needs.
 	KnowledgeBaseExec *KnowledgeBaseExecSpec `json:"knowledgeBaseExec,omitempty"`
+
+	// MCPExec, when set, means this descriptor came from an MCPTool CR
+	// (ADR 0045): the tool is proxied to a Model Context Protocol server through
+	// the mcp-broker rather than launched. Like LocalExec/AgentRef it is the
+	// marker that selects a dispatch path — here, one tools/call relayed through
+	// the broker under the caller's own delegated token. The engine never speaks
+	// MCP.
+	MCPExec *MCPExecSpec `json:"mcpExec,omitempty"`
+}
+
+// MCPExecSpec mirrors the dispatch-relevant fields of MCPToolSpec
+// (controllers/core-controller/api/v1alpha1/mcptool_types.go, ADR 0045): which
+// server to reach and which remote tool to call. The broker holds the MCP
+// session; this carries only what the proxy call needs. The caller's delegated
+// token is resolved from ToolDescriptor.IdentityProviders at dispatch and never
+// rides this descriptor.
+type MCPExecSpec struct {
+	ServerRef      string `json:"serverRef"`
+	RemoteToolName string `json:"remoteToolName"`
+	InputSchema    string `json:"inputSchema,omitempty"`
 }
 
 // KnowledgeBaseExecMember is one member connection, as the search path needs it.
