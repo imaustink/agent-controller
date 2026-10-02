@@ -156,6 +156,8 @@ describe("KnowledgeBaseSearcher", () => {
     const out = await searcher.search(searchTool(member("c", ["reader"], "coll")), "q", reader);
 
     expect(out.needsLink).toBe(true);
+    // The providers the executing layer must start a link flow for.
+    expect(out.linkProviders).toEqual(["atlassian"]);
     expect(out.result).toContain("link the account");
     // No partial answer: probing on the ingestion credential would answer a
     // different question, permissively.
@@ -243,6 +245,7 @@ describe("KnowledgeBaseSearcher", () => {
     );
 
     expect(out.needsLink).toBe(true);
+    expect(out.linkProviders).toEqual(["atlassian", "google"]);
     expect(out.result).toContain("atlassian, google");
     expect(openCorpus).not.toHaveBeenCalled();
   });
