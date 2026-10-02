@@ -15,6 +15,8 @@ export interface CorpusLookupResult {
   result: string;
   /** Set when NOTHING could be searched for want of a linked account. */
   needsLink?: boolean;
+  /** Providers to link when `needsLink`; the graph starts the flow from these. */
+  linkProviders?: string[];
 }
 
 /** One hit, as the broker returns it. */
@@ -69,6 +71,7 @@ export class CorpusLookup {
 
     const hits: (BrokerHit & { member: string; corpus: string })[] = [];
     const unlinked: string[] = [];
+    const unlinkedProviders = new Set<string>();
     const refused: string[] = [];
     let searched = 0;
     let anyMember = false;
@@ -87,6 +90,7 @@ export class CorpusLookup {
       );
       if (!credential?.token) {
         unlinked.push(member.label);
+        for (const provider of member.identityProviders ?? []) unlinkedProviders.add(provider);
         continue;
       }
 
@@ -112,6 +116,7 @@ export class CorpusLookup {
     if (searched === 0 && unlinked.length > 0) {
       return {
         needsLink: true,
+        linkProviders: [...unlinkedProviders].sort(),
         result:
           `I need you to link the account behind ${unlinked.join(", ")} before I can ` +
           "search it live — this runs as you, not as the ingestion credential.",

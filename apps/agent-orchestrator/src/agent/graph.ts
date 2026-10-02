@@ -756,6 +756,50 @@ function identityGatewayFor(provider: string, deps: AgentGraphDeps): IdentityLin
 }
 
 /**
+ * Turns a knowledge-base "needs link" into an ACTIONABLE one.
+ *
+ * The retrieval paths (search/read/lookup) can tell that a caller must link a
+ * provider, but they hold no link-start gateway, so their message was a dead end
+ * — it named providers with no way to link them. This starts the OAuth flow for
+ * each un-linked provider and appends a clickable link, the same `linkPromptText`
+ * the agent path shows.
+ *
+ * Authcode providers only (atlassian/google/slack): there is nothing to poll, so
+ * the caller links in the browser and asks again — no `pendingIdentityLink` slot,
+ * which is the documented v1 scope cut for tool-call links. Falls back to the
+ * plain ask if no provider could start a flow (e.g. the gateway has that provider
+ * unconfigured), so a misconfiguration degrades to the old message rather than
+ * swallowing the turn.
+ */
+export async function knowledgeBaseLinkPrompt(
+  deps: AgentGraphDeps,
+  subject: string,
+  providers: string[],
+  baseMessage: string,
+): Promise<string> {
+  const catalog = resolveIdentityProviderCatalog(deps.identityProviderCatalog);
+  const prompts: string[] = [];
+  for (const provider of providers) {
+    const gateway = identityGatewayFor(provider, deps);
+    if (!gateway) continue;
+    try {
+      const started = await gateway.start(provider, subject, "authcode");
+      if (started) prompts.push(linkPromptText(started, catalog.get(provider)?.label ?? provider));
+    } catch (err) {
+      console.error(
+        `[kb-link] could not start a link for ${provider}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  if (prompts.length === 0) return baseMessage;
+  return (
+    `${baseMessage}\n\n` +
+    prompts.map((prompt) => `- ${prompt}`).join("\n") +
+    "\n\nOnce you've linked, ask again and I'll include those sources."
+  );
+}
+
+/**
  * The per-caller identity gate shared by `runTool`'s two tool-launch branches
  * (agent-backed and container). Resolves the caller's linked credentials for
  * `tool.identityProviders` through the SAME {@link AuthorizationService} the
@@ -2122,9 +2166,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           subject: state.identity.subject,
           roles: state.identity.roles,
         });
+        const result =
+          read.needsLink && read.linkProviders?.length
+            ? await knowledgeBaseLinkPrompt(deps, state.identity.subject, read.linkProviders, read.result)
+            : read.result;
         return {
-          result: read.result,
-          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: read.result }],
+          result,
+          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
         };
       }
 
@@ -2143,9 +2191,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           subject: state.identity.subject,
           roles: state.identity.roles,
         });
+        const result =
+          found.needsLink && found.linkProviders?.length
+            ? await knowledgeBaseLinkPrompt(deps, state.identity.subject, found.linkProviders, found.result)
+            : found.result;
         return {
-          result: found.result,
-          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: found.result }],
+          result,
+          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
         };
       }
 
@@ -2183,9 +2235,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           subject: state.identity.subject,
           roles: state.identity.roles,
         });
+        const result =
+          found.needsLink && found.linkProviders?.length
+            ? await knowledgeBaseLinkPrompt(deps, state.identity.subject, found.linkProviders, found.result)
+            : found.result;
         return {
-          result: found.result,
-          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: found.result }],
+          result,
+          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
         };
       }
 

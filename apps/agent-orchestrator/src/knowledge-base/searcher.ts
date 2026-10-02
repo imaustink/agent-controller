@@ -75,6 +75,12 @@ export interface SearchResult {
    * require, so nothing could be checked and there is no partial answer.
    */
   needsLink?: boolean;
+  /**
+   * Which providers the caller must link, when `needsLink`. The executing layer
+   * (agent/graph.ts) uses this to START the OAuth flow and hand back a clickable
+   * link — the searcher itself holds no link-start gateway.
+   */
+  linkProviders?: string[];
 }
 
 const DEFAULT_LIMIT = 6;
@@ -201,6 +207,7 @@ function needsLinkAsk(displayName: string, providers: string[]): SearchResult {
   const which = providers.length > 0 ? ` (${providers.join(", ")})` : "";
   return {
     needsLink: true,
+    linkProviders: providers,
     result:
       `I need you to link the account behind ${displayName}${which} before I can search it — ` +
       "every result has to be checked against your own access to the source.",

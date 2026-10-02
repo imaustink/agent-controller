@@ -14,6 +14,8 @@ export interface CorpusReadResult {
   result: string;
   /** Set when the caller has not linked the credential this read requires. */
   needsLink?: boolean;
+  /** Providers to link when `needsLink`; the graph starts the flow from these. */
+  linkProviders?: string[];
 }
 
 /**
@@ -106,6 +108,7 @@ export class CorpusReader {
       // permissively.
       return {
         needsLink: true,
+        linkProviders: member.identityProviders ?? [],
         result:
           `I need you to link the account behind ${member.label} before I can ` +
           "read from it — a live read has to run as you, not as the ingestion credential.",
