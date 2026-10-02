@@ -70,7 +70,9 @@ export class OAuthAuthCodeLinker {
     url.searchParams.set("client_id", config.clientId);
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("state", state);
-    url.searchParams.set("scope", config.scopes.join(" "));
+    // Standard OAuth uses `scope`; Slack requests a user token through
+    // `user_scope`, so the parameter name comes from the config.
+    url.searchParams.set(config.scopeParam ?? "scope", config.scopes.join(" "));
     url.searchParams.set("response_type", "code");
     // Atlassian issues a refresh token only when consent is forced; without it
     // a re-link silently produces an access token that dies in an hour with no
@@ -232,18 +234,41 @@ export class OAuthAuthCodeLinker {
 
   private async exchange(params: Record<string, string>): Promise<TokenResponse> {
     const { config, redirectUri } = this.options;
+    const fields: Record<string, string> = {
+      client_id: config.clientId,
+      client_secret: config.clientSecret ?? "",
+      redirect_uri: redirectUri,
+      ...params,
+    };
+    // Slack's token endpoint accepts ONLY form encoding and rejects JSON; the
+    // standard providers take JSON.
+    const form = config.tokenRequestEncoding === "form";
     const response = await this.fetchImpl(config.tokenUrl, {
       method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({
-        client_id: config.clientId,
-        client_secret: config.clientSecret,
-        redirect_uri: redirectUri,
-        ...params,
-      }),
+      headers: {
+        "content-type": form ? "application/x-www-form-urlencoded" : "application/json",
+        accept: "application/json",
+      },
+      body: form ? new URLSearchParams(fields).toString() : JSON.stringify(fields),
     });
     if (!response.ok) throw new Error(`${config.name} token endpoint returned ${response.status}`);
-    return (await response.json()) as TokenResponse;
+
+    const raw = (await response.json()) as Record<string, unknown>;
+    // Slack reports a failed exchange as HTTP 200 with `ok:false`, so a status
+    // check alone would read the failure as an empty token.
+    if (config.resultOkInBody && raw.ok === false) {
+      throw new Error(`${config.name} token endpoint error: ${String(raw.error ?? "unknown")}`);
+    }
+    // Slack returns the bot token at the top level and the USER token — the one
+    // that searches as the caller — under `authed_user`.
+    const source = (
+      config.userTokenFromAuthedUser ? ((raw.authed_user as Record<string, unknown>) ?? {}) : raw
+    ) as TokenResponse;
+    return {
+      access_token: source.access_token,
+      refresh_token: source.refresh_token,
+      expires_in: source.expires_in,
+    };
   }
 
   /** Best-effort: a missing account id costs provenance, never the link. */
@@ -269,6 +294,12 @@ export class OAuthAuthCodeLinker {
    * a token whose lifetime nobody knows.
    */
   private expiryFrom(expiresIn: number | undefined): string {
+    if ((expiresIn === undefined || expiresIn <= 0) && this.options.config.tokensDoNotExpire) {
+      // A provider whose tokens do not expire (default Slack user tokens) must
+      // not be treated as instantly stale, which would re-prompt for a link on
+      // every turn against a credential that still works.
+      return new Date(this.now() + 100 * 365 * 24 * 60 * 60 * 1000).toISOString();
+    }
     const seconds = typeof expiresIn === "number" && expiresIn > 0 ? expiresIn : 0;
     return new Date(this.now() + seconds * 1000).toISOString();
   }

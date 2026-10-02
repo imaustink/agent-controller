@@ -113,4 +113,26 @@ describe("loadOAuthProviders", () => {
     expect(loadOAuthProviders({} as NodeJS.ProcessEnv).has("google")).toBe(false);
   });
 
+  it("registers slack with the flags its non-standard OAuth needs", () => {
+    const slack = loadOAuthProviders({
+      SLACK_CLIENT_ID: "slk-client",
+      SLACK_CLIENT_SECRET: "slk-secret",
+    } as NodeJS.ProcessEnv).get("slack");
+
+    expect(slack?.kind).toBe("authcode");
+    expect(slack?.scopes).toContain("search:read");
+    // The three ways Slack deviates from standard 3LO, each honoured by config.
+    expect(slack?.scopeParam).toBe("user_scope");
+    expect(slack?.tokenRequestEncoding).toBe("form");
+    expect(slack?.userTokenFromAuthedUser).toBe(true);
+    expect(slack?.resultOkInBody).toBe(true);
+    // Default Slack user tokens do not expire and rotation is out of scope, so no
+    // refresh path is exercised.
+    expect(slack?.rotatesRefreshToken).toBe(false);
+    expect(slack?.tokensDoNotExpire).toBe(true);
+  });
+
+  it("leaves slack unregistered when its credentials are absent", () => {
+    expect(loadOAuthProviders({} as NodeJS.ProcessEnv).has("slack")).toBe(false);
+  });
 });
