@@ -10,7 +10,11 @@ image:
   # skaffold overrides repository+tag at build time for local/e2e, so this does
   # not affect those paths.
   tag: "latest"
-  pullPolicy: IfNotPresent
+  # Always, not IfNotPresent: with a mutable :latest tag a node that cached the
+  # image once would keep running the old broker across redeploys. Matches how
+  # values-production.yaml pins every :latest image. (A :<sha> pin could use
+  # IfNotPresent, since the tag itself changes.)
+  pullPolicy: Always
 
 imagePullSecrets: []
 nameOverride: ""
