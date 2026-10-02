@@ -179,7 +179,7 @@ spec:
         name: {{ .Values.claudeCodeSweAgent.secretName }}
         key: {{ .Values.claudeCodeSweAgent.githubAppInstallationIdSecretKey }}
     {{- end }}
-  {{- if or .Values.claudeCodeSweAgent.identityLink.enabled .Values.claudeCodeSweAgent.githubAppSlug .Values.claudeCodeSweAgent.model .Values.claudeCodeSweAgent.remoteControl.enabled .Values.claudeCodeSweAgent.goMemLimit }}
+  {{- if or .Values.claudeCodeSweAgent.identityLink.enabled .Values.claudeCodeSweAgent.githubAppSlug .Values.claudeCodeSweAgent.model .Values.claudeCodeSweAgent.remoteControl.enabled .Values.claudeCodeSweAgent.goMemLimit .Values.claudeCodeSweAgent.skills }}
   env:
     {{- if .Values.claudeCodeSweAgent.goMemLimit }}
     # Inherited by every Go tool Claude runs in the repo (go build/test,
@@ -195,6 +195,10 @@ spec:
     {{- if .Values.claudeCodeSweAgent.githubAppSlug }}
     - name: GITHUB_APP_SLUG
       value: {{ .Values.claudeCodeSweAgent.githubAppSlug | quote }}
+    {{- end }}
+    {{- if .Values.claudeCodeSweAgent.skills }}
+    - name: CLAUDE_SKILLS
+      value: {{ join "," .Values.claudeCodeSweAgent.skills | quote }}
     {{- end }}
     {{- if .Values.claudeCodeSweAgent.model }}
     - name: CLAUDE_CODE_MODEL

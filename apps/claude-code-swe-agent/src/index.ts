@@ -28,6 +28,7 @@ import {
 } from "./identityDelegation.js";
 import { GH_READ_TOKEN_ENV, GH_WRITE_TOKEN_ENV, installGhShim } from "./ghShim.js";
 import { clip } from "./security/redact.js";
+import { installSkills, splitSkillInvocation } from "./skills.js";
 
 const toolConfig = loadToolConfig();
 
@@ -51,6 +52,11 @@ async function handler(session: AgentSession): Promise<AgentReply> {
 
   await ensureDir(toolConfig.homeDir);
   await ensureDir(toolConfig.workdir);
+  const installedSkills = await installSkills({
+    sourceDir: toolConfig.skillsSourceDir,
+    homeDir: toolConfig.homeDir,
+    names: toolConfig.skills,
+  });
 
   if (toolConfig.remoteControlEnabled) {
     // A separate Go/Helm phase's init container is responsible for seeding
@@ -103,8 +109,9 @@ async function handler(session: AgentSession): Promise<AgentReply> {
 
   await session.progress("Authenticating…", { stage: "authenticate" });
 
-  const { token: continuationToken, text: instruction } = extractContinuationToken(session.goal);
+  const { token: continuationToken, text: goalText } = extractContinuationToken(session.goal);
   const marker = decodeSweContinuation(continuationToken);
+  const { skill, instruction } = splitSkillInvocation(goalText, installedSkills);
   if (!instruction.trim()) {
     throw new Error("Goal must not be empty after removing any continuation marker");
   }
@@ -225,7 +232,7 @@ async function handler(session: AgentSession): Promise<AgentReply> {
   }
 
   await session.progress("Running Claude Code…", { stage: "agent" });
-  const prompt = buildPrompt(instruction, marker);
+  const prompt = buildPrompt(instruction, marker, skill);
   const runOpts = {
     cwd: toolConfig.workdir,
     env: childEnv,

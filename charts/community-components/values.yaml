@@ -316,6 +316,17 @@ claudeCodeSweAgent:
   # Claude Code model id/alias (e.g. "sonnet", "claude-sonnet-5"). Empty uses
   # the CLI's own default.
   model: ""
+  # Claude Code skills to install for each run, by directory name under
+  # mattpocock/skills' skills/engineering/ (the image bakes in all of them at a
+  # pinned commit -- see the Dockerfile's MATT_SKILLS_SHA). An unknown name
+  # fails the run. Start a request with `/<skill> ...` to invoke one, e.g.
+  # "/implement the spec in acme/widgets#42"; `implement` can ONLY be invoked
+  # that way (it sets disable-model-invocation), and it calls tdd and
+  # code-review itself, so keep those alongside it. [] installs none.
+  skills:
+    - implement
+    - tdd
+    - code-review
   # The run pod's resources. Memory is the binding constraint: the limit covers
   # the agent, the `claude` CLI, AND every build/test/lint process Claude runs
   # in the cloned repo (tsc, go build, golangci-lint...). At the old 2Gi limit

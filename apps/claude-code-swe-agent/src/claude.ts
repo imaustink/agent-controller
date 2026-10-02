@@ -64,8 +64,13 @@ export function buildClaudeSettings(): object {
  * long-lived local session to `--resume` across separate AgentRun Jobs — see
  * marker.ts — so continuity comes entirely from this re-framing plus
  * re-cloning the repo).
+ *
+ * `skill`, when set, is a Claude Code skill the caller invoked as `/<skill>`
+ * (see skills.ts's splitSkillInvocation). It goes in front of everything
+ * else, since that's the only place the CLI expands it; the rest of the
+ * prompt becomes the skill's arguments, unchanged.
  */
-export function buildPrompt(instruction: string, marker: SweMarker | null): string {
+export function buildPrompt(instruction: string, marker: SweMarker | null, skill: string | null = null): string {
   const context = marker
     ? `You are CONTINUING work on an existing pull request.\n` +
       `- Repository: ${marker.repo}\n` +
@@ -75,7 +80,7 @@ export function buildPrompt(instruction: string, marker: SweMarker | null): stri
     : `If the task needs an existing repository, clone it into the current directory. ` +
       `If it needs a NEW repository, create it with \`gh repo create\` (a private repo unless told otherwise) and clone it.`;
 
-  return [
+  const prompt = [
     `You are an autonomous software-engineering agent running headless in a container.`,
     `Complete the task below end-to-end and open (or update) a GitHub pull request with the result.`,
     ``,
@@ -103,4 +108,5 @@ export function buildPrompt(instruction: string, marker: SweMarker | null): stri
     `- You get exactly ONE turn to complete this task, and this process exits as soon as you reply -- there is no scheduler, cron, or webhook that will wake it back up later. You cannot pause partway through and wait for something external (a CI run, a build, a test job) to finish. Finish the task now with whatever information is available; if something is still pending, say so as a caveat in your final reply instead of deferring completion on it. Do NOT say you'll "resume automatically", "finalize later", or "when the check completes" -- that will never happen, and it leaves the task looking incomplete with no way for anyone to know a human needs to re-trigger you.`,
     `- When finished, print a short summary of what you changed and the pull request URL.`,
   ].join("\n");
+  return skill ? `/${skill} ${prompt}` : prompt;
 }

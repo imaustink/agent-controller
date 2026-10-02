@@ -70,6 +70,10 @@ FROM node:22-bookworm-slim AS runtime
 ARG GH_VERSION=2.63.2
 ARG GO_VERSION=1.24.5
 ARG CLAUDE_CODE_VERSION=2.1.218
+# github.com/mattpocock/skills, pinned to a commit for the same reason as the
+# CLI: a skill is instructions the agent follows, so an upstream edit changes
+# its behaviour. Bump deliberately.
+ARG MATT_SKILLS_SHA=d81f3a183412e71a5b1e84ca21bc1a35eea03a60
 
 # Common dev-tool baseline for the agent's own use during a task (build
 # tooling, archive handling, JSON munging, searching a checkout, editing) --
@@ -123,6 +127,17 @@ RUN apt-get update \
   && apt-get autoremove -y \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
+
+# Claude Code skills bundle: every skill under the upstream repo's
+# skills/engineering/, one directory each. Baked in read-only; the agent copies
+# only the ones CLAUDE_SKILLS names into $HOME/.claude/skills at startup
+# (src/skills.ts), so the subset is a Helm value rather than a rebuild.
+RUN mkdir -p /opt/claude-skills \
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+     "https://codeload.github.com/mattpocock/skills/tar.gz/${MATT_SKILLS_SHA}" \
+  | tar -xzf - -C /opt/claude-skills --strip-components=3 "skills-${MATT_SKILLS_SHA}/skills/engineering" \
+  && rm -f /opt/claude-skills/README.md \
+  && test -f /opt/claude-skills/implement/SKILL.md
 
 WORKDIR /app
 ENV NODE_ENV=production
