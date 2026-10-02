@@ -1,0 +1,23 @@
+{
+  "name": "fake-mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "E2E-only MCP server over streamable-http that stands in for a third-party MCP server (docs/adr/0045). It exposes a FIXED, deterministic tool set (echo, whoami, boom) so cluster e2e tests exercise the real mcp-broker and real engines end to end without a real external server. whoami reflects the inbound Bearer token, proving the broker forwarded the CALLER's per-user delegated token upstream. Never deployed outside the e2e overlay.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.5",
+    "typescript": "^5.6.2"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.25.0"
+  }
+}

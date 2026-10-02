@@ -161,3 +161,10 @@ integrationRoutes:
     enabled: true
     agentRef: stub-swe-agent
     labelName: ai-review
+
+# The in-cluster MCP server the mcp-broker discovers and proxies to (ADR 0045).
+# The MCPServer CR that points at it is applied per-test by
+# e2e/specs/mcp-crd.e2e.ts, so the suite owns its exposure map and lifecycle.
+fakeMcpServer:
+  enabled: true
+  acknowledgeNotForProduction: true
