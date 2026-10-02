@@ -28,6 +28,27 @@ const file = (overrides: Record<string, unknown> = {}) => ({
 
 const driver = (http: FetchLike) => new GDriveDriver({ fetch: http });
 
+describe("file types", () => {
+  it("indexes XML, which is already text and needs no parser", async () => {
+    const http = vi.fn().mockResolvedValue(respond({ files: [file({ id: "X", mimeType: "text/xml" })] }));
+    const { resources } = await driver(http).list(SCOPE, { service: "t" }, undefined);
+    expect(resources.map((r) => r.id)).toContain("X");
+  });
+
+  it("indexes Office formats (docx/xlsx/xlsm), which the extractor parses", async () => {
+    const offices = [
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-excel.sheet.macroEnabled.12",
+    ];
+    const http = vi.fn().mockResolvedValue(
+      respond({ files: offices.map((mimeType, i) => file({ id: `O${i}`, mimeType })) }),
+    );
+    const { resources } = await driver(http).list(SCOPE, { service: "t" }, undefined);
+    expect(resources.map((r) => r.id)).toEqual(["O0", "O1", "O2"]);
+  });
+});
+
 describe("Shared Drive support", () => {
   it("sends supportsAllDrives on every call and includeItemsFromAllDrives on list queries", async () => {
     const http = vi.fn().mockResolvedValue(respond({ files: [file()] }));
