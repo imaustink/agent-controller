@@ -264,11 +264,15 @@ per-server choice, never the silent default (§5).
 
 1. Land this ADR before code: the `mcpExec` contract and the exposure/auth model
    are easier to review as reasoning than as a two-engine diff.
-2. Add `MCPServer` and `MCPTool` CRDs with CEL validation; add the `mcpExec`
-   field to both descriptor models and both dispatchers. Regenerate RBAC and
-   **hand-add the new resources** to the core-controller chart's `rbac.yaml` and
-   copy the CRD YAMLs into `charts/.../crds/` in the same commit — neither is
-   picked up automatically — and bump the chart version so Argo re-renders.
+2. Add `MCPServer` and `MCPTool` CRDs. `make manifests` regenerates the CRD
+   YAMLs and syncs them into `charts/.../crds/` automatically (the `sync-crds`
+   target), so that copy is not manual. The CRDs carry no core-controller
+   reconciler — the broker owns discovery and materialization, and
+   `ownerReferences` cascade-delete derived `MCPTool`s, so no finalizer is
+   needed. When later steps give the broker and catalog-sync access to these
+   kinds, **hand-add those resources** to the relevant chart's `rbac.yaml` (the
+   chart RBAC is hand-maintained, not generated) in the same commit, and bump
+   the chart version so Argo re-renders.
 3. Build `mcp-broker` discovery: connect, `tools/list`, write
    `status.discoveredTools` and derived `MCPTool`s honoring the exposure map and
    the existence rule (§6). No invocation yet.
