@@ -236,6 +236,15 @@ type ConversationState struct {
 	// asked for rather than whatever text happened to arrive next ("ok,
 	// linked it").
 	PendingIdentityLink *authz.PendingLink `json:"pendingIdentityLink,omitempty"`
+
+	// KnowledgeBaseLinkPrompts records the knowledge bases this conversation has
+	// already shown a deterministic "link the accounts it covers" gate for,
+	// keyed by knowledge-base id. The gate fires at most once per knowledge base
+	// per conversation: having been told what is missing, a follow-up ask
+	// proceeds with whatever the caller has linked rather than stopping again —
+	// so linking (or simply re-asking) is the way through, with no poll or
+	// resume anchor to maintain.
+	KnowledgeBaseLinkPrompts map[string]bool `json:"knowledgeBaseLinkPrompts,omitempty"`
 }
 
 // beginAgentListen registers the caller as the current (and only) listener

@@ -1877,9 +1877,13 @@ func TestKnowledgeBaseSearchRunsAsAnActivityNotALaunch(t *testing.T) {
 	require.True(t, le.env.IsWorkflowCompleted())
 	require.NoError(t, le.env.GetWorkflowError())
 
-	require.Len(t, le.kbSearchInputs, 1)
-	require.Equal(t, "how is auth configured", le.kbSearchInputs[0].Query)
-	require.Equal(t, "kb:globex/search", le.kbSearchInputs[0].Tool.ID)
+	// Two activity calls: the deterministic pre-search link gate (GateOnly),
+	// which finds nothing missing here, then the real search.
+	require.Len(t, le.kbSearchInputs, 2)
+	require.True(t, le.kbSearchInputs[0].GateOnly, "the first call is the link gate")
+	require.False(t, le.kbSearchInputs[1].GateOnly, "the second call is the real search")
+	require.Equal(t, "how is auth configured", le.kbSearchInputs[1].Query)
+	require.Equal(t, "kb:globex/search", le.kbSearchInputs[1].Tool.ID)
 	require.Nil(t, le.launched, "a knowledge-base search must never create a ToolRun")
 	require.Contains(t, result.Reply, "Sources:")
 }
@@ -1892,8 +1896,9 @@ func TestKnowledgeBaseSearchNeedingALinkEndsTheTurnOnTheAsk(t *testing.T) {
 	le.skills = []catalog.SkillDescriptor{knowledgeBaseSkillTools().Skill}
 	le.skillTools = knowledgeBaseSkillTools()
 	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
-		NeedsLink: true,
-		Result:    "I need you to link the account behind GLOBEX before I can search it.",
+		NeedsLink:     true,
+		LinkProviders: []string{"atlassian"},
+		Result:        "I need you to link the account behind GLOBEX before I can search it.",
 	}
 	le.plans = []activities.PlannedAction{
 		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "q"},
@@ -1906,6 +1911,10 @@ func TestKnowledgeBaseSearchNeedingALinkEndsTheTurnOnTheAsk(t *testing.T) {
 	require.True(t, le.env.IsWorkflowCompleted())
 	require.NoError(t, le.env.GetWorkflowError())
 
+	// The deterministic gate stops the turn on the ask before any search runs:
+	// one GateOnly call, no real search, nothing framed.
+	require.Len(t, le.kbSearchInputs, 1)
+	require.True(t, le.kbSearchInputs[0].GateOnly)
 	require.Contains(t, result.Reply, "link the account")
 	require.Zero(t, le.composeCalls, "nothing was retrieved, so there is nothing to frame")
 }

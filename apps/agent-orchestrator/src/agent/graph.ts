@@ -31,6 +31,7 @@ import type { ResponseComposer } from "./response-composer.js";
 import type { CorpusReader } from "../knowledge-base/reader.js";
 import type { CorpusLookup } from "../knowledge-base/lookup.js";
 import type { KnowledgeBaseSearcher } from "../knowledge-base/searcher.js";
+import { knowledgeBaseSkillId } from "../knowledge-base/types.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
@@ -280,6 +281,17 @@ export const AgentStateAnnotation = Annotation.Root({
   error: Annotation<string | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
+  }),
+  /**
+   * Set by `runTool` when the deterministic knowledge-base link gate stops the
+   * turn to ask the caller to link an account: `result` holds the ask, and the
+   * turn must END with it rather than looping back to `planAction` (which would
+   * let the model recompose and drop the link). PARITY: the Temporal engine's
+   * `ConversationState.KnowledgeBaseLinkPrompts` gate, which returns directly.
+   */
+  linkGatePending: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
   }),
   /** Descriptor of the sub-agent selected for this turn (agent delegation path). */
   selectedAgent: Annotation<AgentDescriptor | undefined>({
@@ -777,26 +789,79 @@ export async function knowledgeBaseLinkPrompt(
   providers: string[],
   baseMessage: string,
 ): Promise<string> {
+  const clauses = await startKnowledgeBaseLinkClauses(deps, subject, providers);
+  if (clauses.length === 0) return baseMessage;
+  return (
+    `${baseMessage}\n\n` +
+    clauses.map((clause) => `- ${clause}`).join("\n") +
+    "\n\nOnce you've linked, ask again and I'll include those sources."
+  );
+}
+
+/**
+ * Starts an authcode flow per provider and returns one clickable clause each
+ * ("[link your slack account](url)"), skipping any whose flow could not be
+ * started or whose provider has no gateway. Shared by {@link knowledgeBaseLinkPrompt}
+ * and {@link knowledgeBaseLinkGate}.
+ */
+async function startKnowledgeBaseLinkClauses(
+  deps: AgentGraphDeps,
+  subject: string,
+  providers: string[],
+): Promise<string[]> {
   const catalog = resolveIdentityProviderCatalog(deps.identityProviderCatalog);
-  const prompts: string[] = [];
+  const clauses: string[] = [];
   for (const provider of providers) {
     const gateway = identityGatewayFor(provider, deps);
     if (!gateway) continue;
     try {
       const started = await gateway.start(provider, subject, "authcode");
-      if (started) prompts.push(linkPromptText(started, catalog.get(provider)?.label ?? provider));
+      if (started) clauses.push(linkPromptText(started, catalog.get(provider)?.label ?? provider));
     } catch (err) {
       console.error(
         `[kb-link] could not start a link for ${provider}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
-  if (prompts.length === 0) return baseMessage;
-  return (
-    `${baseMessage}\n\n` +
-    prompts.map((prompt) => `- ${prompt}`).join("\n") +
-    "\n\nOnce you've linked, ask again and I'll include those sources."
-  );
+  return clauses;
+}
+
+/**
+ * The deterministic pre-search interrupt shown before a knowledge-base search
+ * when the caller is missing one or more of its accounts. Names what is already
+ * linked, starts a flow for each missing provider and renders a clickable link,
+ * and tells the caller they can link and ask again — or ask again as-is to search
+ * with just what they have.
+ *
+ * This is the deterministic half of "surface the link, don't hope the model
+ * does": the graph calls it before searching and ends the turn on its message,
+ * so a core auth behaviour never depends on the planner relaying a caveat.
+ *
+ * PARITY: `gatePrompt` in
+ * engines/temporal/internal/temporal/activities/knowledgebase.go.
+ */
+export async function knowledgeBaseLinkGate(
+  deps: AgentGraphDeps,
+  subject: string,
+  displayName: string,
+  linked: string[],
+  unlinked: string[],
+): Promise<string> {
+  const catalog = resolveIdentityProviderCatalog(deps.identityProviderCatalog);
+  const label = (provider: string) => catalog.get(provider)?.label ?? provider;
+  let message =
+    `Before I search the **${displayName}** knowledge base, link the account(s) it covers ` +
+    `that you haven't yet (${unlinked.map(label).join(", ")}):`;
+  const clauses = await startKnowledgeBaseLinkClauses(deps, subject, unlinked);
+  if (clauses.length > 0) {
+    message += `\n\n` + clauses.map((clause) => `- ${clause}`).join("\n");
+  }
+  if (linked.length > 0) {
+    message += `\n\n(${linked.map(label).join(", ")} already linked.)`;
+  }
+  message +=
+    "\n\nLink the account(s) above and ask again, or ask again now to search with just what you have linked.";
+  return message;
 }
 
 /**
@@ -2244,6 +2309,37 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // check the results against.
           return { error: `tool ${tool.id} requires a resolved caller identity` };
         }
+
+        // Deterministic link gate: when this knowledge base is being engaged
+        // FRESH this turn (its skill was not already active from a prior turn),
+        // check whether the caller is missing any provider it covers and, if so,
+        // stop and ask them to link it BEFORE searching — rather than returning a
+        // partial answer whose "link this too" line the planner might drop. A
+        // follow-up ask keeps the skill active, so it proceeds with whatever they
+        // have linked (link, or just ask again, to get through). PARITY: the
+        // Temporal engine's GateOnly pre-search check.
+        const kbSkillId = knowledgeBaseSkillId(tool.knowledgeBaseExec.knowledgeBaseId);
+        if (state.activeSkillId !== kbSkillId) {
+          const links = await deps.knowledgeBaseSearcher.checkLinks(tool, {
+            subject: state.identity.subject,
+            roles: state.identity.roles,
+          });
+          if (links.linkProviders.length > 0) {
+            const gate = await knowledgeBaseLinkGate(
+              deps,
+              state.identity.subject,
+              tool.knowledgeBaseExec.displayName,
+              links.linkedProviders,
+              links.linkProviders,
+            );
+            return {
+              result: gate,
+              linkGatePending: true,
+              actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: gate }],
+            };
+          }
+        }
+
         const found = await deps.knowledgeBaseSearcher.search(tool, input, {
           // Already resolved for this turn, and the same identity every other
           // RBAC decision on it was made against.
@@ -2519,6 +2615,10 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     // The turn resumes as a NEW invocation when the client resends.
     .addConditionalEdges("runTool", (state) => {
       if (state.error || state.pendingToolCalls.length > 0) return END;
+      // The deterministic knowledge-base link gate stops the turn on its ask:
+      // END with that message rather than looping to planAction, where the model
+      // would recompose and could drop the link (the whole point of the gate).
+      if (state.linkGatePending) return END;
       if (state.result === undefined) return END;
       return state.selectedSkill ? "planAction" : "composeResponse";
     })
