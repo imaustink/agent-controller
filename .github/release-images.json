@@ -4,6 +4,7 @@
   {"image": "claude-code-swe-agent", "filter": "claude-code-swe-agent", "dockerfile": "apps/claude-code-swe-agent/Dockerfile", "context": "."},
   {"image": "integration-gateway", "filter": "integration-gateway", "dockerfile": "apps/integration-gateway/Dockerfile", "context": "."},
   {"image": "connection-broker", "filter": "connection-broker", "dockerfile": "apps/connection-broker/Dockerfile", "context": "."},
+  {"image": "mcp-broker", "filter": "mcp-broker", "dockerfile": "apps/mcp-broker/Dockerfile", "context": "."},
   {"image": "recipe-scraper", "filter": "recipe-scraper", "dockerfile": "tools/recipe-scraper/Dockerfile", "context": "."},
   {"image": "recipe-publisher", "filter": "recipe-publisher", "dockerfile": "tools/recipe-publisher/Dockerfile", "context": "."},
   {"image": "web-search", "filter": "web-search", "dockerfile": "tools/web-search/Dockerfile", "context": "."},

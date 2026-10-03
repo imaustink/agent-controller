@@ -279,7 +279,7 @@ type CorpusStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=".spec.provider"
+// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=".status.provider"
 // +kubebuilder:printcolumn:name="Resources",type=integer,JSONPath=".status.resources"
 // +kubebuilder:printcolumn:name="Last Reconcile",type=date,JSONPath=".status.lastReconcileTime"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"

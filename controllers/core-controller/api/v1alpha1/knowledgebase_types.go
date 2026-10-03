@@ -179,7 +179,7 @@ type KnowledgeBaseStatus struct {
 // +kubebuilder:resource:shortName=kb
 // +kubebuilder:printcolumn:name="Documents",type=integer,JSONPath=".status.documents"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
-// +kubebuilder:printcolumn:name="Stale",type=string,JSONPath=".status.staleConnections",priority=1
+// +kubebuilder:printcolumn:name="Stale",type=string,JSONPath=".status.staleCorpora",priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
 // KnowledgeBase is the Schema for the knowledgebases API

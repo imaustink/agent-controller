@@ -493,3 +493,18 @@ knowledgeBases:
   brokerTokenSecret:
     name: connection-broker-auth
     key: orchestratorToken
+
+# MCP tools (docs/adr/0045). Turns on the orchestrator's MCPTool watch (so MCP
+# tools union into its catalog) and its dispatch to the mcp-broker. MCPTool CRs
+# are watched in the KB namespace (knowledgeBases.namespace /
+# global.knowledgeBaseNamespace), where the broker writes them. Enable the
+# mcp-broker subchart too — this only teaches the orchestrator about tools the
+# broker has already discovered.
+mcp:
+  enabled: false
+  # The in-cluster mcp-broker Service.
+  brokerUrl: "http://agent-controller-mcp-broker:8080"
+  # Must hold the SAME value as the mcp-broker's orchestratorTokenSecret.
+  brokerTokenSecret:
+    name: mcp-broker-auth
+    key: orchestratorToken

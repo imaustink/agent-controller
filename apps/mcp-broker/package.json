@@ -1,0 +1,25 @@
+{
+  "name": "mcp-broker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The ONLY component that speaks the Model Context Protocol (docs/adr/0045). Two jobs in one Deployment: DISCOVERY (watch MCPServer CRs, list each server's tools, publish them to status and materialize the EXPOSED ones as derived MCPTool CRs) and INVOCATION (proxy one tools/call under the CALLER's delegated token). A separate Deployment from agent-orchestrator on purpose: the MCP wire protocol, its sessions and its outbound egress stay out of the deterministic agent loop, exactly as ADR 0014's LocalTool executor keeps a sidecar runtime out of it.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "start": "node dist/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.5",
+    "typescript": "^5.6.2",
+    "vitest": "^4.0.0"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

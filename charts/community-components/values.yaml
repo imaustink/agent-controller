@@ -771,3 +771,17 @@ integrationRoutes:
     # Which label selects this route rather than githubPrLabeledReview above.
     # Must equal integration-gateway's config.githubTriggerLabel.
     labelName: ai-triage
+
+# E2E-only fixture: a deterministic MCP server (apps/fake-mcp-server, ADR 0045)
+# that stands in for a third-party MCP server so cluster e2e tests exercise the
+# real mcp-broker and engines end to end. Default-disabled; enabled only by
+# values-e2e.yaml. skaffold's e2e profile substitutes the built image.
+fakeMcpServer:
+  enabled: false
+  # Refuses to render unless set true, like the stub agents: a production
+  # cluster must never run a test double that reflects whatever bearer it is
+  # handed.
+  acknowledgeNotForProduction: false
+  image: fake-mcp-server:latest
+  imagePullPolicy: IfNotPresent
+  mcpPath: /mcp

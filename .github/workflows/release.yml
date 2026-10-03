@@ -71,6 +71,10 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - 'apps/connection-broker/**'
+            mcp-broker:
+              - 'package.json'
+              - 'package-lock.json'
+              - 'apps/mcp-broker/**'
             recipe-scraper:
               - 'package.json'
               - 'package-lock.json'

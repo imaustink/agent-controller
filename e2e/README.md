@@ -113,6 +113,8 @@ specs/
   rbac-parity.e2e.ts      markers -> role.yaml -> Helm chart RBAC agree (no cluster)
   rbac-installed.e2e.ts   the INSTALLED ClusterRole, and that the controller starts
   resilience.e2e.ts       what survives NATS/orchestrator moving mid-turn
+  mcp-broker-contract.e2e.ts  MCP engine client <-> broker server <-> Go activity agree (no cluster)
+  mcp-crd.e2e.ts          the deployed mcp-broker discovers the fake MCP server and proxies a call as the caller
 manifests/
   fake-github.yaml          in-cluster GitHub API stub (Deployment + Service + script)
   caller-tool-skills.yaml   two Skill CRs differing only in `allowCallerTools`

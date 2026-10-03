@@ -30,6 +30,7 @@ import type { DelegateSelector } from "./delegate-selector.js";
 import type { ResponseComposer } from "./response-composer.js";
 import type { CorpusReader } from "../knowledge-base/reader.js";
 import type { CorpusLookup } from "../knowledge-base/lookup.js";
+import type { MCPBrokerClient } from "../mcp/mcp-broker-client.js";
 import type { KnowledgeBaseSearcher } from "../knowledge-base/searcher.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
@@ -551,6 +552,13 @@ export interface AgentGraphDeps {
    * generated either.
    */
   corpusLookup?: CorpusLookup;
+  /**
+   * Proxies an MCP tool call through the mcp-broker (docs/adr/0045). Absent when
+   * `AGENT_MCP_BROKER_URL` is unset, in which case an `mcpExec` tool fails
+   * gracefully rather than crashing the graph — and, matching the Go engine, is
+   * not indexed in the first place unless the broker is present to dispatch to.
+   */
+  mcpBrokerClient?: MCPBrokerClient;
   /**
    * Resolves identity from Open WebUI's per-request signed
    * `X-OpenWebUI-User-Jwt` header (`OpenWebUiForwardedUserResolver`) rather
@@ -1625,6 +1633,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               : undefined,
           onToolCall: makeSubAgentToolCallHandler(state.activeAgentRunId, found.agent, deps.agentChannel, deps.toolCatalog, deps, {
             sessionId: state.sessionId,
+            // The caller a sub-agent's own tool calls run AS — needed to resolve
+            // the delegated token an mcpExec tool is dispatched under (ADR 0045).
+            callerSubject: state.identity?.subject,
           }),
         });
         // RE-ATTACH vs CONTINUE. Parked on a question -> this turn's text is the
@@ -1886,6 +1897,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               : undefined,
           onToolCall: makeSubAgentToolCallHandler(runId, agent, deps.agentChannel, deps.toolCatalog, deps, {
             sessionId: state.sessionId,
+            // The caller a sub-agent's own tool calls run AS — needed to resolve
+            // the delegated token an mcpExec tool is dispatched under (ADR 0045).
+            callerSubject: state.identity?.subject,
           }),
         });
         // Anchor the run to the conversation BEFORE creating it, for the same
@@ -2254,6 +2268,29 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         return {
           result,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
+        };
+      }
+
+      // MCP tool (docs/adr/0045): proxied to a Model Context Protocol server
+      // through the mcp-broker. Beside the knowledge-base read/lookup faces and
+      // for the same reasons — it runs AS the caller, in-process rather than any
+      // kind of launch, and never touches the continuation-token machinery (a
+      // sessionless tools/call has no resumable state). The engine never speaks
+      // MCP; a tool-level error or a missing link comes back as prose the model
+      // can act on, not a thrown turn.
+      if (tool.mcpExec) {
+        if (!deps.mcpBrokerClient) {
+          return { error: `tool ${tool.id} is an MCP tool but the mcp-broker is not configured` };
+        }
+        if (!state.identity) {
+          // Fail closed: a per-user MCP call runs AS someone, and there is
+          // nobody to run it as (docs/adr/0045 §5).
+          return { error: `tool ${tool.id} requires a resolved caller identity` };
+        }
+        const called = await deps.mcpBrokerClient.call(tool, input, { subject: state.identity.subject });
+        return {
+          result: called.result,
+          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: called.result }],
         };
       }
 

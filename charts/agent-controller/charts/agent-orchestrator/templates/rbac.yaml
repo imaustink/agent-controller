@@ -36,6 +36,16 @@ rules:
     resources: ["connections", "corpora", "knowledgebases"]
     verbs: ["get", "list", "watch"]
   {{- end }}
+  {{- if and .Values.mcp.enabled (eq $kbNs $toolNs) }}
+  # MCPTools (docs/adr/0045). The broker materializes these in the KB namespace
+  # and the orchestrator WATCHES them to union MCP tools into its catalog — with
+  # mcp enabled and this missing it crashloops on a 403 at startup, not degrades.
+  # Only here when the KB namespace is the tool namespace; a distinct KB
+  # namespace gets its own Role/RoleBinding below instead.
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["mcptools"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
   - apiGroups: ["core.controller-agent.dev"]
     resources: ["toolruns"]
     verbs: ["create", "get", "list", "watch", "delete"]
@@ -83,15 +93,15 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "agent-orchestrator.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
-{{- if and .Values.knowledgeBases.enabled (ne $kbNs $toolNs) }}
+{{- if and (or .Values.knowledgeBases.enabled .Values.mcp.enabled) (ne $kbNs $toolNs) }}
 ---
 {{/*
-When knowledge bases live in a namespace of their own (knowledgeBases.namespace
-or global.knowledgeBaseNamespace), the KB read grant has to be a Role THERE, not
-in the tool namespace — the orchestrator watches KnowledgeBase/Corpus CRs in
-that namespace and 403-crashloops without it. Still a namespaced Role (never a
-ClusterRole); the subject SA stays in the release namespace. That namespace must
-already exist.
+When knowledge bases / MCP tools live in a namespace of their own
+(knowledgeBases.namespace or global.knowledgeBaseNamespace), the CR read grant
+has to be a Role THERE, not in the tool namespace — the orchestrator watches
+KnowledgeBase/Corpus and MCPTool CRs in that namespace and 403-crashloops
+without it. Still a namespaced Role (never a ClusterRole); the subject SA stays
+in the release namespace. That namespace must already exist.
 */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -101,9 +111,16 @@ metadata:
   labels:
     {{- include "agent-orchestrator.labels" . | nindent 4 }}
 rules:
+  {{- if .Values.knowledgeBases.enabled }}
   - apiGroups: ["core.controller-agent.dev"]
     resources: ["connections", "corpora", "knowledgebases"]
     verbs: ["get", "list", "watch"]
+  {{- end }}
+  {{- if .Values.mcp.enabled }}
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["mcptools"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
