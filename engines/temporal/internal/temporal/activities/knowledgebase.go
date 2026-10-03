@@ -193,16 +193,21 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 	// gap to the person reading the answer.
 	outcome.SkippedCorpora += skipped
 
-	return SearchKnowledgeBaseOutput{
-		Result: corpus.Render(corpus.RenderInput{
-			Outcome:  outcome,
-			Withheld: withheld,
-			Disclose: exec.DisclosePartialVisibility,
-			// Members whose provider the caller has not linked: served sources are
-			// real, and this says what more a link would add rather than hiding it.
-			Unlinked: &corpus.Unlinked{Providers: providersToLink(notLinked, tokens), Sources: len(notLinked)},
-		}),
-	}, nil
+	// Members whose provider the caller has not linked: the served sources are
+	// real, so this is a partial answer, not a block — but it still offers a
+	// FRESH clickable link for each missing provider, so they can be linked one
+	// at a time (e.g. Slack after Confluence and Drive), and a link that expired
+	// before the caller finished is simply replaced on the next ask.
+	unlinkedProviders := providersToLink(notLinked, tokens)
+	result := corpus.Render(corpus.RenderInput{
+		Outcome:  outcome,
+		Withheld: withheld,
+		Disclose: exec.DisclosePartialVisibility,
+		Unlinked: &corpus.Unlinked{Providers: unlinkedProviders, Sources: len(notLinked)},
+	})
+	result = a.startLinks(ctx, in.Caller, unlinkedProviders, result)
+
+	return SearchKnowledgeBaseOutput{Result: result, LinkProviders: unlinkedProviders}, nil
 }
 
 // needsLink is the honest response when the caller has linked none of the

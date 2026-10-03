@@ -2167,7 +2167,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           roles: state.identity.roles,
         });
         const result =
-          read.needsLink && read.linkProviders?.length
+          read.linkProviders?.length
             ? await knowledgeBaseLinkPrompt(deps, state.identity.subject, read.linkProviders, read.result)
             : read.result;
         return {
@@ -2192,7 +2192,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           roles: state.identity.roles,
         });
         const result =
-          found.needsLink && found.linkProviders?.length
+          found.linkProviders?.length
             ? await knowledgeBaseLinkPrompt(deps, state.identity.subject, found.linkProviders, found.result)
             : found.result;
         return {
@@ -2236,7 +2236,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           roles: state.identity.roles,
         });
         const result =
-          found.needsLink && found.linkProviders?.length
+          found.linkProviders?.length
             ? await knowledgeBaseLinkPrompt(deps, state.identity.subject, found.linkProviders, found.result)
             : found.result;
         return {

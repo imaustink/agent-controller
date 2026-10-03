@@ -183,6 +183,7 @@ export class KnowledgeBaseSearcher {
       this.options.limit ?? DEFAULT_LIMIT,
     );
 
+    const unlinkedProviders = providersToLink(notLinked, tokens);
     return {
       result: render({
         // A corpus that could not be opened and one that failed mid-query are
@@ -192,8 +193,12 @@ export class KnowledgeBaseSearcher {
         disclose: exec.disclosePartialVisibility,
         // Members whose provider the caller has not linked: served sources are
         // real, and this says what more a link would add rather than hiding it.
-        unlinked: { providers: providersToLink(notLinked, tokens), sources: notLinked.length },
+        unlinked: { providers: unlinkedProviders, sources: notLinked.length },
       }),
+      // A partial answer still carries the providers to link, so the executing
+      // layer offers a fresh clickable link for each — the one still missing can
+      // be linked incrementally without blocking the sources already answered.
+      ...(unlinkedProviders.length > 0 ? { linkProviders: unlinkedProviders } : {}),
     };
   }
 }
