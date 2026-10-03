@@ -35,7 +35,7 @@ Every message is a small, self-describing JSON object validated by
 stream:
 
 ```
-accepted → progress* → warning* → (succeeded | failed)
+accepted → (progress | warning | reflection)* → (succeeded | failed)
 ```
 
 Common fields on every event:
@@ -52,14 +52,22 @@ Event-specific payloads:
 - **accepted** — `{ url }`
 - **progress** — `{ stage, pct?, message? }`
 - **warning** — `{ message }`
+- **reflection** — `{ disposition, confidence?, note? }` — an optional,
+  non-terminal self-report of the job's internal state: a `disposition`
+  (`curious`/`confident`/`uncertain`/`frustrated`/`satisfied` — a suggested,
+  free-form vocabulary, like `stage`/`code`), an optional `confidence` in
+  `[0, 1]`, and an optional free-text `note`. This is observability, not
+  sentience: it makes an agent's certainty and struggle first-class, alertable
+  signals instead of something a consumer must infer from logs. A job may emit
+  any number of them, or none.
 - **succeeded** — `{ result, artifacts? }`, where `artifacts` are `ArtifactRef`s
   (large/binary payloads are referenced, never inlined)
 - **failed** — `{ code, message }`
 
-At the library level, `stage`, `code`, and `result` are intentionally generic
-(plain strings / `unknown`) — each tool defines its own vocabulary and result
-shape and narrows them with TypeScript generics on `JobEmitter<TResult, TStage,
-TCode>`. `recipe-scraper`'s vocabulary, for example ([schema.ts](../tools/recipe-scraper/src/schema.ts)):
+At the library level, `stage`, `code`, `disposition`, and `result` are
+intentionally generic (plain strings / `unknown`) — each tool defines its own
+vocabulary and result shape and narrows them with TypeScript generics on
+`JobEmitter<TResult, TStage, TCode, TDisposition>`. `recipe-scraper`'s vocabulary, for example ([schema.ts](../tools/recipe-scraper/src/schema.ts)):
 
 - `stage ∈ classify|extract|transcribe|format`
 - `code ∈ usage|blocked_url|extraction|formatting|general` (mirrors its process
