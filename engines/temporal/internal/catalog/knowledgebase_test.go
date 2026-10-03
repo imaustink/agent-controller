@@ -325,7 +325,7 @@ func TestKnowledgeBaseMarkdown(t *testing.T) {
 		// Citations are content (ADR 0040): the tool hands back probe-checked
 		// titles and URLs, and the prompt must not invite the model to source a
 		// citation from anywhere else.
-		require.Contains(t, markdown, "exactly as the tool gave them")
+		require.Contains(t, markdown, "must not invent a URL")
 		require.Contains(t, markdown, "Do not\nconstruct a URL")
 		require.Contains(t, markdown, "A link is content")
 	})

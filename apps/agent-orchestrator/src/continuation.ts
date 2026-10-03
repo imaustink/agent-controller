@@ -35,3 +35,45 @@ export function extractContinuationToken(text: string): { token: string | null; 
 export function prependContinuationToken(token: string, text: string): string {
   return `<!-- continuation: ${token} -->\n\n${text}`;
 }
+
+/**
+ * Resolves the session key a tool's continuation token is stored under
+ * (docs/adr/0017), WITHOUT depending on the model to re-supply an instance id
+ * each turn.
+ *
+ * The instance scope (`${toolId}::${instanceKey}`) exists so two instances of a
+ * multi-instance tool in one conversation — say two recipes being published —
+ * don't clobber each other's saved state. The id that distinguished them used to
+ * be a URL the planner copied verbatim into `tool_instance_key` on EVERY call;
+ * a core continuity behaviour then depended on the model re-extracting it, and a
+ * refine turn where it didn't lost the publish target (orphaning the Mealie
+ * entry). This derives the key from SERVER-SIDE state instead:
+ *
+ * - An explicit `instanceKey` (the planner naming a specific instance, e.g.
+ *   switching to a different recipe) always wins — that is the one case where
+ *   the model genuinely selects among instances.
+ * - Otherwise, when the session already holds exactly ONE continuation entry for
+ *   this tool, reuse THAT key: the conversation's active instance is recovered
+ *   from state, so a refine turn continues the same target with no model input.
+ * - Otherwise fall back to the bare tool id (first call, or ambiguous).
+ *
+ * `existing` is the live `toolContinuations` map (keys like `toolId` or
+ * `toolId::<instance>`). PARITY: `continuation.ResolveKey` on the Temporal
+ * engine.
+ */
+export function resolveContinuationKey(
+  toolId: string,
+  instanceKey: string | undefined,
+  existing: Readonly<Record<string, string>> | undefined,
+): string {
+  if (instanceKey) return `${toolId}::${instanceKey}`;
+  const prefix = `${toolId}::`;
+  const own = existing
+    ? Object.keys(existing).filter((k) => k === toolId || k.startsWith(prefix))
+    : [];
+  // Exactly one active instance: recover it from server state. More than one
+  // (genuinely multi-instance) is ambiguous without the planner naming which, so
+  // fall back rather than guess and risk writing one recipe's edit onto another.
+  if (own.length === 1) return own[0]!;
+  return toolId;
+}

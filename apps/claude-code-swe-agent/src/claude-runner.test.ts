@@ -113,6 +113,52 @@ describe("runClaudeTurn", () => {
     expect(result.finalMessage).toBe(summary);
   });
 
+  // FIX 3: auth classification is driven by the structured result fields, with
+  // the text scan only a fallback. These guard the two defects that produced:
+  // (a) re-auth loops from benign text, and (b) dead credentials reported as
+  // success / reworded errors slipping through.
+  it("does not misclassify a benign short success summary that merely mentions an expired login", async () => {
+    // is_error false, subtype success, exit 0, and the text CONTAINS "login
+    // expired" but is a real work summary, not the CLI's anchored complaint.
+    // The old substring+length check flagged this; the anchored check must not.
+    await installFakeClaude(`
+      console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "s1" }));
+      console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id: "s1", result: "Fixed the login expired handling in auth.ts and added a test." }));
+    `);
+
+    const result = await runClaudeTurn("do the thing", { cwd: process.cwd(), env: env(), settings: {} });
+    expect(result.failed).toBe(false);
+    expect(result.authError).toBe(false);
+  });
+
+  it("flags a failed turn from an error* result subtype even when is_error is absent and the exit is 0", async () => {
+    // A reworded / newly added error subtype with no is_error flag and a clean
+    // exit: only the structured subtype catches it. The old code (is_error ||
+    // exit!=0 only) reported this as success.
+    await installFakeClaude(`
+      console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "s1" }));
+      console.log(JSON.stringify({ type: "result", subtype: "error_during_execution", session_id: "s1", result: "the task could not be completed" }));
+      process.exit(0);
+    `);
+
+    const result = await runClaudeTurn("do the thing", { cwd: process.cwd(), env: env(), settings: {} });
+    expect(result.failed).toBe(true);
+    expect(result.authError).toBe(false);
+  });
+
+  it("classifies auth from the structured result.error field, not a (empty) success summary", async () => {
+    // Hard failure with the reason in the dedicated `error` field and an empty
+    // `result`. Scanning only the model summary (as before) would miss it.
+    await installFakeClaude(`
+      console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "s1" }));
+      console.log(JSON.stringify({ type: "result", subtype: "error", is_error: true, session_id: "s1", result: "", error: "Failed to authenticate: OAuth token revoked" }));
+    `);
+
+    const result = await runClaudeTurn("do the thing", { cwd: process.cwd(), env: env(), settings: {} });
+    expect(result.failed).toBe(true);
+    expect(result.authError).toBe(true);
+  });
+
   it("treats a non-zero exit with no JSON output at all as a failure", async () => {
     await installFakeClaude(`
       console.error("boom");

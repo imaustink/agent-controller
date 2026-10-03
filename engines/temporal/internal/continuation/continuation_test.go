@@ -41,3 +41,36 @@ func TestPrependRoundTrip(t *testing.T) {
 	require.Equal(t, "tok-123", token)
 	require.Equal(t, "scrape https://example.com", rest)
 }
+
+func TestResolveKey(t *testing.T) {
+	tool := "recipe-publisher"
+
+	t.Run("explicit instanceKey always wins", func(t *testing.T) {
+		require.Equal(t, tool+"::https://x/r1",
+			continuation.ResolveKey(tool, "https://x/r1", map[string]string{tool + "::https://x/other": "tok"}))
+	})
+
+	t.Run("bare tool id on the first call (no state)", func(t *testing.T) {
+		require.Equal(t, tool, continuation.ResolveKey(tool, "", nil))
+	})
+
+	t.Run("recovers the single active instance from state", func(t *testing.T) {
+		require.Equal(t, tool+"::https://x/r1",
+			continuation.ResolveKey(tool, "", map[string]string{tool + "::https://x/r1": "tok"}))
+	})
+
+	t.Run("recovers a bare-keyed single instance from state", func(t *testing.T) {
+		require.Equal(t, tool, continuation.ResolveKey(tool, "", map[string]string{tool: "tok"}))
+	})
+
+	t.Run("falls back to the bare id when two instances are ambiguous", func(t *testing.T) {
+		require.Equal(t, tool, continuation.ResolveKey(tool, "", map[string]string{
+			tool + "::https://x/r1": "a",
+			tool + "::https://x/r2": "b",
+		}))
+	})
+
+	t.Run("ignores other tools' continuation entries", func(t *testing.T) {
+		require.Equal(t, tool, continuation.ResolveKey(tool, "", map[string]string{"image-gen::img1": "tok"}))
+	})
+}

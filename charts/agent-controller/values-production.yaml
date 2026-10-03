@@ -313,6 +313,21 @@ integration-gateway:
     # as the orchestrator's old "produced no reply" timeout: a bound shorter
     # than the work it's bounding turns a success into a visible failure.
     # 8h5m leaves a 5-minute buffer past the agent-run ceiling.
+    #
+    # DELIBERATELY NOT shortened to shrink the trigger-label "orphan window":
+    # this gateway holds its relay (and so its in-process label-removal
+    # `finally`) for as long as a poll runs, so a shorter bound would shrink how
+    # long a stranded label waits -- BUT only by reintroducing exactly the
+    # false-timeout bug above for every legitimate run between the new bound and
+    # the real 8h run ceiling (agentRunTimeoutSeconds is unset here, so the Job
+    # really can run the full 8h). The orphan window is now closed the right way
+    # instead: label removal is retried on transient GitHub failures
+    # (github-client.ts) and, if the pod dies before the `finally` runs at all, a
+    # durable reconciling sweep (integration-gateway's label-reconciler.ts)
+    # removes the stranded label on the next pass -- neither of which depends on
+    # this value. If this ever IS lowered to ~1h, lower agentRunTimeoutSeconds
+    # (agent-orchestrator subchart) to match in the SAME change, or long runs
+    # regress to the false-timeout comment.
     pollTimeoutMs: "29100000"
 
   # Automatic OIDC client_credentials token fetch/refresh (previously a

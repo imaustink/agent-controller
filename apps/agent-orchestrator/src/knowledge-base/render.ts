@@ -71,13 +71,38 @@ export function render({ outcome, withheld, disclose, unlinked }: RenderInput): 
     );
   });
 
-  parts.push("Sources:");
-  for (const chunk of outcome.chunks) {
-    parts.push(`- [${displayTitle(chunk)}](${chunk.url})`);
-  }
-  parts.push(...caveats(outcome, withheld, disclose, unlinked));
+  const block = citationsBlock({ outcome, withheld, disclose, unlinked });
+  if (block) parts.push(block);
 
   return parts.join("\n") + "\n";
+}
+
+/**
+ * The deterministic `Sources:` list + "What this answer could not see" caveats
+ * ALONE — the probe-derived citation and ADR 0040 access-disclosure block that
+ * {@link render} appends after the passages.
+ *
+ * Factored out because the guarantee it carries must survive even when the
+ * planner chooses `respond` and recomposes the answer in its own prose: the
+ * graph appends this block in code to whatever the turn finally returns, so a
+ * KB answer is correctly cited and disclosed regardless of finish/respond (the
+ * "finish vs respond" verbatim gap). Built from the SAME probe outcome `render`
+ * uses, so the two never drift.
+ *
+ * Returns "" when there is nothing to say (no chunks and no caveats).
+ *
+ * PARITY: `CitationsBlock` in `engines/temporal/internal/corpus/render.go`.
+ */
+export function citationsBlock({ outcome, withheld, disclose, unlinked }: RenderInput): string {
+  const parts: string[] = [];
+  if (outcome.chunks.length > 0) {
+    parts.push("Sources:");
+    for (const chunk of outcome.chunks) {
+      parts.push(`- [${displayTitle(chunk)}](${chunk.url})`);
+    }
+  }
+  parts.push(...caveats(outcome, withheld, disclose, unlinked));
+  return parts.length === 0 ? "" : parts.join("\n");
 }
 
 /**

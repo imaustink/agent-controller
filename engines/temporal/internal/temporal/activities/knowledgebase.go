@@ -119,6 +119,13 @@ type SearchKnowledgeBaseOutput struct {
 	NeedsLink bool `json:"needsLink,omitempty"`
 	// LinkProviders are the providers the caller must link, when NeedsLink.
 	LinkProviders []string `json:"linkProviders,omitempty"`
+	// Citations is the probe-derived `Sources:` + "What this answer could not
+	// see" disclosure block ALONE (corpus.CitationsBlock), carried out separately
+	// so the workflow can DETERMINISTICALLY append it to whatever the turn finally
+	// returns — even a Respond answer the planner recomposed in its own prose.
+	// This closes the "finish vs respond" gap for KB citations/disclosure (ADR
+	// 0040). Empty for the needs-link asks (nothing was searched).
+	Citations string `json:"citations,omitempty"`
 }
 
 // SearchKnowledgeBase probes and renders one knowledge-base search.
@@ -150,11 +157,13 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 
 	visible, withheld := visibleMembers(exec.Members, in.Caller.Roles)
 	if len(visible) == 0 {
+		renderInput := corpus.RenderInput{
+			Withheld: withheld,
+			Disclose: exec.DisclosePartialVisibility,
+		}
 		return SearchKnowledgeBaseOutput{
-			Result: corpus.Render(corpus.RenderInput{
-				Withheld: withheld,
-				Disclose: exec.DisclosePartialVisibility,
-			}),
+			Result:    corpus.Render(renderInput),
+			Citations: corpus.CitationsBlock(renderInput),
 		}, nil
 	}
 
@@ -222,15 +231,22 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 	// at a time (e.g. Slack after Confluence and Drive), and a link that expired
 	// before the caller finished is simply replaced on the next ask.
 	unlinkedProviders := providersToLink(notLinked, tokens)
-	result := corpus.Render(corpus.RenderInput{
+	renderInput := corpus.RenderInput{
 		Outcome:  outcome,
 		Withheld: withheld,
 		Disclose: exec.DisclosePartialVisibility,
 		Unlinked: &corpus.Unlinked{Providers: unlinkedProviders, Sources: len(notLinked)},
-	})
+	}
+	result := corpus.Render(renderInput)
 	result = a.startLinks(ctx, in.Caller, unlinkedProviders, result)
 
-	return SearchKnowledgeBaseOutput{Result: result, LinkProviders: unlinkedProviders}, nil
+	// Citations carried separately so the workflow appends it in code when the
+	// planner recomposes via Respond (ADR 0040 survives finish/respond alike).
+	return SearchKnowledgeBaseOutput{
+		Result:        result,
+		LinkProviders: unlinkedProviders,
+		Citations:     corpus.CitationsBlock(renderInput),
+	}, nil
 }
 
 // needsLink is the honest response when the caller has linked none of the

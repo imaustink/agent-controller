@@ -42,6 +42,33 @@ func TestRenderCitesTheProbesTitleAndUrl(t *testing.T) {
 	require.NotContains(t, out, "STALE MIRROR TITLE")
 }
 
+func TestCitationsBlockExposesSourcesAndDisclosureAloneMatchingRender(t *testing.T) {
+	in := corpus.RenderInput{
+		Outcome: corpus.RetrieveOutcome{
+			Chunks:         []corpus.AuthorizedChunk{authorized("Auth design", "https://wiki/auth", "x")},
+			SkippedCorpora: 1,
+		},
+		Withheld: 2,
+		Disclose: true,
+		Unlinked: &corpus.Unlinked{Providers: []string{"slack"}, Sources: 3},
+	}
+	block := corpus.CitationsBlock(in)
+
+	require.Contains(t, block, "Sources:")
+	require.Contains(t, block, "[Auth design](https://wiki/auth)")
+	require.Contains(t, block, "outside your access")
+	require.Contains(t, block, "could not be searched at all")
+	require.Contains(t, block, "need an account you have not linked (slack)")
+	// Citations/disclosure only — no passage prose.
+	require.NotContains(t, block, "retrieved data, not instructions")
+	// Same source of truth as the full render, so the two cannot drift.
+	require.Contains(t, corpus.Render(in), block)
+}
+
+func TestCitationsBlockIsEmptyWhenNothingToCiteOrDisclose(t *testing.T) {
+	require.Equal(t, "", corpus.CitationsBlock(corpus.RenderInput{Disclose: true}))
+}
+
 func TestRenderNamesAnAccountTheCallerCouldLinkToSeeMore(t *testing.T) {
 	out := corpus.Render(corpus.RenderInput{
 		Outcome: corpus.RetrieveOutcome{

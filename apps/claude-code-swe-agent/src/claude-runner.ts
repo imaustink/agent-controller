@@ -74,15 +74,34 @@ export interface RemoteControlRunOptions extends ClaudeRunOptions {
 }
 
 /**
- * Substrings that indicate the failure is a credential problem the caller
- * should surface distinctly (so the orchestrator can trigger re-auth)
- * instead of an ordinary task failure. Best-effort text matching -- Claude
- * Code's `stream-json` `result` event does carry a `subtype` field for some
- * failure classes, but not a stable machine-readable "auth expired" code, so
- * this also checks stderr/the result text. Confirm and extend this list
- * empirically against the pinned CLI version (see claude-runner.test.ts) --
- * unlike opencode-server.ts there's no `/doc` OpenAPI spec to check these
- * shapes against.
+ * `result.subtype` values the pinned CLI (v2.1.218-220) uses to report a
+ * FAILED turn. Confirmed against the headless-mode docs (code.claude.com/docs/
+ * en/headless, /errors): success is `"success"` (or `"completion"`); every
+ * error flavour is an `error*` subtype -- `error_during_execution`,
+ * `error_max_turns`, `error_max_budget_usd`,
+ * `error_max_structured_output_retries`, or a bare `error`. There is NO
+ * auth-specific subtype; the CLI signals an expired/invalid credential only via
+ * `is_error`, a non-zero exit, and human-readable error text (see below). So
+ * the STRUCTURE here is used to decide IF the turn failed; WHICH failure (auth
+ * vs ordinary) still falls back to text, but only once structure says it failed.
+ *
+ * Matched by an `error` prefix rather than an exact set, so a reworded or newly
+ * added error subtype is still recognised as a failure structurally -- that is
+ * the whole point of keying off the subtype instead of the message string.
+ */
+function isErrorSubtype(subtype: string | null): boolean {
+  return subtype !== null && subtype.toLowerCase().startsWith("error");
+}
+
+/**
+ * Substrings that, once a turn is ALREADY known (structurally) to have failed,
+ * tell an auth/credential drop apart from an ordinary task failure -- so the
+ * orchestrator can trigger re-auth (docs/adr/0027) rather than report a plain
+ * error. This is the deliberate LAST-RESORT fallback behind the structured
+ * `is_error`/subtype/exit-code check, used only because the CLI exposes no
+ * machine-readable "auth expired" code (confirmed against the pinned version).
+ * Scanned against the dedicated `error`/`error_details` text and stderr, not
+ * the model's free-form summary.
  */
 const AUTH_ERROR_SUBSTRINGS = [
   "invalid api key",
@@ -90,6 +109,8 @@ const AUTH_ERROR_SUBSTRINGS = [
   "authentication_error",
   "oauth token has expired",
   "oauth token is invalid",
+  "oauth token revoked",
+  "failed to authenticate",
   // Confirmed empirically, not guessed: this is verbatim what the CLI reported
   // when a seeded ~/.claude/.credentials.json could no longer be refreshed
   // (AgentRun fc9f0896, an "ai-review" run that died 11s in). Redundant with
@@ -109,30 +130,48 @@ function looksLikeAuthError(text: string): boolean {
 /**
  * Longest turn output still treated as "this is an auth notice, not work".
  * A credential message is a single short line; a real turn summary (or a code
- * review that happens to DISCUSS auth) is far longer. Without this bound,
- * reviewing a file that contains the string "invalid api key" would be
- * misreported as an expired credential.
+ * review that happens to DISCUSS auth) is far longer.
  */
 const AUTH_NOTICE_MAX_LENGTH = 200;
 
 /**
- * True when a turn the CLI reported as FINISHED actually just handed back a
- * credential complaint as its output.
+ * ANCHORED forms of the CLI's own credential complaints. A disguised-as-success
+ * turn hands one of these back verbatim AS its result, so the auth message is
+ * what the text STARTS with (or, for the "/login" tail, all it ends on) -- not
+ * a phrase buried mid-sentence. Anchoring is what stops a benign short summary
+ * that merely mentions a credential ("Fixed the login-expired handling in
+ * auth.ts") from being misread as an expired credential, the false positive
+ * that drove re-auth loops. Compare the plain-substring {@link looksLikeAuthError},
+ * which is only ever reached once a turn has ALREADY failed structurally.
+ */
+const AUTH_NOTICE_PATTERNS: RegExp[] = [
+  /^invalid (api key|x-api-key)\b/i,
+  /^authentication_error\b/i,
+  /^oauth token (has expired|is invalid|revoked)\b/i,
+  /^(login expired|failed to authenticate)\b/i,
+  /^credit balance is too low\b/i,
+  /please run (`claude setup-token`|\/login)\.?\s*$/i,
+];
+
+/**
+ * True when a turn the CLI reported as STRUCTURALLY FINISHED (is_error false,
+ * a success subtype, exit 0) actually just handed back a credential complaint
+ * as its output.
  *
  * This is the failure mode that made AgentRun fc9f0896 (an "ai-review" run)
  * look successful: the interactive session recorded `Login expired · Please
  * run /login` as its assistant text and wrote a `turn_duration` entry 11
  * seconds in, so `turnComplete` was true, `failed` was false, and the auth
- * error travelled all the way to the user as a turn summary -- under
- * "The agent produced no pushable repository or pull request. Details: ...".
- * Nothing downstream could act on it because nothing upstream had called it a
- * failure. So the completion signal alone is not sufficient evidence of a
- * completed turn; the output has to not be an auth complaint.
+ * error travelled all the way to the user as a turn summary. No structured
+ * field distinguishes this from a real summary -- it IS a well-formed success
+ * event -- so this anchored text check is the one legitimate place the scan
+ * still drives the decision, and it is held to the CLI's own message shapes to
+ * avoid the re-auth-loop false positives a loose substring match caused.
  */
 function isAuthFailureDisguisedAsSuccess(text: string | null): boolean {
   const trimmed = text?.trim() ?? "";
   if (!trimmed || trimmed.length > AUTH_NOTICE_MAX_LENGTH) return false;
-  return looksLikeAuthError(trimmed);
+  return AUTH_NOTICE_PATTERNS.some((re) => re.test(trimmed));
 }
 
 /**
@@ -193,6 +232,12 @@ export function runClaudeTurn(prompt: string, opts: ClaudeRunOptions): Promise<C
     let sessionId: string | null = null;
     let finalMessage: string | null = null;
     let resultIsError = false;
+    let resultSubtype: string | null = null;
+    // The CLI's dedicated error text (result.error / result.error_details) when
+    // a turn fails -- scanned for the auth-vs-ordinary classification instead of
+    // the model's free-form summary, so an unrelated success summary can't drag
+    // the decision around.
+    let resultErrorText: string | null = null;
     let stderrBuf = "";
     let stdoutLineBuf = "";
     let sawAnyJson = false;
@@ -240,7 +285,13 @@ export function runClaudeTurn(prompt: string, opts: ClaudeRunOptions): Promise<C
       if (type === "result") {
         if (typeof rec.session_id === "string") sessionId = rec.session_id;
         resultIsError = rec.is_error === true;
+        if (typeof rec.subtype === "string") resultSubtype = rec.subtype;
         if (typeof rec.result === "string") finalMessage = rec.result;
+        // The CLI puts the failure reason in `error`/`error_details` on a failed
+        // result; prefer those over the (often empty) `result` text for auth
+        // classification.
+        if (typeof rec.error === "string" && rec.error) resultErrorText = rec.error;
+        else if (typeof rec.error_details === "string" && rec.error_details) resultErrorText = rec.error_details;
       }
     };
 
@@ -304,14 +355,20 @@ export function runClaudeTurn(prompt: string, opts: ClaudeRunOptions): Promise<C
         }
       }
 
-      // On an already-failed turn, scan everything (stderr included). On a
-      // turn the CLI called successful, only a short auth-notice-shaped
-      // `result` counts -- an auth error reported as the turn's own output is
-      // still an auth error (see `isAuthFailureDisguisedAsSuccess`), but a long
-      // summary that merely mentions credentials is not.
-      const hardFailed = code !== 0 || resultIsError || !sawAnyJson;
+      // Decide FAILURE from structured signals first: a non-zero exit, the
+      // result's own `is_error` flag, or an `error*` subtype (confirmed the only
+      // way the CLI marks a failed result -- there is no auth subtype). `!sawAnyJson`
+      // is the one non-structured guard, for a CLI that died before emitting any
+      // stream event at all. This is the fix for the fc9f0896 class of bug: the
+      // decision no longer hinges on scanning the model's text.
+      const hardFailed = code !== 0 || resultIsError || isErrorSubtype(resultSubtype) || !sawAnyJson;
+      // WHICH failure (auth vs ordinary) has no structured code, so once
+      // structure says the turn failed, scan the dedicated error text (not the
+      // model summary) as the documented last-resort fallback. On a turn that is
+      // structurally SUCCESSFUL, the only auth case left is the disguised-as-
+      // success trap, caught by the anchored notice check.
       const authError = hardFailed
-        ? looksLikeAuthError(`${stderrBuf}\n${finalMessage ?? ""}`)
+        ? looksLikeAuthError(`${resultErrorText ?? ""}\n${stderrBuf}\n${finalMessage ?? ""}`)
         : isAuthFailureDisguisedAsSuccess(finalMessage);
       const failed = hardFailed || authError;
       const failureDetail = failed

@@ -4401,6 +4401,137 @@ describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
     expect(final.pendingToolCalls).toEqual([]);
     expect(final.result).toEqual({ title: "Pancakes" });
   });
+
+  // PART A: a KB answer the planner recomposes via `respond` must STILL carry
+  // the probe-derived Sources list and the "What this answer could not see"
+  // disclosure — the deterministic block is appended in code, not left to the
+  // model to echo (ADR 0040). The sibling `finish` path already surfaces it
+  // verbatim; this covers the respond-after-search gap.
+  it("appends the probe-derived Sources + disclosure to a KB answer returned via respond", async () => {
+    const kbTool: ToolDescriptor = {
+      id: "kb:globex/search",
+      name: "kb:globex/search",
+      description: "search the GLOBEX knowledge base",
+      allowedRoles: ["reader"],
+      knowledgeBaseExec: {
+        knowledgeBaseId: "globex",
+        displayName: "GLOBEX",
+        operation: "search",
+        members: [],
+        disclosePartialVisibility: true,
+      },
+    };
+    const kbSkill: SkillDescriptor = {
+      id: "kb:globex",
+      name: "GLOBEX knowledge base",
+      description: "search GLOBEX",
+      markdown: "# GLOBEX",
+      toolIds: ["kb:globex/search"],
+      agentIds: [],
+    };
+    const citations =
+      "Sources:\n- [Auth design](https://wiki/auth)\n\n" +
+      "What this answer could not see:\n" +
+      "- 2 source(s) in this knowledge base are outside your access, so there may be more you cannot see.\n" +
+      "- 3 source(s) need an account you have not linked (slack); link it and ask again to include them.";
+    const search = vi.fn().mockResolvedValue({
+      result: `Found 1 passage(s).\n\n### 1. Auth design\n\`\`\`text\nWe use OIDC.\n\`\`\`\n\n${citations}\n`,
+      citations,
+    });
+    const checkLinks = vi.fn().mockResolvedValue({ linkProviders: [], linkedProviders: ["atlassian"] });
+
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: kbSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([kbSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(kbSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([{ tool: kbTool, score: 1 }]),
+      },
+      actionPlanner: {
+        plan: vi
+          .fn()
+          .mockResolvedValueOnce({ action: "call_tool", toolId: "kb:globex/search", toolArgs: "how does auth work" } satisfies PlannedAction)
+          // The model synthesizes its own answer and DROPS the citations — the gap.
+          .mockResolvedValueOnce({ action: "respond", response: "Auth uses OIDC." } satisfies PlannedAction),
+      },
+      knowledgeBaseSearcher: { search, checkLinks } as unknown as AgentGraphDeps["knowledgeBaseSearcher"],
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "how does auth work?", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.plannedAction).toBe("respond");
+    // Model synthesis preserved…
+    expect(final.result).toContain("Auth uses OIDC.");
+    // …and the probe-derived citations/disclosure survive the respond path.
+    expect(final.result).toContain("Sources:");
+    expect(final.result).toContain("[Auth design](https://wiki/auth)");
+    expect(final.result).toContain("outside your access");
+    expect(final.result).toContain("need an account you have not linked (slack)");
+  });
+
+  // PART B: a stateful refine-loop tool's publish target is keyed from
+  // SERVER-SIDE continuation state (not a URL the model re-supplies), and its
+  // returned Markdown survives the planner choosing `respond` verbatim — so the
+  // skill prompt need not carry "copy the URL" / "you MUST choose finish".
+  it("keys a recipe publish from server state and surfaces its result verbatim on respond", async () => {
+    let launchedArgs: string[] | undefined;
+    const deps = baseDeps({
+      actionPlanner: {
+        plan: vi
+          .fn()
+          // The model names NO instance key — continuity is recovered from state.
+          .mockResolvedValueOnce({ action: "call_tool", toolId: "recipe-publisher", toolArgs: "add salt" } satisfies PlannedAction)
+          // …then paraphrases, which would drop the recipe Markdown without the guarantee.
+          .mockResolvedValueOnce({ action: "respond", response: "I added salt for you." } satisfies PlannedAction),
+      },
+      containerToolLauncher: {
+        launch: vi.fn().mockImplementation((_tmpl: unknown, opts: { args: string[] }) => {
+          launchedArgs = opts.args;
+          return Promise.resolve({ name: "tool-1", namespace: "default" });
+        }),
+      } as unknown as ContainerToolLauncher,
+      jobResultReceiver: {
+        awaitJob: vi.fn().mockResolvedValue({
+          type: "succeeded",
+          job_id: "job-1",
+          seq: 1,
+          ts: new Date().toISOString(),
+          // The publisher banks a fresh slug and returns the live recipe Markdown.
+          result: "<!-- continuation: slug-pasta -->\n\n# Pasta\nBoil. Add salt.\n\n✅ Updated on Mealie: [link](https://mealie/pasta)",
+        } satisfies Event),
+      } as unknown as JobResultReceiver,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "add salt to it",
+      authToken: "tok",
+      // Persisted from the first-publish turn, keyed by the source URL the model
+      // supplied THEN. This turn supplies no key.
+      toolContinuations: { "recipe-publisher::https://example.com/pasta": "slug-pasta" },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(final.plannedAction).toBe("respond");
+    // Keyed from server state: the stored slug was recovered and re-injected,
+    // though the planner named no instance this turn.
+    expect(launchedArgs?.[0]).toBe("<!-- continuation: slug-pasta -->\n\nadd salt");
+    // The tool's Markdown survived the respond verbatim (token stripped), not the
+    // model's paraphrase — so next-turn intent detection still sees the recipe.
+    expect(final.result).toContain("# Pasta");
+    expect(final.result).toContain("Add salt");
+    expect(final.result).not.toContain("I added salt for you.");
+    expect(final.result).not.toContain("continuation:");
+  });
 });
 
 // Graph-level coverage for the deterministic knowledge-base link gate wired in

@@ -173,7 +173,7 @@ describe("the generated markdown", () => {
     // Citations are content (ADR 0040): the tool hands back probe-checked
     // titles and URLs, and the prompt must not invite the model to source a
     // citation from anywhere else.
-    expect(markdown).toContain("exactly as the tool gave them");
+    expect(markdown).toContain("must not invent a URL");
     expect(markdown).toContain("Do not\nconstruct a URL");
     expect(markdown).toContain("A link is content");
   });

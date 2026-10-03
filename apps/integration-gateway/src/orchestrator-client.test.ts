@@ -452,6 +452,31 @@ describe("OrchestratorClient live-session tunnel (ADR 0026)", () => {
     await expect(client2.checkLive("s1")).resolves.toEqual({ live: false });
   });
 
+  it("probeLive distinguishes live, confirmed not-live, and unknown (non-ok or network error)", async () => {
+    const mk = (fetchImpl: typeof fetch) =>
+      new OrchestratorClient({ baseUrl: "http://orchestrator:8081", token: "tok", pollIntervalMs: 1, pollTimeoutMs: 1000, fetchImpl });
+
+    // A real 200 saying live -> "live" with the run id.
+    await expect(
+      mk(vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ live: true, agentRunId: "run-42" }) })).probeLive("s1"),
+    ).resolves.toEqual({ status: "live", agentRunId: "run-42" });
+
+    // A real 200 saying not-live -> CONFIRMED "not-live" (the positive terminal signal).
+    await expect(
+      mk(vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ live: false }) })).probeLive("s1"),
+    ).resolves.toEqual({ status: "not-live" });
+
+    // A non-ok response -> "unknown", NOT confirmed not-live.
+    await expect(
+      mk(vi.fn().mockResolvedValueOnce({ ok: false, status: 500 })).probeLive("s1"),
+    ).resolves.toEqual({ status: "unknown" });
+
+    // A rejected fetch (network error) -> "unknown".
+    await expect(
+      mk(vi.fn().mockRejectedValueOnce(new Error("connection refused"))).probeLive("s1"),
+    ).resolves.toEqual({ status: "unknown" });
+  });
+
   it("openEventStream requests the run's SSE endpoint with the sessionId cross-check and returns the raw response", async () => {
     const rawResponse = { ok: true } as Response;
     const fetchImpl = vi.fn().mockResolvedValueOnce(rawResponse);

@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -314,6 +315,12 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	// client cannot drive an unbounded planner loop by resending.
 	history := seedHistory(in.PriorCallerToolCalls)
 	var lastSuccess *ToolOutcome
+	// Deterministic output produced this turn that the planner's own prose would
+	// otherwise discard on a Respond (the "finish vs respond" verbatim gap):
+	// pendingVerbatim is a stateful tool's result that must REPLACE a paraphrase;
+	// pendingCitations is a KB search's probe-derived Sources/disclosure block
+	// that is APPENDED to the model's synthesis. Re-applied by finalizeRespond.
+	var pendingVerbatim, pendingCitations string
 	for step := len(history); step < maxToolSteps; step++ {
 		var plan activities.PlannedAction
 		if err := workflow.ExecuteActivity(actx, activities.PlanActionActivityName, activities.PlanActionInput{
@@ -328,7 +335,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		}
 
 		if plan.Action == activities.ActionRespond {
-			return plan.Response, meta, nil, nil
+			return finalizeRespond(plan.Response, pendingVerbatim, pendingCitations), meta, nil, nil
 		}
 		if plan.Action == activities.ActionFinish {
 			break
@@ -508,6 +515,11 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 
 			outcome := ToolOutcome{Succeeded: true, Result: found.Result}
 			lastSuccess = &outcome
+			// Carry the probe-derived citation/disclosure block so a later Respond
+			// still cites and discloses (ADR 0040). A search round-trips no
+			// continuation state, so it clears any stale verbatim marker.
+			pendingCitations = found.Citations
+			pendingVerbatim = ""
 			history = append(history, activities.ActionRecord{
 				ToolID: plan.ToolID, Input: plan.ToolInput,
 				Succeeded: true, Result: found.Result,
@@ -571,6 +583,21 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		if outcome.Succeeded {
 			record.Result = outcome.Result
 			lastSuccess = &outcome
+			// A stateful refine-loop tool's output must survive a later Respond
+			// verbatim (its Markdown is what the next turn's intent detection
+			// reads); a one-shot tool keeps the planner's synthesis.
+			if outcome.Verbatim {
+				pendingVerbatim = outcome.Result
+			} else {
+				pendingVerbatim = ""
+			}
+			// Deliberately do NOT clear pendingCitations here: a KB search's
+			// probe-derived Sources/disclosure must survive a LATER non-KB tool in
+			// the same turn (e.g. [KB search -> other tool -> respond]), or the
+			// turn emits an uncited answer and drops the ADR 0040 guarantee. Only
+			// the next KB search overwrites it (see the search branch above),
+			// matching the TS engine, where the KB node is the sole writer and the
+			// update-only reducer preserves it across other tool calls.
 			note(plan.ToolID + " finished")
 		} else {
 			record.Error = outcome.ErrorCode + ": " + outcome.ErrorMessage
@@ -647,12 +674,14 @@ func runToolWithContinuation(
 	creds credentials,
 	note func(string),
 ) (ToolOutcome, error) {
-	continuationKey := tool.ID
-	if instanceKey != "" {
-		continuationKey = tool.ID + "::" + instanceKey
-	}
-	if token := state.ToolContinuations[continuationKey]; token != "" {
-		toolInput = continuation.Prepend(token, toolInput)
+	// Resolve the instance scope from SERVER-SIDE state (the conversation's own
+	// continuation entries), not from a URL the planner re-copies each turn, so a
+	// refine turn continues the same publish target even when the model names no
+	// instance. See continuation.ResolveKey.
+	continuationKey := continuation.ResolveKey(tool.ID, instanceKey, state.ToolContinuations)
+	priorToken := state.ToolContinuations[continuationKey]
+	if priorToken != "" {
+		toolInput = continuation.Prepend(priorToken, toolInput)
 	}
 
 	var outcome ToolOutcome
@@ -689,6 +718,10 @@ func runToolWithContinuation(
 		state.ToolContinuations[continuationKey] = token
 	}
 	outcome.Result = stripped
+	// A continuation round-trip (a prior token injected, or a new one banked)
+	// marks a stateful refine-loop tool whose output must reach the user verbatim
+	// even on a Respond — see finalizeRespond.
+	outcome.Verbatim = priorToken != "" || token != ""
 	return outcome, nil
 }
 
@@ -889,6 +922,29 @@ func adaptAgentAsTool(agent catalog.AgentDescriptor) catalog.ToolDescriptor {
 		AgentRef:          agent.ID,
 		IdentityProviders: agent.IdentityProviders,
 	}
+}
+
+// finalizeRespond re-applies, in code, the deterministic output this turn
+// produced that the planner's own Respond prose would otherwise discard — the
+// "finish vs respond" verbatim gap.
+//
+// Two guarantees, in priority order:
+//  1. A stateful refine-loop tool's verbatim result (ADR 0017 continuation
+//     round-trip, e.g. recipe-publisher) REPLACES the model's paraphrase: its
+//     Markdown is the answer the next turn's intent detection reads.
+//  2. A knowledge-base search's probe-derived Sources/disclosure block is
+//     APPENDED to the model's synthesis (de-duped), so citations/disclosure
+//     (ADR 0040) survive Respond while useful synthesis is preserved.
+//
+// PARITY: respondResult in apps/agent-orchestrator/src/agent/graph.ts.
+func finalizeRespond(response, verbatim, citations string) string {
+	if verbatim != "" {
+		return verbatim
+	}
+	if citations == "" || strings.Contains(response, citations) {
+		return response
+	}
+	return response + "\n\n" + citations
 }
 
 func repeatsLastCall(history []activities.ActionRecord, plan activities.PlannedAction) bool {

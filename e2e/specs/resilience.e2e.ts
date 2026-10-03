@@ -40,7 +40,7 @@ const WARM_UP_BUDGET_MS = 150_000;
  * comment regardless of how well the orchestrator handled things, so any spec
  * asserting on the stub's reply must finish inside it.
  */
-const GATEWAY_POLL_BUDGET_MS = 90_000;
+const GATEWAY_POLL_BUDGET_MS = 240_000;
 
 /**
  * Issue numbers, unique per call AND unlikely to repeat across runs.
@@ -286,9 +286,9 @@ describe("resilience: infrastructure moving under an in-flight agent turn", () =
     // well past the ~20s that nats.js's DEFAULT policy survives -- 10 attempts
     // 2s apart, then the connection closes for good), yet must finish inside
     // the gateway's poll budget for the reply assertion to mean anything.
-    // Measured bounces here were 22.7s and 24.8s, and the gateway ceiling is
-    // 90s, so 50s sits between them with margin at both ends. (75s was tried
-    // first and left almost none against the ceiling.)
+    // Measured bounces here were 22.7s and 24.8s, comfortably under the gateway
+    // ceiling (pollTimeoutMs, 240s in values-e2e), so 50s narration sits between
+    // the bounce and the ceiling with margin at both ends.
     await paceStubAgent({ narrateForMs: 50_000, narrateEveryMs: 5000 });
 
     const { issueNumber, startedAt } = await trigger();
@@ -323,7 +323,11 @@ describe("resilience: infrastructure moving under an in-flight agent turn", () =
 
     await rollOrchestrator();
 
-    const comment = await commentOn(issueNumber);
+    // Wait past the gateway's own give-up: this turn is abandoned (never
+    // re-triggered), so the gateway only comments once its poll budget
+    // (pollTimeoutMs, raised to 240s in values-e2e for slower boxes) elapses.
+    // The wait must exceed that budget or it times out before the comment lands.
+    const comment = await commentOn(issueNumber, GATEWAY_POLL_BUDGET_MS + 60_000);
     console.log(`  [resilience] post-rollout comment: ${comment?.body?.slice(0, 160)}`);
 
     // THE regression guard. The old code turned the drained subscription into

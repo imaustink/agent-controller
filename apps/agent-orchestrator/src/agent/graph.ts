@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import type { Event } from "@controller-agent/messaging";
-import { extractContinuationToken, prependContinuationToken } from "../continuation.js";
+import { extractContinuationToken, prependContinuationToken, resolveContinuationKey } from "../continuation.js";
 import { SELF_IMPROVEMENT_FOOTER } from "../openai/chat-completions.js";
 import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-agent-channel.js";
 import { AgentTurnFailedError, AgentTurnTimeoutError, AgentTurnTransportError } from "../agents/nats-agent-channel.js";
@@ -293,6 +293,34 @@ export const AgentStateAnnotation = Annotation.Root({
   linkGatePending: Annotation<boolean>({
     reducer: (_current, update) => update,
     default: () => false,
+  }),
+  /**
+   * The probe-derived `Sources:` + "What this answer could not see" disclosure
+   * block (render.citationsBlock) from a knowledge-base search THIS turn, carried
+   * so it can be appended in code to whatever the turn finally returns. Without
+   * this, a `respond` answer (the planner recomposing in its own prose) silently
+   * drops the citations/disclosure the search deterministically built — the
+   * "finish vs respond" verbatim gap. Appended, de-duped, in the `respond`
+   * branch below; the `finish` path already surfaces the search result verbatim
+   * (which contains the same block). PARITY: `pendingCitations` in
+   * engines/temporal/internal/temporal/workflows/agentloop.go.
+   */
+  pendingCitations: Annotation<string>({
+    reducer: (_current, update) => update,
+    default: () => "",
+  }),
+  /**
+   * The verbatim result of a successful tool call THIS turn that round-tripped
+   * continuation state (ADR 0017) — a stateful refine-loop tool such as
+   * recipe-publisher. Carried so the tool's own output (the recipe/image
+   * Markdown next-turn intent detection depends on) reaches the user even when
+   * the planner chooses `respond` and would otherwise paraphrase it away. This
+   * is what lets the skill prompts stop carrying a load-bearing "you MUST choose
+   * finish" instruction. PARITY: `pendingVerbatim` in agentloop.go.
+   */
+  pendingVerbatimResult: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
   }),
   /** Descriptor of the sub-agent selected for this turn (agent delegation path). */
   selectedAgent: Annotation<AgentDescriptor | undefined>({
@@ -990,6 +1018,33 @@ function lastHistoryResult(state: AgentState): { result?: unknown } {
   if (state.result !== undefined) return {};
   const last = state.actionHistory[state.actionHistory.length - 1];
   return last ? { result: last.result } : {};
+}
+
+/**
+ * The text a `respond` turn returns, after re-applying in code the deterministic
+ * output a tool produced this turn but that the planner's own prose would
+ * otherwise discard — the "finish vs respond" verbatim gap.
+ *
+ * Two guarantees, in priority order:
+ *  1. A stateful refine-loop tool's verbatim result (ADR 0017 continuation
+ *     round-trip, e.g. recipe-publisher) REPLACES the model's paraphrase: its
+ *     Markdown is the answer the next turn's intent detection reads, so the
+ *     planner recomposing it would break the loop.
+ *  2. A knowledge-base search's probe-derived `Sources:` + "What this answer
+ *     could not see" block is APPENDED to the model's synthesis (de-duped),
+ *     preserving useful synthesis while guaranteeing citations/disclosure
+ *     (ADR 0040) survive `respond`.
+ *
+ * PARITY: `finalizeRespond` in agentloop.go.
+ */
+function respondResult(state: AgentState, response: string): string {
+  if (state.pendingVerbatimResult !== undefined) return state.pendingVerbatimResult;
+  const block = state.pendingCitations;
+  if (!block) return response;
+  // De-dupe: skip when the planner already reproduced the exact block (e.g. it
+  // echoed the tool result), so a `finish`-shaped `respond` isn't double-cited.
+  if (response.includes(block)) return response;
+  return `${response}\n\n${block}`;
 }
 
 /**
@@ -2131,7 +2186,10 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         return { plannedAction: "finish", ...lastHistoryResult(state) };
       }
       if (planned.action === "respond") {
-        return { result: planned.response, plannedAction: "respond" };
+        // Re-apply in code the deterministic output this turn produced that the
+        // planner's own prose would drop: a stateful tool's verbatim result, or a
+        // KB search's citation/disclosure block. See respondResult.
+        return { result: respondResult(state, planned.response), plannedAction: "respond" };
       }
       const tool = state.skillTools.find((t) => t.id === planned.toolId);
       if (!tool) {
@@ -2188,11 +2246,18 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       }
 
       const rawInput = state.toolArgs ?? state.request;
-      // Scope the stored continuation to the planner's declared instance (if
-      // any) so a multi-instance tool's state for one instance (e.g. one
-      // recipe's Mealie slug) is never conflated with another instance's
-      // (a different recipe) within the same conversation (ADR 0017).
-      const continuationKey = state.toolInstanceKey ? `${tool.id}::${state.toolInstanceKey}` : tool.id;
+      // Scope the stored continuation to this tool's active instance (ADR 0017)
+      // so a multi-instance tool's state for one instance (e.g. one recipe's
+      // Mealie slug) is never conflated with another's (a different recipe) in
+      // the same conversation. The instance is resolved from SERVER-SIDE state
+      // (the session's own continuation entries), not from a URL the planner has
+      // to re-copy into `tool_instance_key` every turn — a refine turn continues
+      // the same publish target even when the model names no instance.
+      const continuationKey = resolveContinuationKey(
+        tool.id,
+        state.toolInstanceKey,
+        state.toolContinuations,
+      );
       // Re-inject this tool's saved continuation token (if any), so the tool
       // can resume state (e.g. an existing Mealie slug to update) without it
       // ever having round-tripped through the chat transcript.
@@ -2379,6 +2444,12 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, found);
         return {
           result,
+          // Carry the probe-derived citation/disclosure block so the turn can
+          // append it in code even if the planner then recomposes via `respond`
+          // (ADR 0040 survives finish/respond alike). A search never round-trips
+          // continuation state, so it clears any stale verbatim marker.
+          pendingCitations: found.citations ?? "",
+          pendingVerbatimResult: undefined,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
         };
       }
@@ -2517,9 +2588,21 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // key. Non-string (structured) results have no such marker.
       if (typeof event.result === "string") {
         const { token, text } = extractContinuationToken(event.result);
+        const surfaced = state.wasFallback ? appendSelfImprovementSuggestion(text) : text;
+        // A tool that round-trips continuation state (ADR 0017) — a prior token
+        // was injected, or this call banked a new one — is a stateful refine-loop
+        // tool (recipe-publisher, …) whose own output IS the answer: the next
+        // turn's intent detection reads the recipe/image Markdown it returned. So
+        // guarantee that output reaches the user verbatim even if the planner
+        // chooses `respond` (see the respond branch in planAction), rather than
+        // depending on a "you MUST choose finish" instruction the model may drop.
+        // A one-shot tool (web-search, web-fetch) banks no token and keeps the
+        // planner's synthesis.
+        const roundTrippedContinuation = Boolean(priorToken) || Boolean(token);
         return {
           jobId,
-          result: state.wasFallback ? appendSelfImprovementSuggestion(text) : text,
+          result: surfaced,
+          pendingVerbatimResult: roundTrippedContinuation ? surfaced : undefined,
           extractedContinuation: { toolId: continuationKey, token: token ?? "" },
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: text }],
         };

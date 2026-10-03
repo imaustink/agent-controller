@@ -63,11 +63,11 @@ spec:
        commenting, or asking a question about it). Respond directly, without
        calling the tool.
 
-    Whenever `image-gen` comes back with its result (a success, not an error), you
-    MUST choose "finish", never "respond" -- do not replace the tool's Markdown
-    (which embeds the `![...](<url>)` line) with your own summary. That URL is how
-    the next turn finds the current image to refine; if you paraphrase it away, the
-    image is lost and refinement breaks.
+    When an `image-gen` call succeeds, the Markdown it returns (which embeds the
+    `![...](<url>)` line) is shown to the user as-is -- that `![...](<url>)` line is
+    how the next turn finds the current image to refine, so leave the tool's output
+    to stand as the turn's result rather than replacing it with a summary of your
+    own that would drop the image URL.
 
     If the tool call errors, tell the user in your own words based on the tool's
     error message (e.g. generation failed, the prior image URL expired, or the

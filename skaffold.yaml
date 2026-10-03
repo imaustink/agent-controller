@@ -311,6 +311,13 @@ profiles:
               integration-gateway.image.tag: "{{.IMAGE_TAG_integration_gateway}}"
               connection-broker.image.repository: "{{.IMAGE_REPO_connection_broker}}"
               connection-broker.image.tag: "{{.IMAGE_TAG_connection_broker}}"
+              # The chart defaults connection-broker to pullPolicy Always (its
+              # production :latest tag needs freshness). skaffold builds a local,
+              # digest-tagged image that exists only in minikube's runtime and in
+              # no registry, so Always makes the kubelet try to pull it and fail
+              # ("can't be pulled"). Every other image here is IfNotPresent by
+              # default; override the broker to match for the e2e/minikube path.
+              connection-broker.image.pullPolicy: "IfNotPresent"
               mcp-broker.image.repository: "{{.IMAGE_REPO_mcp_broker}}"
               mcp-broker.image.tag: "{{.IMAGE_TAG_mcp_broker}}"
               temporal-engine.worker.image.repository: "{{.IMAGE_REPO_temporal_engine_worker}}"

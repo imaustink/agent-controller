@@ -6,11 +6,24 @@ import {
   isWritePermission,
   mintInstallationToken,
   resolveDelegatedWriteToken,
+  resolveGithubToken,
   type GithubAppCredentials,
 } from "@controller-agent/github-app-auth";
 import type { AgentToolConfig } from "./config.js";
 
 export { AuthorizationError };
+
+/**
+ * The permission ceiling for a review run's GitHub token. `contents: "read"`
+ * makes `git push` fail at the credential layer (a guarantee independent of the
+ * opencode deny list); `pull_requests`/`issues: "write"` keep the review able to
+ * post its findings.
+ */
+export const REVIEW_TOKEN_PERMISSIONS: Record<string, string> = {
+  contents: "read",
+  pull_requests: "write",
+  issues: "write",
+};
 
 function appCredsFrom(config: AgentToolConfig): GithubAppCredentials | null {
   const { githubAppId, githubAppPrivateKey, githubAppInstallationId } = config;
@@ -29,6 +42,46 @@ function appCredsFrom(config: AgentToolConfig): GithubAppCredentials | null {
  */
 export function isDelegating(config: AgentToolConfig): boolean {
   return Boolean(config.identityDelegationEnabled && appCredsFrom(config) && config.githubToken);
+}
+
+/**
+ * The credential for a run that does NOT delegate -- a webhook turn, whose
+ * shared subject never carries a per-user token. It is the App's either way;
+ * with a verified target repository it is scoped to exactly that repository
+ * (the one the webhook's sender was checked on), and when `reviewMode` is set
+ * it is minted read-only ({@link REVIEW_TOKEN_PERMISSIONS}, `contents: read`)
+ * so a push/merge fails at the credential layer -- a guarantee independent of
+ * the opencode deny list, and the backstop the default `ai-review` route
+ * (`agentRef: opencode-swe-agent`) runs on.
+ *
+ * Non-review runs and runs without App creds are unchanged: the App path keeps
+ * the installation's default permission set, and a static-PAT run falls back to
+ * {@link resolveGithubToken} exactly as before (a PAT's scope is fixed and
+ * can't be narrowed per run, so a review there relies on the deny list alone).
+ */
+export async function resolveUndelegatedToken(
+  config: AgentToolConfig,
+  reviewMode = false,
+  now: number = Date.now(),
+): Promise<string> {
+  const appCreds = appCredsFrom(config);
+  if (appCreds && config.targetRepository) return mintTargetRepositoryToken(config, appCreds, now, reviewMode);
+  return resolveGithubToken(config, now);
+}
+
+async function mintTargetRepositoryToken(
+  config: AgentToolConfig,
+  appCreds: GithubAppCredentials,
+  now: number,
+  reviewMode = false,
+): Promise<string> {
+  const [owner, name] = config.targetRepository.split("/");
+  if (!owner || !name) throw new Error(`Expected AGENT_TARGET_REPOSITORY as "owner/repo", got: ${config.targetRepository}`);
+  const { token } = await mintInstallationToken(appCreds, config.githubApiUrl, now, {
+    repositories: [name],
+    ...(reviewMode ? { permissions: REVIEW_TOKEN_PERMISSIONS } : {}),
+  });
+  return token;
 }
 
 export interface DelegatedAttribution {
@@ -63,6 +116,7 @@ export interface DelegatedAttribution {
 export async function resolveDelegatedToken(
   config: AgentToolConfig,
   repo: string | null,
+  reviewMode = false,
   now: number = Date.now(),
 ): Promise<{ token: string; attribution: DelegatedAttribution }> {
   const appCreds = appCredsFrom(config);
@@ -74,13 +128,19 @@ export async function resolveDelegatedToken(
       repo,
       githubApiUrl: config.githubApiUrl,
       appCreds,
+      ...(reviewMode ? { permissions: REVIEW_TOKEN_PERMISSIONS } : {}),
       now,
     });
     return { token, attribution: { githubLogin, githubId } };
   }
 
   const { login, id } = await fetchGithubUser(config.githubToken, config.githubApiUrl);
-  const { token } = await mintInstallationToken(appCreds, config.githubApiUrl, now);
+  const { token } = await mintInstallationToken(
+    appCreds,
+    config.githubApiUrl,
+    now,
+    reviewMode ? { permissions: REVIEW_TOKEN_PERMISSIONS } : {},
+  );
   return { token, attribution: { githubLogin: login, githubId: id } };
 }
 
