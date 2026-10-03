@@ -50,6 +50,17 @@ export function signAppJwt(appId: string, privateKeyPem: string, now: number): s
 export interface MintInstallationTokenOptions {
   /** Repo names (not `owner/repo`, just the repo name) to scope the minted token to — omit for the installation's full grant. */
   repositories?: string[];
+  /**
+   * Per-permission ceiling for the minted token, e.g.
+   * `{ contents: "read", pull_requests: "write" }`. GitHub narrows the token to
+   * AT MOST these permissions (it can only ever restrict, never exceed, what the
+   * installation itself was granted). Used to mint a genuinely read-only token
+   * for a review run — `contents: "read"` makes `git push` fail at the
+   * credential layer, not merely at a CLI deny rule — while still allowing it to
+   * post its findings (`pull_requests`/`issues: "write"`). Omit for the
+   * installation's default permission set.
+   */
+  permissions?: Record<string, string>;
 }
 
 /**
@@ -57,7 +68,8 @@ export interface MintInstallationTokenOptions {
  * scoped to exactly the repos/permissions the installation grants — the
  * per-repo governance and short-lived-credential properties a static PAT
  * doesn't have. Passing `opts.repositories` narrows the token further, to
- * just the named repos within that installation.
+ * just the named repos within that installation; `opts.permissions` narrows
+ * the granted permissions (e.g. read-only contents for a review run).
  */
 export async function mintInstallationToken(
   creds: GithubAppCredentials,
@@ -66,15 +78,19 @@ export async function mintInstallationToken(
   opts: MintInstallationTokenOptions = {},
 ): Promise<InstallationToken> {
   const jwt = signAppJwt(creds.appId, creds.privateKey, now);
+  const requestBody: Record<string, unknown> = {};
+  if (opts.repositories) requestBody.repositories = opts.repositories;
+  if (opts.permissions) requestBody.permissions = opts.permissions;
+  const hasBody = Object.keys(requestBody).length > 0;
   const res = await fetch(`${apiBaseUrl}/app/installations/${creds.installationId}/access_tokens`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${jwt}`,
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
-      ...(opts.repositories ? { "Content-Type": "application/json" } : {}),
+      ...(hasBody ? { "Content-Type": "application/json" } : {}),
     },
-    ...(opts.repositories ? { body: JSON.stringify({ repositories: opts.repositories }) } : {}),
+    ...(hasBody ? { body: JSON.stringify(requestBody) } : {}),
   });
   if (!res.ok) {
     throw new Error(`Failed to mint GitHub App installation token: ${res.status} ${await res.text()}`);

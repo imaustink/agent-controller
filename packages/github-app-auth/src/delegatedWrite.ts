@@ -109,6 +109,14 @@ export interface ResolveDelegatedWriteTokenOptions {
    * unavailable, which only costs the richer `id+login@` trailer form.
    */
   knownLogin?: string;
+  /**
+   * Per-permission ceiling for the minted write token (see
+   * {@link mintInstallationToken}'s `permissions`). A review run passes
+   * `{ contents: "read", pull_requests: "write" }` so the token cannot push,
+   * even though the authorization check above still proves the user's own
+   * write access.
+   */
+  permissions?: Record<string, string>;
   now?: number;
   fetchImpl?: typeof fetch;
 }
@@ -137,6 +145,9 @@ export async function resolveDelegatedWriteToken(
     throw new AuthorizationError(`${login} does not have write access to ${opts.repo} (permission: ${permission})`);
   }
 
-  const { token } = await mintInstallationToken(opts.appCreds, opts.githubApiUrl, now, { repositories: [name] });
+  const { token } = await mintInstallationToken(opts.appCreds, opts.githubApiUrl, now, {
+    repositories: [name],
+    ...(opts.permissions ? { permissions: opts.permissions } : {}),
+  });
   return { token, githubLogin: login, githubId: id };
 }

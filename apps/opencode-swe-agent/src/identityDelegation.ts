@@ -12,6 +12,18 @@ import type { AgentToolConfig } from "./config.js";
 
 export { AuthorizationError };
 
+/**
+ * The permission ceiling for a review run's GitHub token. `contents: "read"`
+ * makes `git push` fail at the credential layer (a guarantee independent of the
+ * opencode deny list); `pull_requests`/`issues: "write"` keep the review able to
+ * post its findings.
+ */
+export const REVIEW_TOKEN_PERMISSIONS: Record<string, string> = {
+  contents: "read",
+  pull_requests: "write",
+  issues: "write",
+};
+
 function appCredsFrom(config: AgentToolConfig): GithubAppCredentials | null {
   const { githubAppId, githubAppPrivateKey, githubAppInstallationId } = config;
   if (githubAppId && githubAppPrivateKey && githubAppInstallationId) {
@@ -63,6 +75,7 @@ export interface DelegatedAttribution {
 export async function resolveDelegatedToken(
   config: AgentToolConfig,
   repo: string | null,
+  reviewMode = false,
   now: number = Date.now(),
 ): Promise<{ token: string; attribution: DelegatedAttribution }> {
   const appCreds = appCredsFrom(config);
@@ -74,13 +87,19 @@ export async function resolveDelegatedToken(
       repo,
       githubApiUrl: config.githubApiUrl,
       appCreds,
+      ...(reviewMode ? { permissions: REVIEW_TOKEN_PERMISSIONS } : {}),
       now,
     });
     return { token, attribution: { githubLogin, githubId } };
   }
 
   const { login, id } = await fetchGithubUser(config.githubToken, config.githubApiUrl);
-  const { token } = await mintInstallationToken(appCreds, config.githubApiUrl, now);
+  const { token } = await mintInstallationToken(
+    appCreds,
+    config.githubApiUrl,
+    now,
+    reviewMode ? { permissions: REVIEW_TOKEN_PERMISSIONS } : {},
+  );
   return { token, attribution: { githubLogin: login, githubId: id } };
 }
 
