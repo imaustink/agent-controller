@@ -1618,8 +1618,8 @@ func TestSeededHistoryBoundsTheResumedLoop(t *testing.T) {
 	le.skillTools = recipesSkillTools()
 	le.callerTools = []callertools.Descriptor{webSearchCallerTool(t)}
 
-	// Already at the step cap.
-	for i := 0; i < 4; i++ {
+	// Already at the step cap (maxToolSteps, kept in sync with the workflow).
+	for i := 0; i < 8; i++ {
 		le.priorCallerCalls = append(le.priorCallerCalls, callertools.PriorCall{
 			ID: "c" + string(rune('1'+i)), Name: "web_search",
 			Arguments: `{"query":"q"}`, Result: "result " + string(rune('1'+i)),

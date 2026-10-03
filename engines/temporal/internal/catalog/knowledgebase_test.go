@@ -314,12 +314,18 @@ func TestKnowledgeBaseMarkdown(t *testing.T) {
 		require.Contains(t, markdown, "ask which one is meant")
 	})
 
+	t.Run("tells the planner to iterate rather than answer from one search", func(t *testing.T) {
+		markdown := catalog.DeriveKnowledgeBaseSkill(globexKB(), conns).Markdown
+		require.Contains(t, markdown, "research task")
+		require.Contains(t, markdown, "search again before answering")
+	})
+
 	t.Run("forbids citing anything the tools did not return this turn", func(t *testing.T) {
 		markdown := catalog.DeriveKnowledgeBaseSkill(globexKB(), conns).Markdown
 		// Citations are content (ADR 0040): the tool hands back probe-checked
 		// titles and URLs, and the prompt must not invite the model to source a
 		// citation from anywhere else.
-		require.Contains(t, markdown, "exactly as the search result gave them")
+		require.Contains(t, markdown, "exactly as the tool gave them")
 		require.Contains(t, markdown, "Do not\nconstruct a URL")
 		require.Contains(t, markdown, "A link is content")
 	})
@@ -333,12 +339,19 @@ func TestKnowledgeBaseMarkdown(t *testing.T) {
 	t.Run("mentions the live face only when a member has one", func(t *testing.T) {
 		withAPI := catalog.DeriveKnowledgeBaseSkill(globexKB(), conns).Markdown
 		require.Contains(t, withAPI, "true *right now*")
+		// The live keyword/read tools are named only when they are actually
+		// generated (api-enabled AND an identity provider), so the planner is never
+		// told to call a tool it was not given.
+		require.Contains(t, withAPI, "kb:globex/lookup")
+		require.Contains(t, withAPI, "kb:globex/read")
 
 		kb := globexKB()
 		kb.CorpusRefs = []string{"globex-slack-eng"} // no api.enabled member
 		withoutAPI := catalog.DeriveKnowledgeBaseSkill(kb, conns).Markdown
 		require.NotContains(t, withoutAPI, "true *right now*",
 			"do not instruct the planner to call a tool it was not given")
+		require.NotContains(t, withoutAPI, "kb:globex/lookup")
+		require.NotContains(t, withoutAPI, "kb:globex/read")
 	})
 
 	t.Run("includes the disclosure instruction only when disclosure is on", func(t *testing.T) {

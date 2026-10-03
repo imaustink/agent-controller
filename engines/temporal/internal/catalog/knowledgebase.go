@@ -395,17 +395,36 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []CorpusDescripto
 		b.WriteString("\n")
 	}
 
-	fmt.Fprintf(&b, "## Answering\n\n"+
+	readable := anyReadable(members)
+
+	b.WriteString("## Answering\n\n")
+	b.WriteString("Treat this as a research task, not a single lookup. One search rarely\n" +
+		"surfaces everything; keep searching until you have enough to answer well,\n" +
+		"or have confirmed the material simply is not here.\n\n")
+	fmt.Fprintf(&b,
 		"1. Search with `%s`, passing the user's question. Narrow to particular\n"+
-		"   sources with its `connections` argument when the user named one.\n"+
-		"2. Answer **only** from the chunks it returns. When they do not cover the\n"+
-		"   question, say what is missing — never fill the gap from your own\n"+
-		"   knowledge, which is not this client's material and will read as though\n"+
-		"   it were.\n"+
-		"3. End every answer with a `Sources:` list, using each result's title and\n"+
-		"   URL **exactly as the search result gave them**. An uncited claim is not\n"+
-		"   an acceptable answer here.\n\n",
+			"   sources with its `connections` argument when the user named one.\n",
 		KnowledgeBaseSearchToolID(kb.ID))
+	b.WriteString("2. Read what comes back and judge whether it actually covers the\n" +
+		"   question. If it is thin, partial, or answers only part of what was\n" +
+		"   asked, **search again before answering** — rephrase, split a broad\n" +
+		"   question into parts, and reuse the specific names, systems and dates\n" +
+		"   the first results surfaced. Several focused searches beat one broad\n" +
+		"   one, and you have several tool calls to spend.\n")
+	if readable {
+		fmt.Fprintf(&b,
+			"   When the index looks stale or thin, go to the source directly: `%s`\n"+
+				"   runs a live keyword search, and `%s` reads a full document when a\n"+
+				"   passage is cut off or you need detail a chunk leaves out.\n",
+			KnowledgeBaseLookupToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID))
+	}
+	b.WriteString("3. Answer **only** from what the tools returned. When they do not cover\n" +
+		"   the question, say what is missing — never fill the gap from your own\n" +
+		"   knowledge, which is not this client's material and will read as though\n" +
+		"   it were.\n" +
+		"4. End every answer with a `Sources:` list, using each result's title and\n" +
+		"   URL **exactly as the tool gave them**. An uncited claim is not an\n" +
+		"   acceptable answer here.\n\n")
 
 	b.WriteString("Every result you get back was checked against your caller's own access\n" +
 		"to the source at the moment you searched, and its title and URL came back\n" +
@@ -425,17 +444,21 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []CorpusDescripto
 			"  an incomplete one.\n")
 	}
 	b.WriteString("- A result marked **stale** is one the caller may read, but the source has\n" +
-		"  changed since it was indexed. Say the passage may be out of date; where\n" +
-		"  the member offers a `get` tool, read the live object with it and answer\n" +
-		"  from that instead.\n" +
+		"  changed since it was indexed. Say the passage may be out of date")
+	if readable {
+		fmt.Fprintf(&b, "; read the live document with `%s` and answer from that instead",
+			KnowledgeBaseReadToolID(kb.ID))
+	}
+	b.WriteString(".\n" +
 		"- When search reports sources it could not check, say so. Those are not\n" +
 		"  results that were withheld — they are results nobody could confirm\n" +
 		"  either way, so the answer may be missing evidence that exists.\n")
 
-	if anyAPIEnabled(members) {
-		b.WriteString("- Retrieval shows this material as of the last sync. When the question\n" +
-			"  is about what is true *right now*, read the live object with the\n" +
-			"  corpus's own `get` tool instead of trusting a chunk.\n")
+	if readable {
+		fmt.Fprintf(&b, "- Retrieval shows this material as of the last sync. When the question\n"+
+			"  is about what is true *right now*, read the live object with `%s` or run\n"+
+			"  a fresh keyword search with `%s` instead of trusting a chunk.\n",
+			KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseLookupToolID(kb.ID))
 	}
 
 	b.WriteString("\n## Rules\n\n" +
@@ -451,9 +474,15 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []CorpusDescripto
 	return b.String()
 }
 
-func anyAPIEnabled(members []CorpusDescriptor) bool {
+// anyReadable reports whether any member can serve a live, per-user read or
+// lookup — the exact condition DeriveKnowledgeBaseSkill uses to decide whether
+// the `read`/`lookup` tools are generated. The prompt must gate its live-face
+// guidance on the SAME condition: naming those tools when APIEnabled is set but
+// no identity provider is configured would tell the planner to call a tool it
+// was never given.
+func anyReadable(members []CorpusDescriptor) bool {
 	for _, member := range members {
-		if member.APIEnabled {
+		if member.APIEnabled && len(member.IdentityProviders) > 0 {
 			return true
 		}
 	}
