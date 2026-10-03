@@ -156,5 +156,9 @@ func TestRenderNumbersPassagesInRankOrder(t *testing.T) {
 		}},
 	})
 
-	require.Less(t, strings.Index(out, "1. First"), strings.Index(out, "2. Second"))
+	require.Less(t, strings.Index(out, "1. [First]"), strings.Index(out, "2. [Second]"))
+	// The citation URL rides in each passage's heading, so the model cites the
+	// right source instead of guessing from a trailing list.
+	require.Contains(t, out, "### 1. [First](u1)")
+	require.Contains(t, out, "### 2. [Second](u2)")
 }

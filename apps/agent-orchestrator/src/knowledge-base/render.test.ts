@@ -150,6 +150,10 @@ describe("render", () => {
       disclose: true,
     });
 
-    expect(out.indexOf("1. First")).toBeLessThan(out.indexOf("2. Second"));
+    expect(out.indexOf("1. [First]")).toBeLessThan(out.indexOf("2. [Second]"));
+    // The citation URL rides in each passage's heading, so the model cites the
+    // right source instead of guessing from a trailing list.
+    expect(out).toContain("### 1. [First](u1)");
+    expect(out).toContain("### 2. [Second](u2)");
   });
 });
