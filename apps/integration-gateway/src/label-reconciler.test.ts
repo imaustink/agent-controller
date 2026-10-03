@@ -4,6 +4,7 @@ import {
   LabelReconciler,
   type PendingLabelRemoval,
 } from "./label-reconciler.js";
+import { OrchestratorClient } from "./orchestrator-client.js";
 
 const NOW = 1_000_000_000_000;
 
@@ -135,6 +136,105 @@ describe("LabelReconciler.sweepOnce", () => {
     const remaining = await store.list();
     expect(remaining).toHaveLength(1);
     expect(remaining[0]?.issueNumber).toBe(2);
+  });
+});
+
+describe("LabelReconciler + production isRunTerminal wiring (transient-vs-confirmed terminal)", () => {
+  // Mirrors server.ts: a run is terminal ONLY on a confirmed not-live probe,
+  // never on a transient/indeterminate one. Built from a real OrchestratorClient
+  // so the test exercises the actual predicate shipped in production.
+  function isRunTerminalFor(fetchImpl: typeof fetch) {
+    const client = new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      fetchImpl,
+    });
+    return async (sessionId: string): Promise<boolean> =>
+      (await client.probeLive(sessionId)).status === "not-live";
+  }
+
+  it("does NOT strip a PAST-GRACE label when the liveness probe errors (orchestrator blip mid-run)", async () => {
+    const store = new InMemoryPendingLabelStore();
+    await store.record(entry()); // an hour old -> well past grace
+    const removeLabel = vi.fn().mockResolvedValue(undefined);
+    // Probe rejects (connection refused) -> "unknown", NOT confirmed terminal.
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("connection refused")) as unknown as typeof fetch;
+
+    const reconciler = new LabelReconciler({
+      store,
+      isRunTerminal: isRunTerminalFor(fetchImpl),
+      removeLabel,
+      now: () => NOW,
+    });
+    await reconciler.sweepOnce();
+
+    // A still-running turn that is only transiently unreachable must keep its label.
+    expect(removeLabel).not.toHaveBeenCalled();
+    expect(await store.list()).toHaveLength(1);
+  });
+
+  it("does NOT strip a PAST-GRACE label when the liveness probe returns a non-ok response (5xx)", async () => {
+    const store = new InMemoryPendingLabelStore();
+    await store.record(entry());
+    const removeLabel = vi.fn().mockResolvedValue(undefined);
+    // Non-ok (503) -> "unknown", NOT confirmed terminal.
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 503 }) as unknown as typeof fetch;
+
+    const reconciler = new LabelReconciler({
+      store,
+      isRunTerminal: isRunTerminalFor(fetchImpl),
+      removeLabel,
+      now: () => NOW,
+    });
+    await reconciler.sweepOnce();
+
+    expect(removeLabel).not.toHaveBeenCalled();
+    expect(await store.list()).toHaveLength(1);
+  });
+
+  it("DOES strip a PAST-GRACE label once the probe CONFIRMS the run is not live (a real 200 saying not-live)", async () => {
+    const store = new InMemoryPendingLabelStore();
+    await store.record(entry());
+    const removeLabel = vi.fn().mockResolvedValue(undefined);
+    // A real 200 body saying { live: false } -> confirmed terminal.
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ live: false }),
+    }) as unknown as typeof fetch;
+
+    const reconciler = new LabelReconciler({
+      store,
+      isRunTerminal: isRunTerminalFor(fetchImpl),
+      removeLabel,
+      now: () => NOW,
+    });
+    await reconciler.sweepOnce();
+
+    expect(removeLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-triage");
+    expect(await store.list()).toHaveLength(0);
+  });
+
+  it("does NOT strip a PAST-GRACE label while the probe confirms the run is still live", async () => {
+    const store = new InMemoryPendingLabelStore();
+    await store.record(entry());
+    const removeLabel = vi.fn().mockResolvedValue(undefined);
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ live: true, agentRunId: "run-42" }),
+    }) as unknown as typeof fetch;
+
+    const reconciler = new LabelReconciler({
+      store,
+      isRunTerminal: isRunTerminalFor(fetchImpl),
+      removeLabel,
+      now: () => NOW,
+    });
+    await reconciler.sweepOnce();
+
+    expect(removeLabel).not.toHaveBeenCalled();
+    expect(await store.list()).toHaveLength(1);
   });
 });
 

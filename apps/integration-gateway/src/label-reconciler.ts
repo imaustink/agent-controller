@@ -160,11 +160,14 @@ export interface LabelReconcilerOptions {
   /** How often the periodic sweep runs. */
   intervalMs?: number;
   /**
-   * How old a record must be before the sweep will act on it. Guards two races:
-   * a run between `/invoke` accept and its pod becoming live (would read as
-   * "not live" = terminal and be stripped prematurely), and a transient
-   * `checkLive` error that soft-fails to not-live. A legitimately owed removal
-   * is only ever LATE, never wrong, so waiting out the grace costs nothing.
+   * How old a record must be before the sweep will act on it. Guards the race
+   * between `/invoke` accept and its pod becoming live, where a run could read
+   * as "not live" = terminal and be stripped prematurely. (A transient probe
+   * failure is handled separately and more directly: `isRunTerminal` requires a
+   * POSITIVE confirmed not-live signal, so an unreachable orchestrator reads as
+   * still-live, never terminal -- see the wiring in server.ts.) A legitimately
+   * owed removal is only ever LATE, never wrong, so waiting out the grace costs
+   * nothing.
    */
   graceMs?: number;
   onError?: (error: unknown) => void;
