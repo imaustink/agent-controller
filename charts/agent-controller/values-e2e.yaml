@@ -401,12 +401,25 @@ core-controller:
 # per-test by e2e/specs/mcp-crd.e2e.ts.
 mcp-broker:
   enabled: true
+  image:
+    # The subchart defaults to Always (correct for the mutable :latest in prod),
+    # but skaffold builds a local-only SHA tag into minikube's docker, which
+    # Always then tries — and fails — to pull from a registry. Use the local
+    # image in e2e. (connection-broker carries the same prod default and needs
+    # the same override once its image is rebuilt here.)
+    pullPolicy: IfNotPresent
   orchestratorTokenSecret:
     name: e2e-mcp-broker-secrets
     key: orchestratorToken
 
 connection-broker:
   enabled: true
+  image:
+    # Same reason as mcp-broker above: the subchart defaults to Always (right for
+    # the mutable :latest in prod), but skaffold builds a local-only SHA tag that
+    # Always then fails to pull. This surfaced once the new mcp workspaces changed
+    # package-lock.json and forced a connection-broker rebuild to a fresh tag.
+    pullPolicy: IfNotPresent
   qdrant:
     url: "http://agent-controller-qdrant:6333"
   # Pointed at the in-cluster stand-in (e2e/manifests/fake-confluence.yaml),

@@ -59,6 +59,10 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
+            # Numeric uid matching the Dockerfile's `useradd --uid 10001 fake`.
+            # Without it kubelet cannot verify the non-numeric USER is non-root
+            # and fails with CreateContainerConfigError under runAsNonRoot.
+            runAsUser: 10001
             capabilities:
               drop: ["ALL"]
 ---

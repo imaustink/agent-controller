@@ -101,11 +101,16 @@ type MCPServerSpec struct {
 	// +kubebuilder:validation:Enum=streamable-http
 	Transport string `json:"transport"`
 
-	// url is the server's https:// endpoint. API calls go here; it is the
-	// broker's address for the server, not a human-facing one.
+	// url is the server's endpoint. API calls go here; it is the broker's address
+	// for the server, not a human-facing one.
+	//
+	// https:// for an external server, so the delegated token is encrypted in
+	// transit; http:// is permitted for a cluster-internal MCP server (a
+	// Service), where the token stays on the cluster network. A scheme is
+	// required either way.
 	// +required
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:Pattern=`^https://`
+	// +kubebuilder:validation:Pattern=`^https?://`
 	URL string `json:"url"`
 
 	// displayName names the server for operators (e.g. "GitHub MCP").
