@@ -54,6 +54,11 @@ type ToolOutcome struct {
 	Artifacts    []messaging.ArtifactRef `json:"artifacts,omitempty"`
 	ErrorCode    string                  `json:"errorCode,omitempty"`
 	ErrorMessage string                  `json:"errorMessage,omitempty"`
+	// Verbatim is set when this call round-tripped continuation state (ADR 0017):
+	// a prior token was injected, or a new one was banked. It marks a stateful
+	// refine-loop tool (recipe-publisher, …) whose own output IS the answer, so
+	// the turn surfaces Result verbatim even on a Respond — see finalizeRespond.
+	Verbatim bool `json:"-"`
 }
 
 // runTool executes one tool call durably: create the ToolRun CR (activity),

@@ -71,11 +71,30 @@ func Render(in RenderInput) string {
 		b.WriteString("\n```\n\n")
 	}
 
-	b.WriteString("Sources:\n")
-	for _, chunk := range in.Outcome.Chunks {
-		fmt.Fprintf(&b, "- [%s](%s)\n", displayTitle(chunk), chunk.URL)
-	}
+	b.WriteString(CitationsBlock(in))
+	return b.String()
+}
 
+// CitationsBlock is the probe-derived `Sources:` list + "What this answer could
+// not see" disclosure ALONE — the citation and ADR 0040 access-disclosure block
+// Render appends after the passages.
+//
+// Factored out because the guarantee it carries must survive even when the
+// planner chooses to RESPOND and recomposes the answer in its own prose: the
+// workflow appends this block in code to whatever the turn finally returns, so a
+// KB answer is cited and disclosed regardless of finish/respond (the "finish vs
+// respond" verbatim gap). Built from the SAME probe outcome Render uses, so the
+// two never drift. Returns "" when there is nothing to say.
+//
+// PARITY: citationsBlock in apps/agent-orchestrator/src/knowledge-base/render.ts.
+func CitationsBlock(in RenderInput) string {
+	var b strings.Builder
+	if len(in.Outcome.Chunks) > 0 {
+		b.WriteString("Sources:\n")
+		for _, chunk := range in.Outcome.Chunks {
+			fmt.Fprintf(&b, "- [%s](%s)\n", displayTitle(chunk), chunk.URL)
+		}
+	}
 	writeCaveats(&b, in)
 	return b.String()
 }

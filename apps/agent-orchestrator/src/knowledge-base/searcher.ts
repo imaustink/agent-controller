@@ -1,6 +1,6 @@
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import { BrokerProber, retrieve } from "./retrieve.js";
-import { render } from "./render.js";
+import { render, citationsBlock, type RenderInput } from "./render.js";
 import type { Granularity } from "./probe.js";
 import type { CorpusStore } from "./types.js";
 import type { KnowledgeBaseExecMember } from "./exec.js";
@@ -81,6 +81,16 @@ export interface SearchResult {
    * link — the searcher itself holds no link-start gateway.
    */
   linkProviders?: string[];
+  /**
+   * The probe-derived `Sources:` list + "What this answer could not see"
+   * disclosure ALONE (see render.citationsBlock), carried out separately so the
+   * graph can DETERMINISTICALLY append it to whatever the turn finally returns —
+   * even a `respond` answer the planner recomposed in its own prose. This closes
+   * the "finish vs respond" gap for KB citations/disclosure (ADR 0040): the
+   * guarantee no longer depends on the planner choosing `finish`. Empty when
+   * nothing was searched (the needs-link asks).
+   */
+  citations?: string;
 }
 
 /**
@@ -155,13 +165,12 @@ export class KnowledgeBaseSearcher {
 
     const { visible, withheld } = visibleMembers(exec.members, caller.roles);
     if (visible.length === 0) {
-      return {
-        result: render({
-          outcome: { chunks: [], denied: 0, undetermined: [], skippedCorpora: 0, preFiltered: 0 },
-          withheld,
-          disclose: exec.disclosePartialVisibility,
-        }),
+      const renderInput: RenderInput = {
+        outcome: { chunks: [], denied: 0, undetermined: [], skippedCorpora: 0, preFiltered: 0 },
+        withheld,
+        disclose: exec.disclosePartialVisibility,
       };
+      return { result: render(renderInput), citations: citationsBlock(renderInput) };
     }
 
     const tokens = await this.options.credentials.delegatedTokens(caller.subject, providersOf(visible));
@@ -220,17 +229,22 @@ export class KnowledgeBaseSearcher {
     );
 
     const unlinkedProviders = providersToLink(notLinked, tokens);
+    const renderInput: RenderInput = {
+      // A corpus that could not be opened and one that failed mid-query are
+      // the same gap to the person reading the answer.
+      outcome: { ...outcome, skippedCorpora: outcome.skippedCorpora + skipped },
+      withheld,
+      disclose: exec.disclosePartialVisibility,
+      // Members whose provider the caller has not linked: served sources are
+      // real, and this says what more a link would add rather than hiding it.
+      unlinked: { providers: unlinkedProviders, sources: notLinked.length },
+    };
     return {
-      result: render({
-        // A corpus that could not be opened and one that failed mid-query are
-        // the same gap to the person reading the answer.
-        outcome: { ...outcome, skippedCorpora: outcome.skippedCorpora + skipped },
-        withheld,
-        disclose: exec.disclosePartialVisibility,
-        // Members whose provider the caller has not linked: served sources are
-        // real, and this says what more a link would add rather than hiding it.
-        unlinked: { providers: unlinkedProviders, sources: notLinked.length },
-      }),
+      result: render(renderInput),
+      // Carried out separately so the graph can append it in code even when the
+      // planner recomposes the answer via `respond` (ADR 0040 citations survive
+      // finish/respond alike).
+      citations: citationsBlock(renderInput),
       // A partial answer still carries the providers to link, so the executing
       // layer offers a fresh clickable link for each — the one still missing can
       // be linked incrementally without blocking the sources already answered.
