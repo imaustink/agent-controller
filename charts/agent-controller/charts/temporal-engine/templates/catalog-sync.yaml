@@ -42,6 +42,18 @@ rules:
     resources: ["connections", "corpora", "knowledgebases"]
     verbs: ["get", "list", "watch"]
   {{- end }}
+  {{- if and .Values.mcp.enabled (eq $kbNs $catalogNs) }}
+  # MCPTools (docs/adr/0045). The broker materializes these beside the
+  # Connection/Corpus CRs, in the KB namespace, and the catalog watch unions
+  # them into the Tools collection. Without this grant the mcptools informer's
+  # initial LIST 403s and catalog-sync crashloops. Gated independently of
+  # knowledge bases: a deployment may run MCP servers with no knowledge base.
+  # Only here when the KB namespace is the catalog namespace; a distinct KB
+  # namespace gets its own Role/RoleBinding below.
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["mcptools"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -59,12 +71,12 @@ subjects:
     name: {{ .Release.Name }}-temporal-engine-catalog-sync
     namespace: {{ .Release.Namespace }}
 ---
-{{- if and .Values.knowledgeBases.enabled (ne $kbNs $catalogNs) }}
-# When knowledge bases live in a namespace of their own
-# (knowledgeBases.namespace or global.knowledgeBaseNamespace), the KB CR read
-# grant has to be a Role THERE — catalog-sync watches Corpus/KnowledgeBase in
-# that namespace and its informers cannot list without it. Still namespaced; the
-# subject SA stays in the release namespace, and that namespace must exist.
+{{- if and (or .Values.knowledgeBases.enabled .Values.mcp.enabled) (ne $kbNs $catalogNs) }}
+# When knowledge bases / MCP tools live in a namespace of their own
+# (knowledgeBases.namespace or global.knowledgeBaseNamespace), the CR read grant
+# has to be a Role THERE — catalog-sync watches Corpus/KnowledgeBase and MCPTool
+# in that namespace and its informers cannot list without it. Still namespaced;
+# the subject SA stays in the release namespace, and that namespace must exist.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -73,9 +85,16 @@ metadata:
   labels:
     {{- include "temporal-engine.labels" . | nindent 4 }}
 rules:
+  {{- if .Values.knowledgeBases.enabled }}
   - apiGroups: ["core.controller-agent.dev"]
     resources: ["connections", "corpora", "knowledgebases"]
     verbs: ["get", "list", "watch"]
+  {{- end }}
+  {{- if .Values.mcp.enabled }}
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["mcptools"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -140,9 +159,19 @@ spec:
             # ignores every knowledge base in the cluster.
             - name: AGENT_KNOWLEDGE_BASES_ENABLED
               value: "true"
-            # Namespace the Corpus/KnowledgeBase informers watch — may differ
-            # from CATALOG_NAMESPACE so knowledge bases live in their own
-            # namespace (watch.go splits to a second informer factory).
+            {{- end }}
+            {{- if .Values.mcp.enabled }}
+            # Gates the MCPTool informer (docs/adr/0045, internal/catalog/watch.go).
+            # Unset, this process indexes no MCP tools, so the planner never sees
+            # one however many MCPServers the broker has discovered.
+            - name: AGENT_MCP_ENABLED
+              value: "true"
+            {{- end }}
+            {{- if or .Values.knowledgeBases.enabled .Values.mcp.enabled }}
+            # Namespace the KB and MCPTool informers watch — may differ from
+            # CATALOG_NAMESPACE so those CRs live in their own namespace (watch.go
+            # splits to a second informer factory). Required for either feature,
+            # because the broker writes MCPTools into this namespace too.
             - name: KNOWLEDGE_BASE_NAMESPACE
               value: {{ $kbNs | quote }}
             {{- end }}

@@ -1,0 +1,82 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/imaustink/agent-controller/mcp-broker
+  # CI publishes this image to GHCR as `:latest` and `:<sha>` only — never as the
+  # chart appVersion — so an empty tag (which resolves to appVersion) would
+  # ImagePullBackOff. A controlled release should pin this to the published
+  # `:<sha>` instead. skaffold overrides repository+tag at build time for
+  # local/e2e, so this does not affect those paths.
+  tag: "latest"
+  # Always, not IfNotPresent: with a mutable :latest tag a node that cached the
+  # image once would keep running the old broker across redeploys.
+  pullPolicy: Always
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Namespace the broker watches for MCPServer CRs, reads discovery Secrets from,
+# and writes derived MCPTool CRs in (ADR 0045). Empty = the release namespace.
+# Set this (or the umbrella chart's global.knowledgeBaseNamespace) to pin it to
+# the catalog namespace. The broker's Role and RoleBinding are created here; it
+# must exist, and the broker never reads or writes outside it.
+mcpNamespace: ""
+
+serviceAccount:
+  # This app talks to the k8s API: it watches MCPServer CRs, reads the Secrets
+  # they name, and writes/deletes derived MCPTool CRs — rbac.yaml grants exactly
+  # those.
+  create: true
+  annotations: {}
+  name: ""
+  automount: true
+
+rbac:
+  # Namespace-scoped and deliberately narrow: read MCPServers + their Secrets,
+  # own MCPTools, patch both statuses. Never cluster-wide. The broker holds
+  # third-party credentials and speaks an external protocol, so its cluster
+  # reach is the thing most worth keeping small.
+  create: true
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# The credential the engines present to invoke a tool through the broker. This
+# is the broker's own gate; it can NEVER substitute for the per-user delegated
+# token the engine forwards per call (ADR 0045 §5).
+orchestratorTokenSecret:
+  name: mcp-broker-auth
+  key: orchestratorToken
+
+# Optional process-wide discovery config injected as envFrom. Per-server
+# discovery credentials normally come from MCPServer.spec.secretEnv (Secrets the
+# broker reads directly), so this is usually unset.
+discoveryTokenSecret:
+  name: ""
+
+# How often (ms) discovery re-lists every server's tools. 5 minutes by default:
+# a server adding or dropping a tool is reflected within a cycle without waiting
+# for an operator to touch the CR.
+discoveryIntervalMs: 300000
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 384Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: true

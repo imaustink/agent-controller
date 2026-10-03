@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mcp-broker.fullname" . }}
+  labels: {{- include "mcp-broker.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {{- include "mcp-broker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "mcp-broker.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "mcp-broker.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: mcp-broker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.service.port | quote }}
+            # The namespace the broker watches for MCPServer CRs, reads their
+            # discovery Secrets from, and writes derived MCPTool CRs in. Defaults
+            # to the release namespace; set mcpNamespace (or the umbrella chart's
+            # global.knowledgeBaseNamespace) to pin it to the catalog namespace.
+            - name: NAMESPACE
+              value: {{ include "mcp-broker.namespace" . | quote }}
+            # Refused at startup rather than on the first request: a broker
+            # without this accepts no invocation and looks like a networking
+            # fault. This is the engine→broker gate, distinct from the per-user
+            # delegated token the engine forwards per call.
+            - name: ORCHESTRATOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.orchestratorTokenSecret.name }}
+                  key: {{ .Values.orchestratorTokenSecret.key }}
+            # How often discovery re-lists every server's tools, so a tool a
+            # server adds or drops is reflected without waiting for a CR edit.
+            - name: DISCOVERY_INTERVAL_MS
+              value: {{ .Values.discoveryIntervalMs | quote }}
+          {{- if .Values.discoveryTokenSecret.name }}
+          # Per-server discovery tokens referenced by MCPServer.spec.secretEnv
+          # live in Secrets the broker reads directly; this optional envFrom is
+          # for any process-wide discovery config a deployment prefers to inject.
+          envFrom:
+            - secretRef:
+                name: {{ .Values.discoveryTokenSecret.name }}
+                optional: true
+          {{- end }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}

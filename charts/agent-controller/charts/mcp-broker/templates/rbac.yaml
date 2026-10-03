@@ -1,0 +1,69 @@
+{{- if .Values.rbac.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "mcp-broker.serviceAccountName" . }}
+  labels: {{- include "mcp-broker.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "mcp-broker.fullname" . }}
+  # The MCP namespace, pinned to the catalog namespace (ADR 0045). The broker
+  # only reads MCPServers and their Secrets and writes derived MCPTools here, so
+  # its reach stays one namespace wide — never a ClusterRole — even when that
+  # namespace is not the broker's own.
+  namespace: {{ include "mcp-broker.namespace" . }}
+  labels: {{- include "mcp-broker.labels" . | nindent 4 }}
+rules:
+  # Watching MCPServers is what makes a server created after startup take effect
+  # without a restart (docs/adr/0020). A missing verb here 403s the registry's
+  # watch at startup and crashloops the process — loud, which is how a gap like
+  # this is found.
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["mcpservers"]
+    verbs: ["get", "list", "watch"]
+  # Reporting discovered tools and Ready/Degraded back onto the server.
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["mcpservers/status"]
+    verbs: ["get", "patch", "update"]
+  # The broker OWNS MCPTools: it materializes the exposed tools, reconciles them
+  # on every discovery pass, and deletes the ones a server stops advertising
+  # (the existence rule, ADR 0045 §6). This is the one place in the system that
+  # writes this kind.
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["mcptools"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["core.controller-agent.dev"]
+    resources: ["mcptools/status"]
+    verbs: ["get", "patch", "update"]
+  # The DISCOVERY credentials MCPServers name (spec.secretEnv). Read only, and in
+  # this namespace only: the broker holds third-party credentials and speaks an
+  # external protocol, so its reach into the cluster is what is most worth
+  # keeping small. The per-user INVOCATION token never comes from a Secret — the
+  # engine sends it per call.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "mcp-broker.fullname" . }}
+  # Bound in the MCP namespace alongside the Role; the subject SA still lives in
+  # the release namespace.
+  namespace: {{ include "mcp-broker.namespace" . }}
+  labels: {{- include "mcp-broker.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "mcp-broker.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "mcp-broker.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

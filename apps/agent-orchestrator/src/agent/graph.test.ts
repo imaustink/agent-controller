@@ -26,6 +26,8 @@ import type { ToolFitChecker } from "./tool-fit-checker.js";
 import type { BestEffortResponder } from "./best-effort-responder.js";
 import type { CapabilityNeedChecker } from "./capability-need-checker.js";
 import type { IdentityLinkPort } from "../identity-link/gateway-client.js";
+import type { KnowledgeBaseSearcher } from "../knowledge-base/searcher.js";
+import { knowledgeBaseSearchToolId, knowledgeBaseSkillId } from "../knowledge-base/types.js";
 
 const scraperTool: ToolDescriptor = {
   id: "recipe-scraper",
@@ -525,6 +527,92 @@ describe("buildAgentGraph", () => {
     const final = await graph.invoke({ request: "fetch https://example.com", authToken: "tok" });
 
     expect(final.error).toMatch(/local execution is not configured/);
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+
+  it("dispatches an MCP tool through the broker as the caller instead of launching anything (ADR 0045)", async () => {
+    const mcpTool: ToolDescriptor = {
+      id: "mcp:github/create_issue",
+      name: "mcp:github/create_issue",
+      description: "Opens a GitHub issue",
+      allowedRoles: ["reader"],
+      identityProviders: ["github"],
+      mcpExec: { serverRef: "github", remoteToolName: "create_issue" },
+    };
+    const mcpSkill: SkillDescriptor = { ...skill, id: "github-skill", toolIds: ["mcp:github/create_issue"] };
+    const mcpBrokerClient = { call: vi.fn().mockResolvedValue({ result: "Issue #7 created" }) };
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: mcpSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([mcpSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(mcpSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn(),
+        getByIds: vi.fn().mockResolvedValue([{ tool: mcpTool, score: 1 }]),
+      },
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "mcp:github/create_issue",
+          toolArgs: '{"title":"Bug"}',
+        } satisfies PlannedAction),
+      },
+      mcpBrokerClient: mcpBrokerClient as unknown as AgentGraphDeps["mcpBrokerClient"],
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "open an issue", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).toBe("Issue #7 created");
+    // Proxied under the resolved caller's subject, never launched as a Job/sidecar.
+    expect(mcpBrokerClient.call).toHaveBeenCalledWith(mcpTool, '{"title":"Bug"}', { subject: "alice" });
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+
+  it("fails gracefully when an MCP tool is selected but no broker is configured", async () => {
+    const mcpTool: ToolDescriptor = {
+      id: "mcp:github/create_issue",
+      name: "mcp:github/create_issue",
+      description: "Opens a GitHub issue",
+      allowedRoles: ["reader"],
+      identityProviders: ["github"],
+      mcpExec: { serverRef: "github", remoteToolName: "create_issue" },
+    };
+    const mcpSkill: SkillDescriptor = { ...skill, id: "github-skill", toolIds: ["mcp:github/create_issue"] };
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: mcpSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([mcpSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(mcpSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn(),
+        getByIds: vi.fn().mockResolvedValue([{ tool: mcpTool, score: 1 }]),
+      },
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "mcp:github/create_issue",
+          toolArgs: "{}",
+        } satisfies PlannedAction),
+      },
+      mcpBrokerClient: undefined,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "open an issue", authToken: "tok" });
+
+    expect(final.error).toMatch(/mcp-broker is not configured/);
     expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
 });
@@ -4443,5 +4531,124 @@ describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
     expect(final.result).toContain("Add salt");
     expect(final.result).not.toContain("I added salt for you.");
     expect(final.result).not.toContain("continuation:");
+  });
+});
+
+// Graph-level coverage for the deterministic knowledge-base link gate wired in
+// runTool (the `state.activeSkillId !== kbSkillId` block and the
+// `linkGatePending` -> END edge). The unit test in knowledge-base-link.test.ts
+// only exercises the prose rendering with a stubbed gateway; these assert the
+// behaviour that matters — a FRESH KB engagement stops at runTool on the ask
+// without searching or looping back to planAction (the bug this PR fixes),
+// while an already-active KB skill skips the gate and searches. PARITY: the
+// Temporal engine's TestKnowledgeBaseSearchNeedingALinkEndsTheTurnOnTheAsk and
+// TestKnowledgeBaseLinkGateRunsOncePerConversation.
+describe("buildAgentGraph: deterministic knowledge-base link gate", () => {
+  const kbSearchTool: ToolDescriptor = {
+    id: knowledgeBaseSearchToolId("globex"),
+    name: knowledgeBaseSearchToolId("globex"),
+    description: "Search the GLOBEX knowledge base.",
+    allowedRoles: ["reader"],
+    knowledgeBaseExec: {
+      knowledgeBaseId: "globex",
+      displayName: "GLOBEX",
+      operation: "search",
+      members: [],
+      disclosePartialVisibility: true,
+    },
+  };
+  const kbSkill: SkillDescriptor = {
+    id: knowledgeBaseSkillId("globex"),
+    name: "GLOBEX knowledge base",
+    description: "Search the GLOBEX knowledge base",
+    markdown: "# GLOBEX knowledge base",
+    toolIds: [kbSearchTool.id],
+    agentIds: [],
+  };
+
+  function identityLinkGateway(): IdentityLinkPort {
+    return {
+      start: vi.fn(async (provider: string) => ({
+        flow: "authcode" as const,
+        authorizeUrl: `https://gw.example/link/${provider}`,
+        expiresInSeconds: 600,
+      })),
+      poll: vi.fn(),
+      getToken: vi.fn(),
+    } as unknown as IdentityLinkPort;
+  }
+
+  function kbDeps(searcher: KnowledgeBaseSearcher, overrides: Partial<AgentGraphDeps> = {}) {
+    return baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: kbSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([kbSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(kbSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([{ tool: kbSearchTool, score: 1 }]),
+      },
+      knowledgeBaseSearcher: searcher,
+      identityLinkGateway: identityLinkGateway(),
+      ...overrides,
+    });
+  }
+
+  it("stops a FRESH engagement on the ask without searching or looping back to planAction", async () => {
+    const checkLinks = vi.fn().mockResolvedValue({ linkProviders: ["slack"], linkedProviders: ["atlassian", "google"] });
+    const search = vi.fn();
+    const searcher = { checkLinks, search } as unknown as KnowledgeBaseSearcher;
+    const actionPlanner: ActionPlanner = {
+      plan: vi.fn().mockResolvedValue({ action: "call_tool", toolId: kbSearchTool.id, toolArgs: "how is auth configured" } satisfies PlannedAction),
+    };
+    const deps = kbDeps(searcher, { actionPlanner });
+    const graph = buildAgentGraph(deps);
+
+    // No activeSkillId -> the KB skill is engaged fresh this turn.
+    const final = await graph.invoke({ request: "what does GLOBEX say about auth?", authToken: "tok" });
+
+    expect(checkLinks).toHaveBeenCalledTimes(1);
+    // The gate fired BEFORE searching: nothing was retrieved.
+    expect(search).not.toHaveBeenCalled();
+    expect(final.linkGatePending).toBe(true);
+    expect(typeof final.result).toBe("string");
+    expect(final.result as string).toContain("Before I search the **GLOBEX** knowledge base");
+    expect(final.result as string).toContain("[link your slack account](https://gw.example/link/slack)");
+    // The turn ENDED on the ask — it did not loop back to re-plan (and let the
+    // model recompose, dropping the link). planAction ran exactly once.
+    expect(actionPlanner.plan).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the gate and searches when the KB skill is already active from a prior turn", async () => {
+    const checkLinks = vi.fn();
+    const search = vi.fn().mockResolvedValue({ result: "Found 1 passage.\n\nSources:\n- [Auth](https://wiki/auth)\n" });
+    const searcher = { checkLinks, search } as unknown as KnowledgeBaseSearcher;
+    const actionPlanner: ActionPlanner = {
+      plan: vi
+        .fn()
+        .mockResolvedValueOnce({ action: "call_tool", toolId: kbSearchTool.id, toolArgs: "how is auth configured" } satisfies PlannedAction)
+        .mockResolvedValueOnce({ action: "finish" } satisfies PlannedAction),
+    };
+    const deps = kbDeps(searcher, { actionPlanner });
+    const graph = buildAgentGraph(deps);
+
+    // activeSkillId already equals the KB skill id (persisted from a prior turn),
+    // and the session subject matches the resolved identity.
+    const final = await graph.invoke({
+      request: "how is auth configured for GLOBEX?",
+      authToken: "tok",
+      activeSkillId: kbSkill.id,
+      sessionSubject: "alice",
+    });
+
+    expect(checkLinks).not.toHaveBeenCalled();
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(search).toHaveBeenCalledWith(kbSearchTool, "how is auth configured", { subject: "alice", roles: ["reader"] });
+    expect(final.linkGatePending).toBeFalsy();
   });
 });

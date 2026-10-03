@@ -9,15 +9,17 @@ description: >-
   one release. Install the community-components chart afterward to populate
   the catalog with Tool/Skill/Agent CRs.
 type: application
-# 0.5.1: no template change — forces a NEW immutable OCI chart tag so Argo
-# detects a real revision and re-renders. The connection-broker subchart and the
+# Bump the chart version for any RBAC- or template-affecting change so the pin in
+# gitops changes too. 0.5.1/0.5.2 forced a NEW immutable OCI chart tag so Argo
+# detects a real revision and re-renders: the connection-broker subchart and the
 # core-controller ClusterRole RBAC (cronjobs + connections/corpora/knowledgebases)
 # shipped in 0.5.0, but 0.5.0 was republished mutably under the same tag, so Argo
 # served a cached pre-RBAC render and never re-applied the updated ClusterRole —
 # leaving a new core-controller binary running under stale RBAC (403 → cache
-# never syncs → manager crashloop). Bump the chart version for any RBAC- or
-# template-affecting change so the pin in gitops changes too.
-version: 0.5.3
+# never syncs → manager crashloop).
+# 0.6.0: adds the mcp-broker subchart and the mcptools RBAC/env on both engines
+# (ADR 0045) — a template+RBAC change, hence a new version (supersedes 0.5.3).
+version: 0.6.1
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:
@@ -101,3 +103,13 @@ dependencies:
     version: "0.1.0"
     repository: "file://charts/connection-broker"
     condition: connection-broker.enabled
+  # The only component that speaks the Model Context Protocol (apps/mcp-broker,
+  # ADR 0045): discovers an MCPServer's tools into its status and materializes
+  # the exposed ones as derived MCPTool CRs, and proxies one tools/call per
+  # request under the caller's own delegated token. A separate Deployment so an
+  # external protocol and its egress stay out of the pod holding the agent loop.
+  # Off by default; pair with AGENT_MCP_ENABLED + the engines' MCP_BROKER_URL.
+  - name: mcp-broker
+    version: "0.1.0"
+    repository: "file://charts/mcp-broker"
+    condition: mcp-broker.enabled

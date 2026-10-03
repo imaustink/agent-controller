@@ -56,6 +56,28 @@ export interface AppConfig {
   /** Authenticates THIS orchestrator to the broker. Never a corpus credential. */
   connectionBrokerToken: string | undefined;
   /**
+   * Whether `MCPTool` CRs (docs/adr/0045) are indexed.
+   *
+   * Off by default, and for the same reason {@link knowledgeBasesEnabled} is: a
+   * materialized MCPTool descriptor carries no image and no localExec, only an
+   * `mcpExec` that dispatches through the mcp-broker. Indexing one before the
+   * broker is deployed lets the planner select a tool and then fail at dispatch.
+   * Turn it on once the mcp-broker is deployed. Mirrors the Go engine's
+   * `AGENT_MCP_ENABLED` gate on the MCPTool catalog watch.
+   */
+  mcpEnabled: boolean;
+  /**
+   * The mcp-broker Service, the only MCP speaker (docs/adr/0045 §3): it holds
+   * every MCP session and proxies one `tools/call` per dispatch under the
+   * caller's own delegated token.
+   *
+   * Unset means an MCPTool can be indexed but never dispatched — so dispatch is
+   * gated on this exactly as the Go engine gates it on `MCP_BROKER_URL`.
+   */
+  mcpBrokerUrl: string | undefined;
+  /** Authenticates THIS orchestrator to the mcp-broker. Never a per-user delegated token. */
+  mcpBrokerToken: string | undefined;
+  /**
    * Max consumer-supplied tools that may reach the action planner
    * (docs/adr/0035 §3). Doubles as the threshold below which the caller-tool
    * index is skipped ENTIRELY: with this many tools or fewer there is nothing to
@@ -291,6 +313,9 @@ export const config: AppConfig = {
   knowledgeBasesEnabled: process.env.AGENT_KNOWLEDGE_BASES_ENABLED === "true",
   connectionBrokerUrl: process.env.AGENT_CONNECTION_BROKER_URL,
   connectionBrokerToken: process.env.AGENT_CONNECTION_BROKER_TOKEN,
+  mcpEnabled: process.env.AGENT_MCP_ENABLED === "true",
+  mcpBrokerUrl: process.env.AGENT_MCP_BROKER_URL,
+  mcpBrokerToken: process.env.AGENT_MCP_BROKER_TOKEN,
   callerToolTopK: num(process.env.AGENT_CALLER_TOOL_TOP_K, 5),
   agentEngine: process.env.AGENT_ENGINE === "temporal" ? "temporal" : "langgraph",
   temporalEngineUrl: process.env.AGENT_TEMPORAL_ENGINE_URL,

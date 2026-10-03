@@ -74,6 +74,26 @@ describe("K8sSecretIdentityLinkStore", () => {
     expect(Buffer.from(JSON.parse(raw).githubLogin, "base64").toString("utf8")).toBe("octocat");
   });
 
+  // Non-GitHub authcode providers (Atlassian, Google, Slack) record the
+  // provider's account id here. It was silently dropped on write, so `/identity`
+  // 404'd and the KB ACL pre-filter never saw the user's account.
+  it("round-trips a provider accountId in plaintext", async () => {
+    const store = makeStore();
+    const cred = {
+      githubLogin: "",
+      token: "atl_secret",
+      expiresAt: "2026-07-20T12:00:00.000Z",
+      refreshToken: undefined,
+      refreshExpiresAt: undefined,
+      accountId: "557058:abc-123",
+    };
+    await store.set("atlassian", "openwebui:u1", cred);
+    expect(await store.get("atlassian", "openwebui:u1")).toEqual(cred);
+    expect((await store.get("atlassian", "openwebui:u1"))?.accountId).toBe("557058:abc-123");
+    const raw = api.rawFor(api.onlyName());
+    expect(Buffer.from(JSON.parse(raw).accountId, "base64").toString("utf8")).toBe("557058:abc-123");
+  });
+
   it("throws at construction on a malformed encryption key", () => {
     expect(() => new K8sSecretIdentityLinkStore(Buffer.from("not32bytes"), { namespace: NS, api })).toThrow(
       /32 bytes/,

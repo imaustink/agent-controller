@@ -180,3 +180,17 @@ knowledgeBases:
   brokerTokenSecret:
     name: connection-broker-auth
     key: orchestratorToken
+
+# MCP tools (docs/adr/0045). Turns on BOTH the catalog-sync MCPTool informer
+# (so the planner can see MCP tools) and the worker's RunMCPTool activity (so it
+# can dispatch them). MCPTool CRs are watched in the same namespace as the KB
+# CRs (knowledgeBases.namespace / global.knowledgeBaseNamespace), because the
+# mcp-broker writes them there. Enable the mcp-broker subchart too — this only
+# teaches the engine about tools the broker has already discovered.
+mcp:
+  enabled: false
+  brokerUrl: "http://agent-controller-mcp-broker:8080"
+  # Must hold the SAME value as the mcp-broker's orchestratorTokenSecret.
+  brokerTokenSecret:
+    name: mcp-broker-auth
+    key: orchestratorToken

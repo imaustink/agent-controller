@@ -1,0 +1,86 @@
+{{- if .Values.fakeMcpServer.enabled }}
+{{- /*
+  E2E-ONLY fixture (apps/fake-mcp-server, docs/adr/0045): a deterministic MCP
+  server over streamable-http that stands in for a third-party MCP server so
+  cluster e2e tests exercise the REAL mcp-broker and engines end to end without
+  a real external server. Default-disabled; enabled solely by values-e2e.yaml.
+  It enforces no auth — it only REFLECTS the inbound bearer via its `whoami`
+  tool, which is how a test proves the broker forwarded the caller's per-user
+  token upstream.
+*/}}
+{{- if not .Values.fakeMcpServer.acknowledgeNotForProduction }}
+{{- fail "fakeMcpServer is an e2e-only test double. Set fakeMcpServer.acknowledgeNotForProduction=true to enable it." }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-mcp-server
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+    app.kubernetes.io/name: fake-mcp-server
+    e2e: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fake-mcp-server
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fake-mcp-server
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        e2e: "true"
+    spec:
+      containers:
+        - name: fake-mcp-server
+          image: {{ .Values.fakeMcpServer.image | quote }}
+          imagePullPolicy: {{ .Values.fakeMcpServer.imagePullPolicy | default "IfNotPresent" }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: MCP_PATH
+              value: {{ .Values.fakeMcpServer.mcpPath | default "/mcp" | quote }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            # Numeric uid matching the Dockerfile's `useradd --uid 10001 fake`.
+            # Without it kubelet cannot verify the non-numeric USER is non-root
+            # and fails with CreateContainerConfigError under runAsNonRoot.
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-mcp-server
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+    app.kubernetes.io/name: fake-mcp-server
+    e2e: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: fake-mcp-server
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- end }}

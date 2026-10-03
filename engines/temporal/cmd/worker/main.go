@@ -199,6 +199,24 @@ func main() {
 			log.Printf("CONNECTION_BROKER_URL not set; knowledge-base activities disabled")
 		}
 
+		// MCP tools (ADR 0045) are dispatched by proxying to the mcp-broker.
+		// Registered beside knowledge bases and gated the same way: a deployment
+		// without the broker set must not have indexed MCP tools the planner could
+		// select and then fail to dispatch. The broker holds the MCP session; this
+		// activity resolves the caller's delegated token and relays one call.
+		if mcpBrokerURL := os.Getenv("MCP_BROKER_URL"); mcpBrokerURL != "" {
+			mcp := &activities.MCPActivities{
+				Credentials: &activities.LinkedCredentials{Links: links},
+				BrokerURL:   mcpBrokerURL,
+				BrokerToken: os.Getenv("MCP_BROKER_TOKEN"),
+			}
+			w.RegisterActivityWithOptions(mcp.RunMCPTool,
+				activity.RegisterOptions{Name: activities.RunMCPToolActivityName})
+			log.Printf("mcp activities enabled: broker=%s", mcpBrokerURL)
+		} else {
+			log.Printf("MCP_BROKER_URL not set; mcp activities disabled")
+		}
+
 		log.Printf("retrieval activities enabled: qdrant=%s:%d", qdrantHost, qdrantPort)
 	} else {
 		log.Printf("QDRANT_HOST not set; retrieval activities disabled")

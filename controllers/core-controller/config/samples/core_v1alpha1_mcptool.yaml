@@ -1,0 +1,32 @@
+# An MCPTool is the materialized form of ONE exposed MCP tool (ADR 0045): the
+# catalog record a remote tool becomes, dispatched by proxying a single
+# tools/call through the mcp-broker.
+#
+# DERIVED — you do not normally write this. The mcp-broker creates MCPTool
+# objects from an MCPServer's exposure map and owns them via an ownerReference,
+# so deleting the server cascades its tools, and the broker reconciles any
+# hand-edit back. To change what is exposed, edit the MCPServer, not this.
+#
+# It is shown here only so the shape is legible: an MCPTool is an ordinary
+# catalog tool (description + allowedRoles drive RAG retrieval and its RBAC
+# filter) whose dispatch happens to be mcpExec = { serverRef, remoteToolName,
+# inputSchema }.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: MCPTool
+metadata:
+  labels:
+    app.kubernetes.io/name: core-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: github-mcp-search-issues
+  # In practice the broker sets an ownerReference to the MCPServer here.
+spec:
+  serverRef: github-mcp
+  remoteToolName: search_issues
+  description: Search GitHub issues across repositories by query, label, and state.
+  inputSchema: |
+    {"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}
+  allowedRoles:
+    - engineering
+    - support
+  identityProviders:
+    - github
