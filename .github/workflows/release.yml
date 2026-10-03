@@ -163,16 +163,35 @@ jobs:
           echo "Building: $(echo "$MATRIX" | jq -c '[.[].image]')"
           echo "result=$MATRIX" >> "$GITHUB_OUTPUT"
 
-  publish-images:
+  build-images:
+    # Multi-arch (linux/amd64 + linux/arm64), built NATIVELY: every image x
+    # architecture pair is its own job, amd64 on GitHub's x86 runners and arm64
+    # on GitHub's arm64 runners (free for public repos). That beats a single
+    # `platforms: linux/amd64,linux/arm64` build two ways: no QEMU emulation
+    # (several times faster for npm/go/apt-heavy stages), and maximum
+    # parallelism -- there is deliberately no `max-parallel`, so every pair runs
+    # at once, bounded only by the account's concurrent-job limit.
+    #
+    # GitHub-hosted, not the self-hosted ARC runner: building and pushing needs
+    # only GHCR (via GITHUB_TOKEN), never the cluster. `deploy` below stays on
+    # ARC because it is the only runner holding cluster credentials.
+    #
+    # Each job pushes its single-arch image BY DIGEST (untagged) and hands the
+    # digest to `publish-images`, which stitches them into one multi-arch
+    # manifest per image and applies the real tags. So `:latest`/`:<sha>` only
+    # ever move once BOTH architectures exist -- never a half-published image.
     needs: changes
-    runs-on: arc-runner-set-agent-controller
-    # Self-hosted runner: only ever reachable via push to main (collaborators only).
-    # Guard so a fork that somehow re-targets this job cannot run it on our infra.
+    # push-to-main only (collaborators), but keep a fork from pushing to our
+    # GHCR namespace if this workflow is ever re-targeted.
     if: github.repository == 'imaustink/agent-controller' && needs.changes.outputs.matrix != '[]'
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(needs.changes.outputs.matrix) }}
+        img: ${{ fromJson(needs.changes.outputs.matrix) }}
+        arch: [amd64, arm64]
+    name: build ${{ matrix.img.image }} (${{ matrix.arch }})
     steps:
       - uses: actions/checkout@v4
 
@@ -190,28 +209,102 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push ${{ matrix.image }}
+      - name: Build & push ${{ matrix.img.image }} (linux/${{ matrix.arch }}) by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          push: true
-          build-args: ${{ matrix.build_args }}
-          # `:latest` tracks main; `:<sha>` is immutable, for pinning.
-          tags: |
-            ghcr.io/imaustink/agent-controller/${{ matrix.image }}:latest
-            ghcr.io/imaustink/agent-controller/${{ matrix.image }}:${{ github.sha }}
+          context: ${{ matrix.img.context }}
+          file: ${{ matrix.img.dockerfile }}
+          build-args: ${{ matrix.img.build_args }}
+          platforms: linux/${{ matrix.arch }}
           # Links each package to this repo on GHCR, so it shows up on the
           # repo page and can inherit its access settings.
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          # GitHub Actions cache backend, scoped per image so unrelated images
-          # don't evict each other's layers. `mode=max` also caches
-          # intermediate (build-stage) layers, not just the final stage --
-          # needed here since npm ci / go mod download / apt-get all happen
-          # in earlier stages than what gets pushed.
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+          # Untagged, by digest: tags are applied to the multi-arch manifest in
+          # `publish-images`, so a single arch never lands under :latest alone.
+          outputs: type=image,name=ghcr.io/imaustink/agent-controller/${{ matrix.img.image }},push-by-digest=true,name-canonical=true,push=true
+          # Registry cache, per image AND arch, in the image's own GHCR package.
+          # Not the GHA cache backend: ~24 images x 2 arches with `mode=max`
+          # (which also caches the npm ci / go mod download / apt-get build
+          # stages) would blow through the repo's 10GB Actions cache and evict
+          # itself every run. `ignore-error` so a cache-export hiccup can never
+          # fail a publish; `image-manifest`/`oci-mediatypes` for GHCR.
+          cache-from: type=registry,ref=ghcr.io/imaustink/agent-controller/${{ matrix.img.image }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=ghcr.io/imaustink/agent-controller/${{ matrix.img.image }}:buildcache-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
+
+      - name: Export digest
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+
+      # `__` delimiters so one image's pattern can never match another image
+      # that merely shares a prefix (e.g. `github` vs a future `github-x`).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests__${{ matrix.img.image }}__${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-images:
+    # One job per image: combine its per-arch digests into a single multi-arch
+    # manifest list and tag it. `:latest` tracks main; `:<sha>` is immutable,
+    # for pinning. Runs only when EVERY build-images job succeeded (default
+    # `needs` semantics), so tags never point at a partial set of arches.
+    needs: [changes, build-images]
+    if: github.repository == 'imaustink/agent-controller' && needs.changes.outputs.matrix != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        img: ${{ fromJson(needs.changes.outputs.matrix) }}
+    name: publish ${{ matrix.img.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests__${{ matrix.img.image }}__*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io \
+            -u "${{ github.actor }}" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create & push multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: ghcr.io/imaustink/agent-controller/${{ matrix.img.image }}
+        run: |
+          # The index-level source annotation is what GHCR reads to link a
+          # multi-arch package to this repo (the per-arch label alone isn't).
+          refs=()
+          for digest in *; do refs+=("$IMAGE@sha256:$digest"); done
+          docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            -t "$IMAGE:latest" \
+            -t "$IMAGE:$GITHUB_SHA" \
+            "${refs[@]}"
+
+      - name: Verify both architectures are published
+        env:
+          IMAGE: ghcr.io/imaustink/agent-controller/${{ matrix.img.image }}
+        run: |
+          # Ignore attestation entries (platform unknown/unknown) that buildx
+          # adds for provenance; assert the real platforms are exactly the two.
+          platforms=$(docker buildx imagetools inspect --raw "$IMAGE:$GITHUB_SHA" \
+            | jq -r '[.manifests[].platform | select(.os != "unknown") | "\(.os)/\(.architecture)"] | sort | unique | join(",")')
+          echo "$IMAGE:$GITHUB_SHA -> $platforms"
+          if [ "$platforms" != "linux/amd64,linux/arm64" ]; then
+            echo "::error::$IMAGE:$GITHUB_SHA has platforms '$platforms', expected linux/amd64,linux/arm64"
+            exit 1
+          fi
 
   publish-charts:
     # Publishes the two Helm charts (charts/agent-controller,
@@ -329,12 +422,18 @@ jobs:
           done
 
   deploy:
-    needs: [publish-images, publish-charts]
+    # build-images is listed explicitly, not just reached through
+    # publish-images: when a build fails, publish-images is SKIPPED (not
+    # failed), and the `always()` guard below only rejects failure/cancellation
+    # among DIRECT needs -- so without it a broken build would deploy anyway.
+    needs: [build-images, publish-images, publish-charts]
+    # Self-hosted ARC runner, deliberately NOT GitHub-hosted like the build jobs
+    # above: it is the only runner with credentials for the cluster. Only ever
+    # reachable via push to main (collaborators only).
     runs-on: arc-runner-set-agent-controller
-    # Self-hosted runner: only ever reachable via push to main (collaborators only).
     # Guard so a fork that somehow re-targets this job cannot run it on our infra.
     #
-    # `always()` because publish-images/publish-charts are legitimately
+    # `always()` because build-images/publish-images/publish-charts are legitimately
     # skipped when nothing relevant changed (e.g. a docs-only push) -- a
     # skip must not block deploy the way a failure should. Explicitly reject
     # failure/cancellation instead of just checking for 'success' so deploy
