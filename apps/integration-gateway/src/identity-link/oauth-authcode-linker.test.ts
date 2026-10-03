@@ -183,6 +183,19 @@ describe("getValidToken", () => {
     expect(stored?.accountId).toBe("acc-1");
   });
 
+  it("backfills a missing accountId on refresh", async () => {
+    const http = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ access_token: "at-new", refresh_token: "rt-new", expires_in: 3600 }))
+      .mockResolvedValueOnce(jsonResponse({ account_id: "acc-backfilled" }));
+    const { linker, store } = linkerWith(http as unknown as typeof fetch);
+    await store.set("atlassian", "s", linked({ accountId: undefined, expiresAt: new Date(NOW - 1000).toISOString() }));
+
+    await linker.getValidToken("s");
+
+    expect((await store.get("atlassian", "s"))?.accountId).toBe("acc-backfilled");
+  });
+
   it("still returns the working token when persistence fails, and says so loudly", async () => {
     const http = vi
       .fn()
