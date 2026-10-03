@@ -12,6 +12,7 @@ import type { OrchestratorClient, OrchestratorInvokeResult } from "./orchestrato
 import { ClaudeCredentialRefresher, ClaudeCredentialSweeper } from "./claude-auth/credential-refresher.js";
 import { renderSessionPage } from "./session-page.js";
 import type { SessionPageStore } from "./session-page-store.js";
+import { LabelReconciler, type PendingLabelStore } from "./label-reconciler.js";
 import { parseGithubEvent, verifyGithubSignature, WebhookAuthError } from "./webhooks/github.js";
 
 const SESSION_PAGE_PATH = /^\/sessions\/([^/]+)$/;
@@ -125,6 +126,21 @@ export interface GatewayServerOptions {
    */
   sessionPageStore?: SessionPageStore;
   publicBaseUrl?: string;
+  /**
+   * Durable outbox of trigger-label removals still owed, enabling the
+   * self-healing reconciler (label-reconciler.ts). Optional and additive: when
+   * absent, label removal works exactly as before (the in-process `finally`),
+   * just without the restart-surviving backstop. When present (Redis-backed in
+   * production), every label-triggered run records its removal here up front and
+   * clears it once the label is off, and a periodic+startup sweep removes any
+   * label whose `finally` never completed (pod restart/OOM mid-turn) -- the real
+   * fix for "label removal only works ~3/4 of the time".
+   */
+  pendingLabelStore?: PendingLabelStore;
+  /** How often the reconciling sweep runs; forwarded to {@link LabelReconciler}. */
+  labelReconcilerIntervalMs?: number;
+  /** How old an owed removal must be before the sweep acts on it; forwarded to {@link LabelReconciler}. */
+  labelReconcilerGraceMs?: number;
 }
 
 /** `owner/repo#issueNumber` scoped session id -- see docs/integrations-gateway.md. */
@@ -149,6 +165,7 @@ export class GatewayServer {
   private readonly identityLinkApi: IdentityLinkApi | undefined;
   private readonly claudeAuthApi: ClaudeAuthApi | undefined;
   private readonly claudeCredentialSweeper: ClaudeCredentialSweeper | undefined;
+  private readonly labelReconciler: LabelReconciler | undefined;
 
   constructor(private readonly options: GatewayServerOptions) {
     this.identityLinkApi =
@@ -196,6 +213,21 @@ export class GatewayServer {
             ...(options.claudeCredentialSweepMarginMs ? { marginMs: options.claudeCredentialSweepMarginMs } : {}),
           })
         : undefined;
+    // Durable self-heal for a trigger label whose in-process `finally` was lost
+    // to a mid-turn pod restart/OOM. Only built when a pending-label store is
+    // wired; a run that is no longer live (orchestrator liveness probe) and that
+    // THIS gateway recorded is treated as terminal and its label removed.
+    this.labelReconciler = options.pendingLabelStore
+      ? new LabelReconciler({
+          store: options.pendingLabelStore,
+          isRunTerminal: async (sessionId) => !(await options.orchestratorClient.checkLive(sessionId)).live,
+          removeLabel: (owner, repo, issueNumber, label) =>
+            options.githubReplyClient.removeIssueLabel(owner, repo, issueNumber, label),
+          onError: options.onBackgroundError ?? ((error: unknown) => console.error(error)),
+          ...(options.labelReconcilerIntervalMs ? { intervalMs: options.labelReconcilerIntervalMs } : {}),
+          ...(options.labelReconcilerGraceMs !== undefined ? { graceMs: options.labelReconcilerGraceMs } : {}),
+        })
+      : undefined;
   }
 
   listen(port: number): Promise<void> {
@@ -207,6 +239,9 @@ export class GatewayServer {
         });
       });
       this.claudeCredentialSweeper?.start();
+      // Fires one sweep immediately -- the startup self-heal for any label
+      // stranded by the previous pod dying mid-turn -- then on its interval.
+      this.labelReconciler?.start();
       this.server.listen(port, resolve);
     });
   }
@@ -214,6 +249,7 @@ export class GatewayServer {
   close(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.claudeCredentialSweeper?.stop();
+      this.labelReconciler?.stop();
       if (!this.server) return resolve();
       this.server.close((err) => (err ? reject(err) : resolve()));
     });
@@ -437,29 +473,62 @@ export class GatewayServer {
     // from the delegated agent IF one ever arrives, posts a second, separate
     // follow-up comment with the live session link. Independent of
     // `announce` -- may land before, after, or never.
+    const report = this.options.onBackgroundError ?? ((e: unknown) => console.error(e));
     let announce: (() => Promise<void>) | undefined;
     let onRemoteControlUrl: ((url: string) => Promise<void>) | undefined;
-    if (event && this.options.sessionPageStore && this.options.publicBaseUrl) {
-      await this.options.sessionPageStore.getOrCreate(sessionId, { owner, repo, issueNumber });
-      let announced = false;
-      announce = async () => {
-        if (announced) return;
-        announced = true;
-        await this.options.githubReplyClient.postIssueComment(owner, repo, issueNumber, "🤖 Starting work on this now.");
-      };
-      let postedRemoteControlUrl = false;
-      onRemoteControlUrl = async (url) => {
-        if (postedRemoteControlUrl) return;
-        postedRemoteControlUrl = true;
-        await this.options.githubReplyClient.postIssueComment(
-          owner,
-          repo,
-          issueNumber,
-          `🤖 Watch live or take over the session here: ${url}`,
-        );
-      };
-    }
     try {
+      // Record the owed label removal BEFORE anything that can throw or the pod
+      // can die, so the reconciler (label-reconciler.ts) can self-heal it if the
+      // `finally` below never runs. Best-effort: a store blip must not stop the
+      // turn, and the in-process `finally` still removes the label on the happy
+      // path regardless.
+      if (triggerLabel && this.options.pendingLabelStore) {
+        try {
+          await this.options.pendingLabelStore.record({
+            owner,
+            repo,
+            issueNumber,
+            label: triggerLabel,
+            sessionId,
+            recordedAt: Date.now(),
+          });
+        } catch (error) {
+          report(error);
+        }
+      }
+
+      if (event && this.options.sessionPageStore && this.options.publicBaseUrl) {
+        // `getOrCreate` used to run BEFORE the try/finally, so a throw here --
+        // a Redis/store hiccup -- skipped label removal ENTIRELY, stranding the
+        // trigger label. It is now inside the finally's guarantee AND best-effort:
+        // the session page is a convenience, and the turn (and its label cleanup)
+        // must not hinge on it. The announce/URL closures below only post
+        // comments, so they work without a page entry; `runTurn`'s `addTurn`/
+        // `completeTurn` are already no-ops when no entry exists.
+        try {
+          await this.options.sessionPageStore.getOrCreate(sessionId, { owner, repo, issueNumber });
+        } catch (error) {
+          report(error);
+        }
+        let announced = false;
+        announce = async () => {
+          if (announced) return;
+          announced = true;
+          await this.options.githubReplyClient.postIssueComment(owner, repo, issueNumber, "🤖 Starting work on this now.");
+        };
+        let postedRemoteControlUrl = false;
+        onRemoteControlUrl = async (url) => {
+          if (postedRemoteControlUrl) return;
+          postedRemoteControlUrl = true;
+          await this.options.githubReplyClient.postIssueComment(
+            owner,
+            repo,
+            issueNumber,
+            `🤖 Watch live or take over the session here: ${url}`,
+          );
+        };
+      }
+
       await this.runTurn(owner, repo, issueNumber, sessionId, request, event, announce, onRemoteControlUrl);
     } catch (error) {
       // Last line of defence: whatever else a turn does, it must not end in
@@ -485,21 +554,34 @@ export class GatewayServer {
       } catch (postError) {
         // Reported, not thrown: failing to post the failure must not replace
         // the original error with a less informative one.
-        (this.options.onBackgroundError ?? ((e: unknown) => console.error(e)))(postError);
+        report(postError);
       }
-      (this.options.onBackgroundError ?? ((e: unknown) => console.error(e)))(error);
+      report(error);
     } finally {
       // `finally`, not the happy path only: a failed or blocked run is
       // exactly when someone wants to re-trigger, so the label must come off
       // either way. Removing it emits `issues.unlabeled`/
       // `pull_request.unlabeled`, which `parseGithubEvent` ignores -- no
       // self-trigger loop. A failure here is reported but must not mask the
-      // turn's own outcome.
+      // turn's own outcome. The removal is retried internally (github-client.ts)
+      // and backstopped by the reconciler, so this is deterministic even when
+      // GitHub is briefly flaky; only a pod death between here and completion
+      // leaves it to the reconciler.
       if (triggerLabel) {
         try {
           await this.options.githubReplyClient.removeIssueLabel(owner, repo, issueNumber, triggerLabel);
+          // Removed for real -- drop the owed-removal record so the reconciler
+          // doesn't re-check a label that is already gone. Best-effort: a stale
+          // record only costs one idempotent 404 on the next sweep.
+          try {
+            await this.options.pendingLabelStore?.clear(sessionId, triggerLabel);
+          } catch (error) {
+            report(error);
+          }
         } catch (error) {
-          (this.options.onBackgroundError ?? ((e: unknown) => console.error(e)))(error);
+          // Removal exhausted its retries; leave the owed-removal record in
+          // place so the reconciler finishes the job on a later sweep.
+          report(error);
         }
       }
     }

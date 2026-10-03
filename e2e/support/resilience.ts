@@ -184,6 +184,21 @@ export async function rollOrchestrator(): Promise<void> {
 }
 
 /**
+ * Rolls the integration-gateway Deployment and waits for the rollout to
+ * complete.
+ *
+ * This is the disruption the DURABLE label self-heal has to survive: the
+ * gateway holds its label-removal `finally` in-process for the whole turn, so a
+ * pod rolled (or OOM-killed) mid-turn loses it and strands the trigger label.
+ * The replacement's startup sweep + periodic reconciler
+ * (apps/integration-gateway/src/label-reconciler.ts) is what removes it anyway.
+ */
+export async function rollGateway(): Promise<void> {
+  await kubectl(["rollout", "restart", "deploy/agent-controller-integration-gateway"]);
+  await kubectl(["rollout", "status", "deploy/agent-controller-integration-gateway", "--timeout=300s"]);
+}
+
+/**
  * NOTE: there is deliberately no `orchestratorLogs()` helper here.
  *
  * A turn's error text is never logged -- `state.error` is returned over HTTP

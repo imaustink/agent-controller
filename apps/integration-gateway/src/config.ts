@@ -183,12 +183,32 @@ export interface AppConfig {
    * configured (see index.ts).
    */
   claudeAuthEnabled: boolean;
+  /**
+   * How often the trigger-label reconciler sweeps for owed removals whose
+   * in-process `finally` never ran (pod restart/OOM mid-turn). Undefined ->
+   * {@link LabelReconciler}'s own default. See label-reconciler.ts.
+   */
+  labelReconcilerIntervalMs: number | undefined;
+  /**
+   * How old an owed label removal must be before the reconciler acts on it --
+   * the grace that keeps a just-started run (not yet live) or a transient
+   * liveness-probe blip from stripping a label prematurely. Undefined ->
+   * {@link LabelReconciler}'s own default.
+   */
+  labelReconcilerGraceMs: number | undefined;
 }
 
 function num(raw: string | undefined, fallback: number): number {
   if (raw === undefined) return fallback;
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/** Like {@link num} but yields `undefined` (not a fallback) when unset/invalid, so a downstream default can apply. A value of 0 is honoured (e.g. a zero grace in tests). */
+function numOrUndefined(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -233,6 +253,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     publicUrl: env.GATEWAY_PUBLIC_URL ?? "",
     sessionPageRedisUrl: env.SESSION_PAGE_REDIS_URL,
     claudeAuthEnabled: env.GATEWAY_CLAUDE_AUTH_ENABLED === "true",
+    labelReconcilerIntervalMs: numOrUndefined(env.GATEWAY_LABEL_RECONCILER_INTERVAL_MS),
+    labelReconcilerGraceMs: numOrUndefined(env.GATEWAY_LABEL_RECONCILER_GRACE_MS),
   };
 }
 
