@@ -23,7 +23,7 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
-    - jsonPath: .status.staleConnections
+    - jsonPath: .status.staleCorpora
       name: Stale
       priority: 1
       type: string
