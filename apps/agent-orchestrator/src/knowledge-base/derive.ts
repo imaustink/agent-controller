@@ -227,7 +227,14 @@ function knowledgeBaseMarkdown(
       "  from that instead.\n" +
       "- When search reports sources it could not check, say so. Those are not\n" +
       "  results that were withheld — they are results nobody could confirm\n" +
-      "  either way, so the answer may be missing evidence that exists.",
+      "  either way, so the answer may be missing evidence that exists.\n" +
+      "- When search says the caller must **link an account** to include more\n" +
+      "  sources, that is an action for the user, not a caveat to summarise away.\n" +
+      "  Surface it: name the account, and reproduce the clickable\n" +
+      "  `[link your … account](…)` link **exactly as search gave it** — the same\n" +
+      "  discipline as a citation. Dropping it (\"some sources were skipped\")\n" +
+      "  strands the user with no way to act, so those sources stay missing on\n" +
+      "  every later turn too.",
   );
   if (members.some((member) => member.apiEnabled)) {
     parts.push(

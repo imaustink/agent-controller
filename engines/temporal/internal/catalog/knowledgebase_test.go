@@ -330,6 +330,16 @@ func TestKnowledgeBaseMarkdown(t *testing.T) {
 		require.Contains(t, markdown, "could not check")
 	})
 
+	t.Run("tells the planner to surface an account-link prompt, not drop it", func(t *testing.T) {
+		// A partial answer carries a clickable "link your X account" prompt the
+		// user must act on; without this instruction the model summarised the
+		// chunks and silently dropped the link, so the missing provider (e.g.
+		// Slack) was never offered to the user at all.
+		markdown := catalog.DeriveKnowledgeBaseSkill(globexKB(), conns).Markdown
+		require.Contains(t, markdown, "link an account")
+		require.Contains(t, markdown, "exactly as search gave it")
+	})
+
 	t.Run("mentions the live face only when a member has one", func(t *testing.T) {
 		withAPI := catalog.DeriveKnowledgeBaseSkill(globexKB(), conns).Markdown
 		require.Contains(t, withAPI, "true *right now*")

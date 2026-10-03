@@ -178,6 +178,16 @@ describe("the generated markdown", () => {
     expect(markdown).toContain("could not check");
   });
 
+  it("tells the planner to surface an account-link prompt, not drop it", () => {
+    // A partial answer carries a clickable "link your X account" prompt the
+    // user must act on; without this instruction the model summarised the
+    // chunks and silently dropped the link, so the missing provider (e.g.
+    // Slack) was never offered to the user at all.
+    const markdown = markdownFor(globexKb());
+    expect(markdown).toContain("link an account");
+    expect(markdown).toContain("exactly as search gave it");
+  });
+
   it("mentions the live face only when a member has one", () => {
     expect(markdownFor(globexKb())).toContain("true *right now*");
 
