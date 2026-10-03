@@ -800,6 +800,27 @@ export async function knowledgeBaseLinkPrompt(
 }
 
 /**
+ * Appends clickable link(s) to a knowledge-base result whenever it names
+ * providers the caller must link — on BOTH the no-link block (NeedsLink) and a
+ * PARTIAL answer (some providers linked, some not).
+ *
+ * The trigger is `linkProviders`, deliberately NOT `needsLink`: a partial answer
+ * offers a fresh link for the still-missing provider without blocking the
+ * sources it already has. The three KB dispatch branches (search/read/lookup)
+ * all route through here, so that rule lives in exactly ONE place — re-adding a
+ * `needsLink &&` guard would fail this helper's test rather than silently
+ * dropping links on partial answers.
+ */
+export async function enrichKnowledgeBaseResult(
+  deps: AgentGraphDeps,
+  subject: string,
+  found: { result: string; linkProviders?: string[] },
+): Promise<string> {
+  if (!found.linkProviders?.length) return found.result;
+  return knowledgeBaseLinkPrompt(deps, subject, found.linkProviders, found.result);
+}
+
+/**
  * The per-caller identity gate shared by `runTool`'s two tool-launch branches
  * (agent-backed and container). Resolves the caller's linked credentials for
  * `tool.identityProviders` through the SAME {@link AuthorizationService} the
@@ -2166,10 +2187,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           subject: state.identity.subject,
           roles: state.identity.roles,
         });
-        const result =
-          read.needsLink && read.linkProviders?.length
-            ? await knowledgeBaseLinkPrompt(deps, state.identity.subject, read.linkProviders, read.result)
-            : read.result;
+        const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, read);
         return {
           result,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
@@ -2191,10 +2209,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           subject: state.identity.subject,
           roles: state.identity.roles,
         });
-        const result =
-          found.needsLink && found.linkProviders?.length
-            ? await knowledgeBaseLinkPrompt(deps, state.identity.subject, found.linkProviders, found.result)
-            : found.result;
+        const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, found);
         return {
           result,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
@@ -2235,10 +2250,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           subject: state.identity.subject,
           roles: state.identity.roles,
         });
-        const result =
-          found.needsLink && found.linkProviders?.length
-            ? await knowledgeBaseLinkPrompt(deps, state.identity.subject, found.linkProviders, found.result)
-            : found.result;
+        const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, found);
         return {
           result,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],

@@ -210,6 +210,9 @@ describe("KnowledgeBaseSearcher", () => {
     expect(openCorpus).toHaveBeenCalledWith("coll-conf");
     expect(out.needsLink).toBeUndefined();
     expect(out.result).toContain("have not linked (google)");
+    // A partial answer still surfaces the provider to link, so the graph offers a
+    // fresh clickable link for it (Slack/Drive can be linked incrementally).
+    expect(out.linkProviders).toEqual(["google"]);
   });
 
   it("searches every member when all providers are linked", async () => {

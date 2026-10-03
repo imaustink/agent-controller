@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { knowledgeBaseLinkPrompt } from "./graph.js";
+import { enrichKnowledgeBaseResult, knowledgeBaseLinkPrompt } from "./graph.js";
 import type { IdentityLinkPort } from "../identity-link/gateway-client.js";
 
 const BASE = "I need you to link the account behind Sierra Nevada Corporation (atlassian, google) before I can search it.";
@@ -62,5 +62,35 @@ describe("knowledgeBaseLinkPrompt", () => {
     // (a misconfiguration degrades, it does not swallow the turn).
     const out = await knowledgeBaseLinkPrompt({} as never, "openwebui:42", ["atlassian"], BASE);
     expect(out).toBe(BASE);
+  });
+});
+
+describe("enrichKnowledgeBaseResult", () => {
+  it("appends a link on a PARTIAL answer (linkProviders set, needsLink absent)", async () => {
+    // This is the exact wiring #271 adds: a partial answer carries linkProviders
+    // without needsLink, and must still get a clickable link. Re-adding a
+    // `needsLink &&` guard to the dispatch branches would fail this test.
+    const identityLinkGateway = gatewayStarting();
+
+    const out = await enrichKnowledgeBaseResult({ identityLinkGateway } as never, "openwebui:42", {
+      result: "Found 2 passage(s). …Drive + Confluence answer…",
+      linkProviders: ["google"],
+    });
+
+    expect(out).toContain("Found 2 passage(s)");
+    expect(out).toContain("[link your google account](https://gw.example/link/google)");
+    expect(identityLinkGateway.start).toHaveBeenCalledWith("google", "openwebui:42", "authcode");
+  });
+
+  it("returns the result unchanged when there are no providers to link", async () => {
+    const identityLinkGateway = gatewayStarting();
+
+    const out = await enrichKnowledgeBaseResult({ identityLinkGateway } as never, "openwebui:42", {
+      result: "A complete answer with every provider linked.",
+      linkProviders: [],
+    });
+
+    expect(out).toBe("A complete answer with every provider linked.");
+    expect(identityLinkGateway.start).not.toHaveBeenCalled();
   });
 });

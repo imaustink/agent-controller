@@ -319,6 +319,37 @@ func TestSearchServesTheLinkedProvidersOfAMixedBaseAndNamesTheOneToLink(t *testi
 	require.Contains(t, out.Result, "have not linked (google)")
 }
 
+func TestSearchOffersAFreshLinkForTheUnlinkedProviderOnAPartialAnswer(t *testing.T) {
+	links, err := identitylink.NewFake("", "")
+	require.NoError(t, err)
+	corpora := &recordingCorpora{}
+	drive := member("drive", []string{"reader"}, "coll-drive")
+	drive.IdentityProviders = []string{"google"}
+
+	out, err := (&activities.KnowledgeBaseActivities{
+		Corpora:       corpora,
+		Credentials:   &perProviderResolver{linked: map[string]string{"atlassian": "at"}},
+		BrokerURL:     "http://broker",
+		BrokerToken:   "orch",
+		IdentityLinks: links,
+	}).SearchKnowledgeBase(context.Background(), activities.SearchKnowledgeBaseInput{
+		Caller: activities.Caller{Subject: "openwebui:42", Roles: []string{"reader"}},
+		Tool:   searchTool(member("conf", []string{"reader"}, "coll-conf"), drive),
+		Query:  "q",
+	})
+
+	require.NoError(t, err)
+	// A partial answer, not a block: Confluence was searched.
+	require.False(t, out.NeedsLink)
+	require.Equal(t, []string{"coll-conf"}, corpora.opened)
+	// ...and it offers a FRESH clickable link for the one provider still missing,
+	// so Slack can be linked after Confluence/Drive — and an expired link is just
+	// replaced on the next ask.
+	require.Equal(t, []string{"google"}, out.LinkProviders)
+	require.Contains(t, out.Result, "[link your google account](https://example.invalid/link/google)")
+	require.Len(t, links.Started, 1)
+}
+
 func TestSearchSearchesEveryMemberWhenAllProvidersAreLinked(t *testing.T) {
 	corpora := &recordingCorpora{}
 	drive := member("drive", []string{"reader"}, "coll-drive")
