@@ -124,6 +124,60 @@ describe("K8sSecretIdentityLinkStore", () => {
     api.failWith = { verb: "read", error: new FakeApiError(500, "internal error") };
     await expect(store.get("github", "user-1")).resolves.toBeUndefined();
   });
+
+  const CRED_TO_WRITE = {
+    githubLogin: "octocat",
+    token: "gho_supersecret",
+    expiresAt: "2026-07-20T12:00:00.000Z",
+    refreshToken: undefined,
+    refreshExpiresAt: undefined,
+  };
+
+  // The regression this whole change exists for. A WRITE that fails is the
+  // opposite of a read that fails: `set` is only ever called from a completed
+  // OAuth flow that has already burned a one-time device/authcode code, so a
+  // dropped write is a permanently lost link. Swallowing it (the old behavior)
+  // let the linker report the flow "complete" while nothing persisted, so the
+  // caller re-prompted on the very next turn forever, with no error anywhere --
+  // the silent re-link loop. It must SURFACE, so this proves `set` rejects
+  // rather than resolving. (The read path, above, must do the opposite; the two
+  // tests together pin that asymmetry in place.)
+  it("surfaces a write failure instead of silently dropping the completed link", async () => {
+    const store = makeStore();
+    api.failWith = { verb: "create", error: new FakeApiError(500, "etcdserver: request timed out") };
+    await expect(store.set("github", "user-1", CRED_TO_WRITE)).rejects.toThrow(/timed out/);
+    // And nothing half-written was left behind pretending to be a link.
+    expect(await store.get("github", "user-1")).toBeUndefined();
+  });
+
+  // Durability is not "the API accepted the write" -- it is "the record is
+  // readable afterward". A mutating webhook, an over-quota namespace, or a
+  // lying backend can accept a create and leave nothing behind, which at the
+  // `put` call alone is indistinguishable from success. The read-back is what
+  // closes that gap: an accepted-but-empty write must throw, not resolve, or it
+  // becomes the same silent loop by another route.
+  it("rejects when the write is accepted but is not actually durable", async () => {
+    // An API that acknowledges every create but stores nothing.
+    const lyingApi = new FakeSecretApi();
+    lyingApi.createNamespacedSecret = async (request) => {
+      const name = (request.body as { metadata: { name: string } }).metadata.name;
+      return { metadata: { name }, data: {} };
+    };
+    const store = new K8sSecretIdentityLinkStore(KEY, { namespace: NS, api: lyingApi });
+    await expect(store.set("github", "user-1", CRED_TO_WRITE)).rejects.toThrow(/did not persist/);
+  });
+
+  // The headline ADR 0034 property, asserted at the store level: a completed
+  // link outlives the process that wrote it. A brand-new store instance over
+  // the same backing Secrets -- what a pod restart actually produces -- reads
+  // the credential straight back, so the caller is never re-prompted for a link
+  // it already has. (The Redis predecessor failed exactly here.)
+  it("persists a completed link across a store restart", async () => {
+    await makeStore().set("github", "user-1", CRED_TO_WRITE);
+    // A fresh instance shares only the durable backing store, not in-process state.
+    const afterRestart = new K8sSecretIdentityLinkStore(KEY, { namespace: NS, api, watch });
+    expect(await afterRestart.get("github", "user-1")).toEqual(CRED_TO_WRITE);
+  });
 });
 
 describe("K8sSecretIdentityLinkStore.waitForCompletion", () => {

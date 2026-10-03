@@ -115,6 +115,29 @@ describe("GithubDeviceFlowLinker.poll", () => {
       refreshExpiresAt: "2027-01-01T00:00:00.000Z",
     });
   });
+
+  // GitHub already said yes and the one-time device code is now spent, but the
+  // durable write failed. Returning `"complete"` here is precisely what stranded
+  // the caller: they were told they were linked while no record existed, so the
+  // next turn re-prompted, forever. `poll` must propagate the failure instead,
+  // so completion is a durability claim rather than "GitHub approved".
+  it("does not report complete when persisting the credential fails", async () => {
+    vi.spyOn(deviceFlow, "pollDeviceFlow").mockResolvedValue({
+      status: "complete",
+      token: "gho_abc",
+      refreshToken: "ghr_def",
+      expiresAt: "2026-07-20T12:00:00.000Z",
+      refreshExpiresAt: "2027-01-01T00:00:00.000Z",
+    });
+    const fetchImpl = makeFetchMock("octocat");
+    const store = makeInMemoryStore();
+    store.set = async () => {
+      throw new Error("credential did not persist");
+    };
+    const linker = new GithubDeviceFlowLinker({ clientId: "client-1", scope: undefined, store, fetchImpl });
+
+    await expect(linker.poll("user-1", "dc-1")).rejects.toThrow(/did not persist/);
+  });
 });
 
 describe("GithubDeviceFlowLinker.startAuthCode", () => {

@@ -93,6 +93,13 @@ export class GithubDeviceFlowLinker {
         return { status: "denied" };
       case "complete": {
         const githubLogin = await this.fetchGithubLogin(result.token);
+        // Awaited, and its rejection is deliberately NOT caught: `"complete"`
+        // is a durability claim, not just "GitHub said yes". The device code
+        // has already been redeemed by pollDeviceFlow above and cannot be
+        // redeemed again, so a persist failure here means the link is lost --
+        // reporting `"complete"` anyway is exactly what made the caller
+        // re-prompt forever with no record ever landing. Let it throw so the
+        // poll surfaces as failed rather than a phantom success.
         await this.options.store.set(PROVIDER, subject, {
           githubLogin,
           token: result.token,

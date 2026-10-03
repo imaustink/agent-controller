@@ -100,22 +100,43 @@ export class K8sSecretIdentityLinkStore implements IdentityLinkStore {
   }
 
   async set(provider: string, subject: string, cred: LinkedCredential): Promise<void> {
-    try {
-      const fields: Record<string, string> = {
-        githubLogin: cred.githubLogin,
-        expiresAt: cred.expiresAt,
-        token: encryptField(this.key, cred.token),
-      };
-      // Omitted rather than written empty: a Secret field is a string, so an
-      // absent refresh token and an empty one would otherwise be
-      // indistinguishable on read.
-      if (cred.refreshExpiresAt) fields.refreshExpiresAt = cred.refreshExpiresAt;
-      if (cred.refreshToken) fields.refreshToken = encryptField(this.key, cred.refreshToken);
-      await this.storeFor(provider).put(subject, fields);
-    } catch (err) {
-      console.error(
-        "K8sSecretIdentityLinkStore.set failed (ignored):",
-        err instanceof Error ? err.message : String(err),
+    const fields: Record<string, string> = {
+      githubLogin: cred.githubLogin,
+      expiresAt: cred.expiresAt,
+      token: encryptField(this.key, cred.token),
+    };
+    // Omitted rather than written empty: a Secret field is a string, so an
+    // absent refresh token and an empty one would otherwise be
+    // indistinguishable on read.
+    if (cred.refreshExpiresAt) fields.refreshExpiresAt = cred.refreshExpiresAt;
+    if (cred.refreshToken) fields.refreshToken = encryptField(this.key, cred.refreshToken);
+
+    const store = this.storeFor(provider);
+
+    // Do NOT swallow a write failure. `set` is only ever called from a
+    // COMPLETED OAuth flow, which has already redeemed a one-time code with
+    // GitHub -- the token cannot be obtained again. A dropped write is
+    // therefore a permanently lost link, not a retriable miss. Swallowing it
+    // (the previous behavior) let the linker report the flow as `"complete"`
+    // while nothing persisted, so the caller re-prompted on the very next
+    // turn with no error logged anywhere: the silent re-link loop docs/adr/0034
+    // set out to end, but reintroduced one layer up. It must surface so the
+    // completion itself fails loudly instead of masquerading as success.
+    await store.put(subject, fields);
+
+    // A write the API server ACCEPTS is not yet a write that is DURABLE: a
+    // mutating admission webhook can drop fields, a namespace over quota can
+    // reject the object out of band, a storage backend can lie. Those are
+    // indistinguishable from success at the `put` call alone, and the whole
+    // ADR 0034 contract is durability -- so confirm the record is actually
+    // readable back before telling the caller the account is linked. A read
+    // miss here is the one failure that used to become an endless silent
+    // re-prompt; turning it into a thrown error is what makes it diagnosable.
+    const readBack = await store.get(subject);
+    if (!readBack) {
+      throw new Error(
+        `identity-link ${provider} credential for subject did not persist: ` +
+          `the write was accepted but read back empty, so the link is NOT durable and must not be reported complete`,
       );
     }
   }
