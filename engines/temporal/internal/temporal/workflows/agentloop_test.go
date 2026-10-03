@@ -556,6 +556,111 @@ func TestToolInstanceKeyScopesContinuationSeparately(t *testing.T) {
 		"turn 3 must resume the pasta instance's token, not soup's")
 }
 
+func kbSkillTools() *activities.SkillTools {
+	return &activities.SkillTools{
+		Skill: catalog.SkillDescriptor{
+			ID: "kb:globex", Description: "globex knowledge base",
+			Markdown: "# GLOBEX\nSearch it.",
+			ToolIDs:  []string{"kb:globex/search"},
+		},
+		Tools: []catalog.ToolDescriptor{{
+			ID: "kb:globex/search", Description: "search the GLOBEX knowledge base",
+			AllowedRoles: []string{"cook"},
+			KnowledgeBaseExec: &catalog.KnowledgeBaseExecSpec{
+				KnowledgeBaseID: "globex", DisplayName: "GLOBEX", Operation: "search",
+				DisclosePartialVisibility: true,
+			},
+		}},
+	}
+}
+
+// PART A: a KB answer the planner recomposes via Respond must STILL carry the
+// probe-derived Sources list and the "What this answer could not see"
+// disclosure. The block is appended in code (ADR 0040), not left to the model
+// to echo. The Finish path already surfaces it verbatim; this covers the
+// respond-after-search gap.
+func TestKnowledgeBaseCitationsSurviveRespondPath(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skills = []catalog.SkillDescriptor{kbSkillTools().Skill}
+	le.selected = "kb:globex"
+	le.skillTools = kbSkillTools()
+	citations := "Sources:\n- [Auth design](https://wiki/auth)\n\n" +
+		"What this answer could not see:\n" +
+		"- 2 source(s) in this knowledge base are outside your access, so there may be more you cannot see.\n" +
+		"- 3 source(s) need an account you have not linked (slack); link it and ask again to include them."
+	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
+		Result:    "Found 1 passage(s).\n\n### 1. Auth design\n```text\nWe use OIDC.\n```\n\n" + citations + "\n",
+		Citations: citations,
+		// No LinkProviders: the pre-search gate passes and the query runs.
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "how does auth work"},
+		// The model synthesizes its own answer and DROPS the citations — the gap.
+		{Action: activities.ActionRespond, Response: "Auth uses OIDC."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	// Model synthesis preserved…
+	require.Contains(t, res.Reply, "Auth uses OIDC.")
+	// …and the probe-derived citations/disclosure survive the Respond path.
+	require.Contains(t, res.Reply, "Sources:")
+	require.Contains(t, res.Reply, "[Auth design](https://wiki/auth)")
+	require.Contains(t, res.Reply, "outside your access")
+	require.Contains(t, res.Reply, "need an account you have not linked (slack)")
+}
+
+// PART B: a stateful refine-loop tool's publish target is keyed from SERVER-SIDE
+// continuation state (not a URL the model re-supplies each turn), and its
+// returned Markdown survives the planner choosing Respond verbatim — so the
+// skill prompt need not carry "copy the URL" / "you MUST choose finish".
+func TestRecipePublishKeysFromServerStateAndSurvivesRespond(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.selected = "recipes"
+	le.skillTools = recipesSkillTools()
+	le.fits = true // turn 2 rides the active skill
+	le.plans = []activities.PlannedAction{
+		// Turn 1: first publish, keyed by the source URL the model supplies THEN.
+		{Action: activities.ActionCallTool, ToolID: "recipe-scraper", ToolInput: "# Pasta", ToolInstanceKey: "https://example.com/pasta"},
+		{Action: activities.ActionFinish},
+		// Turn 2: refine WITHOUT re-supplying the key, then Respond (paraphrase).
+		{Action: activities.ActionCallTool, ToolID: "recipe-scraper", ToolInput: "add salt"},
+		{Action: activities.ActionRespond, Response: "I added salt for you."},
+	}
+
+	var first, second workflows.TurnResult
+	le.sendTurn(t, "turn-1", "publish the pasta recipe", &first, time.Millisecond)
+	le.env.RegisterDelayedCallback(func() {
+		le.signalToolSuccess(0, `"<!-- continuation: slug-pasta -->\n\n# Pasta\nBoil."`)
+	}, time.Second)
+
+	le.sendTurn(t, "turn-2", "add salt to it", &second, 2*time.Second)
+	le.env.RegisterDelayedCallback(func() {
+		le.signalToolSuccess(1, `"<!-- continuation: slug-pasta -->\n\n# Pasta\nBoil. Add salt."`)
+	}, 3*time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	// Keyed from server state: turn 2 recovered the stored slug and re-injected
+	// it, though the planner named no instance.
+	require.Equal(t, "<!-- continuation: slug-pasta -->\n\nadd salt", le.launches[1].Args[0],
+		"turn 2 must recover the publish target from state, not require a model URL")
+	// The tool's Markdown survived the Respond verbatim (token stripped), not the
+	// paraphrase — so next-turn intent detection still sees the recipe.
+	require.Contains(t, second.Reply, "# Pasta")
+	require.Contains(t, second.Reply, "Add salt")
+	require.NotContains(t, second.Reply, "I added salt for you.")
+	require.NotContains(t, second.Reply, "continuation")
+}
+
 // TS unions LocalTool CRs into the same tool catalog (docs/adr/0014) and
 // branches runTool on `tool.localExec`, dispatching to the executor sidecar
 // instead of a k8s Job. Go had no LocalTool concept at all.

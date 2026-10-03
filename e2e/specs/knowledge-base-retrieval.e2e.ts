@@ -264,6 +264,29 @@ describe("retrieval, as the asking user", () => {
       /withheld|could not see|did not confirm|outside your access|access restriction|not have access to (some|one|all)/,
     );
   }, 300_000);
+
+  it("delivers BOTH the citation and the access disclosure in one answer, however the planner finished", async () => {
+    // The "finish vs respond" guarantee, end to end: the probe-derived
+    // `Sources:` list AND the "what this answer could not see" disclosure are
+    // appended in code to whatever the turn returns, so neither depends on the
+    // planner choosing `finish` nor on the model echoing them. A partial answer
+    // (this caller can read some pages and not others) is the one turn where
+    // both must co-occur — a citation to a page they CAN open, and a caveat for
+    // the one they cannot. If the planner recomposed and dropped either, this is
+    // the spec that catches it.
+    const { text } = await chatTurn(
+      LIMITED_USER,
+      "Using the Alpha knowledge base, tell me what the runbook says about rolling back, and note anything you couldn't reach.",
+      { timeoutMs: 180_000 },
+    );
+
+    // Citation survived: a link to the source the caller may actually open.
+    expect(text).toContain("fake.atlassian.net");
+    // Disclosure survived: something was withheld / could not be seen.
+    expect(text.toLowerCase()).toMatch(
+      /withheld|could not see|did not confirm|outside your access|access restriction|not have access to (some|one|all)/,
+    );
+  }, 300_000);
 });
 
 describe("a caller with no linked account", () => {

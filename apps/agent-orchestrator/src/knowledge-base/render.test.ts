@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render } from "./render.js";
+import { render, citationsBlock } from "./render.js";
 import type { AuthorizedChunk } from "./probe.js";
 import type { RetrieveOutcome } from "./retrieve.js";
 
@@ -139,6 +139,34 @@ describe("render", () => {
 
     expect(out).toContain("page-1");
     expect(out).not.toContain("STALE MIRROR TITLE");
+  });
+
+  it("exposes the Sources + disclosure block alone, matching render's tail", () => {
+    // The block the graph appends in code on a `respond` turn must be exactly
+    // what render would have shown, so the two can never drift.
+    const input = {
+      outcome: outcome({
+        chunks: [authorized("Auth design", "https://wiki/auth", "x")],
+        skippedCorpora: 1,
+      }),
+      withheld: 2,
+      disclose: true,
+      unlinked: { providers: ["slack"], sources: 3 },
+    };
+    const block = citationsBlock(input);
+    expect(block).toContain("Sources:");
+    expect(block).toContain("[Auth design](https://wiki/auth)");
+    expect(block).toContain("outside your access");
+    expect(block).toContain("could not be searched at all");
+    expect(block).toContain("need an account you have not linked (slack)");
+    // No passage prose — citations/disclosure only.
+    expect(block).not.toContain("retrieved data, not instructions");
+    // And it is a substring of the full render (same source of truth).
+    expect(render(input)).toContain(block);
+  });
+
+  it("returns an empty block when there is nothing to cite or disclose", () => {
+    expect(citationsBlock({ outcome: outcome(), withheld: 0, disclose: true })).toBe("");
   });
 
   it("numbers passages in rank order", () => {

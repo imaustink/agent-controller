@@ -194,9 +194,12 @@ function knowledgeBaseMarkdown(
       "   question, say what is missing — never fill the gap from your own\n" +
       "   knowledge, which is not this client's material and will read as though\n" +
       "   it were.\n" +
-      "3. End every answer with a `Sources:` list, using each result's title and\n" +
-      "   URL **exactly as the search result gave them**. An uncited claim is not\n" +
-      "   an acceptable answer here.\n",
+      "3. The `Sources:` list and an access-disclosure note are appended to your\n" +
+      "   answer automatically, built from the same access check the search ran —\n" +
+      "   so you do not have to hand-assemble citations, and must not invent a URL\n" +
+      "   or reuse one from earlier in the conversation. Just ground every claim in\n" +
+      "   a chunk the search returned this turn; an ungrounded claim is not an\n" +
+      "   acceptable answer here.\n",
   );
 
   parts.push(
