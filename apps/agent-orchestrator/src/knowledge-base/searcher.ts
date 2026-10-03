@@ -83,6 +83,19 @@ export interface SearchResult {
   linkProviders?: string[];
 }
 
+/**
+ * The result of the deterministic pre-search link check (`checkLinks`): which of
+ * a knowledge base's providers the caller has, and has not, linked. The executing
+ * layer (agent/graph.ts) uses this to stop the turn and ask BEFORE searching,
+ * rather than relying on the planner to relay a "link this too" caveat.
+ */
+export interface LinkCheck {
+  /** Providers of visible members the caller has NOT linked (sorted). */
+  linkProviders: string[];
+  /** Providers of visible members the caller HAS linked (sorted). */
+  linkedProviders: string[];
+}
+
 const DEFAULT_LIMIT = 6;
 
 /**
@@ -95,6 +108,29 @@ const DEFAULT_LIMIT = 6;
  */
 export class KnowledgeBaseSearcher {
   constructor(private readonly options: KnowledgeBaseSearcherOptions) {}
+
+  /**
+   * The deterministic pre-search link check: which of this knowledge base's
+   * providers the caller has, and has not, linked — WITHOUT running the query or
+   * probe. The graph calls it once per knowledge-base engagement and stops the
+   * turn when `linkProviders` is non-empty, so a core auth behaviour does not
+   * depend on the model echoing a caveat.
+   *
+   * PARITY: `SearchKnowledgeBaseInput.GateOnly` on the Temporal engine.
+   */
+  async checkLinks(tool: ToolDescriptor, caller: { subject: string; roles: string[] }): Promise<LinkCheck> {
+    const exec = tool.knowledgeBaseExec;
+    if (!exec || exec.operation !== "search" || !caller.subject) {
+      return { linkProviders: [], linkedProviders: [] };
+    }
+    const { visible } = visibleMembers(exec.members, caller.roles);
+    if (visible.length === 0) return { linkProviders: [], linkedProviders: [] };
+    const tokens = await this.options.credentials.delegatedTokens(caller.subject, providersOf(visible));
+    return {
+      linkProviders: providersToLink(visible, tokens),
+      linkedProviders: linkedProviders(visible, tokens),
+    };
+  }
 
   async search(tool: ToolDescriptor, query: string, caller: { subject: string; roles: string[] }): Promise<SearchResult> {
     const exec = tool.knowledgeBaseExec;
@@ -226,6 +262,16 @@ function providersToLink(
 ): string[] {
   return [
     ...new Set(members.flatMap((member) => member.identityProviders ?? []).filter((p) => !linked.has(p))),
+  ].sort();
+}
+
+/** The providers these members need that the caller HAS linked, sorted. */
+function linkedProviders(
+  members: KnowledgeBaseExecMember[],
+  linked: ReadonlyMap<string, unknown>,
+): string[] {
+  return [
+    ...new Set(members.flatMap((member) => member.identityProviders ?? []).filter((p) => linked.has(p))),
   ].sort();
 }
 

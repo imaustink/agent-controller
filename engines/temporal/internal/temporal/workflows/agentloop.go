@@ -451,6 +451,36 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		}
 
 		if tool.KnowledgeBaseExec != nil {
+			// Deterministic link gate: before searching, check ONCE per knowledge
+			// base per conversation whether the caller is missing any provider
+			// this knowledge base covers. If so, stop the turn and ask them to
+			// link it rather than quietly returning a partial answer whose "link
+			// this too" line the planner might drop — a core auth behaviour must
+			// not depend on the model echoing a caveat. Keyed in conversation
+			// state so a follow-up ask proceeds with whatever they have linked.
+			kbID := tool.KnowledgeBaseExec.KnowledgeBaseID
+			if !state.KnowledgeBaseLinkPrompts[kbID] {
+				var gate activities.SearchKnowledgeBaseOutput
+				if err := workflow.ExecuteActivity(actx, activities.SearchKnowledgeBaseActivityName,
+					activities.SearchKnowledgeBaseInput{
+						Caller:   in.Caller,
+						Tool:     tool,
+						Query:    plan.ToolInput,
+						GateOnly: true,
+					}).Get(ctx, &gate); err != nil {
+					return "", meta, nil, err
+				}
+				if state.KnowledgeBaseLinkPrompts == nil {
+					state.KnowledgeBaseLinkPrompts = map[string]bool{}
+				}
+				state.KnowledgeBaseLinkPrompts[kbID] = true
+				if len(gate.LinkProviders) > 0 {
+					meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
+					note(plan.ToolID + " needs a linked account")
+					return gate.Result, meta, nil, nil
+				}
+			}
+
 			note("Searching " + tool.KnowledgeBaseExec.DisplayName + "…")
 			var found activities.SearchKnowledgeBaseOutput
 			if err := workflow.ExecuteActivity(actx, activities.SearchKnowledgeBaseActivityName,

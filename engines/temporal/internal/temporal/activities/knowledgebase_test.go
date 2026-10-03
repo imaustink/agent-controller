@@ -350,6 +350,60 @@ func TestSearchOffersAFreshLinkForTheUnlinkedProviderOnAPartialAnswer(t *testing
 	require.Len(t, links.Started, 1)
 }
 
+func TestGateOnlyReportsTheUnlinkedProviderWithoutSearching(t *testing.T) {
+	links, err := identitylink.NewFake("", "")
+	require.NoError(t, err)
+	corpora := &recordingCorpora{}
+	slack := member("chan", []string{"reader"}, "coll-chan")
+	slack.IdentityProviders = []string{"slack"}
+	slack.Granularity = "connection"
+
+	out, err := (&activities.KnowledgeBaseActivities{
+		Corpora:       corpora,
+		Credentials:   &perProviderResolver{linked: map[string]string{"atlassian": "at", "google": "g"}},
+		BrokerURL:     "http://broker",
+		BrokerToken:   "orch",
+		IdentityLinks: links,
+	}).SearchKnowledgeBase(context.Background(), activities.SearchKnowledgeBaseInput{
+		Caller:   activities.Caller{Subject: "openwebui:42", Roles: []string{"reader"}},
+		Tool:     searchTool(member("conf", []string{"reader"}, "coll-conf"), member("drive", []string{"reader"}, "coll-drive"), slack),
+		Query:    "q",
+		GateOnly: true,
+	})
+
+	require.NoError(t, err)
+	// The gate reports what is missing and renders the clickable ask...
+	require.Equal(t, []string{"slack"}, out.LinkProviders)
+	require.Contains(t, out.Result, "[link your slack account](https://example.invalid/link/slack)")
+	require.Contains(t, out.Result, "already linked")
+	// ...but runs NO vector search: Corpora must be untouched on a gate pass.
+	require.Empty(t, corpora.opened, "GateOnly must not run the search")
+}
+
+func TestGateOnlyReturnsNothingWhenEveryProviderIsLinked(t *testing.T) {
+	corpora := &recordingCorpora{}
+	drive := member("drive", []string{"reader"}, "coll-drive")
+	drive.IdentityProviders = []string{"google"}
+
+	out, err := (&activities.KnowledgeBaseActivities{
+		Corpora:     corpora,
+		Credentials: &perProviderResolver{linked: map[string]string{"atlassian": "at", "google": "g"}},
+		BrokerURL:   "http://broker",
+		BrokerToken: "orch",
+	}).SearchKnowledgeBase(context.Background(), activities.SearchKnowledgeBaseInput{
+		Caller:   activities.Caller{Subject: "s", Roles: []string{"reader"}},
+		Tool:     searchTool(member("conf", []string{"reader"}, "coll-conf"), drive),
+		Query:    "q",
+		GateOnly: true,
+	})
+
+	require.NoError(t, err)
+	// Nothing missing: empty LinkProviders signals the workflow to proceed to the
+	// real search, and the gate itself searched nothing.
+	require.Empty(t, out.LinkProviders)
+	require.Empty(t, corpora.opened)
+}
+
 func TestSearchSearchesEveryMemberWhenAllProvidersAreLinked(t *testing.T) {
 	corpora := &recordingCorpora{}
 	drive := member("drive", []string{"reader"}, "coll-drive")
