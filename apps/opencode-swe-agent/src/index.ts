@@ -17,8 +17,7 @@ import { appendCoAuthorTrailer, discoverResult, ensureDir, findRepoDir, resolveG
 import { extractContinuationToken } from "./continuation.js";
 import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./marker.js";
 import { loadToolConfig } from "./config.js";
-import { resolveGithubToken } from "@controller-agent/github-app-auth";
-import { AuthorizationError, finalizeDelegatedWrite, isDelegating, resolveDelegatedToken } from "./identityDelegation.js";
+import { AuthorizationError, finalizeDelegatedWrite, isDelegating, resolveDelegatedToken, resolveUndelegatedToken } from "./identityDelegation.js";
 import { clip } from "./security/redact.js";
 
 const toolConfig = loadToolConfig();
@@ -318,7 +317,13 @@ async function main(): Promise<void> {
         throw err;
       }
     } else {
-      token = await resolveGithubToken(toolConfig);
+      // Non-delegating (webhook) turn. Pass reviewMode so a review run on this
+      // path -- the DEFAULT review path, since the `ai-review` routes dispatch
+      // to `agentRef: opencode-swe-agent` -- mints a read-only (contents:read)
+      // App token scoped to the target repo. Without it a review could mutate
+      // the repo through `gh api --method PUT/PATCH/POST`, which the opencode
+      // deny list does not catch. Non-review runs keep their prior credential.
+      token = await resolveUndelegatedToken(toolConfig, reviewMode);
     }
 
     const xdgConfigHome = `${toolConfig.homeDir}/.config`;
