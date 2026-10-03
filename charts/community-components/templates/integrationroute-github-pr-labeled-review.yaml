@@ -41,7 +41,7 @@ spec:
   # that reaches the container (IntegrationRoute has no env/mode field; the
   # rendered promptTemplate is the only channel), so the string MUST stay
   # byte-for-byte identical to REVIEW_MODE_MARKER in both agents. It is
-  # deliberately in the fixed, trusted part of the template, above {{body}}, so
+  # deliberately in the fixed, trusted part of the template, above the body, so
   # event content cannot remove it; a change run can only ever gain it (which
   # fails safe, read-only), never shed it.
   promptTemplate: |

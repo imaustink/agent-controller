@@ -44,7 +44,7 @@ spec:
   # IntegrationRoute carries no env/mode field, so the rendered promptTemplate is
   # the only per-route channel into the container; keep this string byte-for-byte
   # identical to REVIEW_MODE_MARKER in both agents. It sits in the fixed, trusted
-  # part of the template above {{body}} so event content cannot strip it.
+  # part of the template above the body so event content cannot strip it.
   promptTemplate: |
     SWE-ENFORCED-MODE: review-only
     GitHub issue {{`{{owner}}`}}/{{`{{repo}}`}}#{{`{{issueNumber}}`}} was labeled "{{`{{labelName}}`}}": "{{`{{title}}`}}"
