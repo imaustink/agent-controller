@@ -92,6 +92,25 @@ export interface LiveStatus {
   agentRunId?: string;
 }
 
+/**
+ * Result of `probeLive` (ADR 0026) -- the same real-time liveness probe as
+ * {@link OrchestratorClient.checkLive}, but one that DISTINGUISHES a confirmed
+ * not-live answer from an indeterminate one:
+ *
+ *  - `"live"`     -- a real 200 saying the run is resident/tunnelable.
+ *  - `"not-live"` -- a real 200 saying it is NOT. A POSITIVE terminal signal.
+ *  - `"unknown"`  -- the orchestrator could not be reached or did not answer ok
+ *                    (network error, 5xx, any non-ok, or an unparseable body).
+ *                    "Couldn't determine", NOT "confirmed terminal".
+ *
+ * `checkLive` collapses both `"not-live"` and `"unknown"` into `{ live: false }`
+ * -- correct for the live-session tunnel, which only ever wants to know whether
+ * to render a live badge. A caller that must not mistake a transient blip for a
+ * terminal run (the label reconciler: a stripped label mid-run can spawn a
+ * duplicate run) uses `probeLive` and treats only `"not-live"` as terminal.
+ */
+export type LiveProbe = { status: "live"; agentRunId?: string } | { status: "not-live" } | { status: "unknown" };
+
 /** Result of a forwarded opencode call via `forwardOpencode` (ADR 0026). */
 export interface OpencodeForwardResult {
   status: number;
@@ -122,14 +141,32 @@ export class OrchestratorClient {
    * always reflects whether the Pod is ACTUALLY reachable right now.
    */
   async checkLive(sessionId: string): Promise<LiveStatus> {
+    // Soft-fails both "confirmed not-live" and "couldn't determine" to
+    // { live: false } -- the live-session tunnel only wants to know whether to
+    // render a live badge, so the distinction is immaterial there. A caller
+    // that must NOT treat a transient blip as terminal uses `probeLive`.
+    const probe = await this.probeLive(sessionId);
+    return probe.status === "live" ? { live: true, agentRunId: probe.agentRunId } : { live: false };
+  }
+
+  /**
+   * Same probe as {@link checkLive}, but surfaces whether a not-live reading is
+   * a CONFIRMED 200 ("not-live") or merely INDETERMINATE ("unknown": a network
+   * error, a 5xx/non-ok, or an unparseable body). See {@link LiveProbe}. The
+   * label reconciler needs this: it may only strip a trigger label on a
+   * positive terminal signal, never because the orchestrator was briefly
+   * unreachable mid-run.
+   */
+  async probeLive(sessionId: string): Promise<LiveProbe> {
     try {
       const res = await this.fetchImpl(`${this.baseUrl()}/sessions/live?sessionId=${encodeURIComponent(sessionId)}`, {
         headers: { authorization: `Bearer ${await this.resolveToken()}` },
       });
-      if (!res.ok) return { live: false };
-      return (await res.json()) as LiveStatus;
+      if (!res.ok) return { status: "unknown" };
+      const body = (await res.json()) as LiveStatus;
+      return body.live ? { status: "live", agentRunId: body.agentRunId } : { status: "not-live" };
     } catch {
-      return { live: false };
+      return { status: "unknown" };
     }
   }
 

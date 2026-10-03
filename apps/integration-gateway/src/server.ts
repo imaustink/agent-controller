@@ -220,7 +220,15 @@ export class GatewayServer {
     this.labelReconciler = options.pendingLabelStore
       ? new LabelReconciler({
           store: options.pendingLabelStore,
-          isRunTerminal: async (sessionId) => !(await options.orchestratorClient.checkLive(sessionId)).live,
+          // `probeLive`, NOT `checkLive`: a run is terminal ONLY on a POSITIVE
+          // confirmed not-live answer. A transient probe failure (orchestrator
+          // blip/rollout -> network error or non-ok) reads as "unknown", which
+          // is treated as still-live here so a label is never stripped mid-run
+          // on a run that is merely unreachable (that would let a re-applied
+          // label spawn a duplicate run). `checkLive`'s soft-fail-to-not-live
+          // is kept intact for the live-session tunnel; only the reconciler
+          // takes this stricter path.
+          isRunTerminal: async (sessionId) => (await options.orchestratorClient.probeLive(sessionId)).status === "not-live",
           removeLabel: (owner, repo, issueNumber, label) =>
             options.githubReplyClient.removeIssueLabel(owner, repo, issueNumber, label),
           onError: options.onBackgroundError ?? ((error: unknown) => console.error(error)),
