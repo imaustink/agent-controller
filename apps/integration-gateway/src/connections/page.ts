@@ -155,7 +155,7 @@ export function renderConnectionsPage(model: ConnectionsPageModel): string {
     outstanding.length > 0
       ? `<div class="need">Your chat is waiting on <strong>${outstanding
           .map((r) => escapeHtml(r.provider.label))
-          .join("</strong> and <strong>")}</strong>. Connect below, then go back to your chat; it picks up once you're done.</div>`
+          .join("</strong> and <strong>")}</strong>. Connect below, then go back to your chat.</div>`
       : model.needed.length > 0
         ? `<div class="flash ok">Everything your chat needed is connected. You can go back to it now.</div>`
         : "";
