@@ -278,6 +278,34 @@ sessionPage:
 claudeAuth:
   enabled: false
 
+# Connections page (docs/adr/0046): https://<publicBaseUrl>/connections, one
+# place for a user to see, link, relink and remove the accounts agents act as,
+# instead of meeting each as a bare link mid-chat. Chat link prompts point
+# here once agent-orchestrator's identityLink.connectionsUrl is set too.
+#
+# Requires identityLink.enabled and sessionPage.publicBaseUrl. Users sign in
+# against any OIDC provider -- Pocket ID, or Keycloak with
+# issuer "https://<host>/realms/<realm>" -- using a CONFIDENTIAL client whose
+# redirect URI is exactly "<publicBaseUrl>/connections/callback". Its client
+# secret goes in the existing Secret under secrets.connectionsOidcClientSecretKey.
+#
+# The sign-in's VERIFIED email is matched to the Open WebUI account that
+# carries the same email, so both must sign in through the same IdP, and the
+# IdP must not let users set an unverified or arbitrary email (Keycloak: keep
+# "Duplicate emails" off, and verify email changes). See the ADR's checklist.
+connections:
+  enabled: false
+  oidc:
+    issuer: ""
+    clientId: ""
+    # Empty uses "openid email profile". Must include openid and email.
+    scopes: ""
+  # Accept a sign-in whose email the IdP does not mark verified. Leave false:
+  # the email decides whose credentials the page manages.
+  allowUnverifiedEmail: false
+  # How long a page sign-in lasts. Empty uses 8 hours.
+  sessionTtlSeconds: ""
+
 # Secrets: GITHUB_WEBHOOK_SECRET (required), GATEWAY_ORCHESTRATOR_TOKEN
 # (required), and either GITHUB_TOKEN or the three GITHUB_APP_* fields
 # (required for posting issue comments). When identityLink.enabled=true,
@@ -319,6 +347,8 @@ secrets:
   # Only read when identityLink.slackClientId is set.
   slackClientSecretKey: SLACK_CLIENT_SECRET
   identityLinkStateSecretKey: IDENTITY_LINK_STATE_SECRET
+  # Only read when connections.enabled.
+  connectionsOidcClientSecretKey: GATEWAY_CONNECTIONS_OIDC_CLIENT_SECRET
   # Signs the sender assertion sent to agent-orchestrator (docs/adr/0030 §6).
   # MUST match agent-orchestrator's senderAssertionSecretKey value. Unset (or
   # absent from the Secret) means the sender login is relayed unsigned and the

@@ -40,6 +40,7 @@ import {
   AuthorizationService,
   type CredentialEnvEntry,
   linkPromptText,
+  connectionsPageStart,
 } from "./authorization-service.js";
 
 // Re-exported: several tests and callers import ACTOR_LOGIN_ENV from this
@@ -737,6 +738,8 @@ export interface AgentGraphDeps {
    * a provider's flow/label, not two kept in sync by inspection.
    */
   identityProviderCatalog?: IdentityProviderCatalog;
+  /** integration-gateway's Connections page (docs/adr/0046); see `connectionsPageStart`. */
+  connectionsUrl?: string;
 }
 
 /**
@@ -778,6 +781,16 @@ export async function knowledgeBaseLinkPrompt(
   baseMessage: string,
 ): Promise<string> {
   const catalog = resolveIdentityProviderCatalog(deps.identityProviderCatalog);
+  // One link to the Connections page for every missing provider, rather than a
+  // bullet per provider, each a raw OAuth URL (docs/adr/0046).
+  const page = connectionsPageStart(deps.connectionsUrl, subject, providers, "authcode");
+  if (page) {
+    const labels = providers.map((provider) => catalog.get(provider)?.label ?? provider);
+    return (
+      `${baseMessage}\n\n` +
+      `[Connect ${joinLabels(labels)}](${page.pageUrl}), then ask again and I'll include those sources.`
+    );
+  }
   const prompts: string[] = [];
   for (const provider of providers) {
     const gateway = identityGatewayFor(provider, deps);
@@ -797,6 +810,12 @@ export async function knowledgeBaseLinkPrompt(
     prompts.map((prompt) => `- ${prompt}`).join("\n") +
     "\n\nOnce you've linked, ask again and I'll include those sources."
   );
+}
+
+/** "A", "A and B", "A, B and C". */
+function joinLabels(labels: string[]): string {
+  if (labels.length <= 1) return labels.join("");
+  return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
 }
 
 /**
@@ -1006,16 +1025,20 @@ async function startReplacementLink(
    */
   subject: string,
   catalog: IdentityProviderCatalog,
+  connectionsUrl: string | undefined,
 ): Promise<Partial<AgentState> | undefined> {
   if (!state.identity) return undefined;
   const flow = state.identityLinkFlow ?? "authcode";
+  // `state.identity.subject`, not `subject`: the page maps a sign-in to the
+  // chat subject, while `subject` may be the github principal (docs/adr/0046).
+  const page = connectionsPageStart(connectionsUrl, state.identity.subject, [provider], flow);
   // try/catch around the await rather than `.catch()` on the returned value:
   // `start` is only contractually a promise, and a partial `IdentityLinkPort`
   // (any test double that stubs `start` without a return value) would otherwise
   // crash this recovery path with a TypeError on `undefined.catch`.
-  let started: IdentityLinkStartResult | null = null;
+  let started: IdentityLinkStartResult | null = page ?? null;
   try {
-    started = (await gateway.start(provider, subject, flow)) ?? null;
+    if (!started) started = (await gateway.start(provider, subject, flow)) ?? null;
   } catch (err) {
     console.error(
       `[identity-gate] start threw while re-linking provider ${provider} after an expired credential; falling back to a retry message: ${err instanceof Error ? err.message : String(err)}`,
@@ -1118,7 +1141,7 @@ async function handleAgentTurnFailure(
       // (integration-gateway's `waitAndResume`), so finishing the link re-runs
       // THIS request instead of requiring yet another trigger.
       const relink = agent
-        ? await startReplacementLink(gateway, state, provider, agent.id, staleSubject, catalog)
+        ? await startReplacementLink(gateway, state, provider, agent.id, staleSubject, catalog, deps.connectionsUrl)
         : undefined;
       if (relink) return relink;
 

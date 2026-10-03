@@ -28,6 +28,9 @@ class FakeStore implements IdentityLinkStore {
   async waitForCompletion() {
     return undefined;
   }
+  async delete(provider: string, subject: string) {
+    this.records.delete(`${provider}/${subject}`);
+  }
 }
 
 function jsonResponse(body: unknown, ok = true, status = 200) {

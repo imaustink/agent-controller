@@ -25,6 +25,7 @@ const fetch: typeof globalThis.fetch = (input, init = {}) => {
 describe("IdentityLinkApi with an authcode provider", () => {
   let server: Server;
   let base: string;
+  let api: IdentityLinkApi;
   let atlassian: {
     startAuthCode: ReturnType<typeof vi.fn>;
     completeAuthCode: ReturnType<typeof vi.fn>;
@@ -47,7 +48,7 @@ describe("IdentityLinkApi with an authcode provider", () => {
       getValidToken: vi.fn().mockResolvedValue({ token: "gh-token", githubLogin: "octocat" }),
     };
 
-    const api = new IdentityLinkApi(
+    api = new IdentityLinkApi(
       github as unknown as GithubDeviceFlowLinker,
       TOKEN,
       new Map([["atlassian", atlassian as unknown as OAuthAuthCodeLinker]]),
@@ -165,6 +166,32 @@ describe("IdentityLinkApi with an authcode provider", () => {
 
     expect(res.status).toBe(200);
     expect(atlassian.completeAuthCode).toHaveBeenCalledWith("st", "cd");
+  });
+
+  // The success page used to say "GitHub account linked" for every provider.
+  it("names the provider that was actually linked", async () => {
+    const res = await fetch(`${base}/identity-link/atlassian/callback?state=st&code=cd`);
+    const html = await res.text();
+    expect(html).toContain("Atlassian account linked");
+    expect(html).not.toContain("GitHub");
+  });
+
+  it("sends the browser back to the Connections page when it started the link", async () => {
+    api.completionRedirect = vi.fn().mockReturnValue("/connections?connected=atlassian");
+    const res = await fetch(`${base}/identity-link/atlassian/callback?state=st&code=cd`, { redirect: "manual" });
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/connections?connected=atlassian");
+    expect(api.completionRedirect).toHaveBeenCalledWith(expect.anything(), expect.anything(), "atlassian");
+  });
+
+  it("never redirects a link that failed to complete", async () => {
+    api.completionRedirect = vi.fn().mockReturnValue("/connections?connected=atlassian");
+    atlassian.completeAuthCode.mockResolvedValue(undefined);
+    const res = await fetch(`${base}/identity-link/atlassian/callback?state=st&code=cd`, { redirect: "manual" });
+
+    expect(res.status).toBe(400);
+    expect(api.completionRedirect).not.toHaveBeenCalled();
   });
 
   it("shows an expiry page when the callback cannot be completed", async () => {

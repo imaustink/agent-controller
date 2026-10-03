@@ -900,3 +900,79 @@ describe("AuthorizationService.authorize -- one turn offers every outstanding li
     expect(claudeRemote.start).toHaveBeenCalledTimes(2);
   });
 });
+
+/**
+ * The Connections page (docs/adr/0046) stands in for a provider's own link
+ * flow for chat callers -- and only for them.
+ */
+describe("AuthorizationService with a Connections page", () => {
+  const PAGE = "https://gw.example/connections";
+
+  it("points a chat caller at the page and starts nothing at the provider", async () => {
+    const claude = gateway({});
+    const svc = new AuthorizationService({ claudeAuthGateway: claude, connectionsUrl: PAGE });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity(),
+      request: "r",
+    });
+
+    expect(verdict.kind).toBe("link-required");
+    if (verdict.kind !== "link-required") return;
+    expect(verdict.message).toContain("(https://gw.example/connections?need=claude)");
+    // A PTY `claude setup-token` would otherwise sit unused until it expired.
+    expect(claude.start).not.toHaveBeenCalled();
+    // Still parked like any other link, so the resume path is unchanged.
+    expect(verdict.pending).toMatchObject({ provider: "claude", flow: "page" });
+  });
+
+  it("waits on the same store the page writes to", async () => {
+    const claude = gateway({ claude: { waitResolvesTo: { token: "sk-ant-oat01-x" } } });
+    const progress = vi.fn();
+    const svc = new AuthorizationService({ claudeAuthGateway: claude, connectionsUrl: PAGE });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity(),
+      request: "r",
+      progressListener: progress,
+    });
+
+    expect(progress).toHaveBeenCalledWith("identity-link", expect.stringContaining(`${PAGE}?need=claude`));
+    expect(claude.waitForCompletion).toHaveBeenCalledWith("claude", "openwebui:alice", 600_000);
+    expect(verdict.kind).toBe("authorized");
+  });
+
+  // A webhook relay's subject is shared and has no browser session behind it;
+  // the page could never find it.
+  it("keeps the direct link for a caller that is not an Open WebUI user", async () => {
+    const claude = gateway({});
+    const svc = new AuthorizationService({ claudeAuthGateway: claude, connectionsUrl: PAGE });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ subject: "integration-gateway" }),
+      request: "r",
+    });
+
+    expect(claude.start).toHaveBeenCalled();
+    if (verdict.kind !== "link-required") throw new Error(verdict.kind);
+    expect(verdict.message).toContain("https://link/claude");
+    expect(verdict.message).not.toContain(PAGE);
+  });
+
+  it("keeps the device flow a caller explicitly asked for", async () => {
+    const github = gateway({});
+    const svc = new AuthorizationService({ identityLinkGateway: github, connectionsUrl: PAGE });
+
+    await svc.authorize({
+      agent: { id: "swe", identityProviders: ["github"] },
+      identity: identity(),
+      request: "r",
+      identityLinkFlow: "device",
+    });
+
+    expect(github.start).toHaveBeenCalledWith("github", "openwebui:alice", "device");
+  });
+});
