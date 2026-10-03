@@ -147,6 +147,35 @@ describe("buildConnectionProviders", () => {
       expect(map.size).toBe(0);
     });
 
+    // Remote Control needs the credentials file a real `claude auth login`
+    // produces; a token minted any other way and passed in by env breaks the
+    // session URL. The page must use the SAME login flow chat does, never
+    // the setup-token one.
+    it("links Remote Control through the full-login flow, never setup-token", async () => {
+      const store = new MemStore();
+      await store.set("github", "openwebui:1", cred({ githubLogin: "octocat" }));
+      const start = vi.fn(async () => "https://gw.test/claude-auth/flow?mode=login");
+      const providers = buildConnectionProviders({
+        store,
+        githubLinker: github as unknown as GithubDeviceFlowLinker,
+        claude: { store: claudeStore().store, start, loginEnabled: true },
+      });
+      const remote = providers.find((p) => p.id === "claude-remote")!;
+
+      await remote.connect("openwebui:1");
+
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(start).toHaveBeenCalledWith("github:octocat", "login");
+    });
+
+    it("offers no Remote Control card when the login flow is not wired up", () => {
+      const providers = buildConnectionProviders({
+        store: new MemStore(),
+        claude: { store: claudeStore().store, start: vi.fn(), loginEnabled: false },
+      });
+      expect(providers.map((p) => p.id)).not.toContain("claude-remote");
+    });
+
     it("still sees a record filed under the raw subject before principals existed", async () => {
       const store = new MemStore();
       await store.set("github", "openwebui:1", cred({ githubLogin: "octocat" }));
