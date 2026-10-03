@@ -310,9 +310,9 @@ jobs:
     # Publishes the two Helm charts (charts/agent-controller,
     # charts/community-components) as OCI artifacts to ghcr.io whenever
     # something under charts/ changes on main. Runs on a GitHub-hosted
-    # runner (not the arc-runner-set-agent-controller self-hosted runner
-    # used by publish-images) -- this job only needs outbound internet to
-    # ghcr.io and a GITHUB_TOKEN, not access to the internal cluster.
+    # runner, like the image jobs above -- it only needs outbound internet to
+    # ghcr.io and a GITHUB_TOKEN, not access to the internal cluster (only
+    # `deploy` needs that, which is why it alone stays self-hosted).
     #
     # OCI chart tags are MUTABLE: pushing the same Chart.yaml `version` again
     # overwrites that tag, and Argo (pinned to it) then caches the first render
@@ -426,7 +426,9 @@ jobs:
     # publish-images: when a build fails, publish-images is SKIPPED (not
     # failed), and the `always()` guard below only rejects failure/cancellation
     # among DIRECT needs -- so without it a broken build would deploy anyway.
-    needs: [build-images, publish-images, publish-charts]
+    # `changes` is listed for the same reason: if it fails, every downstream
+    # job is skipped, and deploy would otherwise run on the unchanged :latest.
+    needs: [changes, build-images, publish-images, publish-charts]
     # Self-hosted ARC runner, deliberately NOT GitHub-hosted like the build jobs
     # above: it is the only runner with credentials for the cluster. Only ever
     # reachable via push to main (collaborators only).
