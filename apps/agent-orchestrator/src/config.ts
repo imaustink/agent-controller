@@ -247,6 +247,13 @@ export interface AppConfig {
    */
   defaultIdentityLinkFlow: "device" | "authcode";
   /**
+   * Public URL of integration-gateway's Connections page
+   * (`https://<gateway>/connections`, docs/adr/0046). When set, each verified
+   * Open WebUI caller's email is recorded with the gateway so the page can
+   * find their credentials. Absent leaves the page unable to map anyone.
+   */
+  connectionsUrl: string | undefined;
+  /**
    * Shared HS256 secret matching Open WebUI's `FORWARD_USER_INFO_HEADER_JWT_SECRET`,
    * used to verify its per-request `X-OpenWebUI-User-Jwt` header
    * (`OpenWebUiForwardedUserResolver`). Open WebUI's `Authorization` bearer
@@ -331,6 +338,7 @@ export const config: AppConfig = {
   // behaviour -- a typo must not silently change which flow every chat user
   // gets.
   defaultIdentityLinkFlow: process.env.AGENT_DEFAULT_IDENTITY_LINK_FLOW === "device" ? "device" : "authcode",
+  connectionsUrl: process.env.AGENT_CONNECTIONS_URL || undefined,
   openWebUiUserJwtSecret: process.env.AGENT_OPENWEBUI_USER_JWT_SECRET,
   openWebUiUserRoles: (process.env.AGENT_OPENWEBUI_USER_ROLES ?? "reader,writer")
     .split(",")

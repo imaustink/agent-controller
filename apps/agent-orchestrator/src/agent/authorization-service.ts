@@ -1,4 +1,4 @@
-import type { IdentityLinkPort, IdentityLinkStartResult } from "../identity-link/gateway-client.js";
+import type { IdentityLinkPageStart, IdentityLinkPort, IdentityLinkStartResult } from "../identity-link/gateway-client.js";
 import { canonicalSubjectForLogin, isCanonicalPrincipal, resolveActorLogin } from "../identity-link/credential-subject.js";
 import {
   resolveIdentityGateway,
@@ -201,6 +201,12 @@ export type AuthorizationOutcome =
   | { kind: "misconfigured"; error: string };
 
 export interface AuthorizationServiceDeps {
+  /**
+   * integration-gateway's Connections page (docs/adr/0046). When set, a chat
+   * caller's link prompt points there -- one consistent place to connect --
+   * instead of straight at the provider. See {@link connectionsPageStart}.
+   */
+  connectionsUrl?: string;
   /** GitHub-provider gateway (device/authcode flows). */
   identityLinkGateway?: IdentityLinkPort;
   /** `claude`-provider gateway (PTY `setup-token`, docs/adr/0027). */
@@ -238,6 +244,35 @@ export function linkPromptText(started: IdentityLinkStartResult, label: string):
   }
   if (started.flow === "authcode") return `[link your ${label} account](${started.authorizeUrl})`;
   return `[link your ${label} account](${started.pageUrl})`;
+}
+
+/** How long a Connections-page link prompt waits, matching a direct authcode link's `state` lifetime. */
+const CONNECTIONS_LINK_TTL_SECONDS = 10 * 60;
+
+/**
+ * The Connections page standing in for a provider's own link flow
+ * (docs/adr/0046), or `undefined` when this caller must keep the direct link.
+ *
+ * Only an Open WebUI chat caller qualifies: the page finds whose credentials to
+ * manage by mapping its sign-in back to an `openwebui:<id>` subject, so a
+ * webhook-relay subject (shared, and with no browser session behind it) could
+ * never be found there. An explicit device-flow request keeps the device flow,
+ * since that caller asked for it precisely because it has no browser.
+ *
+ * Nothing is started at the provider: the page starts its own flow when the
+ * user clicks Connect, and it lands in the same store under the same subject
+ * this turn is waiting on, so the wait and resume paths are unchanged.
+ */
+export function connectionsPageStart(
+  connectionsUrl: string | undefined,
+  callerSubject: string,
+  providers: string[],
+  flow: "device" | "authcode",
+): IdentityLinkPageStart | undefined {
+  if (!connectionsUrl || flow === "device" || !callerSubject.startsWith("openwebui:")) return undefined;
+  const url = new URL(connectionsUrl);
+  url.searchParams.set("need", providers.join(","));
+  return { flow: "page", pageUrl: url.toString(), expiresInSeconds: CONNECTIONS_LINK_TTL_SECONDS };
 }
 
 export class AuthorizationService {
@@ -453,7 +488,9 @@ export class AuthorizationService {
         // That must NOT crash the turn into a raw "Something went wrong" -- on
         // the fire-and-forget GitHub-issue triage path that error is what gets
         // posted to the ticket.
-        const started = await this.startWithRetry(gateway, provider, credentialSubject, flow);
+        const started =
+          connectionsPageStart(this.deps.connectionsUrl, identity.subject, [provider], flow) ??
+          (await this.startWithRetry(gateway, provider, credentialSubject, flow));
         if (!started) {
           // A principal link that won't start must DEGRADE, not block: sharing
           // is an improvement over per-entry-point keying, and refusing the

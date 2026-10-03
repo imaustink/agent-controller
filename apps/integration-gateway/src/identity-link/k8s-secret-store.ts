@@ -136,4 +136,13 @@ export class K8sSecretIdentityLinkStore implements IdentityLinkStore {
       return undefined;
     }
   }
+
+  /**
+   * Unlike `set`, failures propagate: a Disconnect that silently left the
+   * credential in place would tell the user it was gone while agents kept
+   * using it.
+   */
+  async delete(provider: string, subject: string): Promise<void> {
+    await this.storeFor(provider).delete(subject);
+  }
 }

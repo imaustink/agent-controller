@@ -94,3 +94,30 @@ describe("enrichKnowledgeBaseResult", () => {
     expect(identityLinkGateway.start).not.toHaveBeenCalled();
   });
 });
+
+describe("knowledgeBaseLinkPrompt with a Connections page", () => {
+  it("offers ONE link to the page naming every missing provider", async () => {
+    const identityLinkGateway = gatewayStarting();
+    const out = await knowledgeBaseLinkPrompt(
+      { identityLinkGateway, connectionsUrl: "https://gw.example/connections" } as never,
+      "openwebui:42",
+      ["atlassian", "google"],
+      BASE,
+    );
+
+    expect(out).toContain(BASE);
+    expect(out).toContain("[Connect atlassian and google](https://gw.example/connections?need=atlassian%2Cgoogle)");
+    expect(identityLinkGateway.start).not.toHaveBeenCalled();
+  });
+
+  it("keeps per-provider direct links for a subject the page cannot map", async () => {
+    const identityLinkGateway = gatewayStarting();
+    const out = await knowledgeBaseLinkPrompt(
+      { identityLinkGateway, connectionsUrl: "https://gw.example/connections" } as never,
+      "integration-gateway",
+      ["google"],
+      BASE,
+    );
+    expect(out).toContain("[link your google account](https://gw.example/link/google)");
+  });
+});

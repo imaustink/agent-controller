@@ -38,11 +38,30 @@ function sendHtml(res: ServerResponse, status: number, html: string): void {
   res.writeHead(status, { "content-type": "text/html; charset=utf-8" }).end(html);
 }
 
+/** Display names for the callback pages; an unknown provider falls back to its id. */
+const PROVIDER_LABELS: Record<string, string> = {
+  github: "GitHub",
+  atlassian: "Atlassian",
+  google: "Google",
+  slack: "Slack",
+};
+
+function providerLabel(provider: string): string {
+  return PROVIDER_LABELS[provider] ?? provider;
+}
+
+function escapeHtml(raw: string): string {
+  return raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function htmlPage(title: string, message: string): string {
+  title = escapeHtml(title);
+  message = escapeHtml(message);
   return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem; color: #1a1a1a; }
@@ -75,6 +94,12 @@ export class IdentityLinkApi {
      */
     private readonly authCodeLinkers: ReadonlyMap<string, OAuthAuthCodeLinker> = new Map(),
   ) {}
+
+  /**
+   * Set by the Connections page (docs/adr/0046): where to send the browser
+   * once a link it started completes. `undefined` keeps the result page below.
+   */
+  completionRedirect?: (req: IncomingMessage, res: ServerResponse, provider: string) => string | undefined;
 
   /** A provider this gateway can actually link. */
   private supports(provider: string): boolean {
@@ -123,7 +148,10 @@ export class IdentityLinkApi {
       sendHtml(
         res,
         200,
-        htmlPage("GitHub link cancelled", "You declined the request. You can try again from chat whenever you're ready."),
+        htmlPage(
+          `${providerLabel(provider)} link cancelled`,
+          "You declined the request. You can try again whenever you're ready.",
+        ),
       );
       return true;
     }
@@ -151,10 +179,15 @@ export class IdentityLinkApi {
       return true;
     }
 
+    const back = this.completionRedirect?.(req, res, provider);
+    if (back) {
+      res.writeHead(303, { location: back }).end();
+      return true;
+    }
     sendHtml(
       res,
       200,
-      htmlPage("GitHub account linked", "You can close this tab and return to your chat."),
+      htmlPage(`${providerLabel(provider)} account linked`, "You can close this tab and return to your chat."),
     );
     return true;
   }

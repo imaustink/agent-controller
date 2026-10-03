@@ -222,6 +222,10 @@ spec:
             - name: AGENT_DEFAULT_IDENTITY_LINK_FLOW
               value: {{ .Values.identityLink.defaultFlow | quote }}
             {{- end }}
+            {{- if .Values.identityLink.connectionsUrl }}
+            - name: AGENT_CONNECTIONS_URL
+              value: {{ .Values.identityLink.connectionsUrl | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.knowledgeBases.enabled }}
             # Knowledge bases (docs/adr/0039). Without these three the
