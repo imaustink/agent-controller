@@ -162,6 +162,12 @@ describe("the generated markdown", () => {
     expect(markdown).toContain("ask which one is meant");
   });
 
+  it("tells the planner to iterate rather than answer from one search", () => {
+    const markdown = markdownFor(globexKb());
+    expect(markdown).toContain("research task");
+    expect(markdown).toContain("search again before answering");
+  });
+
   it("forbids citing anything the tools did not return this turn", () => {
     const markdown = markdownFor(globexKb());
     // Citations are content (ADR 0040): the tool hands back probe-checked
@@ -179,10 +185,18 @@ describe("the generated markdown", () => {
   });
 
   it("mentions the live face only when a member has one", () => {
-    expect(markdownFor(globexKb())).toContain("true *right now*");
+    const withApi = markdownFor(globexKb());
+    expect(withApi).toContain("true *right now*");
+    // The live keyword/read tools are named only when they are actually
+    // generated (api-enabled AND an identity provider), so the planner is never
+    // told to call a tool it was not given.
+    expect(withApi).toContain("kb:globex/lookup");
+    expect(withApi).toContain("kb:globex/read");
 
     const withoutApi = markdownFor({ ...globexKb(), corpusRefs: ["globex-slack-eng"] });
     expect(withoutApi).not.toContain("true *right now*");
+    expect(withoutApi).not.toContain("kb:globex/lookup");
+    expect(withoutApi).not.toContain("kb:globex/read");
   });
 
   it("includes the disclosure instruction only when disclosure is on", () => {

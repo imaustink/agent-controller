@@ -16,7 +16,13 @@ const SearchKnowledgeBaseActivityName = "SearchKnowledgeBase"
 
 // defaultKnowledgeBaseLimit is how many passages an answer gets. The candidate
 // set probed to produce them is this times corpus.DefaultCandidateMultiplier.
-const defaultKnowledgeBaseLimit = 6
+//
+// Six starved multi-document questions: a "what are all our projects for X"
+// drew on one source and read as thin. Twelve gives the model enough spread to
+// synthesise across sources while staying well inside the context budget (a
+// chunk is capped at 800 tokens at ingest). PARITY: DEFAULT_LIMIT in the TS
+// searcher.
+const defaultKnowledgeBaseLimit = 12
 
 // DelegatedCredentialResolver hands back the calling user's own token for a
 // provider.

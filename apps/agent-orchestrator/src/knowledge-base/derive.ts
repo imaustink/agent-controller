@@ -185,16 +185,34 @@ function knowledgeBaseMarkdown(
     parts.push("");
   }
 
+  const readable = members.some(
+    (member) => member.apiEnabled && (member.identityProviders?.length ?? 0) > 0,
+  );
+
   parts.push(
     "## Answering\n\n" +
+      "Treat this as a research task, not a single lookup. One search rarely\n" +
+      "surfaces everything; keep searching until you have enough to answer well,\n" +
+      "or have confirmed the material simply is not here.\n\n" +
       `1. Search with \`${knowledgeBaseSearchToolId(kb.id)}\`, passing the user's question.\n` +
       "   Narrow to particular sources with its `connections` argument when the user\n" +
       "   named one.\n" +
-      "2. Answer **only** from the chunks it returns. When they do not cover the\n" +
+      "2. Read what comes back and judge whether it actually covers the question.\n" +
+      "   If it is thin, partial, or answers only part of what was asked,\n" +
+      "   **search again before answering** — rephrase, split a broad question into\n" +
+      "   parts, and reuse the specific names, systems and dates the first results\n" +
+      "   surfaced. Several focused searches beat one broad one, and you have\n" +
+      "   several tool calls to spend.\n" +
+      (readable
+        ? `   When the index looks stale or thin, go to the source directly: \`${knowledgeBaseLookupToolId(kb.id)}\`\n` +
+          `   runs a live keyword search, and \`${knowledgeBaseReadToolId(kb.id)}\` reads a full\n` +
+          "   document when a passage is cut off or you need detail a chunk leaves out.\n"
+        : "") +
+      "3. Answer **only** from what the tools returned. When they do not cover the\n" +
       "   question, say what is missing — never fill the gap from your own\n" +
       "   knowledge, which is not this client's material and will read as though\n" +
       "   it were.\n" +
-      "3. The `Sources:` list and an access-disclosure note are appended to your\n" +
+      "4. The `Sources:` list and an access-disclosure note are appended to your\n" +
       "   answer automatically, built from the same access check the search ran —\n" +
       "   so you do not have to hand-assemble citations, and must not invent a URL\n" +
       "   or reuse one from earlier in the conversation. Just ground every claim in\n" +
@@ -225,18 +243,21 @@ function knowledgeBaseMarkdown(
   }
   parts.push(
     "- A result marked **stale** is one the caller may read, but the source has\n" +
-      "  changed since it was indexed. Say the passage may be out of date; where\n" +
-      "  the member offers a `get` tool, read the live object with it and answer\n" +
-      "  from that instead.\n" +
+      "  changed since it was indexed. Say the passage may be out of date" +
+      (readable
+        ? `; read the live document with \`${knowledgeBaseReadToolId(kb.id)}\` and answer from that instead`
+        : "") +
+      ".\n" +
       "- When search reports sources it could not check, say so. Those are not\n" +
       "  results that were withheld — they are results nobody could confirm\n" +
       "  either way, so the answer may be missing evidence that exists.",
   );
-  if (members.some((member) => member.apiEnabled)) {
+  if (readable) {
     parts.push(
       "- Retrieval shows this material as of the last sync. When the question\n" +
-        "  is about what is true *right now*, read the live object with the\n" +
-        "  connection's own `get` tool instead of trusting a chunk.",
+        `  is about what is true *right now*, read the live object with \`${knowledgeBaseReadToolId(kb.id)}\`\n` +
+        `  or run a fresh keyword search with \`${knowledgeBaseLookupToolId(kb.id)}\` instead of\n` +
+        "  trusting a chunk.",
     );
   }
 

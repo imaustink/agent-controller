@@ -53,7 +53,11 @@ func Retrieve(
 		return RetrieveOutcome{}, err
 	}
 
-	chunks := authorized.Chunks
+	// Reorder the survivors by relevance (vector score blended with keyword
+	// overlap) BEFORE the cut, so the kept `limit` are the most relevant rather
+	// than merely the highest-cosine. Order-only: it adds and drops nothing, so
+	// the probe's access guarantees still hold.
+	chunks := rerank(query, authorized.Chunks)
 	if len(chunks) > limit {
 		chunks = chunks[:limit]
 	}

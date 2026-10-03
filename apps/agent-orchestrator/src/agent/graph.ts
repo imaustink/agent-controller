@@ -974,8 +974,24 @@ async function resolveToolIdentitySecretEnv(
  * single turn (docs/adr/0008 update: multi-step tool use) -- generous enough
  * for a realistic research chain (e.g. search, then fetch two candidate
  * pages) while bounding the worst case of a planner that never settles.
+ *
+ * Raised 4->8 so a knowledge-base turn can actually iterate: search, read what
+ * came back, search again with narrower terms, and read a live document -- the
+ * research loop the KB skill now asks for -- without the cap forcing an answer
+ * after one lookup. PARITY: maxToolSteps in the Temporal engine.
  */
-const MAX_TOOL_STEPS = 4;
+const MAX_TOOL_STEPS = 8;
+
+/**
+ * LangGraph's own recursion limit, which bounds graph super-steps per run and is
+ * separate from MAX_TOOL_STEPS. It is per-invoke and defaults to 25 — sized for
+ * the old 4-step cap. Each tool step is two super-steps (planAction + runTool)
+ * on top of the fixed pre-loop nodes and composeResponse, so a full
+ * MAX_TOOL_STEPS run now needs more than 25, and overshooting throws
+ * GraphRecursionError mid-turn. Derive it from the step cap with generous slack
+ * for the surrounding nodes; the step cap stays the real bound.
+ */
+const GRAPH_RECURSION_LIMIT = MAX_TOOL_STEPS * 2 + 20;
 
 /**
  * The consumer-supplied tools (docs/adr/0035) a given skill may be offered, or
@@ -2744,5 +2760,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     })
     .addEdge("composeResponse", END);
 
-  return graph.compile();
+  // Bind the recursion limit here so every caller — the server's invoke and
+  // stream paths, and the tests — shares it without threading config through
+  // each call site. withConfig returns the same runnable type, so invoke/stream
+  // and their signatures are unchanged.
+  return graph.compile().withConfig({ recursionLimit: GRAPH_RECURSION_LIMIT });
 }

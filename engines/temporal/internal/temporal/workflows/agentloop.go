@@ -17,7 +17,13 @@ import (
 )
 
 // maxToolSteps bounds the plan⇄runTool loop per turn (upstream MAX_TOOL_STEPS).
-const maxToolSteps = 4
+//
+// Raised 4→8 so a knowledge-base turn can actually iterate: search, read what
+// came back, search again with narrower terms, and read a live document — the
+// research loop the KB skill now asks for — without the cap forcing an answer
+// after one lookup. Still a runaway guard, just a looser one. PARITY:
+// MAX_TOOL_STEPS in the TS graph.
+const maxToolSteps = 8
 
 // TurnMeta reports what the agent loop did, for TurnResult/debugging.
 type TurnMeta struct {
