@@ -19,7 +19,7 @@ type: application
 # never syncs → manager crashloop).
 # 0.6.0: adds the mcp-broker subchart and the mcptools RBAC/env on both engines
 # (ADR 0045) — a template+RBAC change, hence a new version (supersedes 0.5.3).
-version: 0.6.1
+version: 0.6.2
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:
