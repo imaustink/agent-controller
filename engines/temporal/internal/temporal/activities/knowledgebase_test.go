@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/identitylink"
 	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 	"github.com/controller-agent/temporal-engine/internal/vectorstore"
 )
@@ -198,6 +199,53 @@ func TestSearchCountsAnUnreconciledMemberAsWithheld(t *testing.T) {
 	// Still something the answer is missing, so it is disclosed rather than
 	// silently treated as an empty corpus.
 	require.Contains(t, out.Result, "outside your access")
+}
+
+func TestSearchStartsLinksAndRendersClickablePrompts(t *testing.T) {
+	links, err := identitylink.NewFake("", "")
+	require.NoError(t, err)
+	kb := &activities.KnowledgeBaseActivities{
+		Corpora:       vectorstore.NewCorpora(nil, nil, 0),
+		Credentials:   &fakeResolver{token: ""}, // nothing linked
+		BrokerURL:     "http://broker",
+		BrokerToken:   "orch",
+		IdentityLinks: links,
+	}
+	google := catalog.KnowledgeBaseExecMember{
+		ID: "g", Label: "#g", Collection: "cg", AllowedRoles: []string{"reader"},
+		Granularity: "resource", IdentityProviders: []string{"google"},
+	}
+
+	out, err := kb.SearchKnowledgeBase(context.Background(), activities.SearchKnowledgeBaseInput{
+		Caller: activities.Caller{Subject: "openwebui:42", Roles: []string{"reader"}},
+		Tool:   searchTool(member("c", []string{"reader"}, "coll"), google),
+		Query:  "q",
+	})
+
+	require.NoError(t, err)
+	require.True(t, out.NeedsLink)
+	require.Equal(t, []string{"atlassian", "google"}, out.LinkProviders)
+	// The dead-end sentence now carries a clickable link per provider — the whole
+	// point of this fix for the Temporal engine (bitovi runs AGENT_ENGINE=temporal).
+	require.Contains(t, out.Result, "[link your atlassian account](https://example.invalid/link/atlassian)")
+	require.Contains(t, out.Result, "[link your google account](https://example.invalid/link/google)")
+	require.Contains(t, out.Result, "ask again")
+	require.Len(t, links.Started, 2)
+}
+
+func TestSearchFallsBackToPlainAskWhenNoLinkGateway(t *testing.T) {
+	// No IdentityLinks wired: the ask degrades to the plain message rather than
+	// failing the search.
+	out, err := activitiesWith(&fakeResolver{token: ""}).SearchKnowledgeBase(context.Background(),
+		activities.SearchKnowledgeBaseInput{
+			Caller: activities.Caller{Subject: "s", Roles: []string{"reader"}},
+			Tool:   searchTool(member("c", []string{"reader"}, "coll")),
+			Query:  "q",
+		})
+
+	require.NoError(t, err)
+	require.True(t, out.NeedsLink)
+	require.NotContains(t, out.Result, "](")
 }
 
 func TestSearchAsksForALinkRatherThanAnsweringUnchecked(t *testing.T) {

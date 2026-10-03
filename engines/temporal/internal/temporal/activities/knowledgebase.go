@@ -8,6 +8,7 @@ import (
 
 	"github.com/controller-agent/temporal-engine/internal/catalog"
 	"github.com/controller-agent/temporal-engine/internal/corpus"
+	"github.com/controller-agent/temporal-engine/internal/identitylink"
 	"github.com/controller-agent/temporal-engine/internal/vectorstore"
 )
 
@@ -76,6 +77,10 @@ type KnowledgeBaseActivities struct {
 	Credentials DelegatedCredentialResolver
 	BrokerURL   string
 	BrokerToken string
+	// IdentityLinks starts the OAuth flow when a caller must link an account, so
+	// the "needs link" answer carries a clickable link rather than a dead-end
+	// sentence. Optional: without it the ask degrades to the plain message.
+	IdentityLinks identitylink.Port
 }
 
 type SearchKnowledgeBaseInput struct {
@@ -96,6 +101,8 @@ type SearchKnowledgeBaseOutput struct {
 	// knowledge base's sources require. The turn then asks them to, rather than
 	// answering from a corpus it could not check.
 	NeedsLink bool `json:"needsLink,omitempty"`
+	// LinkProviders are the providers the caller must link, when NeedsLink.
+	LinkProviders []string `json:"linkProviders,omitempty"`
 }
 
 // SearchKnowledgeBase probes and renders one knowledge-base search.
@@ -143,7 +150,7 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 		// Without the caller's own credential nothing can be probed, and probing
 		// on the ingestion credential would answer a different question,
 		// permissively (ADR 0040). Asking for a link is the only honest response.
-		return needsLinkAsk(exec.DisplayName, providersToLink(visible, tokens)), nil
+		return a.needsLink(ctx, in.Caller, exec.DisplayName, providersToLink(visible, tokens)), nil
 	}
 
 	// Each member's connection must be probed with the token for ITS provider. A
@@ -168,7 +175,7 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 	}
 
 	if len(servable) == 0 {
-		return needsLinkAsk(exec.DisplayName, providersToLink(visible, tokens)), nil
+		return a.needsLink(ctx, in.Caller, exec.DisplayName, providersToLink(visible, tokens)), nil
 	}
 
 	stores, skipped, err := a.Corpora.Resolve(ctx, collectionsOf(servable))
@@ -198,19 +205,72 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 	}, nil
 }
 
-// needsLinkAsk is the honest response when the caller has linked none of the
-// providers a search needs: ask, naming which, rather than answer on a
-// credential that is not theirs (ADR 0040).
+// needsLink is the honest response when the caller has linked none of the
+// providers a search needs — and, crucially, an ACTIONABLE one: it starts the
+// OAuth flow for each and hands back a clickable link, not just a sentence
+// naming them.
+//
+// Done here in the activity (not the workflow) because starting a flow is a
+// network call and workflows must stay deterministic. PARITY: the TS graph's
+// knowledgeBaseLinkPrompt (agent/graph.ts).
+func (a *KnowledgeBaseActivities) needsLink(ctx context.Context, caller Caller, displayName string, providers []string) SearchKnowledgeBaseOutput {
+	out := needsLinkAsk(displayName, providers)
+	out.Result = a.startLinks(ctx, caller, providers, out.Result)
+	return out
+}
+
+// needsLinkAsk is the plain "link your account" message, naming the providers.
 func needsLinkAsk(displayName string, providers []string) SearchKnowledgeBaseOutput {
 	which := ""
 	if len(providers) > 0 {
 		which = " (" + strings.Join(providers, ", ") + ")"
 	}
 	return SearchKnowledgeBaseOutput{
-		NeedsLink: true,
+		NeedsLink:     true,
+		LinkProviders: providers,
 		Result: fmt.Sprintf(
 			"I need you to link the account behind %s%s before I can search it — every result has to be "+
 				"checked against your own access to the source.", displayName, which),
+	}
+}
+
+// startLinks starts an authcode flow per provider and appends a clickable link
+// to the ask. Authcode because atlassian/google/slack are redirect-based with
+// nothing to poll — the caller links in the browser and asks again. Falls back
+// to the plain message if no flow could be started (e.g. the gateway has the
+// provider unconfigured, or no IdentityLinks was wired), so a misconfiguration
+// degrades rather than failing the search.
+func (a *KnowledgeBaseActivities) startLinks(ctx context.Context, caller Caller, providers []string, baseMessage string) string {
+	if a.IdentityLinks == nil || len(providers) == 0 {
+		return baseMessage
+	}
+	var prompts []string
+	for _, provider := range providers {
+		// Start the link against the SAME subject the credential resolver looks
+		// it up by, or the token would land under a key retrieval never reads.
+		started, err := a.IdentityLinks.Start(ctx, provider, credentialSubject(caller, provider), identitylink.FlowAuthCode)
+		if err != nil {
+			continue
+		}
+		prompts = append(prompts, linkPrompt(started, provider))
+	}
+	if len(prompts) == 0 {
+		return baseMessage
+	}
+	return baseMessage + "\n\n- " + strings.Join(prompts, "\n- ") +
+		"\n\nOnce you've linked, ask again and I'll include those sources."
+}
+
+// linkPrompt renders one started flow as a clickable clause. PARITY:
+// authz.linkPromptText.
+func linkPrompt(started identitylink.StartResult, label string) string {
+	switch started.Flow {
+	case identitylink.FlowDevice:
+		return fmt.Sprintf("[link your %s account](%s) and enter code `%s`", label, started.VerificationURI, started.UserCode)
+	case identitylink.FlowAuthCode:
+		return fmt.Sprintf("[link your %s account](%s)", label, started.AuthorizeURL)
+	default:
+		return fmt.Sprintf("[link your %s account](%s)", label, started.PageURL)
 	}
 }
 

@@ -179,10 +179,11 @@ func main() {
 		// with no runnable activity behind it is worse than a missing one.
 		if brokerURL := os.Getenv("CONNECTION_BROKER_URL"); brokerURL != "" {
 			kb := &activities.KnowledgeBaseActivities{
-				Corpora:     vectorstore.NewCorpora(qdrantClient, embedder, llm.DefaultEmbedDims),
-				Credentials: &activities.LinkedCredentials{Links: links},
-				BrokerURL:   brokerURL,
-				BrokerToken: os.Getenv("CONNECTION_BROKER_TOKEN"),
+				Corpora:       vectorstore.NewCorpora(qdrantClient, embedder, llm.DefaultEmbedDims),
+				Credentials:   &activities.LinkedCredentials{Links: links},
+				BrokerURL:     brokerURL,
+				BrokerToken:   os.Getenv("CONNECTION_BROKER_TOKEN"),
+				IdentityLinks: links,
 			}
 			w.RegisterActivityWithOptions(kb.SearchKnowledgeBase,
 				activity.RegisterOptions{Name: activities.SearchKnowledgeBaseActivityName})

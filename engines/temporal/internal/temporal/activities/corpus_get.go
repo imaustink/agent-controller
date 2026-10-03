@@ -35,6 +35,8 @@ type ReadCorpusOutput struct {
 	// falling back to the ingestion credential, which would answer a different
 	// question (ADR 0040).
 	NeedsLink bool `json:"needsLink,omitempty"`
+	// LinkProviders are the providers to link when NeedsLink.
+	LinkProviders []string `json:"linkProviders,omitempty"`
 }
 
 // ReadCorpus reads one resource live, as the calling user.
@@ -112,11 +114,13 @@ func (a *KnowledgeBaseActivities) ReadCorpus(
 		return ReadCorpusOutput{}, err
 	}
 	if credential.Token == "" {
+		base := fmt.Sprintf(
+			"I need you to link the account behind %s before I can read from it — "+
+				"a live read has to run as you, not as the ingestion credential.", member.Label)
 		return ReadCorpusOutput{
-			NeedsLink: true,
-			Result: fmt.Sprintf(
-				"I need you to link the account behind %s before I can read from it — "+
-					"a live read has to run as you, not as the ingestion credential.", member.Label),
+			NeedsLink:     true,
+			LinkProviders: member.IdentityProviders,
+			Result:        a.startLinks(ctx, in.Caller, member.IdentityProviders, base),
 		}, nil
 	}
 
