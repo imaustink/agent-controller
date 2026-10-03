@@ -69,6 +69,10 @@ graph TD
     Orchestrator -->|final SSE chunk| User
 ```
 
+> The diagram shows the original five CRDs. The full custom-resource reference —
+> all 13 kinds across tools, agents, knowledge bases, MCP, routing and identity —
+> is in **[docs/crds.md](docs/crds.md)**.
+
 This is an **npm workspace** monorepo: `packages/` holds shared libraries,
 `tools/` holds on-demand tool containers, `apps/` holds the long-lived
 orchestrator service, and `controllers/` holds the Go controller.
