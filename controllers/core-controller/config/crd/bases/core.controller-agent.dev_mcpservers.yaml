@@ -1,0 +1,350 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: mcpservers.core.controller-agent.dev
+spec:
+  group: core.controller-agent.dev
+  names:
+    kind: MCPServer
+    listKind: MCPServerList
+    plural: mcpservers
+    singular: mcpserver
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.transport
+      name: Transport
+      type: string
+    - jsonPath: .spec.url
+      name: URL
+      type: string
+    - jsonPath: .status.exposedTools
+      name: Exposed
+      type: integer
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          MCPServer is an authenticated route to one Model Context Protocol server
+          (ADR 0045).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              MCPServerSpec is an authenticated route to one Model Context Protocol server
+              (ADR 0045). It is operator-authored and privileged: creating one introduces
+              an externally-controlled call path reachable by agents, so gate CR
+              create/update via k8s RBAC.
+
+              The mcp-broker — the only component that speaks MCP — discovers this server's
+              tools into status.discoveredTools and materializes each EXPOSED one as a
+              derived MCPTool. The agent loop never sees MCP; it calls an ordinary catalog
+              tool whose dispatch happens to proxy through the broker.
+            properties:
+              displayName:
+                description: displayName names the server for operators (e.g. "GitHub
+                  MCP").
+                type: string
+              exposure:
+                description: |-
+                  exposure is the default-deny map of which advertised tools become callable
+                  MCPTools, and with which roles. Empty exposes nothing, however many tools
+                  the server advertises. See MCPToolExposure.
+                items:
+                  description: |-
+                    MCPToolExposure maps ONE remote tool a Model Context Protocol server
+                    advertises onto the catalog, with the roles an operator assigns it (ADR 0045
+                    §4).
+
+                    Exposure is default-DENY: a remote tool becomes a callable MCPTool only
+                    because an operator wrote an entry for it here. What the server advertises
+                    about the tool (its name, description, schema) never grants it visibility or
+                    a role — those are the operator's to set, which is what keeps the
+                    materialized record trustworthy once it reaches the fail-closed retrieval
+                    filter (ADR 0004). A server that adds a tool tomorrow surfaces in
+                    status.discoveredTools and nowhere else until an entry here names it.
+                  properties:
+                    allowedRoles:
+                      description: |-
+                        allowedRoles are the roles the materialized MCPTool carries — the RBAC
+                        retrieval filter (ADR 0004, fail-closed). Assigned by the operator, never
+                        derived from the server.
+                      items:
+                        type: string
+                      minItems: 1
+                      type: array
+                    expose:
+                      default: true
+                      description: |-
+                        expose materializes this tool when true. It defaults true, so listing a
+                        tool exposes it; set false to keep the entry (and its role assignment) on
+                        record while temporarily withdrawing the tool from the catalog.
+
+                        A pointer, deliberately: this is the field that enforces default-deny, and
+                        false is its meaningful value. A plain bool with omitempty would drop an
+                        explicit `false` set through the generated typed client, and the apiserver
+                        would then re-apply default=true — exposing a tool the operator withdrew. A
+                        *bool keeps "unset" (→ default true) distinct from "explicitly false".
+                      type: boolean
+                    hidden:
+                      description: |-
+                        hidden materializes the tool as referenceable-by-id but never returned by
+                        semantic retrieval (ADR 0008) — for a tool a Skill scopes rather than one
+                        agents discover openly.
+                      type: boolean
+                    remoteToolName:
+                      description: |-
+                        remoteToolName is the tool's name as the server reports it in tools/list.
+                        It is matched against status.discoveredTools; an entry naming a tool the
+                        server does not (yet) advertise materializes nothing.
+                      minLength: 1
+                      type: string
+                    tier:
+                      description: |-
+                        tier is an operator-defined cost/trust classification carried onto the
+                        materialized MCPTool (e.g. "standard", "privileged").
+                      type: string
+                    toolID:
+                      description: |-
+                        toolID overrides the catalog id of the materialized MCPTool. Defaults to a
+                        deterministic id derived from the server and remote tool name; set it to
+                        avoid a collision or to give the tool a stable, friendlier id.
+
+                        It becomes the MCPTool's metadata.name verbatim, so it must be a valid
+                        Kubernetes object name (a DNS-1123 subdomain) — the broker uses it as-is
+                        rather than sanitizing, because a silent rename would break the id a Skill
+                        references in toolRefs. Validated here so the apiserver rejects a bad value
+                        (e.g. underscores or capitals) at write time instead of the broker failing
+                        to materialize the tool with only a log line.
+                      maxLength: 253
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                      type: string
+                  required:
+                  - allowedRoles
+                  - remoteToolName
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - remoteToolName
+                x-kubernetes-list-type: map
+              identityProviders:
+                description: |-
+                  identityProviders names the IdentityProvider CRs whose per-user delegated
+                  credential the broker presents on tools/call (ADR 0032's mechanism).
+
+                  This is the INVOCATION credential, resolved per call so a proxied tool
+                  runs as the user who asked, never as a shared subject. If resolution fails
+                  or the token has expired the call fails closed — it never falls back to
+                  the discovery credential (ADR 0045 §5). Empty means the server needs no
+                  per-user identity to call its tools.
+                items:
+                  type: string
+                type: array
+              secretEnv:
+                description: |-
+                  secretEnv are environment variables sourced from Secret keys in the same
+                  namespace (never literal values), resolved by the mcp-broker.
+
+                  This is the DISCOVERY credential — a shared service identity the broker
+                  uses for tools/list. It is deliberately separate from invocation, which
+                  runs as the calling user (see identityProviders). A server that needs no
+                  credential to list its tools leaves this empty.
+                items:
+                  description: |-
+                    SecretEnvVar names a Job container environment variable whose value comes
+                    from a Secret key in the SAME namespace as the Tool/ToolRun, resolved via
+                    corev1.EnvVarSource.SecretKeyRef at Job-build time. Only the reference
+                    (secret name + key) lives in the Tool spec — never the secret value
+                    itself, same discipline as ToolRunCallback.SecretRef for the callback
+                    HMAC secret. Needed because ordinary tool containers (e.g. recipe-scraper's
+                    OPENAI_API_KEY, recipe-publisher's GITHUB_TOKEN) require real secrets that
+                    `env` (non-secret, catalog metadata) cannot carry.
+                  properties:
+                    name:
+                      description: name of the environment variable to set in the
+                        tool's Job container.
+                      type: string
+                    secretRef:
+                      description: secretRef selects the Secret key providing the
+                        value.
+                      properties:
+                        key:
+                          description: key within the Secret's data.
+                          type: string
+                        name:
+                          description: name of the Secret.
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                  required:
+                  - name
+                  - secretRef
+                  type: object
+                type: array
+              transport:
+                description: |-
+                  transport selects how the broker reaches the server.
+
+                  Only streamable-http is supported today: it is stateless per call, which
+                  lets invocation carry the CALLER's delegated token on each tools/call
+                  without a shared session (ADR 0045 §5). stdio and session-bound sse are
+                  deferred to a second auth mode; adding them is an enum widening here, not
+                  a new CRD.
+                enum:
+                - streamable-http
+                type: string
+              url:
+                description: |-
+                  url is the server's endpoint. API calls go here; it is the broker's address
+                  for the server, not a human-facing one.
+
+                  https:// for an external server, so the delegated token is encrypted in
+                  transit; http:// is permitted for a cluster-internal MCP server (a
+                  Service), where the token stays on the cluster network. A scheme is
+                  required either way.
+                minLength: 1
+                pattern: ^https?://
+                type: string
+            required:
+            - transport
+            - url
+            type: object
+          status:
+            description: MCPServerStatus defines the observed state of MCPServer.
+            properties:
+              conditions:
+                description: |-
+                  conditions follow the usual Ready/Degraded convention. Ready reports a
+                  successful discovery; Degraded reports a server the broker could not reach
+                  or list.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              discoveredTools:
+                description: |-
+                  discoveredTools is the full inventory from the last successful tools/list.
+                  It only surfaces what the server offers; it grants nothing.
+                items:
+                  description: |-
+                    MCPDiscoveredTool is one tool the server advertised on the last successful
+                    tools/list. It is a REPORT, not a grant: a tool appearing here is callable
+                    only once an MCPToolExposure entry names it (ADR 0045 §4).
+                  properties:
+                    description:
+                      description: description is the server's own description of
+                        the tool.
+                      type: string
+                    exposed:
+                      description: |-
+                        exposed reports whether an MCPToolExposure entry currently materializes
+                        this tool, so `kubectl get` on the server shows at a glance what is live.
+                      type: boolean
+                    inputSchema:
+                      description: |-
+                        inputSchema is the tool's JSON Schema as advertised, carried verbatim so an
+                        operator can see what an exposed tool would accept.
+                      type: string
+                    name:
+                      description: name is the tool's name as the server reports it.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              exposedTools:
+                description: |-
+                  exposedTools is how many MCPTools this server currently materializes — the
+                  count of exposure entries that matched a discovered tool.
+                format: int64
+                type: integer
+              observedGeneration:
+                format: int64
+                type: integer
+            type: object
+        required:
+        - metadata
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

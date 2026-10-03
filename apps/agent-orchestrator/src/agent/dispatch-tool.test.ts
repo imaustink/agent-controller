@@ -32,6 +32,19 @@ const agentBackedTool: ToolDescriptor = {
   agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
 };
 
+const mcpTool: ToolDescriptor = {
+  id: "mcp:github/create_issue",
+  name: "mcp:github/create_issue",
+  description: "Opens a GitHub issue.",
+  allowedRoles: ["writer"],
+  identityProviders: ["github"],
+  mcpExec: { serverRef: "github", remoteToolName: "create_issue" },
+};
+
+function fakeMCPBrokerClient(result = "Issue #7 created") {
+  return { call: vi.fn().mockResolvedValue({ result }) } as unknown as import("../mcp/mcp-broker-client.js").MCPBrokerClient;
+}
+
 function fakeContainerToolLauncher(): ContainerToolLauncher {
   return { launch: vi.fn().mockResolvedValue({ jobId: "job-1" }) };
 }
@@ -108,6 +121,37 @@ describe("dispatchResolvedTool", () => {
       containerTool.jobTemplate,
       expect.objectContaining({ callbackSecret: "shh" }),
     );
+  });
+
+  it("dispatches an MCP tool through the broker as the caller and returns its prose result", async () => {
+    const mcpBrokerClient = fakeMCPBrokerClient("Issue #7 created");
+    const outcome = await dispatchResolvedTool(mcpTool, '{"title":"Bug"}', {
+      containerToolLauncher: fakeContainerToolLauncher(),
+      jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "unused" }),
+      mcpBrokerClient,
+    }, { callerSubject: "openwebui:42" });
+
+    expect(outcome).toEqual({ ok: true, result: "Issue #7 created" });
+    expect(mcpBrokerClient.call).toHaveBeenCalledWith(mcpTool, '{"title":"Bug"}', { subject: "openwebui:42" });
+  });
+
+  it("reports an MCP tool as unconfigured when no broker client is provided", async () => {
+    const outcome = await dispatchResolvedTool(mcpTool, "{}", {
+      containerToolLauncher: fakeContainerToolLauncher(),
+      jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "x" }),
+    }, { callerSubject: "openwebui:42" });
+    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("mcp-broker is not configured") });
+  });
+
+  it("FAILS CLOSED on an MCP tool with no resolved caller subject", async () => {
+    const mcpBrokerClient = fakeMCPBrokerClient();
+    const outcome = await dispatchResolvedTool(mcpTool, "{}", {
+      containerToolLauncher: fakeContainerToolLauncher(),
+      jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "x" }),
+      mcpBrokerClient,
+    });
+    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("resolved caller identity") });
+    expect(mcpBrokerClient.call).not.toHaveBeenCalled();
   });
 
   it("reports a container tool's failed event as ok: false", async () => {

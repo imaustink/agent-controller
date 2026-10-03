@@ -22,6 +22,12 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the core-controller itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- mcptool_admin_role.yaml
+- mcptool_editor_role.yaml
+- mcptool_viewer_role.yaml
+- mcpserver_admin_role.yaml
+- mcpserver_editor_role.yaml
+- mcpserver_viewer_role.yaml
 - knowledgebase_admin_role.yaml
 - knowledgebase_editor_role.yaml
 - knowledgebase_viewer_role.yaml

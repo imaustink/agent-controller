@@ -46,6 +46,11 @@ rand() { openssl rand -hex 32; }
 # surfaces as "the knowledge base found nothing" rather than as an auth error —
 # the exact silence that hid a routing bug in this path once already.
 CONNECTION_BROKER_TOKEN="e2e-connection-broker-token"
+# Fixed for the same reason: the engines present this to the mcp-broker on every
+# tool call, and the broker checks it. Two independently-generated values would
+# 401 every MCP call, which surfaces as a tool that silently never runs rather
+# than as an auth error. e2e/specs/mcp-crd.e2e.ts reads this exact value.
+MCP_BROKER_TOKEN="e2e-mcp-broker-token"
 
 # Fixed, not random: this exact value must appear on BOTH sides of the
 # orchestrator<->gateway identity-link channel (the gateway's
@@ -82,6 +87,11 @@ upsert searxng-secrets --from-literal=secret-key="$(rand)"
 # ingestion credential.
 upsert e2e-connection-broker-secrets \
   --from-literal=orchestratorToken="$CONNECTION_BROKER_TOKEN"
+# The mcp-broker's gate: the engines present this on every tools/call, and the
+# broker checks it (ADR 0045 §5). Distinct from the per-user delegated token the
+# engines forward per call, which no e2e secret holds.
+upsert e2e-mcp-broker-secrets \
+  --from-literal=orchestratorToken="$MCP_BROKER_TOKEN"
 # alpha-docs is the corpus the knowledge-base specs create; see
 # e2e/specs/knowledge-base-*.e2e.ts.
 # Keys are the ENV VAR NAMES the broker reads: every key in this Secret is

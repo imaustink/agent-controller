@@ -3,6 +3,7 @@ import type { Event } from "@controller-agent/messaging";
 import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
 import type { JobResultReceiver } from "../callback/receiver.js";
 import type { LocalToolExecutor } from "../local/local-tool-executor.js";
+import type { MCPBrokerClient } from "../mcp/mcp-broker-client.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { AgentDescriptor } from "../agents/types.js";
 import type { AgentOrchestratorChannel } from "../agents/nats-agent-channel.js";
@@ -15,6 +16,8 @@ export interface ToolDispatchDeps {
   containerToolLauncher: ContainerToolLauncher;
   jobResultReceiver: JobResultReceiver;
   localToolExecutor?: LocalToolExecutor;
+  /** Proxies an MCP tool call through the mcp-broker (ADR 0045). Absent when the broker is not configured. */
+  mcpBrokerClient?: MCPBrokerClient;
   natsUrl?: string;
   callbackBaseUrl?: string;
   callbackSecret?: string;
@@ -36,13 +39,31 @@ export async function dispatchResolvedTool(
   tool: ToolDescriptor,
   input: string,
   deps: ToolDispatchDeps,
-  opts: { sessionId?: string } = {},
+  opts: { sessionId?: string; callerSubject?: string } = {},
 ): Promise<ToolCallOutcome> {
   if (tool.agentRunTemplate) {
     return {
       ok: false,
       error: `tool ${tool.id} is agent-backed -- calling an agent-backed tool from a sub-agent's own toolRefs is not supported yet`,
     };
+  }
+
+  if (tool.mcpExec) {
+    // MCP tool (docs/adr/0045): relayed through the mcp-broker as the caller,
+    // the same in-process face `runTool` uses. A tool-level error or a missing
+    // link is PROSE the sub-agent's model can act on (a successful outcome
+    // carrying the message), not a dispatch failure — only the broker being
+    // unreachable throws, which becomes an `{ok:false}` via the catch above us.
+    if (!deps.mcpBrokerClient) {
+      return { ok: false, error: `tool ${tool.id} is an MCP tool but the mcp-broker is not configured` };
+    }
+    if (!opts.callerSubject) {
+      // Fail closed: a per-user MCP call runs AS someone, and a sub-agent tool
+      // call with no resolved caller has nobody to run it as (docs/adr/0045 §5).
+      return { ok: false, error: `tool ${tool.id} requires a resolved caller identity` };
+    }
+    const called = await deps.mcpBrokerClient.call(tool, input, { subject: opts.callerSubject });
+    return { ok: true, result: called.result };
   }
 
   let event: Event;
@@ -113,7 +134,7 @@ export function makeSubAgentToolCallHandler(
   channel: AgentOrchestratorChannel,
   toolCatalog: ToolCatalog | undefined,
   toolDeps: ToolDispatchDeps,
-  opts: { sessionId?: string } = {},
+  opts: { sessionId?: string; callerSubject?: string } = {},
 ): (call: { callId: string; tool: string; input: string }) => void {
   return (call) => {
     void (async () => {

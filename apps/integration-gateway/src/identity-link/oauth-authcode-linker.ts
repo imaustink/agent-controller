@@ -207,7 +207,11 @@ export class OAuthAuthCodeLinker {
 
     const credential = {
       githubLogin: "",
-      accountId: (await this.options.store.get(this.provider, subject))?.accountId,
+      // Backfills links made while the store dropped this field: they would
+      // otherwise carry no account id until the user re-linked by hand.
+      accountId:
+        (await this.options.store.get(this.provider, subject))?.accountId ??
+        (await this.fetchAccountId(tokens.access_token)),
       token: tokens.access_token,
       expiresAt: this.expiryFrom(tokens.expires_in),
       // A provider that rotates returns a new refresh token; one that does not

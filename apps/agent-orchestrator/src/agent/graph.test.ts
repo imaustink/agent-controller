@@ -529,6 +529,92 @@ describe("buildAgentGraph", () => {
     expect(final.error).toMatch(/local execution is not configured/);
     expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
+
+  it("dispatches an MCP tool through the broker as the caller instead of launching anything (ADR 0045)", async () => {
+    const mcpTool: ToolDescriptor = {
+      id: "mcp:github/create_issue",
+      name: "mcp:github/create_issue",
+      description: "Opens a GitHub issue",
+      allowedRoles: ["reader"],
+      identityProviders: ["github"],
+      mcpExec: { serverRef: "github", remoteToolName: "create_issue" },
+    };
+    const mcpSkill: SkillDescriptor = { ...skill, id: "github-skill", toolIds: ["mcp:github/create_issue"] };
+    const mcpBrokerClient = { call: vi.fn().mockResolvedValue({ result: "Issue #7 created" }) };
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: mcpSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([mcpSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(mcpSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn(),
+        getByIds: vi.fn().mockResolvedValue([{ tool: mcpTool, score: 1 }]),
+      },
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "mcp:github/create_issue",
+          toolArgs: '{"title":"Bug"}',
+        } satisfies PlannedAction),
+      },
+      mcpBrokerClient: mcpBrokerClient as unknown as AgentGraphDeps["mcpBrokerClient"],
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "open an issue", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).toBe("Issue #7 created");
+    // Proxied under the resolved caller's subject, never launched as a Job/sidecar.
+    expect(mcpBrokerClient.call).toHaveBeenCalledWith(mcpTool, '{"title":"Bug"}', { subject: "alice" });
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+
+  it("fails gracefully when an MCP tool is selected but no broker is configured", async () => {
+    const mcpTool: ToolDescriptor = {
+      id: "mcp:github/create_issue",
+      name: "mcp:github/create_issue",
+      description: "Opens a GitHub issue",
+      allowedRoles: ["reader"],
+      identityProviders: ["github"],
+      mcpExec: { serverRef: "github", remoteToolName: "create_issue" },
+    };
+    const mcpSkill: SkillDescriptor = { ...skill, id: "github-skill", toolIds: ["mcp:github/create_issue"] };
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: mcpSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([mcpSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(mcpSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn(),
+        getByIds: vi.fn().mockResolvedValue([{ tool: mcpTool, score: 1 }]),
+      },
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "mcp:github/create_issue",
+          toolArgs: "{}",
+        } satisfies PlannedAction),
+      },
+      mcpBrokerClient: undefined,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "open an issue", authToken: "tok" });
+
+    expect(final.error).toMatch(/mcp-broker is not configured/);
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildAgentGraph multi-step tool use (docs/adr/0008 update: fixes the single-tool-call limit)", () => {

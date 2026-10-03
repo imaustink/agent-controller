@@ -510,6 +510,41 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			continue
 		}
 
+		// MCP tools (ADR 0045) are proxied through the mcp-broker. Placed beside
+		// the knowledge-base branches and before the identity gate for the same
+		// reason: the caller's delegated token is resolved INSIDE the activity and
+		// never handed back to the workflow, where the gate below resolves a Tool
+		// CR's providers into secretEnv for a Job.
+		if tool.MCPExec != nil {
+			note("Calling " + plan.ToolID + "…")
+			var out activities.RunMCPToolOutput
+			if err := workflow.ExecuteActivity(actx, activities.RunMCPToolActivityName,
+				activities.RunMCPToolInput{
+					Caller:    in.Caller,
+					Tool:      tool,
+					Arguments: plan.ToolInput,
+				}).Get(ctx, &out); err != nil {
+				return "", meta, nil, err
+			}
+			meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
+
+			if out.NeedsLink {
+				note(plan.ToolID + " needs a linked account")
+				return out.Result, meta, nil, nil
+			}
+
+			outcome := ToolOutcome{Succeeded: out.Succeeded, Result: out.Result}
+			if out.Succeeded {
+				lastSuccess = &outcome
+			}
+			history = append(history, activities.ActionRecord{
+				ToolID: plan.ToolID, Input: plan.ToolInput,
+				Succeeded: out.Succeeded, Result: out.Result,
+			})
+			note(plan.ToolID + " finished")
+			continue
+		}
+
 		// Identity gate — shared by a container Tool and an agent-backed one
 		// (upstream's resolveToolIdentitySecretEnv, ADR 0032 §5/0022): read-only
 		// resolution of an already-linked credential, never starting a fresh
