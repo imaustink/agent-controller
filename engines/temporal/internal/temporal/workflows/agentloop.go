@@ -470,11 +470,11 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 					}).Get(ctx, &gate); err != nil {
 					return "", meta, nil, err
 				}
+				if state.KnowledgeBaseLinkPrompts == nil {
+					state.KnowledgeBaseLinkPrompts = map[string]bool{}
+				}
+				state.KnowledgeBaseLinkPrompts[kbID] = true
 				if len(gate.LinkProviders) > 0 {
-					if state.KnowledgeBaseLinkPrompts == nil {
-						state.KnowledgeBaseLinkPrompts = map[string]bool{}
-					}
-					state.KnowledgeBaseLinkPrompts[kbID] = true
 					meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
 					note(plan.ToolID + " needs a linked account")
 					return gate.Result, meta, nil, nil

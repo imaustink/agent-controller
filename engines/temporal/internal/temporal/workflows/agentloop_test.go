@@ -1918,3 +1918,45 @@ func TestKnowledgeBaseSearchNeedingALinkEndsTheTurnOnTheAsk(t *testing.T) {
 	require.Contains(t, result.Reply, "link the account")
 	require.Zero(t, le.composeCalls, "nothing was retrieved, so there is nothing to frame")
 }
+
+// The deterministic gate fires ONCE per knowledge base per conversation even on
+// the all-linked happy path: the GateOnly activity resolves delegated tokens via
+// the broker, so re-running it before every subsequent search would be wasteful
+// and divergent from LangGraph (which skips checkLinks once activeSkillId is
+// persisted). Two searches in one turn must produce exactly one GateOnly call.
+func TestKnowledgeBaseLinkGateRunsOncePerConversation(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = "kb:globex"
+	le.skills = []catalog.SkillDescriptor{knowledgeBaseSkillTools().Skill}
+	le.skillTools = knowledgeBaseSkillTools()
+	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
+		Result: "Found 1 passage.\n\nSources:\n- [Auth](https://wiki/auth)\n",
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "how is auth configured"},
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "where are the runbooks"},
+		{Action: activities.ActionFinish},
+	}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "two things about GLOBEX", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	// Expected calls: one GateOnly (first search only), then a real search per
+	// planned query — the second search skips the gate because the KB was
+	// already marked checked.
+	require.Len(t, le.kbSearchInputs, 3)
+	gateOnly := 0
+	for _, in := range le.kbSearchInputs {
+		if in.GateOnly {
+			gateOnly++
+		}
+	}
+	require.Equal(t, 1, gateOnly, "the gate must run once per KB per conversation")
+	require.True(t, le.kbSearchInputs[0].GateOnly, "the gate runs before the first search")
+	require.False(t, le.kbSearchInputs[1].GateOnly)
+	require.False(t, le.kbSearchInputs[2].GateOnly)
+}
