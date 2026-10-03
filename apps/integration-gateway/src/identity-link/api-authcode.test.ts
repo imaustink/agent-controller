@@ -89,7 +89,12 @@ describe("IdentityLinkApi with an authcode provider", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ authorizeUrl: expect.stringContaining("atlassian.com") });
+    // flow is the discriminator a strict client (the Temporal Go client) requires;
+    // omitting it silently broke KB linking on that engine.
+    expect(await res.json()).toMatchObject({
+      flow: "authcode",
+      authorizeUrl: expect.stringContaining("atlassian.com"),
+    });
     expect(atlassian.startAuthCode).toHaveBeenCalledWith("openwebui:42");
     // GitHub's linker must not be consulted for another provider.
     expect(github.startAuthCode).not.toHaveBeenCalled();
