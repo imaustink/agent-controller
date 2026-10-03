@@ -202,9 +202,17 @@ identityLink:
   # via `user_scope`, exchanges it form-encoded, and reads it from `authed_user`
   # — which the provider config handles; nothing extra is needed here.
   slackClientId: ""
-  # Optional scope override. Empty uses `search:read`, the user scope the probe
-  # needs to ask what channels THIS user is in. `search:read` is user-only, so
-  # it is sent as `user_scope`, not `scope`.
+  # The Slack USER scope for per-user search. Empty uses `search:read`.
+  #
+  # This MUST be a search scope on the USER token — `search.messages` is
+  # user-token-only and returns `missing_scope`/`not_allowed_token_type`
+  # otherwise, so Slack retrieval silently returns nothing. Do NOT put bot
+  # scopes here (channels:history, channels:read, …): those belong on the
+  # ingestion bot token (the Connection's SERVICE_TOKEN), not on this per-user
+  # link. Slack split the old `search:read` into a granular set, so:
+  #   - app created BEFORE the split: `search:read`
+  #   - newer app: `search:read.public` (plus `.private`/`.im`/`.mpim` as needed)
+  # It is sent as `user_scope`, not `scope`.
   slackScopes: ""
   # Redis URL passed to this app as AGENT_REDIS_URL.
   #
