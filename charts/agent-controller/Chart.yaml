@@ -17,7 +17,7 @@ type: application
 # leaving a new core-controller binary running under stale RBAC (403 → cache
 # never syncs → manager crashloop). Bump the chart version for any RBAC- or
 # template-affecting change so the pin in gitops changes too.
-version: 0.5.2
+version: 0.5.3
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:
