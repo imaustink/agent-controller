@@ -96,7 +96,13 @@ export interface LinkCheck {
   linkedProviders: string[];
 }
 
-const DEFAULT_LIMIT = 6;
+// How many passages an answer gets; the probed candidate set is a multiple of
+// this. Six starved multi-document questions (a "what are all our projects for
+// X" drew on one source and read as thin); twelve gives the model enough spread
+// to synthesise across sources while staying well inside the context budget (a
+// chunk is capped at 800 tokens at ingest). PARITY: defaultKnowledgeBaseLimit on
+// the Temporal engine.
+const DEFAULT_LIMIT = 12;
 
 /**
  * Executes a knowledge base's generated search tool (docs/adr/0039 §3).

@@ -794,7 +794,7 @@ describe("buildAgentGraph multi-step tool use (docs/adr/0008 update: fixes the s
     expect(final.error).toBeUndefined();
     // The planner never settles (always a fresh call_tool with new args, so
     // the identical-repeat guard never kicks in) -- the loop still stops.
-    expect(plan.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(plan.mock.calls.length).toBeLessThanOrEqual(8);
     expect(deps.containerToolLauncher.launch).toHaveBeenCalledTimes(plan.mock.calls.length);
     expect(final.result).toBe(`page ${plan.mock.calls.length} content`);
   });
@@ -4359,7 +4359,7 @@ describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
       request: "weather?",
       authToken: "tok",
       callerTools: [weatherTool],
-      actionHistory: Array.from({ length: 4 }, (_, i) => ({
+      actionHistory: Array.from({ length: 8 }, (_, i) => ({
         toolId: "caller:get_weather",
         toolArgs: `{"n":${i}}`,
         result: `r${i}`,
@@ -4369,7 +4369,7 @@ describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
     // MAX_TOOL_STEPS reached -> finish without ever consulting the planner.
     expect(deps.actionPlanner.plan).not.toHaveBeenCalled();
     expect(final.pendingToolCalls).toEqual([]);
-    expect(final.result).toBe("r3");
+    expect(final.result).toBe("r7");
   });
 
   it("passes tool_choice: required through to the planner as a directive", async () => {

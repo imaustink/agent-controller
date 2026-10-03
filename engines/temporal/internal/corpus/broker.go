@@ -19,7 +19,12 @@ import (
 // says start at 3x and tune from observed drop rates; the right value is an
 // operational question, which is why this is a starting point rather than a
 // constant nobody revisits.
-const DefaultCandidateMultiplier = 3
+//
+// Raised 3→5 alongside the larger answer limit and the rerank step: with more
+// passages wanted per answer, a wider candidate pool keeps probe drops from
+// starving it and gives the rerank something to choose from. PARITY:
+// DEFAULT_CANDIDATE_MULTIPLIER in the TS retrieve path.
+const DefaultCandidateMultiplier = 5
 
 // BrokerProber asks the connection-broker whether the calling user may read a
 // resource (ADR 0040).

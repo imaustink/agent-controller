@@ -1,5 +1,6 @@
 import { authorize, PermissionDeniedError, TransientProbeError, type AuthorizedChunk, type Granularity, type ProbeRequest, type ProbeResult, type Prober } from "./probe.js";
 import { preFilter } from "./prefilter.js";
+import { rerank } from "./rerank.js";
 import { searchCorpus } from "./search.js";
 import type { CorpusStore } from "./types.js";
 
@@ -11,9 +12,13 @@ import type { CorpusStore } from "./types.js";
  * start at 3x and tune from observed drop rates — an operational question,
  * which is why this is a starting point rather than a constant nobody revisits.
  *
+ * Raised 3→5 alongside the larger answer limit and the rerank step: with more
+ * passages wanted per answer, a wider candidate pool keeps probe drops from
+ * starving it and gives the rerank something to choose from.
+ *
  * PARITY: `DefaultCandidateMultiplier` in `engines/temporal/internal/corpus`.
  */
-export const DEFAULT_CANDIDATE_MULTIPLIER = 3;
+export const DEFAULT_CANDIDATE_MULTIPLIER = 5;
 
 export interface RetrieveOutcome {
   chunks: AuthorizedChunk[];
@@ -66,8 +71,14 @@ export async function retrieve(
   const { kept, dropped } = preFilter(hits, callerPrincipals);
   const authorized = await authorize(prober, kept);
 
+  // Reorder the survivors by relevance (vector score blended with keyword
+  // overlap) BEFORE the cut, so the kept `limit` are the most relevant rather
+  // than merely the highest-cosine. Order-only: it adds and drops nothing, so
+  // the probe's access guarantees still hold.
+  const ranked = rerank(query, authorized.chunks);
+
   return {
-    chunks: authorized.chunks.slice(0, limit),
+    chunks: ranked.slice(0, limit),
     denied: authorized.denied,
     undetermined: authorized.undetermined,
     skippedCorpora: skipped,
