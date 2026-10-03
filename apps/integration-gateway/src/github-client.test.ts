@@ -60,10 +60,56 @@ describe("GithubReplyClient.removeIssueLabel", () => {
     await expect(client.removeIssueLabel("acme", "widgets", 42, "ai-triage")).resolves.toBeUndefined();
   });
 
-  it("throws with response detail on any other non-2xx response", async () => {
+  it("throws with response detail on any other non-2xx response, after exhausting its retries", async () => {
     const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 403, text: async () => "forbidden" });
-    const client = new GithubReplyClient({ ...baseConfig, fetchImpl });
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const client = new GithubReplyClient({ ...baseConfig, fetchImpl, sleep });
 
     await expect(client.removeIssueLabel("acme", "widgets", 42, "ai-triage")).rejects.toThrow(/403.*forbidden/s);
+    // Three attempts (the default), not one -- the headline reliability fix.
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  // The core determinism fix: a transient non-404 failure must not strand the
+  // label. The DELETE is retried with backoff and succeeds on a later attempt.
+  it("retries a transient non-404 failure and succeeds, so the label is not stranded", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 502, text: async () => "bad gateway" })
+      .mockResolvedValueOnce({ ok: false, status: 500, text: async () => "server error" })
+      .mockResolvedValueOnce({ ok: true });
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const client = new GithubReplyClient({ ...baseConfig, fetchImpl, sleep });
+
+    await expect(client.removeIssueLabel("acme", "widgets", 42, "ai-triage")).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    // Backoff was applied between attempts (twice, not after the final success).
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  // A rejected fetch (connection reset mid-rollout) is retryable too, not just
+  // a non-ok response.
+  it("retries a rejected fetch (dropped connection) and succeeds", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("UND_ERR_SOCKET"))
+      .mockResolvedValueOnce({ ok: true });
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const client = new GithubReplyClient({ ...baseConfig, fetchImpl, sleep });
+
+    await expect(client.removeIssueLabel("acme", "widgets", 42, "ai-triage")).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  // A 404 is success on the FIRST try and must never be retried -- the label is
+  // already gone, so retrying would waste calls for no reason.
+  it("does not retry a 404 (already-gone label is immediate success)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 404, text: async () => "not found" });
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const client = new GithubReplyClient({ ...baseConfig, fetchImpl, sleep });
+
+    await expect(client.removeIssueLabel("acme", "widgets", 42, "ai-triage")).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
   });
 });

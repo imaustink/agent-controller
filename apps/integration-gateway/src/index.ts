@@ -23,6 +23,7 @@ import { OrchestratorClient } from "./orchestrator-client.js";
 import { OidcTokenProvider } from "./oidc-token-provider.js";
 import { GatewayServer } from "./server.js";
 import { InMemorySessionPageStore, RedisSessionPageStore } from "./session-page-store.js";
+import { InMemoryPendingLabelStore, RedisPendingLabelStore } from "./label-reconciler.js";
 
 const EXIT_STARTUP_FAILURE = 1;
 
@@ -295,6 +296,22 @@ async function main(): Promise<void> {
     );
   }
 
+  // Durable self-heal for trigger-label removal (the headline "only works ~3/4
+  // of the time" bug): an outbox of owed label removals, Redis-backed so it
+  // survives the gateway pod restart/OOM that loses the in-process `finally`.
+  // Reuses the same Redis as the session-page store, and falls back to in-memory
+  // (which heals a same-process throw but not a restart) with the same
+  // "works standalone, better with Redis" posture as elsewhere here. Always on:
+  // no public URL or other feature flag is needed, since it only reconciles
+  // labels this gateway itself applied.
+  const pendingLabelRedisUrl = config.sessionPageRedisUrl ?? config.redisUrl;
+  const pendingLabelStore = pendingLabelRedisUrl
+    ? new RedisPendingLabelStore(pendingLabelRedisUrl)
+    : new InMemoryPendingLabelStore();
+  console.error(
+    `Trigger-label reconciler enabled (${pendingLabelRedisUrl ? `Redis: ${pendingLabelRedisUrl}` : "in-memory (not durable across restarts)"})`,
+  );
+
   // Claude-auth (docs/adr/0027) is opt-in and layered on top of
   // identity-link's Redis/encryption-key/bearer-token config and
   // session-page's publicUrl -- fail closed (not silently disabled) if
@@ -336,6 +353,9 @@ async function main(): Promise<void> {
     ...(identityLinkLinker ? { identityLinkLinker, identityLinkToken: config.identityLinkToken } : {}),
     ...(identityLinkAuthCodeLinkers ? { identityLinkAuthCodeLinkers } : {}),
     ...(sessionPageStore ? { sessionPageStore, publicBaseUrl: config.publicUrl } : {}),
+    pendingLabelStore,
+    ...(config.labelReconcilerIntervalMs ? { labelReconcilerIntervalMs: config.labelReconcilerIntervalMs } : {}),
+    ...(config.labelReconcilerGraceMs !== undefined ? { labelReconcilerGraceMs: config.labelReconcilerGraceMs } : {}),
     ...(claudeAuthFlows && claudeTokenStore ? { claudeAuthFlows, claudeAuthStore: claudeTokenStore } : {}),
     ...(claudeLoginFlows ? { claudeLoginFlows } : {}),
     resumeWaitMs: config.resumeWaitMs,
@@ -359,6 +379,7 @@ async function main(): Promise<void> {
     // the Secret itself (docs/adr/0034). The Redis handles that used to need
     // draining here went with them.
     if (sessionPageStore instanceof RedisSessionPageStore) await sessionPageStore.close();
+    if (pendingLabelStore instanceof RedisPendingLabelStore) await pendingLabelStore.close();
     process.exit(0);
   };
 
