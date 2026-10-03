@@ -585,7 +585,13 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			} else {
 				pendingVerbatim = ""
 			}
-			pendingCitations = ""
+			// Deliberately do NOT clear pendingCitations here: a KB search's
+			// probe-derived Sources/disclosure must survive a LATER non-KB tool in
+			// the same turn (e.g. [KB search -> other tool -> respond]), or the
+			// turn emits an uncited answer and drops the ADR 0040 guarantee. Only
+			// the next KB search overwrites it (see the search branch above),
+			// matching the TS engine, where the KB node is the sole writer and the
+			// update-only reducer preserves it across other tool calls.
 			note(plan.ToolID + " finished")
 		} else {
 			record.Error = outcome.ErrorCode + ": " + outcome.ErrorMessage

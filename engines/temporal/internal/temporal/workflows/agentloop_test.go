@@ -615,6 +615,52 @@ func TestKnowledgeBaseCitationsSurviveRespondPath(t *testing.T) {
 	require.Contains(t, res.Reply, "need an account you have not linked (slack)")
 }
 
+// A KB search's citations/disclosure must survive a LATER non-KB tool call in
+// the same turn — the exact gap PR review flagged: the loop used to clear
+// pendingCitations after ANY successful tool, so [KB search -> other tool ->
+// respond] emitted an uncited answer. Only the next KB search may overwrite them.
+func TestKnowledgeBaseCitationsSurviveALaterNonKBToolCall(t *testing.T) {
+	le := newLoopEnv(t)
+	skill := kbSkillTools()
+	// Add a non-KB (local) tool to the same skill so the planner can chain it
+	// between the KB search and the final Respond.
+	skill.Skill.ToolIDs = append(skill.Skill.ToolIDs, "note-taker")
+	skill.Tools = append(skill.Tools, catalog.ToolDescriptor{
+		ID: "note-taker", Description: "jot a note", AllowedRoles: []string{"cook"},
+		LocalExec: &catalog.LocalExecSpec{Runtime: "node", Package: "p", Version: "1.0.0"},
+	})
+	le.skills = []catalog.SkillDescriptor{skill.Skill}
+	le.selected = "kb:globex"
+	le.skillTools = skill
+
+	citations := "Sources:\n- [Auth design](https://wiki/auth)\n\n" +
+		"What this answer could not see:\n" +
+		"- 3 source(s) need an account you have not linked (slack); link it and ask again to include them."
+	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
+		Result:    "Found 1 passage(s).\n\n### 1. Auth design\n```text\nWe use OIDC.\n```\n\n" + citations + "\n",
+		Citations: citations,
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "how does auth work"},
+		// A non-KB tool runs AFTER the KB search — this is what used to wipe the citations.
+		{Action: activities.ActionCallTool, ToolID: "note-taker", ToolInput: "note"},
+		{Action: activities.ActionRespond, Response: "Auth uses OIDC."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Contains(t, res.Reply, "Auth uses OIDC.")
+	// The citations/disclosure survived the intervening non-KB tool.
+	require.Contains(t, res.Reply, "Sources:")
+	require.Contains(t, res.Reply, "[Auth design](https://wiki/auth)")
+	require.Contains(t, res.Reply, "need an account you have not linked (slack)")
+}
+
 // PART B: a stateful refine-loop tool's publish target is keyed from SERVER-SIDE
 // continuation state (not a URL the model re-supplies each turn), and its
 // returned Markdown survives the planner choosing Respond verbatim — so the
