@@ -174,8 +174,14 @@ func DecodeMCPTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 		return ToolDescriptor{}, err
 	}
 	return ToolDescriptor{
-		ID:                obj.GetName(),
-		Description:       spec.Description,
+		ID:          obj.GetName(),
+		Description: spec.Description,
+		// Input carries the schema so EmbeddingText() vectorizes
+		// "description\n\nInput: <schema>" — byte-identical to the text the TS
+		// engine embeds (toMCPToolDescriptor folds inputSchema into the embedded
+		// description), so the same MCPTool CR ranks the same in retrieval on
+		// either engine (ADR 0045 §2).
+		Input:             spec.InputSchema,
 		AllowedRoles:      spec.AllowedRoles,
 		Tier:              spec.Tier,
 		Hidden:            spec.Hidden,

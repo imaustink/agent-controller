@@ -33,6 +33,13 @@ export interface MCPToolExposure {
   /** Defaults to true (matches the CRD's `+kubebuilder:default=true`). */
   expose?: boolean;
   allowedRoles: string[];
+  /**
+   * Overrides the materialized MCPTool's metadata.name. Used VERBATIM (see
+   * {@link catalogIdFor}) — the broker never sanitizes it, because a silent
+   * rename would break the id a Skill references in toolRefs. The CRD enforces a
+   * valid DNS-1123 name on this field, so the apiserver rejects a bad value at
+   * write time rather than the broker failing to materialize the tool.
+   */
   toolID?: string;
   hidden?: boolean;
   tier?: string;

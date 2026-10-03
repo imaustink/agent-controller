@@ -56,7 +56,16 @@ type MCPToolExposure struct {
 	// toolID overrides the catalog id of the materialized MCPTool. Defaults to a
 	// deterministic id derived from the server and remote tool name; set it to
 	// avoid a collision or to give the tool a stable, friendlier id.
+	//
+	// It becomes the MCPTool's metadata.name verbatim, so it must be a valid
+	// Kubernetes object name (a DNS-1123 subdomain) — the broker uses it as-is
+	// rather than sanitizing, because a silent rename would break the id a Skill
+	// references in toolRefs. Validated here so the apiserver rejects a bad value
+	// (e.g. underscores or capitals) at write time instead of the broker failing
+	// to materialize the tool with only a log line.
 	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	ToolID string `json:"toolID,omitempty"`
 
 	// hidden materializes the tool as referenceable-by-id but never returned by

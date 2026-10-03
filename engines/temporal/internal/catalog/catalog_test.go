@@ -119,6 +119,12 @@ func TestDecodeMCPTool(t *testing.T) {
 	require.Equal(t, `{"type":"object"}`, tool.MCPExec.InputSchema)
 	require.Empty(t, tool.AgentRef, "an MCPTool is never agent-backed")
 	require.Nil(t, tool.LocalExec, "an MCPTool is not a LocalTool")
+
+	// The vectorized text must fold the schema in exactly as the TS engine does
+	// (toMCPToolDescriptor sets description = "desc\n\nInput: <schema>"), or the
+	// same MCPTool ranks differently per engine — the parity ADR 0045 §2
+	// promises. EmbeddingText is description + "\n\nInput: " + Input.
+	require.Equal(t, "Search GitHub issues\n\nInput: {\"type\":\"object\"}", tool.EmbeddingText())
 }
 
 // Agent.spec.toolRefs scopes what the sub-agent's OWN loop may call (upstream
