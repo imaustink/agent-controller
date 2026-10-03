@@ -230,11 +230,17 @@ export class IdentityLinkApi {
         sendJson(res, 400, { error: `${provider} supports the authcode flow only` });
         return;
       }
-      sendJson(res, 200, authCode.startAuthCode(subject));
+      // Stamp the `flow` discriminator, like the device branch below. The
+      // IdentityLinkAuthCodeStart type declares it, and a strict client (the
+      // Temporal engine's Go client) rejects a start response without it — which
+      // silently broke KB account-linking on that engine.
+      sendJson(res, 200, { flow: "authcode", ...authCode.startAuthCode(subject) });
       return;
     }
 
     if (flow === "authcode") {
+      // The generic linker's startAuthCode already carries `flow`; only the
+      // per-provider authCode.startAuthCode above omitted it.
       const started = await this.linker.startAuthCode(subject);
       sendJson(res, 200, started);
       return;
