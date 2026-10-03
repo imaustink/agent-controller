@@ -179,7 +179,24 @@ export function catalogIdFor(
   entry: MCPToolExposure,
 ): string {
   if (entry.toolID && entry.toolID.trim()) return entry.toolID.trim();
-  return sanitizeName(`mcp-${server}-${entry.remoteToolName}`);
+
+  const base = sanitizeName(`mcp-${server}-${entry.remoteToolName}`);
+  // sanitizeName is not injective — it collapses case, underscores and other
+  // characters to `-`, so two distinct remote tool names on ONE server (e.g.
+  // `get_user` and `get-user`, or `getUser` and `get-user`) can sanitize to the
+  // same id. Both would then land in discovery's `desired` with one catalogId;
+  // reconcile creates the first and the second 409s into a swallowed onError, so
+  // an exposed tool silently never materializes. snake_case is common in MCP
+  // tool naming, so this is reachable. When sanitizing the remote tool name was
+  // lossy, disambiguate with a short deterministic hash of the ORIGINAL name:
+  // distinct names get distinct ids, while a name already a clean k8s segment
+  // stays readable (no suffix).
+  if (sanitizeName(entry.remoteToolName) !== entry.remoteToolName) {
+    const hash = createHash("sha1").update(entry.remoteToolName).digest("hex").slice(0, 8);
+    const suffix = `-${hash}`;
+    return `${base.slice(0, MAX_K8S_NAME - suffix.length).replace(/-+$/g, "")}${suffix}`;
+  }
+  return base;
 }
 
 /**

@@ -5,12 +5,21 @@ import { McpTransportError, type DiscoveredTool, type McpClient, type ToolCallRe
 import { MCPToolWriter } from "./mcptool-writer.js";
 import { MCPServerStatusWriter } from "./mcpserver-status.js";
 import {
+  catalogIdFor,
   MCPTOOL_PLURAL,
   SERVER_LABEL,
   type MCPServerCustomResource,
   type MCPToolCustomResource,
 } from "./mcp-server-resource.js";
 import type { MCPServerBinding } from "./mcpserver-registry.js";
+
+// The materialized id for the server+tool used throughout — derived, not
+// hardcoded, since catalogIdFor hashes a lossy remote name (search_issues) to
+// keep ids injective.
+const SEARCH_ISSUES_ID = catalogIdFor("github-mcp", {
+  remoteToolName: "search_issues",
+  allowedRoles: [],
+});
 
 /**
  * An in-memory stand-in for the custom-objects API — no network, no cluster.
@@ -127,7 +136,7 @@ describe("discovery", () => {
     );
     await discoveryWith(k8s, new FakeMcpClient(liveTools)).runServer(binding(server, "svc"));
 
-    const tool = k8s.tools.get("mcp-github-mcp-search-issues");
+    const tool = k8s.tools.get(SEARCH_ISSUES_ID);
     expect(tool).toBeDefined();
     // description/inputSchema from the LIVE tool; roles/tier from the EXPOSURE
     // entry; identityProviders from the SERVER.
@@ -200,7 +209,7 @@ describe("discovery", () => {
 
     // Second pass: the server dropped get_pull_request from tools/list.
     await discoveryWith(k8s, new FakeMcpClient([liveTools[0]!])).runServer(binding(server, "svc"));
-    expect([...k8s.tools.keys()]).toEqual(["mcp-github-mcp-search-issues"]);
+    expect([...k8s.tools.keys()]).toEqual([SEARCH_ISSUES_ID]);
   });
 
   it("deletes an owned tool whose exposure entry was withdrawn", async () => {
@@ -265,7 +274,7 @@ describe("discovery", () => {
     await discoveryWith(k8s, client).runAll([binding(good, "svc"), binding(bad, "svc")]);
 
     // The good server's tool is materialized; the bad one is Degraded, not fatal.
-    expect([...k8s.tools.keys()]).toEqual(["mcp-github-mcp-search-issues"]);
+    expect([...k8s.tools.keys()]).toEqual([SEARCH_ISSUES_ID]);
     expect((k8s.status.get("bad-mcp")!.conditions as Array<{ status: string }>)[0]!.status).toBe(
       "False",
     );

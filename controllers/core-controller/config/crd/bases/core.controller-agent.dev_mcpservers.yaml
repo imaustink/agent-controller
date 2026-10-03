@@ -98,6 +98,12 @@ spec:
                         expose materializes this tool when true. It defaults true, so listing a
                         tool exposes it; set false to keep the entry (and its role assignment) on
                         record while temporarily withdrawing the tool from the catalog.
+
+                        A pointer, deliberately: this is the field that enforces default-deny, and
+                        false is its meaningful value. A plain bool with omitempty would drop an
+                        explicit `false` set through the generated typed client, and the apiserver
+                        would then re-apply default=true — exposing a tool the operator withdrew. A
+                        *bool keeps "unset" (→ default true) distinct from "explicitly false".
                       type: boolean
                     hidden:
                       description: |-

@@ -53,11 +53,28 @@ describe("catalogIdFor", () => {
     ).toBe("gh-search");
   });
 
-  it("derives a deterministic sanitized id otherwise", () => {
-    // mcp-<server>-<remoteTool>, with the underscore collapsed to a dash.
+  it("derives a readable id for a clean remote tool name (no hash)", () => {
+    // A name already a valid k8s segment sanitizes to itself, so it stays
+    // readable with no disambiguating suffix.
     expect(
-      catalogIdFor("github-mcp", { remoteToolName: "search_issues", allowedRoles: ["eng"] }),
+      catalogIdFor("github-mcp", { remoteToolName: "search-issues", allowedRoles: ["eng"] }),
     ).toBe("mcp-github-mcp-search-issues");
+  });
+
+  it("gives distinct ids to names that only sanitize to the same string", () => {
+    // The collision guard: `get_user` and `get-user` both sanitize to
+    // `...-get-user`. Without a hash on the lossy one, the second MCPTool 409s
+    // into a swallowed error and silently never materializes.
+    const underscore = catalogIdFor("srv", { remoteToolName: "get_user", allowedRoles: ["eng"] });
+    const hyphen = catalogIdFor("srv", { remoteToolName: "get-user", allowedRoles: ["eng"] });
+
+    expect(underscore).not.toBe(hyphen);
+    // The clean name stays readable; the lossy one carries the hash.
+    expect(hyphen).toBe("mcp-srv-get-user");
+    expect(underscore).toMatch(/^mcp-srv-get-user-[0-9a-f]{8}$/);
+    // Case differences collide the same way and must also stay distinct.
+    const camel = catalogIdFor("srv", { remoteToolName: "getUser", allowedRoles: ["eng"] });
+    expect(new Set([underscore, hyphen, camel]).size).toBe(3);
   });
 
   it("is stable across calls for the same inputs", () => {
