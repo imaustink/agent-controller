@@ -1,8 +1,15 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { countCommitsAheadOfOriginHead, runCommand, setupGitAuth } from "./git.js";
+import {
+  countCommitsAheadOfOriginHead,
+  ensureChangeDeliverable,
+  ensurePullRequest,
+  isWorkingTreeDirty,
+  runCommand,
+  setupGitAuth,
+} from "./git.js";
 
 // Real-git integration tests for the "did this turn commit pushable work"
 // signal. These reproduce the exact shape that produced a false
@@ -101,5 +108,133 @@ describe("setupGitAuth read/write URL resolution", () => {
     const urls = await resolvedUrls();
     expect(urls.fetch).toBe("https://x-access-token:user-token@github.com/acme/widgets.git");
     expect(urls.push).toBe("https://x-access-token:user-token@github.com/acme/widgets.git");
+  });
+});
+
+// FIX 4: the runner owns the deliverable. These use real git against a bare
+// origin, so they prove the actual commit/branch/push behaviour, not a mock of
+// it. Without ensureChangeDeliverable a change turn's work would only reach the
+// remote if the model remembered to run git itself.
+describe("ensureChangeDeliverable", () => {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "t",
+    GIT_AUTHOR_EMAIL: "t@example.com",
+    GIT_COMMITTER_NAME: "t",
+    GIT_COMMITTER_EMAIL: "t@example.com",
+  };
+  let root: string;
+  let originDir: string;
+
+  beforeAll(async () => {
+    root = mkdtempSync(join(tmpdir(), "deliverable-"));
+    originDir = join(root, "origin.git");
+    // A bare origin seeded with one commit on main, so a clone gets origin/HEAD.
+    await runCommand("git", ["init", "--bare", "-b", "main", originDir], { env });
+    const seed = join(root, "seed");
+    await runCommand("git", ["clone", originDir, seed], { env });
+    await runCommand("git", ["-C", seed, "commit", "--allow-empty", "-m", "base"], { env });
+    await runCommand("git", ["-C", seed, "push", "origin", "main"], { env });
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  async function freshClone(name: string): Promise<string> {
+    const dir = join(root, name);
+    await runCommand("git", ["clone", originDir, dir], { env });
+    return dir;
+  }
+
+  /** True when the bare origin has a branch of this name. */
+  async function originHasBranch(branch: string): Promise<boolean> {
+    const res = await runCommand("git", ["-C", originDir, "rev-parse", "--verify", `refs/heads/${branch}`], { env });
+    return res.code === 0;
+  }
+
+  it("commits a dirty tree on a feature branch and pushes it to origin", async () => {
+    const work = await freshClone("work-feature");
+    await runCommand("git", ["-C", work, "checkout", "-b", "feature"], { env });
+    writeFileSync(join(work, "new.txt"), "change\n");
+
+    expect(await isWorkingTreeDirty(work, env)).toBe(true);
+    const published = await ensureChangeDeliverable(work, env);
+
+    expect(published).toEqual({ branch: "feature", committed: true, pushed: true });
+    expect(await isWorkingTreeDirty(work, env)).toBe(false);
+    expect(await originHasBranch("feature")).toBe(true);
+  });
+
+  it("cuts a feature branch rather than committing onto the default branch", async () => {
+    const work = await freshClone("work-on-main");
+    writeFileSync(join(work, "new.txt"), "change\n");
+
+    const published = await ensureChangeDeliverable(work, env);
+
+    expect(published.committed).toBe(true);
+    expect(published.pushed).toBe(true);
+    expect(published.branch).toMatch(/^swe\/auto-/);
+    expect(published.branch).not.toBe("main");
+    expect(await originHasBranch(published.branch!)).toBe(true);
+    // main itself was never committed onto / pushed past its base.
+    const mainTip = await runCommand("git", ["-C", originDir, "rev-parse", "main"], { env });
+    const baseTip = await runCommand("git", ["-C", work, "rev-parse", "origin/main"], { env });
+    expect(mainTip.stdout.trim()).toBe(baseTip.stdout.trim());
+  });
+
+  it("reports nothing published for a clean tree still on the default branch", async () => {
+    const work = await freshClone("work-clean");
+    expect(await ensureChangeDeliverable(work, env)).toEqual({ branch: "main", committed: false, pushed: false });
+  });
+});
+
+describe("ensurePullRequest", () => {
+  const env0: NodeJS.ProcessEnv = { ...process.env };
+  let binDir: string;
+  let stateFile: string;
+
+  // A fake `gh` on PATH: `pr list` returns [] until `pr create` runs (which
+  // touches a state file), then returns a PR -- so ensurePullRequest's
+  // list -> create -> list sequence resolves to the created PR.
+  beforeAll(() => {
+    binDir = mkdtempSync(join(tmpdir(), "fakegh-"));
+    stateFile = join(binDir, "created");
+    const gh = join(binDir, "gh");
+    writeFileSync(
+      gh,
+      `#!/usr/bin/env node\n` +
+        `const { existsSync, writeFileSync } = require("node:fs");\n` +
+        `const args = process.argv.slice(2);\n` +
+        `const sub = args[0] === "pr" ? args[1] : "";\n` +
+        `if (sub === "list") {\n` +
+        `  process.stdout.write(existsSync(${JSON.stringify(stateFile)}) ? JSON.stringify([{ number: 7, url: "https://example.test/pr/7" }]) : "[]");\n` +
+        `  process.exit(0);\n` +
+        `}\n` +
+        `if (sub === "create") {\n` +
+        `  writeFileSync(${JSON.stringify(stateFile)}, "1");\n` +
+        `  process.stdout.write("https://example.test/pr/7\\n");\n` +
+        `  process.exit(0);\n` +
+        `}\n` +
+        `process.exit(1);\n`,
+    );
+    chmodSync(gh, 0o755);
+    env0.PATH = `${binDir}:${process.env.PATH}`;
+  });
+
+  afterAll(() => {
+    rmSync(binDir, { recursive: true, force: true });
+  });
+
+  it("opens a PR when none is open yet and returns it", async () => {
+    rmSync(stateFile, { force: true });
+    const pr = await ensurePullRequest("acme/widgets", "feature", env0);
+    expect(pr).toEqual({ number: "7", url: "https://example.test/pr/7" });
+  });
+
+  it("returns the existing PR without creating a second one", async () => {
+    writeFileSync(stateFile, "1"); // a PR already exists
+    const pr = await ensurePullRequest("acme/widgets", "feature", env0);
+    expect(pr).toEqual({ number: "7", url: "https://example.test/pr/7" });
   });
 });

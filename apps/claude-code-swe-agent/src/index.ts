@@ -3,13 +3,15 @@ import { readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { AgentFailure, runAgent, type AgentReply, type AgentSession } from "@controller-agent/agent-runtime";
-import { buildClaudeSettings, buildPrompt } from "./claude.js";
+import { buildClaudeSettings, buildPrompt, isReviewMode } from "./claude.js";
 import { runClaudeTurn, runClaudeTurnRemoteControlled } from "./claude-runner.js";
 import {
   appendCoAuthorTrailer,
   countCommitsAheadOfOriginHead,
   discoverResult,
+  ensureChangeDeliverable,
   ensureDir,
+  ensurePullRequest,
   findRepoDir,
   resolveGitIdentity,
   runCommand,
@@ -112,6 +114,17 @@ async function handler(session: AgentSession): Promise<AgentReply> {
     throw new Error("Goal must not be empty after removing any continuation marker");
   }
 
+  // A review run is recognised STRUCTURALLY from an exact sentinel the review
+  // IntegrationRoute placed in the goal (see claude.ts's REVIEW_MODE_MARKER),
+  // not from the model's prose or a configurable label. It drives two
+  // code-level guards below: the CLI permission deny list (buildClaudeSettings)
+  // and a read-only GitHub token (the reviewMode arg to the token resolvers).
+  // Detected on the full goal so a continuation marker can't hide it.
+  const reviewMode = isReviewMode(session.goal);
+  if (reviewMode) {
+    console.error("[claude-code-swe-agent] review mode: enforcing read-only (deny push/PR create/merge, read-only token)");
+  }
+
   const turnStartedAt = Date.now();
   const apiHost =
     new URL(toolConfig.githubApiUrl).host === "api.github.com" ? "github.com" : new URL(toolConfig.githubApiUrl).host;
@@ -125,7 +138,7 @@ async function handler(session: AgentSession): Promise<AgentReply> {
   let attribution: { githubLogin: string; githubId?: number } | null = null;
   if (delegating) {
     try {
-      const resolved = await resolveDelegatedToken(toolConfig, marker?.repo ?? null, turnStartedAt);
+      const resolved = await resolveDelegatedToken(toolConfig, marker?.repo ?? null, reviewMode, turnStartedAt);
       readToken = resolved.readToken;
       writeToken = resolved.writeToken;
       attribution = resolved.attribution;
@@ -136,7 +149,7 @@ async function handler(session: AgentSession): Promise<AgentReply> {
       throw err;
     }
   } else {
-    readToken = writeToken = await resolveUndelegatedToken(toolConfig);
+    readToken = writeToken = await resolveUndelegatedToken(toolConfig, reviewMode);
   }
 
   const childEnv: NodeJS.ProcessEnv = {
@@ -232,7 +245,7 @@ async function handler(session: AgentSession): Promise<AgentReply> {
   const runOpts = {
     cwd: toolConfig.workdir,
     env: childEnv,
-    settings: buildClaudeSettings(),
+    settings: buildClaudeSettings(reviewMode),
     model: toolConfig.model || undefined,
     signal: session.signal,
     onProgress: (message: string, stage: string) => void session.progress(clip(message, 500), { stage }),
@@ -292,9 +305,30 @@ async function handler(session: AgentSession): Promise<AgentReply> {
 
   const summary = clip(outcome.finalMessage ?? "Claude Code finished without a summary.", 4000);
   const repoDir = await findRepoDir(toolConfig.workdir);
+
+  // FIX (deterministic deliverable): on a CHANGE turn the runner itself commits
+  // any dirty tree and pushes the feature branch, so producing pushable work no
+  // longer depends on the model remembering to run the right git commands. A
+  // review turn publishes nothing and is skipped (its token is read-only anyway).
+  if (!reviewMode && repoDir) {
+    const published = await ensureChangeDeliverable(repoDir, childEnv, session.signal);
+    if (published.committed || published.pushed) {
+      console.error(
+        `[claude-code-swe-agent] runner-owned deliverable: committed=${published.committed} pushed=${published.pushed} branch=${published.branch ?? "?"}`,
+      );
+    }
+  }
+
   const discovered = repoDir ? await discoverResult(repoDir, childEnv, session.signal) : null;
 
   if (!discovered?.repo || !discovered.branch) {
+    // A CHANGE turn that produced no pushable repository/branch delivered
+    // nothing; report a failure rather than a success with a note (the latter
+    // hid turns that did nothing -- the model simply "forgot"). A review turn
+    // legitimately produces no pushable branch, so there it stays a plain reply.
+    if (!reviewMode) {
+      throw new Error(`The coding agent produced no pushable repository or branch. Details: ${clip(summary, 1200)}`);
+    }
     return { message: `The agent produced no pushable repository or pull request. Details: ${clip(summary, 1200)}` };
   }
 
@@ -317,6 +351,19 @@ async function handler(session: AgentSession): Promise<AgentReply> {
     priorHeadSha !== null
       ? headSha !== null && headSha !== priorHeadSha
       : (await countCommitsAheadOfOriginHead(repoDir!, childEnv, session.signal)) > 0;
+
+  // FIX (deterministic deliverable): on a CHANGE turn that produced commits but
+  // no open PR, the runner opens one itself rather than warning the user that
+  // the model forgot. Done BEFORE the delegating revoke check below so that, if
+  // the user turns out to lack access, there is a PR to close. A review turn
+  // never reaches here with commits (its token is read-only).
+  if (!reviewMode && madeNewCommits && !discovered.pr) {
+    const pr = await ensurePullRequest(discovered.repo, discovered.branch, childEnv, session.signal);
+    if (pr) {
+      discovered.pr = pr.number;
+      discovered.prUrl = pr.url;
+    }
+  }
 
   if (delegating && attribution) {
     // A verified target repository needs no post-flight: the write token was
@@ -359,6 +406,16 @@ async function handler(session: AgentSession): Promise<AgentReply> {
       childEnv,
       { login: attribution.githubLogin, id: attribution.githubId },
       priorHeadSha,
+    );
+  }
+
+  // FIX (honest failure): a CHANGE turn that produced neither new commits nor a
+  // pull request delivered nothing. Report it as a failure rather than a success
+  // carrying a "no open pull request was found" warning (which read as done).
+  // A review turn makes no commits by design and is exempt.
+  if (!reviewMode && !madeNewCommits && !discovered.pr) {
+    throw new Error(
+      `The coding agent finished without producing any commits or a pull request. Details: ${clip(summary, 1200)}`,
     );
   }
 

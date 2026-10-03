@@ -263,6 +263,106 @@ export async function discoverResult(
   return { repo, branch, pr: pr?.number ?? null, prUrl: pr?.url ?? null };
 }
 
+/** Whether the working tree has uncommitted changes (tracked or untracked). */
+export async function isWorkingTreeDirty(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const res = await runCommand("git", ["-C", repoDir, "status", "--porcelain"], { env, signal });
+  return res.code === 0 && res.stdout.trim().length > 0;
+}
+
+/** The clone's default branch name (from `origin/HEAD`, e.g. "main"), or null if it can't be resolved. */
+async function defaultBranchName(repoDir: string, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<string | null> {
+  const res = await runCommand("git", ["-C", repoDir, "rev-parse", "--abbrev-ref", "origin/HEAD"], { env, signal });
+  if (res.code !== 0) return null;
+  const ref = res.stdout.trim(); // e.g. "origin/main"
+  const slash = ref.indexOf("/");
+  const name = slash >= 0 ? ref.slice(slash + 1) : ref;
+  return name || null;
+}
+
+/**
+ * FIX (deterministic deliverable): the RUNNER, not the model's good behaviour,
+ * owns a change turn's commit→push. If the model did the work but "forgot" to
+ * commit or push, this does it at the git level so the turn still produces
+ * pushable work. Only ever called on a CHANGE (non-review) turn.
+ *
+ *  - A dirty tree is committed. If HEAD is still on the default branch, a
+ *    feature branch is cut first (never commit onto the default branch, matching
+ *    the prompt's own rule).
+ *  - The resulting feature branch is pushed (plain push; the deny list forbids
+ *    force, and {@link appendCoAuthorTrailer} handles the one amend+force-push
+ *    case separately).
+ *
+ * Returns the branch it published and what it did, so the caller can tell a
+ * genuinely-empty change turn (nothing committed, nothing to push) apart from a
+ * completed one. Best-effort and idempotent: a clean tree already on a pushed
+ * branch just re-pushes the same tip.
+ */
+export async function ensureChangeDeliverable(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<{ branch: string | null; committed: boolean; pushed: boolean }> {
+  const branchRes = await runCommand("git", ["-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD"], { env, signal });
+  let branch = branchRes.code === 0 ? branchRes.stdout.trim() : "";
+  if (!branch || branch === "HEAD") return { branch: null, committed: false, pushed: false };
+
+  const defaultBranch = await defaultBranchName(repoDir, env, signal);
+
+  let committed = false;
+  if (await isWorkingTreeDirty(repoDir, env, signal)) {
+    if (defaultBranch && branch === defaultBranch) {
+      const newBranch = `swe/auto-${Date.now().toString(36)}`;
+      const sw = await runCommand("git", ["-C", repoDir, "checkout", "-b", newBranch], { env, signal });
+      if (sw.code === 0) branch = newBranch;
+    }
+    await runCommand("git", ["-C", repoDir, "add", "-A"], { env, signal });
+    const commitRes = await runCommand(
+      "git",
+      ["-C", repoDir, "commit", "-m", "chore: commit changes from coding agent turn"],
+      { env, signal },
+    );
+    committed = commitRes.code === 0;
+  }
+
+  // Nothing publishable if we are still on the default branch (a change turn
+  // that genuinely produced no feature branch / no work).
+  if (!branch || branch === "HEAD" || (defaultBranch && branch === defaultBranch)) {
+    return { branch: defaultBranch && branch === defaultBranch ? branch : branch || null, committed, pushed: false };
+  }
+
+  const pushRes = await runCommand("git", ["-C", repoDir, "push", "-u", "origin", branch], { env, signal });
+  return { branch, committed, pushed: pushRes.code === 0 };
+}
+
+/**
+ * Opens a pull request for `branch` if none is open yet, so the deliverable
+ * doesn't depend on the model remembering to run `gh pr create`. Returns the PR
+ * (newly created or already open), or null if one could not be opened (e.g. the
+ * branch has no commits ahead of base, or `gh` lacks permission -- the latter is
+ * exactly what a review run's read-only token produces, which is why this is
+ * only called on a change turn). `--fill` reuses the branch's commits for the
+ * title/body.
+ */
+export async function ensurePullRequest(
+  repo: string,
+  branch: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<{ number: string; url: string } | null> {
+  const existing = await findOpenPr(repo, branch, env, signal);
+  if (existing) return existing;
+  const createRes = await runCommand("gh", ["pr", "create", "--repo", repo, "--head", branch, "--fill"], {
+    env,
+    signal,
+  });
+  if (createRes.code !== 0) return null;
+  return findOpenPr(repo, branch, env, signal);
+}
+
 async function findOpenPr(
   repo: string,
   branch: string,

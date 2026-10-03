@@ -28,6 +28,52 @@ export const DENY_BASH_PATTERNS: string[] = [
 ];
 
 /**
+ * The exact sentinel a review IntegrationRoute (the "ai-review" label routes,
+ * see charts/community-components/templates/integrationroute-github-*-labeled-
+ * review.yaml) places at the top of the rendered prompt. The IntegrationRoute
+ * CRD carries no env/mode field, so the rendered goal is the ONLY per-route
+ * channel that reaches this container -- this string is how a review run is
+ * recognised STRUCTURALLY (an exact substring the chart controls), rather than
+ * by heuristically reading the model's prose or the configurable label value.
+ * It MUST stay byte-for-byte identical to the chart templates' first line and
+ * to opencode-swe-agent's own copy.
+ */
+export const REVIEW_MODE_MARKER = "SWE-ENFORCED-MODE: review-only";
+
+/**
+ * True when this run is a code-enforced read-only review. Detected by an exact
+ * match of {@link REVIEW_MODE_MARKER} in the goal. Fail-safe by construction:
+ * the marker only ever ADDS deny rules / drops write scope, so the worst a
+ * forged marker in attacker-controlled event text can do is make a change run
+ * read-only (a no-op DoS), never grant a review run write access. The marker
+ * lives above the event `body` in the trusted part of the template, so a real
+ * review run cannot have it stripped.
+ */
+export function isReviewMode(goal: string): boolean {
+  return goal.includes(REVIEW_MODE_MARKER);
+}
+
+/**
+ * Extra `permissions.deny` rules layered on for a review run, on top of
+ * {@link DENY_BASH_PATTERNS}. A review may still READ the repo and POST its
+ * findings (`gh pr review`, `gh api ... /reviews`, `gh pr comment`), but must
+ * not push, open/merge/alter a pull request, or otherwise mutate the repo.
+ * `Bash(git push:*)` denies every push (not just the force variants above),
+ * which is the single most important lever here. These are enforced regardless
+ * of `--permission-mode bypassPermissions` (an explicit `deny` always wins),
+ * so they hold even though this agent answers no permission prompts.
+ */
+export const REVIEW_DENY_BASH_PATTERNS: string[] = [
+  "Bash(git push:*)",
+  "Bash(gh pr create:*)",
+  "Bash(gh pr merge:*)",
+  "Bash(gh pr close:*)",
+  "Bash(gh pr reopen:*)",
+  "Bash(gh pr ready:*)",
+  "Bash(gh pr edit:*)",
+];
+
+/**
  * Builds the `--settings` JSON handed to `claude -p`. Non-negotiable
  * `permissions.deny` bash guardrails plus, since this agent runs headless
  * with nobody to answer a permission prompt, `bypassPermissions` is also set
@@ -44,11 +90,11 @@ export const DENY_BASH_PATTERNS: string[] = [
  * NOT satisfy that check, only the literal file does. That's written
  * directly by `index.ts`'s handler, not here -- see its comment for why.
  */
-export function buildClaudeSettings(): object {
+export function buildClaudeSettings(reviewMode = false): object {
   return {
     permissions: {
       defaultMode: "bypassPermissions",
-      deny: DENY_BASH_PATTERNS,
+      deny: reviewMode ? [...DENY_BASH_PATTERNS, ...REVIEW_DENY_BASH_PATTERNS] : DENY_BASH_PATTERNS,
     },
   };
 }

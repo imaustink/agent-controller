@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig, NatsChannel, type AgentChannel } from "@controller-agent/agent-runtime";
 import type { AgentDownMessage, AgentUpMessage } from "@controller-agent/messaging";
-import { buildOpencodeConfig, buildPrompt } from "./opencode.js";
+import { buildOpencodeConfig, buildPrompt, isReviewMode } from "./opencode.js";
 import {
   createSession,
   forwardRequest,
@@ -285,6 +285,15 @@ async function main(): Promise<void> {
       throw new Error("Goal must not be empty after removing any continuation marker");
     }
 
+    // Structurally detect a review run from the exact sentinel the review
+    // IntegrationRoute put in the goal (see opencode.ts's REVIEW_MODE_MARKER).
+    // Drives the opencode bash deny list (buildOpencodeConfig) and a read-only
+    // GitHub token (resolveDelegatedToken), so a review cannot push or open a PR.
+    const reviewMode = isReviewMode(runtimeConfig.goal);
+    if (reviewMode) {
+      await publishUp({ type: "progress", message: "Review mode: enforcing read-only (no push / PR create / merge)", stage: "authenticate" });
+    }
+
     const turnStartedAt = Date.now();
     const apiHost = new URL(toolConfig.githubApiUrl).host === "api.github.com" ? "github.com" : new URL(toolConfig.githubApiUrl).host;
 
@@ -293,7 +302,7 @@ async function main(): Promise<void> {
     let attribution: { githubLogin: string; githubId?: number } | null = null;
     if (delegating) {
       try {
-        const resolved = await resolveDelegatedToken(toolConfig, marker?.repo ?? null, turnStartedAt);
+        const resolved = await resolveDelegatedToken(toolConfig, marker?.repo ?? null, reviewMode, turnStartedAt);
         token = resolved.token;
         attribution = resolved.attribution;
       } catch (err) {
@@ -330,7 +339,7 @@ async function main(): Promise<void> {
     await mkdir(opencodeConfigDir, { recursive: true });
     await writeFile(
       join(opencodeConfigDir, "opencode.json"),
-      JSON.stringify(buildOpencodeConfig({ model: toolConfig.model }), null, 2),
+      JSON.stringify(buildOpencodeConfig({ model: toolConfig.model, reviewMode }), null, 2),
     );
 
     const identity =

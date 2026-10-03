@@ -62,7 +62,7 @@ describe("resolveDelegatedToken", () => {
       .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ token: "ghs_scoped", expires_at: "" }) });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await resolveDelegatedToken(baseConfig(), "acme/widgets", 1_700_000_000_000);
+    const result = await resolveDelegatedToken(baseConfig(), "acme/widgets", false, 1_700_000_000_000);
     expect(result).toEqual({ token: "ghs_scoped", attribution: { githubLogin: "octocat", githubId: 42 } });
   });
 
@@ -73,7 +73,7 @@ describe("resolveDelegatedToken", () => {
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ permission: "read" }) });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(resolveDelegatedToken(baseConfig(), "acme/widgets", 1_700_000_000_000)).rejects.toThrow(
+    await expect(resolveDelegatedToken(baseConfig(), "acme/widgets", false, 1_700_000_000_000)).rejects.toThrow(
       AuthorizationError,
     );
     expect(fetchMock).toHaveBeenCalledTimes(2); // never reached mintInstallationToken
@@ -86,7 +86,7 @@ describe("resolveDelegatedToken", () => {
       .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ token: "ghs_wide", expires_at: "" }) });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await resolveDelegatedToken(baseConfig(), null, 1_700_000_000_000);
+    const result = await resolveDelegatedToken(baseConfig(), null, false, 1_700_000_000_000);
     expect(result).toEqual({ token: "ghs_wide", attribution: { githubLogin: "octocat", githubId: 42 } });
     const mintCall = fetchMock.mock.calls[1]!;
     expect(mintCall[1].body).toBeUndefined();

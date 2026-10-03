@@ -147,3 +147,32 @@ describe("a verified target repository", () => {
     });
   });
 });
+
+// FIX 1 (credential-layer read-only review): a review run mints a token whose
+// `contents` permission is read-only, so a push fails at GitHub itself even if
+// the CLI deny list were bypassed. A change run must NOT get that ceiling.
+describe("a review run's GitHub token", () => {
+  const REVIEW_PERMS = { contents: "read", pull_requests: "write", issues: "write" };
+
+  it("is minted read-only and repo-scoped for a webhook review", async () => {
+    await withTokenEndpoint(async (mints) => {
+      const token = await resolveUndelegatedToken(config({ githubToken: "", targetRepository: "e2e-org/e2e-repo" }), true);
+      expect(token).toBe("app-token");
+      expect(mints).toEqual([{ repositories: ["e2e-repo"], permissions: REVIEW_PERMS }]);
+    });
+  });
+
+  it("is minted read-only for a delegating review's write token", async () => {
+    await withTokenEndpoint(async (mints) => {
+      await resolveDelegatedToken(config({ targetRepository: "bitovi/platform" }), null, true);
+      expect(mints).toEqual([{ repositories: ["platform"], permissions: REVIEW_PERMS }]);
+    });
+  });
+
+  it("does NOT narrow permissions on a change run (contents stays writable)", async () => {
+    await withTokenEndpoint(async (mints) => {
+      await resolveUndelegatedToken(config({ githubToken: "", targetRepository: "e2e-org/e2e-repo" }), false);
+      expect(mints).toEqual([{ repositories: ["e2e-repo"] }]);
+    });
+  });
+});
