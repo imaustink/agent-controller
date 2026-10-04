@@ -111,8 +111,7 @@ describe("deriveKnowledgeBaseSkill", () => {
     expect(skill.toolIds).toEqual([
       "kb:globex/search",
       "kb:globex/read",
-      "kb:globex/lookup",
-      "kb:globex/recent",
+      "kb:globex/query", // the live structured query (lookup is retired into it)
     ]);
   });
 
@@ -190,15 +189,16 @@ describe("the generated markdown", () => {
   it("mentions the live face only when a member has one", () => {
     const withApi = markdownFor(globexKb());
     expect(withApi).toContain("true *right now*");
-    // The live keyword/read tools are named only when they are actually
+    // The live query/read tools are named only when they are actually
     // generated (api-enabled AND an identity provider), so the planner is never
-    // told to call a tool it was not given.
-    expect(withApi).toContain("kb:globex/lookup");
+    // told to call a tool it was not given — and the retired lookup never.
+    expect(withApi).toContain("kb:globex/query");
     expect(withApi).toContain("kb:globex/read");
+    expect(withApi).not.toContain("kb:globex/lookup");
 
     const withoutApi = markdownFor({ ...globexKb(), corpusRefs: ["globex-slack-eng"] });
     expect(withoutApi).not.toContain("true *right now*");
-    expect(withoutApi).not.toContain("kb:globex/lookup");
+    expect(withoutApi).not.toContain("kb:globex/query");
     expect(withoutApi).not.toContain("kb:globex/read");
   });
 
@@ -211,12 +211,11 @@ describe("the generated markdown", () => {
     expect(markdownFor({ ...globexKb(), corpusRefs: ["globex-slack-eng"] })).not.toContain("read each one in full");
   });
 
-  it("sends newest-first questions to the recent tool, not search", () => {
+  it("sends metadata and newest-first questions to the query tool, not search", () => {
     const withApi = markdownFor(globexKb());
+    expect(withApi).toContain("`kb:globex/query` asks the sources directly with a **structured query**");
     expect(withApi).toContain("Search cannot tell what is newest");
-    expect(withApi).toContain("use `kb:globex/recent`");
-
-    expect(markdownFor({ ...globexKb(), corpusRefs: ["globex-slack-eng"] })).not.toContain("kb:globex/recent");
+    expect(withApi).toContain('query with `"sort": "newest"`');
   });
 
   it("includes the disclosure instruction only when disclosure is on", () => {

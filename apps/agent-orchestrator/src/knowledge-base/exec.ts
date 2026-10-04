@@ -43,7 +43,7 @@ export interface KnowledgeBaseExecSpec {
    *
    * "fetch" is legacy: no such tool is generated (docs/adr/0040).
    */
-  operation: "search" | "read" | "lookup" | "recent" | "fetch";
+  operation: "search" | "read" | "lookup" | "query" | "fetch";
   members: KnowledgeBaseExecMember[];
   disclosePartialVisibility: boolean;
 }

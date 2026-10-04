@@ -97,14 +97,14 @@ func (ix *Indexer) writeKnowledgeBaseTools(
 
 // knowledgeBaseToolIDs is every id a knowledge base owns, generated or not.
 //
-// The fetch id is listed although no fetch tool exists: it is how a record
-// written by an older build gets cleaned up.
+// The fetch and lookup ids are listed although neither tool is generated any
+// more: listing them is how a record written by an older build gets cleaned up.
 func knowledgeBaseToolIDs(id string) []string {
 	return []string{
 		KnowledgeBaseSearchToolID(id),
 		KnowledgeBaseReadToolID(id),
+		KnowledgeBaseQueryToolID(id),
 		KnowledgeBaseLookupToolID(id),
-		KnowledgeBaseRecentToolID(id),
 		KnowledgeBaseFetchToolID(id),
 	}
 }
@@ -230,8 +230,7 @@ func knowledgeBaseTools(kb KnowledgeBaseDescriptor, connections map[string]Corpu
 	// instead, where the model can read it straight off a citation.
 	if readable := readableMembers(kb, connections); len(readable) > 0 {
 		tools = append(tools, knowledgeBaseReadTool(kb, readable, exec("read")))
-		tools = append(tools, knowledgeBaseLookupTool(kb, readable, exec("lookup")))
-		tools = append(tools, knowledgeBaseRecentTool(kb, readable, exec("recent")))
+		tools = append(tools, knowledgeBaseQueryTool(kb, readable, exec("query")))
 	}
 	return tools
 }
@@ -307,54 +306,16 @@ func knowledgeBaseReadTool(
 // carrying that corpus's OWN roles rather than the knowledge base's union —
 // it is one source's capability, not the composition's.
 
-// knowledgeBaseLookupTool is the LIVE search face, paired with the read face.
+// knowledgeBaseQueryTool is the LIVE structured query face, paired with read.
 //
-// The description works hard to separate this from the indexed search, because
-// the two are chosen by embedding and "search the knowledge base" describes
-// both. The distinction that matters to a planner is not semantic-vs-lexical,
-// which is an implementation detail, but WHEN each is right: the index is the
-// default, and this is for when the index may be behind.
-func knowledgeBaseLookupTool(
-	kb KnowledgeBaseDescriptor,
-	readable []CorpusDescriptor,
-	exec *KnowledgeBaseExecSpec,
-) ToolDescriptor {
-	roles := map[string]bool{}
-	for _, conn := range readable {
-		for _, role := range conn.AllowedRoles {
-			roles[role] = true
-		}
-	}
-	allowed := make([]string, 0, len(roles))
-	for role := range roles {
-		allowed = append(allowed, role)
-	}
-	sort.Strings(allowed)
-
-	return ToolDescriptor{
-		ID: KnowledgeBaseLookupToolID(kb.ID),
-		Description: fmt.Sprintf(
-			"Look up documents in %s by keyword, asking the sources directly instead of the "+
-				"search index. Use when something may be too new or too recently changed to "+
-				"be indexed, or when a keyword search found nothing and you know the material "+
-				"exists.", kb.Label()),
-		Input: "Keywords to match. This is a literal keyword search in the source, not a " +
-			"question — short distinctive terms work, whole sentences do not.",
-		Output: "Matching documents with their titles, URLs and a `<corpus>/<id>` reference " +
-			"that can be read in full. Only what the asking user may see, and only from " +
-			"inside this knowledge base.",
-		AllowedRoles:      allowed,
-		KnowledgeBaseExec: exec,
-	}
-}
-
-// knowledgeBaseRecentTool is the LIVE "newest first" face, paired with lookup.
-//
-// The description leads with WHEN, as lookup's does: these faces are chosen by
-// embedding, and "search the knowledge base" fits all of them. What is unique
-// here is time — "latest", "most recent", "what changed" — which neither the
-// relevance-ranked index nor a keyword lookup can order by.
-func knowledgeBaseRecentTool(
+// It replaced two faces — a keyword "lookup" and a newest-first "recent" — that
+// were each one fixed slice of the same capability: a lookup is a query with
+// only keywords, "recent" one sorted newest with none. Keeping a keyword tool
+// beside a query that also takes keywords would recreate the near-identical
+// tools ADR 0039 §5 warns about, chosen by embedding. The description leads
+// with what only it does — filter and sort by metadata — and separates it from
+// the indexed search by WHEN, not by implementation.
+func knowledgeBaseQueryTool(
 	kb KnowledgeBaseDescriptor,
 	readable []CorpusDescriptor,
 	exec *KnowledgeBaseExecSpec,
@@ -374,16 +335,25 @@ func knowledgeBaseRecentTool(
 	sort.Strings(allowed)
 
 	return ToolDescriptor{
-		ID: KnowledgeBaseRecentToolID(kb.ID),
+		ID: KnowledgeBaseQueryToolID(kb.ID),
 		Description: fmt.Sprintf(
-			"List the most recently changed items in %s, newest first, asking the sources "+
-				"directly. Use for \"latest\", \"most recent\", \"what changed lately\" or "+
-				"\"what's new\" questions — search ranks by relevance and cannot order by time.",
-			kb.Label()),
+			"Query the items in %s by their metadata — keywords, title, author, date range, "+
+				"type — sorted newest, oldest or by relevance, asking the sources directly. "+
+				"Use for \"latest\", \"most recent\" or \"what changed\" questions, for anything "+
+				"by a person, in a time window, or with a title, and when something may be too "+
+				"new to be indexed. Search ranks by relevance only and cannot filter or sort by "+
+				"any of these.", kb.Label()),
 		Input: fmt.Sprintf(
-			"Optionally one source to narrow to — %s — by id or name; leave empty for all of "+
-				"them.", strings.Join(names, ", ")),
-		Output: "The newest items with when each changed, their titles, URLs and a " +
+			"A JSON object; every field optional: "+
+				`{"source": one of %s (by id or name, e.g. "#team-snc"), `+
+				`"text": keywords, "title": text in the title, "author": a person's name `+
+				`(an email for Drive), "after": "YYYY-MM-DD" (inclusive), "before": "YYYY-MM-DD" `+
+				`(exclusive), "type": "page"|"blogpost"|"message"|"document"|"spreadsheet"|`+
+				`"presentation"|"pdf", "sort": "newest"|"oldest"|"relevance", "limit": 1-25}. `+
+				`E.g. {"source":"#team-snc","sort":"newest","limit":5}. A source that cannot `+
+				`apply a filter says so rather than ignoring it.`,
+			strings.Join(names, ", ")),
+		Output: "Matching items with when each changed, their titles, URLs and a " +
 			"`<corpus>/<id>` reference that can be read in full. Only what the asking user may " +
 			"see, and only from inside this knowledge base.",
 		AllowedRoles:      allowed,

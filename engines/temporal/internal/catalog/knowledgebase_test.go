@@ -218,9 +218,8 @@ func TestDeriveKnowledgeBaseSkill(t *testing.T) {
 		// from here, which left the live search uncallable in both engines.
 		require.Equal(t, []string{
 			"kb:globex/search",
-			"kb:globex/read",   // one read tool, because a member can serve one
-			"kb:globex/lookup", // and the live search beside it
-			"kb:globex/recent", // and the live newest-first face
+			"kb:globex/read",  // one read tool, because a member can serve one
+			"kb:globex/query", // and the live structured query beside it (lookup is retired into it)
 		}, skill.ToolIDs)
 	})
 
@@ -342,18 +341,19 @@ func TestKnowledgeBaseMarkdown(t *testing.T) {
 	t.Run("mentions the live face only when a member has one", func(t *testing.T) {
 		withAPI := catalog.DeriveKnowledgeBaseSkill(globexKB(), conns).Markdown
 		require.Contains(t, withAPI, "true *right now*")
-		// The live keyword/read tools are named only when they are actually
+		// The live query/read tools are named only when they are actually
 		// generated (api-enabled AND an identity provider), so the planner is never
-		// told to call a tool it was not given.
-		require.Contains(t, withAPI, "kb:globex/lookup")
+		// told to call a tool it was not given — and the retired lookup never.
+		require.Contains(t, withAPI, "kb:globex/query")
 		require.Contains(t, withAPI, "kb:globex/read")
+		require.NotContains(t, withAPI, "kb:globex/lookup")
 
 		kb := globexKB()
 		kb.CorpusRefs = []string{"globex-slack-eng"} // no api.enabled member
 		withoutAPI := catalog.DeriveKnowledgeBaseSkill(kb, conns).Markdown
 		require.NotContains(t, withoutAPI, "true *right now*",
 			"do not instruct the planner to call a tool it was not given")
-		require.NotContains(t, withoutAPI, "kb:globex/lookup")
+		require.NotContains(t, withoutAPI, "kb:globex/query")
 		require.NotContains(t, withoutAPI, "kb:globex/read")
 	})
 
@@ -368,14 +368,11 @@ func TestKnowledgeBaseMarkdown(t *testing.T) {
 		require.NotContains(t, catalog.DeriveKnowledgeBaseSkill(kb, conns).Markdown, "read each one in full")
 	})
 
-	t.Run("sends newest-first questions to the recent tool, not search", func(t *testing.T) {
+	t.Run("sends metadata and newest-first questions to the query tool, not search", func(t *testing.T) {
 		withAPI := catalog.DeriveKnowledgeBaseSkill(globexKB(), conns).Markdown
+		require.Contains(t, withAPI, "`kb:globex/query` asks the sources directly with a **structured query**")
 		require.Contains(t, withAPI, "Search cannot tell what is newest")
-		require.Contains(t, withAPI, "use `kb:globex/recent`")
-
-		kb := globexKB()
-		kb.CorpusRefs = []string{"globex-slack-eng"} // no live faces generated
-		require.NotContains(t, catalog.DeriveKnowledgeBaseSkill(kb, conns).Markdown, "kb:globex/recent")
+		require.Contains(t, withAPI, "query with `\"sort\": \"newest\"`")
 	})
 
 	t.Run("includes the disclosure instruction only when disclosure is on", func(t *testing.T) {

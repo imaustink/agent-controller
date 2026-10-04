@@ -517,18 +517,20 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			continue
 		}
 
-		// The LIVE newest-first face. Beside lookup and for the same reasons: it
-		// runs as the caller inside the activity, and its items are material to
-		// answer from, so they feed back into the loop. No version guard: this
-		// tool is new, so no recorded history can have scheduled it.
-		if tool.KnowledgeBaseExec != nil && tool.KnowledgeBaseExec.Operation == "recent" {
-			note("Checking what's new in " + tool.KnowledgeBaseExec.DisplayName + "…")
-			var found activities.RecentCorpusOutput
-			if err := workflow.ExecuteActivity(actx, activities.RecentCorpusActivityName,
-				activities.RecentCorpusInput{
+		// The LIVE structured query face. Beside lookup, which it replaced as a
+		// generated tool (lookup's branch stays for in-flight and recorded
+		// turns), and for the same reasons: it runs as the caller inside the
+		// activity, and its items are material to answer from, so they feed back
+		// into the loop. No version guard: this tool is new, so no recorded
+		// history can have scheduled it.
+		if tool.KnowledgeBaseExec != nil && tool.KnowledgeBaseExec.Operation == "query" {
+			note("Querying " + tool.KnowledgeBaseExec.DisplayName + "…")
+			var found activities.QueryCorpusOutput
+			if err := workflow.ExecuteActivity(actx, activities.QueryCorpusActivityName,
+				activities.QueryCorpusInput{
 					Caller:     in.Caller,
 					Tool:       tool,
-					Source:     plan.ToolInput,
+					Query:      plan.ToolInput,
 					FirstIndex: cited.next(),
 				}).Get(ctx, &found); err != nil {
 				return "", meta, nil, err
