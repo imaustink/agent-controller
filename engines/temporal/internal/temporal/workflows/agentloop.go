@@ -26,6 +26,22 @@ import (
 // MAX_TOOL_STEPS in the TS graph.
 const maxToolSteps = 8
 
+// Change IDs for workflow.GetVersion, one per change that alters the commands a
+// turn issues. A conversation in flight across a deploy replays its earlier
+// turns on the new code, and a turn that now schedules a different activity
+// than its history recorded fails replay (a nondeterminism error) and wedges
+// the conversation. Each guard replays history recorded before the change
+// exactly as it ran, while new turns take the new path. Once no workflow
+// started before a change can still be open, its guard can be removed.
+const (
+	// Live lookup/read results feed back into the loop instead of ending the
+	// turn as the reply.
+	versionKBLiveFacesLoop = "kb-live-faces-loop"
+	// A turn that would end on a raw knowledge-base result asks the planner once
+	// more, respond-only, instead of composing that result verbatim.
+	versionKBSynthesizeFinish = "kb-synthesize-finish"
+)
+
 // TurnMeta reports what the agent loop did, for TurnResult/debugging.
 type TurnMeta struct {
 	// Path is how this turn reached its target:
@@ -437,6 +453,11 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 				note(plan.ToolID + " needs a linked account")
 				return read.Result, meta, nil, nil
 			}
+			if workflow.GetVersion(ctx, versionKBLiveFacesLoop, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+				// History recorded before this change ended the turn here, on the
+				// raw result. Replay it as it ran.
+				return read.Result, meta, nil, nil
+			}
 			// Back into the loop like a search, NOT returned as the answer: a
 			// live document is material to answer from. Returning it ended the
 			// turn on a raw dump the moment the planner reached for the live
@@ -475,6 +496,11 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 				// NeedsLink means NO member could be searched — nothing to answer
 				// from, so the turn ends on the ask.
 				note(plan.ToolID + " needs a linked account")
+				return found.Result, meta, nil, nil
+			}
+			if workflow.GetVersion(ctx, versionKBLiveFacesLoop, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+				// History recorded before this change ended the turn here, on the
+				// raw hit list. Replay it as it ran.
 				return found.Result, meta, nil, nil
 			}
 			// Back into the loop, for the same reason as the read face above:
@@ -655,8 +681,10 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	// planner once more, restricted to `respond`, to write the answer from
 	// everything gathered, then finalize exactly as a Respond would (probe
 	// citations appended). A planner failure degrades to the verbatim compose
-	// rather than failing the turn.
-	if lastSuccess != nil && lastWasKnowledgeBase {
+	// rather than failing the turn. History recorded before this change composed
+	// directly, so the version guard replays it that way.
+	if lastSuccess != nil && lastWasKnowledgeBase &&
+		workflow.GetVersion(ctx, versionKBSynthesizeFinish, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 		note("Writing the answer…")
 		var final activities.PlannedAction
 		err := workflow.ExecuteActivity(actx, activities.PlanActionActivityName, activities.PlanActionInput{
