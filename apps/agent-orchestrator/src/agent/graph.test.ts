@@ -4674,6 +4674,71 @@ describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
     expect(final.result).not.toContain("I added salt for you.");
     expect(final.result).not.toContain("continuation:");
   });
+
+  // A KB live face after a stateful tool must clear the stateful tool's verbatim
+  // marker, or respondResult returns that stale Markdown and silently discards
+  // the KB synthesis the turn ends on. PARITY: the Go read/lookup faces set
+  // pendingVerbatim = "". This CAN fail: without the reset the result is the
+  // recipe Markdown, not the synthesis.
+  it("clears a stateful tool's verbatim result when a KB live face runs after it", async () => {
+    const kbLookupTool: ToolDescriptor = {
+      id: "kb:globex/lookup",
+      name: "kb:globex/lookup",
+      description: "live keyword search of the GLOBEX sources",
+      allowedRoles: ["reader"],
+      knowledgeBaseExec: {
+        knowledgeBaseId: "globex",
+        displayName: "GLOBEX",
+        operation: "lookup",
+        members: [],
+        disclosePartialVisibility: true,
+      },
+    };
+    const lookup = vi.fn().mockResolvedValue({ result: 'Live results from GLOBEX for "salt": …' });
+    const plan = vi
+      .fn()
+      .mockResolvedValueOnce({ action: "call_tool", toolId: "recipe-publisher", toolArgs: "add salt" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "call_tool", toolId: "kb:globex/lookup", toolArgs: "salt" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "finish" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "respond", response: "Salt was added; the GLOBEX runbook covers why." } satisfies PlannedAction);
+    const deps = baseDeps({
+      actionPlanner: { plan },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([
+          { tool: publisherTool, score: 1 },
+          { tool: kbLookupTool, score: 1 },
+        ]),
+      },
+      corpusLookup: { lookup } as unknown as AgentGraphDeps["corpusLookup"],
+      jobResultReceiver: {
+        awaitJob: vi.fn().mockResolvedValue({
+          type: "succeeded",
+          job_id: "job-1",
+          seq: 1,
+          ts: new Date().toISOString(),
+          // Round-trips continuation state, so the publisher's Markdown becomes
+          // the turn's pending verbatim result.
+          result: "<!-- continuation: slug-pasta -->\n\n# Pasta\nBoil. Add salt.",
+        } satisfies Event),
+      } as unknown as JobResultReceiver,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "add salt and tell me why",
+      authToken: "tok",
+      toolContinuations: { "recipe-publisher::https://example.com/pasta": "slug-pasta" },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(lookup).toHaveBeenCalled();
+    expect(plan.mock.calls[3]?.[4]).toEqual({ respondOnly: true });
+    expect(final.result).toBe("Salt was added; the GLOBEX runbook covers why.");
+    expect(final.result).not.toContain("# Pasta");
+  });
 });
 
 // Graph-level coverage for the deterministic knowledge-base link gate wired in
