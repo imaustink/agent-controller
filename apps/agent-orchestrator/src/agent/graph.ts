@@ -2386,6 +2386,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, read);
         return {
           result,
+          // A live read round-trips no continuation state, so it clears any
+          // stale verbatim marker — otherwise an earlier stateful tool's output
+          // would win over the KB synthesis in respondResult. PARITY: the Go
+          // read face sets pendingVerbatim = "".
+          pendingVerbatimResult: undefined,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
         };
       }
@@ -2408,6 +2413,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, found);
         return {
           result,
+          // Clears any stale verbatim marker, for the same reason as the read
+          // face above. PARITY: the Go lookup face sets pendingVerbatim = "".
+          pendingVerbatimResult: undefined,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
         };
       }
