@@ -588,6 +588,9 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			// round-trips no continuation state, so it clears any stale verbatim
 			// marker.
 			cited.add(found.Sources, found.Caveats)
+			if found.LegacyCitations != "" {
+				cited.legacy = append(cited.legacy, found.LegacyCitations)
+			}
 			pendingVerbatim = ""
 			history = append(history, activities.ActionRecord{
 				ToolID: plan.ToolID, Input: plan.ToolInput,
@@ -1037,10 +1040,21 @@ func finalizeRespond(response, verbatim string, cited citations) string {
 	if verbatim != "" {
 		return verbatim
 	}
-	if len(cited.sources) == 0 && len(cited.caveats) == 0 {
+	if len(cited.sources) == 0 && len(cited.caveats) == 0 && len(cited.legacy) == 0 {
 		return response
 	}
-	return corpus.FinalizeCitations(response, cited.sources, cited.caveats)
+	out := response
+	if len(cited.sources) > 0 || len(cited.caveats) > 0 {
+		out = corpus.FinalizeCitations(response, cited.sources, cited.caveats)
+	}
+	// A search that completed on the pre-inline worker returned its citations
+	// as one pre-rendered block: append it as that code did, de-duped.
+	for _, block := range cited.legacy {
+		if !strings.Contains(out, block) {
+			out = strings.TrimRight(out, "\n") + "\n\n" + block
+		}
+	}
+	return out
 }
 
 // citations is everything a turn's knowledge-base calls retrieved that an
@@ -1052,6 +1066,9 @@ func finalizeRespond(response, verbatim string, cited citations) string {
 type citations struct {
 	sources []corpus.Source
 	caveats []string
+	// legacy holds pre-rendered blocks from searches that completed on the
+	// pre-inline worker (activities.SearchKnowledgeBaseOutput.LegacyCitations).
+	legacy []string
 }
 
 func (c *citations) next() int {

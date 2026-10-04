@@ -131,6 +131,14 @@ type SearchKnowledgeBaseOutput struct {
 	// finish/respond alike). Empty for the needs-link asks (nothing was searched).
 	Sources []corpus.Source `json:"sources,omitempty"`
 	Caveats []string        `json:"caveats,omitempty"`
+	// LegacyCitations is the pre-rendered `Sources:` + caveats block this
+	// activity returned before Sources/Caveats replaced it. Never written now —
+	// read only, so a turn in flight across the deploy whose search completed on
+	// the old worker (its result already in history in the old shape) still
+	// appends that block, rather than losing its citations AND its access
+	// disclosure (ADR 0040). Remove once no workflow from before the change can
+	// still be open, alongside the version guards in workflows/agentloop.go.
+	LegacyCitations string `json:"citations,omitempty"`
 }
 
 // SearchKnowledgeBase probes and renders one knowledge-base search.

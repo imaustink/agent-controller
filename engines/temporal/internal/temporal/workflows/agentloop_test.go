@@ -714,6 +714,47 @@ func TestKnowledgeBaseFinishIsSynthesizedNotDumped(t *testing.T) {
 // and URL, and no Sources list is appended because the answer cited inline.
 //
 // This CAN fail: the old finalize ignored markers and always appended the list.
+// A turn in flight across the deploy can have its search completed on the
+// pre-inline worker: that result sits in history in the OLD shape, a single
+// pre-rendered `citations` block and no Sources/Caveats. The new worker must
+// still cite and disclose from it rather than ship an uncited answer with no
+// access disclosure.
+//
+// Decoded from the old JSON, as replay would, so this pins the json tag too.
+// This CAN fail: without LegacyCitations the old key is dropped on decode and
+// the reply is the bare "Auth uses OIDC."
+func TestKnowledgeBaseSearchFromThePreInlineWorkerStillCitesAndDiscloses(t *testing.T) {
+	block := "Sources:\n- [Auth design](https://wiki/auth)\n\n" +
+		"What this answer could not see:\n" +
+		"- 2 source(s) in this knowledge base are outside your access, so there may be more you cannot see."
+	recorded, err := json.Marshal(map[string]any{"result": "### 1. Auth design", "citations": block})
+	require.NoError(t, err)
+	var old activities.SearchKnowledgeBaseOutput
+	require.NoError(t, json.Unmarshal(recorded, &old))
+	require.Equal(t, block, old.LegacyCitations, "the old `citations` key decodes into the compat field")
+
+	le := newLoopEnv(t)
+	le.skills = []catalog.SkillDescriptor{kbSkillTools().Skill}
+	le.selected = "kb:globex"
+	le.skillTools = kbSkillTools()
+	le.kbSearchResult = old
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "auth"},
+		{Action: activities.ActionRespond, Response: "Auth uses OIDC."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Contains(t, res.Reply, "Auth uses OIDC.")
+	require.Contains(t, res.Reply, "[Auth design](https://wiki/auth)")
+	require.Contains(t, res.Reply, "outside your access", "the access disclosure survives the deploy")
+}
+
 func TestKnowledgeBaseAnswerCitesInline(t *testing.T) {
 	le := newLoopEnv(t)
 	le.skills = []catalog.SkillDescriptor{kbSkillTools().Skill}
