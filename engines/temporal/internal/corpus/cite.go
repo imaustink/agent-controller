@@ -110,6 +110,11 @@ func LinkCitations(text string, sources []Source) (string, int) {
 			// Nothing valid in this run: remove it, and the space it was
 			// attached with, so "OIDC [9]." reads "OIDC." not "OIDC ."
 			prefix = strings.TrimRight(prefix, " \t")
+		} else if needsSpaceBefore(text, start) {
+			// The model often glues a marker to the word it follows
+			// ("…with SNC[1]."). A bare marker reads fine that way; a title
+			// does not ("…with SNC[End of Project Retro](…)"), so separate it.
+			prefix += " "
 		}
 		out.WriteString(prefix)
 		out.WriteString(strings.Join(links, ", "))
@@ -135,6 +140,20 @@ func FinalizeCitations(response string, sources []Source, caveats []string) stri
 		linked = strings.TrimRight(linked, "\n") + "\n" + block
 	}
 	return linked
+}
+
+// needsSpaceBefore reports whether a link replacing the marker at text[start]
+// would be glued to the preceding character: anything but the start of the
+// text, whitespace, or an opening bracket/quote the link belongs inside.
+func needsSpaceBefore(text string, start int) bool {
+	if start == 0 {
+		return false
+	}
+	switch text[start-1] {
+	case ' ', '\t', '\n', '\r', '(', '[', '{', '"', '\'':
+		return false
+	}
+	return true
 }
 
 func sourceKey(s Source) string {

@@ -79,6 +79,9 @@ export function linkCitations(text: string, sources: CitedSource[]): { text: str
     // Nothing valid in this run: remove it, and the space it was attached with,
     // so "OIDC [9]." reads "OIDC." not "OIDC ."
     if (links.length === 0) prefix = prefix.replace(/[ \t]+$/, "");
+    // The model often glues a marker to the word it follows ("…with SNC[1].").
+    // A bare marker reads fine that way; a title does not, so separate it.
+    else if (needsSpaceBefore(text, start)) prefix += " ";
     out += prefix + links.join(", ");
     last = end;
   }
@@ -105,6 +108,15 @@ export function finalizeCitations(response: string, sources: CitedSource[], cave
     text = `${text.replace(/\n+$/, "")}\n${block}`;
   }
   return text;
+}
+
+/**
+ * Whether a link replacing the marker at `start` would be glued to the preceding
+ * character: anything but the start of the text, whitespace, or an opening
+ * bracket/quote the link belongs inside. PARITY: needsSpaceBefore in cite.go.
+ */
+function needsSpaceBefore(text: string, start: number): boolean {
+  return start > 0 && !" \t\n\r([{\"'".includes(text[start - 1]!);
 }
 
 function sourceKey(source: CitedSource): string {

@@ -50,6 +50,25 @@ func TestLinkCitationsLeavesMarkdownLinkSyntaxAlone(t *testing.T) {
 	require.Zero(t, used)
 }
 
+// The model often glues a marker to the word before it ("…with SNC[1]."). The
+// substituted title must not be: "SNC[End of Project Retro](…)" reads as one
+// word. This CAN fail: the old substitution kept the marker's exact position.
+func TestLinkCitationsSeparatesALinkGluedToTheWordBeforeIt(t *testing.T) {
+	cases := map[string]string{
+		"Regular emails with SNC[2].":  "Regular emails with SNC [SNC Session 2 Assessment](https://wiki/session2).",
+		"Scope grew[1][2].":            "Scope grew [Project Details as of August 2026](https://wiki/details), [SNC Session 2 Assessment](https://wiki/session2).",
+		"Done.[2]":                     "Done. [SNC Session 2 Assessment](https://wiki/session2)",
+		"Already spaced, per [2].":     "Already spaced, per [SNC Session 2 Assessment](https://wiki/session2).",
+		"Inside parens ([2]).":         "Inside parens ([SNC Session 2 Assessment](https://wiki/session2)).",
+		"[2] opens the answer.":        "[SNC Session 2 Assessment](https://wiki/session2) opens the answer.",
+		"First line.\n[2] starts one.": "First line.\n[SNC Session 2 Assessment](https://wiki/session2) starts one.",
+	}
+	for in, want := range cases {
+		out, _ := corpus.LinkCitations(in, citeSources)
+		require.Equal(t, want, out, in)
+	}
+}
+
 func TestLinkCitationsEscapesTitlesAndURLs(t *testing.T) {
 	out, _ := corpus.LinkCitations("x [1]", []corpus.Source{{N: 1, Title: "Q3 [draft]", URL: "https://w/a b(c)"}})
 
