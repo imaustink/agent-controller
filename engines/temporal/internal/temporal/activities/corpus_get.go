@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/corpus"
 )
 
 // ReadCorpusActivityName is the GET face a Corpus exposes (ADR 0038 §5).
@@ -25,6 +26,9 @@ type ReadCorpusInput struct {
 	// cites. One tool serves the whole knowledge base, so the corpus travels
 	// here rather than in the choice of tool.
 	SourceID string `json:"sourceId"`
+	// FirstIndex is the citation number the document takes: the turn's next
+	// unused number. Zero means 1.
+	FirstIndex int `json:"firstIndex,omitempty"`
 }
 
 // ReadCorpusOutput carries prose and a citation, never a credential.
@@ -37,6 +41,9 @@ type ReadCorpusOutput struct {
 	NeedsLink bool `json:"needsLink,omitempty"`
 	// LinkProviders are the providers to link when NeedsLink.
 	LinkProviders []string `json:"linkProviders,omitempty"`
+	// Sources is the document read, when the source returned one, so an answer
+	// can cite it inline.
+	Sources []corpus.Source `json:"sources,omitempty"`
 }
 
 // ReadCorpus reads one resource live, as the calling user.
@@ -124,19 +131,33 @@ func (a *KnowledgeBaseActivities) ReadCorpus(
 		}, nil
 	}
 
-	body, citation, err := a.readThroughBroker(ctx, corpusID, sourceID, credential.Token)
+	body, citation, title, err := a.readThroughBroker(ctx, corpusID, sourceID, credential.Token)
 	if err != nil {
 		return ReadCorpusOutput{}, err
 	}
 
+	// A document the source actually returned is citable like any passage: it
+	// takes the turn's next number, and its title and URL are the source's own
+	// answer to a read run AS the caller. A refused read returns no URL and
+	// gets no number — there is nothing to cite.
+	n := in.FirstIndex
+	if n < 1 {
+		n = 1
+	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "Live read from %s (%s)", member.Label, sourceID)
+	var sources []corpus.Source
 	if citation != "" {
-		fmt.Fprintf(&out, " — %s", citation)
+		if title == "" {
+			title = sourceID
+		}
+		sources = []corpus.Source{{N: n, Title: title, URL: citation}}
+		fmt.Fprintf(&out, "[%d] Live read from %s (%s) — %s", n, member.Label, sourceID, citation)
+	} else {
+		fmt.Fprintf(&out, "Live read from %s (%s)", member.Label, sourceID)
 	}
 	out.WriteString(":\n\n")
 	out.WriteString(body)
-	return ReadCorpusOutput{Result: out.String()}, nil
+	return ReadCorpusOutput{Result: out.String(), Sources: sources}, nil
 }
 
 // readThroughBroker performs the GET, carrying the caller's own token.
@@ -147,26 +168,26 @@ func (a *KnowledgeBaseActivities) ReadCorpus(
 func (a *KnowledgeBaseActivities) readThroughBroker(
 	ctx context.Context,
 	corpus, sourceID, delegated string,
-) (body string, citation string, err error) {
+) (body, citation, title string, err error) {
 	endpoint := fmt.Sprintf("%s/corpora/%s/documents/%s",
 		strings.TrimRight(a.BrokerURL, "/"), url.PathEscape(corpus), url.PathEscape(sourceID))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+a.BrokerToken)
 	req.Header.Set("x-delegated-token", delegated)
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("connection-broker unreachable: %w", err)
+		return "", "", "", fmt.Errorf("connection-broker unreachable: %w", err)
 	}
 	defer res.Body.Close()
 
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
 	if res.StatusCode != http.StatusOK {
@@ -175,7 +196,7 @@ func (a *KnowledgeBaseActivities) readThroughBroker(
 		// it can try a different path, or say the material is not available —
 		// where a failed activity just ends the turn.
 		return fmt.Sprintf("The source refused that read (%d). %s",
-			res.StatusCode, strings.TrimSpace(string(raw))), "", nil
+			res.StatusCode, strings.TrimSpace(string(raw))), "", "", nil
 	}
 
 	// The fetch route returns a Document: the resource normalised to Markdown,
@@ -186,9 +207,9 @@ func (a *KnowledgeBaseActivities) readThroughBroker(
 		Title    string `json:"title"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "", "", fmt.Errorf("decode broker response: %w", err)
+		return "", "", "", fmt.Errorf("decode broker response: %w", err)
 	}
-	return parsed.Markdown, parsed.URL, nil
+	return parsed.Markdown, parsed.URL, parsed.Title, nil
 }
 
 // memberByID finds the member a reference names.

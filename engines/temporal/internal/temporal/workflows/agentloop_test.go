@@ -17,6 +17,7 @@ import (
 	"github.com/controller-agent/temporal-engine/internal/authz"
 	"github.com/controller-agent/temporal-engine/internal/callertools"
 	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/corpus"
 	"github.com/controller-agent/temporal-engine/internal/messaging"
 	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
@@ -34,13 +35,17 @@ type loopEnv struct {
 	launched *activities.LaunchToolRunInput
 	launches []activities.LaunchToolRunInput
 
-	retrieveCalls        int
-	retrieveAgentCalls   int
-	fitCalls             int
-	planCalls            int
-	composeCalls         int
-	kbSearchInputs       []activities.SearchKnowledgeBaseInput
-	kbSearchResult       activities.SearchKnowledgeBaseOutput
+	retrieveCalls      int
+	retrieveAgentCalls int
+	fitCalls           int
+	planCalls          int
+	composeCalls       int
+	kbSearchInputs     []activities.SearchKnowledgeBaseInput
+	kbSearchResult     activities.SearchKnowledgeBaseOutput
+	// kbSearchSeq, when set, answers successive (non-gate) searches in order —
+	// for turns that search more than once.
+	kbSearchSeq          []activities.SearchKnowledgeBaseOutput
+	kbSearchCalls        int
 	kbLookupResult       activities.LookupCorpusOutput
 	runLocalToolInputs   []activities.RunLocalToolInput
 	runLocalToolResult   *messaging.Event
@@ -216,6 +221,11 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	})
 	reg(activities.SearchKnowledgeBaseActivityName, func(_ context.Context, in activities.SearchKnowledgeBaseInput) (activities.SearchKnowledgeBaseOutput, error) {
 		le.kbSearchInputs = append(le.kbSearchInputs, in)
+		if len(le.kbSearchSeq) > 0 && !in.GateOnly {
+			out := le.kbSearchSeq[min(le.kbSearchCalls, len(le.kbSearchSeq)-1)]
+			le.kbSearchCalls++
+			return out, nil
+		}
 		return le.kbSearchResult, nil
 	})
 	reg(activities.LookupCorpusActivityName, func(context.Context, activities.LookupCorpusInput) (activities.LookupCorpusOutput, error) {
@@ -588,13 +598,13 @@ func TestKnowledgeBaseCitationsSurviveRespondPath(t *testing.T) {
 	le.skills = []catalog.SkillDescriptor{kbSkillTools().Skill}
 	le.selected = "kb:globex"
 	le.skillTools = kbSkillTools()
-	citations := "Sources:\n- [Auth design](https://wiki/auth)\n\n" +
-		"What this answer could not see:\n" +
-		"- 2 source(s) in this knowledge base are outside your access, so there may be more you cannot see.\n" +
-		"- 3 source(s) need an account you have not linked (slack); link it and ask again to include them."
 	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
-		Result:    "Found 1 passage(s).\n\n### 1. Auth design\n```text\nWe use OIDC.\n```\n\n" + citations + "\n",
-		Citations: citations,
+		Result:  "### [1] Auth design\n```text\nWe use OIDC.\n```\n",
+		Sources: []corpus.Source{{N: 1, Title: "Auth design", URL: "https://wiki/auth"}},
+		Caveats: []string{
+			"2 source(s) in this knowledge base are outside your access, so there may be more you cannot see.",
+			"3 source(s) need an account you have not linked (slack); link it and ask again to include them.",
+		},
 		// No LinkProviders: the pre-search gate passes and the query runs.
 	}
 	le.plans = []activities.PlannedAction{
@@ -637,12 +647,10 @@ func TestKnowledgeBaseCitationsSurviveALaterNonKBToolCall(t *testing.T) {
 	le.selected = "kb:globex"
 	le.skillTools = skill
 
-	citations := "Sources:\n- [Auth design](https://wiki/auth)\n\n" +
-		"What this answer could not see:\n" +
-		"- 3 source(s) need an account you have not linked (slack); link it and ask again to include them."
 	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
-		Result:    "Found 1 passage(s).\n\n### 1. Auth design\n```text\nWe use OIDC.\n```\n\n" + citations + "\n",
-		Citations: citations,
+		Result:  "### [1] Auth design\n```text\nWe use OIDC.\n```\n",
+		Sources: []corpus.Source{{N: 1, Title: "Auth design", URL: "https://wiki/auth"}},
+		Caveats: []string{"3 source(s) need an account you have not linked (slack); link it and ask again to include them."},
 	}
 	le.plans = []activities.PlannedAction{
 		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "how does auth work"},
@@ -677,10 +685,9 @@ func TestKnowledgeBaseFinishIsSynthesizedNotDumped(t *testing.T) {
 	le.skills = []catalog.SkillDescriptor{kbSkillTools().Skill}
 	le.selected = "kb:globex"
 	le.skillTools = kbSkillTools()
-	citations := "Sources:\n- [Auth design](https://wiki/auth)"
 	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
-		Result:    "### 1. Auth design\n```text\nWe use OIDC.\n```\n\n" + citations + "\n",
-		Citations: citations,
+		Result:  "### [1] Auth design\n```text\nWe use OIDC.\n```\n",
+		Sources: []corpus.Source{{N: 1, Title: "Auth design", URL: "https://wiki/auth"}},
 	}
 	le.plans = []activities.PlannedAction{
 		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "how does auth work"},
@@ -701,6 +708,75 @@ func TestKnowledgeBaseFinishIsSynthesizedNotDumped(t *testing.T) {
 	require.Zero(t, le.composeCalls, "a KB result is synthesized, not composed verbatim")
 	require.Len(t, le.planInputs, 3)
 	require.True(t, le.planInputs[2].RespondOnly, "the synthesis step is pinned to respond")
+}
+
+// Inline citations: the model writes `[n]`, code substitutes the probe's title
+// and URL, and no Sources list is appended because the answer cited inline.
+//
+// This CAN fail: the old finalize ignored markers and always appended the list.
+func TestKnowledgeBaseAnswerCitesInline(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skills = []catalog.SkillDescriptor{kbSkillTools().Skill}
+	le.selected = "kb:globex"
+	le.skillTools = kbSkillTools()
+	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
+		Result:  "### [1] Auth design\n```text\nWe use OIDC.\n```\n",
+		Sources: []corpus.Source{{N: 1, Title: "Auth design", URL: "https://wiki/auth"}},
+		Caveats: []string{"2 source(s) in this knowledge base are outside your access, so there may be more you cannot see."},
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "auth"},
+		{Action: activities.ActionRespond, Response: "Auth uses OIDC, per [1]. Tokens rotate hourly [7]."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Contains(t, res.Reply, "Auth uses OIDC, per [Auth design](https://wiki/auth).")
+	require.Contains(t, res.Reply, "Tokens rotate hourly.", "an invented [7] is dropped, not left dangling")
+	require.NotContains(t, res.Reply, "Sources:", "cited inline, so no list")
+	require.Contains(t, res.Reply, "outside your access", "disclosure is appended whatever the model wrote")
+}
+
+// A second search continues the turn's numbering, and a marker from it links to
+// ITS source — not to whatever the first search numbered the same.
+//
+// This CAN fail: without FirstIndex both searches would number from 1 and [2]
+// would be ambiguous.
+func TestKnowledgeBaseCitationNumbersRunAcrossTheTurn(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skills = []catalog.SkillDescriptor{kbSkillTools().Skill}
+	le.selected = "kb:globex"
+	le.skillTools = kbSkillTools()
+	le.kbSearchSeq = []activities.SearchKnowledgeBaseOutput{
+		{Result: "### [1] Auth design", Sources: []corpus.Source{{N: 1, Title: "Auth design", URL: "https://wiki/auth"}}},
+		{Result: "### [2] Rotation runbook", Sources: []corpus.Source{{N: 2, Title: "Rotation runbook", URL: "https://wiki/rotate"}}},
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "auth"},
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "token rotation"},
+		{Action: activities.ActionRespond, Response: "OIDC [1], rotated hourly [2]."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	var firsts []int
+	for _, in := range le.kbSearchInputs {
+		if !in.GateOnly {
+			firsts = append(firsts, in.FirstIndex)
+		}
+	}
+	require.Equal(t, []int{1, 2}, firsts, "the second search starts after the first's last number")
+	require.Equal(t, "OIDC [Auth design](https://wiki/auth), rotated hourly [Rotation runbook](https://wiki/rotate).", res.Reply)
 }
 
 // The live lookup face used to END the turn on its raw hit list ("Live results

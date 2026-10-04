@@ -11,6 +11,7 @@ import (
 	"github.com/controller-agent/temporal-engine/internal/callertools"
 	"github.com/controller-agent/temporal-engine/internal/catalog"
 	"github.com/controller-agent/temporal-engine/internal/continuation"
+	"github.com/controller-agent/temporal-engine/internal/corpus"
 	"github.com/controller-agent/temporal-engine/internal/llm"
 	"github.com/controller-agent/temporal-engine/internal/messaging"
 	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
@@ -323,9 +324,11 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	// Deterministic output produced this turn that the planner's own prose would
 	// otherwise discard on a Respond (the "finish vs respond" verbatim gap):
 	// pendingVerbatim is a stateful tool's result that must REPLACE a paraphrase;
-	// pendingCitations is a KB search's probe-derived Sources/disclosure block
-	// that is APPENDED to the model's synthesis. Re-applied by finalizeRespond.
-	var pendingVerbatim, pendingCitations string
+	// cited is every knowledge-base result this turn retrieved, numbered across
+	// the whole turn, whose `[n]` markers the model's synthesis is linked against;
+	// caveats are what those retrievals could not see. Applied by finalizeRespond.
+	var pendingVerbatim string
+	var cited citations
 	for step := len(history); step < maxToolSteps; step++ {
 		var plan activities.PlannedAction
 		if err := workflow.ExecuteActivity(actx, activities.PlanActionActivityName, activities.PlanActionInput{
@@ -340,7 +343,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		}
 
 		if plan.Action == activities.ActionRespond {
-			return finalizeRespond(plan.Response, pendingVerbatim, pendingCitations), meta, nil, nil
+			return finalizeRespond(plan.Response, pendingVerbatim, cited), meta, nil, nil
 		}
 		if plan.Action == activities.ActionFinish {
 			break
@@ -419,9 +422,10 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			var read activities.ReadCorpusOutput
 			if err := workflow.ExecuteActivity(actx, activities.ReadCorpusActivityName,
 				activities.ReadCorpusInput{
-					Caller:   in.Caller,
-					Tool:     tool,
-					SourceID: plan.ToolInput,
+					Caller:     in.Caller,
+					Tool:       tool,
+					SourceID:   plan.ToolInput,
+					FirstIndex: cited.next(),
 				}).Get(ctx, &read); err != nil {
 				return "", meta, nil, err
 			}
@@ -441,6 +445,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			outcome := ToolOutcome{Succeeded: true, Result: read.Result}
 			lastSuccess, lastWasKnowledgeBase = &outcome, true
 			pendingVerbatim = ""
+			cited.add(read.Sources, nil)
 			history = append(history, activities.ActionRecord{
 				ToolID: plan.ToolID, Input: plan.ToolInput,
 				Succeeded: true, Result: read.Result,
@@ -457,9 +462,10 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			var found activities.LookupCorpusOutput
 			if err := workflow.ExecuteActivity(actx, activities.LookupCorpusActivityName,
 				activities.LookupCorpusInput{
-					Caller: in.Caller,
-					Tool:   tool,
-					Query:  plan.ToolInput,
+					Caller:     in.Caller,
+					Tool:       tool,
+					Query:      plan.ToolInput,
+					FirstIndex: cited.next(),
 				}).Get(ctx, &found); err != nil {
 				return "", meta, nil, err
 			}
@@ -476,6 +482,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			outcome := ToolOutcome{Succeeded: true, Result: found.Result}
 			lastSuccess, lastWasKnowledgeBase = &outcome, true
 			pendingVerbatim = ""
+			cited.add(found.Sources, nil)
 			history = append(history, activities.ActionRecord{
 				ToolID: plan.ToolID, Input: plan.ToolInput,
 				Succeeded: true, Result: found.Result,
@@ -531,9 +538,10 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			var found activities.SearchKnowledgeBaseOutput
 			if err := workflow.ExecuteActivity(actx, activities.SearchKnowledgeBaseActivityName,
 				activities.SearchKnowledgeBaseInput{
-					Caller: in.Caller,
-					Tool:   tool,
-					Query:  plan.ToolInput,
+					Caller:     in.Caller,
+					Tool:       tool,
+					Query:      plan.ToolInput,
+					FirstIndex: cited.next(),
 				}).Get(ctx, &found); err != nil {
 				return "", meta, nil, err
 			}
@@ -548,10 +556,12 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 
 			outcome := ToolOutcome{Succeeded: true, Result: found.Result}
 			lastSuccess, lastWasKnowledgeBase = &outcome, true
-			// Carry the probe-derived citation/disclosure block so a later Respond
-			// still cites and discloses (ADR 0040). A search round-trips no
-			// continuation state, so it clears any stale verbatim marker.
-			pendingCitations = found.Citations
+			// Carry the probe-derived sources and caveats so a later Respond still
+			// cites and discloses (ADR 0040). ACCUMULATED across the turn's
+			// searches, not replaced: the answer may cite any of them. A search
+			// round-trips no continuation state, so it clears any stale verbatim
+			// marker.
+			cited.add(found.Sources, found.Caveats)
 			pendingVerbatim = ""
 			history = append(history, activities.ActionRecord{
 				ToolID: plan.ToolID, Input: plan.ToolInput,
@@ -624,13 +634,12 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			} else {
 				pendingVerbatim = ""
 			}
-			// Deliberately do NOT clear pendingCitations here: a KB search's
-			// probe-derived Sources/disclosure must survive a LATER non-KB tool in
-			// the same turn (e.g. [KB search -> other tool -> respond]), or the
-			// turn emits an uncited answer and drops the ADR 0040 guarantee. Only
-			// the next KB search overwrites it (see the search branch above),
-			// matching the TS engine, where the KB node is the sole writer and the
-			// update-only reducer preserves it across other tool calls.
+			// Deliberately do NOT touch `cited` here: a KB search's probe-derived
+			// sources/disclosure must survive a LATER non-KB tool in the same turn
+			// (e.g. [KB search -> other tool -> respond]), or the turn emits an
+			// uncited answer and drops the ADR 0040 guarantee. Only knowledge-base
+			// results add to it, matching the TS engine, where the KB nodes are the
+			// sole writers.
 			note(plan.ToolID + " finished")
 		} else {
 			record.Error = outcome.ErrorCode + ": " + outcome.ErrorMessage
@@ -658,7 +667,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			RespondOnly:   true,
 		}).Get(ctx, &final)
 		if err == nil && strings.TrimSpace(final.Response) != "" {
-			return finalizeRespond(final.Response, pendingVerbatim, pendingCitations), meta, nil, nil
+			return finalizeRespond(final.Response, pendingVerbatim, cited), meta, nil, nil
 		}
 		logger.Warn("knowledge-base synthesis failed; composing the raw result", "error", err)
 	}
@@ -989,19 +998,47 @@ func adaptAgentAsTool(agent catalog.AgentDescriptor) catalog.ToolDescriptor {
 //  1. A stateful refine-loop tool's verbatim result (ADR 0017 continuation
 //     round-trip, e.g. recipe-publisher) REPLACES the model's paraphrase: its
 //     Markdown is the answer the next turn's intent detection reads.
-//  2. A knowledge-base search's probe-derived Sources/disclosure block is
-//     APPENDED to the model's synthesis (de-duped), so citations/disclosure
-//     (ADR 0040) survive Respond while useful synthesis is preserved.
+//  2. Knowledge-base citations are applied to the model's synthesis: its
+//     `[n]` markers become inline links to the retrieved sources (falling back
+//     to an appended Sources list when it cited nothing), and what the
+//     retrievals could not see is appended — so citations/disclosure (ADR 0040)
+//     survive Respond while useful synthesis is preserved.
 //
 // PARITY: respondResult in apps/agent-orchestrator/src/agent/graph.ts.
-func finalizeRespond(response, verbatim, citations string) string {
+func finalizeRespond(response, verbatim string, cited citations) string {
 	if verbatim != "" {
 		return verbatim
 	}
-	if citations == "" || strings.Contains(response, citations) {
+	if len(cited.sources) == 0 && len(cited.caveats) == 0 {
 		return response
 	}
-	return response + "\n\n" + citations
+	return corpus.FinalizeCitations(response, cited.sources, cited.caveats)
+}
+
+// citations is everything a turn's knowledge-base calls retrieved that an
+// answer may cite, plus what they could not see.
+//
+// Numbers run across the whole turn (next), so a second search's passages
+// never reuse the first's [1] — the model cites by number, and a collision
+// would link a claim to the wrong source.
+type citations struct {
+	sources []corpus.Source
+	caveats []string
+}
+
+func (c *citations) next() int {
+	n := 1
+	for _, s := range c.sources {
+		if s.N >= n {
+			n = s.N + 1
+		}
+	}
+	return n
+}
+
+func (c *citations) add(sources []corpus.Source, caveats []string) {
+	c.sources = append(c.sources, sources...)
+	c.caveats = append(c.caveats, caveats...)
 }
 
 func repeatsLastCall(history []activities.ActionRecord, plan activities.PlannedAction) bool {

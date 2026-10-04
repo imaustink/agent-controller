@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/corpus"
 	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 	"github.com/controller-agent/temporal-engine/internal/vectorstore"
 )
@@ -92,6 +93,35 @@ func TestLookupFansOutAcrossMembersAndCitesReadableReferences(t *testing.T) {
 	require.Contains(t, out.Result, "reference: wiki/123")
 	require.Contains(t, out.Result, "reference: slack/C1/1.1")
 	require.Contains(t, out.Result, "Runbook")
+}
+
+// Live hits are citable inline like indexed passages: numbered on from the
+// turn's earlier results, and returned as sources the answer's `[n]` markers
+// are linked against.
+func TestLookupNumbersHitsFromTheTurnsNextCitation(t *testing.T) {
+	srv, _ := brokerStub(t, map[string]any{
+		"wiki": hits(
+			map[string]string{"id": "1", "title": "Runbook", "url": "https://wiki/1"},
+			map[string]string{"id": "2", "title": "Postmortem", "url": "https://wiki/2"},
+		),
+	})
+
+	out, err := lookupActivities(srv, &fakeResolver{token: "user-token"}).LookupCorpus(
+		context.Background(),
+		activities.LookupCorpusInput{
+			Caller:     activities.Caller{Subject: "s", Roles: []string{"reader"}},
+			Tool:       lookupTool(member("wiki", []string{"reader"}, "c1")),
+			Query:      "deploy",
+			FirstIndex: 5,
+		})
+
+	require.NoError(t, err)
+	require.Contains(t, out.Result, "- [5] Runbook")
+	require.Contains(t, out.Result, "- [6] Postmortem")
+	require.Equal(t, []corpus.Source{
+		{N: 5, Title: "Runbook", URL: "https://wiki/1"},
+		{N: 6, Title: "Postmortem", URL: "https://wiki/2"},
+	}, out.Sources)
 }
 
 func TestLookupSkipsMembersTheCallerHoldsNoRoleFor(t *testing.T) {

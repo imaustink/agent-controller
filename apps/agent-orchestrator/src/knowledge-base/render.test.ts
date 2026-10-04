@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, citationsBlock } from "./render.js";
+import { render, citationsBlock, sources } from "./render.js";
 import type { AuthorizedChunk } from "./probe.js";
 import type { RetrieveOutcome } from "./retrieve.js";
 
@@ -182,6 +182,26 @@ describe("render", () => {
       disclose: true,
     });
 
-    expect(out.indexOf("1. First")).toBeLessThan(out.indexOf("2. Second"));
+    expect(out).toContain("### [1] First");
+    expect(out.indexOf("[1] First")).toBeLessThan(out.indexOf("[2] Second"));
+  });
+
+  // A turn can search more than once and the model cites across all of it, so
+  // a later search continues the turn's numbering rather than reusing [1].
+  it("continues the turn's citation numbering", () => {
+    const input = {
+      outcome: outcome({ chunks: [authorized("First", "u1", "a"), authorized("Second", "u2", "b")] }),
+      withheld: 0,
+      disclose: true,
+      firstIndex: 13,
+    };
+
+    const out = render(input);
+    expect(out).toContain("### [13] First");
+    expect(out).toContain("### [14] Second");
+    expect(sources(input)).toEqual([
+      { n: 13, title: "First", url: "u1" },
+      { n: 14, title: "Second", url: "u2" },
+    ]);
   });
 });

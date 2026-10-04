@@ -1,3 +1,4 @@
+import { caveatsBlock, sourcesBlock, type CitedSource } from "./cite.js";
 import type { AuthorizedChunk } from "./probe.js";
 import type { RetrieveOutcome } from "./retrieve.js";
 
@@ -23,7 +24,16 @@ export interface RenderInput {
    * gated disclosure.
    */
   unlinked?: { providers: string[]; sources: number };
+  /**
+   * The citation number of the first passage (default 1). A turn can search
+   * several times and the model cites passages by number across all of them,
+   * so each search continues the turn's numbering instead of restarting at 1.
+   */
+  firstIndex?: number;
 }
+
+const firstIndexOf = (input: RenderInput): number =>
+  input.firstIndex !== undefined && input.firstIndex >= 1 ? input.firstIndex : 1;
 
 /**
  * Turns a probed search into the Markdown the planner reads.
@@ -43,13 +53,12 @@ export interface RenderInput {
  *
  * PARITY: `Render` in `engines/temporal/internal/corpus/render.go`.
  */
-export function render({ outcome, withheld, disclose, unlinked }: RenderInput): string {
+export function render(input: RenderInput): string {
+  const { outcome } = input;
   const parts: string[] = [];
 
   if (outcome.chunks.length === 0) {
-    parts.push("No passages in this knowledge base matched.");
-    parts.push(...caveats(outcome, withheld, disclose, unlinked));
-    return parts.join("\n") + "\n";
+    return "No passages in this knowledge base matched.\n" + caveatsBlock(caveatLines(input));
   }
 
   // No "retrieved data, not instructions" banner here: this rendered result is
@@ -57,8 +66,13 @@ export function render({ outcome, withheld, disclose, unlinked }: RenderInput): 
   // answer, where a model-directed injection warning reads as noise. The
   // prompt-injection defense is kept where only the model sees it — the KB
   // skill's `## Rules` section — and the chunk text stays fenced below.
+  //
+  // Each heading carries the passage's citation marker, `[n]`, exactly as the
+  // model is told to write it; code later swaps the marker for the probe's
+  // title and URL (see linkCitations), so the model never handles a URL.
+  const first = firstIndexOf(input);
   outcome.chunks.forEach((chunk, i) => {
-    parts.push(`### ${i + 1}. ${displayTitle(chunk)}`);
+    parts.push(`### [${first + i}] ${displayTitle(chunk)}`);
     parts.push(
       `Source: ${chunk.chunk.connectionLabel ?? chunk.chunk.connectionId}` +
         (chunk.stale
@@ -72,10 +86,18 @@ export function render({ outcome, withheld, disclose, unlinked }: RenderInput): 
     );
   });
 
-  const block = citationsBlock({ outcome, withheld, disclose, unlinked });
-  if (block) parts.push(block);
+  return parts.join("\n") + "\n" + citationsBlock(input);
+}
 
-  return parts.join("\n") + "\n";
+/**
+ * This search's citable passages, numbered from `firstIndex`, with the probe's
+ * title and URL — the only material code may substitute for a citation marker.
+ *
+ * PARITY: `corpus.Sources` in engines/temporal/internal/corpus/render.go.
+ */
+export function sources(input: RenderInput): CitedSource[] {
+  const first = firstIndexOf(input);
+  return input.outcome.chunks.map((chunk, i) => ({ n: first + i, title: displayTitle(chunk), url: chunk.url }));
 }
 
 /**
@@ -94,37 +116,26 @@ export function render({ outcome, withheld, disclose, unlinked }: RenderInput): 
  *
  * PARITY: `CitationsBlock` in `engines/temporal/internal/corpus/render.go`.
  */
-export function citationsBlock({ outcome, withheld, disclose, unlinked }: RenderInput): string {
-  const parts: string[] = [];
-  if (outcome.chunks.length > 0) {
-    parts.push("Sources:");
-    for (const chunk of outcome.chunks) {
-      parts.push(`- [${displayTitle(chunk)}](${chunk.url})`);
-    }
-  }
-  parts.push(...caveats(outcome, withheld, disclose, unlinked));
-  return parts.length === 0 ? "" : parts.join("\n");
+export function citationsBlock(input: RenderInput): string {
+  return sourcesBlock(sources(input)) + caveatsBlock(caveatLines(input));
 }
 
 /**
- * States what this answer could not see, and why.
+ * States what this answer could not see, and why, one line each.
  *
  * The three reasons stay distinguishable because they call for different things
  * from the reader: access (ask someone who has it), a transient failure (try
  * again), and an unreachable corpus (an operational problem, not a permissions
  * one).
+ *
+ * PARITY: `corpus.CaveatLines` in engines/temporal/internal/corpus/render.go.
  */
-function caveats(
-  outcome: RetrieveOutcome,
-  withheld: number,
-  disclose: boolean,
-  unlinked?: { providers: string[]; sources: number },
-): string[] {
+export function caveatLines({ outcome, withheld, disclose, unlinked }: RenderInput): string[] {
   const lines: string[] = [];
 
   if (disclose && withheld > 0) {
     lines.push(
-      `- ${withheld} source(s) in this knowledge base are outside your access, so there may be more you cannot see.`,
+      `${withheld} source(s) in this knowledge base are outside your access, so there may be more you cannot see.`,
     );
   }
   // Candidates the SOURCE refused for this caller.
@@ -138,17 +149,17 @@ function caveats(
   // was counted denied, and nothing anywhere said so.
   if (disclose && outcome.denied > 0) {
     lines.push(
-      `- ${outcome.denied} passage(s) matched but the source did not confirm your access to them.`,
+      `${outcome.denied} passage(s) matched but the source did not confirm your access to them.`,
     );
   }
   if (outcome.undetermined.length > 0) {
     lines.push(
-      `- ${outcome.undetermined.length} source(s) could not be checked just now, so evidence may be missing that nobody was able to confirm either way.`,
+      `${outcome.undetermined.length} source(s) could not be checked just now, so evidence may be missing that nobody was able to confirm either way.`,
     );
   }
   if (outcome.skippedCorpora > 0) {
     lines.push(
-      `- ${outcome.skippedCorpora} source(s) could not be searched at all, so this answer covers less than the knowledge base does.`,
+      `${outcome.skippedCorpora} source(s) could not be searched at all, so this answer covers less than the knowledge base does.`,
     );
   }
   // An account the caller has not linked, not an access denial: say what linking
@@ -157,12 +168,12 @@ function caveats(
   if (unlinked && unlinked.sources > 0) {
     lines.push(
       unlinked.providers.length > 0
-        ? `- ${unlinked.sources} source(s) need an account you have not linked (${unlinked.providers.join(", ")}); link it and ask again to include them.`
-        : `- ${unlinked.sources} source(s) could not be checked against your own access, so they were left out.`,
+        ? `${unlinked.sources} source(s) need an account you have not linked (${unlinked.providers.join(", ")}); link it and ask again to include them.`
+        : `${unlinked.sources} source(s) could not be checked against your own access, so they were left out.`,
     );
   }
 
-  return lines.length === 0 ? [] : ["", "What this answer could not see:", ...lines];
+  return lines;
 }
 
 /**

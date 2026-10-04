@@ -28,6 +28,7 @@ import type { BestEffortResponder } from "./best-effort-responder.js";
 import type { CapabilityNeedChecker } from "./capability-need-checker.js";
 import type { DelegateSelector } from "./delegate-selector.js";
 import type { ResponseComposer } from "./response-composer.js";
+import { finalizeCitations, type CitedSource } from "../knowledge-base/cite.js";
 import type { CorpusReader } from "../knowledge-base/reader.js";
 import type { CorpusLookup } from "../knowledge-base/lookup.js";
 import type { MCPBrokerClient } from "../mcp/mcp-broker-client.js";
@@ -295,19 +296,25 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => false,
   }),
   /**
-   * The probe-derived `Sources:` + "What this answer could not see" disclosure
-   * block (render.citationsBlock) from a knowledge-base search THIS turn, carried
-   * so it can be appended in code to whatever the turn finally returns. Without
-   * this, a `respond` answer (the planner recomposing in its own prose) silently
-   * drops the citations/disclosure the search deterministically built — the
-   * "finish vs respond" verbatim gap. Appended, de-duped, in the `respond`
-   * branch below; the `finish` path already surfaces the search result verbatim
-   * (which contains the same block). PARITY: `pendingCitations` in
+   * Every knowledge-base result THIS turn retrieved that an answer may cite —
+   * numbered across the whole turn (each KB call continues from the last
+   * number), with the title and URL the source itself returned to the caller —
+   * plus what those retrievals could not see. Carried so they are applied in
+   * code to whatever the turn finally returns: the model's `[n]` markers become
+   * these links, and the caveats are appended whatever the model wrote. Without
+   * this, a `respond` answer (the planner recomposing in its own prose) could
+   * drop the citations/disclosure — the "finish vs respond" verbatim gap.
+   * APPENDED by each KB node, never replaced, so a later search or another
+   * tool cannot wipe an earlier search's sources. PARITY: `citations` in
    * engines/temporal/internal/temporal/workflows/agentloop.go.
    */
-  pendingCitations: Annotation<string>({
-    reducer: (_current, update) => update,
-    default: () => "",
+  citationSources: Annotation<CitedSource[]>({
+    reducer: (current, update) => [...current, ...update],
+    default: () => [],
+  }),
+  citationCaveats: Annotation<string[]>({
+    reducer: (current, update) => [...current, ...update],
+    default: () => [],
   }),
   /**
    * The verbatim result of a successful tool call THIS turn that round-tripped
@@ -1066,21 +1073,26 @@ async function finishPlanLoop(deps: AgentGraphDeps, state: AgentState): Promise<
  *     round-trip, e.g. recipe-publisher) REPLACES the model's paraphrase: its
  *     Markdown is the answer the next turn's intent detection reads, so the
  *     planner recomposing it would break the loop.
- *  2. A knowledge-base search's probe-derived `Sources:` + "What this answer
- *     could not see" block is APPENDED to the model's synthesis (de-duped),
- *     preserving useful synthesis while guaranteeing citations/disclosure
- *     (ADR 0040) survive `respond`.
+ *  2. Knowledge-base citations are applied to the model's synthesis: its `[n]`
+ *     markers become inline links to the retrieved sources (falling back to an
+ *     appended Sources list when it cited nothing), and what the retrievals
+ *     could not see is appended — so citations/disclosure (ADR 0040) survive
+ *     `respond` while useful synthesis is preserved.
  *
  * PARITY: `finalizeRespond` in agentloop.go.
  */
 function respondResult(state: AgentState, response: string): string {
   if (state.pendingVerbatimResult !== undefined) return state.pendingVerbatimResult;
-  const block = state.pendingCitations;
-  if (!block) return response;
-  // De-dupe: skip when the planner already reproduced the exact block (e.g. it
-  // echoed the tool result), so a `finish`-shaped `respond` isn't double-cited.
-  if (response.includes(block)) return response;
-  return `${response}\n\n${block}`;
+  if (state.citationSources.length === 0 && state.citationCaveats.length === 0) return response;
+  return finalizeCitations(response, state.citationSources, state.citationCaveats);
+}
+
+/**
+ * The citation number the turn's next knowledge-base result takes, so a second
+ * search never reuses the first's [1]. PARITY: `citations.next` in agentloop.go.
+ */
+function nextCitation(state: AgentState): number {
+  return state.citationSources.reduce((next, s) => Math.max(next, s.n + 1), 1);
 }
 
 /**
@@ -2379,13 +2391,16 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // it as.
           return { error: `tool ${tool.id} requires a resolved caller identity` };
         }
-        const read = await deps.corpusReader.read(tool, input, {
-          subject: state.identity.subject,
-          roles: state.identity.roles,
-        });
+        const read = await deps.corpusReader.read(
+          tool,
+          input,
+          { subject: state.identity.subject, roles: state.identity.roles },
+          nextCitation(state),
+        );
         const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, read);
         return {
           result,
+          citationSources: read.sources ?? [],
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
         };
       }
@@ -2401,13 +2416,16 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // run it as.
           return { error: `tool ${tool.id} requires a resolved caller identity` };
         }
-        const found = await deps.corpusLookup.lookup(tool, input, {
-          subject: state.identity.subject,
-          roles: state.identity.roles,
-        });
+        const found = await deps.corpusLookup.lookup(
+          tool,
+          input,
+          { subject: state.identity.subject, roles: state.identity.roles },
+          nextCitation(state),
+        );
         const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, found);
         return {
           result,
+          citationSources: found.sources ?? [],
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
         };
       }
@@ -2471,20 +2489,27 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           }
         }
 
-        const found = await deps.knowledgeBaseSearcher.search(tool, input, {
-          // Already resolved for this turn, and the same identity every other
-          // RBAC decision on it was made against.
-          subject: state.identity.subject,
-          roles: state.identity.roles,
-        });
+        const found = await deps.knowledgeBaseSearcher.search(
+          tool,
+          input,
+          {
+            // Already resolved for this turn, and the same identity every other
+            // RBAC decision on it was made against.
+            subject: state.identity.subject,
+            roles: state.identity.roles,
+          },
+          nextCitation(state),
+        );
         const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, found);
         return {
           result,
-          // Carry the probe-derived citation/disclosure block so the turn can
-          // append it in code even if the planner then recomposes via `respond`
-          // (ADR 0040 survives finish/respond alike). A search never round-trips
-          // continuation state, so it clears any stale verbatim marker.
-          pendingCitations: found.citations ?? "",
+          // Carry the probe-derived sources and caveats so the turn applies them
+          // in code even if the planner then recomposes via `respond` (ADR 0040
+          // survives finish/respond alike). APPENDED to the turn's, not
+          // replacing them: the answer may cite any search. A search never
+          // round-trips continuation state, so it clears any stale verbatim marker.
+          citationSources: found.sources ?? [],
+          citationCaveats: found.caveats ?? [],
           pendingVerbatimResult: undefined,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
         };

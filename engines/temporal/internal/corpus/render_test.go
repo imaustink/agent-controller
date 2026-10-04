@@ -188,5 +188,26 @@ func TestRenderNumbersPassagesInRankOrder(t *testing.T) {
 		}},
 	})
 
-	require.Less(t, strings.Index(out, "1. First"), strings.Index(out, "2. Second"))
+	require.Contains(t, out, "### [1] First")
+	require.Less(t, strings.Index(out, "[1] First"), strings.Index(out, "[2] Second"))
+}
+
+// A turn can search more than once and the model cites across all of it, so a
+// later search continues the turn's numbering rather than reusing [1].
+func TestRenderContinuesTheTurnsCitationNumbering(t *testing.T) {
+	in := corpus.RenderInput{
+		Outcome: corpus.RetrieveOutcome{Chunks: []corpus.AuthorizedChunk{
+			authorized("First", "u1", "a"),
+			authorized("Second", "u2", "b"),
+		}},
+		FirstIndex: 13,
+	}
+
+	out := corpus.Render(in)
+	require.Contains(t, out, "### [13] First")
+	require.Contains(t, out, "### [14] Second")
+	require.Equal(t, []corpus.Source{
+		{N: 13, Title: "First", URL: "u1"},
+		{N: 14, Title: "Second", URL: "u2"},
+	}, corpus.Sources(in))
 }
