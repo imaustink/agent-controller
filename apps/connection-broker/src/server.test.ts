@@ -243,6 +243,78 @@ describe("broker server", () => {
     });
   });
 
+  describe("recent items", () => {
+    const HIT = { id: "9", title: "Runbook", url: "https://wiki/9", updatedAt: "2026-10-01T12:00:00.000Z" };
+    const recent = () => fakeDriver({ recentAsUser: vi.fn().mockResolvedValue([HIT]) });
+
+    it("reads the newest items with the caller's token, bounded by the corpus scope", async () => {
+      start(recent());
+
+      const res = await call("/corpora/globex-confluence/recent?limit=3", {
+        headers: { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "user" },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ hits: [HIT] });
+      expect(driver.recentAsUser).toHaveBeenCalledWith({ delegated: "user" }, { space: "GLOBEX" }, 3);
+    });
+
+    it("defaults and caps the limit", async () => {
+      start(recent());
+      const headers = { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "user" };
+
+      await call("/corpora/globex-confluence/recent", { headers });
+      await call("/corpora/globex-confluence/recent?limit=5000", { headers });
+      await call("/corpora/globex-confluence/recent?limit=abc", { headers });
+
+      expect((driver.recentAsUser as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[2])).toEqual([10, 25, 10]);
+    });
+
+    it("never reaches the ingestion credential", async () => {
+      // A sync worker would otherwise authorize as a list and arrive holding
+      // the service credential; the route refuses it before the driver.
+      start(recent());
+
+      const res = await call("/corpora/globex-confluence/recent", {
+        headers: { authorization: "Bearer sync" },
+      });
+
+      expect(res.status).toBe(403);
+      expect(driver.recentAsUser).not.toHaveBeenCalled();
+    });
+
+    it("refuses an orchestrator request with no delegated token", async () => {
+      start(recent());
+
+      const res = await call("/corpora/globex-confluence/recent", {
+        headers: { authorization: "Bearer orch" },
+      });
+
+      expect(res.status).toBe(403);
+      expect(driver.recentAsUser).not.toHaveBeenCalled();
+    });
+
+    it("says so when the provider has no recent", async () => {
+      start(fakeDriver());
+
+      const res = await call("/corpora/globex-confluence/recent", {
+        headers: { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "user" },
+      });
+
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toBe("confluence has no recent");
+    });
+
+    it("maps a driver denial to 403", async () => {
+      start(fakeDriver({ recentAsUser: vi.fn().mockRejectedValue(new PermissionDeniedError("no")) }));
+
+      const res = await call("/corpora/globex-confluence/recent", {
+        headers: { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "user" },
+      });
+
+      expect(res.status).toBe(403);
+    });
+  });
 
   it("refuses a SYNC worker the user-read route", async () => {
     // A sync worker passes the fetch check — fetch is a legitimate ingestion

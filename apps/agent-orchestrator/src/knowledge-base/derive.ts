@@ -1,6 +1,7 @@
 import type { SkillAccess } from "../skills/types.js";
 import {
   knowledgeBaseLookupToolId,
+  knowledgeBaseRecentToolId,
   knowledgeBaseReadToolId,
   connectionLabel,
   knowledgeBaseLabel,
@@ -68,7 +69,7 @@ export function deriveKnowledgeBaseSkill(
   // search and could never read or look anything up, with the skill pointing
   // at a tool that did not exist.
   const liveToolIds = readable
-    ? [knowledgeBaseReadToolId(kb.id), knowledgeBaseLookupToolId(kb.id)]
+    ? [knowledgeBaseReadToolId(kb.id), knowledgeBaseLookupToolId(kb.id), knowledgeBaseRecentToolId(kb.id)]
     : [];
 
   return {
@@ -211,7 +212,11 @@ function knowledgeBaseMarkdown(
           "   particular documents — a retro, meeting notes, a proposal, a plan, \"the\n" +
           `   action items\" — find them, then read each one in full with \`${knowledgeBaseReadToolId(kb.id)}\`,\n` +
           "   passing the `reference:` its result shows, before you answer. Do not\n" +
-          "   summarise a document from the one or two passages that matched.\n"
+          "   summarise a document from the one or two passages that matched.\n" +
+          "   **Search cannot tell what is newest** — it ranks by relevance, not time.\n" +
+          "   For \"latest\", \"most recent\", \"what changed\" or \"what's new\" questions,\n" +
+          `   use \`${knowledgeBaseRecentToolId(kb.id)}\` (optionally naming one source, e.g. a channel) and answer from\n` +
+          "   the dates it returns; never pick \"the latest\" from search results.\n"
         : "") +
       "3. Answer **only** from what the tools returned. When they do not cover the\n" +
       "   question, say what is missing — never fill the gap from your own\n" +

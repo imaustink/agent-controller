@@ -255,6 +255,24 @@ export interface Driver {
    * MUST throw the classified errors, for the same reason `probe` must.
    */
   searchAsUser?(credentials: Credentials, scope: Scope, query: string, limit?: number): Promise<SearchHit[]>;
+
+  /**
+   * The scope's most recently changed items, newest first, as the calling user.
+   *
+   * The recency counterpart of `searchAsUser`, and bounded exactly as it is —
+   * by the corpus's scope AND the caller's identity, for the reasons given
+   * there. It answers "what is the latest here", which neither the index (a
+   * snapshot, ranked by similarity) nor a keyword search (ranked by relevance,
+   * and needing words to search for) can.
+   *
+   * Every hit MUST carry `updatedAt` (ISO 8601). Recency is the whole point of
+   * the call, and a hit without a time cannot be placed in the answer.
+   *
+   * Optional: a provider that cannot sort by time simply does not implement it.
+   *
+   * MUST throw the classified errors, for the same reason `probe` must.
+   */
+  recentAsUser?(credentials: Credentials, scope: Scope, limit?: number): Promise<SearchHit[]>;
 }
 
 /**

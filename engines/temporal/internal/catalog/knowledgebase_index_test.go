@@ -133,7 +133,7 @@ func TestUpsertKnowledgeBaseIndexesASkillAndItsTools(t *testing.T) {
 	require.ElementsMatch(t, []string{"lead", "reader", "writer"}, skill.Roles)
 
 	require.ElementsMatch(t, []string{
-		"kb:globex/search", "kb:globex/read", "kb:globex/lookup",
+		"kb:globex/search", "kb:globex/read", "kb:globex/lookup", "kb:globex/recent",
 	}, h.tools.ids())
 	require.NotContains(t, h.tools.ids(), "kb:globex/fetch",
 		"fetch has no dispatch path, so no fetch tool is generated")
@@ -385,6 +385,25 @@ func TestLookupToolIsDistinctFromTheIndexedSearch(t *testing.T) {
 		"dispatch fails closed on an unrecognised operation")
 }
 
+// The recent face is chosen by embedding beside search and lookup, so its
+// description must lead with what only it does — time — and it must dispatch
+// as its own operation.
+func TestRecentToolIsDistinctAndDispatchesAsRecent(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+
+	rec, ok := h.tools.get("kb:globex/recent")
+	require.True(t, ok)
+	recent := decodeTool(t, rec)
+
+	require.Contains(t, recent.Description, "most recently changed")
+	require.Contains(t, recent.Description, "cannot order by time")
+	require.Equal(t, "recent", recent.KnowledgeBaseExec.Operation)
+}
+
 func TestLookupToolIsOmittedWhenNoMemberCanServeIt(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
@@ -399,6 +418,7 @@ func TestLookupToolIsOmittedWhenNoMemberCanServeIt(t *testing.T) {
 
 	require.NotContains(t, h.tools.ids(), "kb:leadsonly/lookup")
 	require.NotContains(t, h.tools.ids(), "kb:leadsonly/read")
+	require.NotContains(t, h.tools.ids(), "kb:leadsonly/recent")
 }
 
 func TestDeleteKnowledgeBaseRemovesEveryToolItOwns(t *testing.T) {

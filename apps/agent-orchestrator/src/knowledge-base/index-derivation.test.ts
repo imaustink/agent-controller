@@ -55,6 +55,7 @@ describe("deriveKnowledgeBaseIndex", () => {
     expect(tools.map((t) => t.id).sort()).toEqual([
       "kb:globex/lookup",
       "kb:globex/read",
+      "kb:globex/recent",
       "kb:globex/search",
     ]);
   });
@@ -156,5 +157,20 @@ describe("the live lookup tool", () => {
   it("is hidden, like every other generated tool", () => {
     const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
     expect(tools.find((t) => t.id === "kb:globex/lookup")!.hidden).toBe(true);
+  });
+});
+
+// The recent face is chosen by embedding beside search and lookup, so its
+// description must lead with what only it does — time — and it must dispatch
+// as its own operation. PARITY: TestRecentToolIsDistinctAndDispatchesAsRecent.
+describe("the recent face", () => {
+  it("leads with time and dispatches as recent", () => {
+    const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
+    const recent = tools.find((t) => t.id === "kb:globex/recent")!;
+
+    expect(recent.description).toContain("most recently changed");
+    expect(recent.description).toContain("cannot order by time");
+    expect(recent.knowledgeBaseExec?.operation).toBe("recent");
+    expect(recent.hidden).toBe(true);
   });
 });

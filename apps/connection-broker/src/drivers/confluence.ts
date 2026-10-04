@@ -535,6 +535,37 @@ export class ConfluenceDriver implements Driver {
       .filter((hit): hit is SearchHit => hit !== undefined);
   }
 
+  /**
+   * The space's most recently modified pages, as the caller (see
+   * Driver.recentAsUser).
+   *
+   * The same endpoint, the same space and `type = page` terms, and the same
+   * hit mapping as `searchAsUser` — every reason recorded there applies here
+   * too — with the text term swapped for an ordering. `lastModified` comes back
+   * on each result, which is what makes a hit's `updatedAt` honest.
+   *
+   * The space key needs no escaping: validateScope already restricts it to a
+   * character set with no quote or backslash in it.
+   */
+  async recentAsUser(credentials: Credentials, scope: Scope, limit = 10): Promise<SearchHit[]> {
+    this.validateScope(scope);
+    if (!credentials.delegated) {
+      throw new Error("a confluence recent read requires the calling user's delegated token");
+    }
+
+    const cql = `space = "${scope.space}" AND type = page order by lastmodified desc`;
+
+    const apiBase = await this.apiBaseFor(credentials.delegated);
+    const url = `${apiBase}/rest/api/search?cql=${encodeURIComponent(cql)}&limit=${Math.min(limit, 25)}`;
+    const body = (await this.request(url, credentials.delegated)) as {
+      results?: ConfluenceSearchResult[];
+    };
+
+    return (body.results ?? [])
+      .map((result) => toSearchHit(result, this.siteBaseUrl))
+      .filter((hit): hit is SearchHit => hit !== undefined);
+  }
+
   private async request(url: string, token: string | undefined): Promise<unknown> {
     if (!token) throw new Error("no credential supplied for a confluence request");
 

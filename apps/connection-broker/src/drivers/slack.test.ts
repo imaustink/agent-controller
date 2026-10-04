@@ -611,3 +611,95 @@ describe("searchAsUser", () => {
     expect(http).not.toHaveBeenCalled();
   });
 });
+
+describe("recentAsUser", () => {
+  const match = (ts: string, over = {}) => ({
+    ts,
+    text: `message ${ts}`,
+    channel: { id: "C123ABC", name: "team-snc" },
+    ...over,
+  });
+
+  const routed = (matches: unknown[], name: string | null = "team-snc") =>
+    vi.fn(async (url: string) => {
+      if (url.includes("conversations.info")) {
+        return name ? respond({ ok: true, channel: { name } }) : respond({ ok: false, error: "channel_not_found" });
+      }
+      return respond({ ok: true, messages: { matches } });
+    }) as unknown as FetchLike;
+
+  const searchParams = (http: FetchLike) =>
+    new URL(
+      (http as unknown as ReturnType<typeof vi.fn>).mock.calls
+        .map((c: unknown[]) => String(c[0]))
+        .find((u: string) => u.includes("search.messages"))!,
+    ).searchParams;
+
+  it("asks for the channel's messages, newest first, with no other terms", async () => {
+    const http = routed([]);
+    await driver(http).recentAsUser({ delegated: "u" }, SCOPE, 5);
+
+    const params = searchParams(http);
+    expect(params.get("query")).toBe("in:#team-snc");
+    expect(params.get("sort")).toBe("timestamp");
+    expect(params.get("sort_dir")).toBe("desc");
+    expect(params.get("count")).toBe("5");
+  });
+
+  it("caps the count at what search.messages is asked for elsewhere", async () => {
+    const http = routed([]);
+    await driver(http).recentAsUser({ delegated: "u" }, SCOPE, 500);
+    expect(searchParams(http).get("count")).toBe("20");
+  });
+
+  it("filters results by channel ID, because `in:` matches a mutable NAME", async () => {
+    const http = routed([
+      match("1700000002.000200", { channel: { id: "C_OTHER", name: "team-snc" } }),
+      match("1700000001.000100"),
+    ]);
+
+    const hits = await driver(http).recentAsUser({ delegated: "u" }, SCOPE);
+
+    expect(hits.map((h) => h.id)).toEqual(["C123ABC/1700000001.000100"]);
+  });
+
+  it("stamps every hit with the MESSAGE's own time, not its thread's", async () => {
+    // A recent reply in an old thread is recent; the citation still points at
+    // the thread so the read face fetches the whole conversation.
+    const http = routed([match("1700000500.123456", { thread_ts: "1600000000.000001" })]);
+
+    const [hit] = await driver(http).recentAsUser({ delegated: "u" }, SCOPE);
+
+    expect(hit!.id).toBe("C123ABC/1600000000.000001");
+    expect(hit!.updatedAt).toBe(new Date(1700000500123).toISOString());
+  });
+
+  it("returns nothing when the channel name cannot be resolved, rather than searching everywhere", async () => {
+    const http = routed([match("1.1")], null);
+
+    expect(await driver(http).recentAsUser({ delegated: "u" }, SCOPE)).toEqual([]);
+    const called = (http as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(called.some((u: string) => u.includes("search.messages"))).toBe(false);
+  });
+
+  it("refuses the service credential", async () => {
+    const http = vi.fn() as unknown as FetchLike;
+    await expect(driver(http).recentAsUser({ service: "s" }, SCOPE)).rejects.toThrow(/delegated token/);
+    expect(http).not.toHaveBeenCalled();
+  });
+});
+
+describe("searchAsUser hits carry a time", () => {
+  it("derives updatedAt from the matched message's ts", async () => {
+    const http = vi.fn(async (url: string) => {
+      if (url.includes("conversations.info")) return respond({ ok: true, channel: { name: "x" } });
+      return respond({
+        ok: true,
+        messages: { matches: [{ ts: "1700000000.500000", text: "hi", channel: { id: "C123ABC" } }] },
+      });
+    }) as unknown as FetchLike;
+
+    const [hit] = await driver(http).searchAsUser({ delegated: "u" }, SCOPE, "hi");
+    expect(hit!.updatedAt).toBe("2023-11-14T22:13:20.500Z");
+  });
+});

@@ -289,6 +289,96 @@ describe("searchAsUser", () => {
   });
 });
 
+describe("recentAsUser", () => {
+  /**
+   * F1 holds 40 subfolders, so the tree is 41 folders and the file query must
+   * split into two batches. Each batch answers with the files whose parent it
+   * names, newest first, the way Drive's orderBy would.
+   */
+  function wideTree(files: { id: string; parents: string[]; modifiedTime: string; mimeType?: string }[]) {
+    const subs = Array.from({ length: 40 }, (_, i) => ({ id: `S${i}` }));
+    return vi.fn(async (url: string) => {
+      const q = new URL(String(url)).searchParams.get("q") ?? "";
+      if (q.includes("mimeType = 'application/vnd.google-apps.folder'")) {
+        const parent = /'([^']+)' in parents/.exec(q)?.[1] ?? "";
+        return respond({ files: parent === "F1" ? subs : [] });
+      }
+      const named = new Set([...q.matchAll(/'([^']+)' in parents/g)].map((m) => m[1]));
+      return respond({
+        files: files
+          .filter((f) => f.parents.some((p) => named.has(p)))
+          .map((f) => ({ name: f.id, mimeType: "text/plain", ...f }))
+          .sort((a, b) => b.modifiedTime.localeCompare(a.modifiedTime)),
+      });
+    }) as unknown as FetchLike;
+  }
+
+  const fileQueries = (http: FetchLike) =>
+    (http as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .map((c: unknown[]) => new URL(String(c[0])).searchParams)
+      .filter((p: URLSearchParams) => !(p.get("q") ?? "").includes("mimeType = 'application/vnd.google-apps.folder'"));
+
+  it("asks Drive for the folder tree's files, newest first, as the caller", async () => {
+    const http = wideTree([]);
+    await driver(http).recentAsUser({ delegated: "user-token" }, { folderID: "F1" });
+
+    const queries = fileQueries(http);
+    expect(queries.length).toBeGreaterThan(0);
+    for (const params of queries) {
+      expect(params.get("orderBy")).toBe("modifiedTime desc");
+      expect(params.get("includeItemsFromAllDrives")).toBe("true");
+      expect(params.get("q")).toMatch(/^\('[^']+' in parents( or '[^']+' in parents)*\) and .*trashed = false$/);
+    }
+    // Every folder in the tree is named exactly once across the batches.
+    const named = queries.flatMap((p: URLSearchParams) =>
+      [...(p.get("q") ?? "").matchAll(/'([^']+)' in parents/g)].map((m) => m[1]),
+    );
+    expect(named.sort()).toEqual(["F1", ...Array.from({ length: 40 }, (_, i) => `S${i}`)].sort());
+
+    // Run on the CALLER's token, folder walk included.
+    for (const call of (http as unknown as ReturnType<typeof vi.fn>).mock.calls) {
+      expect((call[1] as { headers: Record<string, string> }).headers.Authorization).toBe("Bearer user-token");
+    }
+  });
+
+  it("batches a wide tree's parent clause rather than sending it in one query", async () => {
+    const http = wideTree([]);
+    await driver(http).recentAsUser({ delegated: "u" }, { folderID: "F1" });
+
+    expect(fileQueries(http)).toHaveLength(2);
+  });
+
+  it("merges the batches newest first, capped at the limit, with updatedAt on every hit", async () => {
+    // The newest file lives in the SECOND batch; a merge that concatenated
+    // without re-sorting would put it last.
+    const http = wideTree([
+      { id: "old-top", parents: ["F1"], modifiedTime: "2026-01-01T00:00:00Z" },
+      { id: "mid-sub", parents: ["S5"], modifiedTime: "2026-05-01T00:00:00Z" },
+      { id: "newest-deep", parents: ["S39"], modifiedTime: "2026-09-30T00:00:00Z" },
+      { id: "second-deep", parents: ["S35"], modifiedTime: "2026-08-01T00:00:00Z" },
+      { id: "photo", parents: ["S1"], modifiedTime: "2026-10-01T00:00:00Z", mimeType: "image/png" },
+    ]);
+
+    const hits = await driver(http).recentAsUser({ delegated: "u" }, { folderID: "F1" }, 3);
+
+    // The image is newest of all but not indexable, so it is not a hit.
+    expect(hits.map((h) => h.id)).toEqual(["newest-deep", "second-deep", "mid-sub"]);
+    expect(hits.map((h) => h.updatedAt)).toEqual([
+      "2026-09-30T00:00:00Z",
+      "2026-08-01T00:00:00Z",
+      "2026-05-01T00:00:00Z",
+    ]);
+  });
+
+  it("refuses the service credential", async () => {
+    const http = vi.fn() as unknown as FetchLike;
+    await expect(
+      driver(http).recentAsUser({ service: "s" }, { folderID: "F1" }),
+    ).rejects.toThrow(/delegated token/);
+    expect(http).not.toHaveBeenCalled();
+  });
+});
+
 describe("recursive listing", () => {
   /** Answers folder-enumeration queries and the file query separately. */
   function tree(children: Record<string, { id: string }[]>, files: unknown[]) {

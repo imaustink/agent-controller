@@ -248,6 +248,43 @@ export class SlackDriver implements Driver {
   }
 
   /**
+   * The channel's newest messages, as the caller (see Driver.recentAsUser).
+   *
+   * The same call and the same bound as `searchAsUser`, minus the words: an
+   * `in:` term on its own, sorted by time. Replies are included on purpose —
+   * "what was said last" is usually a reply — and each hit still cites its
+   * thread parent, so the read face fetches the conversation it belongs to.
+   *
+   * Unlike search, an unresolvable name returns NOTHING rather than a wider
+   * query. Search degrades to the caller's words across the workspace, which
+   * the id filter then narrows to a relevant handful; a terms-free query has
+   * no words to narrow by, so it would be "the newest messages anywhere this
+   * person can see", filtered down to whatever happened to be in our channel
+   * — a short, wrong answer to "what is the latest here".
+   */
+  async recentAsUser(credentials: Credentials, scope: Scope, limit = 10): Promise<SearchHit[]> {
+    this.validateScope(scope);
+    const token = requireDelegatedSlack(credentials);
+
+    const channel = scope.channel!;
+    const name = await this.channelName(token, channel);
+    if (!name) return [];
+
+    const body = (await this.call("search.messages", token, {
+      query: `in:#${name}`,
+      sort: "timestamp",
+      sort_dir: "desc",
+      count: String(Math.min(limit, 20)),
+    })) as { messages?: { matches?: SlackSearchMatch[] } };
+
+    return (body.messages?.matches ?? [])
+      // THE bound, exactly as in searchAsUser: `in:` is by name and names move.
+      .filter((match) => match.channel?.id === channel)
+      .map((match) => this.toSearchHit(channel, match))
+      .slice(0, limit);
+  }
+
+  /**
    * The channel's name, for the `in:` term. Cached, and never fatal.
    *
    * A failure here costs a wider search that the id filter still narrows, so
@@ -281,6 +318,9 @@ export class SlackDriver implements Driver {
       title: firstLine(match.text ?? "") || `message ${ts}`,
       url: match.permalink ?? this.messageUrl(channel, ts),
       version: ts,
+      // The MATCHED message's own time, not its thread's: a recent reply in an
+      // old thread is recent, and that is what a recency answer reports.
+      updatedAt: tsToISO(match.ts),
       excerpt: renderText(match.text ?? "").slice(0, 300) || undefined,
     };
   }
@@ -433,7 +473,7 @@ export class SlackDriver implements Driver {
       // Slack's ts IS the version: any edit produces a new one on the message
       // that changed.
       version: message.ts,
-      updatedAt: new Date(Number(message.ts.split(".")[0]) * 1000).toISOString(),
+      updatedAt: tsToISO(message.ts),
       // Channel membership governs, and this driver does not enumerate members.
       // Permissive rather than guessed: the probe is the authority, and
       // under-inclusion is the only direction that hurts (ADR 0040).
@@ -580,6 +620,17 @@ function requireToken(token: string | undefined): string {
  */
 function isNotInChannel(err: unknown): boolean {
   return err instanceof PermissionDeniedError && err.message.includes("not_in_channel");
+}
+
+/**
+ * A Slack ts (`<seconds>.<micros>`) as ISO 8601.
+ *
+ * Millisecond precision is all a Date holds, and is plenty: this is for a human
+ * reading "when", not for ordering messages that share a second.
+ */
+function tsToISO(ts: string): string | undefined {
+  const millis = Number(ts) * 1000;
+  return Number.isFinite(millis) ? new Date(millis).toISOString() : undefined;
 }
 
 const firstLine = (text: string): string =>

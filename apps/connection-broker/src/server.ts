@@ -27,6 +27,7 @@ import type { CorpusRegistry } from "./registry.js";
  *   GET  /corpora/:name/resources/:id          — one document, SCOPE-bounded (sync)
  *   GET  /corpora/:name/documents/:id          — one document, IDENTITY-bounded (read)
  *   GET  /corpora/:name/search?q=              — live search, SCOPE- and identity-bounded
+ *   GET  /corpora/:name/recent?limit=          — newest items, SCOPE- and identity-bounded
  *   POST /corpora/:name/probe                  — per-user authorization (ADR 0040)
  *   POST /corpora/:name/sync                   — run a reconcile now (sync only)
  *   POST /connections/:name/webhook            — provider change notification
@@ -119,7 +120,7 @@ async function handle(
           // ingestion credential, which is exactly what `fetch` already
           // encodes — so it authorizes as one rather than growing a fourth
           // operation that would have to be kept in step with it.
-          route.kind === "documents" || route.kind === "search" || route.id
+          route.kind === "documents" || route.kind === "search" || route.kind === "recent" || route.id
           ? "fetch"
           : "list";
     ({ credential } = authorize(caller, operation, route.name, delegated));
@@ -139,8 +140,9 @@ async function handle(
   const credentials: Credentials =
     credential === "service" ? { service: binding.serviceToken } : { delegated };
 
-  // `documents` and `search` are user reads BY DEFINITION: both answer "what
-  // can this person see", and both are meaningless without a person.
+  // `documents`, `search` and `recent` are user reads BY DEFINITION: each
+  // answers "what can this person see", and each is meaningless without a
+  // person.
   //
   // auth.ts authorizes them as a fetch, which is right about the danger — they
   // must never spend the ingestion credential — but a fetch is also a
@@ -149,7 +151,10 @@ async function handle(
   // that makes the boundary a thing each driver has to remember, and
   // `searchAsUser` is optional, so the next one can forget. Refusing here
   // makes it a property of the route instead.
-  if ((route.kind === "documents" || route.kind === "search") && credential !== "delegated") {
+  if (
+    (route.kind === "documents" || route.kind === "search" || route.kind === "recent") &&
+    credential !== "delegated"
+  ) {
     return send(res, 403, {
       error: `${route.kind} is a read on a user's behalf and requires a delegated token`,
     });
@@ -180,6 +185,21 @@ async function handle(
         // inconsistency between two neighbouring lines.
         binding.scope,
         query,
+        Number.isFinite(limit) && limit > 0 ? Math.min(limit, 25) : 10,
+      );
+      return send(res, 200, { hits });
+    }
+
+    if (route.kind === "recent") {
+      if (!binding.driver.recentAsUser) {
+        return send(res, 404, { error: `${binding.driver.provider} has no recent` });
+      }
+      const limit = Number(url.searchParams.get("limit") ?? "10");
+      const hits = await binding.driver.recentAsUser(
+        credentials,
+        // Scope-bounded, like search and for the same reason: "newest" with no
+        // anchor would be the newest thing this person can see anywhere.
+        binding.scope,
         Number.isFinite(limit) && limit > 0 ? Math.min(limit, 25) : 10,
       );
       return send(res, 200, { hits });
@@ -236,7 +256,7 @@ async function handle(
 interface Route {
   /** A corpus name for data routes; a CONNECTION name for a webhook. */
   name: string;
-  kind: "resources" | "documents" | "search" | "probe" | "sync" | "webhook";
+  kind: "resources" | "documents" | "search" | "recent" | "probe" | "sync" | "webhook";
   id?: string;
 }
 
@@ -352,6 +372,8 @@ function parseRoute(pathname: string): Route | undefined {
     // by the caller. `documents` may leave the scope because a citation
     // anchors it; a search has no anchor, so it may not.
     if (parts[2] === "search" && parts.length === 3) return { name, kind: "search" };
+    // Search's recency twin: the same two bounds, ordered by time not words.
+    if (parts[2] === "recent" && parts.length === 3) return { name, kind: "recent" };
     if (parts[2] === "resources") {
       if (parts.length === 3) return { name, kind: "resources" };
       if (parts.length === 4) {

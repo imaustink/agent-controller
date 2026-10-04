@@ -542,6 +542,64 @@ describe("probe", () => {
   });
 });
 
+describe("recentAsUser", () => {
+  const result = (id: string, lastModified: string) => ({
+    content: { id, type: "page", title: `Page ${id}` },
+    url: `/spaces/GLOBEX/pages/${id}`,
+    lastModified,
+  });
+
+  it("sends the space-bounded CQL ordered by lastmodified desc", async () => {
+    const http = vi.fn().mockResolvedValue(respond(200, { results: [] }));
+
+    await driverWith(http).recentAsUser({ delegated: "user-token" }, { space: "GLOBEX" }, 5);
+
+    const [url, init] = http.mock.calls[0]!;
+    const parsed = new URL(String(url));
+    expect(parsed.pathname).toBe(`/ex/confluence/${CLOUD_ID}/wiki/rest/api/search`);
+    expect(parsed.searchParams.get("cql")).toBe('space = "GLOBEX" AND type = page order by lastmodified desc');
+    expect(parsed.searchParams.get("limit")).toBe("5");
+    expect(init.headers.Authorization).toBe("Bearer user-token");
+  });
+
+  it("caps the limit at what the search endpoint serves", async () => {
+    const http = vi.fn().mockResolvedValue(respond(200, { results: [] }));
+    await driverWith(http).recentAsUser({ delegated: "u" }, { space: "GLOBEX" }, 500);
+    expect(new URL(String(http.mock.calls[0]![0])).searchParams.get("limit")).toBe("25");
+  });
+
+  it("carries lastModified onto every hit as updatedAt, in the source's order", async () => {
+    const http = vi.fn().mockResolvedValue(
+      respond(200, {
+        results: [result("2", "2026-09-30T10:00:00.000Z"), result("1", "2026-09-01T10:00:00.000Z")],
+      }),
+    );
+
+    const hits = await driverWith(http).recentAsUser({ delegated: "u" }, { space: "GLOBEX" });
+
+    expect(hits.map((h) => [h.id, h.updatedAt])).toEqual([
+      ["2", "2026-09-30T10:00:00.000Z"],
+      ["1", "2026-09-01T10:00:00.000Z"],
+    ]);
+    expect(hits[0]!.url).toBe("https://example.atlassian.net/wiki/spaces/GLOBEX/pages/2");
+  });
+
+  it("refuses the service credential", async () => {
+    const http = vi.fn();
+    await expect(
+      driverWith(http).recentAsUser({ service: "svc" }, { space: "GLOBEX" }),
+    ).rejects.toThrow(/delegated token/);
+    expect(http).not.toHaveBeenCalled();
+  });
+
+  it("throws the classified denial when the source refuses", async () => {
+    const http = vi.fn().mockResolvedValue(respond(403, {}));
+    await expect(
+      driverWith(http).recentAsUser({ delegated: "u" }, { space: "GLOBEX" }),
+    ).rejects.toBeInstanceOf(PermissionDeniedError);
+  });
+});
+
 describe("error classification", () => {
   it.each([403, 404])("treats %i as a denial", async (status) => {
     const http = vi.fn().mockResolvedValue(respond(status));

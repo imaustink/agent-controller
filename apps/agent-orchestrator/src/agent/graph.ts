@@ -31,6 +31,7 @@ import type { ResponseComposer } from "./response-composer.js";
 import { finalizeCitations, type CitedSource } from "../knowledge-base/cite.js";
 import type { CorpusReader } from "../knowledge-base/reader.js";
 import type { CorpusLookup } from "../knowledge-base/lookup.js";
+import type { CorpusRecent } from "../knowledge-base/recent.js";
 import type { MCPBrokerClient } from "../mcp/mcp-broker-client.js";
 import type { KnowledgeBaseSearcher } from "../knowledge-base/searcher.js";
 import { knowledgeBaseSkillId } from "../knowledge-base/types.js";
@@ -599,6 +600,11 @@ export interface AgentGraphDeps {
    * generated either.
    */
   corpusLookup?: CorpusLookup;
+  /**
+   * Lists a knowledge base's newest items live, as the caller — the recency
+   * face beside lookup. Absent when knowledge bases are not configured.
+   */
+  corpusRecent?: CorpusRecent;
   /**
    * Proxies an MCP tool call through the mcp-broker (docs/adr/0045). Absent when
    * `AGENT_MCP_BROKER_URL` is unset, in which case an `mcpExec` tool fails
@@ -2433,6 +2439,31 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           citationSources: found.sources ?? [],
           // Clears any stale verbatim marker, for the same reason as the read
           // face above. PARITY: the Go lookup face sets pendingVerbatim = "".
+          pendingVerbatimResult: undefined,
+          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
+        };
+      }
+
+      // The LIVE newest-first face. Beside lookup and for the same reasons: it
+      // runs as the caller, and its items are material to answer from.
+      // PARITY: the Go "recent" branch in agentloop.go.
+      if (tool.knowledgeBaseExec?.operation === "recent") {
+        if (!deps.corpusRecent) {
+          return { error: `tool ${tool.id} lists a corpus but knowledge bases are not configured` };
+        }
+        if (!state.identity) {
+          return { error: `tool ${tool.id} requires a resolved caller identity` };
+        }
+        const found = await deps.corpusRecent.recent(
+          tool,
+          input,
+          { subject: state.identity.subject, roles: state.identity.roles },
+          nextCitation(state),
+        );
+        const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, found);
+        return {
+          result,
+          citationSources: found.sources ?? [],
           pendingVerbatimResult: undefined,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
         };

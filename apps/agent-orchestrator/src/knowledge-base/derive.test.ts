@@ -112,6 +112,7 @@ describe("deriveKnowledgeBaseSkill", () => {
       "kb:globex/search",
       "kb:globex/read",
       "kb:globex/lookup",
+      "kb:globex/recent",
     ]);
   });
 
@@ -208,6 +209,14 @@ describe("the generated markdown", () => {
     expect(withApi).toContain("passing the `reference:` its result shows");
 
     expect(markdownFor({ ...globexKb(), corpusRefs: ["globex-slack-eng"] })).not.toContain("read each one in full");
+  });
+
+  it("sends newest-first questions to the recent tool, not search", () => {
+    const withApi = markdownFor(globexKb());
+    expect(withApi).toContain("Search cannot tell what is newest");
+    expect(withApi).toContain("use `kb:globex/recent`");
+
+    expect(markdownFor({ ...globexKb(), corpusRefs: ["globex-slack-eng"] })).not.toContain("kb:globex/recent");
   });
 
   it("includes the disclosure instruction only when disclosure is on", () => {

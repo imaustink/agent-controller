@@ -104,6 +104,7 @@ func knowledgeBaseToolIDs(id string) []string {
 		KnowledgeBaseSearchToolID(id),
 		KnowledgeBaseReadToolID(id),
 		KnowledgeBaseLookupToolID(id),
+		KnowledgeBaseRecentToolID(id),
 		KnowledgeBaseFetchToolID(id),
 	}
 }
@@ -230,6 +231,7 @@ func knowledgeBaseTools(kb KnowledgeBaseDescriptor, connections map[string]Corpu
 	if readable := readableMembers(kb, connections); len(readable) > 0 {
 		tools = append(tools, knowledgeBaseReadTool(kb, readable, exec("read")))
 		tools = append(tools, knowledgeBaseLookupTool(kb, readable, exec("lookup")))
+		tools = append(tools, knowledgeBaseRecentTool(kb, readable, exec("recent")))
 	}
 	return tools
 }
@@ -334,6 +336,49 @@ func knowledgeBaseLookupTool(
 		Output: "Matching documents with their titles, URLs and a `<corpus>/<id>` reference " +
 			"that can be read in full. Only what the asking user may see, and only from " +
 			"inside this knowledge base.",
+		AllowedRoles:      allowed,
+		KnowledgeBaseExec: exec,
+	}
+}
+
+// knowledgeBaseRecentTool is the LIVE "newest first" face, paired with lookup.
+//
+// The description leads with WHEN, as lookup's does: these faces are chosen by
+// embedding, and "search the knowledge base" fits all of them. What is unique
+// here is time — "latest", "most recent", "what changed" — which neither the
+// relevance-ranked index nor a keyword lookup can order by.
+func knowledgeBaseRecentTool(
+	kb KnowledgeBaseDescriptor,
+	readable []CorpusDescriptor,
+	exec *KnowledgeBaseExecSpec,
+) ToolDescriptor {
+	names := make([]string, 0, len(readable))
+	roles := map[string]bool{}
+	for _, conn := range readable {
+		names = append(names, fmt.Sprintf("%s (%s)", conn.ID, conn.Label()))
+		for _, role := range conn.AllowedRoles {
+			roles[role] = true
+		}
+	}
+	allowed := make([]string, 0, len(roles))
+	for role := range roles {
+		allowed = append(allowed, role)
+	}
+	sort.Strings(allowed)
+
+	return ToolDescriptor{
+		ID: KnowledgeBaseRecentToolID(kb.ID),
+		Description: fmt.Sprintf(
+			"List the most recently changed items in %s, newest first, asking the sources "+
+				"directly. Use for \"latest\", \"most recent\", \"what changed lately\" or "+
+				"\"what's new\" questions — search ranks by relevance and cannot order by time.",
+			kb.Label()),
+		Input: fmt.Sprintf(
+			"Optionally one source to narrow to — %s — by id or name; leave empty for all of "+
+				"them.", strings.Join(names, ", ")),
+		Output: "The newest items with when each changed, their titles, URLs and a " +
+			"`<corpus>/<id>` reference that can be read in full. Only what the asking user may " +
+			"see, and only from inside this knowledge base.",
 		AllowedRoles:      allowed,
 		KnowledgeBaseExec: exec,
 	}

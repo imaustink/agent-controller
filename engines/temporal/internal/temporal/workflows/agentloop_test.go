@@ -47,6 +47,8 @@ type loopEnv struct {
 	kbSearchSeq          []activities.SearchKnowledgeBaseOutput
 	kbSearchCalls        int
 	kbLookupResult       activities.LookupCorpusOutput
+	kbRecentInputs       []activities.RecentCorpusInput
+	kbRecentResult       activities.RecentCorpusOutput
 	runLocalToolInputs   []activities.RunLocalToolInput
 	runLocalToolResult   *messaging.Event
 	resolveAgentCalls    int
@@ -230,6 +232,10 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	})
 	reg(activities.LookupCorpusActivityName, func(context.Context, activities.LookupCorpusInput) (activities.LookupCorpusOutput, error) {
 		return le.kbLookupResult, nil
+	})
+	reg(activities.RecentCorpusActivityName, func(_ context.Context, in activities.RecentCorpusInput) (activities.RecentCorpusOutput, error) {
+		le.kbRecentInputs = append(le.kbRecentInputs, in)
+		return le.kbRecentResult, nil
 	})
 	reg(activities.ComposeResponseActivityName, func(context.Context, activities.ComposeResponseInput) (activities.ComposedResponse, error) {
 		le.composeCalls++
@@ -827,6 +833,48 @@ func TestKnowledgeBaseCitationNumbersRunAcrossTheTurn(t *testing.T) {
 //
 // This CAN fail: the old branch returned the lookup result after one planner
 // call, so the reply was the raw list and planCalls was 1.
+// "What was the most recent message in #team-snc?" — the recent face takes the
+// planner's source name, continues the turn's citation numbering, feeds back
+// into the loop, and its items are linked inline like any other result. This
+// CAN fail: without the dispatch branch the "recent" operation has no path and
+// the turn errors.
+func TestKnowledgeBaseRecentAnswersNewestFirstQuestions(t *testing.T) {
+	le := newLoopEnv(t)
+	skill := kbSkillTools()
+	skill.Skill.ToolIDs = append(skill.Skill.ToolIDs, "kb:globex/recent")
+	skill.Tools = append(skill.Tools, catalog.ToolDescriptor{
+		ID: "kb:globex/recent", Description: "most recently changed items, newest first",
+		AllowedRoles: []string{"cook"},
+		KnowledgeBaseExec: &catalog.KnowledgeBaseExecSpec{
+			KnowledgeBaseID: "globex", DisplayName: "GLOBEX", Operation: "recent",
+		},
+	})
+	le.skills = []catalog.SkillDescriptor{skill.Skill}
+	le.selected = "kb:globex"
+	le.skillTools = skill
+	le.kbRecentResult = activities.RecentCorpusOutput{
+		Result:  "Most recent in GLOBEX (#team-snc), newest first:\n\n- [1] has joined the channel — #team-snc · changed 2026-09-21T18:00:00Z",
+		Sources: []corpus.Source{{N: 1, Title: "has joined the channel", URL: "https://slack/join"}},
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/recent", ToolInput: "#team-snc"},
+		{Action: activities.ActionRespond, Response: "The latest message is a channel join on Sep 21 [1]."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "what was the most recent message in #team-snc?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Len(t, le.kbRecentInputs, 1)
+	require.Equal(t, "#team-snc", le.kbRecentInputs[0].Source)
+	require.Equal(t, 1, le.kbRecentInputs[0].FirstIndex)
+	require.Equal(t, 2, le.planCalls, "the planner saw the items and wrote the answer")
+	require.Equal(t, "The latest message is a channel join on Sep 21 [has joined the channel](https://slack/join).", res.Reply)
+}
+
 func TestKnowledgeBaseLookupFeedsBackIntoTheLoop(t *testing.T) {
 	le := newLoopEnv(t)
 	skill := kbSkillTools()

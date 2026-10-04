@@ -8,6 +8,7 @@ import {
   knowledgeBaseLabel,
   knowledgeBaseLookupToolId,
   knowledgeBaseReadToolId,
+  knowledgeBaseRecentToolId,
   knowledgeBaseSearchToolId,
   type CorpusDescriptor,
   type KnowledgeBaseDescriptor,
@@ -79,7 +80,7 @@ export function knowledgeBaseTools(
   roles: string[],
 ): ToolDescriptor[] {
   const label = knowledgeBaseLabel(kb);
-  const exec = (operation: "search" | "read" | "lookup"): KnowledgeBaseExecSpec => ({
+  const exec = (operation: "search" | "read" | "lookup" | "recent"): KnowledgeBaseExecSpec => ({
     knowledgeBaseId: kb.id,
     displayName: label,
     operation,
@@ -122,6 +123,7 @@ export function knowledgeBaseTools(
   if (readable.length > 0) {
     tools.push(knowledgeBaseReadTool(kb, readable, exec("read")));
     tools.push(knowledgeBaseLookupTool(kb, readable, exec("lookup")));
+    tools.push(knowledgeBaseRecentTool(kb, readable, exec("recent")));
   }
 
   return tools;
@@ -200,6 +202,43 @@ export function knowledgeBaseLookupTool(
       "\nOutput: Matching documents with their titles, URLs and a `<corpus>/<id>` " +
       "reference that can be read in full. Only what the asking user may see, and only " +
       "from inside this knowledge base.",
+    allowedRoles: roles,
+    hidden: true,
+    knowledgeBaseExec: exec,
+  };
+}
+
+/**
+ * The LIVE "newest first" face, paired with lookup.
+ *
+ * The description leads with WHEN, as lookup's does: these faces are chosen by
+ * embedding, and "search the knowledge base" fits all of them. What is unique
+ * here is time — "latest", "most recent", "what changed" — which neither the
+ * relevance-ranked index nor a keyword lookup can order by.
+ *
+ * PARITY: `knowledgeBaseRecentTool` in `engines/temporal/internal/catalog`.
+ */
+export function knowledgeBaseRecentTool(
+  kb: KnowledgeBaseDescriptor,
+  readable: CorpusDescriptor[],
+  exec: ToolDescriptor["knowledgeBaseExec"],
+): ToolDescriptor {
+  const label = knowledgeBaseLabel(kb);
+  const names = readable.map((connection) => `${connection.id} (${connectionLabel(connection)})`).join(", ");
+  const roles = [...new Set(readable.flatMap((connection) => connection.allowedRoles))].sort();
+
+  return {
+    id: knowledgeBaseRecentToolId(kb.id),
+    name: `What's new in ${label}`,
+    description:
+      `List the most recently changed items in ${label}, newest first, asking the sources ` +
+      'directly. Use for "latest", "most recent", "what changed lately" or "what\'s new" ' +
+      "questions — search ranks by relevance and cannot order by time." +
+      `\n\nInput: Optionally one source to narrow to — ${names} — by id or name; leave ` +
+      "empty for all of them." +
+      "\nOutput: The newest items with when each changed, their titles, URLs and a " +
+      "`<corpus>/<id>` reference that can be read in full. Only what the asking user may " +
+      "see, and only from inside this knowledge base.",
     allowedRoles: roles,
     hidden: true,
     knowledgeBaseExec: exec,

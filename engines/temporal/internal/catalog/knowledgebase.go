@@ -51,6 +51,14 @@ func KnowledgeBaseLookupToolID(name string) string {
 	return KnowledgeBaseIDPrefix + name + "/lookup"
 }
 
+// KnowledgeBaseRecentToolID is the LIVE "newest first" face a KnowledgeBase
+// generates: the sources' most recently changed items, asked of the sources
+// themselves. The index cannot answer "what is the latest…": it ranks by
+// relevance, not time, and lags by a sync interval.
+func KnowledgeBaseRecentToolID(name string) string {
+	return KnowledgeBaseIDPrefix + name + "/recent"
+}
+
 // CorpusGetToolID is the id a PER-MEMBER read tool used to carry. No such tool
 // is generated any more — one read per knowledge base replaced them — and the
 // id is retained only so DeleteKnowledgeBase can remove records written by an
@@ -274,7 +282,8 @@ func DeriveKnowledgeBaseSkill(kb KnowledgeBaseDescriptor, connections map[string
 	// the lookup id left it generated, hidden and uncallable — a knowledge base
 	// that could search its index and never ask the source what was there now.
 	if readable {
-		toolIDs = append(toolIDs, KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseLookupToolID(kb.ID))
+		toolIDs = append(toolIDs, KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseLookupToolID(kb.ID),
+			KnowledgeBaseRecentToolID(kb.ID))
 	}
 
 	skill := SkillDescriptor{
@@ -420,8 +429,13 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []CorpusDescripto
 				"   particular documents — a retro, meeting notes, a proposal, a plan, \"the\n"+
 				"   action items\" — find them, then read each one in full with `%s`,\n"+
 				"   passing the `reference:` its result shows, before you answer. Do not\n"+
-				"   summarise a document from the one or two passages that matched.\n",
-			KnowledgeBaseLookupToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID))
+				"   summarise a document from the one or two passages that matched.\n"+
+				"   **Search cannot tell what is newest** — it ranks by relevance, not time.\n"+
+				"   For \"latest\", \"most recent\", \"what changed\" or \"what's new\" questions,\n"+
+				"   use `%s` (optionally naming one source, e.g. a channel) and answer from\n"+
+				"   the dates it returns; never pick \"the latest\" from search results.\n",
+			KnowledgeBaseLookupToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID),
+			KnowledgeBaseRecentToolID(kb.ID))
 	}
 	b.WriteString("3. Answer **only** from what the tools returned. When they do not cover\n" +
 		"   the question, say what is missing — never fill the gap from your own\n" +

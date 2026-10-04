@@ -220,6 +220,7 @@ func TestDeriveKnowledgeBaseSkill(t *testing.T) {
 			"kb:globex/search",
 			"kb:globex/read",   // one read tool, because a member can serve one
 			"kb:globex/lookup", // and the live search beside it
+			"kb:globex/recent", // and the live newest-first face
 		}, skill.ToolIDs)
 	})
 
@@ -365,6 +366,16 @@ func TestKnowledgeBaseMarkdown(t *testing.T) {
 		kb := globexKB()
 		kb.CorpusRefs = []string{"globex-slack-eng"} // no read tool generated
 		require.NotContains(t, catalog.DeriveKnowledgeBaseSkill(kb, conns).Markdown, "read each one in full")
+	})
+
+	t.Run("sends newest-first questions to the recent tool, not search", func(t *testing.T) {
+		withAPI := catalog.DeriveKnowledgeBaseSkill(globexKB(), conns).Markdown
+		require.Contains(t, withAPI, "Search cannot tell what is newest")
+		require.Contains(t, withAPI, "use `kb:globex/recent`")
+
+		kb := globexKB()
+		kb.CorpusRefs = []string{"globex-slack-eng"} // no live faces generated
+		require.NotContains(t, catalog.DeriveKnowledgeBaseSkill(kb, conns).Markdown, "kb:globex/recent")
 	})
 
 	t.Run("includes the disclosure instruction only when disclosure is on", func(t *testing.T) {

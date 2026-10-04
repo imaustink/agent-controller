@@ -412,6 +412,66 @@ export class GDriveDriver implements Driver {
     return hits;
   }
 
+  /**
+   * The folder tree's most recently modified files, as the caller (see
+   * Driver.recentAsUser).
+   *
+   * Built the way `list` is rather than the way `searchAsUser` is. Search can
+   * afford to query the whole Drive and keep what the parent walk admits,
+   * because its words already narrow the candidates to a relevant few. "Newest
+   * anywhere" has no words: the user's whole Drive sorted by time would be
+   * mostly files from elsewhere, and the walk would leave a short, wrong
+   * answer. So the bound goes INTO the query, as `list` puts it — every folder
+   * in the tree named as a parent.
+   *
+   * The tree is walked with the caller's token. It may come from the cache a
+   * sync filled with the service credential, which is fine: it is a set of
+   * folder ids inside the scope, not a grant. What the caller may SEE is
+   * decided by the file query, which always runs as them.
+   *
+   * Batched, because a wide tree's parent clause outgrows what Drive will
+   * accept in one `q`. Each batch is already newest-first, so taking `limit`
+   * from each and merging gives the true newest `limit` overall.
+   */
+  async recentAsUser(credentials: Credentials, scope: Scope, limit = 10): Promise<SearchHit[]> {
+    this.validateScope(scope);
+    const token = requireDelegatedDrive(credentials);
+    const wanted = Math.min(limit, 25);
+
+    const folders = await this.descendantFolders(scope.folderID!, token);
+    const batches: string[][] = [];
+    for (let i = 0; i < folders.length; i += RECENT_PARENTS_PER_QUERY) {
+      batches.push(folders.slice(i, i + RECENT_PARENTS_PER_QUERY));
+    }
+
+    const pages = await Promise.all(
+      batches.map(async (batch) => {
+        const parents = batch.map((id) => `'${id}' in parents`).join(" or ");
+        const body = (await this.call("/files", token, {
+          // Folders excluded in the query, not just by indexable(): a folder's
+          // modifiedTime moves whenever a child changes, so they would
+          // otherwise crowd the newest-first page they are then filtered from.
+          q: `(${parents}) and mimeType != 'application/vnd.google-apps.folder' and trashed = false`,
+          fields: "files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size,shortcutDetails)",
+          orderBy: "modifiedTime desc",
+          // Over-fetched for the same reason search does: indexable() drops
+          // binaries after the fact, and a page of exactly `limit` would come
+          // back short whenever the newest files were images.
+          pageSize: String(Math.min(wanted * 3, 100)),
+          includeItemsFromAllDrives: "true",
+        })) as { files?: DriveFile[] };
+        return body.files ?? [];
+      }),
+    );
+
+    return pages
+      .flat()
+      .filter((file) => this.indexable(file))
+      .sort((a, b) => modifiedMillis(b) - modifiedMillis(a))
+      .slice(0, wanted)
+      .map((file) => toRef(file));
+  }
+
   async probe(scope: Scope, credentials: Credentials, id?: string): Promise<ProbeResult> {
     this.validateScope(scope);
     if (!id) throw new Error("gdrive probes are per resource and need a file id");
@@ -679,6 +739,20 @@ const MAX_TREE_FOLDERS = 200;
 
 /** Pages of subfolders to read per parent before giving up on the walk. */
 const MAX_TREE_PAGES = 50;
+
+/**
+ * Parent folders named per `recentAsUser` query.
+ *
+ * Drive documents no hard limit on `q`, but a long OR chain starts failing with
+ * an unhelpful 400 well before MAX_TREE_FOLDERS; 30 stays comfortably inside.
+ */
+const RECENT_PARENTS_PER_QUERY = 30;
+
+/** A file's modifiedTime as a sortable number; an absent one sorts last. */
+function modifiedMillis(file: DriveFile): number {
+  const millis = file.modifiedTime ? Date.parse(file.modifiedTime) : NaN;
+  return Number.isFinite(millis) ? millis : 0;
+}
 
 function toRef(file: DriveFile) {
   return {

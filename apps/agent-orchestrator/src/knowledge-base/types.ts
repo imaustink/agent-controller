@@ -36,6 +36,14 @@ export const knowledgeBaseReadToolId = (name: string) =>
 export const knowledgeBaseLookupToolId = (name: string) =>
   `${KNOWLEDGE_BASE_ID_PREFIX}${name}/lookup`;
 
+/**
+ * The LIVE "newest first" face: the sources' most recently changed items. The
+ * index cannot answer "what is the latest…" — it ranks by relevance, not time,
+ * and lags by a sync interval. PARITY: KnowledgeBaseRecentToolID.
+ */
+export const knowledgeBaseRecentToolId = (name: string) =>
+  `${KNOWLEDGE_BASE_ID_PREFIX}${name}/recent`;
+
 export const knowledgeBaseFetchToolId = (name: string) =>
   `${KNOWLEDGE_BASE_ID_PREFIX}${name}/fetch`;
 /**
@@ -51,6 +59,7 @@ export const knowledgeBaseToolIds = (name: string) => [
   knowledgeBaseSearchToolId(name),
   knowledgeBaseReadToolId(name),
   knowledgeBaseLookupToolId(name),
+  knowledgeBaseRecentToolId(name),
   knowledgeBaseFetchToolId(name),
 ];
 
