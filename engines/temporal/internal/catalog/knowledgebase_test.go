@@ -356,6 +356,17 @@ func TestKnowledgeBaseMarkdown(t *testing.T) {
 		require.NotContains(t, withoutAPI, "kb:globex/read")
 	})
 
+	t.Run("tells the planner to read whole documents for document-shaped questions", func(t *testing.T) {
+		withAPI := catalog.DeriveKnowledgeBaseSkill(globexKB(), conns).Markdown
+		require.Contains(t, withAPI, "Passages are fragments of documents")
+		require.Contains(t, withAPI, "read each one in full with `kb:globex/read`")
+		require.Contains(t, withAPI, "passing the `reference:` its result shows")
+
+		kb := globexKB()
+		kb.CorpusRefs = []string{"globex-slack-eng"} // no read tool generated
+		require.NotContains(t, catalog.DeriveKnowledgeBaseSkill(kb, conns).Markdown, "read each one in full")
+	})
+
 	t.Run("includes the disclosure instruction only when disclosure is on", func(t *testing.T) {
 		on := catalog.DeriveKnowledgeBaseSkill(globexKB(), conns).Markdown
 		require.Contains(t, on, "there may be more")

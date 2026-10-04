@@ -206,7 +206,12 @@ function knowledgeBaseMarkdown(
       (readable
         ? `   When the index looks stale or thin, go to the source directly: \`${knowledgeBaseLookupToolId(kb.id)}\`\n` +
           `   runs a live keyword search, and \`${knowledgeBaseReadToolId(kb.id)}\` reads a full\n` +
-          "   document when a passage is cut off or you need detail a chunk leaves out.\n"
+          "   document when a passage is cut off or you need detail a chunk leaves out.\n" +
+          "   **Passages are fragments of documents.** When the question is about\n" +
+          "   particular documents — a retro, meeting notes, a proposal, a plan, \"the\n" +
+          `   action items\" — find them, then read each one in full with \`${knowledgeBaseReadToolId(kb.id)}\`,\n` +
+          "   passing the `reference:` its result shows, before you answer. Do not\n" +
+          "   summarise a document from the one or two passages that matched.\n"
         : "") +
       "3. Answer **only** from what the tools returned. When they do not cover the\n" +
       "   question, say what is missing — never fill the gap from your own\n" +

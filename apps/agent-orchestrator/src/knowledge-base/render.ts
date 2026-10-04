@@ -78,6 +78,10 @@ export function render(input: RenderInput): string {
         (chunk.stale
           ? " · **may be out of date** (the source has changed since this was indexed)"
           : ""),
+      // The whole document behind this passage, in exactly the form the live
+      // read tool takes — without it a search could surface a document the
+      // model had no way to open. PARITY: render.go; lookup's `reference:` line.
+      `reference: ${chunk.chunk.connectionId}/${chunk.chunk.sourceId}`,
       "",
       "```text",
       chunk.chunk.text.trim(),

@@ -186,6 +186,18 @@ describe("render", () => {
     expect(out.indexOf("[1] First")).toBeLessThan(out.indexOf("[2] Second"));
   });
 
+  // A search hit must say how to open its whole document; read needs
+  // `<corpus>/<id>`. PARITY: TestRenderGivesEachPassageAReadableReference.
+  it("gives each passage a readable reference", () => {
+    const out = render({
+      outcome: outcome({ chunks: [authorized("Retro", "u1", "action items")] }),
+      withheld: 0,
+      disclose: true,
+    });
+
+    expect(out).toContain("reference: globex-confluence/page-1");
+  });
+
   // A turn can search more than once and the model cites across all of it, so
   // a later search continues the turn's numbering rather than reusing [1].
   it("continues the turn's citation numbering", () => {

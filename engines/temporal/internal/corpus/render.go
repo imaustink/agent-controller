@@ -87,6 +87,12 @@ func Render(in RenderInput) string {
 			// rather than silently presenting an old passage as current.
 			b.WriteString(" · **may be out of date** (the source has changed since this was indexed)")
 		}
+		// The whole document behind this passage, in exactly the form the live
+		// read tool takes. Without it a search could surface a document but the
+		// model had no way to open it — only lookup hits carried a reference —
+		// so a question about a document (a retro, meeting notes) was answered
+		// from an 800-token fragment of it. PARITY: lookup's `reference:` line.
+		fmt.Fprintf(&b, "\nreference: %s/%s", chunk.Chunk.CorpusID, chunk.Chunk.SourceID)
 		b.WriteString("\n\n")
 		b.WriteString("```text\n")
 		b.WriteString(strings.TrimSpace(chunk.Chunk.Text))

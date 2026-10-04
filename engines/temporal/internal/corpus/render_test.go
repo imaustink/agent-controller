@@ -192,6 +192,17 @@ func TestRenderNumbersPassagesInRankOrder(t *testing.T) {
 	require.Less(t, strings.Index(out, "[1] First"), strings.Index(out, "[2] Second"))
 }
 
+// A search hit must say how to open its whole document. Without the reference
+// the model could only answer from the passage; read needs `<corpus>/<id>`.
+// This CAN fail: passages used to carry no reference at all.
+func TestRenderGivesEachPassageAReadableReference(t *testing.T) {
+	out := corpus.Render(corpus.RenderInput{
+		Outcome: corpus.RetrieveOutcome{Chunks: []corpus.AuthorizedChunk{authorized("Retro", "u1", "action items")}},
+	})
+
+	require.Contains(t, out, "reference: globex-confluence/page-1")
+}
+
 // A turn can search more than once and the model cites across all of it, so a
 // later search continues the turn's numbering rather than reusing [1].
 func TestRenderContinuesTheTurnsCitationNumbering(t *testing.T) {

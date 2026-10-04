@@ -201,6 +201,15 @@ describe("the generated markdown", () => {
     expect(withoutApi).not.toContain("kb:globex/read");
   });
 
+  it("tells the planner to read whole documents for document-shaped questions", () => {
+    const withApi = markdownFor(globexKb());
+    expect(withApi).toContain("Passages are fragments of documents");
+    expect(withApi).toContain("read each one in full with `kb:globex/read`");
+    expect(withApi).toContain("passing the `reference:` its result shows");
+
+    expect(markdownFor({ ...globexKb(), corpusRefs: ["globex-slack-eng"] })).not.toContain("read each one in full");
+  });
+
   it("includes the disclosure instruction only when disclosure is on", () => {
     expect(markdownFor(globexKb())).toContain("there may be more");
     expect(markdownFor({ ...globexKb(), disclosePartialVisibility: false })).not.toContain(
