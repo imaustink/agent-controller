@@ -145,6 +145,32 @@ func TestLookupReportsWhatItCouldNotSearchRatherThanLookingComplete(t *testing.T
 	require.Contains(t, out.Result, "no live search")
 }
 
+// A refused source carries the broker's reason, not just a status. The broker
+// maps a source's non-denial failure to 503, so a bare "refused (503)" read the
+// same for an outage and for a linked token missing `search:confluence` — the
+// exact report that needed a cluster login to diagnose.
+//
+// This CAN fail: the old note was the bare status and dropped the body.
+func TestLookupCarriesTheBrokersReasonForARefusal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"confluence returned 401: Unauthorized; scope does not match"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	out, err := lookupActivities(srv, &fakeResolver{token: "user-token"}).LookupCorpus(
+		context.Background(),
+		activities.LookupCorpusInput{
+			Caller: activities.Caller{Subject: "s", Roles: []string{"reader"}},
+			Tool:   lookupTool(member("wiki", []string{"reader"}, "c1")),
+			Query:  "q",
+		})
+
+	require.NoError(t, err)
+	require.Contains(t, out.Result, "refused (503): confluence returned 401: Unauthorized; scope does not match")
+}
+
 func TestLookupAsksForALinkOnlyWhenNothingCouldBeSearched(t *testing.T) {
 	srv, _ := brokerStub(t, map[string]any{})
 

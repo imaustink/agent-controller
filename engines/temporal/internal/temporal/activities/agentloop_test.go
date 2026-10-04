@@ -3,6 +3,7 @@ package activities_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -17,13 +18,15 @@ type fakeLLM struct {
 	payload    string
 	lastSystem string
 	lastUser   string
+	lastSchema llm.ResponseSchema
 }
 
 func (f *fakeLLM) Complete(context.Context, []llm.Message) (string, error) {
 	return f.payload, nil
 }
 
-func (f *fakeLLM) CompleteJSON(_ context.Context, messages []llm.Message, _ llm.ResponseSchema) (json.RawMessage, error) {
+func (f *fakeLLM) CompleteJSON(_ context.Context, messages []llm.Message, schema llm.ResponseSchema) (json.RawMessage, error) {
+	f.lastSchema = schema
 	for _, m := range messages {
 		switch m.Role {
 		case "system":
@@ -154,6 +157,40 @@ func TestPlanActionFoldsHistoryAndSkillPrompt(t *testing.T) {
 	require.Equal(t, activities.ActionFinish, plan.Action)
 	require.Contains(t, fake.lastSystem, "# Recipe workflow instructions", "skill markdown is the system prompt")
 	require.Contains(t, fake.lastUser, "succeeded: # Pasta", "history must be in the prompt")
+}
+
+// RespondOnly pins the schema to `respond`, tells the model the turn is over,
+// and refuses anything else a provider might return despite the schema.
+func TestPlanActionRespondOnlyIsEnforced(t *testing.T) {
+	fake := &fakeLLM{payload: `{"action":"respond","tool_id":"","tool_input":"","response":"The answer.","tool_instance_key":""}`}
+	a := &activities.AgentLoopActivities{LLM: fake}
+
+	plan, err := a.PlanAction(context.Background(), activities.PlanActionInput{Request: "x", RespondOnly: true})
+	require.NoError(t, err)
+	require.Equal(t, "The answer.", plan.Response)
+	require.Contains(t, string(fake.lastSchema.Schema), `"enum": ["respond"]`)
+	require.NotContains(t, string(fake.lastSchema.Schema), "call_tool")
+	require.Contains(t, fake.lastSystem, "no more tools can be called")
+
+	fake.payload = `{"action":"call_tool","tool_id":"kb:x/search","tool_input":"q","response":"","tool_instance_key":""}`
+	_, err = a.PlanAction(context.Background(), activities.PlanActionInput{Request: "x", RespondOnly: true})
+	require.Error(t, err, "a respond-only plan must not come back as another tool call")
+}
+
+// A full knowledge-base search (twelve passages) must reach the planner whole.
+// At the old 4000-char cap the planner saw only the first passage or two, so a
+// synthesized answer was written from a sliver of what was retrieved.
+func TestPlanActionKeepsAFullSearchResultInHistory(t *testing.T) {
+	fake := &fakeLLM{payload: `{"action":"finish","tool_id":"","tool_input":"","response":""}`}
+	a := &activities.AgentLoopActivities{LLM: fake}
+	result := strings.Repeat("passage text ", 2500) + "LAST-PASSAGE-MARKER" // ~32k chars
+
+	_, err := a.PlanAction(context.Background(), activities.PlanActionInput{
+		Request: "x",
+		History: []activities.ActionRecord{{ToolID: "kb:x/search", Input: "q", Succeeded: true, Result: result}},
+	})
+	require.NoError(t, err)
+	require.Contains(t, fake.lastUser, "LAST-PASSAGE-MARKER")
 }
 
 // The fit gate exists to reject loose keyword overlap, so every uncertain

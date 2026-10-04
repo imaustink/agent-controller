@@ -1021,6 +1021,42 @@ function lastHistoryResult(state: AgentState): { result?: unknown } {
 }
 
 /**
+ * How the plan loop ends when the planner did not `respond` — an explicit
+ * finish, the repeat guard, or the step cap.
+ *
+ * Normally that shows the last tool's result as-is. But a knowledge-base result
+ * (search, lookup or read) is retrieved material, never a finished answer, and
+ * finishing on it handed the user raw passages or a list of live hits. So when
+ * the last call was a knowledge-base tool, ask the planner once more,
+ * respond-only, and return its synthesis exactly as a `respond` would
+ * (citations re-applied by respondResult). A failed or empty synthesis degrades
+ * to the verbatim finish rather than failing the turn.
+ *
+ * PARITY: step 6b in engines/temporal/internal/temporal/workflows/agentloop.go.
+ */
+async function finishPlanLoop(deps: AgentGraphDeps, state: AgentState): Promise<Partial<AgentState>> {
+  const last = state.actionHistory[state.actionHistory.length - 1];
+  const lastTool = last ? state.skillTools.find((t) => t.id === last.toolId) : undefined;
+  if (lastTool?.knowledgeBaseExec && state.selectedSkill) {
+    try {
+      const planned = await deps.actionPlanner.plan(
+        state.request,
+        state.selectedSkill,
+        state.skillTools,
+        state.actionHistory,
+        { respondOnly: true },
+      );
+      if (planned.action === "respond" && planned.response.trim()) {
+        return { result: respondResult(state, planned.response), plannedAction: "respond" };
+      }
+    } catch {
+      // Degrade to the verbatim finish below: an unsynthesized answer beats none.
+    }
+  }
+  return { plannedAction: "finish", ...lastHistoryResult(state) };
+}
+
+/**
  * The text a `respond` turn returns, after re-applying in code the deterministic
  * output a tool produced this turn but that the planner's own prose would
  * otherwise discard — the "finish vs respond" verbatim gap.
@@ -2177,13 +2213,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // last tool's result rather than erroring, since a genuine answer is
       // already in hand.
       if (state.actionHistory.length >= MAX_TOOL_STEPS) {
-        return { plannedAction: "finish", ...lastHistoryResult(state) };
+        return finishPlanLoop(deps, state);
       }
       const planned = await deps.actionPlanner.plan(state.request, state.selectedSkill, state.skillTools, state.actionHistory, {
         callerToolRequired: state.callerToolChoiceRequired,
       });
       if (planned.action === "finish") {
-        return { plannedAction: "finish", ...lastHistoryResult(state) };
+        return finishPlanLoop(deps, state);
       }
       if (planned.action === "respond") {
         // Re-apply in code the deterministic output this turn produced that the
@@ -2205,7 +2241,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // invocation, so `state.result` is unset and the answer lives only in
         // the seeded actionHistory. Without `lastHistoryResult` the blocking
         // facade would render `renderResult(undefined)` here.
-        return { plannedAction: "finish", ...lastHistoryResult(state) };
+        return finishPlanLoop(deps, state);
       }
       return {
         selectedTool: tool,
