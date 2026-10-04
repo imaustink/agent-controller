@@ -4429,14 +4429,13 @@ describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
       toolIds: ["kb:globex/search"],
       agentIds: [],
     };
-    const citations =
-      "Sources:\n- [Auth design](https://wiki/auth)\n\n" +
-      "What this answer could not see:\n" +
-      "- 2 source(s) in this knowledge base are outside your access, so there may be more you cannot see.\n" +
-      "- 3 source(s) need an account you have not linked (slack); link it and ask again to include them.";
     const search = vi.fn().mockResolvedValue({
-      result: `Found 1 passage(s).\n\n### 1. Auth design\n\`\`\`text\nWe use OIDC.\n\`\`\`\n\n${citations}\n`,
-      citations,
+      result: "### [1] Auth design\n```text\nWe use OIDC.\n```\n",
+      sources: [{ n: 1, title: "Auth design", url: "https://wiki/auth" }],
+      caveats: [
+        "2 source(s) in this knowledge base are outside your access, so there may be more you cannot see.",
+        "3 source(s) need an account you have not linked (slack); link it and ask again to include them.",
+      ],
     });
     const checkLinks = vi.fn().mockResolvedValue({ linkProviders: [], linkedProviders: ["atlassian"] });
 
@@ -4505,10 +4504,9 @@ describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
       toolIds: ["kb:globex/search"],
       agentIds: [],
     };
-    const citations = "Sources:\n- [Auth design](https://wiki/auth)";
     const search = vi.fn().mockResolvedValue({
-      result: `### 1. Auth design\n\`\`\`text\nWe use OIDC.\n\`\`\`\n\n${citations}\n`,
-      citations,
+      result: "### [1] Auth design\n```text\nWe use OIDC.\n```\n",
+      sources: [{ n: 1, title: "Auth design", url: "https://wiki/auth" }],
     });
     const checkLinks = vi.fn().mockResolvedValue({ linkProviders: [], linkedProviders: ["atlassian"] });
     const plan = vi
@@ -4545,6 +4543,81 @@ describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
     expect(final.result).not.toContain("```text");
     expect(plan).toHaveBeenCalledTimes(3);
     expect(plan.mock.calls[2]?.[4]).toEqual({ respondOnly: true });
+  });
+
+  // Inline citations across a multi-search turn: the second search continues
+  // the turn's numbering, the model's [n] markers become the probe's links, an
+  // invented number is dropped, no Sources list is appended (it cited inline),
+  // and the disclosure is appended regardless. This CAN fail: the old respond
+  // path ignored markers and appended the last search's block verbatim.
+  it("links [n] markers inline across the turn's searches", async () => {
+    const kbTool: ToolDescriptor = {
+      id: "kb:globex/search",
+      name: "kb:globex/search",
+      description: "search the GLOBEX knowledge base",
+      allowedRoles: ["reader"],
+      knowledgeBaseExec: {
+        knowledgeBaseId: "globex",
+        displayName: "GLOBEX",
+        operation: "search",
+        members: [],
+        disclosePartialVisibility: true,
+      },
+    };
+    const kbSkill: SkillDescriptor = {
+      id: "kb:globex",
+      name: "GLOBEX knowledge base",
+      description: "search GLOBEX",
+      markdown: "# GLOBEX",
+      toolIds: ["kb:globex/search"],
+      agentIds: [],
+    };
+    const search = vi
+      .fn()
+      .mockResolvedValueOnce({
+        result: "### [1] Auth design",
+        sources: [{ n: 1, title: "Auth design", url: "https://wiki/auth" }],
+        caveats: ["2 source(s) in this knowledge base are outside your access, so there may be more you cannot see."],
+      })
+      .mockResolvedValueOnce({
+        result: "### [2] Rotation runbook",
+        sources: [{ n: 2, title: "Rotation runbook", url: "https://wiki/rotate" }],
+      });
+    const checkLinks = vi.fn().mockResolvedValue({ linkProviders: [], linkedProviders: ["atlassian"] });
+    const plan = vi
+      .fn()
+      .mockResolvedValueOnce({ action: "call_tool", toolId: "kb:globex/search", toolArgs: "auth" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "call_tool", toolId: "kb:globex/search", toolArgs: "rotation" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "respond", response: "OIDC [1], rotated hourly [2], audited [9]." } satisfies PlannedAction);
+
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: kbSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([kbSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(kbSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([{ tool: kbTool, score: 1 }]),
+      },
+      actionPlanner: { plan },
+      knowledgeBaseSearcher: { search, checkLinks } as unknown as AgentGraphDeps["knowledgeBaseSearcher"],
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "how does auth work?", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(search.mock.calls.map((call) => call[3])).toEqual([1, 2]);
+    expect(final.result).toContain(
+      "OIDC [Auth design](https://wiki/auth), rotated hourly [Rotation runbook](https://wiki/rotate), audited.",
+    );
+    expect(final.result).not.toContain("Sources:");
+    expect(final.result).toContain("outside your access");
   });
 
   // PART B: a stateful refine-loop tool's publish target is keyed from
@@ -4782,7 +4855,12 @@ describe("buildAgentGraph: deterministic knowledge-base link gate", () => {
 
     expect(checkLinks).not.toHaveBeenCalled();
     expect(search).toHaveBeenCalledTimes(1);
-    expect(search).toHaveBeenCalledWith(kbSearchTool, "how is auth configured", { subject: "alice", roles: ["reader"] });
+    expect(search).toHaveBeenCalledWith(
+      kbSearchTool,
+      "how is auth configured",
+      { subject: "alice", roles: ["reader"] },
+      1, // the turn's first citation number
+    );
     expect(final.linkGatePending).toBeFalsy();
   });
 });

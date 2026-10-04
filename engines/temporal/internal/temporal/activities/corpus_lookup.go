@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/corpus"
 )
 
 // LookupCorpusActivityName is the LIVE search face a knowledge base exposes.
@@ -23,6 +24,9 @@ type LookupCorpusInput struct {
 	Tool catalog.ToolDescriptor `json:"tool"`
 	// Query is the caller's words, passed to each provider's own search.
 	Query string `json:"query"`
+	// FirstIndex is the citation number the first hit takes: the turn's next
+	// unused number, shared with indexed search. Zero means 1.
+	FirstIndex int `json:"firstIndex,omitempty"`
 }
 
 // LookupCorpusOutput carries prose and citations, never a credential.
@@ -34,6 +38,10 @@ type LookupCorpusOutput struct {
 	NeedsLink bool `json:"needsLink,omitempty"`
 	// LinkProviders are the providers to link when NeedsLink.
 	LinkProviders []string `json:"linkProviders,omitempty"`
+	// Sources are the hits, numbered from FirstIndex, so an answer written from
+	// them can cite inline. Each title and URL is the source's own answer to a
+	// search run AS the caller, so it is theirs to see, like a probe's.
+	Sources []corpus.Source `json:"sources,omitempty"`
 }
 
 // LookupCorpus searches the SOURCES live, as the calling user.
@@ -141,7 +149,18 @@ func (a *KnowledgeBaseActivities) LookupCorpus(
 		}, nil
 	}
 
-	return LookupCorpusOutput{Result: renderLookup(exec.DisplayName, query, hits, unlinked, refused)}, nil
+	first := in.FirstIndex
+	if first < 1 {
+		first = 1
+	}
+	sources := make([]corpus.Source, 0, len(hits))
+	for i, hit := range hits {
+		sources = append(sources, corpus.Source{N: first + i, Title: hit.Title, URL: hit.URL})
+	}
+	return LookupCorpusOutput{
+		Result:  renderLookup(exec.DisplayName, query, first, hits, unlinked, refused),
+		Sources: sources,
+	}, nil
 }
 
 // lookupHit is one result, plus which member produced it.
@@ -161,15 +180,18 @@ type lookupHit struct {
 // tool takes. That is the point of the pairing: a lookup finds the current
 // document and hands back a reference that reads it, without the model having
 // to assemble one.
-func renderLookup(displayName, query string, hits []lookupHit, unlinked, refused []string) string {
+//
+// Each hit also leads with its citation marker, `[n]`, numbered on from the
+// turn's earlier results, which is what the model writes to cite it inline.
+func renderLookup(displayName, query string, firstIndex int, hits []lookupHit, unlinked, refused []string) string {
 	var out strings.Builder
 
 	if len(hits) == 0 {
 		fmt.Fprintf(&out, "Nothing in %s matches %q right now.", displayName, query)
 	} else {
 		fmt.Fprintf(&out, "Live results from %s for %q:\n", displayName, query)
-		for _, hit := range hits {
-			fmt.Fprintf(&out, "\n- %s — %s\n  reference: %s/%s", hit.Title, hit.member, hit.corpus, hit.ID)
+		for i, hit := range hits {
+			fmt.Fprintf(&out, "\n- [%d] %s — %s\n  reference: %s/%s", firstIndex+i, hit.Title, hit.member, hit.corpus, hit.ID)
 			if hit.URL != "" {
 				fmt.Fprintf(&out, "\n  %s", hit.URL)
 			}

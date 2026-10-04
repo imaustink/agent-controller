@@ -107,6 +107,10 @@ type SearchKnowledgeBaseInput struct {
 	// the model echoing a caveat). An empty LinkProviders means nothing is
 	// missing and the caller should proceed to the real search.
 	GateOnly bool `json:"gateOnly,omitempty"`
+	// FirstIndex is the citation number this search's first passage takes: the
+	// turn's next unused number, so a second search's passages never reuse [1]
+	// (see corpus.RenderInput.FirstIndex). Zero means 1.
+	FirstIndex int `json:"firstIndex,omitempty"`
 }
 
 // SearchKnowledgeBaseOutput carries prose, never a credential.
@@ -119,13 +123,22 @@ type SearchKnowledgeBaseOutput struct {
 	NeedsLink bool `json:"needsLink,omitempty"`
 	// LinkProviders are the providers the caller must link, when NeedsLink.
 	LinkProviders []string `json:"linkProviders,omitempty"`
-	// Citations is the probe-derived `Sources:` + "What this answer could not
-	// see" disclosure block ALONE (corpus.CitationsBlock), carried out separately
-	// so the workflow can DETERMINISTICALLY append it to whatever the turn finally
-	// returns — even a Respond answer the planner recomposed in its own prose.
-	// This closes the "finish vs respond" gap for KB citations/disclosure (ADR
-	// 0040). Empty for the needs-link asks (nothing was searched).
-	Citations string `json:"citations,omitempty"`
+	// Sources are this search's citable passages, numbered from FirstIndex, with
+	// the probe's title and URL; Caveats are what it could not see. Both are
+	// carried out separately so the workflow applies them in CODE to whatever the
+	// turn finally returns — the model's `[n]` markers become these links, and
+	// the caveats are appended whatever the model wrote (ADR 0040 survives
+	// finish/respond alike). Empty for the needs-link asks (nothing was searched).
+	Sources []corpus.Source `json:"sources,omitempty"`
+	Caveats []string        `json:"caveats,omitempty"`
+	// LegacyCitations is the pre-rendered `Sources:` + caveats block this
+	// activity returned before Sources/Caveats replaced it. Never written now —
+	// read only, so a turn in flight across the deploy whose search completed on
+	// the old worker (its result already in history in the old shape) still
+	// appends that block, rather than losing its citations AND its access
+	// disclosure (ADR 0040). Remove once no workflow from before the change can
+	// still be open, alongside the version guards in workflows/agentloop.go.
+	LegacyCitations string `json:"citations,omitempty"`
 }
 
 // SearchKnowledgeBase probes and renders one knowledge-base search.
@@ -162,8 +175,8 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 			Disclose: exec.DisclosePartialVisibility,
 		}
 		return SearchKnowledgeBaseOutput{
-			Result:    corpus.Render(renderInput),
-			Citations: corpus.CitationsBlock(renderInput),
+			Result:  corpus.Render(renderInput),
+			Caveats: corpus.CaveatLines(renderInput),
 		}, nil
 	}
 
@@ -232,20 +245,23 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 	// before the caller finished is simply replaced on the next ask.
 	unlinkedProviders := providersToLink(notLinked, tokens)
 	renderInput := corpus.RenderInput{
-		Outcome:  outcome,
-		Withheld: withheld,
-		Disclose: exec.DisclosePartialVisibility,
-		Unlinked: &corpus.Unlinked{Providers: unlinkedProviders, Sources: len(notLinked)},
+		Outcome:    outcome,
+		Withheld:   withheld,
+		Disclose:   exec.DisclosePartialVisibility,
+		Unlinked:   &corpus.Unlinked{Providers: unlinkedProviders, Sources: len(notLinked)},
+		FirstIndex: in.FirstIndex,
 	}
 	result := corpus.Render(renderInput)
 	result = a.startLinks(ctx, in.Caller, unlinkedProviders, result)
 
-	// Citations carried separately so the workflow appends it in code when the
-	// planner recomposes via Respond (ADR 0040 survives finish/respond alike).
+	// Sources and caveats carried separately so the workflow applies them in
+	// code when the planner recomposes via Respond (ADR 0040 survives
+	// finish/respond alike).
 	return SearchKnowledgeBaseOutput{
 		Result:        result,
 		LinkProviders: unlinkedProviders,
-		Citations:     corpus.CitationsBlock(renderInput),
+		Sources:       corpus.Sources(renderInput),
+		Caveats:       corpus.CaveatLines(renderInput),
 	}, nil
 }
 

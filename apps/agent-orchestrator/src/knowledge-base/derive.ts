@@ -212,23 +212,25 @@ function knowledgeBaseMarkdown(
       "   question, say what is missing — never fill the gap from your own\n" +
       "   knowledge, which is not this client's material and will read as though\n" +
       "   it were.\n" +
-      "4. The `Sources:` list and an access-disclosure note are appended to your\n" +
-      "   answer automatically, built from the same access check the search ran —\n" +
-      "   so you do not have to hand-assemble citations, and must not invent a URL\n" +
-      "   or reuse one from earlier in the conversation. Just ground every claim in\n" +
-      "   a chunk the search returned this turn; an ungrounded claim is not an\n" +
-      "   acceptable answer here.\n",
+      "4. **Cite inline, by number.** Every result carries a marker — `[1]`, `[2]`,\n" +
+      "   … — in its heading. Put a result's marker where you use it, and place it\n" +
+      "   where the source's name would read naturally, because it is replaced by\n" +
+      "   the source's title as a link: \"the demo runs through September, per\n" +
+      "   [3]\", or \"two engagements are active [1][4].\" Ground every claim in a\n" +
+      "   result returned this turn; an ungrounded claim is not an acceptable\n" +
+      "   answer here. A note on what the search could not see is appended\n" +
+      "   automatically.\n",
   );
 
   parts.push(
-    "Every result you get back was checked against your caller's own access\n" +
-      "to the source at the moment you searched, and its title and URL came back\n" +
-      "from that check. So: never build a citation out of anything else. Do not\n" +
-      "construct a URL, do not reuse a title or link you saw earlier in the\n" +
-      "conversation, and do not cite a document that search did not return to\n" +
-      "you on this turn. A link is content — citing one the caller may\n" +
-      "not open discloses exactly what checking their access was meant to\n" +
-      "prevent.\n",
+    "Write ONLY the bracketed number. Every result you get back was checked\n" +
+      "against your caller's own access to the source at the moment you\n" +
+      "searched, and the link a marker becomes comes from that check — so never\n" +
+      "write a URL or a title-as-link yourself, never reuse a link you saw\n" +
+      "earlier in the conversation, and never use a number no result was given\n" +
+      "this turn (it is removed, not linked). A link is content — citing one the\n" +
+      "caller may not open discloses exactly what checking their access was\n" +
+      "meant to prevent.\n",
   );
 
   parts.push("## What you must admit\n");

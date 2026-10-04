@@ -1,6 +1,7 @@
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import { BrokerProber, retrieve } from "./retrieve.js";
-import { render, citationsBlock, type RenderInput } from "./render.js";
+import type { CitedSource } from "./cite.js";
+import { caveatLines, render, sources, type RenderInput } from "./render.js";
 import type { Granularity } from "./probe.js";
 import type { CorpusStore } from "./types.js";
 import type { KnowledgeBaseExecMember } from "./exec.js";
@@ -82,15 +83,17 @@ export interface SearchResult {
    */
   linkProviders?: string[];
   /**
-   * The probe-derived `Sources:` list + "What this answer could not see"
-   * disclosure ALONE (see render.citationsBlock), carried out separately so the
-   * graph can DETERMINISTICALLY append it to whatever the turn finally returns —
-   * even a `respond` answer the planner recomposed in its own prose. This closes
-   * the "finish vs respond" gap for KB citations/disclosure (ADR 0040): the
-   * guarantee no longer depends on the planner choosing `finish`. Empty when
-   * nothing was searched (the needs-link asks).
+   * This search's citable passages, numbered from the `firstIndex` it was given,
+   * with the probe's title and URL; and what it could not see. Both carried out
+   * separately so the graph applies them in CODE to whatever the turn finally
+   * returns — the model's `[n]` markers become these links, and the caveats are
+   * appended whatever the model wrote (ADR 0040 survives finish/respond alike).
+   * Absent when nothing was searched (the needs-link asks).
+   *
+   * PARITY: `SearchKnowledgeBaseOutput.Sources`/`.Caveats` on the Temporal engine.
    */
-  citations?: string;
+  sources?: CitedSource[];
+  caveats?: string[];
 }
 
 /**
@@ -148,7 +151,16 @@ export class KnowledgeBaseSearcher {
     };
   }
 
-  async search(tool: ToolDescriptor, query: string, caller: { subject: string; roles: string[] }): Promise<SearchResult> {
+  /**
+   * `firstIndex` is the citation number this search's first passage takes: the
+   * turn's next unused number, so a second search never reuses [1].
+   */
+  async search(
+    tool: ToolDescriptor,
+    query: string,
+    caller: { subject: string; roles: string[] },
+    firstIndex = 1,
+  ): Promise<SearchResult> {
     const exec = tool.knowledgeBaseExec;
     if (!exec) throw new Error(`tool ${tool.id} carries no knowledge-base execution spec`);
 
@@ -176,7 +188,7 @@ export class KnowledgeBaseSearcher {
         withheld,
         disclose: exec.disclosePartialVisibility,
       };
-      return { result: render(renderInput), citations: citationsBlock(renderInput) };
+      return { result: render(renderInput), caveats: caveatLines(renderInput) };
     }
 
     const tokens = await this.options.credentials.delegatedTokens(caller.subject, providersOf(visible));
@@ -244,13 +256,15 @@ export class KnowledgeBaseSearcher {
       // Members whose provider the caller has not linked: served sources are
       // real, and this says what more a link would add rather than hiding it.
       unlinked: { providers: unlinkedProviders, sources: notLinked.length },
+      firstIndex,
     };
     return {
       result: render(renderInput),
-      // Carried out separately so the graph can append it in code even when the
+      // Carried out separately so the graph can apply them in code even when the
       // planner recomposes the answer via `respond` (ADR 0040 citations survive
       // finish/respond alike).
-      citations: citationsBlock(renderInput),
+      sources: sources(renderInput),
+      caveats: caveatLines(renderInput),
       // A partial answer still carries the providers to link, so the executing
       // layer offers a fresh clickable link for each — the one still missing can
       // be linked incrementally without blocking the sources already answered.
