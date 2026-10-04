@@ -26,8 +26,11 @@ func TestEveryScenarioSeparatesTheRightMoveFromTheFailureItTargets(t *testing.T)
 			respond("End of project: set up a Kanban board [4]. July retro: connect Paul with Jason [5]."),
 			respond("Set up an internal Kanban board [1]."), // fragments only: misses the July retro
 		},
-		"4 latest": {call(recentTool, "#team-snc"), call(searchTool, "most recent message team-snc")},
-		"5 latest": {call(recentTool, "#team-snc"), respond("The latest was the Jira Initiative message [1].")},
+		"4 latest": {
+			call(queryTool, `{"source":"#team-snc","sort":"newest","limit":1}`),
+			call(queryTool, "team-snc latest message"), // keywords cannot order by time
+		},
+		"5 latest": {call(queryTool, `{"source":"team-snc","sort":"newest"}`), respond("The latest was the Jira Initiative message [1].")},
 		"6 latest": {
 			respond("The most recent message is a channel join: @U0C3DFPAEP8 has joined the channel [1]."),
 			respond("The latest was the evening update [2]."),
@@ -54,8 +57,8 @@ func TestTheEvalOffersTheGeneratedLiveFaces(t *testing.T) {
 	for _, tool := range tools {
 		ids[tool.ID] = true
 	}
-	for _, id := range []string{searchTool, readTool, lookupTool, recentTool} {
+	for _, id := range []string{searchTool, readTool, queryTool} {
 		require.True(t, ids[id], id)
 	}
-	require.Contains(t, skill.Markdown, "use `kb:snc/recent`")
+	require.Contains(t, skill.Markdown, "query with `\"sort\": \"newest\"`")
 }

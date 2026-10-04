@@ -5,7 +5,7 @@
 // prompt and tool list for an SNC-shaped knowledge base, at the decision points
 // where a weak planner fails: stopping after one search, answering a document
 // question from fragments instead of reading the documents, and picking "the
-// latest" from relevance-ranked search instead of asking for recent items. The
+// latest" from relevance-ranked search instead of querying newest first. The
 // tool results it feeds back are synthetic but rendered by the engine's own
 // code, so the model sees exactly the shape production would show it.
 //
@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -94,9 +95,26 @@ type scenario struct {
 const (
 	searchTool = "kb:snc/search"
 	readTool   = "kb:snc/read"
-	recentTool = "kb:snc/recent"
-	lookupTool = "kb:snc/lookup"
+	queryTool  = "kb:snc/query"
 )
+
+// newestQuery reports whether a planned call is a structured query sorted
+// newest first — and, when source is non-empty, narrowed to that source. The
+// planner writes the filter as JSON; a keyword-only query (or prose) does not
+// count, because it cannot order by time.
+func newestQuery(p activities.PlannedAction, source string) bool {
+	if p.Action != activities.ActionCallTool || p.ToolID != queryTool {
+		return false
+	}
+	var filter struct {
+		Source string `json:"source"`
+		Sort   string `json:"sort"`
+	}
+	if json.Unmarshal([]byte(p.ToolInput), &filter) != nil || filter.Sort != "newest" {
+		return false
+	}
+	return source == "" || strings.Contains(strings.ToLower(filter.Source), source)
+}
 
 var citation = regexp.MustCompile(`\[\d+\]`)
 
@@ -132,8 +150,8 @@ func scenarios(tools []catalog.ToolDescriptor) []scenario {
 				"Brad just dropped this in our chat 5 mins ago: SNC leadership desires to move PDS Integration into PE in 4Q …"),
 		}}}),
 	}
-	recent := activities.ActionRecord{ToolID: recentTool, Input: "#team-snc", Succeeded: true,
-		Result: "Most recent in SNC (#team-snc), newest first:\n" +
+	recent := activities.ActionRecord{ToolID: queryTool, Input: `{"source":"#team-snc","sort":"newest"}`, Succeeded: true,
+		Result: "Results from SNC (#team-snc) — newest first:\n" +
 			"\n- [1] @U0C3DFPAEP8 has joined the channel — #team-snc · changed 2026-09-21T18:05:00Z\n  reference: snc-slack-team/C0ADFD16CDB/1790445900.000100\n  https://slack/join" +
 			"\n- [2] for Evening Updates September 21, 2026 — #team-snc · changed 2026-09-21T17:00:00Z\n  reference: snc-slack-team/C0ADFD16CDB/1790442000.000200\n  https://slack/evening" +
 			"\n- [3] for morning updates September 21, 2026 — #team-snc · changed 2026-09-21T13:00:00Z\n  reference: snc-slack-team/C0ADFD16CDB/1790427600.000300\n  https://slack/morning"}
@@ -142,7 +160,7 @@ func scenarios(tools []catalog.ToolDescriptor) []scenario {
 		{
 			name: "1 retro: starts by searching", request: retroQ,
 			pass: func(p activities.PlannedAction) bool {
-				return p.Action == activities.ActionCallTool && (p.ToolID == searchTool || p.ToolID == lookupTool)
+				return p.Action == activities.ActionCallTool && (p.ToolID == searchTool || p.ToolID == queryTool)
 			},
 		},
 		{
@@ -163,18 +181,13 @@ func scenarios(tools []catalog.ToolDescriptor) []scenario {
 			},
 		},
 		{
-			name: "4 latest: asks recent for team-snc", request: latestQ,
-			pass: func(p activities.PlannedAction) bool {
-				return p.Action == activities.ActionCallTool && p.ToolID == recentTool &&
-					strings.Contains(strings.ToLower(p.ToolInput), "team-snc")
-			},
+			name: "4 latest: queries team-snc newest", request: latestQ,
+			pass: func(p activities.PlannedAction) bool { return newestQuery(p, "team-snc") },
 		},
 		{
 			name: "5 latest: not fooled by search", request: latestQ,
 			history: []activities.ActionRecord{slackSearch},
-			pass: func(p activities.PlannedAction) bool {
-				return p.Action == activities.ActionCallTool && p.ToolID == recentTool
-			},
+			pass:    func(p activities.PlannedAction) bool { return newestQuery(p, "") },
 		},
 		{
 			name: "6 latest: answers the newest, cited", request: latestQ,
