@@ -1,7 +1,6 @@
 import type { SkillAccess } from "../skills/types.js";
 import {
-  knowledgeBaseLookupToolId,
-  knowledgeBaseRecentToolId,
+  knowledgeBaseQueryToolId,
   knowledgeBaseReadToolId,
   connectionLabel,
   knowledgeBaseLabel,
@@ -69,7 +68,7 @@ export function deriveKnowledgeBaseSkill(
   // search and could never read or look anything up, with the skill pointing
   // at a tool that did not exist.
   const liveToolIds = readable
-    ? [knowledgeBaseReadToolId(kb.id), knowledgeBaseLookupToolId(kb.id), knowledgeBaseRecentToolId(kb.id)]
+    ? [knowledgeBaseReadToolId(kb.id), knowledgeBaseQueryToolId(kb.id)]
     : [];
 
   return {
@@ -205,9 +204,13 @@ function knowledgeBaseMarkdown(
       "   surfaced. Several focused searches beat one broad one, and you have\n" +
       "   several tool calls to spend.\n" +
       (readable
-        ? `   When the index looks stale or thin, go to the source directly: \`${knowledgeBaseLookupToolId(kb.id)}\`\n` +
-          `   runs a live keyword search, and \`${knowledgeBaseReadToolId(kb.id)}\` reads a full\n` +
-          "   document when a passage is cut off or you need detail a chunk leaves out.\n" +
+        ? `   \`${knowledgeBaseQueryToolId(kb.id)}\` asks the sources directly with a **structured query**: keywords,\n` +
+          "   a title, an author, a date range, a type, sorted newest, oldest or by\n" +
+          "   relevance, optionally in one source. Use it when the question names any\n" +
+          '   of those ("pages titled retro", "what Brad posted last week", "what\n' +
+          '   changed since September"), or when the index looks stale or thin.\n' +
+          `   \`${knowledgeBaseReadToolId(kb.id)}\` reads a full document when a passage is cut off or you need detail\n` +
+          "   a chunk leaves out.\n" +
           "   **Passages are fragments of documents.** When the question is about\n" +
           "   particular documents — a retro, meeting notes, a proposal, a plan, \"the\n" +
           `   action items\" — find them, then read each one in full with \`${knowledgeBaseReadToolId(kb.id)}\`,\n` +
@@ -215,8 +218,8 @@ function knowledgeBaseMarkdown(
           "   summarise a document from the one or two passages that matched.\n" +
           "   **Search cannot tell what is newest** — it ranks by relevance, not time.\n" +
           "   For \"latest\", \"most recent\", \"what changed\" or \"what's new\" questions,\n" +
-          `   use \`${knowledgeBaseRecentToolId(kb.id)}\` (optionally naming one source, e.g. a channel) and answer from\n` +
-          "   the dates it returns; never pick \"the latest\" from search results.\n"
+          '   query with `"sort": "newest"` (and the source, e.g. a channel) and answer\n' +
+          "   from the dates it returns; never pick \"the latest\" from search results.\n"
         : "") +
       "3. Answer **only** from what the tools returned. When they do not cover the\n" +
       "   question, say what is missing — never fill the gap from your own\n" +
@@ -268,7 +271,7 @@ function knowledgeBaseMarkdown(
     parts.push(
       "- Retrieval shows this material as of the last sync. When the question\n" +
         `  is about what is true *right now*, read the live object with \`${knowledgeBaseReadToolId(kb.id)}\`\n` +
-        `  or run a fresh keyword search with \`${knowledgeBaseLookupToolId(kb.id)}\` instead of\n` +
+        `  or run a fresh query with \`${knowledgeBaseQueryToolId(kb.id)}\` instead of\n` +
         "  trusting a chunk.",
     );
   }

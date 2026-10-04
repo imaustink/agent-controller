@@ -37,12 +37,14 @@ export const knowledgeBaseLookupToolId = (name: string) =>
   `${KNOWLEDGE_BASE_ID_PREFIX}${name}/lookup`;
 
 /**
- * The LIVE "newest first" face: the sources' most recently changed items. The
- * index cannot answer "what is the latest…" — it ranks by relevance, not time,
- * and lags by a sync interval. PARITY: KnowledgeBaseRecentToolID.
+ * The LIVE structured query: filter and sort the sources' items by metadata —
+ * keywords, title, author, date range, type, newest/oldest — asked of the
+ * sources themselves. The index ranks by relevance only, its metadata is not
+ * queryable, and it lags by a sync interval. It subsumes the retired keyword
+ * lookup (a lookup is a query with only keywords). PARITY: KnowledgeBaseQueryToolID.
  */
-export const knowledgeBaseRecentToolId = (name: string) =>
-  `${KNOWLEDGE_BASE_ID_PREFIX}${name}/recent`;
+export const knowledgeBaseQueryToolId = (name: string) =>
+  `${KNOWLEDGE_BASE_ID_PREFIX}${name}/query`;
 
 export const knowledgeBaseFetchToolId = (name: string) =>
   `${KNOWLEDGE_BASE_ID_PREFIX}${name}/fetch`;
@@ -58,8 +60,9 @@ export const knowledgeBaseFetchToolId = (name: string) =>
 export const knowledgeBaseToolIds = (name: string) => [
   knowledgeBaseSearchToolId(name),
   knowledgeBaseReadToolId(name),
+  knowledgeBaseQueryToolId(name),
+  // Retired into query; listed so a record an earlier build wrote is removed.
   knowledgeBaseLookupToolId(name),
-  knowledgeBaseRecentToolId(name),
   knowledgeBaseFetchToolId(name),
 ];
 

@@ -10,9 +10,12 @@ import {
   type ProbeGranularity,
   type ProbeResult,
   type Scope,
+  type QueryResult,
   type SearchHit,
+  type SourceQuery,
 } from "./types.js";
 import type { FetchLike } from "./confluence.js";
+import { resolveQuery } from "./query.js";
 import type { WebhookEvent, WebhookRequest } from "./types.js";
 import { hmacHex, signaturesMatch, withinReplayWindow } from "./webhook-signature.js";
 
@@ -228,10 +231,9 @@ export class SlackDriver implements Driver {
     const channel = scope.channel!;
     const name = await this.channelName(token, channel);
 
-    // Slack has no quoting to escape into — the query is a term language, not
-    // a structured one — but a caller's own `in:` would widen the search past
-    // this channel, so operators are stripped from the user's words.
-    const terms = trimmed.replace(/\b(in|from|with|during|before|after|on):\S*/gi, " ").trim();
+    // A caller's own `in:` would widen the search past this channel, so
+    // operators are stripped from the user's words (see stripOperators).
+    const terms = stripOperators(trimmed);
     if (terms.length === 0) return [];
 
     const query_ = name ? `in:#${name} ${terms}` : terms;
@@ -248,40 +250,84 @@ export class SlackDriver implements Driver {
   }
 
   /**
-   * The channel's newest messages, as the caller (see Driver.recentAsUser).
+   * A structured query over the channel's messages, as the caller (see
+   * Driver.queryAsUser).
    *
-   * The same call and the same bound as `searchAsUser`, minus the words: an
-   * `in:` term on its own, sorted by time. Replies are included on purpose —
-   * "what was said last" is usually a reply — and each hit still cites its
-   * thread parent, so the read face fetches the conversation it belongs to.
+   * The same call and the same bound as `searchAsUser`, with the filters
+   * written as Slack's own search modifiers and the order as `sort`/`sort_dir`.
+   * Replies are included on purpose — "what was said last" is usually a reply
+   * — and each hit still cites its thread parent, so the read face fetches the
+   * conversation it belongs to.
    *
-   * Unlike search, an unresolvable name returns NOTHING rather than a wider
-   * query. Search degrades to the caller's words across the workspace, which
-   * the id filter then narrows to a relevant handful; a terms-free query has
-   * no words to narrow by, so it would be "the newest messages anywhere this
+   * Filters, and what they become:
+   *
+   * - `text` — the caller's words, operators stripped exactly as search does.
+   * - `author` — `from:@<handle>`. BEST EFFORT: Slack matches a username or
+   *   display name, and we are handed a person's name, so it is trimmed,
+   *   de-`@`ed and de-spaced ("Ana Lopez" → `from:@AnaLopez`) and may simply
+   *   match nobody. No user lookup is done to resolve a real name to an id.
+   * - `after`/`before` — `after:`/`before:`. Slack's `after:` is EXCLUSIVE of
+   *   its day, so an inclusive `after=D` is sent as the day before D;
+   *   `before:` is already exclusive and goes as-is.
+   * - `type` — only "message"; a message has no `title` either. Anything else
+   *   is refused rather than ignored (see Driver.queryAsUser).
+   *
+   * An unresolvable channel name returns NOTHING rather than a wider query.
+   * Search degrades to the caller's words across the workspace, which the id
+   * filter then narrows to a relevant handful; a filter-only query has no
+   * words to narrow by, so it would be "the newest messages anywhere this
    * person can see", filtered down to whatever happened to be in our channel
    * — a short, wrong answer to "what is the latest here".
    */
-  async recentAsUser(credentials: Credentials, scope: Scope, limit = 10): Promise<SearchHit[]> {
+  async queryAsUser(credentials: Credentials, scope: Scope, query: SourceQuery): Promise<QueryResult> {
     this.validateScope(scope);
     const token = requireDelegatedSlack(credentials);
+    const q = resolveQuery(query);
+
+    const unsupported: string[] = [];
+    if (q.title !== undefined) unsupported.push("title");
+    if (q.type !== undefined && q.type !== "message") unsupported.push("type");
+    if (unsupported.length > 0) return { hits: [], unsupported };
+
+    const terms: string[] = [];
+    if (q.text !== undefined) {
+      // Stripped for the reason search strips them: a caller's own `in:` would
+      // widen the search past this channel.
+      const words = stripOperators(q.text);
+      // Words that were ALL operators leave nothing to match on. Dropping the
+      // filter would answer a different question, so this answers none.
+      if (words.length === 0) return { hits: [] };
+      terms.push(words);
+    }
+    if (q.author !== undefined) {
+      const handle = q.author.replace(/^@+/, "").replace(/\s+/g, "");
+      if (handle.length === 0) return { hits: [] };
+      terms.push(`from:@${handle}`);
+    }
+    if (q.after !== undefined) terms.push(`after:${previousDay(q.after)}`);
+    if (q.before !== undefined) terms.push(`before:${q.before}`);
 
     const channel = scope.channel!;
     const name = await this.channelName(token, channel);
-    if (!name) return [];
+    if (!name) return { hits: [] };
+
+    const order: Record<string, string> =
+      q.sort === "relevance"
+        ? { sort: "score" }
+        : { sort: "timestamp", sort_dir: q.sort === "oldest" ? "asc" : "desc" };
 
     const body = (await this.call("search.messages", token, {
-      query: `in:#${name}`,
-      sort: "timestamp",
-      sort_dir: "desc",
-      count: String(Math.min(limit, 20)),
+      query: [`in:#${name}`, ...terms].join(" "),
+      ...order,
+      count: String(q.limit),
     })) as { messages?: { matches?: SlackSearchMatch[] } };
 
-    return (body.messages?.matches ?? [])
+    const hits = (body.messages?.matches ?? [])
       // THE bound, exactly as in searchAsUser: `in:` is by name and names move.
       .filter((match) => match.channel?.id === channel)
       .map((match) => this.toSearchHit(channel, match))
-      .slice(0, limit);
+      .slice(0, q.limit);
+    return { hits };
   }
 
   /**
@@ -587,6 +633,28 @@ function requireDelegatedSlack(credentials: Credentials): string {
     throw new Error("a slack user read requires the calling user's delegated token");
   }
   return credentials.delegated;
+}
+
+/**
+ * The caller's words with Slack's search modifiers removed.
+ *
+ * Slack has no quoting to escape into — the query is a term language, not a
+ * structured one — so a caller's own `in:` would widen the search past this
+ * channel, and their own `from:`/`after:` would quietly override ours.
+ */
+function stripOperators(words: string): string {
+  return words.replace(/\b(in|from|with|during|before|after|on):\S*/gi, " ").trim();
+}
+
+/**
+ * The day before a YYYY-MM-DD date (already validated by resolveQuery).
+ *
+ * Slack's `after:` excludes the day it names, so "on or after D" is
+ * `after:<D-1>`.
+ */
+function previousDay(date: string): string {
+  const [year, month, day] = date.split("-").map(Number) as [number, number, number];
+  return new Date(Date.UTC(year, month - 1, day - 1)).toISOString().slice(0, 10);
 }
 
 /**

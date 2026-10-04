@@ -41,7 +41,7 @@ import { ClaudeAuthGatewayClient } from "./identity-link/claude-auth-gateway-cli
 import { ClaudeRemoteGatewayClient } from "./identity-link/claude-remote-gateway-client.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { CorpusLookup } from "./knowledge-base/lookup.js";
-import { CorpusRecent } from "./knowledge-base/recent.js";
+import { CorpusQuery } from "./knowledge-base/query.js";
 import { CorpusReader } from "./knowledge-base/reader.js";
 import { KnowledgeBaseSearcher } from "./knowledge-base/searcher.js";
 import { LinkedCredentials } from "./knowledge-base/linked-credentials.js";
@@ -761,9 +761,9 @@ async function main(): Promise<void> {
         })
       : undefined;
 
-  const corpusRecent =
+  const corpusQuery =
     config.knowledgeBasesEnabled && config.connectionBrokerUrl && identityLinkGateway
-      ? new CorpusRecent({
+      ? new CorpusQuery({
           brokerUrl: config.connectionBrokerUrl,
           brokerToken: config.connectionBrokerToken ?? "",
           credentials: new LinkedCredentials(identityLinkGateway),
@@ -834,7 +834,7 @@ async function main(): Promise<void> {
     ...(knowledgeBaseSearcher ? { knowledgeBaseSearcher } : {}),
     ...(corpusReader ? { corpusReader } : {}),
     ...(corpusLookup ? { corpusLookup } : {}),
-    ...(corpusRecent ? { corpusRecent } : {}),
+    ...(corpusQuery ? { corpusQuery } : {}),
     ...(mcpBrokerClient ? { mcpBrokerClient } : {}),
     ...(claudeAuthGateway ? { claudeAuthGateway } : {}),
     ...(claudeRemoteGateway ? { claudeRemoteGateway } : {}),

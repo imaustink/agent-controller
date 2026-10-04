@@ -53,9 +53,8 @@ describe("deriveKnowledgeBaseIndex", () => {
     expect(skills[0].effectiveRoles).toEqual(["lead", "reader", "writer"]);
 
     expect(tools.map((t) => t.id).sort()).toEqual([
-      "kb:globex/lookup",
+      "kb:globex/query",
       "kb:globex/read",
-      "kb:globex/recent",
       "kb:globex/search",
     ]);
   });
@@ -127,23 +126,31 @@ describe("deriveKnowledgeBaseIndex", () => {
   });
 });
 
-describe("the live lookup tool", () => {
-  it("reads differently from the indexed search, because both are picked by embedding", () => {
+describe("the live query tool", () => {
+  // Both are picked by embedding, so the query face leads with what only it does
+  // — filter and sort by metadata — and documents its structured input.
+  // PARITY: TestQueryToolIsDistinctFromTheIndexedSearch.
+  it("reads differently from the indexed search and dispatches as query", () => {
     const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
 
     const search = tools.find((t) => t.id === "kb:globex/search")!;
-    const lookup = tools.find((t) => t.id === "kb:globex/lookup")!;
+    const query = tools.find((t) => t.id === "kb:globex/query")!;
 
-    // Two tools that both say "search" would reproduce the near-identical
-    // description problem of ADR 0039 §5 one level down, self-inflicted.
-    expect(lookup.description).not.toEqual(search.description);
-    expect(lookup.description).toContain("instead of the search index");
-    expect(lookup.name).not.toContain("Search");
-    expect(lookup.knowledgeBaseExec?.operation).toBe("lookup");
+    expect(query.description).not.toEqual(search.description);
+    expect(query.description).toContain("by their metadata");
+    expect(query.description).toContain("cannot filter or sort");
+    expect(query.description).toContain('"sort": "newest"|"oldest"|"relevance"');
+    expect(query.name).not.toContain("Search");
+    expect(query.knowledgeBaseExec?.operation).toBe("query");
+  });
+
+  it("replaces the keyword lookup rather than sitting beside it", () => {
+    const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
+    expect(tools.map((t) => t.id)).not.toContain("kb:globex/lookup");
   });
 
   it("is omitted when no member can serve it", () => {
-    // A corpus with no API face can no more answer a live search than a live
+    // A corpus with no API face can no more answer a live query than a live
     // read, so offering the tool would offer something that always fails.
     const onlyLeads = new Map([...connections()].filter(([id]) => id === "globex-slack-private"));
     const { tools } = deriveKnowledgeBaseIndex(
@@ -151,26 +158,11 @@ describe("the live lookup tool", () => {
       onlyLeads,
     );
 
-    expect(tools.map((t) => t.id)).not.toContain("kb:globex/lookup");
+    expect(tools.map((t) => t.id)).not.toContain("kb:globex/query");
   });
 
   it("is hidden, like every other generated tool", () => {
     const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
-    expect(tools.find((t) => t.id === "kb:globex/lookup")!.hidden).toBe(true);
-  });
-});
-
-// The recent face is chosen by embedding beside search and lookup, so its
-// description must lead with what only it does — time — and it must dispatch
-// as its own operation. PARITY: TestRecentToolIsDistinctAndDispatchesAsRecent.
-describe("the recent face", () => {
-  it("leads with time and dispatches as recent", () => {
-    const { tools } = deriveKnowledgeBaseIndex([globexKb()], connections());
-    const recent = tools.find((t) => t.id === "kb:globex/recent")!;
-
-    expect(recent.description).toContain("most recently changed");
-    expect(recent.description).toContain("cannot order by time");
-    expect(recent.knowledgeBaseExec?.operation).toBe("recent");
-    expect(recent.hidden).toBe(true);
+    expect(tools.find((t) => t.id === "kb:globex/query")!.hidden).toBe(true);
   });
 });

@@ -41,22 +41,22 @@ func KnowledgeBaseFetchToolID(name string) string { return KnowledgeBaseIDPrefix
 // (ADR 0038 §5): one per knowledge base, not one per member.
 func KnowledgeBaseReadToolID(name string) string { return KnowledgeBaseIDPrefix + name + "/read" }
 
-// KnowledgeBaseLookupToolID is the LIVE search a KnowledgeBase generates.
-//
-// Named "lookup" rather than "search" on purpose. Two tools whose ids and
-// descriptions both say "search" is the near-identical-description problem
-// ADR 0039 §5 warns about, and here it would be self-inflicted: the planner
-// picks by embedding, so the one word that must differ is the verb.
+// KnowledgeBaseLookupToolID is the id the LIVE keyword search used to carry.
+// No lookup tool is generated any more — the structured query face subsumes
+// it (a lookup is a query with only keywords) — and the id is retained so
+// DeleteKnowledgeBase and re-indexing remove records written by an earlier
+// build. Its dispatch path stays so in-flight and recorded turns still run.
 func KnowledgeBaseLookupToolID(name string) string {
 	return KnowledgeBaseIDPrefix + name + "/lookup"
 }
 
-// KnowledgeBaseRecentToolID is the LIVE "newest first" face a KnowledgeBase
-// generates: the sources' most recently changed items, asked of the sources
-// themselves. The index cannot answer "what is the latest…": it ranks by
-// relevance, not time, and lags by a sync interval.
-func KnowledgeBaseRecentToolID(name string) string {
-	return KnowledgeBaseIDPrefix + name + "/recent"
+// KnowledgeBaseQueryToolID is the LIVE structured query a KnowledgeBase
+// generates: filter and sort the sources' items by metadata — keywords, title,
+// author, date range, type, newest/oldest — asked of the sources themselves.
+// The index cannot answer these: it ranks by relevance only, its metadata is
+// not queryable, and it lags by a sync interval.
+func KnowledgeBaseQueryToolID(name string) string {
+	return KnowledgeBaseIDPrefix + name + "/query"
 }
 
 // CorpusGetToolID is the id a PER-MEMBER read tool used to carry. No such tool
@@ -282,8 +282,7 @@ func DeriveKnowledgeBaseSkill(kb KnowledgeBaseDescriptor, connections map[string
 	// the lookup id left it generated, hidden and uncallable — a knowledge base
 	// that could search its index and never ask the source what was there now.
 	if readable {
-		toolIDs = append(toolIDs, KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseLookupToolID(kb.ID),
-			KnowledgeBaseRecentToolID(kb.ID))
+		toolIDs = append(toolIDs, KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseQueryToolID(kb.ID))
 	}
 
 	skill := SkillDescriptor{
@@ -422,9 +421,13 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []CorpusDescripto
 		"   one, and you have several tool calls to spend.\n")
 	if readable {
 		fmt.Fprintf(&b,
-			"   When the index looks stale or thin, go to the source directly: `%s`\n"+
-				"   runs a live keyword search, and `%s` reads a full document when a\n"+
-				"   passage is cut off or you need detail a chunk leaves out.\n"+
+			"   `%s` asks the sources directly with a **structured query**: keywords,\n"+
+				"   a title, an author, a date range, a type, sorted newest, oldest or by\n"+
+				"   relevance, optionally in one source. Use it when the question names any\n"+
+				"   of those (\"pages titled retro\", \"what Brad posted last week\", \"what\n"+
+				"   changed since September\"), or when the index looks stale or thin.\n"+
+				"   `%s` reads a full document when a passage is cut off or you need detail\n"+
+				"   a chunk leaves out.\n"+
 				"   **Passages are fragments of documents.** When the question is about\n"+
 				"   particular documents — a retro, meeting notes, a proposal, a plan, \"the\n"+
 				"   action items\" — find them, then read each one in full with `%s`,\n"+
@@ -432,10 +435,9 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []CorpusDescripto
 				"   summarise a document from the one or two passages that matched.\n"+
 				"   **Search cannot tell what is newest** — it ranks by relevance, not time.\n"+
 				"   For \"latest\", \"most recent\", \"what changed\" or \"what's new\" questions,\n"+
-				"   use `%s` (optionally naming one source, e.g. a channel) and answer from\n"+
-				"   the dates it returns; never pick \"the latest\" from search results.\n",
-			KnowledgeBaseLookupToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID),
-			KnowledgeBaseRecentToolID(kb.ID))
+				"   query with `\"sort\": \"newest\"` (and the source, e.g. a channel) and answer\n"+
+				"   from the dates it returns; never pick \"the latest\" from search results.\n",
+			KnowledgeBaseQueryToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID))
 	}
 	b.WriteString("3. Answer **only** from what the tools returned. When they do not cover\n" +
 		"   the question, say what is missing — never fill the gap from your own\n" +
@@ -481,8 +483,8 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []CorpusDescripto
 	if readable {
 		fmt.Fprintf(&b, "- Retrieval shows this material as of the last sync. When the question\n"+
 			"  is about what is true *right now*, read the live object with `%s` or run\n"+
-			"  a fresh keyword search with `%s` instead of trusting a chunk.\n",
-			KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseLookupToolID(kb.ID))
+			"  a fresh query with `%s` instead of trusting a chunk.\n",
+			KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseQueryToolID(kb.ID))
 	}
 
 	b.WriteString("\n## Rules\n\n" +
