@@ -40,7 +40,14 @@ type AgentLoopActivities struct {
 
 const (
 	// maxPromptResult bounds tool results folded into planner prompts.
-	maxPromptResult = 4000
+	//
+	// Was 4000, which cut a knowledge-base search (twelve passages of up to ~800
+	// tokens each) down to its first one or two passages before the planner ever
+	// saw it — so a synthesized answer was written from a sliver of what was
+	// retrieved. 40000 chars (~10k tokens) fits a full search; even a turn that
+	// fills every step with a maximal result stays inside the model's context.
+	// The TS planner folds results in uncapped.
+	maxPromptResult = 40000
 	// maxPromptSchema bounds one caller tool's JSON Schema in the planner
 	// prompt. Parse already caps it far higher; this keeps a handful of large
 	// schemas from crowding out the skill's own instructions.
@@ -240,6 +247,24 @@ var planActionSchema = llm.ResponseSchema{
 	}`),
 }
 
+// respondOnlySchema is planActionSchema with the action pinned to `respond`, so
+// a RespondOnly plan cannot come back as another tool call or a verbatim finish.
+var respondOnlySchema = llm.ResponseSchema{
+	Name: "plan_action",
+	Schema: json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"action": {"type": "string", "enum": ["respond"]},
+			"tool_id": {"type": "string"},
+			"tool_input": {"type": "string"},
+			"response": {"type": "string"},
+			"tool_instance_key": {"type": "string"}
+		},
+		"required": ["action", "tool_id", "tool_input", "response", "tool_instance_key"],
+		"additionalProperties": false
+	}`),
+}
+
 type PlannedAction struct {
 	Action    string `json:"action"`
 	ToolID    string `json:"tool_id"`
@@ -276,6 +301,12 @@ type PlanActionInput struct {
 	// legitimately conclude nothing fits, and claiming an enforcement we do not
 	// have would be worse than documenting the gap.
 	CallerToolRequired bool `json:"callerToolRequired,omitempty"`
+	// RespondOnly restricts the decision to `respond`: the turn is over and the
+	// planner must write the final answer from the steps taken. Enforced by the
+	// response schema, not just asked for. The workflow uses it when a turn
+	// would otherwise end on a raw knowledge-base tool result — that output is
+	// material to answer FROM, never the answer itself.
+	RespondOnly bool `json:"respondOnly,omitempty"`
 }
 
 // PlanAction decides the next step of a skill-driven turn. The skill's
@@ -286,8 +317,16 @@ func (a *AgentLoopActivities) PlanAction(ctx context.Context, in PlanActionInput
 		"You are the action planner executing the workflow above. Decide the next step:\n" +
 		"- respond: answer the user directly now; put the complete answer in `response`.\n" +
 		"- call_tool: run one of the available tools; set `tool_id` and `tool_input`.\n" +
-		"- finish: the latest successful tool result is the answer; it will be shown to the user as-is.\n" +
+		"- finish: the latest successful tool result is the answer; it will be shown to the user as-is. Only for a tool whose output IS the user-facing content (a publish confirmation, a generated document) — never to paste back raw search results when the instructions call for a written answer; respond with your own synthesis instead.\n" +
 		"Only ever use a tool id from the available tools list. If a previous step failed, either retry with different input or respond explaining the problem. Leave unused fields as empty strings."
+
+	schema := planActionSchema
+	if in.RespondOnly {
+		schema = respondOnlySchema
+		system += "\n\nYou are done gathering: no more tools can be called on this turn. Write the complete final " +
+			"answer to the user's request now, in `response`, synthesized from the steps taken above and following " +
+			"the instructions' answering and citation rules. Do not paste tool output back verbatim."
+	}
 
 	if in.CallerToolRequired && len(in.CallerTools) > 0 {
 		system += "\n\nThe caller has requested that a tool be called on this turn. Strongly prefer calling one of the " +
@@ -317,13 +356,18 @@ func (a *AgentLoopActivities) PlanAction(ctx context.Context, in PlanActionInput
 	raw, err := a.LLM.CompleteJSON(ctx, []llm.Message{
 		{Role: "system", Content: system},
 		{Role: "user", Content: user.String()},
-	}, planActionSchema)
+	}, schema)
 	if err != nil {
 		return PlannedAction{}, err
 	}
 	var plan PlannedAction
 	if err := json.Unmarshal(raw, &plan); err != nil {
 		return PlannedAction{}, fmt.Errorf("decode planned action: %w", err)
+	}
+	if in.RespondOnly && plan.Action != ActionRespond {
+		// The schema pins this; a provider that ignored it must not slip a tool
+		// call or a verbatim finish past a turn that has already ended.
+		return PlannedAction{}, fmt.Errorf("respond-only planner returned action %q", plan.Action)
 	}
 	switch plan.Action {
 	case ActionRespond, ActionCallTool, ActionFinish:

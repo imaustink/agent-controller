@@ -29,6 +29,15 @@ export interface PlanOptions {
    * the dispatch layer can't keep would be worse than documenting the gap.
    */
   callerToolRequired?: boolean;
+  /**
+   * The turn is over: the only allowed decision is `respond`, written from the
+   * tool results gathered so far. Enforced by the response schema, not just
+   * asked for. The graph uses it when a turn would otherwise end on a raw
+   * knowledge-base result — retrieved material, never the answer itself.
+   *
+   * PARITY: `PlanActionInput.RespondOnly` on the Temporal engine.
+   */
+  respondOnly?: boolean;
 }
 
 export interface ActionPlanner {
@@ -82,6 +91,15 @@ const PLAN_SCHEMA = {
   },
   required: ["action", "response", "tool_id", "tool_args", "tool_instance_key"],
   additionalProperties: false,
+} as const;
+
+/** PLAN_SCHEMA with the action pinned to "respond", for {@link PlanOptions.respondOnly}. */
+const RESPOND_ONLY_SCHEMA = {
+  ...PLAN_SCHEMA,
+  properties: {
+    ...PLAN_SCHEMA.properties,
+    action: { type: "string", enum: ["respond"], description: "Always \"respond\": write the final answer." },
+  },
 } as const;
 
 /**
@@ -196,6 +214,12 @@ export class OpenAiActionPlanner implements ActionPlanner {
         "\n\nThe caller has requested that a tool be called on this turn. Strongly prefer calling one of the " +
         "caller-supplied tools over responding directly, unless none of them could possibly apply.";
     }
+    if (options.respondOnly) {
+      systemPrompt +=
+        "\n\nYou are done gathering: no more tools can be called on this turn. Write the complete final answer " +
+        "to the user's request now, in `response`, synthesized from <prior_tool_calls> and following the skill's " +
+        "answering and citation rules. Do not paste tool output back verbatim.";
+    }
 
     const response = await this.client.chat.completions.create({
       model: this.model,
@@ -212,7 +236,11 @@ export class OpenAiActionPlanner implements ActionPlanner {
       ],
       response_format: {
         type: "json_schema",
-        json_schema: { name: "planned_action", strict: true, schema: PLAN_SCHEMA },
+        json_schema: {
+          name: "planned_action",
+          strict: true,
+          schema: options.respondOnly ? RESPOND_ONLY_SCHEMA : PLAN_SCHEMA,
+        },
       },
     });
 
@@ -228,6 +256,12 @@ export class OpenAiActionPlanner implements ActionPlanner {
       parsed = JSON.parse(raw) as typeof parsed;
     } catch {
       return { action: "respond", response: "I couldn't process that request." };
+    }
+
+    if (options.respondOnly) {
+      // Never a tool call or a verbatim finish once the turn is over. An empty
+      // response tells the caller the synthesis failed, so it can degrade.
+      return { action: "respond", response: parsed.action === "respond" ? (parsed.response ?? "") : "" };
     }
 
     if (parsed.action === "finish" && history.length > 0) {
