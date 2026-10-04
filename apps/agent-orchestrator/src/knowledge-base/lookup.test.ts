@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CorpusLookup } from "./lookup.js";
+import { CorpusLookup, refusalNote } from "./lookup.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 
 const tool = {
@@ -178,5 +178,27 @@ describe("lookup", () => {
     await expect(
       lookup(vi.fn() as unknown as typeof fetch).lookup(bare, "q", READER),
     ).rejects.toThrow(/not a knowledge-base lookup/);
+  });
+});
+
+// A refused source carries the broker's reason, not just a status: the broker
+// maps a source's non-denial failure to 503, so a bare "refused (503)" read the
+// same for an outage and for a token missing `search:confluence`.
+describe("refusalNote", () => {
+  it("carries the broker's reason", () => {
+    expect(refusalNote(503, '{"error":"confluence returned 401: scope does not match"}')).toBe(
+      "refused (503): confluence returned 401: scope does not match",
+    );
+  });
+
+  it("falls back to the bare status when there is no reason", () => {
+    expect(refusalNote(503, "")).toBe("refused (503)");
+    expect(refusalNote(502, "<html>bad gateway</html>")).toBe("refused (502)");
+  });
+
+  it("bounds a long reason", () => {
+    const note = refusalNote(503, JSON.stringify({ error: "x".repeat(500) }));
+    expect(note.length).toBeLessThan(230);
+    expect(note.endsWith("…")).toBe(true);
   });
 });

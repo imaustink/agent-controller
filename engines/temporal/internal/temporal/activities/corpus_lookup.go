@@ -190,6 +190,35 @@ func renderLookup(displayName, query string, hits []lookupHit, unlinked, refused
 	return out.String()
 }
 
+// maxRefusalDetail bounds the broker's explanation carried into a refusal note.
+const maxRefusalDetail = 200
+
+// refusalNote names a refused source WITH the broker's reason when it gave one.
+//
+// The bare status hid the cause: the broker maps a source's non-denial failure
+// to 503, so `refused (503)` read the same for an Atlassian outage, a 429, and
+// a linked token missing `search:confluence` (Atlassian's 401 "scope does not
+// match") — three different fixes. The driver already puts the source's own
+// explanation in the error the broker returns; this stops throwing it away.
+//
+// PARITY: refusalNote in apps/agent-orchestrator/src/knowledge-base/lookup.ts.
+func refusalNote(status int, body []byte) string {
+	var parsed struct {
+		Error string `json:"error"`
+	}
+	detail := ""
+	if json.Unmarshal(body, &parsed) == nil {
+		detail = strings.Join(strings.Fields(parsed.Error), " ")
+	}
+	if detail == "" {
+		return fmt.Sprintf("refused (%d)", status)
+	}
+	if runes := []rune(detail); len(runes) > maxRefusalDetail {
+		detail = string(runes[:maxRefusalDetail]) + "…"
+	}
+	return fmt.Sprintf("refused (%d): %s", status, detail)
+}
+
 // lookupThroughBroker performs the search, carrying the caller's own token.
 //
 // Returns a non-empty note instead of an error when the source answered with a
@@ -227,7 +256,7 @@ func (a *KnowledgeBaseActivities) lookupThroughBroker(
 		return nil, "no live search for this source", nil
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Sprintf("refused (%d)", res.StatusCode), nil
+		return nil, refusalNote(res.StatusCode, raw), nil
 	}
 
 	var parsed struct {

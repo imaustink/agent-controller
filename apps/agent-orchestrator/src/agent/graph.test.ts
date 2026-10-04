@@ -4478,6 +4478,75 @@ describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
     expect(final.result).toContain("need an account you have not linked (slack)");
   });
 
+  // A knowledge-base result is material to answer from, never the answer. When
+  // the planner picks `finish` after a search, the turn used to show the raw
+  // passages verbatim. It must instead re-plan respond-only and return the
+  // synthesis (citations re-applied). This CAN fail: without finishPlanLoop the
+  // turn routes to composeResponse with the fenced passages as the result.
+  it("synthesizes instead of finishing verbatim on a knowledge-base result", async () => {
+    const kbTool: ToolDescriptor = {
+      id: "kb:globex/search",
+      name: "kb:globex/search",
+      description: "search the GLOBEX knowledge base",
+      allowedRoles: ["reader"],
+      knowledgeBaseExec: {
+        knowledgeBaseId: "globex",
+        displayName: "GLOBEX",
+        operation: "search",
+        members: [],
+        disclosePartialVisibility: true,
+      },
+    };
+    const kbSkill: SkillDescriptor = {
+      id: "kb:globex",
+      name: "GLOBEX knowledge base",
+      description: "search GLOBEX",
+      markdown: "# GLOBEX",
+      toolIds: ["kb:globex/search"],
+      agentIds: [],
+    };
+    const citations = "Sources:\n- [Auth design](https://wiki/auth)";
+    const search = vi.fn().mockResolvedValue({
+      result: `### 1. Auth design\n\`\`\`text\nWe use OIDC.\n\`\`\`\n\n${citations}\n`,
+      citations,
+    });
+    const checkLinks = vi.fn().mockResolvedValue({ linkProviders: [], linkedProviders: ["atlassian"] });
+    const plan = vi
+      .fn()
+      .mockResolvedValueOnce({ action: "call_tool", toolId: "kb:globex/search", toolArgs: "how does auth work" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "finish" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "respond", response: "Auth uses OIDC, per the design doc." } satisfies PlannedAction);
+
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: kbSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([kbSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(kbSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([{ tool: kbTool, score: 1 }]),
+      },
+      actionPlanner: { plan },
+      knowledgeBaseSearcher: { search, checkLinks } as unknown as AgentGraphDeps["knowledgeBaseSearcher"],
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "how does auth work?", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.plannedAction).toBe("respond");
+    expect(final.result).toContain("Auth uses OIDC, per the design doc.");
+    expect(final.result).toContain("[Auth design](https://wiki/auth)");
+    expect(final.result).not.toContain("```text");
+    expect(plan).toHaveBeenCalledTimes(3);
+    expect(plan.mock.calls[2]?.[4]).toEqual({ respondOnly: true });
+  });
+
   // PART B: a stateful refine-loop tool's publish target is keyed from
   // SERVER-SIDE continuation state (not a URL the model re-supplies), and its
   // returned Markdown survives the planner choosing `respond` verbatim — so the
