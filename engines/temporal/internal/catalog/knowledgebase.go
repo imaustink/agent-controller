@@ -415,8 +415,13 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []CorpusDescripto
 		fmt.Fprintf(&b,
 			"   When the index looks stale or thin, go to the source directly: `%s`\n"+
 				"   runs a live keyword search, and `%s` reads a full document when a\n"+
-				"   passage is cut off or you need detail a chunk leaves out.\n",
-			KnowledgeBaseLookupToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID))
+				"   passage is cut off or you need detail a chunk leaves out.\n"+
+				"   **Passages are fragments of documents.** When the question is about\n"+
+				"   particular documents — a retro, meeting notes, a proposal, a plan, \"the\n"+
+				"   action items\" — find them, then read each one in full with `%s`,\n"+
+				"   passing the `reference:` its result shows, before you answer. Do not\n"+
+				"   summarise a document from the one or two passages that matched.\n",
+			KnowledgeBaseLookupToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID))
 	}
 	b.WriteString("3. Answer **only** from what the tools returned. When they do not cover\n" +
 		"   the question, say what is missing — never fill the gap from your own\n" +
