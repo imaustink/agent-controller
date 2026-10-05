@@ -38,6 +38,7 @@ func main() {
 	keyEnv := flag.String("key-env", "OPENAI_API_KEY", "env var holding the API key")
 	models := flag.String("models", "", "comma-separated model ids to compare (required)")
 	runs := flag.Int("runs", 3, "runs per scenario per model (models are not deterministic)")
+	verbose := flag.Bool("v", false, "print the plan of every failed run")
 	flag.Parse()
 
 	key := os.Getenv(*keyEnv)
@@ -71,8 +72,14 @@ func main() {
 				switch {
 				case err != nil:
 					invalid++
+					if *verbose {
+						fmt.Fprintf(os.Stderr, "  [%s / %s] invalid: %v\n", model, sc.name, err)
+					}
 				case sc.pass(plan):
 					pass++
+				case *verbose:
+					fmt.Fprintf(os.Stderr, "  [%s / %s] failed: action=%s tool=%s input=%q response=%q\n",
+						model, sc.name, plan.Action, plan.ToolID, plan.ToolInput, plan.Response)
 				}
 			}
 			totalPass += pass
