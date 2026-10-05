@@ -37,6 +37,24 @@ describe("linkCitations", () => {
     expect(linkCitations(input, sources)).toEqual({ text: input, used: 0 });
   });
 
+  // The model often glues a marker to the word before it ("…with SNC[1].").
+  // The substituted title must not be. PARITY:
+  // TestLinkCitationsSeparatesALinkGluedToTheWordBeforeIt.
+  it.each([
+    ["Regular emails with SNC[2].", "Regular emails with SNC [SNC Session 2 Assessment](https://wiki/session2)."],
+    [
+      "Scope grew[1][2].",
+      "Scope grew [Project Details as of August 2026](https://wiki/details), [SNC Session 2 Assessment](https://wiki/session2).",
+    ],
+    ["Done.[2]", "Done. [SNC Session 2 Assessment](https://wiki/session2)"],
+    ["Already spaced, per [2].", "Already spaced, per [SNC Session 2 Assessment](https://wiki/session2)."],
+    ["Inside parens ([2]).", "Inside parens ([SNC Session 2 Assessment](https://wiki/session2))."],
+    ["[2] opens the answer.", "[SNC Session 2 Assessment](https://wiki/session2) opens the answer."],
+    ["First line.\n[2] starts one.", "First line.\n[SNC Session 2 Assessment](https://wiki/session2) starts one."],
+  ])("spaces a link off the word it is glued to: %j", (input, want) => {
+    expect(linkCitations(input, sources).text).toBe(want);
+  });
+
   it("escapes titles and URLs", () => {
     expect(linkCitations("x [1]", [{ n: 1, title: "Q3 [draft]", url: "https://w/a b(c)" }]).text).toBe(
       "x [Q3 \\[draft\\]](https://w/a%20b%28c%29)",
