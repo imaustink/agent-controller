@@ -255,6 +255,66 @@ export interface Driver {
    * MUST throw the classified errors, for the same reason `probe` must.
    */
   searchAsUser?(credentials: Credentials, scope: Scope, query: string, limit?: number): Promise<SearchHit[]>;
+
+  /**
+   * A structured query over the scope's items, as the calling user: filter by
+   * words, title, author, time window and type, and order by relevance or time.
+   *
+   * Bounded exactly as `searchAsUser` is — by the corpus's scope AND the
+   * caller's identity, for the reasons given there. It answers what neither the
+   * index (a snapshot, ranked by similarity, holding no metadata it can filter
+   * or sort on) nor a keyword search (ranked by relevance, and needing words)
+   * can: "the latest in #channel", "what did Ana write last month", "the
+   * oldest runbook here".
+   *
+   * Every hit carries `updatedAt` (ISO 8601) wherever the provider has one: a
+   * time-ordered answer is only as good as the times it can show.
+   *
+   * Refuse, don't fake. A filter this provider cannot apply is reported in
+   * `unsupported` with EMPTY `hits`, and the provider is NOT called. Results
+   * that silently ignored a filter would be confidently wrong — "Ana's pages"
+   * answered with everyone's — which is worse than no answer, because nothing
+   * downstream could tell the difference.
+   *
+   * Optional: a provider that cannot filter or sort by metadata simply does not
+   * implement it, and that corpus keeps search and the index.
+   *
+   * MUST throw the classified errors, for the same reason `probe` and
+   * `searchAsUser` must. An invalid query (a malformed date) throws a plain
+   * `QueryValidationError` (drivers/query.ts), which is the caller's mistake
+   * rather than the source's answer.
+   */
+  queryAsUser?(credentials: Credentials, scope: Scope, query: SourceQuery): Promise<QueryResult>;
+}
+
+/** A provider-neutral structured query over a corpus's items. Every field optional. */
+export interface SourceQuery {
+  /** Keywords matched against content. */
+  text?: string;
+  /** Substring of the item's title/name. */
+  title?: string;
+  /** Who wrote/owns the item — a person's name (Slack handle-ish, Confluence full name) or, for Drive, an email. */
+  author?: string;
+  /** Inclusive lower bound on when the item last changed (or was posted), YYYY-MM-DD. */
+  after?: string;
+  /** Exclusive upper bound, YYYY-MM-DD. */
+  before?: string;
+  /** "page" | "blogpost" | "message" | "document" | "spreadsheet" | "presentation" | "pdf" */
+  type?: string;
+  /** Default: "relevance" when `text` is set, otherwise "newest". "relevance" without text behaves as "newest". */
+  sort?: "relevance" | "newest" | "oldest";
+  /** Default 10, max 25. */
+  limit?: number;
+}
+
+export interface QueryResult {
+  hits: SearchHit[];
+  /**
+   * Filter names this provider cannot apply. When non-empty, `hits` is EMPTY:
+   * a provider must refuse rather than return results that silently ignore a
+   * filter.
+   */
+  unsupported?: string[];
 }
 
 /**

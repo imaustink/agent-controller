@@ -13,7 +13,14 @@ import {
   TransientError,
   type Credentials,
   type Scope,
+  type SourceQuery,
 } from "./drivers/types.js";
+import {
+  parseSourceQuery,
+  QUERY_DEFAULT_LIMIT,
+  QUERY_MAX_LIMIT,
+  QueryValidationError,
+} from "./drivers/query.js";
 import type { CorpusRegistry } from "./registry.js";
 
 /**
@@ -27,6 +34,7 @@ import type { CorpusRegistry } from "./registry.js";
  *   GET  /corpora/:name/resources/:id          — one document, SCOPE-bounded (sync)
  *   GET  /corpora/:name/documents/:id          — one document, IDENTITY-bounded (read)
  *   GET  /corpora/:name/search?q=              — live search, SCOPE- and identity-bounded
+ *   POST /corpora/:name/query                  — structured query (SourceQuery body), SCOPE- and identity-bounded
  *   POST /corpora/:name/probe                  — per-user authorization (ADR 0040)
  *   POST /corpora/:name/sync                   — run a reconcile now (sync only)
  *   POST /connections/:name/webhook            — provider change notification
@@ -93,6 +101,12 @@ async function handle(
     send(res, 404, { error: "not found" });
     return;
   }
+  // The query is a body, so it is a POST; a GET would arrive with no filters
+  // and be answered as "newest ten", which is not what was asked.
+  if (route.kind === "query" && req.method !== "POST") {
+    send(res, 405, { error: "query is POST only" });
+    return;
+  }
 
   // Webhooks are authenticated by the PROVIDER's signature, not by a bearer
   // token: the caller is Confluence or Slack, which hold no credential of ours.
@@ -119,7 +133,7 @@ async function handle(
           // ingestion credential, which is exactly what `fetch` already
           // encodes — so it authorizes as one rather than growing a fourth
           // operation that would have to be kept in step with it.
-          route.kind === "documents" || route.kind === "search" || route.id
+          route.kind === "documents" || route.kind === "search" || route.kind === "query" || route.id
           ? "fetch"
           : "list";
     ({ credential } = authorize(caller, operation, route.name, delegated));
@@ -139,8 +153,9 @@ async function handle(
   const credentials: Credentials =
     credential === "service" ? { service: binding.serviceToken } : { delegated };
 
-  // `documents` and `search` are user reads BY DEFINITION: both answer "what
-  // can this person see", and both are meaningless without a person.
+  // `documents`, `search` and `query` are user reads BY DEFINITION: each
+  // answers "what can this person see", and each is meaningless without a
+  // person.
   //
   // auth.ts authorizes them as a fetch, which is right about the danger — they
   // must never spend the ingestion credential — but a fetch is also a
@@ -149,7 +164,10 @@ async function handle(
   // that makes the boundary a thing each driver has to remember, and
   // `searchAsUser` is optional, so the next one can forget. Refusing here
   // makes it a property of the route instead.
-  if ((route.kind === "documents" || route.kind === "search") && credential !== "delegated") {
+  if (
+    (route.kind === "documents" || route.kind === "search" || route.kind === "query") &&
+    credential !== "delegated"
+  ) {
     return send(res, 403, {
       error: `${route.kind} is a read on a user's behalf and requires a delegated token`,
     });
@@ -183,6 +201,39 @@ async function handle(
         Number.isFinite(limit) && limit > 0 ? Math.min(limit, 25) : 10,
       );
       return send(res, 200, { hits });
+    }
+
+    if (route.kind === "query") {
+      if (!binding.driver.queryAsUser) {
+        return send(res, 404, { error: `${binding.driver.provider} has no structured query` });
+      }
+      // Validated HERE, before any driver sees it: a malformed date or an
+      // unknown field is the caller's mistake, and answering it with a 400 is
+      // better than letting each driver discover it in its own query language.
+      const text = await readBodyText(req);
+      let raw: unknown = {};
+      if (text.trim().length > 0) {
+        try {
+          raw = JSON.parse(text);
+        } catch {
+          return send(res, 400, { error: "query body is not valid JSON" });
+        }
+      }
+      let query: SourceQuery;
+      try {
+        query = parseSourceQuery(raw);
+      } catch (err) {
+        if (err instanceof QueryValidationError) return send(res, 400, { error: err.message });
+        throw err;
+      }
+      const result = await binding.driver.queryAsUser(
+        credentials,
+        // Scope-bounded, like search and for the same reason: "newest" with no
+        // anchor would be the newest thing this person can see anywhere.
+        binding.scope,
+        { ...query, limit: Math.min(query.limit ?? QUERY_DEFAULT_LIMIT, QUERY_MAX_LIMIT) },
+      );
+      return send(res, 200, result);
     }
 
     if (route.kind === "sync") {
@@ -229,6 +280,8 @@ async function handle(
     // failure retrying can never fix. 500 stops the loop and puts the
     // provider's own explanation where an operator will read it.
     if (err instanceof PermanentError) return send(res, 500, { error: err.message });
+    // A driver re-validating a query it was handed directly (drivers/query.ts).
+    if (err instanceof QueryValidationError) return send(res, 400, { error: err.message });
     throw err;
   }
 }
@@ -236,7 +289,7 @@ async function handle(
 interface Route {
   /** A corpus name for data routes; a CONNECTION name for a webhook. */
   name: string;
-  kind: "resources" | "documents" | "search" | "probe" | "sync" | "webhook";
+  kind: "resources" | "documents" | "search" | "query" | "probe" | "sync" | "webhook";
   id?: string;
 }
 
@@ -352,6 +405,9 @@ function parseRoute(pathname: string): Route | undefined {
     // by the caller. `documents` may leave the scope because a citation
     // anchors it; a search has no anchor, so it may not.
     if (parts[2] === "search" && parts.length === 3) return { name, kind: "search" };
+    // Search's structured twin: the same two bounds, filtered and ordered by
+    // metadata (author, time, type) rather than ranked by words alone.
+    if (parts[2] === "query" && parts.length === 3) return { name, kind: "query" };
     if (parts[2] === "resources") {
       if (parts.length === 3) return { name, kind: "resources" };
       if (parts.length === 4) {
@@ -378,7 +434,8 @@ function header(req: IncomingMessage, name: string): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+/** A JSON request body's text, bounded: a probe or a query is a few fields. */
+async function readBodyText(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -387,9 +444,14 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
     if (size > 64 * 1024) throw new Error("request body too large");
     chunks.push(chunk as Buffer);
   }
-  if (chunks.length === 0) return {};
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const text = await readBodyText(req);
+  if (text.length === 0) return {};
   try {
-    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const parsed: unknown = JSON.parse(text);
     return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
   } catch {
     return {};

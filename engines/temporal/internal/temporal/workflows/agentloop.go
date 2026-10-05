@@ -517,6 +517,42 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			continue
 		}
 
+		// The LIVE structured query face. Beside lookup, which it replaced as a
+		// generated tool (lookup's branch stays for in-flight and recorded
+		// turns), and for the same reasons: it runs as the caller inside the
+		// activity, and its items are material to answer from, so they feed back
+		// into the loop. No version guard: this tool is new, so no recorded
+		// history can have scheduled it.
+		if tool.KnowledgeBaseExec != nil && tool.KnowledgeBaseExec.Operation == "query" {
+			note("Querying " + tool.KnowledgeBaseExec.DisplayName + "…")
+			var found activities.QueryCorpusOutput
+			if err := workflow.ExecuteActivity(actx, activities.QueryCorpusActivityName,
+				activities.QueryCorpusInput{
+					Caller:     in.Caller,
+					Tool:       tool,
+					Query:      plan.ToolInput,
+					FirstIndex: cited.next(),
+				}).Get(ctx, &found); err != nil {
+				return "", meta, nil, err
+			}
+			meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
+
+			if found.NeedsLink {
+				note(plan.ToolID + " needs a linked account")
+				return found.Result, meta, nil, nil
+			}
+			outcome := ToolOutcome{Succeeded: true, Result: found.Result}
+			lastSuccess, lastWasKnowledgeBase = &outcome, true
+			pendingVerbatim = ""
+			cited.add(found.Sources, nil)
+			history = append(history, activities.ActionRecord{
+				ToolID: plan.ToolID, Input: plan.ToolInput,
+				Succeeded: true, Result: found.Result,
+			})
+			note(plan.ToolID + " finished")
+			continue
+		}
+
 		// Everything else with an exec spec is the INDEXED search. Guarded on
 		// the operation rather than left as a catch-all: an unrecognised
 		// operation reaching here would run a vector search over whatever the

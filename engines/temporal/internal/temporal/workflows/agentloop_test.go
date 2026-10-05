@@ -47,6 +47,8 @@ type loopEnv struct {
 	kbSearchSeq          []activities.SearchKnowledgeBaseOutput
 	kbSearchCalls        int
 	kbLookupResult       activities.LookupCorpusOutput
+	kbQueryInputs        []activities.QueryCorpusInput
+	kbQueryResult        activities.QueryCorpusOutput
 	runLocalToolInputs   []activities.RunLocalToolInput
 	runLocalToolResult   *messaging.Event
 	resolveAgentCalls    int
@@ -230,6 +232,10 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	})
 	reg(activities.LookupCorpusActivityName, func(context.Context, activities.LookupCorpusInput) (activities.LookupCorpusOutput, error) {
 		return le.kbLookupResult, nil
+	})
+	reg(activities.QueryCorpusActivityName, func(_ context.Context, in activities.QueryCorpusInput) (activities.QueryCorpusOutput, error) {
+		le.kbQueryInputs = append(le.kbQueryInputs, in)
+		return le.kbQueryResult, nil
 	})
 	reg(activities.ComposeResponseActivityName, func(context.Context, activities.ComposeResponseInput) (activities.ComposedResponse, error) {
 		le.composeCalls++
@@ -820,13 +826,58 @@ func TestKnowledgeBaseCitationNumbersRunAcrossTheTurn(t *testing.T) {
 	require.Equal(t, "OIDC [Auth design](https://wiki/auth), rotated hourly [Rotation runbook](https://wiki/rotate).", res.Reply)
 }
 
+// "What was the most recent message in #team-snc?" — the query face takes the
+// planner's structured filter verbatim, continues the turn's citation
+// numbering, feeds back into the loop, and its items are linked inline like any
+// other result. This CAN fail: without the dispatch branch the "query"
+// operation has no path and the turn errors.
+func TestKnowledgeBaseQueryAnswersNewestFirstQuestions(t *testing.T) {
+	le := newLoopEnv(t)
+	skill := kbSkillTools()
+	skill.Skill.ToolIDs = append(skill.Skill.ToolIDs, "kb:globex/query")
+	skill.Tools = append(skill.Tools, catalog.ToolDescriptor{
+		ID: "kb:globex/query", Description: "query items by metadata, sorted newest/oldest/relevance",
+		AllowedRoles: []string{"cook"},
+		KnowledgeBaseExec: &catalog.KnowledgeBaseExecSpec{
+			KnowledgeBaseID: "globex", DisplayName: "GLOBEX", Operation: "query",
+		},
+	})
+	le.skills = []catalog.SkillDescriptor{skill.Skill}
+	le.selected = "kb:globex"
+	le.skillTools = skill
+	le.kbQueryResult = activities.QueryCorpusOutput{
+		Result:  "Results from GLOBEX (#team-snc) — newest first:\n\n- [1] has joined the channel — #team-snc · changed 2026-09-21T18:00:00Z",
+		Sources: []corpus.Source{{N: 1, Title: "has joined the channel", URL: "https://slack/join"}},
+	}
+	filter := `{"source":"#team-snc","sort":"newest","limit":1}`
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/query", ToolInput: filter},
+		{Action: activities.ActionRespond, Response: "The latest message is a channel join on Sep 21 [1]."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "what was the most recent message in #team-snc?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Len(t, le.kbQueryInputs, 1)
+	require.Equal(t, filter, le.kbQueryInputs[0].Query)
+	require.Equal(t, 1, le.kbQueryInputs[0].FirstIndex)
+	require.Equal(t, 2, le.planCalls, "the planner saw the items and wrote the answer")
+	require.Equal(t, "The latest message is a channel join on Sep 21 [has joined the channel](https://slack/join).", res.Reply)
+}
+
 // The live lookup face used to END the turn on its raw hit list ("Live results
 // from … reference: … reference: …"), so the planner never saw the hits, never
 // wrote an answer, and could not take another step. It must feed back into the
-// loop like a search.
+// loop like a search. Lookup is no longer generated, but its branch still runs
+// for in-flight and recorded turns.
 //
 // This CAN fail: the old branch returned the lookup result after one planner
 // call, so the reply was the raw list and planCalls was 1.
+
 func TestKnowledgeBaseLookupFeedsBackIntoTheLoop(t *testing.T) {
 	le := newLoopEnv(t)
 	skill := kbSkillTools()

@@ -41,6 +41,7 @@ import { ClaudeAuthGatewayClient } from "./identity-link/claude-auth-gateway-cli
 import { ClaudeRemoteGatewayClient } from "./identity-link/claude-remote-gateway-client.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { CorpusLookup } from "./knowledge-base/lookup.js";
+import { CorpusQuery } from "./knowledge-base/query.js";
 import { CorpusReader } from "./knowledge-base/reader.js";
 import { KnowledgeBaseSearcher } from "./knowledge-base/searcher.js";
 import { LinkedCredentials } from "./knowledge-base/linked-credentials.js";
@@ -760,6 +761,15 @@ async function main(): Promise<void> {
         })
       : undefined;
 
+  const corpusQuery =
+    config.knowledgeBasesEnabled && config.connectionBrokerUrl && identityLinkGateway
+      ? new CorpusQuery({
+          brokerUrl: config.connectionBrokerUrl,
+          brokerToken: config.connectionBrokerToken ?? "",
+          credentials: new LinkedCredentials(identityLinkGateway),
+        })
+      : undefined;
+
   // MCP tool dispatch (ADR 0045): proxies one tools/call through the mcp-broker
   // under the caller's own delegated token. Built only when there is a broker to
   // talk to — and, like the knowledge-base faces, it needs the identity-link
@@ -824,6 +834,7 @@ async function main(): Promise<void> {
     ...(knowledgeBaseSearcher ? { knowledgeBaseSearcher } : {}),
     ...(corpusReader ? { corpusReader } : {}),
     ...(corpusLookup ? { corpusLookup } : {}),
+    ...(corpusQuery ? { corpusQuery } : {}),
     ...(mcpBrokerClient ? { mcpBrokerClient } : {}),
     ...(claudeAuthGateway ? { claudeAuthGateway } : {}),
     ...(claudeRemoteGateway ? { claudeRemoteGateway } : {}),

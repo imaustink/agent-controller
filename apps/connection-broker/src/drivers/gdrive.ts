@@ -10,9 +10,12 @@ import {
   type ProbeGranularity,
   type ProbeResult,
   type Scope,
+  type QueryResult,
   type SearchHit,
+  type SourceQuery,
 } from "./types.js";
 import type { FetchLike } from "./confluence.js";
+import { resolveQuery } from "./query.js";
 import { GoogleServiceCredential, type TokenFetch } from "./google-auth.js";
 import { extractDocxText, extractXlsxText } from "./ooxml.js";
 
@@ -412,6 +415,103 @@ export class GDriveDriver implements Driver {
     return hits;
   }
 
+  /**
+   * A structured query over the folder tree's files, as the caller (see
+   * Driver.queryAsUser).
+   *
+   * Built the way `list` is rather than the way `searchAsUser` is. Search can
+   * afford to query the whole Drive and keep what the parent walk admits,
+   * because its words already narrow the candidates to a relevant few. A
+   * filter-only query ("newest", "modified last week") has no words: the
+   * user's whole Drive sorted by time would be mostly files from elsewhere, and
+   * the walk would leave a short, wrong answer. So the bound goes INTO the
+   * query, as `list` puts it — every folder in the tree named as a parent.
+   *
+   * The tree is walked with the caller's token. It may come from the cache a
+   * sync filled with the service credential, which is fine: it is a set of
+   * folder ids inside the scope, not a grant. What the caller may SEE is
+   * decided by the file query, which always runs as them.
+   *
+   * Filters, as Drive query clauses (strings escaped as search escapes them):
+   *
+   *   text   → `fullText contains '…'`   title  → `name contains '…'`
+   *   after  → `modifiedTime >= 'DT00:00:00'`
+   *   before → `modifiedTime < 'DT00:00:00'`
+   *   type   → `mimeType = '…'` for document|spreadsheet|presentation|pdf
+   *   author → `'<email>' in owners`, ONLY for an email: Drive knows owners by
+   *            address, not by name, so a name is refused rather than guessed.
+   *
+   * Batched, because a wide tree's parent clause outgrows what Drive will
+   * accept in one `q`. For newest/oldest each batch is already in order, so
+   * taking `limit` from each and merging gives the true first `limit` overall.
+   * Relevance cannot be merged that way — Drive's scores are not comparable
+   * across queries and are not returned — so batches are concatenated in
+   * order: exact within one batch, APPROXIMATE across them.
+   */
+  async queryAsUser(credentials: Credentials, scope: Scope, query: SourceQuery): Promise<QueryResult> {
+    this.validateScope(scope);
+    const token = requireDelegatedDrive(credentials);
+    const q = resolveQuery(query);
+
+    const unsupported: string[] = [];
+    if (q.author !== undefined && !q.author.includes("@")) unsupported.push("author");
+    const typeMime = q.type === undefined ? undefined : QUERY_TYPE_MIME[q.type];
+    if (q.type !== undefined && !typeMime) unsupported.push("type");
+    if (unsupported.length > 0) return { hits: [], unsupported };
+
+    const filters: string[] = [];
+    if (q.text !== undefined) filters.push(`fullText contains '${driveString(q.text)}'`);
+    if (q.title !== undefined) filters.push(`name contains '${driveString(q.title)}'`);
+    if (q.after !== undefined) filters.push(`modifiedTime >= '${q.after}T00:00:00'`);
+    if (q.before !== undefined) filters.push(`modifiedTime < '${q.before}T00:00:00'`);
+    if (typeMime) filters.push(`mimeType = '${typeMime}'`);
+    if (q.author !== undefined) filters.push(`'${driveString(q.author)}' in owners`);
+
+    const folders = await this.descendantFolders(scope.folderID!, token);
+    const batches: string[][] = [];
+    for (let i = 0; i < folders.length; i += QUERY_PARENTS_PER_REQUEST) {
+      batches.push(folders.slice(i, i + QUERY_PARENTS_PER_REQUEST));
+    }
+
+    const pages = await Promise.all(
+      batches.map(async (batch) => {
+        const parents = batch.map((id) => `'${id}' in parents`).join(" or ");
+        const params: Record<string, string> = {
+          // Folders excluded in the query, not just by indexable(): a folder's
+          // modifiedTime moves whenever a child changes, so they would
+          // otherwise crowd the newest-first page they are then filtered from.
+          q: [
+            `(${parents})`,
+            "mimeType != 'application/vnd.google-apps.folder'",
+            "trashed = false",
+            ...filters,
+          ].join(" and "),
+          fields: "files(id,name,mimeType,modifiedTime,version,webViewLink,trashed,parents,size,shortcutDetails)",
+          // Over-fetched for the same reason search does: indexable() drops
+          // binaries after the fact, and a page of exactly `limit` would come
+          // back short whenever the first files were images.
+          pageSize: String(Math.min(q.limit * 3, 100)),
+          includeItemsFromAllDrives: "true",
+        };
+        // Relevance is Drive's default order for a fullText query; naming any
+        // orderBy would replace it.
+        if (q.sort !== "relevance") {
+          params.orderBy = `modifiedTime ${q.sort === "oldest" ? "asc" : "desc"}`;
+        }
+        const body = (await this.call("/files", token, params)) as { files?: DriveFile[] };
+        return body.files ?? [];
+      }),
+    );
+
+    let files = pages.flat().filter((file) => this.indexable(file));
+    if (q.sort === "newest") files = files.sort((a, b) => modifiedMillis(b, 0) - modifiedMillis(a, 0));
+    if (q.sort === "oldest") {
+      const last = Number.MAX_SAFE_INTEGER;
+      files = files.sort((a, b) => modifiedMillis(a, last) - modifiedMillis(b, last));
+    }
+    return { hits: files.slice(0, q.limit).map((file) => toRef(file)) };
+  }
+
   async probe(scope: Scope, credentials: Credentials, id?: string): Promise<ProbeResult> {
     this.validateScope(scope);
     if (!id) throw new Error("gdrive probes are per resource and need a file id");
@@ -679,6 +779,40 @@ const MAX_TREE_FOLDERS = 200;
 
 /** Pages of subfolders to read per parent before giving up on the walk. */
 const MAX_TREE_PAGES = 50;
+
+/**
+ * Parent folders named per `queryAsUser` request.
+ *
+ * Drive documents no hard limit on `q`, but a long OR chain starts failing with
+ * an unhelpful 400 well before MAX_TREE_FOLDERS; 30 stays comfortably inside.
+ */
+const QUERY_PARENTS_PER_REQUEST = 30;
+
+/** SourceQuery `type` values Drive can filter on, as the mimeType each means. */
+const QUERY_TYPE_MIME: Record<string, string> = {
+  document: "application/vnd.google-apps.document",
+  spreadsheet: "application/vnd.google-apps.spreadsheet",
+  presentation: "application/vnd.google-apps.presentation",
+  pdf: "application/pdf",
+};
+
+/**
+ * A caller-supplied string, made safe inside a single-quoted Drive literal.
+ *
+ * Escaped, not stripped, exactly as searchAsUser escapes its words.
+ */
+function driveString(value: string): string {
+  return value.replace(/['\\]/g, "\\$&");
+}
+
+/**
+ * A file's modifiedTime as a sortable number. An absent one takes `missing`,
+ * which the caller picks so that it sorts LAST in either direction.
+ */
+function modifiedMillis(file: DriveFile, missing: number): number {
+  const millis = file.modifiedTime ? Date.parse(file.modifiedTime) : NaN;
+  return Number.isFinite(millis) ? millis : missing;
+}
 
 function toRef(file: DriveFile) {
   return {

@@ -243,6 +243,122 @@ describe("broker server", () => {
     });
   });
 
+  describe("structured query", () => {
+    const HIT = { id: "9", title: "Runbook", url: "https://wiki/9", updatedAt: "2026-10-01T12:00:00.000Z" };
+    const querying = (result: unknown = { hits: [HIT] }) =>
+      fakeDriver({ queryAsUser: vi.fn().mockResolvedValue(result) });
+    const USER = { authorization: "Bearer orch", [DELEGATED_TOKEN_HEADER]: "user" };
+
+    const post = (body: unknown, headers: Record<string, string> = USER) =>
+      call("/corpora/globex-confluence/query", {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: typeof body === "string" ? body : JSON.stringify(body),
+      });
+
+    it("runs the query with the caller's token, bounded by the corpus scope", async () => {
+      start(querying());
+
+      const res = await post({ author: "Ana Lopez", after: "2026-09-01", sort: "newest", limit: 3 });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ hits: [HIT] });
+      expect(driver.queryAsUser).toHaveBeenCalledWith(
+        { delegated: "user" },
+        { space: "GLOBEX" },
+        { author: "Ana Lopez", after: "2026-09-01", sort: "newest", limit: 3 },
+      );
+    });
+
+    it("passes the driver's refusal through, unsupported filters and all", async () => {
+      start(querying({ hits: [], unsupported: ["title"] }));
+
+      const res = await post({ title: "Runbook" });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ hits: [], unsupported: ["title"] });
+    });
+
+    it("defaults and caps the limit", async () => {
+      start(querying());
+
+      await post({});
+      await post({ limit: 5000 });
+      await post("");
+
+      expect(
+        (driver.queryAsUser as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[2] as { limit: number }).limit),
+      ).toEqual([10, 25, 10]);
+    });
+
+    it.each([
+      ["a non-object body", [1, 2]],
+      ["a scalar body", "42"],
+      ["malformed JSON", "{not json"],
+      ["a non-string field", { author: 7 }],
+      ["a date in the wrong form", { after: "10/01/2026" }],
+      ["a date that is not on the calendar", { before: "2026-02-30" }],
+      ["an unknown sort", { sort: "popular" }],
+      ["a fractional limit", { limit: 2.5 }],
+      ["a zero limit", { limit: 0 }],
+      ["a string limit", { limit: "5" }],
+      ["an unknown field", { space: "OTHER" }],
+    ])("400s %s before the driver sees it", async (_label, body) => {
+      start(querying());
+
+      const res = await post(body);
+
+      expect(res.status).toBe(400);
+      expect(typeof (await res.json()).error).toBe("string");
+      expect(driver.queryAsUser).not.toHaveBeenCalled();
+    });
+
+    it("refuses a GET, which would carry no filters", async () => {
+      start(querying());
+
+      const res = await call("/corpora/globex-confluence/query", { headers: USER });
+
+      expect(res.status).toBe(405);
+      expect(driver.queryAsUser).not.toHaveBeenCalled();
+    });
+
+    it("never reaches the ingestion credential", async () => {
+      // A sync worker would otherwise authorize as a fetch and arrive holding
+      // the service credential; the route refuses it before the driver.
+      start(querying());
+
+      const res = await post({}, { authorization: "Bearer sync" });
+
+      expect(res.status).toBe(403);
+      expect(driver.queryAsUser).not.toHaveBeenCalled();
+    });
+
+    it("refuses an orchestrator request with no delegated token", async () => {
+      start(querying());
+
+      const res = await post({}, { authorization: "Bearer orch" });
+
+      expect(res.status).toBe(403);
+      expect(driver.queryAsUser).not.toHaveBeenCalled();
+    });
+
+    it("says so when the provider has no structured query", async () => {
+      start(fakeDriver());
+
+      const res = await post({});
+
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toBe("confluence has no structured query");
+    });
+
+    it("maps a driver denial to 403", async () => {
+      start(fakeDriver({ queryAsUser: vi.fn().mockRejectedValue(new PermissionDeniedError("no")) }));
+
+      const res = await post({});
+
+      expect(res.status).toBe(403);
+    });
+  });
 
   it("refuses a SYNC worker the user-read route", async () => {
     // A sync worker passes the fetch check — fetch is a legitimate ingestion

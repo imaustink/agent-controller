@@ -191,6 +191,8 @@ func main() {
 				activity.RegisterOptions{Name: activities.ReadCorpusActivityName})
 			w.RegisterActivityWithOptions(kb.LookupCorpus,
 				activity.RegisterOptions{Name: activities.LookupCorpusActivityName})
+			w.RegisterActivityWithOptions(kb.QueryCorpus,
+				activity.RegisterOptions{Name: activities.QueryCorpusActivityName})
 			log.Printf("knowledge-base activities enabled: broker=%s", brokerURL)
 		} else {
 			// Not an error: a deployment may index nothing. But it is worth

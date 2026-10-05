@@ -611,3 +611,177 @@ describe("searchAsUser", () => {
     expect(http).not.toHaveBeenCalled();
   });
 });
+
+describe("queryAsUser", () => {
+  const match = (ts: string, over = {}) => ({
+    ts,
+    text: `message ${ts}`,
+    channel: { id: "C123ABC", name: "team-snc" },
+    ...over,
+  });
+
+  const routed = (matches: unknown[], name: string | null = "team-snc") =>
+    vi.fn(async (url: string) => {
+      if (url.includes("conversations.info")) {
+        return name ? respond({ ok: true, channel: { name } }) : respond({ ok: false, error: "channel_not_found" });
+      }
+      return respond({ ok: true, messages: { matches } });
+    }) as unknown as FetchLike;
+
+  const searchParams = (http: FetchLike) =>
+    new URL(
+      (http as unknown as ReturnType<typeof vi.fn>).mock.calls
+        .map((c: unknown[]) => String(c[0]))
+        .find((u: string) => u.includes("search.messages"))!,
+    ).searchParams;
+
+  const searched = (http: FetchLike) =>
+    (http as unknown as ReturnType<typeof vi.fn>).mock.calls.some((c: unknown[]) =>
+      String(c[0]).includes("search.messages"),
+    );
+
+  it("with no filters, asks for the channel's messages newest first, and nothing else", async () => {
+    const http = routed([]);
+    await driver(http).queryAsUser({ delegated: "u" }, SCOPE, { limit: 5 });
+
+    const params = searchParams(http);
+    expect(params.get("query")).toBe("in:#team-snc");
+    expect(params.get("sort")).toBe("timestamp");
+    expect(params.get("sort_dir")).toBe("desc");
+    expect(params.get("count")).toBe("5");
+  });
+
+  it("writes every filter as a Slack modifier, after: moved back a day to stay inclusive", async () => {
+    const http = routed([]);
+    await driver(http).queryAsUser({ delegated: "u" }, SCOPE, {
+      text: "deploy freeze",
+      author: " @Ana Lopez ",
+      after: "2026-03-01",
+      before: "2026-04-01",
+      type: "message",
+      sort: "oldest",
+    });
+
+    const params = searchParams(http);
+    // Slack's after: EXCLUDES its day, so "on or after March 1" is after:Feb 28
+    // (and the month boundary is crossed correctly). before: is exclusive
+    // already and goes as-is.
+    expect(params.get("query")).toBe(
+      "in:#team-snc deploy freeze from:@AnaLopez after:2026-02-28 before:2026-04-01",
+    );
+    expect(params.get("sort")).toBe("timestamp");
+    expect(params.get("sort_dir")).toBe("asc");
+  });
+
+  it("crosses a year boundary when moving after: back a day", async () => {
+    const http = routed([]);
+    await driver(http).queryAsUser({ delegated: "u" }, SCOPE, { after: "2026-01-01" });
+    expect(searchParams(http).get("query")).toBe("in:#team-snc after:2025-12-31");
+  });
+
+  it("sorts by relevance when there are words and no sort was asked for", async () => {
+    const http = routed([]);
+    await driver(http).queryAsUser({ delegated: "u" }, SCOPE, { text: "deploy" });
+
+    const params = searchParams(http);
+    expect(params.get("sort")).toBe("score");
+    expect(params.get("sort_dir")).toBeNull();
+  });
+
+  it("treats relevance without words as newest", async () => {
+    const http = routed([]);
+    await driver(http).queryAsUser({ delegated: "u" }, SCOPE, { sort: "relevance", author: "ana" });
+
+    const params = searchParams(http);
+    expect(params.get("sort")).toBe("timestamp");
+    expect(params.get("sort_dir")).toBe("desc");
+  });
+
+  it("strips the caller's own operators, which would widen or override ours", async () => {
+    const http = routed([]);
+    await driver(http).queryAsUser({ delegated: "u" }, SCOPE, { text: "in:#exec-private salary" });
+
+    const query = searchParams(http).get("query")!;
+    expect(query).not.toContain("exec-private");
+    expect(query).toContain("salary");
+  });
+
+  it("answers nothing when the words were ALL operators, rather than dropping the filter", async () => {
+    const http = routed([match("1.1")]);
+    const result = await driver(http).queryAsUser({ delegated: "u" }, SCOPE, { text: "in:#exec-private" });
+
+    expect(result).toEqual({ hits: [] });
+    expect(searched(http)).toBe(false);
+  });
+
+  it.each([
+    [{ title: "Runbook" }, ["title"]],
+    [{ type: "page" }, ["type"]],
+    [{ type: "document", title: "x" }, ["title", "type"]],
+  ])("refuses %j rather than ignoring it, without calling Slack", async (query, unsupported) => {
+    const http = routed([match("1.1")]);
+
+    const result = await driver(http).queryAsUser({ delegated: "u" }, SCOPE, query);
+
+    expect(result).toEqual({ hits: [], unsupported });
+    expect(http).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed date rather than sending it to Slack", async () => {
+    const http = routed([]);
+    await expect(
+      driver(http).queryAsUser({ delegated: "u" }, SCOPE, { after: "2026-13-01" }),
+    ).rejects.toThrow(/YYYY-MM-DD/);
+    expect(searched(http)).toBe(false);
+  });
+
+  it("filters results by channel ID, because `in:` matches a mutable NAME", async () => {
+    const http = routed([
+      match("1700000002.000200", { channel: { id: "C_OTHER", name: "team-snc" } }),
+      match("1700000001.000100"),
+    ]);
+
+    const { hits } = await driver(http).queryAsUser({ delegated: "u" }, SCOPE, {});
+
+    expect(hits.map((h) => h.id)).toEqual(["C123ABC/1700000001.000100"]);
+  });
+
+  it("stamps every hit with the MESSAGE's own time, not its thread's", async () => {
+    // A recent reply in an old thread is recent; the citation still points at
+    // the thread so the read face fetches the whole conversation.
+    const http = routed([match("1700000500.123456", { thread_ts: "1600000000.000001" })]);
+
+    const { hits } = await driver(http).queryAsUser({ delegated: "u" }, SCOPE, {});
+
+    expect(hits[0]!.id).toBe("C123ABC/1600000000.000001");
+    expect(hits[0]!.updatedAt).toBe(new Date(1700000500123).toISOString());
+  });
+
+  it("returns nothing when the channel name cannot be resolved, rather than searching everywhere", async () => {
+    const http = routed([match("1.1")], null);
+
+    expect(await driver(http).queryAsUser({ delegated: "u" }, SCOPE, { text: "deploy" })).toEqual({ hits: [] });
+    expect(searched(http)).toBe(false);
+  });
+
+  it("refuses the service credential", async () => {
+    const http = vi.fn() as unknown as FetchLike;
+    await expect(driver(http).queryAsUser({ service: "s" }, SCOPE, {})).rejects.toThrow(/delegated token/);
+    expect(http).not.toHaveBeenCalled();
+  });
+});
+
+describe("searchAsUser hits carry a time", () => {
+  it("derives updatedAt from the matched message's ts", async () => {
+    const http = vi.fn(async (url: string) => {
+      if (url.includes("conversations.info")) return respond({ ok: true, channel: { name: "x" } });
+      return respond({
+        ok: true,
+        messages: { matches: [{ ts: "1700000000.500000", text: "hi", channel: { id: "C123ABC" } }] },
+      });
+    }) as unknown as FetchLike;
+
+    const [hit] = await driver(http).searchAsUser({ delegated: "u" }, SCOPE, "hi");
+    expect(hit!.updatedAt).toBe("2023-11-14T22:13:20.500Z");
+  });
+});

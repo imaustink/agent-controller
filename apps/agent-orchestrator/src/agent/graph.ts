@@ -31,6 +31,7 @@ import type { ResponseComposer } from "./response-composer.js";
 import { finalizeCitations, type CitedSource } from "../knowledge-base/cite.js";
 import type { CorpusReader } from "../knowledge-base/reader.js";
 import type { CorpusLookup } from "../knowledge-base/lookup.js";
+import type { CorpusQuery } from "../knowledge-base/query.js";
 import type { MCPBrokerClient } from "../mcp/mcp-broker-client.js";
 import type { KnowledgeBaseSearcher } from "../knowledge-base/searcher.js";
 import { knowledgeBaseSkillId } from "../knowledge-base/types.js";
@@ -599,6 +600,12 @@ export interface AgentGraphDeps {
    * generated either.
    */
   corpusLookup?: CorpusLookup;
+  /**
+   * Runs a knowledge base's structured query live, as the caller — filter and
+   * sort the sources' items by metadata. Absent when knowledge bases are not
+   * configured.
+   */
+  corpusQuery?: CorpusQuery;
   /**
    * Proxies an MCP tool call through the mcp-broker (docs/adr/0045). Absent when
    * `AGENT_MCP_BROKER_URL` is unset, in which case an `mcpExec` tool fails
@@ -2433,6 +2440,32 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           citationSources: found.sources ?? [],
           // Clears any stale verbatim marker, for the same reason as the read
           // face above. PARITY: the Go lookup face sets pendingVerbatim = "".
+          pendingVerbatimResult: undefined,
+          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
+        };
+      }
+
+      // The LIVE structured query face. Beside lookup, which it replaced as a
+      // generated tool (lookup's branch stays for any in-flight tool list), and
+      // for the same reasons: it runs as the caller, and its items are material
+      // to answer from. PARITY: the Go "query" branch in agentloop.go.
+      if (tool.knowledgeBaseExec?.operation === "query") {
+        if (!deps.corpusQuery) {
+          return { error: `tool ${tool.id} queries a corpus but knowledge bases are not configured` };
+        }
+        if (!state.identity) {
+          return { error: `tool ${tool.id} requires a resolved caller identity` };
+        }
+        const found = await deps.corpusQuery.query(
+          tool,
+          input,
+          { subject: state.identity.subject, roles: state.identity.roles },
+          nextCitation(state),
+        );
+        const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, found);
+        return {
+          result,
+          citationSources: found.sources ?? [],
           pendingVerbatimResult: undefined,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
         };

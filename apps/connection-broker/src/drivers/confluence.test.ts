@@ -542,6 +542,134 @@ describe("probe", () => {
   });
 });
 
+describe("queryAsUser", () => {
+  const SPACE = { space: "GLOBEX" };
+  const result = (id: string, lastModified: string) => ({
+    content: { id, type: "page", title: `Page ${id}` },
+    url: `/spaces/GLOBEX/pages/${id}`,
+    lastModified,
+  });
+  const empty = () => vi.fn().mockResolvedValue(respond(200, { results: [] }));
+  const sent = (http: ReturnType<typeof vi.fn>) => new URL(String(http.mock.calls[0]![0])).searchParams;
+
+  it("with no filters, sends the space-bounded page CQL ordered newest first", async () => {
+    const http = empty();
+
+    await driverWith(http).queryAsUser({ delegated: "user-token" }, SPACE, { limit: 5 });
+
+    const [url, init] = http.mock.calls[0]!;
+    const parsed = new URL(String(url));
+    expect(parsed.pathname).toBe(`/ex/confluence/${CLOUD_ID}/wiki/rest/api/search`);
+    expect(parsed.searchParams.get("cql")).toBe('space = "GLOBEX" AND type = page order by lastmodified desc');
+    expect(parsed.searchParams.get("limit")).toBe("5");
+    expect(init.headers.Authorization).toBe("Bearer user-token");
+  });
+
+  it("writes every filter as a CQL clause, still inside the space", async () => {
+    const http = empty();
+
+    await driverWith(http).queryAsUser({ delegated: "u" }, SPACE, {
+      text: "deploy",
+      title: "Runbook",
+      author: "Ana Lopez",
+      after: "2026-03-01",
+      before: "2026-04-01",
+      type: "blogpost",
+      sort: "oldest",
+    });
+
+    expect(sent(http).get("cql")).toBe(
+      'space = "GLOBEX" AND type = blogpost AND text ~ "deploy" AND title ~ "Runbook" AND ' +
+        'creator.fullname ~ "Ana Lopez" AND lastmodified >= "2026-03-01" AND lastmodified < "2026-04-01" ' +
+        "order by lastmodified asc",
+    );
+  });
+
+  it("escapes quotes and backslashes in every caller-supplied string", async () => {
+    // Unescaped, `"` would end the literal and the rest would read as CQL —
+    // e.g. an OR that leaves the space.
+    const http = empty();
+
+    await driverWith(http).queryAsUser({ delegated: "u" }, SPACE, {
+      text: 'a" OR space = "OTHER',
+      title: "back\\slash",
+      author: 'O"Brien',
+    });
+
+    expect(sent(http).get("cql")).toBe(
+      'space = "GLOBEX" AND type = page AND text ~ "a\\" OR space = \\"OTHER" AND ' +
+        'title ~ "back\\\\slash" AND creator.fullname ~ "O\\"Brien"',
+    );
+  });
+
+  it("ranks by relevance when there are words and no sort was asked for: no order clause", async () => {
+    const http = empty();
+    await driverWith(http).queryAsUser({ delegated: "u" }, SPACE, { text: "deploy" });
+    expect(sent(http).get("cql")).toBe('space = "GLOBEX" AND type = page AND text ~ "deploy"');
+  });
+
+  it("treats relevance without words as newest", async () => {
+    const http = empty();
+    await driverWith(http).queryAsUser({ delegated: "u" }, SPACE, { sort: "relevance" });
+    expect(sent(http).get("cql")).toBe('space = "GLOBEX" AND type = page order by lastmodified desc');
+  });
+
+  it("caps the limit at what the search endpoint serves", async () => {
+    const http = empty();
+    await driverWith(http).queryAsUser({ delegated: "u" }, SPACE, { limit: 500 });
+    expect(sent(http).get("limit")).toBe("25");
+  });
+
+  it.each(["message", "document", "folder", "attachment"])(
+    "refuses type %s rather than ignoring it, without calling Confluence",
+    async (type) => {
+      const http = empty();
+
+      const outcome = await driverWith(http).queryAsUser({ delegated: "u" }, SPACE, { type });
+
+      expect(outcome).toEqual({ hits: [], unsupported: ["type"] });
+      expect(http).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a malformed date rather than writing it into CQL", async () => {
+    const http = empty();
+    await expect(
+      driverWith(http).queryAsUser({ delegated: "u" }, SPACE, { before: '2026-01-01" OR space = "X' }),
+    ).rejects.toThrow(/YYYY-MM-DD/);
+    expect(http).not.toHaveBeenCalled();
+  });
+
+  it("carries lastModified onto every hit as updatedAt, in the source's order", async () => {
+    const http = vi.fn().mockResolvedValue(
+      respond(200, {
+        results: [result("2", "2026-09-30T10:00:00.000Z"), result("1", "2026-09-01T10:00:00.000Z")],
+      }),
+    );
+
+    const { hits } = await driverWith(http).queryAsUser({ delegated: "u" }, SPACE, {});
+
+    expect(hits.map((h) => [h.id, h.updatedAt])).toEqual([
+      ["2", "2026-09-30T10:00:00.000Z"],
+      ["1", "2026-09-01T10:00:00.000Z"],
+    ]);
+    expect(hits[0]!.url).toBe("https://example.atlassian.net/wiki/spaces/GLOBEX/pages/2");
+  });
+
+  it("refuses the service credential", async () => {
+    const http = vi.fn();
+    await expect(driverWith(http).queryAsUser({ service: "svc" }, SPACE, {})).rejects.toThrow(/delegated token/);
+    expect(http).not.toHaveBeenCalled();
+  });
+
+  it("throws the classified denial when the source refuses", async () => {
+    const http = vi.fn().mockResolvedValue(respond(403, {}));
+    await expect(driverWith(http).queryAsUser({ delegated: "u" }, SPACE, {})).rejects.toBeInstanceOf(
+      PermissionDeniedError,
+    );
+  });
+});
+
 describe("error classification", () => {
   it.each([403, 404])("treats %i as a denial", async (status) => {
     const http = vi.fn().mockResolvedValue(respond(status));

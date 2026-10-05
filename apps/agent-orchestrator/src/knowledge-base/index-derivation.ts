@@ -6,7 +6,7 @@ import {
   corpusGetToolId,
   connectionLabel,
   knowledgeBaseLabel,
-  knowledgeBaseLookupToolId,
+  knowledgeBaseQueryToolId,
   knowledgeBaseReadToolId,
   knowledgeBaseSearchToolId,
   type CorpusDescriptor,
@@ -79,7 +79,7 @@ export function knowledgeBaseTools(
   roles: string[],
 ): ToolDescriptor[] {
   const label = knowledgeBaseLabel(kb);
-  const exec = (operation: "search" | "read" | "lookup"): KnowledgeBaseExecSpec => ({
+  const exec = (operation: "search" | "read" | "query"): KnowledgeBaseExecSpec => ({
     knowledgeBaseId: kb.id,
     displayName: label,
     operation,
@@ -121,7 +121,7 @@ export function knowledgeBaseTools(
 
   if (readable.length > 0) {
     tools.push(knowledgeBaseReadTool(kb, readable, exec("read")));
-    tools.push(knowledgeBaseLookupTool(kb, readable, exec("lookup")));
+    tools.push(knowledgeBaseQueryTool(kb, readable, exec("query")));
   }
 
   return tools;
@@ -166,40 +166,45 @@ export function knowledgeBaseReadTool(
 
 
 /**
- * The LIVE search face, paired with the read face.
+ * The LIVE structured query face, paired with read.
  *
- * Named "lookup" rather than "search" deliberately. Two tools whose ids and
- * descriptions both say "search" is the near-identical-description problem
- * docs/adr/0039 §5 warns about, here self-inflicted: the planner chooses by
- * embedding, so the verb is the one word that has to differ.
+ * It replaced two faces — a keyword "lookup" and a newest-first "recent" — that
+ * were each one fixed slice of the same capability. Keeping a keyword tool
+ * beside a query that also takes keywords would recreate the near-identical
+ * tools docs/adr/0039 §5 warns about, chosen by embedding. The description leads
+ * with what only it does — filter and sort by metadata — and separates it from
+ * the indexed search by WHEN, not by implementation.
  *
- * The description separates them by WHEN each is right — the index is the
- * default, this is for when the index may be behind — rather than by
- * semantic-vs-lexical, which is an implementation detail a planner cannot act
- * on.
- *
- * PARITY: `knowledgeBaseLookupTool` in `engines/temporal/internal/catalog`.
+ * PARITY: `knowledgeBaseQueryTool` in `engines/temporal/internal/catalog`.
  */
-export function knowledgeBaseLookupTool(
+export function knowledgeBaseQueryTool(
   kb: KnowledgeBaseDescriptor,
   readable: CorpusDescriptor[],
   exec: ToolDescriptor["knowledgeBaseExec"],
 ): ToolDescriptor {
   const label = knowledgeBaseLabel(kb);
+  const names = readable.map((connection) => `${connection.id} (${connectionLabel(connection)})`).join(", ");
   const roles = [...new Set(readable.flatMap((connection) => connection.allowedRoles))].sort();
 
   return {
-    id: knowledgeBaseLookupToolId(kb.id),
-    name: `Look up in ${label}`,
+    id: knowledgeBaseQueryToolId(kb.id),
+    name: `Query ${label}`,
     description:
-      `Look up documents in ${label} by keyword, asking the sources directly instead ` +
-      "of the search index. Use when something may be too new or too recently changed " +
-      "to be indexed, or when a keyword search found nothing and you know the material exists." +
-      "\n\nInput: Keywords to match. This is a literal keyword search in the source, not " +
-      "a question — short distinctive terms work, whole sentences do not." +
-      "\nOutput: Matching documents with their titles, URLs and a `<corpus>/<id>` " +
-      "reference that can be read in full. Only what the asking user may see, and only " +
-      "from inside this knowledge base.",
+      `Query the items in ${label} by their metadata — keywords, title, author, date range, ` +
+      "type — sorted newest, oldest or by relevance, asking the sources directly. Use for " +
+      '"latest", "most recent" or "what changed" questions, for anything by a person, in a ' +
+      "time window, or with a title, and when something may be too new to be indexed. Search " +
+      "ranks by relevance only and cannot filter or sort by any of these." +
+      `\n\nInput: A JSON object; every field optional: {"source": one of ${names} (by id or ` +
+      'name, e.g. "#team-snc"), "text": keywords, "title": text in the title, "author": a ' +
+      'person\'s name (an email for Drive), "after": "YYYY-MM-DD" (inclusive), "before": ' +
+      '"YYYY-MM-DD" (exclusive), "type": "page"|"blogpost"|"message"|"document"|"spreadsheet"|' +
+      '"presentation"|"pdf", "sort": "newest"|"oldest"|"relevance", "limit": 1-25}. E.g. ' +
+      '{"source":"#team-snc","sort":"newest","limit":5}. A source that cannot apply a filter ' +
+      "says so rather than ignoring it." +
+      "\nOutput: Matching items with when each changed, their titles, URLs and a " +
+      "`<corpus>/<id>` reference that can be read in full. Only what the asking user may " +
+      "see, and only from inside this knowledge base.",
     allowedRoles: roles,
     hidden: true,
     knowledgeBaseExec: exec,
