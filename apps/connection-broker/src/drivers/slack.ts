@@ -36,6 +36,17 @@ export interface SlackDriverOptions {
    * `channels:join` scope on the bot token.
    */
   autoJoin?: boolean;
+  /**
+   * A token for resolving user ids to names, and for NOTHING else.
+   *
+   * The connection's bot token. A live read runs as the caller, but a caller's
+   * Slack link carries only a search scope, so `users.info` refuses it and
+   * every hit came back as `@U4YSZEZFG`. Names are workspace directory data —
+   * every member can see them — and only ids that appear in content the caller
+   * is already reading are ever looked up, so this reveals nothing the message
+   * did not. It is never used to read a channel, a message or a search.
+   */
+  directoryToken?: string;
 }
 
 /** A `search.messages` match. Carries its own channel, which is what bounds a hit. */
@@ -78,6 +89,7 @@ export class SlackDriver implements Driver {
   private readonly apiOrigin: string;
   private readonly workspaceUrl: string | undefined;
   private readonly autoJoin: boolean;
+  private readonly directoryToken: string | undefined;
 
   /**
    * Slack user id -> display name, or null for "asked, and Slack would not say".
@@ -99,6 +111,7 @@ export class SlackDriver implements Driver {
     this.apiOrigin = (options.apiOrigin ?? "https://slack.com/api").replace(/\/+$/, "");
     this.workspaceUrl = options.workspaceUrl?.replace(/\/+$/, "");
     this.autoJoin = options.autoJoin ?? false;
+    this.directoryToken = options.directoryToken;
   }
 
   validateScope(scope: Scope): void {
@@ -153,8 +166,9 @@ export class SlackDriver implements Driver {
         isProse(message) && (!message.thread_ts || message.thread_ts === message.ts),
     );
 
+    const names = await this.resolveNames(token, mentionedUserIDs(parents));
     return {
-      resources: parents.map((message) => this.toRef(scope, message)),
+      resources: parents.map((message) => this.toRef(scope, message, names)),
       // Slack pages backwards through time; the oldest ts on this page is where
       // the next page resumes. An empty page ends the walk.
       cursor: body.has_more && messages.length > 0 ? messages[messages.length - 1]!.ts : undefined,
@@ -177,16 +191,18 @@ export class SlackDriver implements Driver {
     }
 
     const parent = messages[0]!;
+    // The whole thread as one document. A question and its answer belong
+    // together; splitting them is what makes chat corpora useless.
+    //
+    // System messages are filtered out of the BODY as well as out of listing:
+    // a thread whose replies include three join events should not carry them
+    // into the chunk. The parent survives regardless — it is what this
+    // document is, and dropping it would leave a thread with no opening.
+    const thread = [parent, ...messages.slice(1).filter(isProse)];
+    const names = await this.resolveNames(token, referencedUserIDs(thread));
     return {
-      ...this.toRef(scope, parent),
-      // The whole thread as one document. A question and its answer belong
-      // together; splitting them is what makes chat corpora useless.
-      //
-      // System messages are filtered out of the BODY as well as out of listing:
-      // a thread whose replies include three join events should not carry them
-      // into the chunk. The parent survives regardless — it is what this
-      // document is, and dropping it would leave a thread with no opening.
-      markdown: await this.renderThread(token, [parent, ...messages.slice(1).filter(isProse)]),
+      ...this.toRef(scope, parent, names),
+      markdown: renderThread(thread, names),
     };
   }
 
@@ -242,11 +258,11 @@ export class SlackDriver implements Driver {
       count: String(Math.min(limit, 20)),
     })) as { messages?: { matches?: SlackSearchMatch[] } };
 
-    return (body.messages?.matches ?? [])
+    const matches = (body.messages?.matches ?? [])
       // THE bound. See the note above: `in:` is by name and names move.
       .filter((match) => match.channel?.id === channel)
-      .map((match) => this.toSearchHit(channel, match))
       .slice(0, limit);
+    return this.toSearchHits(token, channel, matches);
   }
 
   /**
@@ -322,12 +338,11 @@ export class SlackDriver implements Driver {
       count: String(q.limit),
     })) as { messages?: { matches?: SlackSearchMatch[] } };
 
-    const hits = (body.messages?.matches ?? [])
+    const matches = (body.messages?.matches ?? [])
       // THE bound, exactly as in searchAsUser: `in:` is by name and names move.
       .filter((match) => match.channel?.id === channel)
-      .map((match) => this.toSearchHit(channel, match))
       .slice(0, q.limit);
-    return { hits };
+    return { hits: await this.toSearchHits(token, channel, matches) };
   }
 
   /**
@@ -357,24 +372,33 @@ export class SlackDriver implements Driver {
    * since the read face indexes threads and a reply's own ts would fetch a
    * one-message thread rather than the conversation the answer is in.
    */
-  private toSearchHit(channel: string, match: SlackSearchMatch): SearchHit {
+  private async toSearchHits(
+    token: string,
+    channel: string,
+    matches: readonly SlackSearchMatch[],
+  ): Promise<SearchHit[]> {
+    // Mentions are resolved as a thread read resolves them: a hit's title and
+    // excerpt are what the agent reads back, so an id there is an id in the answer.
+    const names = await this.resolveNames(token, mentionedUserIDs(matches));
+    return matches.map((match) => this.toSearchHit(channel, match, names));
+  }
+
+  private toSearchHit(
+    channel: string,
+    match: SlackSearchMatch,
+    names: ReadonlyMap<string, string>,
+  ): SearchHit {
     const ts = match.thread_ts ?? match.ts;
     return {
       id: `${channel}/${ts}`,
-      title: firstLine(match.text ?? "") || `message ${ts}`,
+      title: titleOf(match.text ?? "", names) || `message ${ts}`,
       url: match.permalink ?? this.messageUrl(channel, ts),
       version: ts,
       // The MATCHED message's own time, not its thread's: a recent reply in an
       // old thread is recent, and that is what a recency answer reports.
       updatedAt: tsToISO(match.ts),
-      excerpt: renderText(match.text ?? "").slice(0, 300) || undefined,
+      excerpt: renderText(match.text ?? "", names).slice(0, 300) || undefined,
     };
-  }
-
-  /** The shared tail of both read paths: resolve who spoke, then render. */
-  private async renderThread(token: string, messages: readonly SlackMessage[]): Promise<string> {
-    const names = await this.resolveNames(token, referencedUserIDs(messages));
-    return messages.map((message) => renderMessage(message, names)).join("\n\n");
   }
 
   /**
@@ -399,9 +423,11 @@ export class SlackDriver implements Driver {
       throw new PermissionDeniedError(`slack thread ${id} returned no messages`);
     }
     const parent = messages[0]!;
+    const thread = [parent, ...messages.slice(1).filter(isProse)];
+    const names = await this.resolveNames(token, referencedUserIDs(thread));
     return {
-      ...this.toRef({ channel }, parent),
-      markdown: await this.renderThread(token, [parent, ...messages.slice(1).filter(isProse)]),
+      ...this.toRef({ channel }, parent, names),
+      markdown: renderThread(thread, names),
     };
   }
 
@@ -511,10 +537,10 @@ export class SlackDriver implements Driver {
     return { scopeKey: event.channel, sourceIds: sourceId ? [sourceId] : [] };
   }
 
-  private toRef(scope: Scope, message: SlackMessage) {
+  private toRef(scope: Scope, message: SlackMessage, names?: ReadonlyMap<string, string>) {
     return {
       id: message.ts,
-      title: firstLine(message.text ?? "") || `Thread ${message.ts}`,
+      title: titleOf(message.text ?? "", names) || `Thread ${message.ts}`,
       url: message.permalink ?? this.messageUrl(scope.channel!, message.ts),
       // Slack's ts IS the version: any edit produces a new one on the message
       // that changed.
@@ -550,23 +576,25 @@ export class SlackDriver implements Driver {
    * propagating: `users.info` needs the `users:read` scope, and this driver
    * classifies `missing_scope` as PERMANENT, so a workspace that never granted
    * it would otherwise see every fetch fail over decoration.
+   *
+   * The caller's token is asked first, then the directory token (see
+   * SlackDriverOptions.directoryToken): a caller's link is usually scoped for
+   * search alone, and without the fallback a live read never resolved anyone.
    */
-  private async resolveNames(token: string, ids: Iterable<string>): Promise<Map<string, string>> {
+  private async resolveNames(token: string, ids: readonly string[]): Promise<Map<string, string>> {
     const wanted = [...new Set(ids)].filter((id) => !this.userNames.has(id));
+    const tokens =
+      this.directoryToken && this.directoryToken !== token ? [token, this.directoryToken] : [token];
 
     // Sequential on purpose: this is a per-author cost paid once, and Slack
     // rate-limits users.info per workspace rather than per connection.
     for (const id of wanted) {
-      try {
-        const body = (await this.call("users.info", token, { user: id })) as {
-          user?: { profile?: { display_name?: string; real_name?: string }; name?: string };
-        };
-        const profile = body.user?.profile;
-        const name = profile?.display_name || profile?.real_name || body.user?.name;
-        this.userNames.set(id, name && name.length > 0 ? name : null);
-      } catch {
-        this.userNames.set(id, null);
+      let name: string | null = null;
+      for (const candidate of tokens) {
+        name = await this.lookupName(candidate, id);
+        if (name) break;
       }
+      this.userNames.set(id, name);
     }
 
     const resolved = new Map<string, string>();
@@ -575,6 +603,20 @@ export class SlackDriver implements Driver {
       if (name) resolved.set(id, name);
     }
     return resolved;
+  }
+
+  /** One `users.info` lookup; null for any failure (see resolveNames). */
+  private async lookupName(token: string, id: string): Promise<string | null> {
+    try {
+      const body = (await this.call("users.info", token, { user: id })) as {
+        user?: { profile?: { display_name?: string; real_name?: string }; name?: string };
+      };
+      const profile = body.user?.profile;
+      const name = profile?.display_name || profile?.real_name || body.user?.name;
+      return name && name.length > 0 ? name : null;
+    } catch {
+      return null;
+    }
   }
 
   private async call(
@@ -701,8 +743,32 @@ function tsToISO(ts: string): string | undefined {
   return Number.isFinite(millis) ? new Date(millis).toISOString() : undefined;
 }
 
-const firstLine = (text: string): string =>
-  renderText(text).split("\n")[0]?.slice(0, 120).trim() ?? "";
+/**
+ * A message as a title: its first line with words in it, names resolved and
+ * emoji shortcodes dropped.
+ *
+ * A title becomes the text of a citation link, and Slack sends emoji as
+ * shortcodes — so a workflow post opening with 🧵 was cited as a link reading
+ * ":thread: for Evening Updates". Bodies keep their shortcodes; they read fine
+ * in prose, where nobody mistakes them for a name.
+ */
+export function titleOf(text: string, names?: ReadonlyMap<string, string>): string {
+  for (const line of renderText(text, names).split("\n")) {
+    const title = stripEmoji(line).replace(/\s+/g, " ").trim();
+    if (/[\p{L}\p{N}]/u.test(title)) return title.slice(0, 120).trim();
+  }
+  return "";
+}
+
+/**
+ * Removes Slack emoji shortcodes, skin tones included (`:wave::skin-tone-2:`).
+ *
+ * A shortcode must contain a letter, so a clock time like `12:00:11` survives;
+ * thumbs up and down (`:+1:`, `:-1:`) are the common ones without, and are named.
+ */
+export function stripEmoji(text: string): string {
+  return text.replace(/:(?:[+-]1|(?=[a-z0-9_+'-]*[a-z])[a-z0-9_+'-]+):/g, "");
+}
 
 /**
  * Turns Slack's mrkdwn into text worth embedding.
@@ -783,12 +849,24 @@ function renderMessage(message: SlackMessage, names?: ReadonlyMap<string, string
   return `**${author}**: ${renderText(message.text ?? "", names)}`.trim();
 }
 
+/** A thread as Markdown, one message per paragraph. */
+function renderThread(messages: readonly SlackMessage[], names: ReadonlyMap<string, string>): string {
+  return messages.map((message) => renderMessage(message, names)).join("\n\n");
+}
+
 /** Every user id a rendered thread would otherwise expose: authors and mentions. */
 export function referencedUserIDs(messages: readonly SlackMessage[]): string[] {
+  return [...messages.flatMap((message) => (message.user ? [message.user] : [])), ...mentionedUserIDs(messages)];
+}
+
+/**
+ * Every id MENTIONED in the text — what a title or excerpt would expose.
+ *
+ * Bare `<@U123>` only. The `<@U123|name>` form already carries its name.
+ */
+export function mentionedUserIDs(messages: readonly { text?: string }[]): string[] {
   const ids: string[] = [];
   for (const message of messages) {
-    if (message.user) ids.push(message.user);
-    // Bare `<@U123>` only. The `<@U123|name>` form already carries its name.
     for (const match of (message.text ?? "").matchAll(/<@([UW][A-Z0-9]+)>/g)) {
       if (match[1]) ids.push(match[1]);
     }
