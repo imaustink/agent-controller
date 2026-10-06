@@ -16,6 +16,7 @@ type toolSpec struct {
 	Output            string   `json:"output"`
 	AllowedRoles      []string `json:"allowedRoles"`
 	Tier              string   `json:"tier,omitempty"`
+	Approval          string   `json:"approval,omitempty"`
 	AgentRef          string   `json:"agentRef,omitempty"`
 	IdentityProviders []string `json:"identityProviders,omitempty"`
 }
@@ -26,6 +27,7 @@ type agentSpec struct {
 	Output             string   `json:"output"`
 	AllowedRoles       []string `json:"allowedRoles"`
 	Tier               string   `json:"tier,omitempty"`
+	ApprovalDefault    string   `json:"approvalDefault,omitempty"`
 	OrchestratorPrompt string   `json:"orchestratorPrompt,omitempty"`
 	AgentPrompt        string   `json:"agentPrompt,omitempty"`
 	SkillRefs          []string `json:"skillRefs,omitempty"`
@@ -57,6 +59,7 @@ type localToolSpec struct {
 	Output         string             `json:"output"`
 	AllowedRoles   []string           `json:"allowedRoles"`
 	Tier           string             `json:"tier,omitempty"`
+	Approval       string             `json:"approval,omitempty"`
 	Runtime        string             `json:"runtime"`
 	Package        string             `json:"package,omitempty"`
 	Version        string             `json:"version,omitempty"`
@@ -80,6 +83,7 @@ type mcpToolSpec struct {
 	AllowedRoles      []string `json:"allowedRoles"`
 	Hidden            bool     `json:"hidden,omitempty"`
 	Tier              string   `json:"tier,omitempty"`
+	Approval          string   `json:"approval,omitempty"`
 	IdentityProviders []string `json:"identityProviders,omitempty"`
 }
 
@@ -113,6 +117,7 @@ func DecodeTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 		Output:            spec.Output,
 		AllowedRoles:      spec.AllowedRoles,
 		Tier:              spec.Tier,
+		Approval:          spec.Approval,
 		AgentRef:          spec.AgentRef,
 		IdentityProviders: spec.IdentityProviders,
 	}, nil
@@ -147,6 +152,7 @@ func DecodeLocalTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 		Output:       spec.Output,
 		AllowedRoles: spec.AllowedRoles,
 		Tier:         spec.Tier,
+		Approval:     spec.Approval,
 		LocalExec: &LocalExecSpec{
 			Runtime:        spec.Runtime,
 			Package:        spec.Package,
@@ -184,6 +190,7 @@ func DecodeMCPTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 		Input:             spec.InputSchema,
 		AllowedRoles:      spec.AllowedRoles,
 		Tier:              spec.Tier,
+		Approval:          spec.Approval,
 		Hidden:            spec.Hidden,
 		IdentityProviders: spec.IdentityProviders,
 		MCPExec: &MCPExecSpec{
@@ -208,6 +215,7 @@ func DecodeAgent(obj *unstructured.Unstructured) (AgentDescriptor, error) {
 		Output:             spec.Output,
 		AllowedRoles:       spec.AllowedRoles,
 		Tier:               spec.Tier,
+		ApprovalDefault:    spec.ApprovalDefault,
 		OrchestratorPrompt: spec.OrchestratorPrompt,
 		AgentPrompt:        spec.AgentPrompt,
 		SkillRefs:          spec.SkillRefs,

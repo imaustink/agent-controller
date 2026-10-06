@@ -1,3 +1,5 @@
+import type { ApprovalPending } from "../agent/graph.js";
+
 /**
  * Session-scoped skill lifecycle (docs/adr/0012): a conversation keeps ONE
  * active skill across turns so follow-up messages ("yes, publish it") don't
@@ -96,6 +98,15 @@ export interface SessionRecord {
    * can poll it without the caller having to repeat their request.
    */
   pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number; subject?: string; request?: string };
+  /**
+   * A tool call this conversation paused awaiting human approval (ADR 0003 +
+   * ADR 0004 terminate-and-resume — agent/graph.ts's `approvalPending` state
+   * field, see {@link ApprovalPending}). Persisted so the NEXT turn's
+   * `checkPendingApproval` node can read the caller's decision and re-dispatch
+   * the exact same call without re-running retrieval/planning. Mutually
+   * exclusive with the active-skill/agent-run fields, like `pendingIdentityLink`.
+   */
+  approvalPending?: ApprovalPending;
   /** Last touch time (ms since epoch); used for sliding TTL expiry. */
   updatedAt: number;
 }

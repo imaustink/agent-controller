@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/controller-agent/temporal-engine/internal/approval"
 	"github.com/controller-agent/temporal-engine/internal/catalog"
 	"github.com/controller-agent/temporal-engine/internal/continuation"
 	"github.com/controller-agent/temporal-engine/internal/messaging"
@@ -212,6 +213,21 @@ func AgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 					Error: "tool not available to this agent",
 				})
 				continue
+			}
+
+			// Approval gate (ADR 0003), mirroring the parent loop. Here the human
+			// wait is in-workflow (prompts.Receive), exactly like ask_user: the
+			// question bubbles to the parent as an AgentUp and the answer returns
+			// as the next AgentPrompt. The governing agent's approvalDefault is the
+			// fallback when the tool sets no policy of its own.
+			if approval.RequiresHuman(approval.Resolve(tool.Approval, in.Agent.ApprovalDefault)) {
+				if requestAgentApproval(ctx, up, prompts, plan.ToolID) == approval.DecisionDenied {
+					history = append(history, activities.ActionRecord{
+						ToolID: plan.ToolID, Input: plan.ToolInput,
+						Error: approval.DeniedCode + ": " + approval.DeniedMessage,
+					})
+					continue
+				}
 			}
 
 			// A container Tool that declares identityProviders must not run

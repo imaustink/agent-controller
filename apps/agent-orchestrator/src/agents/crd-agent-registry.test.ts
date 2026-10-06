@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { WatchCrdFn } from "../k8s/crd-watcher.js";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
-import { CrdAgentRegistry, type AgentCustomResource } from "./crd-agent-registry.js";
+import { CrdAgentRegistry, toAgentDescriptor, type AgentCustomResource } from "./crd-agent-registry.js";
 
 const validAgent: AgentCustomResource = {
   metadata: { name: "software-engineering-agent" },
@@ -91,5 +91,16 @@ describe("CrdAgentRegistry", () => {
       const registry = new CrdAgentRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
       expect(() => registry.watch(() => {})).toThrow();
     });
+  });
+});
+
+describe("toAgentDescriptor — approvalDefault (ADR 0003)", () => {
+  it("round-trips approvalDefault onto the descriptor", () => {
+    const d = toAgentDescriptor({ ...validAgent, spec: { ...validAgent.spec, approvalDefault: "always" } }, "default");
+    expect(d?.approvalDefault).toBe("always");
+  });
+
+  it("leaves approvalDefault undefined when the CR sets none (existing CRs unaffected)", () => {
+    expect(toAgentDescriptor(validAgent, "default")?.approvalDefault).toBeUndefined();
   });
 });

@@ -162,6 +162,23 @@ describe("discovery", () => {
     });
   });
 
+  it("copies approval from the exposure entry onto the materialized MCPTool (ADR 0003)", async () => {
+    const server = makeServer(
+      [{ remoteToolName: "search_issues", allowedRoles: ["eng"], approval: "always" }],
+      ["github"],
+    );
+    await discoveryWith(k8s, new FakeMcpClient(liveTools)).runServer(binding(server, "svc"));
+
+    expect(k8s.tools.get(SEARCH_ISSUES_ID)!.spec).toMatchObject({ approval: "always" });
+  });
+
+  it("omits approval when the exposure entry sets none (existing servers unaffected)", async () => {
+    const server = makeServer([{ remoteToolName: "search_issues", allowedRoles: ["eng"] }], ["github"]);
+    await discoveryWith(k8s, new FakeMcpClient(liveTools)).runServer(binding(server, "svc"));
+
+    expect(k8s.tools.get(SEARCH_ISSUES_ID)!.spec.approval).toBeUndefined();
+  });
+
   it("does not materialize an expose:false entry, but records the role assignment on status", async () => {
     const server = makeServer([
       { remoteToolName: "search_issues", allowedRoles: ["eng"], expose: false },

@@ -70,6 +70,15 @@ type AgentSpec struct {
 	// +optional
 	Tier string `json:"tier,omitempty"`
 
+	// approvalDefault is the fallback tool-approval policy (ADR 0003) for tools
+	// this agent calls that do not set their own `approval`. "never" (and the
+	// empty default) runs tools silently; "always" requires human approval;
+	// "auto" consults an optional evaluator. A tool's own `approval` always wins
+	// over this default (most-specific-wins).
+	// +optional
+	// +kubebuilder:validation:Enum=never;always;auto
+	ApprovalDefault string `json:"approvalDefault,omitempty"`
+
 	// image is the agent-loop container the AgentRun controller launches as a
 	// Job (e.g. the agent-orchestrator image running in scoped sub-agent mode).
 	// +required

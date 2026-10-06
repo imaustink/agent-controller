@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/controller-agent/temporal-engine/internal/approval"
 	"github.com/controller-agent/temporal-engine/internal/callertools"
 	"github.com/controller-agent/temporal-engine/internal/catalog"
 	"github.com/controller-agent/temporal-engine/internal/continuation"
@@ -73,11 +74,14 @@ type TurnMeta struct {
 // active-skill fit check → capability gate → retrieve → select → resolve
 // tools → plan⇄runTool → compose. It returns the reply plus which skill (if
 // any) stays active. Mirrors agent-controller's graph nodes.
-func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput, note func(string)) (string, TurnMeta, []callertools.PendingCall, error) {
+func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput, note func(string), emit func(messaging.TurnEvent)) (string, TurnMeta, []callertools.PendingCall, error) {
 	logger := workflow.GetLogger(ctx)
 	meta := TurnMeta{Path: "bare"}
 	if note == nil {
 		note = func(string) {}
+	}
+	if emit == nil {
+		emit = func(messaging.TurnEvent) {}
 	}
 
 	// 0. Mid-episode agent takes the turn outright (upstream's
@@ -106,6 +110,14 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	}
 
 	var skillTools *activities.SkillTools
+
+	// Tool-approval resume state (ADR 0003), set by step 0.7 below and read by
+	// the approval gate inside the plan⇄runTool loop. approvedCall is a one-shot:
+	// the single tool call the user just approved, which the gate lets through
+	// without re-prompting. deniedCalls names tools the user denied this turn, so
+	// the gate surfaces them to the planner as failed rather than re-prompting.
+	var approvedCall *PendingApproval
+	deniedCalls := map[string]bool{}
 
 	// 0.5. Deterministic dispatch (ADR 0024). The gateway matched this turn's
 	// event descriptor to an IntegrationRoute and named a target; re-resolve
@@ -157,6 +169,28 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	if skillTools == nil && state.PendingIdentityLink != nil && in.Caller.Subject != "" {
 		if reply, m, handled, err := resumePendingLink(ctx, actx, state, in, &meta, note); handled {
 			return reply, m, nil, err
+		}
+	}
+
+	// 0.7. A turn that paused for tool approval resumes here (ADR 0003). The
+	// decision re-arms the normal loop below: an approved call becomes a one-shot
+	// the gate lets through; a denied call is remembered so the gate surfaces it
+	// as failed. Re-resolves the skill under current roles rather than trusting
+	// the anchor, exactly as the pending-link resume above does.
+	if skillTools == nil && state.PendingApproval != nil && in.Caller.Subject != "" {
+		resolved, approved, deniedID, reply, handled, err := resumePendingApproval(ctx, actx, state, &in, &meta, note)
+		if handled {
+			return reply, meta, nil, err
+		}
+		if resolved != nil {
+			skillTools = resolved
+			approvedCall = approved
+			if deniedID != "" {
+				deniedCalls[deniedID] = true
+				emit(messaging.ApprovalResolved(0, "", deniedID, false))
+			} else if approved != nil {
+				emit(messaging.ApprovalResolved(0, "", approved.ToolID, true))
+			}
 		}
 	}
 
@@ -418,6 +452,39 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		}
 
 		tool := *findTool(plan.ToolID, skillTools)
+
+		// Approval gate (ADR 0003): a tool whose policy requires a human pauses
+		// the turn here — ahead of every dispatch branch (KB, MCP, container,
+		// local, agent-backed) — so one check covers them all. Deterministic,
+		// single-owner control flow: no planner can skip or reorder it. The
+		// top-level conversation has no governing agent, so there is no agent
+		// default to fall back to (the sub-agent loop passes its agent's default).
+		if deniedCalls[plan.ToolID] {
+			// Denied earlier this turn: surface as a failed call so the planner
+			// moves on, and never re-prompt for the same tool in one turn.
+			logger.Info("tool was denied this turn; surfacing as failed", "toolId", plan.ToolID)
+			history = append(history, activities.ActionRecord{
+				ToolID: plan.ToolID, Input: plan.ToolInput,
+				Error: approval.DeniedCode + ": " + approval.DeniedMessage,
+			})
+			note(plan.ToolID + " was denied")
+			continue
+		}
+		if approval.RequiresHuman(approval.Resolve(tool.Approval, "")) {
+			if approvedCall != nil && approvedCall.ToolID == plan.ToolID && approvedCall.ToolInput == plan.ToolInput {
+				approvedCall = nil // one-shot consumed — fall through and run it
+			} else {
+				state.PendingApproval = &PendingApproval{
+					OriginalRequest: in.Message,
+					SkillID:         skillTools.Skill.ID,
+					ToolID:          plan.ToolID,
+					ToolInput:       plan.ToolInput,
+					ToolInstanceKey: plan.ToolInstanceKey,
+				}
+				emit(messaging.ApprovalRequired(0, "", plan.ToolID, approval.Prompt(plan.ToolID)))
+				return approval.Prompt(plan.ToolID), meta, nil, nil
+			}
+		}
 
 		// A knowledge base's generated tool (ADR 0039 §3) has nothing to
 		// launch: its work is a vector query plus a per-user probe, both

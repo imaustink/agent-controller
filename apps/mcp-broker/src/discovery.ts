@@ -113,6 +113,7 @@ export class Discovery {
           allowedRoles: entry.allowedRoles ?? [],
           ...(entry.hidden !== undefined ? { hidden: entry.hidden } : {}),
           ...(entry.tier !== undefined ? { tier: entry.tier } : {}),
+          ...(entry.approval !== undefined ? { approval: entry.approval } : {}),
           ...(server.spec.identityProviders && server.spec.identityProviders.length > 0
             ? { identityProviders: server.spec.identityProviders }
             : {}),

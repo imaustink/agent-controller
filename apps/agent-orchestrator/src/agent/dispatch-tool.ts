@@ -7,6 +7,7 @@ import type { MCPBrokerClient } from "../mcp/mcp-broker-client.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { AgentDescriptor } from "../agents/types.js";
 import type { AgentOrchestratorChannel } from "../agents/nats-agent-channel.js";
+import { approvalPrompt, requiresApproval, resolveApproval } from "./approval.js";
 
 /** Outcome of dispatching one resolved Tool, reported back as a `tool_result` down-message (docs/adr/0028). */
 export type ToolCallOutcome = { ok: true; result?: unknown } | { ok: false; error: string };
@@ -39,8 +40,22 @@ export async function dispatchResolvedTool(
   tool: ToolDescriptor,
   input: string,
   deps: ToolDispatchDeps,
-  opts: { sessionId?: string; callerSubject?: string } = {},
+  opts: { sessionId?: string; callerSubject?: string; agentApprovalDefault?: string } = {},
 ): Promise<ToolCallOutcome> {
+  // Declarative tool-approval gate (ADR 0003), mirrored from `runTool` so a
+  // sub-agent's own tool calls are governed by the same policy — resolved
+  // most-specific-wins against the GOVERNING agent's `approvalDefault`. Covers
+  // every dispatch kind at once by sitting ahead of the branches below.
+  //
+  // A sub-agent tool call has no human-in-the-loop channel to pause on (ADR
+  // 0004 terminate-and-resume lives in the top-level graph, not here), so an
+  // `always`/`auto` call fails closed with the approval prompt as a tool_result
+  // the sub-agent's model can surface, rather than running unapproved.
+  const effective = resolveApproval(tool.approval, opts.agentApprovalDefault);
+  if (requiresApproval(effective)) {
+    return { ok: false, error: approvalPrompt(tool.id) };
+  }
+
   if (tool.agentRunTemplate) {
     return {
       ok: false,
@@ -155,7 +170,12 @@ export function makeSubAgentToolCallHandler(
         return;
       }
       try {
-        const outcome = await dispatchResolvedTool(tool, call.input, toolDeps, opts);
+        const outcome = await dispatchResolvedTool(tool, call.input, toolDeps, {
+          ...opts,
+          // The governing agent's fallback policy (ADR 0003) — a tool's own
+          // `approval` still wins inside `dispatchResolvedTool`.
+          agentApprovalDefault: agent.approvalDefault,
+        });
         await channel.resolveToolCall(runId, call.callId, outcome);
       } catch (err) {
         await channel.resolveToolCall(runId, call.callId, {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { WatchCrdFn } from "../k8s/crd-watcher.js";
-import { CrdToolRegistry, type CustomObjectsApiLike, type ToolCustomResource } from "./crd-tool-registry.js";
+import { CrdToolRegistry, toToolDescriptor, type CustomObjectsApiLike, type ToolCustomResource } from "./crd-tool-registry.js";
 
 const validTool: ToolCustomResource = {
   metadata: { name: "recipe-scraper" },
@@ -192,5 +192,29 @@ describe("CrdToolRegistry", () => {
 
       expect(onChange).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("toToolDescriptor — approval (ADR 0003)", () => {
+  it("round-trips approval onto a container Tool descriptor", () => {
+    const d = toToolDescriptor({ ...validTool, spec: { ...validTool.spec, approval: "always" } }, "default");
+    expect(d?.approval).toBe("always");
+  });
+
+  it("round-trips approval onto an agent-backed Tool descriptor", () => {
+    const d = toToolDescriptor(
+      {
+        metadata: { name: "agent-tool" },
+        spec: { description: "d", input: "i", output: "o", allowedRoles: ["reader"], approval: "auto", agentRef: "some-agent" },
+      },
+      "default",
+    );
+    expect(d?.agentRunTemplate?.agentRef).toBe("some-agent");
+    expect(d?.approval).toBe("auto");
+  });
+
+  it("leaves approval undefined when the CR sets none (existing CRs unaffected)", () => {
+    const d = toToolDescriptor(validTool, "default");
+    expect(d?.approval).toBeUndefined();
   });
 });

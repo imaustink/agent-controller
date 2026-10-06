@@ -4864,3 +4864,112 @@ describe("buildAgentGraph: deterministic knowledge-base link gate", () => {
     expect(final.linkGatePending).toBeFalsy();
   });
 });
+
+describe("buildAgentGraph — tool-approval gate (ADR 0003)", () => {
+  const approvalTool: ToolDescriptor = { ...scraperTool, approval: "always" };
+  const PROMPT = 'Approval required: run tool "recipe-scraper"? Reply "approve" or "deny".';
+  const DENIED = "Tool call was denied by the user.";
+
+  function approvalDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
+    const deps = baseDeps(overrides);
+    // The selected skill's toolIds resolve to the always-approval tool.
+    deps.vectorStore.getByIds = vi.fn().mockResolvedValue([{ tool: approvalTool, score: 1 }]);
+    return deps;
+  }
+
+  it("an always-approval tool returns the prompt and does NOT execute", async () => {
+    const deps = approvalDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.result).toBe(PROMPT);
+    expect(final.approvalPending?.toolId).toBe("recipe-scraper");
+    expect(final.approvalWaiting).toBe(true);
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+
+  it("a never-approval tool runs unchanged (no gate, no pause)", async () => {
+    // scraperTool declares no approval -> resolves to "never" -> today's path.
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.approvalPending).toBeUndefined();
+    expect(final.result).toEqual({ title: "Pancakes" });
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalled();
+  });
+
+  it("approve resumes and executes the exact stored call", async () => {
+    const deps = approvalDeps({ actionPlanner: { plan: vi.fn().mockResolvedValue({ action: "finish" }) } });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "approve",
+      authToken: "tok",
+      sessionSubject: "alice",
+      approvalPending: {
+        toolId: "recipe-scraper",
+        toolArgs: "https://example.com/recipe",
+        tool: approvalTool,
+        skill,
+        skillTools: [approvalTool],
+        subject: "alice",
+      },
+    });
+
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
+      approvalTool.jobTemplate,
+      expect.objectContaining({ args: ["https://example.com/recipe"] }),
+    );
+    expect(final.approvalPending).toBeUndefined();
+    expect(final.result).toEqual({ title: "Pancakes" });
+  });
+
+  it("deny synthesizes an approval_denied failure, does not execute, and feeds the planner", async () => {
+    const plan = vi.fn().mockResolvedValue({ action: "finish" });
+    const deps = approvalDeps({ actionPlanner: { plan } });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "deny",
+      authToken: "tok",
+      sessionSubject: "alice",
+      approvalPending: {
+        toolId: "recipe-scraper",
+        toolArgs: "https://example.com/recipe",
+        tool: approvalTool,
+        skill,
+        skillTools: [approvalTool],
+        subject: "alice",
+      },
+    });
+
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+    expect(final.approvalPending).toBeUndefined();
+    expect(final.actionHistory.some((r) => r.result === DENIED)).toBe(true);
+    // The planner saw the denial (it reacts to the failure rather than the turn
+    // silently dropping it): history passed to plan() carries the denied record.
+    expect(plan).toHaveBeenCalled();
+    const history = plan.mock.calls[0][3] as { result: string }[];
+    expect(history.some((r) => r.result === DENIED)).toBe(true);
+  });
+
+  it("an ambiguous reply re-asks and keeps the pause in place", async () => {
+    const deps = approvalDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "hmmmm not sure",
+      authToken: "tok",
+      sessionSubject: "alice",
+      approvalPending: { toolId: "recipe-scraper", tool: approvalTool, subject: "alice" },
+    });
+
+    expect(final.result).toBe(PROMPT);
+    expect(final.approvalPending?.toolId).toBe("recipe-scraper");
+    expect(final.approvalWaiting).toBe(true);
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+});

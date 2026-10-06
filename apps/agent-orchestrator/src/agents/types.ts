@@ -21,6 +21,16 @@ export interface AgentDescriptor {
   /** Optional coarse risk/cost tier, mirrors ToolDescriptor.tier. */
   tier?: string;
   /**
+   * Fallback tool-approval policy (ADR 0003) for tools this agent's own loop
+   * calls that do not set their own `approval`. `"never"`/empty runs tools
+   * silently; `"always"` requires human approval; `"auto"` consults an
+   * optional evaluator (treated as `"always"` for now). A tool's own
+   * `approval` always wins (most-specific-wins, see `agent/approval.ts`).
+   * Consulted ONLY in the sub-agent tool-call loop (`dispatch-tool.ts`) — the
+   * top-level graph has no agent default. PARITY: `AgentSpec.ApprovalDefault`.
+   */
+  approvalDefault?: string;
+  /**
    * Guidance for THIS orchestrator's planner on how/when to delegate to the
    * agent and how to interpret its replies — trusted, catalog-authored
    * (same trust model as a Skill's markdown). Distinct from the sub-agent's

@@ -40,6 +40,13 @@ import type { SkillSelector } from "./skill-selector.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
 import { makeSubAgentToolCallHandler, type ToolCatalog } from "./dispatch-tool.js";
 import {
+  APPROVAL_DENIED_MESSAGE,
+  approvalPrompt,
+  parseApprovalDecision,
+  requiresApproval,
+  resolveApproval,
+} from "./approval.js";
+import {
   ACTOR_LOGIN_ENV,
   AuthorizationService,
   type CredentialEnvEntry,
@@ -50,6 +57,39 @@ import {
 // module, and the constant's home is now the authorization service that owns
 // the decision to inject it.
 export { ACTOR_LOGIN_ENV };
+
+/**
+ * A tool call paused awaiting human approval (ADR 0003 + ADR 0004
+ * terminate-and-resume). Set by `runTool` when a gated call cannot run yet;
+ * persisted to the session store exactly like `pendingIdentityLink`, and
+ * consumed next turn by `checkPendingApproval`, which reads the user's reply as
+ * the decision. Carries everything the resume needs to re-dispatch the exact
+ * same call and continue the planner loop WITHOUT re-running retrieval/planning
+ * (which could pick a different tool or args than the user approved).
+ */
+export interface ApprovalPending {
+  /** Catalog id of the gated tool — also what the prompt names. */
+  toolId: string;
+  /** The exact args the gated call would run with (ADR 0008). */
+  toolArgs?: string;
+  /** Instance scope for the resumed call's continuation key (ADR 0017). */
+  instanceKey?: string;
+  /**
+   * The resolved tool descriptor, so the resume re-dispatches the SAME call
+   * rather than re-resolving it (which depends on this turn's throwaway
+   * "approve"/"deny" text). Plain JSON — safe to persist.
+   */
+  tool: ToolDescriptor;
+  /** The governing skill, restored so the planner loop can continue after the decision. */
+  skill?: SkillDescriptor;
+  /** The skill's loaded tools, restored for the same reason. */
+  skillTools?: ToolDescriptor[];
+  /**
+   * The subject this pause was stored under (mirrors `pendingIdentityLink.subject`)
+   * — the resume is honored only when the caller's freshly resolved subject matches.
+   */
+  subject?: string;
+}
 
 /**
  * Agent state threaded through the graph (docs/adr/0008, docs/adr/0012,
@@ -512,6 +552,38 @@ export const AgentStateAnnotation = Annotation.Root({
    * would for an ordinary terminal turn.
    */
   identityLinkPending: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
+  }),
+  /**
+   * A tool call this conversation paused on, awaiting the caller's approval
+   * (ADR 0003). The resume anchor `checkPendingApproval` reads on the NEXT turn
+   * — set by `runTool` when a gated call cannot run yet, persisted like
+   * `pendingIdentityLink`, and cleared once the decision is read. See
+   * {@link ApprovalPending}.
+   */
+  approvalPending: Annotation<ApprovalPending | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * True for exactly the one re-dispatch that `checkPendingApproval` authorized
+   * after the caller approved: it tells `runTool` to skip the approval gate so
+   * an already-approved call does not re-prompt forever. Transient (never
+   * persisted) — a fresh turn always re-gates.
+   */
+  approvalGranted: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
+  }),
+  /**
+   * True when THIS turn ended still waiting on the caller to make an approval
+   * decision (`runTool` just gated a call, or `checkPendingApproval` re-asked
+   * on an ambiguous reply) — the turn's `result` is the approval prompt, so the
+   * server persists `approvalPending` rather than clearing it, exactly as it
+   * does for `identityLinkPending`.
+   */
+  approvalWaiting: Annotation<boolean>({
     reducer: (_current, update) => update,
     default: () => false,
   }),
@@ -1692,6 +1764,53 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (await hasOutOfScopeToolMatch(state, skill, deps)) return {};
       return { selectedSkill: skill };
     })
+    .addNode("checkPendingApproval", async (state) => {
+      // Approval continuation (ADR 0003 + ADR 0004 terminate-and-resume), run
+      // early each turn alongside checkPendingIdentityLink: if the LAST turn
+      // paused a tool call awaiting approval, read THIS turn's message as the
+      // caller's decision. Every miss (no session, no pause, subject mismatch)
+      // falls through to the ordinary chain -- a miss is never an error.
+      if (!state.identity || !state.approvalPending) return {};
+      if (state.sessionSubject !== state.identity.subject) return {};
+      const pending = state.approvalPending;
+      // The subject the pause was STORED under, mirroring pendingIdentityLink --
+      // honor the resume only for the caller who owns it.
+      const pendingSubject = pending.subject ?? state.identity.subject;
+      if (pendingSubject !== state.identity.subject) return {};
+
+      const decision = parseApprovalDecision(state.request);
+      if (decision === "ambiguous") {
+        // Neither approve nor deny -> re-ask rather than guess. Keep the pause in
+        // place (re-emit it so the server re-persists) and prompt again.
+        return { approvalPending: pending, approvalWaiting: true, result: approvalPrompt(pending.toolId) };
+      }
+      if (decision === "deny") {
+        // Never silently drop: synthesize a failed tool result the planner can
+        // react to, append it to history, and continue the loop (or END if this
+        // was a skill-less fallback call with nowhere to re-plan).
+        return {
+          approvalPending: undefined,
+          result: APPROVAL_DENIED_MESSAGE,
+          actionHistory: [
+            ...state.actionHistory,
+            { toolId: pending.toolId, toolArgs: pending.toolArgs ?? "", result: APPROVAL_DENIED_MESSAGE },
+          ],
+          ...(pending.skill ? { selectedSkill: pending.skill } : {}),
+          ...(pending.skillTools ? { skillTools: pending.skillTools } : {}),
+        };
+      }
+      // Approved: re-dispatch the EXACT same call (not a re-planned one) with the
+      // gate suppressed, then let the loop continue so the planner sees the result.
+      return {
+        approvalPending: undefined,
+        approvalGranted: true,
+        selectedTool: pending.tool,
+        ...(pending.toolArgs !== undefined ? { toolArgs: pending.toolArgs } : {}),
+        ...(pending.instanceKey !== undefined ? { toolInstanceKey: pending.instanceKey } : {}),
+        ...(pending.skill ? { selectedSkill: pending.skill } : {}),
+        ...(pending.skillTools ? { skillTools: pending.skillTools } : {}),
+      };
+    })
     .addNode("checkPendingIdentityLink", async (state) => {
       // Identity-link continuation, run right after resolveIdentity and
       // before any skill/agent-run continuity check (mirrors
@@ -2267,12 +2386,45 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         toolArgs: planned.toolArgs,
         toolInstanceKey: planned.toolInstanceKey,
         plannedAction: "call_tool",
+        // A freshly PLANNED call must always re-gate (ADR 0003): clear any
+        // approval granted for the previous (just-executed) call so approving
+        // one tool never silently waves through the next one in the same turn.
+        approvalGranted: false,
       };
     })
     .addNode("runTool", async (state) => {
       const tool = state.selectedTool;
       if (!tool) {
         return { error: "no tool selected" };
+      }
+      // Declarative tool-approval gate (ADR 0003 + ADR 0004 HITL). Placed right
+      // after the tool is resolved and before the dispatch branches so it covers
+      // every dispatch kind at once. The top-level graph has no governing agent
+      // default, so resolution is `tool.approval` else `"never"`. Caller tools
+      // are EXEMPT — the caller's own client runs them, so there is nothing here
+      // to approve. Skipped for the one re-dispatch `checkPendingApproval` just
+      // authorized (`approvalGranted`).
+      if (!tool.callerTool && !state.approvalGranted) {
+        // TODO(ADR 0003 A3): consult evaluator — `auto` behaves as `always` for now.
+        if (requiresApproval(resolveApproval(tool.approval, undefined))) {
+          // Terminate-and-resume (ADR 0004), modeled on `pendingIdentityLink`:
+          // stash everything the resume needs, set `result` to the prompt, and
+          // let the runTool edge route the turn to END. The server persists
+          // `approvalPending` because `approvalWaiting` is set.
+          return {
+            approvalPending: {
+              toolId: tool.id,
+              ...(state.toolArgs !== undefined ? { toolArgs: state.toolArgs } : {}),
+              ...(state.toolInstanceKey !== undefined ? { instanceKey: state.toolInstanceKey } : {}),
+              tool,
+              ...(state.selectedSkill ? { skill: state.selectedSkill } : {}),
+              skillTools: state.skillTools,
+              ...(state.identity ? { subject: state.identity.subject } : {}),
+            },
+            approvalWaiting: true,
+            result: approvalPrompt(tool.id),
+          };
+        }
       }
       if (tool.callerTool) {
         // Consumer-supplied tool (docs/adr/0035): the ONE dispatch branch that
@@ -2772,8 +2924,20 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             ? "delegateToAgent"
             : state.selectedSkill
               ? "loadSkillTools"
-              : "checkPendingIdentityLink",
+              : "checkPendingApproval",
     )
+    // An awaited approval decision resumes FIRST (ADR 0003): approve ->
+    // re-dispatch the stored call (runTool, gate suppressed); deny -> continue
+    // the planner with the synthesized failure (planAction) or END if there is
+    // no skill to re-plan; a re-ask (ambiguous reply) -> END with the prompt
+    // again; a miss -> fall through to the identity-link check exactly as before.
+    .addConditionalEdges("checkPendingApproval", (state) => {
+      if (state.error) return END;
+      if (state.approvalGranted) return "runTool";
+      if (state.approvalWaiting) return END;
+      if (state.result !== undefined) return state.selectedSkill ? "planAction" : END;
+      return "checkPendingIdentityLink";
+    })
     // A pending device-flow link either just completed (an agent was
     // re-selected -> resume straight into delegateToAgent), is still being
     // waited on (identityLinkPending -> END, same "still waiting" result as
@@ -2853,6 +3017,10 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     // The turn resumes as a NEW invocation when the client resends.
     .addConditionalEdges("runTool", (state) => {
       if (state.error || state.pendingToolCalls.length > 0) return END;
+      // Gated on approval (ADR 0003): the turn paused with the prompt as its
+      // result, to resume next turn via checkPendingApproval. END, like the
+      // caller-tool and link-gate terminators above.
+      if (state.approvalPending) return END;
       // The deterministic knowledge-base link gate stops the turn on its ask:
       // END with that message rather than looping to planAction, where the model
       // would recompose and could drop the link (the whole point of the gate).

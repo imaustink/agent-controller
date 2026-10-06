@@ -233,3 +233,30 @@ describe("makeSubAgentToolCallHandler", () => {
     await new Promise((r) => setTimeout(r, 0));
   });
 });
+
+describe("dispatchResolvedTool — approval gate (ADR 0003, sub-agent loop)", () => {
+  it("fails closed (does not execute) when the tool's own approval is always", async () => {
+    const launcher = fakeContainerToolLauncher();
+    const outcome = await dispatchResolvedTool(
+      { ...containerTool, approval: "always" },
+      "get pods",
+      { containerToolLauncher: launcher, jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "x" }) },
+    );
+    expect(outcome).toEqual({ ok: false, error: 'Approval required: run tool "kubectl-readonly"? Reply "approve" or "deny".' });
+    expect(launcher.launch).not.toHaveBeenCalled();
+  });
+
+  it("gates on the governing agent's approvalDefault when the tool sets none", async () => {
+    const executor: LocalToolExecutor = { run: vi.fn().mockResolvedValue({ type: "succeeded", job_id: "j", result: {} }) };
+    const outcome = await dispatchResolvedTool(localTool, "https://x", { containerToolLauncher: fakeContainerToolLauncher(), jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: {} }), localToolExecutor: executor }, { agentApprovalDefault: "always" });
+    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("Approval required") });
+    expect(executor.run).not.toHaveBeenCalled();
+  });
+
+  it("a tool's own never beats an agent default of always (runs)", async () => {
+    const executor: LocalToolExecutor = { run: vi.fn().mockResolvedValue({ type: "succeeded", job_id: "j", result: { ok: true } }) };
+    const outcome = await dispatchResolvedTool({ ...localTool, approval: "never" }, "https://x", { containerToolLauncher: fakeContainerToolLauncher(), jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: {} }), localToolExecutor: executor }, { agentApprovalDefault: "always" });
+    expect(outcome).toEqual({ ok: true, result: { ok: true } });
+    expect(executor.run).toHaveBeenCalled();
+  });
+});

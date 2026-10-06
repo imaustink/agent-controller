@@ -193,4 +193,18 @@ export interface ToolDescriptor {
   identityProviders?: string[];
   /** Optional coarse risk/cost tier, for future quota/authorization use. */
   tier?: string;
+  /**
+   * Declarative tool-approval policy (ADR 0003): whether a human must approve
+   * each call to this tool before it executes. `"never"` (and the empty
+   * default) runs silently — today's behavior, so existing CRs are unaffected;
+   * `"always"` pauses the turn for human approval; `"auto"` is treated as
+   * `"always"` until the deferred evaluator phase lands. Resolution is
+   * most-specific-wins (see `agent/approval.ts`): a tool's own `approval`
+   * always beats the governing agent's `approvalDefault`.
+   *
+   * For a container/LocalTool it is read straight from the CR spec; for an
+   * `mcpExec` tool it is carried from the MCPServer exposure entry (mirrors
+   * `tier`). PARITY: `approval` on the Go Tool/LocalTool/MCPTool descriptors.
+   */
+  approval?: string;
 }

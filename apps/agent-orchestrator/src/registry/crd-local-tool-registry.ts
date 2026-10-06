@@ -18,6 +18,8 @@ export interface LocalToolCustomResource {
     output: string;
     allowedRoles: string[];
     tier?: string;
+    /** Tool-approval policy (ADR 0003): "never" | "always" | "auto". Empty/unset resolves to "never". Mirrors `tier`. */
+    approval?: string;
     runtime: LocalToolSpec["runtime"];
     package?: string;
     version?: string;
@@ -145,6 +147,7 @@ export function toLocalToolDescriptor(cr: LocalToolCustomResource): ToolDescript
     description: `${spec.description}\n\nInput: ${spec.input}\nOutput: ${spec.output}`,
     allowedRoles: spec.allowedRoles ?? [],
     tier: spec.tier,
+    approval: spec.approval,
     localExec,
   };
 }

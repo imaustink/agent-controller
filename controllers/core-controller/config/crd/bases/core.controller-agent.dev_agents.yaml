@@ -53,6 +53,18 @@ spec:
                   type: string
                 minItems: 1
                 type: array
+              approvalDefault:
+                description: |-
+                  approvalDefault is the fallback tool-approval policy (ADR 0003) for tools
+                  this agent calls that do not set their own `approval`. "never" (and the
+                  empty default) runs tools silently; "always" requires human approval;
+                  "auto" consults an optional evaluator. A tool's own `approval` always wins
+                  over this default (most-specific-wins).
+                enum:
+                - never
+                - always
+                - auto
+                type: string
               description:
                 description: description is fed to the orchestrator's embedder for
                   RAG retrieval.

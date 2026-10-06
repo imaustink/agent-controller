@@ -13,6 +13,8 @@ export interface ToolCustomResource {
     output: string;
     allowedRoles: string[];
     tier?: string;
+    /** Tool-approval policy (ADR 0003): "never" | "always" | "auto". Empty/unset resolves to "never". Mirrors `tier`. */
+    approval?: string;
     /** Names an Agent CR this Tool wraps — mutually exclusive with image/serviceAccountName. */
     agentRef?: string;
     image?: string;
@@ -136,6 +138,7 @@ export function toToolDescriptor(cr: ToolCustomResource, namespace: string): Too
       description: `${spec.description}\n\nInput: ${spec.input}\nOutput: ${spec.output}`,
       allowedRoles: spec.allowedRoles ?? [],
       tier: spec.tier,
+      approval: spec.approval,
       agentRunTemplate: { namespace, agentRef: spec.agentRef },
     };
   }
@@ -147,6 +150,7 @@ export function toToolDescriptor(cr: ToolCustomResource, namespace: string): Too
     description: `${spec.description}\n\nInput: ${spec.input}\nOutput: ${spec.output}`,
     allowedRoles: spec.allowedRoles ?? [],
     tier: spec.tier,
+    approval: spec.approval,
     jobTemplate: {
       image: spec.image,
       namespace,
