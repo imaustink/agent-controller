@@ -82,6 +82,16 @@ describe("parseApprovalDecision (deterministic, case-insensitive, trimmed)", () 
     expect(parseApprovalDecision("denied.")).toBe("deny");
     expect(parseApprovalDecision("no,")).toBe("deny");
   });
+
+  it("is deny-biased: any deny word denies, and wins over an embedded approve", () => {
+    // PARITY with Go ParseDecision — fail toward NOT running.
+    expect(parseApprovalDecision("deny, i would never approve this!")).toBe("deny");
+    expect(parseApprovalDecision("no way")).toBe("deny");
+    expect(parseApprovalDecision("approve, no")).toBe("deny");
+    expect(parseApprovalDecision("absolutely not, reject it")).toBe("deny");
+    // A sentence merely containing "approve" still never approves.
+    expect(parseApprovalDecision("please approve the deploy")).toBe("ambiguous");
+  });
 });
 
 describe("approvalPrompt / constants (shared wording — both engines)", () => {

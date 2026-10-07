@@ -93,16 +93,26 @@ const DENY_WORDS = new Set([
 ]);
 
 /**
- * Interpret the user's reply to an approval prompt deterministically
- * (case-insensitive, trimmed). Anything that is neither an approve nor a deny
- * word is AMBIGUOUS — the caller re-asks rather than guessing, so a stray
- * message can never silently approve or deny a gated call.
+ * Interpret the user's reply to an approval prompt deterministically, with a
+ * deliberate safety asymmetry (PARITY: engines/temporal/internal/approval
+ * ParseDecision): STRICT about approving, LIBERAL about denying, so the gate
+ * fails toward NOT running a tool.
+ *
+ * - Deny is checked FIRST and matches if ANY word in the reply is a deny word,
+ *   so "deny, i would never approve this!" denies (the embedded "approve" is
+ *   ignored) and "approve, no" denies too.
+ * - Approve matches ONLY when the whole reply is a single approve word, so a
+ *   sentence that merely contains "approve" never runs the tool — it re-asks.
+ *
+ * Anything else is AMBIGUOUS; the caller re-asks rather than guessing.
  */
 export function parseApprovalDecision(message: string | undefined): ApprovalDecision {
-  // Strip a single trailing punctuation mark so "approve." / "yes!" still count,
-  // matching the Go engine's ParseDecision (PARITY: engines/temporal/internal/approval).
+  // Strip a single trailing punctuation mark so "approve." / "yes!" still count.
   const normalized = (message ?? "").trim().toLowerCase().replace(/[.!,]$/, "");
+  // Deny first, token-wise: any deny word anywhere in the reply denies.
+  const tokens = normalized.split(/[^a-z]+/).filter(Boolean);
+  if (tokens.some((t) => DENY_WORDS.has(t))) return "deny";
+  // Approve strictly: only a bare approve word (the whole reply) approves.
   if (APPROVE_WORDS.has(normalized)) return "approve";
-  if (DENY_WORDS.has(normalized)) return "deny";
   return "ambiguous";
 }

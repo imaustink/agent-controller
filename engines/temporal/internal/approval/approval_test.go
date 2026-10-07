@@ -64,6 +64,28 @@ func TestParseDecisionDoesNotMatchSubstrings(t *testing.T) {
 	}
 }
 
+// Safety asymmetry: deny is liberal (any deny word denies) and wins over an
+// embedded approve word; approve stays strict (whole reply only).
+func TestParseDecisionIsDenyBiased(t *testing.T) {
+	denies := []string{
+		"deny, i would never approve this!", // embedded "approve" must not win
+		"no",
+		"no way",
+		"approve, no",      // contradictory -> fail safe to deny
+		"absolutely not, reject it",
+		"cancel please",
+	}
+	for _, m := range denies {
+		if got := ParseDecision(m); got != DecisionDenied {
+			t.Errorf("ParseDecision(%q) = %v, want denied", m, got)
+		}
+	}
+	// A sentence that only CONTAINS "approve" still does not approve.
+	if ParseDecision("please approve the deploy") != DecisionPending {
+		t.Error("a sentence merely containing 'approve' must stay pending, not approve")
+	}
+}
+
 func TestPromptMentionsTool(t *testing.T) {
 	p := Prompt("deploy-prod")
 	if p == "" || !contains(p, "deploy-prod") {

@@ -8,7 +8,10 @@
 // against the same CRs.
 package approval
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // Policy values, matching the CRD enum (core-controller api/v1alpha1).
 const (
@@ -68,21 +71,35 @@ var denyWords = map[string]bool{
 	"rejected": true, "cancel": true, "cancelled": true, "stop": true, "disallow": true,
 }
 
-// ParseDecision interprets a user's reply deterministically. Anything that is
-// not an unambiguous approve or deny is DecisionPending — the gate never
-// executes a tool on an ambiguous answer.
+// ParseDecision interprets a user's reply deterministically, with a deliberate
+// safety asymmetry: it is STRICT about approving and LIBERAL about denying, so
+// the gate fails toward NOT running a tool.
+//
+//   - Deny is checked FIRST and matches if ANY word in the reply is a deny word,
+//     so "deny, i would never approve this!" denies rather than being confused by
+//     the embedded "approve", and "approve, no" denies too.
+//   - Approve matches ONLY when the whole reply is a single approve word, so a
+//     sentence that merely contains "approve" ("please approve the deploy") never
+//     runs the tool — it is pending and re-asked.
+//
+// Anything that is neither is DecisionPending; the gate never executes on an
+// ambiguous answer.
 func ParseDecision(message string) Decision {
 	m := strings.ToLower(strings.TrimSpace(message))
 	// Strip a single trailing punctuation mark so "approve." / "yes!" still count.
 	m = strings.TrimRight(m, ".!,")
-	switch {
-	case approveWords[m]:
-		return DecisionApproved
-	case denyWords[m]:
-		return DecisionDenied
-	default:
-		return DecisionPending
+
+	// Deny first, token-wise: any deny word anywhere in the reply denies.
+	for _, tok := range strings.FieldsFunc(m, func(r rune) bool { return !unicode.IsLetter(r) }) {
+		if denyWords[tok] {
+			return DecisionDenied
+		}
 	}
+	// Approve strictly: only a bare approve word (the whole reply) approves.
+	if approveWords[m] {
+		return DecisionApproved
+	}
+	return DecisionPending
 }
 
 // Prompt is the shared approval wording. Both engines use this exact text so a
