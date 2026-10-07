@@ -95,9 +95,16 @@ single tool-dispatch choke point, reusing the existing durable human-wait.
 
 Implemented in **both engines** in lockstep against one shared contract: the
 `approval` field is defined once on the CRDs, and the Temporal (Go) and
-LangGraph (TS) loops enforce identical semantics. This keeps a safety behavior
-from diverging between engines. The CR field names/semantics are frozen in this
-ADR; the parity audit gains a matching entry.
+LangGraph (TS) loops enforce identical semantics at the top-level conversation
+path (resolution precedence, decision parsing, prompt wording, deny result). This
+keeps a safety behavior from diverging between engines. The CR field
+names/semantics are frozen in this ADR; the parity audit gains a matching entry.
+
+**One deliberate v1 asymmetry:** the sub-agent loop (an Agent's own `toolRefs`,
+ADR 0028) does a real HITL round-trip in Go (durable wait) but FAILS CLOSED in TS
+(no resume channel in that synchronous path) — both fail safe, but a TS sub-agent
+cannot yet pause-and-approve. Tracked in parity-audit #20; closing it needs a
+durable resume channel in the TS sub-agent dispatch.
 
 ## Milestones
 

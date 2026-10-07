@@ -99,7 +99,9 @@ const DENY_WORDS = new Set([
  * message can never silently approve or deny a gated call.
  */
 export function parseApprovalDecision(message: string | undefined): ApprovalDecision {
-  const normalized = (message ?? "").trim().toLowerCase();
+  // Strip a single trailing punctuation mark so "approve." / "yes!" still count,
+  // matching the Go engine's ParseDecision (PARITY: engines/temporal/internal/approval).
+  const normalized = (message ?? "").trim().toLowerCase().replace(/[.!,]$/, "");
   if (APPROVE_WORDS.has(normalized)) return "approve";
   if (DENY_WORDS.has(normalized)) return "deny";
   return "ambiguous";

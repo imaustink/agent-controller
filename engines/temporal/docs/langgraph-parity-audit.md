@@ -249,6 +249,21 @@ silently diverge.
   runs them). This is a NEW safety behavior, net-ahead of the pre-existing
   reference — both engines gained it simultaneously, so there is no parity gap.
 
+  **Known sub-agent asymmetry (v1, deliberate).** The terminate-and-resume HITL
+  above is the TOP-LEVEL conversation path and is identical across engines. The
+  SUB-AGENT (an Agent's own `toolRefs` loop, ADR 0028) differs: Go runs a real
+  HITL round-trip (`requestAgentApproval` bubbles the prompt to the human and
+  waits durably on the AgentPrompt channel, `agent_workflow.go`), so an
+  `always`/`auto` tool can be approved then run; the TS sub-agent dispatch
+  (`dispatch-tool.ts`) is a synchronous handler with no resume channel, so it
+  FAILS CLOSED — it returns the approval prompt as `{ok:false}` and the tool is
+  never run from a sub-agent, no human is asked. Net effect: a tool with
+  `approval: always` reachable via an Agent's `toolRefs` "asks and runs" on
+  Temporal but "always fails" on LangGraph for the same CR. Both fail safe (never
+  run un-approved). Making TS sub-agents pause needs a durable resume channel in
+  that path and is deferred; until then do not read "terminate-and-resume in both
+  engines" as covering the sub-agent loop.
+
 - **#21 — Unified lifecycle event stream (ADR 0004).** A typed `TurnEvent`
   envelope (kinds: turn-started, skill-selected, tool-started/-progress/
   -finished/-failed, warning, approval-required/-resolved, turn-completed,

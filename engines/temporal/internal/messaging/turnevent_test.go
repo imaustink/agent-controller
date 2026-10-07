@@ -20,6 +20,13 @@ func TestTurnEventRenderMatchesLegacyNarration(t *testing.T) {
 		{"progress-staged", FromToolEvent(5, Event{Type: EventProgress, JobID: "j", TS: "t", Stage: "clone", Message: "pulling"}), "clone: pulling"},
 		{"progress-bare", FromToolEvent(6, Event{Type: EventProgress, JobID: "j", TS: "t", Message: "working"}), "working"},
 		{"warning", FromToolEvent(7, Event{Type: EventWarning, JobID: "j", TS: "t", Message: "slow"}), "slow"},
+		{"approval-required", ApprovalRequired(8, "t", "deploy", "Approval required: run tool \"deploy\"? Reply \"approve\" or \"deny\"."), "Approval required: run tool \"deploy\"? Reply \"approve\" or \"deny\"."},
+		// Lifecycle-only kinds contribute no narration line (must not leak a bare
+		// "approved"/"denied" word into the status stream).
+		{"approval-resolved-approved", ApprovalResolved(9, "t", "deploy", true), ""},
+		{"approval-resolved-denied", ApprovalResolved(10, "t", "deploy", false), ""},
+		{"turn-started", TurnEvent{Kind: KindTurnStarted}, ""},
+		{"turn-completed", TurnEvent{Kind: KindTurnCompleted}, ""},
 	}
 	for _, c := range cases {
 		if got := c.ev.Render(); got != c.want {

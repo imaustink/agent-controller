@@ -73,6 +73,15 @@ describe("parseApprovalDecision (deterministic, case-insensitive, trimmed)", () 
     // A word CONTAINING an approve token is not a bare decision.
     expect(parseApprovalDecision("yessir")).toBe("ambiguous");
   });
+
+  it("strips a single trailing punctuation mark, matching the Go engine", () => {
+    // PARITY: Go ParseDecision strips trailing .!, — "approve." must not re-ask.
+    expect(parseApprovalDecision("approve.")).toBe("approve");
+    expect(parseApprovalDecision("yes!")).toBe("approve");
+    expect(parseApprovalDecision("confirm!")).toBe("approve");
+    expect(parseApprovalDecision("denied.")).toBe("deny");
+    expect(parseApprovalDecision("no,")).toBe("deny");
+  });
 });
 
 describe("approvalPrompt / constants (shared wording — both engines)", () => {

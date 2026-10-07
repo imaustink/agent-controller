@@ -146,6 +146,12 @@ func (t TurnEvent) Render() string {
 	case KindApprovalRequired:
 		// The prompt text is already the human-facing line.
 		return t.Message
+	case KindApprovalResolved:
+		// A structured lifecycle transition (like turn started/completed) —
+		// contributes no narration line; the resume path emits its own note()
+		// ("Approved <tool>" / "<tool> was denied"), so rendering the bare
+		// "approved"/"denied" word here would duplicate it.
+		return ""
 	case KindNarration:
 		return t.Message
 	default:
