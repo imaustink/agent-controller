@@ -100,11 +100,17 @@ path (resolution precedence, decision parsing, prompt wording, deny result). Thi
 keeps a safety behavior from diverging between engines. The CR field
 names/semantics are frozen in this ADR; the parity audit gains a matching entry.
 
-**One deliberate v1 asymmetry:** the sub-agent loop (an Agent's own `toolRefs`,
-ADR 0028) does a real HITL round-trip in Go (durable wait) but FAILS CLOSED in TS
-(no resume channel in that synchronous path) — both fail safe, but a TS sub-agent
-cannot yet pause-and-approve. Tracked in parity-audit #20; closing it needs a
-durable resume channel in the TS sub-agent dispatch.
+**Sub-agent HITL (both engines).** The sub-agent loop (an Agent's own `toolRefs`,
+ADR 0028) also does a real HITL round-trip now, with an orchestrator-owned
+timeout and graceful degradation (a never-answered approval becomes an
+`approval_timeout` failed result the agent reasons over, never a hang). The
+mechanism differs by what waits: Go native sub-agents are child workflows that
+wait durably on a workflow timer (no pod held); TS sub-agents are pods whose
+`tool_call` the orchestrator holds across turns, bounded by an always-on sweeper
+that times out expired approvals (`approval_timeout`), with the Job
+`activeDeadlineSeconds` as the hard backstop. Per-Agent `approvalTimeoutSeconds`
+(15m default, env `SUBAGENT_APPROVAL_TIMEOUT_SECONDS` on the TS side) tunes the
+hold. Both fail safe; the observable behavior is identical. See parity-audit #20.
 
 ## Milestones
 

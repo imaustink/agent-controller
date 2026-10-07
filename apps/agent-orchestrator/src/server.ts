@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AgentState, ApprovalPending } from "./agent/graph.js";
+import type { AgentState, ApprovalPending, SubAgentApprovalPending } from "./agent/graph.js";
 import type { ToolCallRecord } from "./agent/action-planner.js";
 import type { AgentOrchestratorChannel } from "./agents/nats-agent-channel.js";
 import {
@@ -164,6 +164,8 @@ export interface AgentGraphInput {
   pendingIdentityLink?: { agentId: string; provider: string; flow: "device" | "authcode" | "page"; deviceCode?: string; expiresAt: number; subject?: string; request?: string };
   /** A tool call this conversation paused awaiting human approval (ADR 0003), if any (see `SessionRecord.approvalPending`). */
   approvalPending?: ApprovalPending;
+  /** A tool call a RUNNING SUB-AGENT paused awaiting approval (ADR 0003 + sub-agent HITL), if any (see `SessionRecord.subAgentApprovalPending`). */
+  subAgentApprovalPending?: SubAgentApprovalPending;
   /**
    * Per-request override of which OAuth flow `delegateToAgent` starts if
    * this caller needs to link an identity (see `AgentState.identityLinkFlow`
@@ -451,6 +453,7 @@ export class InvokeServer {
     input.agentContinuations = record.agentContinuations;
     input.pendingIdentityLink = record.pendingIdentityLink;
     input.approvalPending = record.approvalPending;
+    input.subAgentApprovalPending = record.subAgentApprovalPending;
     return input;
   }
 
@@ -484,6 +487,8 @@ export class InvokeServer {
       identityLinkPending?: boolean;
       approvalPending?: ApprovalPending;
       approvalWaiting?: boolean;
+      subAgentApprovalPending?: SubAgentApprovalPending;
+      subAgentApprovalWaiting?: boolean;
     },
   ): Promise<void> {
     if (!sessionId || !this.sessionStore || !identity) return;
@@ -519,6 +524,25 @@ export class InvokeServer {
       // before either), so this is mutually exclusive with the branches below,
       // mirroring the identity-link pause.
       await this.sessionStore.set(sessionId, { ...base, approvalPending: outcome.approvalPending });
+      return;
+    }
+
+    if (outcome.subAgentApprovalWaiting && outcome.subAgentApprovalPending) {
+      // A RUNNING sub-agent paused on a gated tool call (ADR 0003 + sub-agent
+      // HITL). Unlike the top-level pause above this COEXISTS with the
+      // active-run anchor: the sub-agent's AgentRun is still live and blocked on
+      // our unresolved tool_result, so the next turn must both read the decision
+      // (subAgentApprovalPending) AND be able to re-attach to that run
+      // (activeAgentRunId + activeAgentRunAwaitingReply). Checked ahead of the
+      // ordinary agentRunId branch, which would otherwise clear the anchor.
+      const pending = outcome.subAgentApprovalPending;
+      await this.sessionStore.set(sessionId, {
+        ...base,
+        activeAgentId: pending.agentId,
+        activeAgentRunId: pending.runId,
+        activeAgentRunAwaitingReply: true,
+        subAgentApprovalPending: pending,
+      });
       return;
     }
 
@@ -986,6 +1010,8 @@ export class InvokeServer {
             extractedAgentContinuation: state.extractedAgentContinuation,
             pendingIdentityLink: state.pendingIdentityLink,
             identityLinkPending: state.identityLinkPending,
+            subAgentApprovalPending: state.subAgentApprovalPending,
+            subAgentApprovalWaiting: state.subAgentApprovalWaiting,
           });
           // Carry forward any remoteControlUrl already recorded by the
           // progress listener above -- this terminal write replaces the whole
@@ -1273,6 +1299,8 @@ export class InvokeServer {
       identityLinkPending: state.identityLinkPending,
       approvalPending: state.approvalPending,
       approvalWaiting: state.approvalWaiting,
+      subAgentApprovalPending: state.subAgentApprovalPending,
+      subAgentApprovalWaiting: state.subAgentApprovalWaiting,
     });
     const id = chatCompletionId();
     // The turn is asking the CALLER to run a tool (docs/adr/0035): hand back
@@ -1446,6 +1474,8 @@ export class InvokeServer {
       let identityLinkPending: boolean | undefined;
       let approvalPending: ApprovalPending | undefined;
       let approvalWaiting: boolean | undefined;
+      let subAgentApprovalPending: SubAgentApprovalPending | undefined;
+      let subAgentApprovalWaiting: boolean | undefined;
       const persist = (): Promise<void> =>
         this.persistSession(sessionId, identity, {
           selectedSkill,
@@ -1458,6 +1488,8 @@ export class InvokeServer {
           identityLinkPending,
           approvalPending,
           approvalWaiting,
+          subAgentApprovalPending,
+          subAgentApprovalWaiting,
         });
       for await (const item of withHeartbeat(source, HEARTBEAT_MS)) {
         if (item.type === "heartbeat") {
@@ -1488,6 +1520,12 @@ export class InvokeServer {
         if ("identityLinkPending" in update) identityLinkPending = update.identityLinkPending as boolean | undefined;
         if ("approvalPending" in update) approvalPending = update.approvalPending as ApprovalPending | undefined;
         if ("approvalWaiting" in update) approvalWaiting = update.approvalWaiting as boolean | undefined;
+        if ("subAgentApprovalPending" in update) {
+          subAgentApprovalPending = update.subAgentApprovalPending as SubAgentApprovalPending | undefined;
+        }
+        if ("subAgentApprovalWaiting" in update) {
+          subAgentApprovalWaiting = update.subAgentApprovalWaiting as boolean | undefined;
+        }
 
         if (typeof update.error === "string") {
           finish(`❌ ${update.error}`);
@@ -1528,6 +1566,27 @@ export class InvokeServer {
           writeSseStatus(
             res,
             renderTurnEvent(turnEvent("approval-required", { toolId: approvalPending?.toolId })),
+          );
+          await persist();
+          finish(renderResult(result));
+          return;
+        }
+        // A RUNNING sub-agent's own tool call paused awaiting approval (ADR 0003
+        // + sub-agent HITL): delegateToAgent/checkActiveAgentRun just parked one,
+        // or checkPendingSubAgentApproval re-asked on an ambiguous reply.
+        // `result` is the approval prompt; the pause is persisted alongside the
+        // live-run anchor so the next turn's decision resumes it. Terminal for
+        // this invocation, and checked ahead of the agentRunId branch below
+        // (which the initial pause also sets).
+        if (
+          (nodeName === "delegateToAgent" ||
+            nodeName === "checkActiveAgentRun" ||
+            nodeName === "checkPendingSubAgentApproval") &&
+          update.subAgentApprovalWaiting
+        ) {
+          writeSseStatus(
+            res,
+            renderTurnEvent(turnEvent("approval-required", { toolId: subAgentApprovalPending?.tool })),
           );
           await persist();
           finish(renderResult(result));

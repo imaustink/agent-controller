@@ -249,20 +249,29 @@ silently diverge.
   runs them). This is a NEW safety behavior, net-ahead of the pre-existing
   reference — both engines gained it simultaneously, so there is no parity gap.
 
-  **Known sub-agent asymmetry (v1, deliberate).** The terminate-and-resume HITL
-  above is the TOP-LEVEL conversation path and is identical across engines. The
-  SUB-AGENT (an Agent's own `toolRefs` loop, ADR 0028) differs: Go runs a real
-  HITL round-trip (`requestAgentApproval` bubbles the prompt to the human and
-  waits durably on the AgentPrompt channel, `agent_workflow.go`), so an
-  `always`/`auto` tool can be approved then run; the TS sub-agent dispatch
-  (`dispatch-tool.ts`) is a synchronous handler with no resume channel, so it
-  FAILS CLOSED — it returns the approval prompt as `{ok:false}` and the tool is
-  never run from a sub-agent, no human is asked. Net effect: a tool with
-  `approval: always` reachable via an Agent's `toolRefs` "asks and runs" on
-  Temporal but "always fails" on LangGraph for the same CR. Both fail safe (never
-  run un-approved). Making TS sub-agents pause needs a durable resume channel in
-  that path and is deferred; until then do not read "terminate-and-resume in both
-  engines" as covering the sub-agent loop.
+  **Sub-agent HITL — now in both engines (was a deliberate v1 asymmetry).** The
+  SUB-AGENT path (an Agent's own `toolRefs` loop, ADR 0028) originally differed:
+  Go did a real HITL round-trip while the TS sub-agent dispatch failed closed. As
+  of the sub-agent-approval-HITL change both engines now ask a human and can
+  approve-then-run, with the same deterministic parsing, prompt wording, and
+  `approval_denied`/`approval_timeout` failed-result codes. Only the *mechanism*
+  differs, because the waiter differs:
+  - **Go** native sub-agents are child workflows — `requestAgentApproval`
+    (`agent_workflow.go`/`approval.go`) bubbles the prompt and waits durably on
+    the AgentPrompt channel, now bounded by a workflow timer (per-Agent
+    `approvalTimeoutSeconds`, 15m default) that returns `DecisionTimeout` for
+    graceful degradation. No pod is held (the child workflow is the durable
+    waiter); the existing 1h episode timer is the hard backstop.
+  - **TS** sub-agents are AgentRun pods — the orchestrator holds the pod's
+    `tool_call` across turns (`awaitReply` throws `AgentTurnApprovalPendingError`
+    leaving the call unresolved; `dispatch-tool.ts` defers instead of failing
+    closed; `checkPendingSubAgentApproval` resolves it next turn). An always-on
+    orchestrator **sweeper** gracefully resolves expired approvals with an
+    `approval_timeout` error (the wire has no `code` field, so it rides the
+    `error` string); the Job `activeDeadlineSeconds` is the hard backstop.
+  Net: identical observable behavior (ask, approve-and-run, or graceful timeout);
+  the only difference is Go holds a durable workflow while TS holds a pod bounded
+  by an orchestrator-owned timeout. See ADR 0003.
 
 - **#21 — Unified lifecycle event stream (ADR 0004).** A typed `TurnEvent`
   envelope (kinds: turn-started, skill-selected, tool-started/-progress/

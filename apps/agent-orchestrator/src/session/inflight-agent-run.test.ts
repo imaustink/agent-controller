@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { InMemorySessionStore } from "./in-memory-session-store.js";
-import { clearAgentRunAwaitingReply, markAgentRunAwaitingReply } from "./inflight-agent-run.js";
+import {
+  clearAgentRunAwaitingReply,
+  markAgentRunAwaitingReply,
+  markSubAgentApproval,
+  SUBAGENT_APPROVAL_TIMEOUT_ERROR,
+  sweepExpiredSubAgentApprovals,
+} from "./inflight-agent-run.js";
+import type { SubAgentApprovalPending } from "../agent/graph.js";
 
 function store(): InMemorySessionStore {
   return new InMemorySessionStore({ ttlMs: 60_000, maxEntries: 10 });
@@ -92,5 +99,61 @@ describe("clearAgentRunAwaitingReply", () => {
     const s = store();
     await clearAgentRunAwaitingReply(s, "session-nope");
     expect(await s.get("session-nope")).toBeUndefined();
+  });
+});
+
+describe("sweepExpiredSubAgentApprovals (sub-agent HITL timeout)", () => {
+  function pending(overrides: Partial<SubAgentApprovalPending> = {}): SubAgentApprovalPending {
+    return {
+      runId: "run-1",
+      callId: "c1",
+      tool: "kubectl",
+      input: "get pods",
+      agentId: "swe",
+      subject: "alice",
+      expiresAt: 1_000,
+      ...overrides,
+    };
+  }
+
+  it("resolves an EXPIRED approval with an approval_timeout tool_result and clears the pause, keeping the anchor", async () => {
+    const s = store();
+    await markSubAgentApproval(s, "session-1", pending({ expiresAt: 500 }));
+    const resolveToolCall = vi.fn().mockResolvedValue(undefined);
+
+    const timedOut = await sweepExpiredSubAgentApprovals(s, { resolveToolCall }, 1_000);
+
+    expect(timedOut).toBe(1);
+    expect(resolveToolCall).toHaveBeenCalledWith("run-1", "c1", {
+      ok: false,
+      error: SUBAGENT_APPROVAL_TIMEOUT_ERROR,
+    });
+    expect(SUBAGENT_APPROVAL_TIMEOUT_ERROR.startsWith("approval_timeout")).toBe(true);
+    const record = await s.get("session-1");
+    // Pause cleared...
+    expect(record?.subAgentApprovalPending).toBeUndefined();
+    // ...but the active-run anchor is kept so the next turn re-attaches and
+    // collects the reply the sub-agent produces after the failed tool_result.
+    expect(record?.activeAgentRunId).toBe("run-1");
+    expect(record?.activeAgentRunAwaitingReply).toBe(true);
+  });
+
+  it("leaves a NOT-YET-expired approval untouched", async () => {
+    const s = store();
+    await markSubAgentApproval(s, "session-1", pending({ expiresAt: 5_000 }));
+    const resolveToolCall = vi.fn().mockResolvedValue(undefined);
+
+    const timedOut = await sweepExpiredSubAgentApprovals(s, { resolveToolCall }, 1_000);
+
+    expect(timedOut).toBe(0);
+    expect(resolveToolCall).not.toHaveBeenCalled();
+    expect((await s.get("session-1"))?.subAgentApprovalPending).toMatchObject({ callId: "c1" });
+  });
+
+  it("is inert when the channel cannot resolve tool calls", async () => {
+    const s = store();
+    await markSubAgentApproval(s, "session-1", pending({ expiresAt: 500 }));
+    expect(await sweepExpiredSubAgentApprovals(s, {}, 1_000)).toBe(0);
+    expect((await s.get("session-1"))?.subAgentApprovalPending).toBeDefined();
   });
 });

@@ -31,6 +31,16 @@ export interface AgentDescriptor {
    */
   approvalDefault?: string;
   /**
+   * Per-Agent timeout (seconds) bounding how long the orchestrator holds one of
+   * this agent's own gated tool calls waiting for human approval (ADR 0003 +
+   * sub-agent HITL). On expiry the orchestrator resolves the pending tool call
+   * with a FAILED `tool_result` (graceful degradation — the sub-agent keeps
+   * reasoning, never a hard kill) rather than running it unapproved. Absent ->
+   * the global `SUBAGENT_APPROVAL_TIMEOUT_SECONDS` default applies
+   * (most-specific-wins). PARITY: `AgentSpec.ApprovalTimeoutSeconds`.
+   */
+  approvalTimeoutSeconds?: number;
+  /**
    * Guidance for THIS orchestrator's planner on how/when to delegate to the
    * agent and how to interpret its replies — trusted, catalog-authored
    * (same trust model as a Skill's markdown). Distinct from the sub-agent's

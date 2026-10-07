@@ -52,6 +52,38 @@ export class AgentTurnFailedError extends Error {
   }
 }
 
+/**
+ * A running sub-agent's OWN tool call (`tool_call` up-message) requires human
+ * approval (ADR 0003 + sub-agent HITL). Unlike every other way `awaitReply`
+ * ends, this is NOT a failure and the run is NOT over: the `tool_call` is
+ * deliberately left UNRESOLVED so the sub-agent's pod stays blocked on its
+ * in-memory `callTool` promise while the orchestrator holds for the caller's
+ * decision across turns (bounded by `expiresAt`). The graph catches this to
+ * park a `subAgentApprovalPending` and surface the approval prompt, then — on
+ * approve/deny/timeout — resolves the held `callId` and re-attaches to the
+ * still-live run. Carries everything the park needs to identify the exact call.
+ */
+export class AgentTurnApprovalPendingError extends Error {
+  constructor(
+    readonly callId: string,
+    readonly tool: string,
+    readonly input: string,
+    /** ms-since-epoch deadline after which the orchestrator times the hold out. */
+    readonly expiresAt: number,
+  ) {
+    super(`sub-agent tool call ${callId} ("${tool}") requires approval`);
+  }
+}
+
+/** The sub-agent `tool_call` that needs approval, signaled up out of the tool-call handler. */
+export interface SubAgentApprovalCall {
+  callId: string;
+  tool: string;
+  input: string;
+  /** ms-since-epoch deadline after which the hold is swept and the call failed. */
+  expiresAt: number;
+}
+
 /** Result of a forwarded live-tunnel HTTP call (ADR 0026). */
 export interface OpencodeProxyResult {
   status: number;
@@ -108,6 +140,17 @@ export interface AgentOrchestratorChannel {
        * idling out as "went silent". See `AgentRunLauncherPort.whenFailed`.
        */
       runFailed?: Promise<string>;
+      /**
+       * Resolves when a `tool_call` dispatched via `onToolCall` turns out to
+       * require human approval (ADR 0003 + sub-agent HITL). Modeled on
+       * `runFailed`: the tool-call handler signals through this promise instead
+       * of resolving the call, and `awaitReply` ends the wait at once by
+       * throwing {@link AgentTurnApprovalPendingError} — WITHOUT resolving the
+       * `tool_call`, leaving the sub-agent's pod blocked until the decision.
+       * Thrown ahead of the timeout/transport disambiguation because it is a
+       * deliberate pause, not any kind of loss.
+       */
+      approvalNeeded?: Promise<SubAgentApprovalCall>;
     },
   ): Promise<AgentTurnResult>;
   /**
@@ -258,6 +301,7 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
       onProgress?: (stage: string | undefined, message: string) => void;
       onToolCall?: (call: { callId: string; tool: string; input: string }) => void;
       runFailed?: Promise<string>;
+      approvalNeeded?: Promise<SubAgentApprovalCall>;
     } = {},
   ): Promise<AgentTurnResult> {
     const { up } = agentSubjects(agentRunId, this.subjectPrefix);
@@ -279,6 +323,17 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
     opts.runFailed?.then(
       (reason) => {
         runFailedReason = reason;
+        sub.unsubscribe();
+      },
+      () => {},
+    );
+    // Same shape again: a sub-agent tool call that needs approval ends the wait
+    // by unsubscribing; the post-loop check throws AgentTurnApprovalPendingError
+    // FIRST, leaving the call unresolved so the pod stays blocked.
+    let approvalPendingCall: SubAgentApprovalCall | undefined;
+    opts.approvalNeeded?.then(
+      (call) => {
+        approvalPendingCall = call;
         sub.unsubscribe();
       },
       () => {},
@@ -367,6 +422,16 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
             break; // opencode_event/opencode_response/session_idle/session_ended (ADR 0026) irrelevant here -- see subscribeLive/forwardOpencodeRequest
         }
       }
+      // A pending approval is a deliberate pause, not a loss: check it FIRST so
+      // it is never misreported as a transport drop or a silence timeout.
+      if (approvalPendingCall) {
+        throw new AgentTurnApprovalPendingError(
+          approvalPendingCall.callId,
+          approvalPendingCall.tool,
+          approvalPendingCall.input,
+          approvalPendingCall.expiresAt,
+        );
+      }
       if (runFailedReason !== undefined) {
         throw new AgentTurnFailedError("run_failed", runFailedReason);
       }
@@ -384,7 +449,8 @@ export class NatsAgentChannel implements AgentOrchestratorChannel {
       if (
         err instanceof AgentTurnFailedError ||
         err instanceof AgentTurnTimeoutError ||
-        err instanceof AgentTurnTransportError
+        err instanceof AgentTurnTransportError ||
+        err instanceof AgentTurnApprovalPendingError
       ) {
         throw err;
       }

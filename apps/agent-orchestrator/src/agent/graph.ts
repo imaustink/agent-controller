@@ -3,8 +3,13 @@ import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import type { Event } from "@controller-agent/messaging";
 import { extractContinuationToken, prependContinuationToken, resolveContinuationKey } from "../continuation.js";
 import { SELF_IMPROVEMENT_FOOTER } from "../openai/chat-completions.js";
-import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-agent-channel.js";
-import { AgentTurnFailedError, AgentTurnTimeoutError, AgentTurnTransportError } from "../agents/nats-agent-channel.js";
+import type { AgentOrchestratorChannel, AgentTurnResult, SubAgentApprovalCall } from "../agents/nats-agent-channel.js";
+import {
+  AgentTurnApprovalPendingError,
+  AgentTurnFailedError,
+  AgentTurnTimeoutError,
+  AgentTurnTransportError,
+} from "../agents/nats-agent-channel.js";
 import type { AgentDescriptor, AgentSearchResult, AgentStore } from "../agents/types.js";
 import type { PendingToolCall } from "../caller-tools/types.js";
 import { JobTimeoutError, type JobResultReceiver } from "../callback/receiver.js";
@@ -38,8 +43,9 @@ import { knowledgeBaseSkillId } from "../knowledge-base/types.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
-import { makeSubAgentToolCallHandler, type ToolCatalog } from "./dispatch-tool.js";
+import { dispatchResolvedTool, makeSubAgentToolCallHandler, type ToolCatalog } from "./dispatch-tool.js";
 import {
+  APPROVAL_DENIED_CODE,
   APPROVAL_DENIED_MESSAGE,
   approvalPrompt,
   parseApprovalDecision,
@@ -89,6 +95,35 @@ export interface ApprovalPending {
    * — the resume is honored only when the caller's freshly resolved subject matches.
    */
   subject?: string;
+}
+
+/**
+ * A tool call a RUNNING SUB-AGENT paused on, awaiting the caller's approval
+ * (ADR 0003 + sub-agent HITL). Set by `checkActiveAgentRun`/`delegateToAgent`
+ * when the sub-agent's own `tool_call` turns out to need approval; persisted to
+ * the session store (coexisting with the active-run anchor, since the run is
+ * still live and blocked on the orchestrator's unresolved `tool_result`) and
+ * consumed next turn by `checkPendingSubAgentApproval`, which reads the reply as
+ * the decision, resolves the held call, and re-attaches to the same run. Plain
+ * JSON — safe to persist. The `tool`/`input` are the raw `tool_call` fields;
+ * the descriptor is re-resolved from the catalog on approve (like a fresh
+ * sub-agent dispatch).
+ */
+export interface SubAgentApprovalPending {
+  /** The live AgentRun the paused sub-agent is running as — the subject the resolved `tool_result` is published to. */
+  runId: string;
+  /** Correlates the held `tool_call`/`tool_result` (docs/adr/0028). */
+  callId: string;
+  /** Tool name the sub-agent asked to run (validated against the agent's `toolRefs`). */
+  tool: string;
+  /** Raw tool input the gated call would run with. */
+  input: string;
+  /** Catalog id of the governing Agent — re-fetched under current roles before resume. */
+  agentId: string;
+  /** The subject the pause was stored under — the resume is honored only for that caller. */
+  subject: string;
+  /** ms-since-epoch deadline after which the background sweeper fails the held call out. */
+  expiresAt: number;
 }
 
 /**
@@ -588,6 +623,29 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => false,
   }),
   /**
+   * A tool call a RUNNING SUB-AGENT paused on, awaiting the caller's approval
+   * (ADR 0003 + sub-agent HITL). Set by `checkActiveAgentRun`/`delegateToAgent`
+   * when the sub-agent's own `tool_call` needs approval, read next turn by
+   * `checkPendingSubAgentApproval`. Unlike {@link approvalPending} it COEXISTS
+   * with the active-run anchor — the run is still live. See
+   * {@link SubAgentApprovalPending}.
+   */
+  subAgentApprovalPending: Annotation<SubAgentApprovalPending | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * True when THIS turn ended still waiting on the caller to decide a
+   * sub-agent's gated tool call (`checkActiveAgentRun`/`delegateToAgent` just
+   * parked one, or `checkPendingSubAgentApproval` re-asked on an ambiguous
+   * reply) — the turn's `result` is the approval prompt, so the server persists
+   * `subAgentApprovalPending`. Mirrors `approvalWaiting`.
+   */
+  subAgentApprovalWaiting: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
+  }),
+  /**
    * Per-turn override of which OAuth flow `delegateToAgent` starts when this
    * caller hasn't linked their identity yet. Absent means the default
    * ("authcode") applies at the point of use -- ordinary Open WebUI chat
@@ -754,6 +812,13 @@ export interface AgentGraphDeps {
    * see `agentAwaitReplyIdleTimeoutMs`.
    */
   agentIdleTimeoutSeconds?: number;
+  /**
+   * Global fallback (seconds) for how long the orchestrator holds a sub-agent's
+   * own gated tool call waiting for approval (ADR 0003 + sub-agent HITL) when
+   * the governing Agent sets no `approvalTimeoutSeconds`. Default 900 when
+   * absent. Threaded into the per-call `expiresAt` the sweeper enforces.
+   */
+  subAgentApprovalTimeoutSeconds?: number;
   /**
    * Records, before the wait begins, that this conversation is owed a reply by
    * a specific AgentRun — the resume anchor a later turn re-attaches to
@@ -1420,6 +1485,41 @@ async function handleAgentTurnFailure(
  * request failed, try again", which would be the third variation on telling a
  * user their successful run failed.
  */
+/**
+ * Outcome for a turn whose live sub-agent paused on a gated tool call awaiting
+ * approval (ADR 0003 + sub-agent HITL). The `tool_call` was deliberately left
+ * UNRESOLVED (see `awaitReply`), so the run is still alive and blocked: this
+ * parks `subAgentApprovalPending` (persisted alongside the active-run anchor)
+ * and ends the turn with the approval prompt. Next turn, `checkPendingSubAgentApproval`
+ * reads the decision, resolves the held call, and re-attaches.
+ *
+ * `agentRunId` is set so the server's streaming/invoke paths treat this as a
+ * terminal agent turn; `agentAwaitingReply` is deliberately NOT set (there is no
+ * reply being awaited — the run is blocked on us), and persistence routes on
+ * `subAgentApprovalWaiting` ahead of the ordinary agent-run branches.
+ */
+function subAgentApprovalPause(
+  state: Pick<AgentState, "identity">,
+  agent: Pick<AgentDescriptor, "id">,
+  runId: string,
+  err: AgentTurnApprovalPendingError,
+): Partial<AgentState> {
+  return {
+    agentRunId: runId,
+    subAgentApprovalWaiting: true,
+    subAgentApprovalPending: {
+      runId,
+      callId: err.callId,
+      tool: err.tool,
+      input: err.input,
+      agentId: agent.id,
+      subject: state.identity?.subject ?? "",
+      expiresAt: err.expiresAt,
+    },
+    result: approvalPrompt(err.tool),
+  };
+}
+
 function resumableAgentTurnOutcome(state: Pick<AgentState, "progressListener">, agentRunId: string): Partial<AgentState> {
   const nudge = state.progressListener
     ? "Send any message and I'll pick up its reply where this left off."
@@ -1492,6 +1592,43 @@ function composeAgentTurnMessage(state: Pick<AgentState, "progressListener">, re
  */
 function agentAwaitReplyIdleTimeoutMs(deps: Pick<AgentGraphDeps, "agentIdleTimeoutSeconds">): number | undefined {
   return deps.agentIdleTimeoutSeconds ? deps.agentIdleTimeoutSeconds * 1000 : undefined;
+}
+
+/** Default sub-agent approval hold (15m) when neither the Agent nor config sets one. */
+const DEFAULT_SUBAGENT_APPROVAL_TIMEOUT_SECONDS = 900;
+
+/**
+ * How long THIS launch holds a gated sub-agent tool call for approval (ADR 0003
+ * + sub-agent HITL), most-specific-wins: the governing Agent's own
+ * `approvalTimeoutSeconds`, else the global `subAgentApprovalTimeoutSeconds`
+ * dep, else the 15-minute default. Returns milliseconds for `expiresAt`.
+ */
+function subAgentApprovalTimeoutMs(
+  deps: Pick<AgentGraphDeps, "subAgentApprovalTimeoutSeconds">,
+  agent: Pick<AgentDescriptor, "approvalTimeoutSeconds">,
+): number {
+  const seconds =
+    agent.approvalTimeoutSeconds ?? deps.subAgentApprovalTimeoutSeconds ?? DEFAULT_SUBAGENT_APPROVAL_TIMEOUT_SECONDS;
+  return seconds * 1000;
+}
+
+/**
+ * Builds the two wired-together signals a live sub-agent wait needs for HITL
+ * approval (ADR 0003 + sub-agent HITL): `onApprovalNeeded`, handed to
+ * {@link makeSubAgentToolCallHandler} so a gated `tool_call` is reported up
+ * instead of dispatched, and `approvalNeeded`, the promise `awaitReply` watches
+ * to end the wait and throw {@link AgentTurnApprovalPendingError}. Bridged by a
+ * single deferred, mirroring how `runFailed` ends a wait from the outside.
+ */
+function makeApprovalBridge(): {
+  onApprovalNeeded: (call: SubAgentApprovalCall) => void;
+  approvalNeeded: Promise<SubAgentApprovalCall>;
+} {
+  let onApprovalNeeded!: (call: SubAgentApprovalCall) => void;
+  const approvalNeeded = new Promise<SubAgentApprovalCall>((resolve) => {
+    onApprovalNeeded = resolve;
+  });
+  return { onApprovalNeeded, approvalNeeded };
 }
 
 /**
@@ -1811,6 +1948,61 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         ...(pending.skillTools ? { skillTools: pending.skillTools } : {}),
       };
     })
+    .addNode("checkPendingSubAgentApproval", async (state) => {
+      // Sub-agent approval continuation (ADR 0003 + sub-agent HITL), run early
+      // each turn alongside checkPendingApproval: if a RUNNING sub-agent paused
+      // on a gated tool call last turn, read THIS turn's message as the caller's
+      // decision, answer the held `tool_call` accordingly, and re-enter the
+      // still-live run to collect its next reply. Every miss (no session,
+      // subject mismatch, channel can't answer) falls through to the ordinary
+      // chain -- a miss is never an error.
+      if (!state.identity || !state.subAgentApprovalPending) return {};
+      if (state.sessionSubject !== state.identity.subject) return {};
+      const pending = state.subAgentApprovalPending;
+      // Honor the resume only for the caller who owns it (mirrors checkPendingApproval).
+      if (pending.subject !== state.identity.subject) return {};
+      const channel = deps.agentChannel;
+      // No channel / no way to answer the held call -> fall through rather than
+      // strand the decision (the sweeper still bounds the hold).
+      if (!channel?.resolveToolCall) return {};
+
+      const decision = parseApprovalDecision(state.request);
+      if (decision === "ambiguous") {
+        // Re-ask rather than guess. Keep the pause (coexisting anchor stays put)
+        // and prompt again; the sweeper's deadline is unaffected.
+        return { subAgentApprovalPending: pending, subAgentApprovalWaiting: true, result: approvalPrompt(pending.tool) };
+      }
+      if (decision === "deny") {
+        // Never silently drop: hand the blocked sub-agent a FAILED tool_result
+        // it reasons over (graceful degradation), the same shape a timeout uses.
+        await channel.resolveToolCall(pending.runId, pending.callId, {
+          ok: false,
+          error: `${APPROVAL_DENIED_CODE}: ${APPROVAL_DENIED_MESSAGE}`,
+        });
+      } else {
+        // Approved: re-dispatch the EXACT same call with the gate suppressed,
+        // then deliver its outcome to the blocked sub-agent. A dispatch throw
+        // becomes a clean failed tool_result rather than crashing the resume.
+        const tool = deps.toolCatalog?.getById(pending.tool);
+        const outcome: { ok: true; result?: unknown } | { ok: false; error: string } = tool
+          ? await dispatchResolvedTool(tool, pending.input, deps, {
+              sessionId: state.sessionId,
+              callerSubject: state.identity.subject,
+              suppressApprovalGate: true,
+            }).catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) }))
+          : { ok: false, error: `tool "${pending.tool}" not found in the catalog` };
+        await channel.resolveToolCall(pending.runId, pending.callId, outcome);
+      }
+      // Decision applied and the held call answered: clear the pause and re-enter
+      // the still-live run in RE-ATTACH mode (awaitingReply -> no prompt sent) to
+      // collect the reply it produces now that its tool call unblocked.
+      return {
+        subAgentApprovalPending: undefined,
+        activeAgentId: pending.agentId,
+        activeAgentRunId: pending.runId,
+        activeAgentRunAwaitingReply: true,
+      };
+    })
     .addNode("checkPendingIdentityLink", async (state) => {
       // Identity-link continuation, run right after resolveIdentity and
       // before any skill/agent-run continuity check (mirrors
@@ -1929,6 +2121,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         }
       }
 
+      const approval = makeApprovalBridge();
       try {
         const awaitReply = awaitAgentReply(deps, deps.agentChannel, state.activeAgentRunId, found.agent.agentRunTemplate.namespace, {
           idleTimeoutMs: state.activeAgentRunAwaitingReply
@@ -1946,7 +2139,13 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             // The caller a sub-agent's own tool calls run AS — needed to resolve
             // the delegated token an mcpExec tool is dispatched under (ADR 0045).
             callerSubject: state.identity?.subject,
+            // Real HITL for a gated sub-agent tool call (ADR 0003 + sub-agent
+            // HITL): report up instead of dispatching, so the pod blocks until
+            // the caller decides.
+            onApprovalNeeded: approval.onApprovalNeeded,
+            approvalTimeoutMs: subAgentApprovalTimeoutMs(deps, found.agent),
           }),
+          approvalNeeded: approval.approvalNeeded,
         });
         // RE-ATTACH vs CONTINUE. Parked on a question -> this turn's text is the
         // answer, publish it. Owed a reply (a previous turn's wait lost its
@@ -1972,6 +2171,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
+        if (err instanceof AgentTurnApprovalPendingError) {
+          return subAgentApprovalPause(state, found.agent, state.activeAgentRunId, err);
+        }
         if (err instanceof AgentTurnTransportError) {
           return {
             agentRunId: state.activeAgentRunId,
@@ -2193,6 +2395,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       const priorToken = state.agentContinuations?.[agent.id];
       const goal = priorToken ? prependContinuationToken(priorToken, state.request) : state.request;
 
+      const approval = makeApprovalBridge();
       try {
         // Subscribe BEFORE creating the AgentRun CR so a fast-replying agent
         // can never publish before our subscription exists.
@@ -2210,7 +2413,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             // The caller a sub-agent's own tool calls run AS — needed to resolve
             // the delegated token an mcpExec tool is dispatched under (ADR 0045).
             callerSubject: state.identity?.subject,
+            // Real HITL for a gated sub-agent tool call (ADR 0003 + sub-agent HITL).
+            onApprovalNeeded: approval.onApprovalNeeded,
+            approvalTimeoutMs: subAgentApprovalTimeoutMs(deps, agent),
           }),
+          approvalNeeded: approval.approvalNeeded,
         });
         // Anchor the run to the conversation BEFORE creating it, for the same
         // reason the subscription above is opened first: the window this anchor
@@ -2280,6 +2487,12 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
+        if (err instanceof AgentTurnApprovalPendingError) {
+          // The run was launched and is live, blocked on the unresolved
+          // tool_call; adopt `identity` so the persisted pause is keyed by the
+          // same subject the resume re-checks.
+          return { identity, selectedAgent: agent, ...subAgentApprovalPause({ identity }, agent, runId, err) };
+        }
         if (err instanceof AgentTurnTransportError) {
           return { agentRunId: runId, identity, selectedAgent: agent, ...resumableAgentTurnOutcome(state, runId) };
         }
@@ -2910,21 +3123,28 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     .addConditionalEdges("checkIntegrationRoute", (state) =>
       state.error
         ? END
-        : // A conversation still owed a reply by a run re-attaches FIRST, even on
-          // a route-driven turn. The route's whole purpose is to skip retrieval
-          // and dispatch deterministically, but dispatching again while an
-          // earlier run of this same conversation is holding an answer would do
-          // the work twice -- a second branch and a second PR on a real coding
-          // agent. This is the path a re-applied trigger label takes
-          // (docs/adr/0033), and `checkActiveAgentRun` falls back to the route's
-          // own target below if the anchor turns out to be stale.
-          state.activeAgentRunAwaitingReply && state.activeAgentRunId
-          ? "checkActiveAgentRun"
-          : state.selectedAgent
-            ? "delegateToAgent"
-            : state.selectedSkill
-              ? "loadSkillTools"
-              : "checkPendingApproval",
+        : // A sub-agent paused on a gated tool call resumes FIRST (ADR 0003 +
+          // sub-agent HITL), ahead of the re-attach below: the coexisting anchor
+          // also sets `activeAgentRunAwaitingReply`, so without this a route turn
+          // would re-attach and wait on a run that is blocked on US rather than
+          // reading the approval decision.
+          state.subAgentApprovalPending
+          ? "checkPendingSubAgentApproval"
+          : // A conversation still owed a reply by a run re-attaches FIRST, even on
+            // a route-driven turn. The route's whole purpose is to skip retrieval
+            // and dispatch deterministically, but dispatching again while an
+            // earlier run of this same conversation is holding an answer would do
+            // the work twice -- a second branch and a second PR on a real coding
+            // agent. This is the path a re-applied trigger label takes
+            // (docs/adr/0033), and `checkActiveAgentRun` falls back to the route's
+            // own target below if the anchor turns out to be stale.
+            state.activeAgentRunAwaitingReply && state.activeAgentRunId
+            ? "checkActiveAgentRun"
+            : state.selectedAgent
+              ? "delegateToAgent"
+              : state.selectedSkill
+                ? "loadSkillTools"
+                : "checkPendingApproval",
     )
     // An awaited approval decision resumes FIRST (ADR 0003): approve ->
     // re-dispatch the stored call (runTool, gate suppressed); deny -> continue
@@ -2937,6 +3157,18 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (state.approvalWaiting) return END;
       if (state.result !== undefined) return state.selectedSkill ? "planAction" : END;
       return "checkPendingIdentityLink";
+    })
+    // A sub-agent approval decision (ADR 0003 + sub-agent HITL): a re-ask
+    // (ambiguous reply) ends the turn with the prompt again; approve/deny both
+    // answered the held tool_call and cleared the pause, so re-attach to the
+    // still-live run (reattach mode) to collect its next reply; a miss (subject
+    // mismatch, no channel) leaves the pause set and falls through to the
+    // ordinary approval/identity-link chain.
+    .addConditionalEdges("checkPendingSubAgentApproval", (state) => {
+      if (state.error) return END;
+      if (state.subAgentApprovalWaiting) return END;
+      if (state.subAgentApprovalPending === undefined) return "checkActiveAgentRun";
+      return "checkPendingApproval";
     })
     // A pending device-flow link either just completed (an agent was
     // re-selected -> resume straight into delegateToAgent), is still being

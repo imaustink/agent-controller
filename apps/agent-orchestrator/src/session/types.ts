@@ -1,4 +1,4 @@
-import type { ApprovalPending } from "../agent/graph.js";
+import type { ApprovalPending, SubAgentApprovalPending } from "../agent/graph.js";
 
 /**
  * Session-scoped skill lifecycle (docs/adr/0012): a conversation keeps ONE
@@ -107,6 +107,18 @@ export interface SessionRecord {
    * exclusive with the active-skill/agent-run fields, like `pendingIdentityLink`.
    */
   approvalPending?: ApprovalPending;
+  /**
+   * A tool call a RUNNING SUB-AGENT (not the top-level graph) paused on,
+   * awaiting the caller's approval (ADR 0003 + sub-agent HITL — agent/graph.ts's
+   * `subAgentApprovalPending` state field). Unlike {@link approvalPending} this
+   * COEXISTS with the active-agent-run anchor (`activeAgentRunId` +
+   * `activeAgentRunAwaitingReply`): the sub-agent's AgentRun is still live and
+   * blocked on the orchestrator's unresolved `tool_result`, so the next turn
+   * reads the decision here, resolves the tool call, and re-attaches to the same
+   * run to collect its next reply. `expiresAt` bounds the hold for the
+   * background sweeper (see {@link SessionStore.listSubAgentApprovals}).
+   */
+  subAgentApprovalPending?: SubAgentApprovalPending;
   /** Last touch time (ms since epoch); used for sliding TTL expiry. */
   updatedAt: number;
 }
@@ -120,4 +132,12 @@ export interface SessionRecord {
 export interface SessionStore {
   get(sessionId: string): Promise<SessionRecord | undefined>;
   set(sessionId: string, record: Omit<SessionRecord, "updatedAt">): Promise<void>;
+  /**
+   * Every session that currently carries a {@link SessionRecord.subAgentApprovalPending}
+   * pause, for the background sweeper that times out approvals nobody answered
+   * (index.ts). Optional and guarded so an adapter that predates sub-agent HITL
+   * (or one that can't scan) simply never times approvals out — a pending hold
+   * then lives until the sub-agent's AgentRun hits its own wall-clock deadline.
+   */
+  listSubAgentApprovals?(): Promise<Array<{ sessionId: string; pending: SubAgentApprovalPending }>>;
 }

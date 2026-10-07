@@ -104,3 +104,14 @@ describe("toAgentDescriptor — approvalDefault (ADR 0003)", () => {
     expect(toAgentDescriptor(validAgent, "default")?.approvalDefault).toBeUndefined();
   });
 });
+
+describe("toAgentDescriptor — approvalTimeoutSeconds (sub-agent HITL)", () => {
+  it("round-trips approvalTimeoutSeconds onto the descriptor", () => {
+    const d = toAgentDescriptor({ ...validAgent, spec: { ...validAgent.spec, approvalTimeoutSeconds: 300 } }, "default");
+    expect(d?.approvalTimeoutSeconds).toBe(300);
+  });
+
+  it("leaves approvalTimeoutSeconds undefined when the CR sets none (global default applies)", () => {
+    expect(toAgentDescriptor(validAgent, "default")?.approvalTimeoutSeconds).toBeUndefined();
+  });
+});

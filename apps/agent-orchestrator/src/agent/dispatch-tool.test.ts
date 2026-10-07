@@ -232,6 +232,47 @@ describe("makeSubAgentToolCallHandler", () => {
     expect(() => handler({ callId: "call-1", tool: "kubectl-readonly", input: "get pods" })).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
   });
+
+  it("DEFERS a gated (approval: always) tool call — signals approval-needed and leaves the call UNRESOLVED (sub-agent HITL)", async () => {
+    const channel = fakeChannel();
+    const launcher = fakeContainerToolLauncher();
+    const onApprovalNeeded = vi.fn();
+    const gated = { ...containerTool, approval: "always" };
+    const handler = makeSubAgentToolCallHandler(
+      "run-1",
+      agent,
+      channel,
+      { getById: () => gated },
+      { ...baseDeps, containerToolLauncher: launcher },
+      { onApprovalNeeded, approvalTimeoutMs: 900_000 },
+    );
+
+    handler({ callId: "call-1", tool: "kubectl-readonly", input: "get pods -n default" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Reported up for approval, NOT resolved and NOT dispatched — the pod stays blocked.
+    expect(onApprovalNeeded).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: "call-1", tool: "kubectl-readonly", input: "get pods -n default", expiresAt: expect.any(Number) }),
+    );
+    expect(channel.resolveToolCall).not.toHaveBeenCalled();
+    expect(launcher.launch).not.toHaveBeenCalled();
+  });
+
+  it("dispatches a NON-gated (approval: never) tool unchanged even when a HITL channel is wired", async () => {
+    const channel = fakeChannel();
+    const onApprovalNeeded = vi.fn();
+    const ungated = { ...containerTool, approval: "never" };
+    const handler = makeSubAgentToolCallHandler("run-1", agent, channel, { getById: () => ungated }, baseDeps, {
+      onApprovalNeeded,
+      approvalTimeoutMs: 900_000,
+    });
+
+    handler({ callId: "call-1", tool: "kubectl-readonly", input: "get pods -n default" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(onApprovalNeeded).not.toHaveBeenCalled();
+    expect(channel.resolveToolCall).toHaveBeenCalledWith("run-1", "call-1", { ok: true, result: { ok: true } });
+  });
 });
 
 describe("dispatchResolvedTool — approval gate (ADR 0003, sub-agent loop)", () => {
