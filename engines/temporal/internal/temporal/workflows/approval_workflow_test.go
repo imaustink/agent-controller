@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/controller-agent/temporal-engine/internal/approval"
@@ -107,4 +108,47 @@ func TestApprovalNeverRunsSilently(t *testing.T) {
 	require.Equal(t, "Here you go:\n# Pasta\nBoil water.\nEnjoy!", result.Reply)
 	require.Equal(t, []string{"recipe-scraper"}, result.Meta.ToolCalls)
 	require.Len(t, le.launches, 1)
+}
+
+// A sub-agent whose tool needs approval degrades GRACEFULLY when no human
+// answers in time (ADR 0003): the approval wait is bounded by the agent's
+// approvalTimeout, the gated tool never runs, and the planner sees an
+// `approval_timeout` failed action it can reason over — not a hang. Drives the
+// child AgentWorkflow directly, since the timeout fires between conversation
+// turns with no one actively consuming the up-channel.
+func TestSubAgentApprovalTimesOutGracefully(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := mealPlannerAgent()
+	agent.SkillRefs = nil
+	agent.ToolRefs = []string{"kubectl-readonly"}
+	agent.ApprovalTimeoutSeconds = 60 // virtual time fires it regardless of magnitude
+
+	gated := kubectlTool()
+	gated.Approval = "always"
+	le.agentTools = []catalog.ToolDescriptor{gated}
+	le.agentPlans = []activities.PlannedAgentAction{
+		{Action: activities.AgentActionCallTool, ToolID: "kubectl-readonly", ToolInput: "get pods"},
+		{Action: activities.AgentActionFinish, Message: "I couldn't get that approved, so I stopped."},
+	}
+	// Executing the child directly: absorb its up-signals (incl. the approval
+	// prompt) and NEVER deliver an AgentPrompt, so the timer is the only way out.
+	le.env.OnSignalExternalWorkflow(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	le.env.ExecuteWorkflow(workflows.AgentWorkflowName, workflows.AgentWorkflowInput{
+		Agent:            agent,
+		Goal:             "list the pods",
+		Caller:           activities.Caller{Subject: "user:1", Roles: []string{"cook"}},
+		ParentWorkflowID: "some-parent",
+		Depth:            1,
+	})
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	// The gated tool never launched — nobody approved it.
+	require.Empty(t, le.launches, "a tool awaiting approval must never run on timeout")
+	// The planner's next call saw the timeout as a failed action, distinctly coded.
+	require.GreaterOrEqual(t, len(le.agentPlanInputs), 2)
+	hist := le.agentPlanInputs[len(le.agentPlanInputs)-1].History
+	require.NotEmpty(t, hist)
+	require.Contains(t, hist[len(hist)-1].Error, approval.TimeoutCode)
 }

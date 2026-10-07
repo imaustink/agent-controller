@@ -1,6 +1,8 @@
 package workflows
 
 import (
+	"time"
+
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/controller-agent/temporal-engine/internal/approval"
@@ -86,21 +88,42 @@ func resumePendingApproval(
 // requestAgentApproval runs the approval round-trip inside a sub-agent workflow:
 // it bubbles the approval prompt to the parent as a question and durably waits
 // for the answer on the same AgentPrompt channel ask_user uses — no pod idles on
-// the human. An ambiguous answer is re-asked a few times, then fails safe to
-// denied so the loop can never hang on persistently unclear input.
-func requestAgentApproval(ctx workflow.Context, up func(AgentUp), prompts workflow.ReceiveChannel, toolID string) approval.Decision {
+// the human. The wait is bounded by a single overall `timeout` (shared across
+// re-asks, not reset per attempt): when it elapses the function returns
+// DecisionTimeout so the loop records a distinct `approval_timeout` failure and
+// the agent keeps reasoning — graceful degradation, never a hang. An ambiguous
+// answer is re-asked a few times, then fails safe to denied.
+func requestAgentApproval(ctx workflow.Context, up func(AgentUp), prompts workflow.ReceiveChannel, toolID string, timeout time.Duration) approval.Decision {
 	const maxReasks = 3
+	timerCtx, cancelTimer := workflow.WithCancel(ctx)
+	defer cancelTimer()
+	timer := workflow.NewTimer(timerCtx, timeout)
+	timedOut := false
+
 	for attempt := 0; attempt <= maxReasks; attempt++ {
 		up(AgentUp{Message: approval.Prompt(toolID)})
 		var answer AgentPrompt
-		prompts.Receive(ctx, &answer)
-		switch approval.ParseDecision(answer.Message) {
-		case approval.DecisionApproved:
-			return approval.DecisionApproved
-		case approval.DecisionDenied:
-			return approval.DecisionDenied
+		received := false
+		sel := workflow.NewSelector(ctx)
+		sel.AddReceive(prompts, func(c workflow.ReceiveChannel, _ bool) {
+			c.Receive(ctx, &answer)
+			received = true
+		})
+		sel.AddFuture(timer, func(workflow.Future) { timedOut = true })
+		sel.Select(ctx)
+
+		if timedOut {
+			return approval.DecisionTimeout
 		}
-		// Ambiguous — ask again.
+		if received {
+			switch approval.ParseDecision(answer.Message) {
+			case approval.DecisionApproved:
+				return approval.DecisionApproved
+			case approval.DecisionDenied:
+				return approval.DecisionDenied
+			}
+			// Ambiguous — ask again, with the same deadline still ticking.
+		}
 	}
 	return approval.DecisionDenied
 }

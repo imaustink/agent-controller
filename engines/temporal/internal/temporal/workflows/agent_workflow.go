@@ -39,9 +39,25 @@ const (
 	defaultAgentMaxIterations = 8
 
 	// agentEpisodeTimeout bounds a parent's wait on a child episode
-	// (upstream's 1h AgentRun await, kept).
+	// (upstream's 1h AgentRun await, kept). It is also the hard backstop under
+	// the graceful approval timeout below.
 	agentEpisodeTimeout = time.Hour
+
+	// defaultApprovalTimeout bounds how long a sub-agent waits for a human to
+	// approve one of its tool calls (ADR 0003) before degrading gracefully. An
+	// Agent CR may override it via approvalTimeoutSeconds. Kept well under
+	// agentEpisodeTimeout so the graceful path fires before the hard backstop.
+	defaultApprovalTimeout = 15 * time.Minute
 )
+
+// agentApprovalTimeout resolves how long this agent's tool-approval waits before
+// timing out gracefully: the Agent CR's approvalTimeoutSeconds, else the default.
+func agentApprovalTimeout(agent catalog.AgentDescriptor) time.Duration {
+	if agent.ApprovalTimeoutSeconds > 0 {
+		return time.Duration(agent.ApprovalTimeoutSeconds) * time.Second
+	}
+	return defaultApprovalTimeout
+}
 
 // AgentUp is one child→parent message.
 type AgentUp struct {
@@ -219,12 +235,22 @@ func AgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 			// wait is in-workflow (prompts.Receive), exactly like ask_user: the
 			// question bubbles to the parent as an AgentUp and the answer returns
 			// as the next AgentPrompt. The governing agent's approvalDefault is the
-			// fallback when the tool sets no policy of its own.
+			// fallback when the tool sets no policy of its own. The wait is bounded
+			// by the agent's approvalTimeout so a never-answered approval degrades
+			// gracefully (a failed action the agent reasons over) instead of
+			// pinning the episode until the 1h backstop.
 			if approval.RequiresHuman(approval.Resolve(tool.Approval, in.Agent.ApprovalDefault)) {
-				if requestAgentApproval(ctx, up, prompts, plan.ToolID) == approval.DecisionDenied {
+				switch requestAgentApproval(ctx, up, prompts, plan.ToolID, agentApprovalTimeout(in.Agent)) {
+				case approval.DecisionDenied:
 					history = append(history, activities.ActionRecord{
 						ToolID: plan.ToolID, Input: plan.ToolInput,
 						Error: approval.DeniedCode + ": " + approval.DeniedMessage,
+					})
+					continue
+				case approval.DecisionTimeout:
+					history = append(history, activities.ActionRecord{
+						ToolID: plan.ToolID, Input: plan.ToolInput,
+						Error: approval.TimeoutCode + ": " + approval.TimeoutMessage,
 					})
 					continue
 				}

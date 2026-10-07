@@ -59,6 +59,10 @@ const (
 	DecisionPending Decision = iota
 	DecisionApproved
 	DecisionDenied
+	// DecisionTimeout is never returned by ParseDecision; a caller that bounds the
+	// human wait with a timer returns it when the timer fires, so the gate can
+	// surface a distinct "approval_timeout" failure (fail safe, like a denial).
+	DecisionTimeout
 )
 
 var approveWords = map[string]bool{
@@ -112,6 +116,14 @@ func Prompt(toolID string) string {
 const (
 	DeniedCode    = "approval_denied"
 	DeniedMessage = "Tool call was denied by the user."
+)
+
+// Timed-out result envelope, surfaced when a human did not answer in time. Kept
+// distinct from a denial so telemetry and the model can tell "the user said no"
+// from "nobody answered."
+const (
+	TimeoutCode    = "approval_timeout"
+	TimeoutMessage = "Tool call was not approved in time and was not run."
 )
 
 func normalize(s string) string {

@@ -65,6 +65,15 @@ spec:
                 - always
                 - auto
                 type: string
+              approvalTimeoutSeconds:
+                description: |-
+                  approvalTimeoutSeconds bounds how long this agent's tool calls wait for a
+                  human approval decision (ADR 0003) before degrading gracefully — a timed-out
+                  approval becomes a failed tool result the agent reasons over, never a hang.
+                  Zero (unset) uses the engine default (15 minutes).
+                format: int32
+                minimum: 1
+                type: integer
               description:
                 description: description is fed to the orchestrator's embedder for
                   RAG retrieval.

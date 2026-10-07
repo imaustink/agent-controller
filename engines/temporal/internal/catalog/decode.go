@@ -22,19 +22,20 @@ type toolSpec struct {
 }
 
 type agentSpec struct {
-	Description        string   `json:"description"`
-	Input              string   `json:"input"`
-	Output             string   `json:"output"`
-	AllowedRoles       []string `json:"allowedRoles"`
-	Tier               string   `json:"tier,omitempty"`
-	ApprovalDefault    string   `json:"approvalDefault,omitempty"`
-	OrchestratorPrompt string   `json:"orchestratorPrompt,omitempty"`
-	AgentPrompt        string   `json:"agentPrompt,omitempty"`
-	SkillRefs          []string `json:"skillRefs,omitempty"`
-	Model              string   `json:"model,omitempty"`
-	MaxIterations      int32    `json:"maxIterations,omitempty"`
-	IdentityProviders  []string `json:"identityProviders,omitempty"`
-	ToolRefs           []string `json:"toolRefs,omitempty"`
+	Description            string   `json:"description"`
+	Input                  string   `json:"input"`
+	Output                 string   `json:"output"`
+	AllowedRoles           []string `json:"allowedRoles"`
+	Tier                   string   `json:"tier,omitempty"`
+	ApprovalDefault        string   `json:"approvalDefault,omitempty"`
+	ApprovalTimeoutSeconds int32    `json:"approvalTimeoutSeconds,omitempty"`
+	OrchestratorPrompt     string   `json:"orchestratorPrompt,omitempty"`
+	AgentPrompt            string   `json:"agentPrompt,omitempty"`
+	SkillRefs              []string `json:"skillRefs,omitempty"`
+	Model                  string   `json:"model,omitempty"`
+	MaxIterations          int32    `json:"maxIterations,omitempty"`
+	IdentityProviders      []string `json:"identityProviders,omitempty"`
+	ToolRefs               []string `json:"toolRefs,omitempty"`
 }
 
 type envVarSpec struct {
@@ -207,22 +208,23 @@ func DecodeAgent(obj *unstructured.Unstructured) (AgentDescriptor, error) {
 		return AgentDescriptor{}, err
 	}
 	return AgentDescriptor{
-		ID:                 obj.GetName(),
-		StepToolRef:        obj.GetAnnotations()[StepToolAnnotation],
-		Bridged:            obj.GetAnnotations()[BridgedAnnotation] == "true",
-		Description:        spec.Description,
-		Input:              spec.Input,
-		Output:             spec.Output,
-		AllowedRoles:       spec.AllowedRoles,
-		Tier:               spec.Tier,
-		ApprovalDefault:    spec.ApprovalDefault,
-		OrchestratorPrompt: spec.OrchestratorPrompt,
-		AgentPrompt:        spec.AgentPrompt,
-		SkillRefs:          spec.SkillRefs,
-		Model:              spec.Model,
-		MaxIterations:      spec.MaxIterations,
-		IdentityProviders:  spec.IdentityProviders,
-		ToolRefs:           spec.ToolRefs,
+		ID:                     obj.GetName(),
+		StepToolRef:            obj.GetAnnotations()[StepToolAnnotation],
+		Bridged:                obj.GetAnnotations()[BridgedAnnotation] == "true",
+		Description:            spec.Description,
+		Input:                  spec.Input,
+		Output:                 spec.Output,
+		AllowedRoles:           spec.AllowedRoles,
+		Tier:                   spec.Tier,
+		ApprovalDefault:        spec.ApprovalDefault,
+		ApprovalTimeoutSeconds: spec.ApprovalTimeoutSeconds,
+		OrchestratorPrompt:     spec.OrchestratorPrompt,
+		AgentPrompt:            spec.AgentPrompt,
+		SkillRefs:              spec.SkillRefs,
+		Model:                  spec.Model,
+		MaxIterations:          spec.MaxIterations,
+		IdentityProviders:      spec.IdentityProviders,
+		ToolRefs:               spec.ToolRefs,
 	}, nil
 }
 

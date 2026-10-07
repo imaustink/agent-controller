@@ -176,6 +176,11 @@ type AgentDescriptor struct {
 	// wins over this default (most-specific-wins; see workflows.resolveApproval).
 	ApprovalDefault string `json:"approvalDefault,omitempty"`
 
+	// ApprovalTimeoutSeconds bounds how long this agent's tool calls wait for a
+	// human approval decision before degrading gracefully (ADR 0003). Zero means
+	// the engine default (15m).
+	ApprovalTimeoutSeconds int32 `json:"approvalTimeoutSeconds,omitempty"`
+
 	OrchestratorPrompt string   `json:"orchestratorPrompt,omitempty"`
 	AgentPrompt        string   `json:"agentPrompt,omitempty"`
 	SkillRefs          []string `json:"skillRefs,omitempty"`
