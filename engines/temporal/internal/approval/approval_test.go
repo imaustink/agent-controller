@@ -71,7 +71,7 @@ func TestParseDecisionIsDenyBiased(t *testing.T) {
 		"deny, i would never approve this!", // embedded "approve" must not win
 		"no",
 		"no way",
-		"approve, no",      // contradictory -> fail safe to deny
+		"approve, no", // contradictory -> fail safe to deny
 		"absolutely not, reject it",
 		"cancel please",
 	}
