@@ -1,0 +1,34 @@
+{
+  "message": "agentcontroller.protocol.v1.AgentDownMessage",
+  "cases": [
+    { "name": "prompt", "valid": true, "json": { "agent_run_id": "r1", "seq": 0, "ts": "t", "type": "prompt", "message": "Fix the flaky test" } },
+    { "name": "prompt with an empty message", "valid": true, "json": { "agent_run_id": "r1", "seq": 0, "ts": "t", "type": "prompt", "message": "" } },
+    { "name": "cancel without a reason", "valid": true, "json": { "agent_run_id": "r1", "seq": 1, "ts": "t", "type": "cancel" } },
+    { "name": "cancel with a reason", "valid": true, "json": { "agent_run_id": "r1", "seq": 1, "ts": "t", "type": "cancel", "reason": "user left" } },
+    { "name": "signal with arbitrary data", "valid": true, "json": { "agent_run_id": "r1", "seq": 2, "ts": "t", "type": "signal", "name": "pause", "data": [true, null, "x", 3] } },
+    {
+      "name": "opencode_request",
+      "valid": true,
+      "json": { "agent_run_id": "r1", "seq": 3, "ts": "t", "type": "opencode_request", "requestId": "q1", "method": "POST", "path": "/session", "body": { "a": 1 } }
+    },
+    { "name": "reply_ack of seq 0", "valid": true, "json": { "agent_run_id": "r1", "seq": 4, "ts": "t", "type": "reply_ack", "ackSeq": 0 } },
+    {
+      "name": "tool_result ok",
+      "valid": true,
+      "json": { "agent_run_id": "r1", "seq": 5, "ts": "t", "type": "tool_result", "callId": "c1", "ok": true, "result": "42 results" }
+    },
+    {
+      "name": "tool_result not ok",
+      "valid": true,
+      "json": { "agent_run_id": "r1", "seq": 5, "ts": "t", "type": "tool_result", "callId": "c1", "ok": false, "error": "denied" }
+    },
+    { "name": "unknown type", "valid": false, "json": { "agent_run_id": "r1", "seq": 0, "ts": "t", "type": "resume" } },
+    { "name": "an up-message type sent down", "valid": false, "json": { "agent_run_id": "r1", "seq": 0, "ts": "t", "type": "reply", "message": "m", "final": true } },
+    { "name": "prompt without message", "valid": false, "json": { "agent_run_id": "r1", "seq": 0, "ts": "t", "type": "prompt" } },
+    { "name": "signal without name", "valid": false, "json": { "agent_run_id": "r1", "seq": 2, "ts": "t", "type": "signal" } },
+    { "name": "opencode_request without path", "valid": false, "json": { "agent_run_id": "r1", "seq": 3, "ts": "t", "type": "opencode_request", "requestId": "q1", "method": "GET" } },
+    { "name": "reply_ack without ackSeq", "valid": false, "json": { "agent_run_id": "r1", "seq": 4, "ts": "t", "type": "reply_ack" } },
+    { "name": "reply_ack with a negative ackSeq", "valid": false, "json": { "agent_run_id": "r1", "seq": 4, "ts": "t", "type": "reply_ack", "ackSeq": -1 } },
+    { "name": "tool_result without ok", "valid": false, "json": { "agent_run_id": "r1", "seq": 5, "ts": "t", "type": "tool_result", "callId": "c1" } }
+  ]
+}

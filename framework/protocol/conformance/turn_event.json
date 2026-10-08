@@ -1,0 +1,39 @@
+{
+  "message": "agentcontroller.protocol.v1.TurnEvent",
+  "cases": [
+    { "name": "turn-started", "valid": true, "json": { "seq": 0, "ts": "t", "kind": "turn-started" } },
+    { "name": "skill-selected with skillId", "valid": true, "json": { "seq": 1, "ts": "t", "kind": "skill-selected", "skillId": "recipes" } },
+    { "name": "tool-started with toolId", "valid": true, "json": { "seq": 2, "ts": "t", "kind": "tool-started", "toolId": "web-search" } },
+    {
+      "name": "tool-progress with every detail field",
+      "valid": true,
+      "json": {
+        "seq": 3, "ts": "t", "kind": "tool-progress", "toolId": "image-gen", "stage": "render", "pct": 12.5, "message": "drawing",
+        "artifacts": [{ "uri": "s3://b/k", "sha256": "h", "bytes": 0, "content_type": "image/png" }]
+      }
+    },
+    { "name": "tool-finished", "valid": true, "json": { "seq": 4, "ts": "t", "kind": "tool-finished", "toolId": "web-search" } },
+    { "name": "tool-failed with code", "valid": true, "json": { "seq": 4, "ts": "t", "kind": "tool-failed", "toolId": "web-search", "code": "TIMEOUT", "message": "no answer" } },
+    { "name": "warning", "valid": true, "json": { "seq": 5, "ts": "t", "kind": "warning", "message": "slow" } },
+    { "name": "approval-required", "valid": true, "json": { "seq": 6, "ts": "t", "kind": "approval-required", "toolId": "ssh" } },
+    { "name": "approval-resolved", "valid": true, "json": { "seq": 7, "ts": "t", "kind": "approval-resolved", "toolId": "ssh", "code": "approved" } },
+    { "name": "turn-completed", "valid": true, "json": { "seq": 8, "ts": "t", "kind": "turn-completed" } },
+    { "name": "narration", "valid": true, "json": { "seq": 9, "ts": "t", "kind": "narration", "message": "Looking that up…" } },
+    {
+      "name": "the Go engine's former snake_case spelling still decodes",
+      "valid": true,
+      "roundTrip": false,
+      "json": { "seq": 1, "ts": "t", "kind": "skill-selected", "skill_id": "recipes" }
+    },
+    { "name": "unknown kind", "valid": false, "json": { "seq": 0, "ts": "t", "kind": "tool-exploded" } },
+    { "name": "missing kind", "valid": false, "json": { "seq": 0, "ts": "t" } },
+    { "name": "missing seq", "valid": false, "json": { "ts": "t", "kind": "turn-started" } },
+    { "name": "missing ts", "valid": false, "json": { "seq": 0, "kind": "turn-started" } },
+    { "name": "pct out of range", "valid": false, "json": { "seq": 0, "ts": "t", "kind": "tool-progress", "pct": 150 } },
+    {
+      "name": "artifact missing content_type",
+      "valid": false,
+      "json": { "seq": 0, "ts": "t", "kind": "tool-progress", "artifacts": [{ "uri": "u", "sha256": "h", "bytes": 1 }] }
+    }
+  ]
+}

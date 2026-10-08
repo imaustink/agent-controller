@@ -1,0 +1,238 @@
+syntax = "proto3";
+
+package agentcontroller.protocol.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/imaustink/agent-controller/framework/protocol/go/agentcontroller/protocol/v1;protocolv1";
+
+// The bidirectional control protocol between a running AGENT and the
+// orchestrator that launched it, for the life of the agent's process. Distinct
+// from Event, which a tool emits once in one direction.
+//
+//   up   (agent -> orchestrator): AgentUpMessage
+//   down (orchestrator -> agent): AgentDownMessage
+//
+// Transport-agnostic: messages are plain JSON. The reference carrier is NATS,
+// one subject per direction keyed by the agent run id (`<prefix>.<id>.up` and
+// `<prefix>.<id>.down`, prefix `agent` by default).
+//
+// Human-in-the-loop has no dedicated ask/answer pair: an agent asks a question
+// by sending a `reply` with `final: false`, and the answer arrives as the next
+// `prompt`. A human may take arbitrarily long and answer across turns, so no
+// reply timeout can apply.
+//
+// Wire shape (ADR 0047): each direction is ONE flat message discriminated by
+// the `type` string, exactly as on the wire today; the message-level rules say
+// which fields each type requires. Note the mixed field-name casing
+// (`agent_run_id` beside `callId`, `requestId`, `ackSeq`, `liveUntil`): it is
+// the existing wire, preserved verbatim through explicit json_names.
+
+// agent -> orchestrator.
+message AgentUpMessage {
+  option (buf.validate.message).cel = {
+    id: "agent_up.progress_requires_message"
+    message: "a progress message requires message"
+    expression: "this.type != 'progress' || has(this.message)"
+  };
+  option (buf.validate.message).cel = {
+    id: "agent_up.warning_requires_message"
+    message: "a warning message requires message"
+    expression: "this.type != 'warning' || has(this.message)"
+  };
+  option (buf.validate.message).cel = {
+    id: "agent_up.reply_requires_message_and_final"
+    message: "a reply requires message and final"
+    expression: "this.type != 'reply' || (has(this.message) && has(this.final))"
+  };
+  option (buf.validate.message).cel = {
+    id: "agent_up.failed_requires_code_and_message"
+    message: "a failed message requires code and message"
+    expression: "this.type != 'failed' || (has(this.code) && has(this.message))"
+  };
+  option (buf.validate.message).cel = {
+    id: "agent_up.opencode_response_requires_request_id_and_status"
+    message: "an opencode_response requires requestId and status"
+    expression: "this.type != 'opencode_response' || (has(this.request_id) && has(this.status))"
+  };
+  option (buf.validate.message).cel = {
+    id: "agent_up.session_idle_requires_live_until"
+    message: "a session_idle message requires liveUntil"
+    expression: "this.type != 'session_idle' || has(this.live_until)"
+  };
+  option (buf.validate.message).cel = {
+    id: "agent_up.session_ended_requires_reason"
+    message: "a session_ended message requires reason"
+    expression: "this.type != 'session_ended' || has(this.reason)"
+  };
+  option (buf.validate.message).cel = {
+    id: "agent_up.tool_call_requires_call_id_tool_and_input"
+    message: "a tool_call requires callId, tool and input"
+    expression: "this.type != 'tool_call' || (has(this.call_id) && has(this.tool) && has(this.input))"
+  };
+
+  // Correlation id = the agent run's name; shared by every message of one run.
+  optional string agent_run_id = 1 [
+    json_name = "agent_run_id",
+    (buf.validate.field).required = true
+  ];
+  // Monotonic per-direction sequence number; ordering and dedupe.
+  optional uint32 seq = 2 [
+    json_name = "seq",
+    (buf.validate.field).required = true
+  ];
+  // ISO 8601 emission timestamp.
+  optional string ts = 3 [
+    json_name = "ts",
+    (buf.validate.field).required = true
+  ];
+  optional string type = 4 [
+    json_name = "type",
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      in: [
+        "ready",
+        "progress",
+        "warning",
+        "reply",
+        "failed",
+        "opencode_event",
+        "opencode_response",
+        "session_idle",
+        "session_ended",
+        "tool_call"
+      ]
+    }
+  ];
+
+  // progress / warning / reply / failed.
+  optional string stage = 5 [json_name = "stage"];
+  optional string message = 6 [json_name = "message"];
+  optional double pct = 7 [
+    json_name = "pct",
+    (buf.validate.field).double = {
+      gte: 0
+      lte: 100
+    }
+  ];
+
+  // reply: `final: false` means the agent awaits a further prompt (including
+  // when `message` is a question for the user); `final: true` means the task
+  // is complete and the agent exits after this. `result` is an optional
+  // structured outcome for non-chat consumers.
+  optional bool final = 8 [json_name = "final"];
+  google.protobuf.Value result = 9 [json_name = "result"];
+
+  // failed.
+  optional string code = 10 [json_name = "code"];
+
+  // opencode_event: one raw event from the agent's local session server,
+  // forwarded verbatim for a live viewer. Best-effort.
+  google.protobuf.Value event = 11 [json_name = "event"];
+
+  // opencode_response: the reply to a down `opencode_request`, correlated by
+  // requestId.
+  optional string request_id = 12 [json_name = "requestId"];
+  optional int32 status = 13 [json_name = "status"];
+  google.protobuf.Value body = 14 [json_name = "body"];
+
+  // session_idle: the agent has replied but stays resident (and tunnelable)
+  // until this ISO 8601 time unless it sees more activity first.
+  optional string live_until = 15 [json_name = "liveUntil"];
+
+  // session_ended: the agent is about to exit.
+  optional string reason = 16 [json_name = "reason"];
+
+  // tool_call: the agent's own loop calling a tool it was granted. Answered
+  // by a down `tool_result` with the same callId; several may be outstanding.
+  optional string call_id = 17 [json_name = "callId"];
+  optional string tool = 18 [json_name = "tool"];
+  optional string input = 19 [json_name = "input"];
+}
+
+// orchestrator -> agent.
+message AgentDownMessage {
+  option (buf.validate.message).cel = {
+    id: "agent_down.prompt_requires_message"
+    message: "a prompt requires message"
+    expression: "this.type != 'prompt' || has(this.message)"
+  };
+  option (buf.validate.message).cel = {
+    id: "agent_down.signal_requires_name"
+    message: "a signal requires name"
+    expression: "this.type != 'signal' || has(this.name)"
+  };
+  option (buf.validate.message).cel = {
+    id: "agent_down.opencode_request_requires_request_id_method_and_path"
+    message: "an opencode_request requires requestId, method and path"
+    expression: "this.type != 'opencode_request' || (has(this.request_id) && has(this.method) && has(this.path))"
+  };
+  option (buf.validate.message).cel = {
+    id: "agent_down.reply_ack_requires_ack_seq"
+    message: "a reply_ack requires ackSeq"
+    expression: "this.type != 'reply_ack' || has(this.ack_seq)"
+  };
+  option (buf.validate.message).cel = {
+    id: "agent_down.tool_result_requires_call_id_and_ok"
+    message: "a tool_result requires callId and ok"
+    expression: "this.type != 'tool_result' || (has(this.call_id) && has(this.ok))"
+  };
+
+  optional string agent_run_id = 1 [
+    json_name = "agent_run_id",
+    (buf.validate.field).required = true
+  ];
+  optional uint32 seq = 2 [
+    json_name = "seq",
+    (buf.validate.field).required = true
+  ];
+  optional string ts = 3 [
+    json_name = "ts",
+    (buf.validate.field).required = true
+  ];
+  optional string type = 4 [
+    json_name = "type",
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      in: [
+        "prompt",
+        "cancel",
+        "signal",
+        "opencode_request",
+        "reply_ack",
+        "tool_result"
+      ]
+    }
+  ];
+
+  // prompt: a user turn -- the initial goal or any follow-up.
+  optional string message = 5 [json_name = "message"];
+
+  // cancel: stop and exit.
+  optional string reason = 6 [json_name = "reason"];
+
+  // signal: a generic out-of-band control signal (extension point).
+  optional string name = 7 [json_name = "name"];
+  google.protobuf.Value data = 8 [json_name = "data"];
+
+  // opencode_request: an HTTP call to forward into the agent's local session
+  // server; answered by an up `opencode_response` with the same requestId.
+  optional string request_id = 9 [json_name = "requestId"];
+  optional string method = 10 [json_name = "method"];
+  optional string path = 11 [json_name = "path"];
+  google.protobuf.Value body = 12 [json_name = "body"];
+
+  // reply_ack: confirms the up `reply`/`failed` with this seq was received.
+  // The agent holds its concluding message, re-offering it, until acked, so a
+  // lost publish (fire-and-forget transport, receiver restarting) does not
+  // lose the turn's outcome. Narration is deliberately never acked.
+  optional uint32 ack_seq = 13 [json_name = "ackSeq"];
+
+  // tool_result: the answer to an up `tool_call` with the same callId.
+  // `result` is meaningful when ok, `error` when not.
+  optional string call_id = 14 [json_name = "callId"];
+  optional bool ok = 15 [json_name = "ok"];
+  google.protobuf.Value result = 16 [json_name = "result"];
+  optional string error = 17 [json_name = "error"];
+}

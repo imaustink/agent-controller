@@ -1,0 +1,17 @@
+# The canonical wire contract (ADR 0047). Every language binding under this
+# directory is generated from proto/ by `npm run generate`; never edit the
+# generated output by hand.
+version: v2
+modules:
+  - path: proto
+deps:
+  - buf.build/bufbuild/protovalidate
+lint:
+  use:
+    - STANDARD
+breaking:
+  # JSON is the wire, so the compatibility surface is the JSON shape: field
+  # json_names, types and presence. WIRE_JSON flags exactly that without
+  # tripping on source-only changes (e.g. a renamed Go package).
+  use:
+    - WIRE_JSON

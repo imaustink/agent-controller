@@ -133,7 +133,9 @@ Specifics, chosen deliberately:
   byte-compatible with every running agent and tool — no dual-read, no cutover.
   Moving to `oneof` later is a versioned (`v2`) decision, not a prerequisite.
 - **Package `agentcontroller.protocol.v1`**, under
-  `framework/proto/agentcontroller/protocol/v1/`. It is permanent once third
+  `framework/protocol/proto/agentcontroller/protocol/v1/`, beside the
+  generated TypeScript package, the generated Go module and the shared
+  conformance fixtures. The package name is permanent once third
   parties depend on it.
 - **Generated code is committed**, which is the Go norm and leaves Dockerfiles
   untouched. CI regenerates it and fails on any diff.
