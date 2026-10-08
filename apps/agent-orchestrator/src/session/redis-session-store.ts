@@ -1,4 +1,5 @@
 import { Redis } from "ioredis";
+import type { SubAgentApprovalPending } from "../agent/graph.js";
 import type { SessionRecord, SessionStore } from "./types.js";
 
 export interface RedisSessionStoreOptions {
@@ -78,6 +79,43 @@ export class RedisSessionStore implements SessionStore {
         err instanceof Error ? err.message : String(err),
       );
     }
+  }
+
+  /**
+   * Scans for sessions holding a sub-agent-approval pause (index.ts sweeper).
+   * `SCAN` (never `KEYS`) so a large keyspace never blocks Redis; each matching
+   * record is read and parsed, and any that can't be read is skipped — the
+   * sweep is best-effort, exactly like every other op here.
+   */
+  async listSubAgentApprovals(): Promise<Array<{ sessionId: string; pending: SubAgentApprovalPending }>> {
+    const out: Array<{ sessionId: string; pending: SubAgentApprovalPending }> = [];
+    try {
+      const match = `${this.prefix}*`;
+      let cursor = "0";
+      do {
+        const [next, keys] = await this.redis.scan(cursor, "MATCH", match, "COUNT", 200);
+        cursor = next;
+        for (const key of keys) {
+          const raw = await this.redis.get(key).catch(() => null);
+          if (!raw) continue;
+          let record: SessionRecord;
+          try {
+            record = JSON.parse(raw) as SessionRecord;
+          } catch {
+            continue;
+          }
+          if (record.subAgentApprovalPending) {
+            out.push({ sessionId: key.slice(this.prefix.length), pending: record.subAgentApprovalPending });
+          }
+        }
+      } while (cursor !== "0");
+    } catch (err) {
+      console.error(
+        "RedisSessionStore.listSubAgentApprovals failed (treating as empty):",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    return out;
   }
 
   /** Closes the underlying Redis connection gracefully. */

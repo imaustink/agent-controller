@@ -124,3 +124,14 @@ describe("CrdMCPToolRegistry", () => {
     });
   });
 });
+
+describe("toMCPToolDescriptor — approval (ADR 0003)", () => {
+  it("round-trips approval (sourced from the MCPServer exposure by the broker) onto the descriptor", () => {
+    const d = toMCPToolDescriptor({ ...createIssue, spec: { ...createIssue.spec, approval: "always" } });
+    expect(d?.approval).toBe("always");
+  });
+
+  it("leaves approval undefined when the MCPTool sets none (existing CRs unaffected)", () => {
+    expect(toMCPToolDescriptor(createIssue)?.approval).toBeUndefined();
+  });
+});

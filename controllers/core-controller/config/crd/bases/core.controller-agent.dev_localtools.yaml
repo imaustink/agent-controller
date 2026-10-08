@@ -47,6 +47,18 @@ spec:
                   type: string
                 minItems: 1
                 type: array
+              approval:
+                description: |-
+                  approval sets whether a human must approve each call to this LocalTool
+                  before it executes (ADR 0003). "never" (and the empty default) runs
+                  silently; "always" pauses the turn for approval; "auto" consults an
+                  optional evaluator and escalates to a human when unsure. Empty means
+                  "never".
+                enum:
+                - never
+                - always
+                - auto
+                type: string
               checksum:
                 description: |-
                   checksum is the lowercase hex sha256 digest of the fetched artifact,

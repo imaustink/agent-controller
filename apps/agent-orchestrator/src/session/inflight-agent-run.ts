@@ -1,3 +1,4 @@
+import type { SubAgentApprovalPending } from "../agent/graph.js";
 import type { SessionStore } from "./types.js";
 
 /**
@@ -60,4 +61,100 @@ export async function clearAgentRunAwaitingReply(store: SessionStore, sessionId:
     activeAgentRunId: undefined,
     activeAgentRunAwaitingReply: undefined,
   });
+}
+
+/**
+ * Records that a running sub-agent has paused on a gated tool call awaiting the
+ * caller's approval (ADR 0003 + sub-agent HITL), mirroring
+ * {@link markAgentRunAwaitingReply}. The pause COEXISTS with the active-run
+ * anchor: the run is still live and blocked on an unresolved `tool_result`, so
+ * the anchor is kept (and the awaiting-reply flag set) alongside it.
+ */
+export async function markSubAgentApproval(
+  store: SessionStore,
+  sessionId: string,
+  pending: SubAgentApprovalPending,
+): Promise<void> {
+  const existing = await store.get(sessionId);
+  await store.set(sessionId, {
+    ...existing,
+    subject: existing?.subject ?? pending.subject,
+    activeAgentId: pending.agentId,
+    activeAgentRunId: pending.runId,
+    activeAgentRunAwaitingReply: true,
+    lastAgentRunId: pending.runId,
+    subAgentApprovalPending: pending,
+    activeSkillId: undefined,
+  });
+}
+
+/**
+ * Drops a sub-agent-approval pause while LEAVING the active-run anchor in place.
+ *
+ * Used by the timeout sweeper after it resolves the stranded tool call with a
+ * failed `tool_result`: the sub-agent's run is still live and goes on to reason
+ * over that failure, so the anchor (and its awaiting-reply flag) must survive so
+ * the next turn re-attaches and collects the reply it produces — only the
+ * pending-approval field is cleared.
+ */
+export async function clearSubAgentApproval(store: SessionStore, sessionId: string): Promise<void> {
+  const existing = await store.get(sessionId);
+  if (!existing) return;
+  await store.set(sessionId, { ...existing, subAgentApprovalPending: undefined });
+}
+
+/** The one capability the sweep needs from the agent channel — publishing a `tool_result`. */
+export interface SubAgentApprovalResolver {
+  resolveToolCall?(
+    agentRunId: string,
+    callId: string,
+    outcome: { ok: true; result?: unknown } | { ok: false; error: string },
+  ): Promise<void>;
+}
+
+/** The wire error a swept (timed-out) sub-agent approval resolves its held call with. Starts with the literal `approval_timeout` token so telemetry/tests can match it. */
+export const SUBAGENT_APPROVAL_TIMEOUT_ERROR =
+  "approval_timeout: Tool call was not approved in time and was not run.";
+
+/**
+ * One pass of the sub-agent-approval timeout sweep (ADR 0003 + sub-agent HITL),
+ * extracted from `index.ts`'s timer so it is unit-testable. For every session
+ * whose {@link SessionRecord.subAgentApprovalPending} has expired, resolves the
+ * stranded `tool_call` with a FAILED `tool_result` (graceful degradation — the
+ * sub-agent keeps reasoning, never a hard kill) and clears the pause, LEAVING
+ * the active-run anchor so the next turn re-attaches and collects the reply the
+ * sub-agent produces. Best-effort per entry: a failure is logged and retried
+ * next tick. Returns how many approvals it timed out (handy for tests/metrics).
+ */
+export async function sweepExpiredSubAgentApprovals(
+  store: SessionStore,
+  channel: SubAgentApprovalResolver,
+  now: number = Date.now(),
+): Promise<number> {
+  if (!channel.resolveToolCall || !store.listSubAgentApprovals) return 0;
+  let pendings: Array<{ sessionId: string; pending: SubAgentApprovalPending }>;
+  try {
+    pendings = await store.listSubAgentApprovals();
+  } catch (err) {
+    console.warn("sub-agent approval sweep: listing failed:", err instanceof Error ? err.message : String(err));
+    return 0;
+  }
+  let timedOut = 0;
+  for (const { sessionId, pending } of pendings) {
+    if (pending.expiresAt >= now) continue;
+    try {
+      await channel.resolveToolCall(pending.runId, pending.callId, {
+        ok: false,
+        error: SUBAGENT_APPROVAL_TIMEOUT_ERROR,
+      });
+      await clearSubAgentApproval(store, sessionId);
+      timedOut += 1;
+    } catch (err) {
+      console.warn(
+        `sub-agent approval sweep: failed to time out ${pending.runId}/${pending.callId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+  return timedOut;
 }

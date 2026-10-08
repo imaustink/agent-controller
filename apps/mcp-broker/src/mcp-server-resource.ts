@@ -43,6 +43,12 @@ export interface MCPToolExposure {
   toolID?: string;
   hidden?: boolean;
   tier?: string;
+  /**
+   * Tool-approval policy (ADR 0003) carried onto the materialized MCPTool's
+   * `approval` — "never" | "always" | "auto". Mirrors `tier`: the operator's
+   * decision on the exposure entry, copied verbatim into the derived MCPTool.
+   */
+  approval?: string;
 }
 
 export interface MCPServerSpec {
@@ -103,6 +109,8 @@ export interface MCPToolSpec {
   allowedRoles: string[];
   hidden?: boolean;
   tier?: string;
+  /** Tool-approval policy (ADR 0003), copied from the exposure entry — mirrors `tier`. */
+  approval?: string;
   identityProviders?: string[];
 }
 

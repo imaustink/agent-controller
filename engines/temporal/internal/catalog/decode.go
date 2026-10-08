@@ -16,23 +16,26 @@ type toolSpec struct {
 	Output            string   `json:"output"`
 	AllowedRoles      []string `json:"allowedRoles"`
 	Tier              string   `json:"tier,omitempty"`
+	Approval          string   `json:"approval,omitempty"`
 	AgentRef          string   `json:"agentRef,omitempty"`
 	IdentityProviders []string `json:"identityProviders,omitempty"`
 }
 
 type agentSpec struct {
-	Description        string   `json:"description"`
-	Input              string   `json:"input"`
-	Output             string   `json:"output"`
-	AllowedRoles       []string `json:"allowedRoles"`
-	Tier               string   `json:"tier,omitempty"`
-	OrchestratorPrompt string   `json:"orchestratorPrompt,omitempty"`
-	AgentPrompt        string   `json:"agentPrompt,omitempty"`
-	SkillRefs          []string `json:"skillRefs,omitempty"`
-	Model              string   `json:"model,omitempty"`
-	MaxIterations      int32    `json:"maxIterations,omitempty"`
-	IdentityProviders  []string `json:"identityProviders,omitempty"`
-	ToolRefs           []string `json:"toolRefs,omitempty"`
+	Description            string   `json:"description"`
+	Input                  string   `json:"input"`
+	Output                 string   `json:"output"`
+	AllowedRoles           []string `json:"allowedRoles"`
+	Tier                   string   `json:"tier,omitempty"`
+	ApprovalDefault        string   `json:"approvalDefault,omitempty"`
+	ApprovalTimeoutSeconds int32    `json:"approvalTimeoutSeconds,omitempty"`
+	OrchestratorPrompt     string   `json:"orchestratorPrompt,omitempty"`
+	AgentPrompt            string   `json:"agentPrompt,omitempty"`
+	SkillRefs              []string `json:"skillRefs,omitempty"`
+	Model                  string   `json:"model,omitempty"`
+	MaxIterations          int32    `json:"maxIterations,omitempty"`
+	IdentityProviders      []string `json:"identityProviders,omitempty"`
+	ToolRefs               []string `json:"toolRefs,omitempty"`
 }
 
 type envVarSpec struct {
@@ -57,6 +60,7 @@ type localToolSpec struct {
 	Output         string             `json:"output"`
 	AllowedRoles   []string           `json:"allowedRoles"`
 	Tier           string             `json:"tier,omitempty"`
+	Approval       string             `json:"approval,omitempty"`
 	Runtime        string             `json:"runtime"`
 	Package        string             `json:"package,omitempty"`
 	Version        string             `json:"version,omitempty"`
@@ -80,6 +84,7 @@ type mcpToolSpec struct {
 	AllowedRoles      []string `json:"allowedRoles"`
 	Hidden            bool     `json:"hidden,omitempty"`
 	Tier              string   `json:"tier,omitempty"`
+	Approval          string   `json:"approval,omitempty"`
 	IdentityProviders []string `json:"identityProviders,omitempty"`
 }
 
@@ -113,6 +118,7 @@ func DecodeTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 		Output:            spec.Output,
 		AllowedRoles:      spec.AllowedRoles,
 		Tier:              spec.Tier,
+		Approval:          spec.Approval,
 		AgentRef:          spec.AgentRef,
 		IdentityProviders: spec.IdentityProviders,
 	}, nil
@@ -147,6 +153,7 @@ func DecodeLocalTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 		Output:       spec.Output,
 		AllowedRoles: spec.AllowedRoles,
 		Tier:         spec.Tier,
+		Approval:     spec.Approval,
 		LocalExec: &LocalExecSpec{
 			Runtime:        spec.Runtime,
 			Package:        spec.Package,
@@ -184,6 +191,7 @@ func DecodeMCPTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 		Input:             spec.InputSchema,
 		AllowedRoles:      spec.AllowedRoles,
 		Tier:              spec.Tier,
+		Approval:          spec.Approval,
 		Hidden:            spec.Hidden,
 		IdentityProviders: spec.IdentityProviders,
 		MCPExec: &MCPExecSpec{
@@ -200,21 +208,23 @@ func DecodeAgent(obj *unstructured.Unstructured) (AgentDescriptor, error) {
 		return AgentDescriptor{}, err
 	}
 	return AgentDescriptor{
-		ID:                 obj.GetName(),
-		StepToolRef:        obj.GetAnnotations()[StepToolAnnotation],
-		Bridged:            obj.GetAnnotations()[BridgedAnnotation] == "true",
-		Description:        spec.Description,
-		Input:              spec.Input,
-		Output:             spec.Output,
-		AllowedRoles:       spec.AllowedRoles,
-		Tier:               spec.Tier,
-		OrchestratorPrompt: spec.OrchestratorPrompt,
-		AgentPrompt:        spec.AgentPrompt,
-		SkillRefs:          spec.SkillRefs,
-		Model:              spec.Model,
-		MaxIterations:      spec.MaxIterations,
-		IdentityProviders:  spec.IdentityProviders,
-		ToolRefs:           spec.ToolRefs,
+		ID:                     obj.GetName(),
+		StepToolRef:            obj.GetAnnotations()[StepToolAnnotation],
+		Bridged:                obj.GetAnnotations()[BridgedAnnotation] == "true",
+		Description:            spec.Description,
+		Input:                  spec.Input,
+		Output:                 spec.Output,
+		AllowedRoles:           spec.AllowedRoles,
+		Tier:                   spec.Tier,
+		ApprovalDefault:        spec.ApprovalDefault,
+		ApprovalTimeoutSeconds: spec.ApprovalTimeoutSeconds,
+		OrchestratorPrompt:     spec.OrchestratorPrompt,
+		AgentPrompt:            spec.AgentPrompt,
+		SkillRefs:              spec.SkillRefs,
+		Model:                  spec.Model,
+		MaxIterations:          spec.MaxIterations,
+		IdentityProviders:      spec.IdentityProviders,
+		ToolRefs:               spec.ToolRefs,
 	}, nil
 }
 

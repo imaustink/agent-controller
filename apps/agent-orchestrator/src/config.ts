@@ -140,6 +140,17 @@ export interface AppConfig {
    */
   agentIdleTimeoutSeconds: number;
   /**
+   * Global fallback (seconds) for how long the orchestrator holds a sub-agent's
+   * own gated tool call waiting for human approval (ADR 0003 + sub-agent HITL),
+   * when the governing Agent CR sets no `approvalTimeoutSeconds`. On expiry a
+   * background sweeper resolves the pending call with a FAILED `tool_result`
+   * (graceful degradation — the sub-agent keeps reasoning) rather than running
+   * it unapproved. Default 900 (15 minutes).
+   */
+  subAgentApprovalTimeoutSeconds: number;
+  /** How often the sub-agent-approval sweeper scans for timed-out pending approvals. Default 60s. */
+  subAgentApprovalSweepIntervalSeconds: number;
+  /**
    * On SIGTERM, how long to let in-flight HTTP requests finish before tearing
    * down the NATS/Redis connections they depend on. Must stay under the pod's
    * `terminationGracePeriodSeconds` (30s today) or k8s SIGKILLs mid-drain and
@@ -328,6 +339,8 @@ export const config: AppConfig = {
   agentTopK: num(process.env.AGENT_TOP_K, 3),
   agentRunTimeoutSeconds: num(process.env.AGENT_RUN_TIMEOUT_SECONDS, 28800), // 8h wall-clock backstop
   agentIdleTimeoutSeconds: num(process.env.AGENT_IDLE_TIMEOUT_SECONDS, 600), // 10m of silence
+  subAgentApprovalTimeoutSeconds: num(process.env.SUBAGENT_APPROVAL_TIMEOUT_SECONDS, 900), // 15m to approve a sub-agent tool call
+  subAgentApprovalSweepIntervalSeconds: num(process.env.SUBAGENT_APPROVAL_SWEEP_INTERVAL_SECONDS, 60),
   shutdownDrainMs: num(process.env.AGENT_SHUTDOWN_DRAIN_MS, 25_000), // under the 30s grace period
   sessionTtlSeconds: num(process.env.AGENT_SESSION_TTL_SECONDS, 1800),
   invocationTtlSeconds: num(process.env.AGENT_INVOCATION_TTL_SECONDS, 3600),

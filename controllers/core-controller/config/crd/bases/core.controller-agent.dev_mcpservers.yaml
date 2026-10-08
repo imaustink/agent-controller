@@ -92,6 +92,16 @@ spec:
                         type: string
                       minItems: 1
                       type: array
+                    approval:
+                      description: |-
+                        approval is the tool-approval policy (ADR 0003) carried onto the
+                        materialized MCPTool. "never" (and the empty default) runs silently;
+                        "always" requires human approval; "auto" consults an optional evaluator.
+                      enum:
+                      - never
+                      - always
+                      - auto
+                      type: string
                     expose:
                       default: true
                       description: |-

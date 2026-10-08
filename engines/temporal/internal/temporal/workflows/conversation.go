@@ -12,6 +12,7 @@ import (
 	"github.com/controller-agent/temporal-engine/internal/authz"
 	"github.com/controller-agent/temporal-engine/internal/callertools"
 	"github.com/controller-agent/temporal-engine/internal/llm"
+	"github.com/controller-agent/temporal-engine/internal/messaging"
 	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 )
 
@@ -36,13 +37,40 @@ const (
 	// TurnProgressQuery exposes the in-flight turn's narration; the gateway
 	// polls it to stream status while the update runs.
 	TurnProgressQuery = "turn-progress"
+
+	// ConversationEventsQuery exposes the durable, offset-addressable lifecycle
+	// event log (ADR 0004 B2/B3): a client that reconnected asks for events after
+	// its last-seen Offset instead of losing everything on disconnect.
+	ConversationEventsQuery = "conversation-events"
+
+	// PendingApprovalQuery exposes the tool call (if any) currently awaiting human
+	// approval (ADR 0003), so the gateway can render an approve/deny affordance.
+	PendingApprovalQuery = "pending-approval"
 )
+
+// maxEventLog bounds the durable lifecycle event log carried in conversation
+// state, so event history cannot grow without limit across a long conversation.
+const maxEventLog = 200
+
+// EventLogView is the ConversationEventsQuery result: the retained (bounded)
+// lifecycle events plus the current global offset. A resuming client keeps the
+// last Offset it saw and ignores events whose Seq is below it.
+type EventLogView struct {
+	Events []messaging.TurnEvent `json:"events,omitempty"`
+	Offset int                   `json:"offset"`
+}
 
 // TurnProgress is the streamed view of one turn.
 type TurnProgress struct {
-	Turn   int      `json:"turn"`
-	Active bool     `json:"active"`
-	Lines  []string `json:"lines,omitempty"`
+	Turn   int  `json:"turn"`
+	Active bool `json:"active"`
+	// Lines is the human-facing narration, DERIVED from Events via Render so
+	// legacy consumers (the OpenAI facade's status chunks) are byte-for-byte
+	// unchanged (ADR 0004 B1).
+	Lines []string `json:"lines,omitempty"`
+	// Events is the typed lifecycle stream and the single source of truth for
+	// this turn's narration; Lines is its string projection.
+	Events []messaging.TurnEvent `json:"events,omitempty"`
 	// RemoteControlUrl is lifted out of Lines the moment a
 	// remoteControlUrlNarrationPrefix line appears, so a polling caller can
 	// link a live Remote Control session without parsing narration text.
@@ -237,6 +265,20 @@ type ConversationState struct {
 	// linked it").
 	PendingIdentityLink *authz.PendingLink `json:"pendingIdentityLink,omitempty"`
 
+	// PendingApproval anchors a turn that paused to ask the user to approve a
+	// tool call (ADR 0003). Carried across turns like PendingIdentityLink; the
+	// next turn's reply is interpreted as the approve/deny decision. Nil when no
+	// approval is outstanding.
+	PendingApproval *PendingApproval `json:"pendingApproval,omitempty"`
+
+	// EventLog is the durable, offset-addressable lifecycle event stream
+	// (ADR 0004 B2): each completed turn's events are appended here with a global
+	// Seq assigned from EventOffset, bounded to the last maxEventLog entries so a
+	// disconnected client can resume from an offset instead of losing narration.
+	// This generalizes the one-off RemoteControlUrl carry-forward below.
+	EventLog    []messaging.TurnEvent `json:"eventLog,omitempty"`
+	EventOffset int                   `json:"eventOffset,omitempty"`
+
 	// KnowledgeBaseLinkPrompts records the knowledge bases this conversation has
 	// already shown a deterministic "link the accounts it covers" gate for,
 	// keyed by knowledge-base id. The gate fires at most once per knowledge base
@@ -296,11 +338,26 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 		return err
 	}
 
-	// Per-run progress buffer (not durable state: streaming is best-effort
-	// and a continued-as-new run simply starts a fresh buffer).
+	// Per-run progress buffer. The LIVE view is best-effort (a continued-as-new
+	// run starts fresh); its completed events are folded into the durable
+	// state.EventLog at the end of each turn (ADR 0004 B2) so a reconnecting
+	// client can still resume from an offset.
 	var progress TurnProgress
 	if err := workflow.SetQueryHandler(ctx, TurnProgressQuery, func() (TurnProgress, error) {
 		return progress, nil
+	}); err != nil {
+		return err
+	}
+
+	// Durable, offset-addressable lifecycle event log (ADR 0004 B3) and the
+	// pending-approval affordance (ADR 0003).
+	if err := workflow.SetQueryHandler(ctx, ConversationEventsQuery, func() (EventLogView, error) {
+		return EventLogView{Events: state.EventLog, Offset: state.EventOffset}, nil
+	}); err != nil {
+		return err
+	}
+	if err := workflow.SetQueryHandler(ctx, PendingApprovalQuery, func() (*PendingApproval, error) {
+		return state.PendingApproval, nil
 	}); err != nil {
 		return err
 	}
@@ -319,15 +376,46 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 		episodeWasActive := state.ActiveAgentWorkflowID != ""
 
 		progress = TurnProgress{Turn: state.Turns + 1, Active: true}
-		defer func() { progress.Active = false }()
-		note := func(line string) {
-			progress.Lines = append(progress.Lines, line)
-			if url, ok := strings.CutPrefix(line, remoteControlUrlNarrationPrefix); ok {
-				progress.RemoteControlUrl = url
+		defer func() {
+			progress.Active = false
+			// Fold this turn's events into the durable, offset-addressable log,
+			// assigning each a global Seq (ADR 0004 B2). Bounded so a long
+			// conversation's event history cannot grow without limit.
+			for _, ev := range progress.Events {
+				ev.Seq = state.EventOffset
+				state.EventOffset++
+				state.EventLog = append(state.EventLog, ev)
+			}
+			if len(state.EventLog) > maxEventLog {
+				state.EventLog = state.EventLog[len(state.EventLog)-maxEventLog:]
+			}
+		}()
+
+		// emit is the single writer for this turn's typed event stream (ADR 0004):
+		// it stamps a per-turn seq + a deterministic timestamp, appends the typed
+		// event, and derives the legacy Lines projection via Render so existing
+		// consumers are unchanged. note() is the back-compat shim: a bare status
+		// line becomes a Narration event.
+		turnSeq := 0
+		emit := func(ev messaging.TurnEvent) {
+			ev.Seq = turnSeq
+			turnSeq++
+			ev.TS = workflow.Now(ctx).UTC().Format(time.RFC3339Nano)
+			progress.Events = append(progress.Events, ev)
+			// Derive the legacy narration line. Lifecycle-only events (turn
+			// started/completed) Render to "" and contribute no status line, so a
+			// client's narration is byte-for-byte what it was before (ADR 0004 B1).
+			if line := ev.Render(); line != "" {
+				progress.Lines = append(progress.Lines, line)
+				if url, ok := strings.CutPrefix(line, remoteControlUrlNarrationPrefix); ok {
+					progress.RemoteControlUrl = url
+				}
 			}
 		}
+		note := func(line string) { emit(messaging.Narration(0, "", line)) }
 
-		reply, meta, pending, err := runAgentTurn(ctx, actx, state, in, note)
+		emit(messaging.TurnEvent{Kind: messaging.KindTurnStarted})
+		reply, meta, pending, err := runAgentTurn(ctx, actx, state, in, note, emit)
 		if err != nil {
 			// Drop the failed turn's user message so a retry re-sends it cleanly.
 			state.History = state.History[:len(state.History)-1]
@@ -359,6 +447,7 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 		// is folded in, because there is no answer yet — the resend arrives as
 		// the next turn carrying its own results.
 		if len(pending) > 0 {
+			emit(messaging.TurnEvent{Kind: messaging.KindTurnCompleted})
 			state.Turns++
 			return TurnResult{Turn: state.Turns, Meta: meta, PendingToolCalls: pending}, nil
 		}
@@ -368,6 +457,15 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 		// its "no existing skill or agent matched" wording biases the next
 		// turn's selection toward repeating "no match" even for a request
 		// that plainly fits a real skill.
+		// A turn that paused for approval is not a completed exchange; it resumes
+		// next turn. Don't fold a prompt-only reply into the transcript as an
+		// assistant answer, and mark the lifecycle accordingly.
+		if state.PendingApproval != nil {
+			state.Turns++
+			return TurnResult{Reply: reply, Turn: state.Turns, Meta: meta}, nil
+		}
+
+		emit(messaging.TurnEvent{Kind: messaging.KindTurnCompleted})
 		state.History = trimHistory(append(state.History,
 			ChatMessage{Role: "assistant", Content: stripSelfImprovementFooter(reply)}), maxHistoryMessages)
 		state.Turns++
@@ -379,7 +477,10 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 	logger := workflow.GetLogger(ctx)
 	for {
 		timeout := idleTimeout
-		if state.ActiveAgentWorkflowID != "" {
+		if state.ActiveAgentWorkflowID != "" || state.PendingApproval != nil {
+			// A turn paused on a human — a mid-HITL agent episode or a tool
+			// awaiting approval (ADR 0003) — must not be reaped at the short idle
+			// timeout, or the human's answer arrives after the workflow is gone.
 			timeout = agentIdleTimeout
 		}
 		turnsAtWait := state.Turns

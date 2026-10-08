@@ -66,7 +66,11 @@ import { RedisInvocationStore } from "./invocation/redis-invocation-store.js";
 import { InMemoryAgentReplyStore, RedisAgentReplyStore, type AgentReplyStore } from "./agents/reply-store.js";
 import { InMemoryInvocationStore, type InvocationStore } from "./invocation/types.js";
 import type { SessionStore } from "./session/types.js";
-import { clearAgentRunAwaitingReply, markAgentRunAwaitingReply } from "./session/inflight-agent-run.js";
+import {
+  clearAgentRunAwaitingReply,
+  markAgentRunAwaitingReply,
+  sweepExpiredSubAgentApprovals,
+} from "./session/inflight-agent-run.js";
 import { InvokeServer, type AgentGraphLike } from "./server.js";
 import { retryWithBackoff } from "./retry.js";
 import type { ToolDescriptor } from "./tool-descriptor.js";
@@ -853,6 +857,7 @@ async function main(): Promise<void> {
           agentTopK: config.agentTopK,
           agentRunTimeoutSeconds: config.agentRunTimeoutSeconds,
           agentIdleTimeoutSeconds: config.agentIdleTimeoutSeconds,
+          subAgentApprovalTimeoutSeconds: config.subAgentApprovalTimeoutSeconds,
           // Resume anchor for an agent turn whose wait is interrupted (a
           // rollout, a lost NATS channel): written before the wait, read by the
           // next turn's `checkActiveAgentRun` to re-attach instead of failing a
@@ -896,6 +901,28 @@ async function main(): Promise<void> {
     config.callerToolPruneIntervalSeconds * 1_000,
   );
   callerToolPruneTimer.unref();
+
+  // Sub-agent approval timeout sweeper (ADR 0003 + sub-agent HITL). A sub-agent
+  // that paused on a gated tool call is blocked on the orchestrator's unresolved
+  // `tool_result` across turns; if nobody ever approves/denies, this bounds the
+  // hold. Each tick resolves every expired pause with a FAILED `tool_result`
+  // (graceful degradation — the pod keeps reasoning, never a hard kill) and
+  // clears the pause, LEAVING the active-run anchor so the next user turn
+  // re-attaches and collects whatever reply the sub-agent produces. Always on
+  // but inert unless agent delegation, a scannable session store, and a channel
+  // that can answer calls are all present. `unref()` so an idle timer never
+  // holds the process open; cleared explicitly at shutdown below.
+  const subAgentApprovalChannel = agentDelegation?.agentChannel;
+  const subAgentApprovalSweepTimer = setInterval(
+    () => {
+      if (!subAgentApprovalChannel) return;
+      void sweepExpiredSubAgentApprovals(sessionStore, subAgentApprovalChannel).catch((err: unknown) =>
+        console.warn("sub-agent approval sweep failed:", err),
+      );
+    },
+    config.subAgentApprovalSweepIntervalSeconds * 1_000,
+  );
+  subAgentApprovalSweepTimer.unref();
 
   // Which agent loop runs a turn (docs/adr/0036). `langgraph` is the default,
   // so enabling the engine is always an explicit act and this whole block is
@@ -976,6 +1003,7 @@ async function main(): Promise<void> {
     identityProviderWatch.stop();
     if (skillReindexTimer) clearTimeout(skillReindexTimer);
     clearInterval(callerToolPruneTimer);
+    clearInterval(subAgentApprovalSweepTimer);
 
     // Refuse NEW turns first. Durable invocation records make an answer
     // retrievable from any replica; they do not make a turn whose graph died

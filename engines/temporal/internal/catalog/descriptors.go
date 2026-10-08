@@ -27,7 +27,15 @@ type ToolDescriptor struct {
 	Output       string   `json:"output,omitempty"`
 	AllowedRoles []string `json:"allowedRoles"`
 	Tier         string   `json:"tier,omitempty"`
-	AgentRef     string   `json:"agentRef,omitempty"` // set = agent-backed tool
+
+	// Approval is the tool-approval policy (ADR 0003): "never" (or empty) runs
+	// silently, "always" pauses the turn for human approval, "auto" consults an
+	// optional evaluator (deferred — behaves as "always" until configured).
+	// Resolved against the governing agent's ApprovalDefault most-specific-wins;
+	// see workflows.resolveApproval.
+	Approval string `json:"approval,omitempty"`
+
+	AgentRef string `json:"agentRef,omitempty"` // set = agent-backed tool
 
 	// Hidden keeps a tool REFERENCEABLE by id (a Skill's/Agent's refs, an
 	// MCPServer exposure marked hidden) but out of semantic retrieval
@@ -156,12 +164,23 @@ const StepToolAnnotation = "durable-agents.dev/step-tool"
 const BridgedAnnotation = "durable-agents.dev/bridged"
 
 type AgentDescriptor struct {
-	ID                 string   `json:"id"`
-	Description        string   `json:"description"`
-	Input              string   `json:"input,omitempty"`
-	Output             string   `json:"output,omitempty"`
-	AllowedRoles       []string `json:"allowedRoles"`
-	Tier               string   `json:"tier,omitempty"`
+	ID           string   `json:"id"`
+	Description  string   `json:"description"`
+	Input        string   `json:"input,omitempty"`
+	Output       string   `json:"output,omitempty"`
+	AllowedRoles []string `json:"allowedRoles"`
+	Tier         string   `json:"tier,omitempty"`
+
+	// ApprovalDefault is the fallback tool-approval policy (ADR 0003) for tools
+	// this agent calls that do not set their own Approval. A tool's own Approval
+	// wins over this default (most-specific-wins; see workflows.resolveApproval).
+	ApprovalDefault string `json:"approvalDefault,omitempty"`
+
+	// ApprovalTimeoutSeconds bounds how long this agent's tool calls wait for a
+	// human approval decision before degrading gracefully (ADR 0003). Zero means
+	// the engine default (15m).
+	ApprovalTimeoutSeconds int32 `json:"approvalTimeoutSeconds,omitempty"`
+
 	OrchestratorPrompt string   `json:"orchestratorPrompt,omitempty"`
 	AgentPrompt        string   `json:"agentPrompt,omitempty"`
 	SkillRefs          []string `json:"skillRefs,omitempty"`

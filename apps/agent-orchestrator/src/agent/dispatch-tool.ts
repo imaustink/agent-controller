@@ -7,6 +7,7 @@ import type { MCPBrokerClient } from "../mcp/mcp-broker-client.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { AgentDescriptor } from "../agents/types.js";
 import type { AgentOrchestratorChannel } from "../agents/nats-agent-channel.js";
+import { approvalPrompt, requiresApproval, resolveApproval } from "./approval.js";
 
 /** Outcome of dispatching one resolved Tool, reported back as a `tool_result` down-message (docs/adr/0028). */
 export type ToolCallOutcome = { ok: true; result?: unknown } | { ok: false; error: string };
@@ -39,8 +40,35 @@ export async function dispatchResolvedTool(
   tool: ToolDescriptor,
   input: string,
   deps: ToolDispatchDeps,
-  opts: { sessionId?: string; callerSubject?: string } = {},
+  opts: {
+    sessionId?: string;
+    callerSubject?: string;
+    agentApprovalDefault?: string;
+    /**
+     * Skips the approval gate for a call the caller has ALREADY approved
+     * (sub-agent HITL re-dispatch, graph.ts's `checkPendingSubAgentApproval`) —
+     * the exact same policy `approvalGranted` plays for the top-level `runTool`.
+     */
+    suppressApprovalGate?: boolean;
+  } = {},
 ): Promise<ToolCallOutcome> {
+  // Declarative tool-approval gate (ADR 0003), mirrored from `runTool` so a
+  // sub-agent's own tool calls are governed by the same policy — resolved
+  // most-specific-wins against the GOVERNING agent's `approvalDefault`. Covers
+  // every dispatch kind at once by sitting ahead of the branches below.
+  //
+  // Real human-in-the-loop now lives in the top-level graph (sub-agent HITL):
+  // `makeSubAgentToolCallHandler` detects an `always`/`auto` call and signals
+  // for approval WITHOUT dispatching, so this gate is reached here only for a
+  // caller that is NOT wired for HITL (fails closed with the prompt, as before)
+  // or for the post-approval re-dispatch, which suppresses it.
+  if (!opts.suppressApprovalGate) {
+    const effective = resolveApproval(tool.approval, opts.agentApprovalDefault);
+    if (requiresApproval(effective)) {
+      return { ok: false, error: approvalPrompt(tool.id) };
+    }
+  }
+
   if (tool.agentRunTemplate) {
     return {
       ok: false,
@@ -134,7 +162,21 @@ export function makeSubAgentToolCallHandler(
   channel: AgentOrchestratorChannel,
   toolCatalog: ToolCatalog | undefined,
   toolDeps: ToolDispatchDeps,
-  opts: { sessionId?: string; callerSubject?: string } = {},
+  opts: {
+    sessionId?: string;
+    callerSubject?: string;
+    /**
+     * When set (with `approvalTimeoutMs`), a tool call that requires approval
+     * (ADR 0003 + sub-agent HITL) is NOT
+     * dispatched or resolved — it is signaled up through this callback instead,
+     * leaving the `tool_call` unresolved so the sub-agent's pod stays blocked
+     * until the caller decides. Absent -> the pre-HITL behavior (the call fails
+     * closed with the approval prompt, via `dispatchResolvedTool`'s own gate).
+     */
+    onApprovalNeeded?: (call: { callId: string; tool: string; input: string; expiresAt: number }) => void;
+    /** ms budget the orchestrator will hold a pending approval before timing it out. */
+    approvalTimeoutMs?: number;
+  } = {},
 ): (call: { callId: string; tool: string; input: string }) => void {
   return (call) => {
     void (async () => {
@@ -154,8 +196,28 @@ export function makeSubAgentToolCallHandler(
         });
         return;
       }
+      // Approval gate (ADR 0003 + sub-agent HITL). Resolved most-specific-wins:
+      // the tool's own `approval` else the governing agent's `approvalDefault`.
+      // A gated call with a HITL channel wired (`onApprovalNeeded`) is DEFERRED,
+      // not dispatched — we leave the `tool_call` unresolved and signal up, so
+      // the pod blocks on its `callTool` promise until approve/deny/timeout.
+      if (opts.onApprovalNeeded && requiresApproval(resolveApproval(tool.approval, agent.approvalDefault))) {
+        opts.onApprovalNeeded({
+          callId: call.callId,
+          tool: call.tool,
+          input: call.input,
+          expiresAt: Date.now() + (opts.approvalTimeoutMs ?? 0),
+        });
+        return;
+      }
       try {
-        const outcome = await dispatchResolvedTool(tool, call.input, toolDeps, opts);
+        const outcome = await dispatchResolvedTool(tool, call.input, toolDeps, {
+          sessionId: opts.sessionId,
+          callerSubject: opts.callerSubject,
+          // The governing agent's fallback policy (ADR 0003) — a tool's own
+          // `approval` still wins inside `dispatchResolvedTool`.
+          agentApprovalDefault: agent.approvalDefault,
+        });
         await channel.resolveToolCall(runId, call.callId, outcome);
       } catch (err) {
         await channel.resolveToolCall(runId, call.callId, {

@@ -75,6 +75,14 @@ type MCPToolSpec struct {
 	// +optional
 	Tier string `json:"tier,omitempty"`
 
+	// approval sets whether a human must approve each call to this MCPTool before
+	// it executes (ADR 0003). "never" (and the empty default) runs silently;
+	// "always" pauses the turn for approval; "auto" consults an optional
+	// evaluator. Copied from the exposure entry on the owning MCPServer.
+	// +optional
+	// +kubebuilder:validation:Enum=never;always;auto
+	Approval string `json:"approval,omitempty"`
+
 	// identityProviders names the IdentityProvider CRs whose per-user delegated
 	// credential the broker presents on tools/call. Copied from the owning
 	// server so the dispatch path need not join back across resources; an

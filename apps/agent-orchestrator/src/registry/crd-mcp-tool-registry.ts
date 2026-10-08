@@ -21,6 +21,8 @@ export interface MCPToolCustomResource {
     allowedRoles: string[];
     hidden?: boolean;
     tier?: string;
+    /** Tool-approval policy (ADR 0003): "never" | "always" | "auto". Sourced from the MCPServer exposure entry by the broker, exactly like `tier`. */
+    approval?: string;
     identityProviders?: string[];
   };
 }
@@ -135,6 +137,7 @@ export function toMCPToolDescriptor(cr: MCPToolCustomResource): ToolDescriptor |
     allowedRoles: spec.allowedRoles ?? [],
     hidden: spec.hidden ?? false,
     tier: spec.tier,
+    approval: spec.approval,
     identityProviders: spec.identityProviders,
     mcpExec,
   };

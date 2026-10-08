@@ -84,6 +84,13 @@ type MCPToolExposure struct {
 	// materialized MCPTool (e.g. "standard", "privileged").
 	// +optional
 	Tier string `json:"tier,omitempty"`
+
+	// approval is the tool-approval policy (ADR 0003) carried onto the
+	// materialized MCPTool. "never" (and the empty default) runs silently;
+	// "always" requires human approval; "auto" consults an optional evaluator.
+	// +optional
+	// +kubebuilder:validation:Enum=never;always;auto
+	Approval string `json:"approval,omitempty"`
 }
 
 // MCPServerSpec is an authenticated route to one Model Context Protocol server

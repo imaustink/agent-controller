@@ -21,6 +21,26 @@ export interface AgentDescriptor {
   /** Optional coarse risk/cost tier, mirrors ToolDescriptor.tier. */
   tier?: string;
   /**
+   * Fallback tool-approval policy (ADR 0003) for tools this agent's own loop
+   * calls that do not set their own `approval`. `"never"`/empty runs tools
+   * silently; `"always"` requires human approval; `"auto"` consults an
+   * optional evaluator (treated as `"always"` for now). A tool's own
+   * `approval` always wins (most-specific-wins, see `agent/approval.ts`).
+   * Consulted ONLY in the sub-agent tool-call loop (`dispatch-tool.ts`) — the
+   * top-level graph has no agent default. PARITY: `AgentSpec.ApprovalDefault`.
+   */
+  approvalDefault?: string;
+  /**
+   * Per-Agent timeout (seconds) bounding how long the orchestrator holds one of
+   * this agent's own gated tool calls waiting for human approval (ADR 0003 +
+   * sub-agent HITL). On expiry the orchestrator resolves the pending tool call
+   * with a FAILED `tool_result` (graceful degradation — the sub-agent keeps
+   * reasoning, never a hard kill) rather than running it unapproved. Absent ->
+   * the global `SUBAGENT_APPROVAL_TIMEOUT_SECONDS` default applies
+   * (most-specific-wins). PARITY: `AgentSpec.ApprovalTimeoutSeconds`.
+   */
+  approvalTimeoutSeconds?: number;
+  /**
    * Guidance for THIS orchestrator's planner on how/when to delegate to the
    * agent and how to interpret its replies — trusted, catalog-authored
    * (same trust model as a Skill's markdown). Distinct from the sub-agent's

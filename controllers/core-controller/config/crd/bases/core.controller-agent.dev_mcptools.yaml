@@ -67,6 +67,17 @@ spec:
                   type: string
                 minItems: 1
                 type: array
+              approval:
+                description: |-
+                  approval sets whether a human must approve each call to this MCPTool before
+                  it executes (ADR 0003). "never" (and the empty default) runs silently;
+                  "always" pauses the turn for approval; "auto" consults an optional
+                  evaluator. Copied from the exposure entry on the owning MCPServer.
+                enum:
+                - never
+                - always
+                - auto
+                type: string
               description:
                 description: |-
                   description is fed to the orchestrator's embedder for RAG tool retrieval —

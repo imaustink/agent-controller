@@ -54,6 +54,19 @@ spec:
                   type: string
                 minItems: 1
                 type: array
+              approval:
+                description: |-
+                  approval sets whether a human must approve each call to this Tool before it
+                  executes (ADR 0003). "never" (and the empty default) runs silently;
+                  "always" pauses the turn and asks the user to approve or deny; "auto"
+                  consults an optional evaluator and escalates to a human when unsure (until
+                  an evaluator is configured it behaves as "always"). Empty means "never", so
+                  existing Tools keep running without approval.
+                enum:
+                - never
+                - always
+                - auto
+                type: string
               args:
                 description: args are static extra container args appended after the
                   caller-supplied input.

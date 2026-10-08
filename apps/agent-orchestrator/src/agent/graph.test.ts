@@ -15,11 +15,13 @@ import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { AgentDescriptor, AgentStore } from "../agents/types.js";
 import type { DelegateSelector } from "./delegate-selector.js";
 import {
+  AgentTurnApprovalPendingError,
   AgentTurnFailedError,
   AgentTurnTimeoutError,
   AgentTurnTransportError,
   type AgentOrchestratorChannel,
   type AgentTurnResult,
+  type SubAgentApprovalCall,
 } from "../agents/nats-agent-channel.js";
 import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
@@ -4862,5 +4864,279 @@ describe("buildAgentGraph: deterministic knowledge-base link gate", () => {
       1, // the turn's first citation number
     );
     expect(final.linkGatePending).toBeFalsy();
+  });
+});
+
+describe("buildAgentGraph — tool-approval gate (ADR 0003)", () => {
+  const approvalTool: ToolDescriptor = { ...scraperTool, approval: "always" };
+  const PROMPT = 'Approval required: run tool "recipe-scraper"? Reply "approve" or "deny".';
+  const DENIED = "Tool call was denied by the user.";
+
+  function approvalDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
+    const deps = baseDeps(overrides);
+    // The selected skill's toolIds resolve to the always-approval tool.
+    deps.vectorStore.getByIds = vi.fn().mockResolvedValue([{ tool: approvalTool, score: 1 }]);
+    return deps;
+  }
+
+  it("an always-approval tool returns the prompt and does NOT execute", async () => {
+    const deps = approvalDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.result).toBe(PROMPT);
+    expect(final.approvalPending?.toolId).toBe("recipe-scraper");
+    expect(final.approvalWaiting).toBe(true);
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+
+  it("a never-approval tool runs unchanged (no gate, no pause)", async () => {
+    // scraperTool declares no approval -> resolves to "never" -> today's path.
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.approvalPending).toBeUndefined();
+    expect(final.result).toEqual({ title: "Pancakes" });
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalled();
+  });
+
+  it("approve resumes and executes the exact stored call", async () => {
+    const deps = approvalDeps({ actionPlanner: { plan: vi.fn().mockResolvedValue({ action: "finish" }) } });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "approve",
+      authToken: "tok",
+      sessionSubject: "alice",
+      approvalPending: {
+        toolId: "recipe-scraper",
+        toolArgs: "https://example.com/recipe",
+        tool: approvalTool,
+        skill,
+        skillTools: [approvalTool],
+        subject: "alice",
+      },
+    });
+
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
+      approvalTool.jobTemplate,
+      expect.objectContaining({ args: ["https://example.com/recipe"] }),
+    );
+    expect(final.approvalPending).toBeUndefined();
+    expect(final.result).toEqual({ title: "Pancakes" });
+  });
+
+  it("deny synthesizes an approval_denied failure, does not execute, and feeds the planner", async () => {
+    const plan = vi.fn().mockResolvedValue({ action: "finish" });
+    const deps = approvalDeps({ actionPlanner: { plan } });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "deny",
+      authToken: "tok",
+      sessionSubject: "alice",
+      approvalPending: {
+        toolId: "recipe-scraper",
+        toolArgs: "https://example.com/recipe",
+        tool: approvalTool,
+        skill,
+        skillTools: [approvalTool],
+        subject: "alice",
+      },
+    });
+
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+    expect(final.approvalPending).toBeUndefined();
+    expect(final.actionHistory.some((r) => r.result === DENIED)).toBe(true);
+    // The planner saw the denial (it reacts to the failure rather than the turn
+    // silently dropping it): history passed to plan() carries the denied record.
+    expect(plan).toHaveBeenCalled();
+    const history = plan.mock.calls[0][3] as { result: string }[];
+    expect(history.some((r) => r.result === DENIED)).toBe(true);
+  });
+
+  it("an ambiguous reply re-asks and keeps the pause in place", async () => {
+    const deps = approvalDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "hmmmm not sure",
+      authToken: "tok",
+      sessionSubject: "alice",
+      approvalPending: { toolId: "recipe-scraper", tool: approvalTool, subject: "alice" },
+    });
+
+    expect(final.result).toBe(PROMPT);
+    expect(final.approvalPending?.toolId).toBe("recipe-scraper");
+    expect(final.approvalWaiting).toBe(true);
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+});
+
+describe("buildAgentGraph sub-agent tool-approval HITL (ADR 0003 + sub-agent HITL)", () => {
+  const gatedTool: ToolDescriptor = {
+    id: "kubectl-readonly",
+    name: "kubectl-readonly",
+    description: "Runs a kubectl command.",
+    allowedRoles: ["reader"],
+    // Gated: the sub-agent's own call to it must be approved before it runs.
+    approval: "always",
+    jobTemplate: { image: "example.com/kubectl:latest", namespace: "default", serviceAccountName: "sa" },
+  };
+  const hitlAgent: AgentDescriptor = {
+    id: "ops-agent",
+    name: "ops-agent",
+    description: "Runs ops tasks via its own tools",
+    allowedRoles: ["reader"],
+    toolRefs: ["kubectl-readonly"],
+    agentRunTemplate: { namespace: "default", agentRef: "ops-agent" },
+  };
+  const PROMPT = 'Approval required: run tool "kubectl-readonly"? Reply "approve" or "deny".';
+
+  /** deps whose awaitReply simulates the sub-agent emitting the gated tool_call, then pausing for approval. */
+  function pausingDeps() {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: hitlAgent }]),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn((_runId: string, opts?: { onToolCall?: (c: { callId: string; tool: string; input: string }) => void; approvalNeeded?: Promise<SubAgentApprovalCall> }) => {
+        // The sub-agent calls its gated tool; the wired handler signals approval
+        // needed instead of resolving, which resolves `approvalNeeded`.
+        opts?.onToolCall?.({ callId: "call-1", tool: "kubectl-readonly", input: "get pods" });
+        return (opts?.approvalNeeded ?? new Promise<SubAgentApprovalCall>(() => {})).then((call) => {
+          throw new AgentTurnApprovalPendingError(call.callId, call.tool, call.input, call.expiresAt);
+        });
+      }),
+      resolveToolCall: vi.fn().mockResolvedValue(undefined),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      agentStore,
+      agentChannel,
+      agentRunLauncher,
+      toolCatalog: { getById: (id) => (id === "kubectl-readonly" ? gatedTool : undefined) },
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      subAgentApprovalTimeoutSeconds: 600,
+    });
+  }
+
+  /** deps for a resume turn: checkActiveAgentRun reattaches and the sub-agent gives a final reply. */
+  function resumeDeps() {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: hitlAgent }]),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({ message: "pods listed", final: true, narration: [] } satisfies AgentTurnResult),
+      resolveToolCall: vi.fn().mockResolvedValue(undefined),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      agentStore,
+      agentChannel,
+      agentRunLauncher,
+      toolCatalog: { getById: (id) => (id === "kubectl-readonly" ? gatedTool : undefined) },
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+  }
+
+  function resumeInput(request: string) {
+    return {
+      request,
+      authToken: "tok",
+      sessionSubject: "alice",
+      activeAgentId: "ops-agent",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+      subAgentApprovalPending: {
+        runId: "run-1",
+        callId: "call-1",
+        tool: "kubectl-readonly",
+        input: "get pods",
+        agentId: "ops-agent",
+        subject: "alice",
+        expiresAt: Date.now() + 600_000,
+      },
+    };
+  }
+
+  it("pauses the turn with the approval prompt when a sub-agent's own tool call needs approval — the call is NOT dispatched or resolved", async () => {
+    const deps = pausingDeps();
+    const final = await buildAgentGraph(deps).invoke({ request: "list the pods", authToken: "tok", forcedAgentId: "ops-agent" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.subAgentApprovalWaiting).toBe(true);
+    expect(final.result).toBe(PROMPT);
+    expect(final.subAgentApprovalPending).toMatchObject({
+      callId: "call-1",
+      tool: "kubectl-readonly",
+      input: "get pods",
+      agentId: "ops-agent",
+      subject: "alice",
+      expiresAt: expect.any(Number),
+    });
+    // The run WAS launched, but the sub-agent's gated tool was neither
+    // dispatched nor answered — the pod stays blocked on its callTool promise.
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalled();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+    expect(deps.agentChannel!.resolveToolCall).not.toHaveBeenCalled();
+  });
+
+  it("APPROVE: next turn dispatches the held call, answers it with the outcome, and re-attaches to collect the reply", async () => {
+    const deps = resumeDeps();
+    const final = await buildAgentGraph(deps).invoke(resumeInput("approve"));
+
+    expect(final.error).toBeUndefined();
+    // Dispatched the EXACT held call (gate suppressed) ...
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(gatedTool.jobTemplate, expect.anything());
+    // ... and handed its outcome back to the blocked sub-agent.
+    expect(deps.agentChannel!.resolveToolCall).toHaveBeenCalledWith("run-1", "call-1", {
+      ok: true,
+      result: { title: "Pancakes" },
+    });
+    // Re-attached and collected the sub-agent's follow-up reply; pause cleared.
+    expect(final.subAgentApprovalPending).toBeUndefined();
+    expect(final.result).toContain("pods listed");
+  });
+
+  it("DENY: next turn answers the held call with a failed tool_result, NEVER dispatches the tool, and re-attaches", async () => {
+    const deps = resumeDeps();
+    const final = await buildAgentGraph(deps).invoke(resumeInput("deny"));
+
+    expect(final.error).toBeUndefined();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+    const [[runId, callId, outcome]] = (deps.agentChannel!.resolveToolCall as ReturnType<typeof vi.fn>).mock.calls;
+    expect([runId, callId]).toEqual(["run-1", "call-1"]);
+    expect(outcome).toMatchObject({ ok: false, error: expect.stringContaining("approval_denied") });
+    expect(final.subAgentApprovalPending).toBeUndefined();
+    expect(final.result).toContain("pods listed");
+  });
+
+  it("AMBIGUOUS: next turn re-asks and keeps the pause, resolving nothing", async () => {
+    const deps = resumeDeps();
+    const final = await buildAgentGraph(deps).invoke(resumeInput("hmm, not sure yet"));
+
+    expect(final.error).toBeUndefined();
+    expect(final.subAgentApprovalWaiting).toBe(true);
+    expect(final.result).toBe(PROMPT);
+    expect(final.subAgentApprovalPending).toMatchObject({ callId: "call-1" });
+    expect(deps.agentChannel!.resolveToolCall).not.toHaveBeenCalled();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
 });

@@ -227,3 +227,65 @@ in `engines/temporal`. Tier 2 next, same method. Tier 3 gets written up as
 confirmed-intentional in whatever PR closes this out — no code change unless
 someone disagrees with the call. Tier 4 (`LocalTool`) is its own workstream;
 scope it separately if it's actually needed by a deployed catalog tool.
+
+## Cross-engine additions (2026-10-05): approval policy + unified event stream
+
+Two features were added to BOTH engines at once, against one shared contract,
+rather than ported one way. They are tracked here so the two engines do not
+silently diverge.
+
+- **#20 — Declarative tool-approval policy (ADR 0003).** New `approval` enum
+  (`never`|`always`|`auto`) on the Tool/LocalTool/MCPTool CRDs and
+  `approvalDefault` on the Agent CRD, sourced on `MCPServer.spec.exposure` for
+  derived MCPTools. Empty resolves to `never`, so no existing CR changes
+  behavior. Enforced at the single tool-dispatch choke point in both engines
+  (Go: `runToolWithContinuation`'s predecessor at `agentloop.go` + the sub-agent
+  loop; TS: the `runTool` node + `dispatchResolvedTool`). HITL is terminate-and-
+  resume in both (Go: `ConversationState.PendingApproval` + step-0.7 resume; TS:
+  `approvalPending` channel + `checkPendingApproval` node), modeled on the
+  existing identity-link pause. Decision parsing, resolution precedence, prompt
+  wording, and the `approval_denied` failed result are identical across engines
+  (Go `internal/approval`, mirrored in TS). Caller tools are exempt (the client
+  runs them). This is a NEW safety behavior, net-ahead of the pre-existing
+  reference — both engines gained it simultaneously, so there is no parity gap.
+
+  **Sub-agent HITL — now in both engines (was a deliberate v1 asymmetry).** The
+  SUB-AGENT path (an Agent's own `toolRefs` loop, ADR 0028) originally differed:
+  Go did a real HITL round-trip while the TS sub-agent dispatch failed closed. As
+  of the sub-agent-approval-HITL change both engines now ask a human and can
+  approve-then-run, with the same deterministic parsing, prompt wording, and
+  `approval_denied`/`approval_timeout` failed-result codes. Only the *mechanism*
+  differs, because the waiter differs:
+  - **Go** native sub-agents are child workflows — `requestAgentApproval`
+    (`agent_workflow.go`/`approval.go`) bubbles the prompt and waits durably on
+    the AgentPrompt channel, now bounded by a workflow timer (per-Agent
+    `approvalTimeoutSeconds`, 15m default) that returns `DecisionTimeout` for
+    graceful degradation. No pod is held (the child workflow is the durable
+    waiter); the existing 1h episode timer is the hard backstop.
+  - **TS** sub-agents are AgentRun pods — the orchestrator holds the pod's
+    `tool_call` across turns (`awaitReply` throws `AgentTurnApprovalPendingError`
+    leaving the call unresolved; `dispatch-tool.ts` defers instead of failing
+    closed; `checkPendingSubAgentApproval` resolves it next turn). An always-on
+    orchestrator **sweeper** gracefully resolves expired approvals with an
+    `approval_timeout` error (the wire has no `code` field, so it rides the
+    `error` string); the Job `activeDeadlineSeconds` is the hard backstop.
+  Net: identical observable behavior (ask, approve-and-run, or graceful timeout);
+  the only difference is Go holds a durable workflow while TS holds a pod bounded
+  by an orchestrator-owned timeout. See ADR 0003.
+
+- **#21 — Unified lifecycle event stream (ADR 0004).** A typed `TurnEvent`
+  envelope (kinds: turn-started, skill-selected, tool-started/-progress/
+  -finished/-failed, warning, approval-required/-resolved, turn-completed,
+  narration) defined once in `@controller-agent/messaging` and its Go port.
+  Go: the conversation workflow emits typed events as the single source and
+  DERIVES the legacy narration `Lines` via `Render()` (byte-for-byte unchanged
+  for existing consumers, B1); completed events fold into a bounded, offset-
+  addressable durable log in `ConversationState` (`conversation-events` query,
+  B2/B3), generalizing the one-off `RemoteControlUrl` carry-forward. TS: the
+  same envelope down-converts to the existing `NODE_STATUS` strings at the SSE
+  edge. Token-level model streaming (B4) is explicitly out of scope — Temporal
+  activities do not stream, so it needs a capability neither engine has today.
+
+`go build ./... && go test ./...` passes in `engines/temporal`; the TS side is
+covered by vitest. Kubernetes e2e (CRD round-trip, cross-pod approval) is NOT
+exercised here and needs a cluster pass before release.

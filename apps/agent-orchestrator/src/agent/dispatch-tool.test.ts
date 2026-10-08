@@ -232,4 +232,72 @@ describe("makeSubAgentToolCallHandler", () => {
     expect(() => handler({ callId: "call-1", tool: "kubectl-readonly", input: "get pods" })).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
   });
+
+  it("DEFERS a gated (approval: always) tool call — signals approval-needed and leaves the call UNRESOLVED (sub-agent HITL)", async () => {
+    const channel = fakeChannel();
+    const launcher = fakeContainerToolLauncher();
+    const onApprovalNeeded = vi.fn();
+    const gated = { ...containerTool, approval: "always" };
+    const handler = makeSubAgentToolCallHandler(
+      "run-1",
+      agent,
+      channel,
+      { getById: () => gated },
+      { ...baseDeps, containerToolLauncher: launcher },
+      { onApprovalNeeded, approvalTimeoutMs: 900_000 },
+    );
+
+    handler({ callId: "call-1", tool: "kubectl-readonly", input: "get pods -n default" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Reported up for approval, NOT resolved and NOT dispatched — the pod stays blocked.
+    expect(onApprovalNeeded).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: "call-1", tool: "kubectl-readonly", input: "get pods -n default", expiresAt: expect.any(Number) }),
+    );
+    expect(channel.resolveToolCall).not.toHaveBeenCalled();
+    expect(launcher.launch).not.toHaveBeenCalled();
+  });
+
+  it("dispatches a NON-gated (approval: never) tool unchanged even when a HITL channel is wired", async () => {
+    const channel = fakeChannel();
+    const onApprovalNeeded = vi.fn();
+    const ungated = { ...containerTool, approval: "never" };
+    const handler = makeSubAgentToolCallHandler("run-1", agent, channel, { getById: () => ungated }, baseDeps, {
+      onApprovalNeeded,
+      approvalTimeoutMs: 900_000,
+    });
+
+    handler({ callId: "call-1", tool: "kubectl-readonly", input: "get pods -n default" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(onApprovalNeeded).not.toHaveBeenCalled();
+    expect(channel.resolveToolCall).toHaveBeenCalledWith("run-1", "call-1", { ok: true, result: { ok: true } });
+  });
+});
+
+describe("dispatchResolvedTool — approval gate (ADR 0003, sub-agent loop)", () => {
+  it("fails closed (does not execute) when the tool's own approval is always", async () => {
+    const launcher = fakeContainerToolLauncher();
+    const outcome = await dispatchResolvedTool(
+      { ...containerTool, approval: "always" },
+      "get pods",
+      { containerToolLauncher: launcher, jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "x" }) },
+    );
+    expect(outcome).toEqual({ ok: false, error: 'Approval required: run tool "kubectl-readonly"? Reply "approve" or "deny".' });
+    expect(launcher.launch).not.toHaveBeenCalled();
+  });
+
+  it("gates on the governing agent's approvalDefault when the tool sets none", async () => {
+    const executor: LocalToolExecutor = { run: vi.fn().mockResolvedValue({ type: "succeeded", job_id: "j", result: {} }) };
+    const outcome = await dispatchResolvedTool(localTool, "https://x", { containerToolLauncher: fakeContainerToolLauncher(), jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: {} }), localToolExecutor: executor }, { agentApprovalDefault: "always" });
+    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("Approval required") });
+    expect(executor.run).not.toHaveBeenCalled();
+  });
+
+  it("a tool's own never beats an agent default of always (runs)", async () => {
+    const executor: LocalToolExecutor = { run: vi.fn().mockResolvedValue({ type: "succeeded", job_id: "j", result: { ok: true } }) };
+    const outcome = await dispatchResolvedTool({ ...localTool, approval: "never" }, "https://x", { containerToolLauncher: fakeContainerToolLauncher(), jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: {} }), localToolExecutor: executor }, { agentApprovalDefault: "always" });
+    expect(outcome).toEqual({ ok: true, result: { ok: true } });
+    expect(executor.run).toHaveBeenCalled();
+  });
 });
