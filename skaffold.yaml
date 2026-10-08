@@ -24,7 +24,7 @@ metadata:
 #   - `helm dependency update` on the agent-orchestrator subchart itself
 #     (its own qdrant dependency; Helm doesn't recurse into file:// subcharts,
 #     so skipBuildDependencies below only covers each chart's own direct deps)
-#   - applying charts/agent-controller/charts/core-controller/crds/*.yaml
+#   - applying orchestrator/charts/agent-controller/charts/core-controller/crds/*.yaml
 #     --server-side (Helm's crds/ dir is install-only; upgrades never touch it)
 
 build:
@@ -42,50 +42,50 @@ build:
   artifacts:
     - image: agent-orchestrator
       docker:
-        dockerfile: apps/agent-orchestrator/Dockerfile
+        dockerfile: orchestrator/apps/agent-orchestrator/Dockerfile
     - image: core-controller
-      context: controllers/core-controller
+      context: orchestrator/controllers/core-controller
       docker:
         dockerfile: Dockerfile
     - image: recipe-scraper
       docker:
-        dockerfile: tools/recipe-scraper/Dockerfile
+        dockerfile: catalog/tools/recipe-scraper/Dockerfile
     - image: recipe-publisher
       docker:
-        dockerfile: tools/recipe-publisher/Dockerfile
+        dockerfile: catalog/tools/recipe-publisher/Dockerfile
     - image: web-search
       docker:
-        dockerfile: tools/web-search/Dockerfile
+        dockerfile: catalog/tools/web-search/Dockerfile
     - image: image-gen
       docker:
-        dockerfile: tools/image-gen/Dockerfile
+        dockerfile: catalog/tools/image-gen/Dockerfile
     - image: opencode-swe-agent
       docker:
-        dockerfile: apps/opencode-swe-agent/Dockerfile
+        dockerfile: catalog/agents/opencode-swe-agent/Dockerfile
     # One Dockerfile, four runtimes via --build-arg (mirrors dev-up.sh).
     - image: localtool-executor-node
-      context: sidecars/localtool-executor
+      context: orchestrator/sidecars/localtool-executor
       docker:
         dockerfile: Dockerfile
         buildArgs:
           BASE_IMAGE: node:24-bookworm-slim
           RUNTIME: node
     - image: localtool-executor-python
-      context: sidecars/localtool-executor
+      context: orchestrator/sidecars/localtool-executor
       docker:
         dockerfile: Dockerfile
         buildArgs:
           BASE_IMAGE: python:3.12-slim-bookworm
           RUNTIME: python
     - image: localtool-executor-go
-      context: sidecars/localtool-executor
+      context: orchestrator/sidecars/localtool-executor
       docker:
         dockerfile: Dockerfile
         buildArgs:
           BASE_IMAGE: golang:1.24-bookworm
           RUNTIME: go
     - image: localtool-executor-shell
-      context: sidecars/localtool-executor
+      context: orchestrator/sidecars/localtool-executor
       docker:
         dockerfile: Dockerfile
         buildArgs:
@@ -100,12 +100,12 @@ deploy:
       # Deployed first: owns the CRDs that community-components' CRs need.
       # Skaffold's helm deployer runs releases in the order listed here.
       - name: agent-controller
-        chartPath: charts/agent-controller
+        chartPath: orchestrator/charts/agent-controller
         namespace: controller-agent
         createNamespace: true
         wait: true
         valuesFiles:
-          - charts/agent-controller/values-minikube-demo.yaml
+          - orchestrator/charts/agent-controller/values-minikube-demo.yaml
         # false = skaffold runs `helm dependency build` on this chart itself
         # before every deploy. It does NOT recurse into the nested
         # agent-orchestrator/qdrant dependency (file:// subcharts aren't
@@ -139,12 +139,12 @@ deploy:
           agent-orchestrator.localTool.runtimes[3].image: "{{.IMAGE_FULLY_QUALIFIED_localtool_executor_shell}}"
       # Deployed second: needs agent-controller's CRDs to already exist.
       - name: community-components
-        chartPath: charts/community-components
+        chartPath: orchestrator/charts/community-components
         namespace: controller-agent
         createNamespace: true
         wait: true
         valuesFiles:
-          - charts/community-components/values-minikube-demo.yaml
+          - orchestrator/charts/community-components/values-minikube-demo.yaml
         skipBuildDependencies: false
         setValueTemplates:
           recipeScraper.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_scraper}}"
@@ -169,104 +169,104 @@ profiles:
       artifacts:
         - image: agent-orchestrator
           docker:
-            dockerfile: apps/agent-orchestrator/Dockerfile
+            dockerfile: orchestrator/apps/agent-orchestrator/Dockerfile
         - image: core-controller
-          context: controllers/core-controller
+          context: orchestrator/controllers/core-controller
           docker:
             dockerfile: Dockerfile
         - image: integration-gateway
           docker:
-            dockerfile: apps/integration-gateway/Dockerfile
+            dockerfile: orchestrator/apps/integration-gateway/Dockerfile
         # values-e2e.yaml turns the broker on: the knowledge-base specs cannot
         # sync a corpus without it, and an unbuilt image sits in
         # ImagePullBackOff until up.sh times out.
         - image: connection-broker
           docker:
-            dockerfile: apps/connection-broker/Dockerfile
+            dockerfile: orchestrator/apps/connection-broker/Dockerfile
         # values-e2e.yaml turns the mcp-broker on so the MCP specs can discover
         # and call the fake MCP server below; an unbuilt image would sit in
         # ImagePullBackOff until up.sh times out (ADR 0045).
         - image: mcp-broker
           docker:
-            dockerfile: apps/mcp-broker/Dockerfile
+            dockerfile: orchestrator/apps/mcp-broker/Dockerfile
         # The in-cluster MCP server the mcp-broker discovers and proxies to —
         # the only MCP stub, deterministic, built here so skaffold rewrites its
         # image in the community-components fixture.
         - image: fake-mcp-server
           docker:
-            dockerfile: apps/fake-mcp-server/Dockerfile
+            dockerfile: orchestrator/apps/fake-mcp-server/Dockerfile
         - image: opencode-swe-agent
           docker:
-            dockerfile: apps/opencode-swe-agent/Dockerfile
+            dockerfile: catalog/agents/opencode-swe-agent/Dockerfile
         # Needed by the community-components release below: its Tool/Agent CRs
         # pin image tags, and a release deployed without freshly-built tags
         # leaves AgentRun pods stuck in ImagePullBackOff on a stale tag that
         # no longer exists in minikube's daemon.
         - image: recipe-scraper
           docker:
-            dockerfile: tools/recipe-scraper/Dockerfile
+            dockerfile: catalog/tools/recipe-scraper/Dockerfile
         - image: recipe-publisher
           docker:
-            dockerfile: tools/recipe-publisher/Dockerfile
+            dockerfile: catalog/tools/recipe-publisher/Dockerfile
         - image: web-search
           docker:
-            dockerfile: tools/web-search/Dockerfile
+            dockerfile: catalog/tools/web-search/Dockerfile
         # The e2e triage route targets this agent (see
-        # charts/community-components/values-e2e.yaml): it declares the same
+        # orchestrator/charts/community-components/values-e2e.yaml): it declares the same
         # Claude identityProviders as claude-code-swe-agent, so the credential
         # gate behaves identically, but replies over NATS without a model call
         # so a run can actually reach a terminal phase in a cluster holding no
         # Anthropic credential.
         - image: stub-agent
           docker:
-            dockerfile: apps/stub-agent/Dockerfile
+            dockerfile: catalog/agents/stub-agent/Dockerfile
         # Still built: its Agent CR stays enabled as the production-shaped
         # reference the stub's providers are kept in step with, and its CR pins
         # an image tag -- a release deployed without a freshly-built one leaves
         # the tag dangling in minikube's daemon.
         - image: claude-code-swe-agent
           docker:
-            dockerfile: apps/claude-code-swe-agent/Dockerfile
+            dockerfile: catalog/agents/claude-code-swe-agent/Dockerfile
         # The chart defaults route every turn through the Temporal engine, and
         # the demo values turn on the LocalTool executor sidecars, so neither
         # set is optional here. Unbuilt, they only worked on a minikube whose
         # daemon still held `:latest` copies from some earlier manual build; a
         # fresh cluster sat in ImagePullBackOff until `up.sh` timed out.
         - image: temporal-engine-worker
-          context: engines/temporal
+          context: orchestrator/engines/temporal
           docker:
             dockerfile: Dockerfile.worker
         - image: temporal-engine-gateway
-          context: engines/temporal
+          context: orchestrator/engines/temporal
           docker:
             dockerfile: Dockerfile.gateway
         - image: temporal-engine-catalog-sync
-          context: engines/temporal
+          context: orchestrator/engines/temporal
           docker:
             dockerfile: Dockerfile.catalog-sync
         - image: localtool-executor-node
-          context: sidecars/localtool-executor
+          context: orchestrator/sidecars/localtool-executor
           docker:
             dockerfile: Dockerfile
             buildArgs:
               BASE_IMAGE: node:24-bookworm-slim
               RUNTIME: node
         - image: localtool-executor-python
-          context: sidecars/localtool-executor
+          context: orchestrator/sidecars/localtool-executor
           docker:
             dockerfile: Dockerfile
             buildArgs:
               BASE_IMAGE: python:3.12-slim-bookworm
               RUNTIME: python
         - image: localtool-executor-go
-          context: sidecars/localtool-executor
+          context: orchestrator/sidecars/localtool-executor
           docker:
             dockerfile: Dockerfile
             buildArgs:
               BASE_IMAGE: golang:1.24-bookworm
               RUNTIME: go
         - image: localtool-executor-shell
-          context: sidecars/localtool-executor
+          context: orchestrator/sidecars/localtool-executor
           docker:
             dockerfile: Dockerfile
             buildArgs:
@@ -276,7 +276,7 @@ profiles:
       helm:
         releases:
           - name: agent-controller
-            chartPath: charts/agent-controller
+            chartPath: orchestrator/charts/agent-controller
             namespace: controller-agent
             createNamespace: true
             # Deliberately NOT `wait: true` here, unlike the default profile.
@@ -299,8 +299,8 @@ profiles:
             # instead of a deadline.
             wait: false
             valuesFiles:
-              - charts/agent-controller/values-minikube-demo.yaml
-              - charts/agent-controller/values-e2e.yaml
+              - orchestrator/charts/agent-controller/values-minikube-demo.yaml
+              - orchestrator/charts/agent-controller/values-e2e.yaml
             skipBuildDependencies: false
             setValueTemplates:
               agent-orchestrator.image.repository: "{{.IMAGE_REPO_agent_orchestrator}}"
@@ -342,13 +342,13 @@ profiles:
           # the cluster keeps whatever CRs an older install left behind,
           # pointing at image tags that no longer exist.
           - name: community-components
-            chartPath: charts/community-components
+            chartPath: orchestrator/charts/community-components
             namespace: controller-agent
             createNamespace: true
             wait: true
             valuesFiles:
-              - charts/community-components/values-minikube-demo.yaml
-              - charts/community-components/values-e2e.yaml
+              - orchestrator/charts/community-components/values-minikube-demo.yaml
+              - orchestrator/charts/community-components/values-e2e.yaml
             skipBuildDependencies: false
             setValueTemplates:
               stubAgent.image: "{{.IMAGE_FULLY_QUALIFIED_stub_agent}}"

@@ -26,14 +26,14 @@ cluster for exactly this conversation's Jobs; nothing in the system provided
 one.
 
 The session id itself already exists — `x-openwebui-chat-id`
-(`CHAT_ID_HEADER`, `apps/agent-orchestrator/src/server.ts`) or the `/invoke`
+(`CHAT_ID_HEADER`, `orchestrator/apps/agent-orchestrator/src/server.ts`) or the `/invoke`
 `session_id` body field, the same id ADR 0012's `SessionStore` is keyed by —
 it just never propagated past `buildGraphInput`.
 
 ## Decision
 
 1. **`AgentGraphInput`/`AgentStateAnnotation` gain a plain `sessionId` field**
-   (`apps/agent-orchestrator/src/server.ts`, `src/agent/graph.ts`), set
+   (`orchestrator/apps/agent-orchestrator/src/server.ts`, `src/agent/graph.ts`), set
    whenever the caller supplied one — independent of whether a `SessionStore`
    is configured at all (unlike `sessionSubject`/`activeSkillId`/etc., which
    only exist when session continuity, ADR 0012, is active). This is a
@@ -49,7 +49,7 @@ it just never propagated past `buildGraphInput`.
    no CRD schema/regeneration was needed for something that carries no
    validated shape and no reconciliation behavior.
 4. **The Go core-controller copies just that one annotation onto the Job it
-   builds — and its Pod template** (`controllers/core-controller/internal/
+   builds — and its Pod template** (`orchestrator/controllers/core-controller/internal/
    controller/run_job.go`'s `buildRunJob`, via a new `sessionIDAnnotations`
    helper called from both `toolrun_controller.go` and
    `agentrun_controller.go`). Deliberately narrow — it copies only the

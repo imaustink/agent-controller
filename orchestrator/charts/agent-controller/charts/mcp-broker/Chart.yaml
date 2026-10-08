@@ -1,0 +1,23 @@
+apiVersion: v2
+name: mcp-broker
+description: >-
+  Helm chart for the mcp-broker (see orchestrator/apps/mcp-broker), ADR 0045: the only
+  component that speaks the Model Context Protocol. It discovers an MCPServer's
+  tools into the server's status and materializes the exposed ones as derived
+  MCPTool CRs, and proxies one tools/call per request under the caller's own
+  delegated token. A separate Deployment from the engines on purpose, so an
+  external MCP protocol and its outbound egress stay out of the pod holding the
+  agent loop. Off by default.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/imaustink/agent-controller
+sources:
+  - https://github.com/imaustink/agent-controller
+keywords:
+  - agent
+  - mcp
+  - model-context-protocol
+  - tools
+maintainers:
+  - name: controller-agent

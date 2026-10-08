@@ -20,25 +20,19 @@
   },
   "units": [
     { "path": "framework/protocol", "layer": "framework" },
-    { "path": "packages/messaging", "layer": "framework" },
-    { "path": "packages/agent-runtime", "layer": "framework" },
-    { "path": "packages/github-app-auth", "layer": "framework" },
+    { "path": "framework/messaging", "layer": "framework" },
+    { "path": "framework/agent-runtime", "layer": "framework" },
+    { "path": "framework/github-app-auth", "layer": "framework" },
 
-    { "path": "tools/*", "layer": "catalog" },
-    { "path": "tools-local/*", "layer": "catalog" },
-    { "path": "apps/stub-agent", "layer": "catalog" },
-    { "path": "apps/claude-code-swe-agent", "layer": "catalog" },
-    { "path": "apps/opencode-swe-agent", "layer": "catalog" },
+    { "path": "catalog/agents/*", "layer": "catalog" },
+    { "path": "catalog/tools/*", "layer": "catalog" },
+    { "path": "catalog/tools-local/*", "layer": "catalog" },
 
-    { "path": "apps/agent-orchestrator", "layer": "orchestrator" },
-    { "path": "apps/integration-gateway", "layer": "orchestrator" },
-    { "path": "apps/connection-broker", "layer": "orchestrator" },
-    { "path": "apps/mcp-broker", "layer": "orchestrator" },
-    { "path": "apps/fake-mcp-server", "layer": "orchestrator" },
-    { "path": "engines/temporal", "layer": "orchestrator" },
-    { "path": "controllers/core-controller", "layer": "orchestrator" },
-    { "path": "sidecars/localtool-executor", "layer": "orchestrator" },
-    { "path": "charts/*", "layer": "orchestrator" },
+    { "path": "orchestrator/apps/*", "layer": "orchestrator" },
+    { "path": "orchestrator/engines/temporal", "layer": "orchestrator" },
+    { "path": "orchestrator/controllers/core-controller", "layer": "orchestrator" },
+    { "path": "orchestrator/sidecars/localtool-executor", "layer": "orchestrator" },
+    { "path": "orchestrator/charts/*", "layer": "orchestrator" },
 
     { "path": "e2e", "layer": "test" }
   ]

@@ -20,7 +20,7 @@ next, keyed to a single tool or agent:
 Both were solved the same way: embed the state as a leading HTML comment in
 the tool/agent's own reply (`<!-- mealie-slug: ... -->`,
 `<!-- swe: ... -->`), and rely on the orchestrator's conversation-history fold
-(`apps/agent-orchestrator/src/openai/chat-completions.ts`) to hand it back on
+(`orchestrator/apps/agent-orchestrator/src/openai/chat-completions.ts`) to hand it back on
 the next turn as part of the user's message. This worked, but the marker sat
 in the actual chat transcript — the same text the LLM planner and any other
 skill logic reads. `docs/security.md` documented the resulting risk: a
@@ -49,14 +49,14 @@ orchestrator:
      the caller, or the next turn's transcript, and stashes the token in
      `state.extractedContinuation`. On the next call to the SAME tool, it
      re-prepends the saved token onto `tool_args` via `prependContinuationToken`
-     (`apps/agent-orchestrator/src/continuation.ts`).
+     (`orchestrator/apps/agent-orchestrator/src/continuation.ts`).
    - `recipe-publisher` was already speaking this wire format (see
-     `tools/recipe-publisher/src/mealie/markdown-parser.ts`); only the
+     `catalog/tools/recipe-publisher/src/mealie/markdown-parser.ts`); only the
      orchestrator-side plumbing was missing.
 2. **Agents get an equivalent, but via a cleaner channel.** An `AgentRun`
    episode is a fresh Job/process each time (ADR 0013), so its "reply" already
    carries a structured, out-of-band `result` field alongside the chat
-   `message` (`packages/messaging/src/agent-protocol.ts`'s `reply.result`,
+   `message` (`framework/messaging/src/agent-protocol.ts`'s `reply.result`,
    `AgentReply.result` in `@controller-agent/agent-runtime`) — a side channel
    the chat transcript never sees. `opencode-swe-agent` now returns
    `{ message, result: encodeSweContinuation(marker) }` instead of embedding a
@@ -65,7 +65,7 @@ orchestrator:
    FINAL reply's `result` into `state.extractedAgentContinuation`, and prepends
    any saved token onto the goal of the NEXT episode for that same agent using
    the same `<!-- continuation: ... -->` wire format as tools (duplicated as a
-   small local parser in `apps/opencode-swe-agent/src/continuation.ts`, since
+   small local parser in `catalog/agents/opencode-swe-agent/src/continuation.ts`, since
    that app ships as its own container image with no access to the
    orchestrator's source).
 3. **Storage**: `SessionRecord` gains `toolContinuations` and

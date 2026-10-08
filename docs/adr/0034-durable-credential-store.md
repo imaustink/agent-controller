@@ -37,7 +37,7 @@ sessionPage:token:vEqpyrHNwXMnqUiLfyS2EQln5qJJuSvdGVpE4nCgwb0
 Two keys. Every identity link and every Claude credential in the cluster was
 gone, because:
 
-- `charts/agent-controller/charts/agent-orchestrator/templates/redis.yaml` runs
+- `orchestrator/charts/agent-controller/charts/agent-orchestrator/templates/redis.yaml` runs
   Redis with `--save "" --appendonly no` — no RDB snapshots, no AOF.
 - Its only volume is an `emptyDir`.
 - The pod terminated (exit 255) and restarted a few hours earlier.

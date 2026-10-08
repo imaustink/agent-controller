@@ -1,0 +1,510 @@
+replicaCount: 1
+
+image:
+  repository: agent-orchestrator
+  # Defaults to .Chart.AppVersion if empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Creates the ServiceAccount the orchestrator runs as (see rbac.create
+  # below for the permissions bound to it: read the Tool/Skill CRD catalog,
+  # create/watch/delete ToolRun CRs -- it never talks to batch/jobs
+  # directly, that's charts/core-controller's job, ADR 0010).
+  create: true
+  annotations: {}
+  name: ""
+  automount: true
+
+rbac:
+  # Namespace-scoped Role + RoleBinding (never a ClusterRole — the
+  # orchestrator only needs to read the Tool/Skill catalog and manage
+  # ToolRun CRs in one namespace, see docs/orchestrator.md and ADR 0010).
+  create: true
+
+# Namespace the orchestrator discovers Tool/Skill CRs in and creates ToolRun
+# CRs into (AGENT_NAMESPACE). Defaults to the release namespace when empty.
+namespace: ""
+
+ports:
+  http: 8081
+  callback: 8080
+
+# Seconds to sleep in preStop before the process is signalled, so the pod
+# outlives its own endpoint removal.
+#
+# SIGTERM and endpoint removal are concurrent, and this pod loses that race:
+# `/invoke` answers 202 immediately, so the shutdown drain has nothing in flight
+# to wait for and the process exits ~1s after SIGTERM, while kube-proxy applies
+# endpoint changes at most once a second. A caller connecting in the gap hits an
+# address with nothing behind it and waits out a ~10.5s connect timeout rather
+# than being refused. Measured: 5 of 10 rollouts lost a poll from a
+# gateway-shaped client.
+#
+# 5s covers a 1s proxy sync with room to spare and sits well inside the default
+# 30s terminationGracePeriodSeconds. It delays only rollouts, never a request.
+# Set to 0 (or "") to disable -- e.g. on Kubernetes older than 1.30, where the
+# `sleep` preStop action does not exist.
+preStopSleepSeconds: 5
+
+config:
+  # Ignored when qdrant.enabled=true below (the in-cluster subchart's
+  # Service URL is derived automatically instead). Set this to point at an
+  # existing/external Qdrant instance otherwise.
+  qdrantUrl: "http://qdrant:6333"
+  qdrantCollection: tools
+  qdrantVectorSize: 1536
+  qdrantSkillsCollection: skills
+  # Consumer-supplied tools (docs/adr/0035) live in their own collection, keyed
+  # by content hash so identical definitions are embedded once, ever. Kept apart
+  # from the catalog collections above so a caller's ephemeral definitions can
+  # never affect catalog retrieval.
+  qdrantCallerToolsCollection: caller_tools
+  embeddingModel: text-embedding-3-small
+  selectionModel: gpt-4o-2024-08-06
+  skillTopK: 3
+  # Max consumer-supplied tools that may reach the action planner, and the
+  # threshold below which the caller-tool index is skipped entirely (with this
+  # many or fewer there is nothing to prune). Leave empty for the orchestrator's
+  # own defaults (5 tools, 7-day TTL swept hourly).
+  callerToolTopK: ""
+  callerToolTtlSeconds: ""
+  callerToolPruneIntervalSeconds: ""
+  # Which agent loop runs a turn (docs/adr/0036). Empty or "langgraph" keeps
+  # the in-process graph, which is the default and the behaviour this app has
+  # always had. "temporal" forwards each turn to the temporal-engine subchart
+  # instead — which must also be enabled, and which needs a reachable Temporal
+  # cluster.
+  #
+  # Process-wide rather than per-request: the two engines keep conversation
+  # state in different places (a Redis session record vs. workflow state), so
+  # alternating between them mid-conversation would lose whichever one it left.
+  agentEngine: ""
+  # Base URL of the temporal-engine gateway Service. Required when
+  # agentEngine is "temporal"; the app refuses to start without it rather
+  # than silently falling back to the other engine.
+  temporalEngineUrl: ""
+  # Base URL Job pods use to reach the callback receiver. Leave empty to
+  # default to the in-cluster callback Service DNS name (ADR 0006).
+  callbackBaseUrl: ""
+  # API group/version for the Tool/Skill/ToolRun CRDs (ADR 0010). Must match
+  # charts/core-controller's installed CRDs.
+  crdGroup: core.controller-agent.dev
+  crdVersion: v1alpha1
+  # Agent-run timeouts. Leave empty to use the orchestrator's own defaults
+  # (8h wall clock, 10m of silence, 25s shutdown drain) -- these exist so the
+  # e2e environment can shrink the idle window to something a test can wait out.
+  #
+  # agentRunTimeoutSeconds is the Job's activeDeadlineSeconds: a backstop for a
+  # wedged pod, NOT a task budget. agentIdleTimeoutSeconds bounds SILENCE and is
+  # what actually ends a stuck run -- any up-message resets it, so a narrating
+  # run is never cut off however long it takes.
+  agentRunTimeoutSeconds: ""
+  agentIdleTimeoutSeconds: ""
+  shutdownDrainMs: ""
+  # Which IdentityResolver to build: "static" (default) or "oidc". See
+  # src/rbac/static-identity-resolver.ts and src/rbac/oidc-identity-resolver.ts.
+  identityResolver: static
+  # JSON map of bearer token -> {subject, roles}. When identityResolver=static
+  # this is the only resolver; when identityResolver=oidc it becomes a
+  # fallback for tokens that fail oidc verification (see
+  # staticIdentitiesExistingSecret below for the not-mutually-exclusive
+  # behavior). Prefer staticIdentitiesExistingSecret for anything beyond
+  # local/dev use: `staticIdentities` here lands in plaintext in the Helm
+  # release's stored values (same caveat as secrets.create/values above),
+  # which is not appropriate once the values file itself is committed
+  # anywhere outside a private, secret-free repo.
+  staticIdentities: ""
+  # Existing Secret name holding the same JSON map (see staticIdentities
+  # above) under staticIdentitiesExistingSecretKey. Takes precedence over
+  # the inline `staticIdentities` value when set.
+  #
+  # Not exclusive with identityResolver=oidc: when both are set, the app
+  # builds a CompositeIdentityResolver -- oidc verification first, falling
+  # back to this static map only for tokens that fail it. Use this for
+  # callers that structurally cannot present a real, refreshable OIDC token
+  # (e.g. a chat UI with only a static API-key field), while callers capable
+  # of real OIDC still go through full verification.
+  staticIdentitiesExistingSecret: ""
+  staticIdentitiesExistingSecretKey: AGENT_STATIC_IDENTITIES
+  # Existing Secret holding the HS256 secret Open WebUI signs its per-request
+  # X-OpenWebUI-User-Jwt header with (Open WebUI's own
+  # FORWARD_USER_INFO_HEADER_JWT_SECRET, ENABLE_FORWARD_USER_INFO_HEADERS).
+  # Required whenever staticIdentitiesExistingSecret/staticIdentities above is
+  # serving Open WebUI: without it, every Open WebUI user resolves to the
+  # SAME shared subject from the static map (Open WebUI's Authorization
+  # bearer token is one static value for all of its users), so any OAuth
+  # identity one user links (e.g. GitHub, ADR 0022) becomes usable by every
+  # other Open WebUI user with no authentication. See
+  # src/rbac/openwebui-forwarded-user-resolver.ts.
+  openWebUiUserJwtSecretExistingSecret: ""
+  openWebUiUserJwtSecretExistingSecretKey: AGENT_OPENWEBUI_USER_JWT_SECRET
+  # RBAC roles (this system's vocabulary, e.g. Tool/Agent allowedRoles --
+  # NOT Open WebUI's own "user"/"admin" role) granted to every Open WebUI
+  # user resolved via openWebUiUserJwtSecretExistingSecret above. Comma-
+  # separated. Defaults (in the app itself) to "reader,writer" -- the same
+  # roles the old shared AGENT_STATIC_IDENTITIES entry granted everyone --
+  # so leave unset unless you need a narrower/different grant.
+  openWebUiUserRoles: ""
+  # Required when identityResolver=oidc: expected JWT `iss` claim.
+  oidcIssuer: ""
+  # Required when identityResolver=oidc: JWKS endpoint used to verify JWT
+  # signatures (e.g. an IdP's `.well-known/jwks.json` or provider-specific
+  # certs endpoint).
+  oidcJwksUri: ""
+  # Optional: expected JWT `aud` claim. Leave empty to skip audience
+  # verification.
+  oidcAudience: ""
+  # Dot-path to the roles claim in the verified JWT, e.g. "roles" or
+  # "realm_access.roles" (Keycloak).
+  oidcRolesClaim: roles
+  # NATS URL for the queue-based tool-result channel. Ignored when
+  # nats.enabled=true (the in-cluster Service URL is derived automatically).
+  # When non-empty the orchestrator uses NatsJobReceiver instead of the HTTP
+  # CallbackReceiver -- AGENT_CALLBACK_SECRET / AGENT_CALLBACK_SECRET_REF_NAME
+  # are no longer required in that case. Leave empty to use the HTTP callback
+  # path (backward-compatible default).
+  natsUrl: ""
+  # Redis URL for the conversation-session store (docs/adr/0016). Ignored
+  # when redis.enabled=true below (the in-cluster Service URL is derived
+  # automatically). When non-empty the orchestrator uses RedisSessionStore
+  # instead of the single-replica in-memory default.
+  redisUrl: ""
+
+# Per-chat-user GitHub identity linking (docs/adr/0022): lets the
+# orchestrator resolve the CALLING USER's own linked GitHub token (via
+# integration-gateway's new /identity-link/* API) and inject it per-run into
+# an identity-linked Agent's launched Job, instead of that Agent always
+# using a shared bot/PAT credential. Off by default -- both fields below are
+# optional and, when left empty, no Agent should declare identityProviders
+# (see orchestrator/charts/community-components) and this feature has no effect.
+identityLink:
+  enabled: false
+  # Base URL of integration-gateway's identity-link API (in-cluster Service
+  # DNS). Mirrors config.orchestratorUrl above's naming precedent, just in
+  # the opposite direction -- pointing at integration-gateway's Service
+  # instead of this chart's own. No default: set this to the
+  # integration-gateway release's Service name/port (see that chart's
+  # templates/service.yaml), e.g.
+  # "http://integration-gateway:8090" for the umbrella chart's pinned name.
+  gatewayUrl: ""
+  # Which link flow a caller gets when it doesn't name one: "authcode" or
+  # "device". Empty -> the app's own default ("authcode").
+  #
+  # Only /invoke can choose per request (identity_link_flow); the
+  # chat-completions facade cannot, so every Open WebUI turn takes this.
+  #
+  # "authcode" redirects the browser to GitHub, so it REQUIRES the GitHub
+  # App's registered "Callback URL" to exactly match integration-gateway's
+  # identityLink.githubOauthRedirectUri. "device" shows a user code instead
+  # and has no redirect URI, so it is unaffected by that registration -- the
+  # flow to pick when the Callback URL can't be corrected.
+  defaultFlow: ""
+  # Secrets: IDENTITY_LINK_GATEWAY_TOKEN (see secrets block below). Must
+  # match the value configured as integration-gateway's
+  # identityLink.secrets.identityLinkToken (GATEWAY_IDENTITY_LINK_TOKEN env
+  # var on that side) -- same shared-secret-value convention already used
+  # for AGENT_CALLBACK_SECRET / GATEWAY_ORCHESTRATOR_TOKEN in the reverse
+  # direction.
+
+# Secrets: OPENAI_API_KEY (required), AGENT_CALLBACK_SECRET (required, no
+# default — must not be guessable), AGENT_QDRANT_API_KEY (optional).
+#
+# By default the chart does NOT create a Secret — bring your own via
+# `existingSecret` (e.g. populated by an external-secrets operator / sealed
+# secrets / `kubectl create secret`). Setting `create: true` and passing
+# values here is provided for local/dev convenience only: those values land
+# in plaintext in the Helm release's stored values, which is not appropriate
+# for production secrets.
+secrets:
+  create: false
+  existingSecret: ""
+  openaiApiKeyKey: OPENAI_API_KEY
+  callbackSecretKey: AGENT_CALLBACK_SECRET
+  qdrantApiKeyKey: AGENT_QDRANT_API_KEY
+  # Only used when identityLink.enabled=true above.
+  identityLinkGatewayTokenKey: IDENTITY_LINK_GATEWAY_TOKEN
+  # Verifies integration-gateway's signed sender assertion (docs/adr/0030 §6).
+  # MUST match that chart's senderAssertionSecretKey value. When the key is
+  # absent from the Secret the orchestrator falls back to trusting the
+  # unsigned request-body login and warns at startup.
+  senderAssertionSecretKey: AGENT_SENDER_ASSERTION_SECRET
+  # Only used when config.agentEngine is set above. The engine gateway maps
+  # this token to a subject and ROLES, and re-resolves every skill/agent target
+  # under them, so an unrecognised or absent token leaves a turn with no
+  # capabilities. Must match an entry in that gateway's
+  # identity.staticIdentities — or be left out in favour of its
+  # defaultSubject/defaultRoles, which is the other way to give the hop an
+  # identity.
+  temporalEngineTokenKey: AGENT_TEMPORAL_ENGINE_TOKEN
+  # Only read when secrets.create=true.
+  openaiApiKey: ""
+  callbackSecret: ""
+  qdrantApiKey: ""
+  identityLinkGatewayToken: ""
+
+service:
+  invoke:
+    type: ClusterIP
+    port: 8081
+  callback:
+    type: ClusterIP
+    port: 8080
+
+ingress:
+  # Exposes only the invoke Service (consumer-facing /invoke, /v1/*) — the
+  # callback Service is deliberately never routed through an Ingress; it's
+  # in-cluster-only for Job pods (ADR 0006).
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  path: /
+  pathType: Prefix
+  tls: []
+
+networkPolicy:
+  # Mirrors the network-boundary separation documented in ADR 0006: the
+  # invoke port is for whoever calls the agent, the callback port is for
+  # Job pods only, in-cluster. Disabled by default; enable once you know
+  # your cluster's CNI supports NetworkPolicy and you've set the selectors
+  # below.
+  enabled: false
+  # NetworkPolicyPeer list for the invoke port. Empty = allow from anywhere
+  # in the cluster (still namespaced to this policy's namespace unless a
+  # namespaceSelector is given in a peer).
+  invokeFrom: []
+  # podSelector.matchLabels identifying the Job pods allowed to reach the
+  # callback port (e.g. labels applied by job-launcher.ts to launched Jobs).
+  callbackFromPodSelector: {}
+
+resources:
+  limits:
+    cpu: "1"
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+# Matches the hardened run contract in run.sh / docs/security.md.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# The runtime image's root filesystem is read-only; only /tmp needs to be
+# writable (matches --tmpfs /tmp in run.sh).
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+
+podAnnotations: {}
+podLabels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# GET /v1/models needs no auth, so it's a safe, cheap probe target.
+livenessProbe:
+  httpGet:
+    path: /v1/models
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /v1/models
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+extraEnv: []
+
+# LocalTool executor sidecars (ADR 0014). When enabled, one sidecar container
+# per listed runtime runs in this pod and executes LocalTool CRs inside a
+# bubblewrap sandbox, reached by the orchestrator over a shared unix socket.
+# Disabled by default: it adds always-on sidecar containers and requires
+# UNPRIVILEGED USER NAMESPACES on the node (for the per-tool network sandbox).
+localTool:
+  enabled: false
+  # Shared emptyDir directory holding one <runtime>.sock per sidecar.
+  socketDir: /run/localtool
+  # Comma-separated fetch-registry allowlist enforced by every sidecar
+  # (fail-closed). Also the only hosts a shell tool's sourceURL may target.
+  allowedRegistryHosts: "registry.npmjs.org,pypi.org,files.pythonhosted.org,proxy.golang.org,sum.golang.org"
+  defaultTimeoutSeconds: 30
+  pullPolicy: IfNotPresent
+  # One sidecar container per entry. Trim to only the languages you use —
+  # each is an always-on container with its own image + cache.
+  runtimes:
+    - name: node
+      image: localtool-executor-node:latest
+    - name: python
+      image: localtool-executor-python:latest
+    - name: go
+      image: localtool-executor-go:latest
+    - name: shell
+      image: localtool-executor-shell:latest
+  # Per-runtime fetch cache. emptyDir (default) re-fetches after every restart;
+  # set persistentVolumeClaimName to use pre-created PVCs named
+  # "<persistentVolumeClaimName>-<runtime>" for a warm cache (recommended for
+  # production).
+  cache:
+    persistentVolumeClaimName: ""
+    sizeLimit: 1Gi
+  resources: {}
+  # bubblewrap creates user/network namespaces per invocation. That needs
+  # unprivileged user namespaces on the node AND an Unconfined seccomp profile:
+  # the RuntimeDefault profile filters the namespace-creation clone flags once
+  # all capabilities are dropped, so bwrap fails with "No permissions to create
+  # new namespace". Unconfined is safe here — the container keeps non-root +
+  # cap-drop-ALL + read-only rootfs, and the sidecar has no k8s identity.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    seccompProfile:
+      type: Unconfined
+    capabilities:
+      drop: ["ALL"]
+
+# Optional bundled Qdrant instance (github.com/qdrant/qdrant-helm). Disabled
+# by default -- most real deployments should point config.qdrantUrl at an
+# existing Qdrant (managed, shared, or deployed separately) instead of
+# coupling its lifecycle to this release. Enabling this is meant for
+# local/dev/single-cluster-demo convenience only: it's a single replica with
+# no backup/disaster-recovery story (see the subchart's own README for its
+# production limitations).
+#
+# Run `helm dependency update charts/agent-orchestrator` once before
+# `helm install`/`helm package` so the subchart is fetched.
+qdrant:
+  enabled: false
+  replicaCount: 1
+  # The subchart defaults `config.cluster.enabled: true`, which is wrong for the
+  # single replica above and fails closed rather than degrading: pod-0's
+  # entrypoint runs `--uri http://<release>-qdrant-0.<release>-qdrant-headless:6335`
+  # and Raft dials that address during startup, before qdrant is listening on
+  # 6335 itself. It panics in `Can't initialize consensus: Failed to initialize
+  # Consensus for new Raft state` (exit 101) and crashloops, which then takes
+  # out everything downstream -- agent-orchestrator blocks on its qdrant startup
+  # check, and the temporal worker on `CollectionExists`.
+  #
+  # Nothing here ever runs more than one replica (values-production.yaml calls
+  # it "this single-replica dev/demo instance"), so consensus buys nothing. Turn
+  # it off in the base values rather than per-profile: every consumer inherits
+  # replicaCount 1, so every consumer has the same bug.
+  config:
+    cluster:
+      enabled: false
+  persistence:
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  # Set to true (or a string) to require an API key; then also set it as
+  # config.qdrantApiKey / secrets.qdrantApiKey above so the orchestrator
+  # sends the same key. Left disabled by default to keep the local/dev path
+  # simple -- enable both sides together for anything less trusted than a
+  # single-tenant dev cluster.
+  apiKey: false
+
+# Optional lightweight Redis instance for the conversation session store
+# (docs/adr/0016). Uses the official redis:alpine image (no Bitnami subchart)
+# so there are no external chart dependencies to fetch. Off by default --
+# the in-memory session store is used when this is disabled (single replica
+# only; a shared Redis store is the scale-out path).
+redis:
+  enabled: false
+  image:
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+  storageClass: ""
+  storageSize: 1Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# Toggles AGENT_NATS_URL derivation only -- the actual NATS server is the
+# umbrella chart's shared `nats` dependency (see orchestrator/charts/agent-controller/Chart.yaml),
+# not bundled here. When enabled, AGENT_NATS_URL is set automatically to that
+# shared in-cluster Service's DNS name, and tool Jobs deliver their results
+# over NATS instead of the HTTP callback receiver. The HTTP callback Service
+# (port 8080) stays up as a fallback but receives no traffic in NATS mode.
+# Off by default. Must be set together with the umbrella chart's top-level
+# `nats.enabled` (which actually deploys the server).
+nats:
+  enabled: false
+
+# Knowledge bases (docs/adr/0039), served out of the connection-broker.
+#
+# Off by default and on deliberately, matching the broker's own default: the
+# two are useless apart, and turning this on while the broker is disabled
+# produces an orchestrator that offers knowledge-base tools and cannot answer
+# with them.
+knowledgeBases:
+  enabled: false
+  # Namespace the KnowledgeBase/Corpus CRs live in. Empty = the same namespace
+  # as tools/agents (toolNamespace). Set this (or the umbrella chart's
+  # global.knowledgeBaseNamespace) to read knowledge bases from a dedicated
+  # namespace; the orchestrator's KB read Role/RoleBinding then move there and
+  # that namespace must exist.
+  namespace: ""
+  # The in-cluster broker Service. The default assumes the umbrella chart's
+  # release name, the same assumption identityLink.gatewayUrl already makes.
+  brokerUrl: "http://agent-controller-connection-broker:8080"
+  # Must hold the SAME value as the broker's own orchestratorTokenSecret, or
+  # every probe and every user read 401s — and a 401 from the broker surfaces
+  # as a knowledge base that finds nothing rather than as an auth failure.
+  brokerTokenSecret:
+    name: connection-broker-auth
+    key: orchestratorToken
+
+# MCP tools (docs/adr/0045). Turns on the orchestrator's MCPTool watch (so MCP
+# tools union into its catalog) and its dispatch to the mcp-broker. MCPTool CRs
+# are watched in the KB namespace (knowledgeBases.namespace /
+# global.knowledgeBaseNamespace), where the broker writes them. Enable the
+# mcp-broker subchart too — this only teaches the orchestrator about tools the
+# broker has already discovered.
+mcp:
+  enabled: false
+  # The in-cluster mcp-broker Service.
+  brokerUrl: "http://agent-controller-mcp-broker:8080"
+  # Must hold the SAME value as the mcp-broker's orchestratorTokenSecret.
+  brokerTokenSecret:
+    name: mcp-broker-auth
+    key: orchestratorToken

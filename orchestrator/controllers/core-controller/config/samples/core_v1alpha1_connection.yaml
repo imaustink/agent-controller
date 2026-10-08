@@ -1,0 +1,73 @@
+# A Connection is an authenticated route to ONE system (ADR 0043) — not one
+# per space or channel. Bitovi's whole Confluence site is this single object,
+# and every Corpus over it (GLOBEX, ENG, …) shares this credential.
+#
+# That is the point of the split: rotating the token is one edit, not ten.
+#
+# Two details here are easy to get wrong and expensive to debug:
+#
+#   site.baseURL keeps the /wiki path. Confluence lives under /wiki even on a
+#   custom domain, and this base is what citation URLs are built from — get it
+#   wrong and every citation is a link nobody can open.
+#
+#   site.cloudId is REQUIRED for this site, not merely advisable. Discovery
+#   matches baseURL against the canonical *.atlassian.net address that
+#   /oauth/token/accessible-resources reports, so a custom domain never matches
+#   and the driver refuses rather than guess. It will not fall back to "the only
+#   site this token can reach": nothing has confirmed that site is this tenant,
+#   and a credential issued for another org fits that description exactly. Read
+#   it from `node orchestrator/apps/connection-broker/scripts/verify-confluence.mjs GLOBEX`.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Connection
+metadata:
+  labels:
+    app.kubernetes.io/name: core-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: bitovi-confluence
+spec:
+  provider: confluence
+  displayName: Bitovi Confluence
+
+  site:
+    baseURL: https://wiki.at.bitovi.com/wiki
+    cloudId: 2a2bce9e-5780-4e10-a848-ee82abca0056
+
+  # Optional cap on what Corpora may be built from this credential (ADR 0043
+  # §3). Absent means no cap, not an empty one.
+  #
+  # Worth setting when creating a Corpus is less privileged than creating a
+  # Connection: without it, anyone who can create a Corpus can reach anything
+  # this token can, and the broker would be taking the caller's word for what
+  # is in scope.
+  allowedScopes:
+    spaces:
+      - GLOBEX
+
+  # The INGESTION credential, shared by every Corpus over this Connection. It
+  # stays a service credential: a scheduled reconcile has no calling user, so a
+  # per-user sync is incoherent as stated (ADR 0038 §7).
+  #
+  # An API token on a dedicated service account, as `email:token`
+  # (docs/adr/0044). Long-lived on purpose — nothing refreshes a service
+  # credential, so an OAuth access token here syncs for about an hour and then
+  # fails permanently, in a way that reads as a permissions problem.
+  #
+  # Per-user reads do NOT use this. They run on the caller's own delegated
+  # OAuth token (docs/adr/0040), which is refreshed by the integration-gateway.
+  secretEnv:
+    - name: SERVICE_TOKEN
+      secretRef:
+        name: bitovi-atlassian
+        key: token
+
+  # Retrieval is the opposite of ingestion: every candidate is probed against
+  # the source with the ASKING USER's own token before it can be ranked,
+  # prompted or cited (ADR 0040). Without this the site can be ingested but
+  # never served to a caller whose access differs from the ingestion
+  # credential's.
+  #
+  # On the Connection because it describes how a human authenticates to this
+  # system, which cannot differ between two spaces of one site. The controller
+  # copies it onto each Corpus's status.
+  identityProviders:
+    - atlassian

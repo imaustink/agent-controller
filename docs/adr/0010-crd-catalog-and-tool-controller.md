@@ -8,7 +8,7 @@
 > `CrdSkillRegistry`, `ToolRunLauncher`, `controllers/tool-controller/`).
 >
 > **Editorial note (2026-07-17):** the controller introduced here was later
-> renamed `controllers/core-controller` (Helm subchart `charts/core-controller`,
+> renamed `orchestrator/controllers/core-controller` (Helm subchart `charts/core-controller`,
 > image `core-controller`) — by then it reconciled `Tool`, `Skill`, `Agent`,
 > `ToolRun`, `AgentRun`, and `LocalTool` CRs, not just tools, so "tool-controller"
 > no longer described what it did. This ADR's body below is left as originally
@@ -64,7 +64,7 @@ as ADR 0009, but the refresh no longer requires an image rebuild.
 
 - "Register a tool/skill" is now `kubectl apply -f tool.yaml` /
   `skill.yaml` — no orchestrator rebuild. `tools/*/tool.yaml` and
-  `apps/agent-orchestrator/config/samples/*.yaml` hold the CRs.
+  `orchestrator/apps/agent-orchestrator/config/samples/*.yaml` hold the CRs.
 - The orchestrator no longer creates Jobs directly; only the Go controller
   does. The orchestrator's RBAC narrows to CRUD on the CRDs; the
   controller owns `batch/jobs`.
@@ -75,5 +75,5 @@ as ADR 0009, but the refresh no longer requires an image rebuild.
   (charts/tool-controller) before the orchestrator is useful.
 - CRD changes require the regeneration chain: edit Go types → `make
   generate manifests` (the latter also syncs the CRD yaml into
-  `charts/agent-controller/charts/core-controller/crds/`, which is generated
+  `orchestrator/charts/agent-controller/charts/core-controller/crds/`, which is generated
   and not committed) → rebuild controller image.

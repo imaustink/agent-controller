@@ -3,11 +3,11 @@
   "private": true,
   "version": "0.0.0",
   "workspaces": [
-    "framework/protocol",
-    "packages/*",
-    "apps/*",
-    "tools/*",
-    "tools-local/http-get-node",
+    "framework/*",
+    "catalog/agents/*",
+    "catalog/tools/*",
+    "catalog/tools-local/http-get-node",
+    "orchestrator/apps/*",
     "e2e"
   ],
   "scripts": {

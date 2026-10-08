@@ -165,8 +165,8 @@ jobs:
         # go.sum). The controller is a heavier kubebuilder project handled in
         # its own job below.
         module:
-          - sidecars/localtool-executor
-          - tools-local/http-get-go
+          - orchestrator/sidecars/localtool-executor
+          - catalog/tools-local/http-get-go
     defaults:
       run:
         working-directory: ${{ matrix.module }}
@@ -205,7 +205,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: engines/temporal
+        working-directory: orchestrator/engines/temporal
     steps:
       - uses: actions/checkout@v5
 
@@ -214,8 +214,8 @@ jobs:
       # setup-go's cache, while this module has a go.sum worth caching.
       - uses: actions/setup-go@v6
         with:
-          go-version-file: engines/temporal/go.mod
-          cache-dependency-path: engines/temporal/go.sum
+          go-version-file: orchestrator/engines/temporal/go.mod
+          cache-dependency-path: orchestrator/engines/temporal/go.sum
 
       - name: gofmt
         run: |
@@ -240,7 +240,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: charts/agent-controller/charts/temporal-engine
+        working-directory: orchestrator/charts/agent-controller/charts/temporal-engine
     steps:
       - uses: actions/checkout@v5
 
@@ -344,14 +344,14 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: controllers/core-controller
+        working-directory: orchestrator/controllers/core-controller
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: controllers/core-controller/go.mod
-          cache-dependency-path: controllers/core-controller/go.sum
+          go-version-file: orchestrator/controllers/core-controller/go.mod
+          cache-dependency-path: orchestrator/controllers/core-controller/go.sum
 
       # Reuse the project's own Makefile targets so CI runs exactly what a
       # developer runs locally, rather than a second, drifting definition of

@@ -3,8 +3,8 @@ name: Validate CRD samples
 on:
   pull_request:
     paths:
-      - "controllers/core-controller/config/crd/**"
-      - "charts/community-components/**"
+      - "orchestrator/controllers/core-controller/config/crd/**"
+      - "orchestrator/charts/community-components/**"
 
 permissions:
   contents: read
@@ -33,9 +33,9 @@ jobs:
         uses: helm/kind-action@v1
 
       - name: Install CRDs
-        run: kubectl apply -f controllers/core-controller/config/crd/bases/
+        run: kubectl apply -f orchestrator/controllers/core-controller/config/crd/bases/
 
-      # charts/community-components is the only place these Tool/Skill/Agent
+      # orchestrator/charts/community-components is the only place these Tool/Skill/Agent
       # CRs are defined now (no more standalone tools/*/tool.yaml or
       # apps/**/config/samples/*.yaml twins to drift out of sync) -- render it
       # with every component enabled so this validates the full catalog, then
@@ -47,8 +47,8 @@ jobs:
       # including the Agent production actually runs.
       - name: Render community-components with every component enabled
         run: |
-          helm template community-components charts/community-components \
-            -f charts/community-components/values-ci-all.yaml \
+          helm template community-components orchestrator/charts/community-components \
+            -f orchestrator/charts/community-components/values-ci-all.yaml \
             > /tmp/community-components-rendered.yaml
 
       - name: Assert every template was actually rendered
@@ -60,17 +60,17 @@ jobs:
         # failure.
         run: |
           missing=()
-          for f in charts/community-components/templates/*.yaml; do
+          for f in orchestrator/charts/community-components/templates/*.yaml; do
             base=$(basename "$f")
             grep -q "# Source: community-components/templates/$base" /tmp/community-components-rendered.yaml || missing+=("$base")
           done
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::These templates rendered nothing, so they were NOT validated:"
             printf '  %s\n' "${missing[@]}"
-            echo "Enable them in charts/community-components/values-ci-all.yaml."
+            echo "Enable them in orchestrator/charts/community-components/values-ci-all.yaml."
             exit 1
           fi
-          echo "All $(ls charts/community-components/templates/*.yaml | wc -l | tr -d ' ') templates rendered."
+          echo "All $(ls orchestrator/charts/community-components/templates/*.yaml | wc -l | tr -d ' ') templates rendered."
 
       - name: Validate rendered CRs against the API server
         run: kubectl apply --dry-run=server -f /tmp/community-components-rendered.yaml

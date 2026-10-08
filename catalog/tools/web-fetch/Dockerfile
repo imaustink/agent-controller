@@ -1,0 +1,57 @@
+# syntax=docker/dockerfile:1
+#
+# Build from the REPO ROOT (this tool depends on the shared
+# @controller-agent/messaging workspace package):
+#
+#   docker build -f catalog/tools/web-fetch/Dockerfile -t web-fetch:latest .
+
+############################
+# Build stage
+############################
+FROM node:20-bookworm-slim AS build
+WORKDIR /repo
+
+# Install across the whole workspace so the local @controller-agent/messaging
+# package resolves without hitting the registry.
+COPY package.json package-lock.json* ./
+COPY framework/messaging/package.json framework/messaging/package.json
+COPY catalog/tools/web-fetch/package.json catalog/tools/web-fetch/package.json
+RUN npm ci
+
+COPY framework/messaging framework/messaging
+COPY catalog/tools/web-fetch/tsconfig.json catalog/tools/web-fetch/tsconfig.json
+COPY catalog/tools/web-fetch/src catalog/tools/web-fetch/src
+
+RUN npm run build --workspace=@controller-agent/messaging \
+  && npm run build --workspace=web-fetch \
+  && npm prune --omit=dev \
+  # Materialize the workspace package into a real directory (not the npm-created
+  # symlink) so it survives being copied into the runtime stage below.
+  && rm -rf node_modules/@controller-agent/messaging \
+  && mkdir -p node_modules/@controller-agent/messaging \
+  && cp -r framework/messaging/dist node_modules/@controller-agent/messaging/dist \
+  && cp framework/messaging/package.json node_modules/@controller-agent/messaging/package.json
+
+############################
+# Runtime stage
+############################
+# No browser needed here -- this tool only does a plain HTTP GET + Readability
+# extraction, never JS rendering (see README's known limitations).
+FROM node:20-bookworm-slim AS runtime
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=build /repo/node_modules ./node_modules
+COPY --from=build /repo/catalog/tools/web-fetch/dist ./dist
+COPY --from=build /repo/catalog/tools/web-fetch/package.json ./package.json
+
+# node:20-bookworm-slim ships an unprivileged 'node' user.
+USER node
+
+ENTRYPOINT ["node", "dist/index.js"]

@@ -9,6 +9,6 @@ coverage
 **/*.test.ts
 
 # The Temporal engine is a separate Go module built from its own context
-# (engines/temporal), so it is only dead weight in the root context every
+# (orchestrator/engines/temporal), so it is only dead weight in the root context every
 # Node image uses.
 engines

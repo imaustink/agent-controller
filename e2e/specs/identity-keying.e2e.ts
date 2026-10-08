@@ -137,7 +137,7 @@ describe("credential keying converges across entry points (ADR 0029/0030)", () =
     // controller's own contract, with its own tests; conflating the two makes
     // an orchestrator spec fail for a controller reason. (It was previously
     // observed NOT to happen on minikube. That turned out to be a stale
-    // controller image, not a defect -- see controllers/core-controller/
+    // controller image, not a defect -- see orchestrator/controllers/core-controller/
     // .dockerignore -- and the happy-path spec asserts the rendered Job.)
     const envNames = await agentRunSecretEnvNames(run.name);
     expect(envNames).toContain("CLAUDE_CODE_OAUTH_TOKEN");

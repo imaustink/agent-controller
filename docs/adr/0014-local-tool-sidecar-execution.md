@@ -43,7 +43,7 @@ isolated, slowest): in-pod execution keeps latency low (no scheduling, warm
 runtime, shared cache) while a separate container restores real
 container-level isolation.
 
-1. **`LocalTool` CRD** (`controllers/core-controller/api/v1alpha1/localtool_types.go`).
+1. **`LocalTool` CRD** (`orchestrator/controllers/core-controller/api/v1alpha1/localtool_types.go`).
    Catalog/RAG fields like `Tool` (`description`/`input`/`output`/`allowedRoles`/
    `tier`) plus a `runtime` enum, a pinned package coordinate
    (`package`+exact `version`+optional `entry`, or `sourceURL`+`checksum` for
@@ -58,7 +58,7 @@ container-level isolation.
    interface — it works identically for every runtime, and any language just
    needs to read stdin and print one line.
 
-3. **Executor sidecars** (`sidecars/localtool-executor/`, one Go binary,
+3. **Executor sidecars** (`orchestrator/sidecars/localtool-executor/`, one Go binary,
    `LOCALTOOL_RUNTIME` selects behavior, one image per runtime). Each listens on
    a **unix socket** on a shared `emptyDir` (`POST /run`, HTTP-over-unix-socket
    — off the network entirely). It fetches+caches the pinned package (with
@@ -71,7 +71,7 @@ container-level isolation.
    force mounting a fresh `/proc`, which a container runtime's masked `/proc`
    makes the kernel reject — so the bound `/proc` is reused instead.
 
-4. **Orchestrator integration** (`apps/agent-orchestrator/src/local/`). A
+4. **Orchestrator integration** (`orchestrator/apps/agent-orchestrator/src/local/`). A
    `CrdLocalToolRegistry` reads `LocalTool` CRs into `ToolDescriptor`s carrying a
    `localExec` spec (instead of a `jobTemplate`); both catalogs are unioned into
    the same RAG index, so skills reference either kind transparently by CR name.
