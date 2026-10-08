@@ -1,4 +1,4 @@
-import { connect, JSONCodec, type NatsConnection } from "nats";
+import type { NatsConnection } from "nats";
 import type { Event } from "./event.js";
 import type { Sink } from "./sink.js";
 
@@ -20,24 +20,26 @@ export interface NatsSinkOptions {
  * NATS server provides transport-level security. This removes the need to
  * share a callback HMAC secret between the orchestrator and every tool Job.
  *
- * The connection is lazily established on the first {@link emit} call so
- * tool containers that use the `stdout` or `file` transport are not forced
- * to carry a NATS client import cost.
+ * Both the connection AND the `nats` module itself are loaded on the first
+ * {@link emit} call, so importing this package never loads a NATS client:
+ * a tool on the `stdout`/`file`/`callback` transport, or anything using only
+ * the protocol schemas, doesn't carry it (ADR 0047).
  */
 export class NatsSink<TResult = unknown> implements Sink<TResult> {
   private nc: NatsConnection | undefined;
-  private readonly codec = JSONCodec<Event>();
+  private readonly encoder = new TextEncoder();
 
   constructor(private readonly opts: NatsSinkOptions) {}
 
   async emit(event: Event<TResult>): Promise<void> {
     if (!this.nc) {
+      const { connect } = await import("nats");
       this.nc = await connect({ servers: this.opts.natsUrl });
     }
     // publish is fire-and-forget at the nats.js layer; the tool's
     // activeDeadlineSeconds (set by the core-controller) bounds the worst
     // case if the message is never received.
-    this.nc.publish(this.opts.subject, this.codec.encode(event as Event));
+    this.nc.publish(this.opts.subject, this.encoder.encode(JSON.stringify(event)));
   }
 
   async close(): Promise<void> {
