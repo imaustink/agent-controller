@@ -8,7 +8,10 @@ import (
 	"sync"
 	"time"
 
+	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/agentcontroller/protocol/v1"
 	"github.com/nats-io/nats.go"
+
+	"github.com/controller-agent/temporal-engine/internal/messaging"
 )
 
 // Signaler is the slice of the Temporal client the bridge needs.
@@ -115,6 +118,13 @@ func (b *Bridge) Detach(agentRunID string) {
 }
 
 func (b *Bridge) handleUp(agentRunID string, data []byte) {
+	// The wire contract decides validity (see messaging.CheckContract); UpMessage
+	// is only how a valid message is carried into the workflow. Dropping an
+	// invalid message is the same outcome an undecodable one has always had.
+	if err := messaging.CheckContract(data, &protocolv1.AgentUpMessage{}); err != nil {
+		log.Printf("[agent-bridge] %s: up-message violates the wire contract, dropped: %v", agentRunID, err)
+		return
+	}
 	var msg UpMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
 		log.Printf("[agent-bridge] %s: undecodable up-message: %v", agentRunID, err)
@@ -213,9 +223,13 @@ func (b *Bridge) publish(agentRunID string, msg DownMessage) error {
 	subject := run.subjects.Down
 	b.mu.Unlock()
 
-	data, err := json.Marshal(msg)
+	wire, err := msg.wire()
 	if err != nil {
-		return fmt.Errorf("marshal %s: %w", msg.Type, err)
+		return fmt.Errorf("encode %s: %w", msg.Type, err)
+	}
+	data, err := messaging.EncodeContract(wire)
+	if err != nil {
+		return fmt.Errorf("%s violates the wire contract: %w", msg.Type, err)
 	}
 	return b.conn.Publish(subject, data)
 }

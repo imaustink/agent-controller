@@ -236,9 +236,20 @@ by giving the framework a non-NATS `AgentChannel` and `Sink`.
   - proto3 JSON field names and the exact lifecycle shapes must stay
     wire-compatible with today's JSON during cutover; `buf breaking` guards the
     contract from that point forward but the first translation is by hand.
-  - The Go engine's hand-written `internal/messaging` mirrors are deleted in
-    favor of generated code; the port must be proven equivalent (golden-fixture
-    conformance) as it is replaced, not after.
+  - The Go engine's hand-written *validation* is deleted in favor of the
+    contract, but its protocol *structs* stay. They are Temporal signal
+    payloads, activity results and workflow state, so their JSON is recorded
+    in workflow history: replacing them with generated types would change how
+    in-flight workflows decode on replay, and routing a tool's result through
+    `google.protobuf.Value` would reorder its keys and round large integers
+    before the model saw them. So the engine adopts the contract **at its wire
+    edges**: inbound callbacks and agent up-messages must pass the contract
+    before they are decoded into the existing structs, and outbound
+    down-messages are encoded through the generated types. The contract
+    decides validity; the structs carry what passed.
+  - An engine consumes the contract the way a third party would: as a
+    versioned Go module from this repository, not a local `replace`, so image
+    builds whose context is the engine's own directory keep working.
 
 - **Two contract formats to keep coherent.** proto (wire) and OpenAPI (CRDs). We
   accept this because each is the correct tool for its layer and both are
@@ -278,8 +289,8 @@ directory move can merge without touching deployment paths:
 2. The import-boundary check in CI.
 3. `buf` + the `.proto` contract, committed TS/Go codegen, the golden-fixture
    conformance suite, and the CI drift check.
-4. The Temporal engine swaps its hand-written protocol mirrors for the generated
-   Go types.
+4. The Temporal engine validates and encodes at its wire edges through the
+   generated Go types, replacing its hand-written validation (see Consequences).
 5. `messaging` split into schemas and transports, with an in-process
    `AgentChannel`/`Sink` so an agent runs without NATS.
 6. The `framework/` / `orchestrator/` / `catalog/` directory move.
