@@ -51,4 +51,10 @@ export interface IdentityLinkStore {
    * browser round-trip instead of re-checking on every chat turn.
    */
   waitForCompletion(provider: string, subject: string, timeoutMs: number): Promise<LinkedCredential | undefined>;
+  /**
+   * Forgets a subject's credential for `provider` -- the Connections page's
+   * Disconnect (docs/adr/0046). Local only: the grant at the provider is
+   * untouched, which the page tells the user. A no-op when nothing is stored.
+   */
+  delete(provider: string, subject: string): Promise<void>;
 }

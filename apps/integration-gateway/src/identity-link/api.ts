@@ -10,6 +10,21 @@ import type { OAuthAuthCodeLinker } from "./oauth-authcode-linker.js";
  */
 const DEVICE_FLOW_PROVIDER = "github";
 
+/**
+ * Human-facing provider names for the callback result pages. The `:provider`
+ * path segment is lowercase (the CR name, e.g. `atlassian`), which title-cases
+ * cleanly for every provider except `github`'s brand capitalisation. Anything
+ * not listed falls back to title-casing the segment, so a newly registered
+ * provider still renders a reasonable name without a code change here.
+ */
+const PROVIDER_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  github: "GitHub",
+};
+
+function providerDisplayName(provider: string): string {
+  return PROVIDER_DISPLAY_NAMES[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
 /** Hard ceiling on `/wait`'s `timeoutMs`, matching the authcode `state` TTL -- a caller can't hold this route open longer than a link attempt could possibly still be valid for. */
 const MAX_WAIT_MS = 10 * 60 * 1000;
 
@@ -38,11 +53,18 @@ function sendHtml(res: ServerResponse, status: number, html: string): void {
   res.writeHead(status, { "content-type": "text/html; charset=utf-8" }).end(html);
 }
 
+function escapeHtml(raw: string): string {
+  return raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function htmlPage(title: string, message: string): string {
+  title = escapeHtml(title);
+  message = escapeHtml(message);
   return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem; color: #1a1a1a; }
@@ -76,6 +98,15 @@ export class IdentityLinkApi {
     private readonly authCodeLinkers: ReadonlyMap<string, OAuthAuthCodeLinker> = new Map(),
   ) {}
 
+  /**
+   * Set by the Connections page (docs/adr/0046): where to send the browser
+   * once a link it started completes. `undefined` keeps the result page below.
+   */
+  completionRedirect?: (req: IncomingMessage, res: ServerResponse, provider: string) => string | undefined;
+
+  /** The same, for a link the user declined at the provider. */
+  cancelRedirect?: (req: IncomingMessage, res: ServerResponse, provider: string) => string | undefined;
+
   /** A provider this gateway can actually link. */
   private supports(provider: string): boolean {
     return provider === DEVICE_FLOW_PROVIDER || this.authCodeLinkers.has(provider);
@@ -105,6 +136,7 @@ export class IdentityLinkApi {
       res.writeHead(400, { "content-type": "text/plain" }).end(`Unsupported identity provider: ${provider}`);
       return true;
     }
+    const displayName = providerDisplayName(provider);
 
     const state = url.searchParams.get("state");
     if (!state) {
@@ -118,12 +150,21 @@ export class IdentityLinkApi {
 
     const error = url.searchParams.get("error");
     if (error) {
-      // GitHub's denial redirect (e.g. the user clicked "Cancel"). This is a
-      // completed-but-declined flow, not really an error condition, so 200.
+      // The provider's denial redirect (e.g. the user clicked "Cancel"). This is
+      // a completed-but-declined flow, not really an error condition, so 200.
+      //
+      // A link the Connections page started goes back to the page instead --
+      // and, mid-way through a one-click chain, stops the chain there rather
+      // than moving on to the next provider (docs/adr/0046).
+      const back = this.cancelRedirect?.(req, res, provider);
+      if (back) {
+        res.writeHead(303, { location: back }).end();
+        return true;
+      }
       sendHtml(
         res,
         200,
-        htmlPage("GitHub link cancelled", "You declined the request. You can try again from chat whenever you're ready."),
+        htmlPage(`${displayName} link cancelled`, "You declined the request. You can try again whenever you're ready."),
       );
       return true;
     }
@@ -151,10 +192,15 @@ export class IdentityLinkApi {
       return true;
     }
 
+    const back = this.completionRedirect?.(req, res, provider);
+    if (back) {
+      res.writeHead(303, { location: back }).end();
+      return true;
+    }
     sendHtml(
       res,
       200,
-      htmlPage("GitHub account linked", "You can close this tab and return to your chat."),
+      htmlPage(`${displayName} account linked`, "You can close this tab and return to your chat."),
     );
     return true;
   }
