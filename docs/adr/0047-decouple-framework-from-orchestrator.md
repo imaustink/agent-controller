@@ -38,7 +38,7 @@ that keep either half from standing alone.
 
 Three debts stand in the way:
 
-- **`packages/messaging` is a grab-bag.** It now carries four concern-groups in
+- **`framework/messaging` is a grab-bag.** It now carries four concern-groups in
   one package — the tool `Event` stream, the `TurnEvent` lifecycle stream (ADR
   0004 of the temporal engine), the bidirectional agent protocol, and
   `ArtifactRef` — *and* mixes the transport implementations (`StdoutSink`,
@@ -52,7 +52,7 @@ Three debts stand in the way:
 
 - **The contract is hand-ported across stacks, and growing.** The schemas exist
   once in TypeScript (zod) and again as hand-written Go mirrors
-  (`engines/temporal/internal/messaging/*.go`). `TurnEvent` arriving this week
+  (`orchestrator/engines/temporal/internal/messaging/*.go`). `TurnEvent` arriving this week
   added a third copy by hand. Every protocol change now costs N hand-synced
   copies with nothing enforcing parity — and Python and Rust would make N
   larger. zod cannot be the source of truth for a multi-language public
@@ -74,7 +74,7 @@ physical repo/registry split until the seam is proven.
   The example agents (`stub-agent`, the SWE agents) are reference implementations
   that consume it, grouped under `catalog/` below.
 - **Orchestrator** (the product; needs K8s/Qdrant/Redis/Temporal): the LangGraph
-  engine (`agent-orchestrator`), the Temporal engine (`engines/temporal`), the
+  engine (`agent-orchestrator`), the Temporal engine (`orchestrator/engines/temporal`), the
   controller (`core-controller`), the brokers/gateways, `charts/`, `sidecars/`.
 
 Each major unit is independently adoptable (à la carte). The boundary is made
@@ -86,7 +86,7 @@ The repository is regrouped physically into three top-level trees:
 
 - **`framework/`** — `messaging`, `agent-runtime`, `github-app-auth`, the
   `.proto` contract and its generated code.
-- **`orchestrator/`** — `agent-orchestrator`, `engines/temporal`,
+- **`orchestrator/`** — `agent-orchestrator`, `orchestrator/engines/temporal`,
   `core-controller`, the brokers/gateways, `sidecars/`, `charts/`.
 - **`catalog/`** — the reference tools (`catalog/tools/*`) and agents
   (`catalog/agents/*`: `stub-agent` and the SWE agents). They are consumers of

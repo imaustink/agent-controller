@@ -8,7 +8,7 @@
 # which produced a confusing failure the first time through:
 #
 #   1. Helm does not recurse into file:// subcharts. `skaffold run` builds
-#      charts/agent-controller's dependencies but NOT agent-orchestrator's own
+#      orchestrator/charts/agent-controller's dependencies but NOT agent-orchestrator's own
 #      qdrant dependency, so qdrant is silently never deployed and the
 #      orchestrator crashloops on "qdrant startup check failed" while Helm
 #      reports the far less helpful "context deadline exceeded".
@@ -39,7 +39,7 @@ fi
 step "Fetching nested subchart dependencies (Helm won't recurse into these)..."
 # The top-level chart's deps are handled by skaffold (skipBuildDependencies:
 # false). This is the nested one it cannot see -- see note 1 in the header.
-helm dependency update "$REPO_ROOT/charts/agent-controller/charts/agent-orchestrator" >/dev/null
+helm dependency update "$REPO_ROOT/orchestrator/charts/agent-controller/charts/agent-orchestrator" >/dev/null
 echo "  ✓ qdrant"
 
 step "Applying CRDs..."
@@ -49,13 +49,13 @@ step "Applying CRDs..."
 # while listing that resource. This is exactly how `integrationroutes` came to
 # be missing here: every other CRD existed, from an older install.
 #
-# NOTE: dev-up.sh applies these from charts/agent-controller/charts/
+# NOTE: dev-up.sh applies these from orchestrator/charts/agent-controller/charts/
 # core-controller/crds/, which no longer exists. The generated bases below are
 # the real source.
-for crd in "$REPO_ROOT"/controllers/core-controller/config/crd/bases/*.yaml; do
+for crd in "$REPO_ROOT"/orchestrator/controllers/core-controller/config/crd/bases/*.yaml; do
   kubectl apply -f "$crd" --server-side --force-conflicts >/dev/null
 done
-echo "  ✓ $(ls "$REPO_ROOT"/controllers/core-controller/config/crd/bases/*.yaml | wc -l | tr -d ' ') CRDs"
+echo "  ✓ $(ls "$REPO_ROOT"/orchestrator/controllers/core-controller/config/crd/bases/*.yaml | wc -l | tr -d ' ') CRDs"
 
 step "Creating throwaway secrets..."
 "$REPO_ROOT/e2e/scripts/bootstrap-secrets.sh"
@@ -107,7 +107,7 @@ step "Building images and deploying (skaffold profile: e2e)..."
 # .dockerignore, and a .dockerignore it can't evaluate yields a list that never
 # changes -- so it silently re-tags an old image for every new commit. That
 # shipped an eight-day-old core-controller here, presenting as a rendered Job
-# missing its per-run secretEnv (see controllers/core-controller/.dockerignore).
+# missing its per-run secretEnv (see orchestrator/controllers/core-controller/.dockerignore).
 #
 # Check with:  skaffold diagnose -p e2e | grep -A3 'Docker artifact: <name>'
 # A dependency count far below the artifact's real source-file count is the tell.

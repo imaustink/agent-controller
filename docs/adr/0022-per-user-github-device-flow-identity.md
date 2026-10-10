@@ -22,17 +22,17 @@ Two structural gaps stood in the way of "act as the calling user" before this
 decision:
 
 1. **No per-caller persistent store.** `SessionRecord`
-   (`apps/agent-orchestrator/src/session/types.ts`) is keyed by conversation
+   (`orchestrator/apps/agent-orchestrator/src/session/types.ts`) is keyed by conversation
    id and scoped to session TTL (ADR 0012) — there was nowhere to durably
    remember "this identity subject's GitHub account is *this* GitHub
    account," independent of any one conversation.
 2. **No per-invocation credential injection.** `AgentRunSpec`
-   (`controllers/core-controller/api/v1alpha1/agentrun_types.go`) carried
+   (`orchestrator/controllers/core-controller/api/v1alpha1/agentrun_types.go`) carried
    only `agentRef`/`goal`/`callback`/`timeoutSeconds` — every credential an
    Agent's Job saw came from the Agent CR's own static `secretEnv`, baked in
    at deploy time and identical for every invocation.
 
-Login to the system (Open WebUI, via Google OIDC — `charts/agent-controller/
+Login to the system (Open WebUI, via Google OIDC — `orchestrator/charts/agent-controller/
 values-production.yaml`'s `identityResolver: oidc`) authenticates a Google
 identity, which cannot authenticate GitHub — there was no existing GitHub
 identity anywhere in the system to reuse. Getting a per-user GitHub credential
@@ -49,17 +49,17 @@ coding request ever re-prompts the same user.
 
 ## Decision
 
-1. **`apps/integration-gateway` becomes a general external-identity
+1. **`orchestrator/apps/integration-gateway` becomes a general external-identity
    credential broker**, in addition to its existing GitHub-webhook-relay
    role — it already sits at the boundary between the cluster and GitHub
    (App JWT/installation-token minting for posting issue comments), so it is
    the natural owner of the reverse direction too: linking a specific
    person's own GitHub account.
-   - `packages/github-app-auth/src/deviceFlow.ts` adds `startDeviceFlow`,
+   - `framework/github-app-auth/src/deviceFlow.ts` adds `startDeviceFlow`,
      `pollDeviceFlow`, `refreshUserToken` — thin wrappers around GitHub's
      `/login/device/code` and `/login/oauth/access_token` endpoints, using
      only the App's `client_id` (new config, public, not a secret).
-   - `apps/integration-gateway/src/identity-link/` adds a subject-keyed,
+   - `orchestrator/apps/integration-gateway/src/identity-link/` adds a subject-keyed,
      durable store (`RedisIdentityLinkStore` — no session TTL, since an
      account link persists until the user re-links; fields encrypted at rest
      with AES-256-GCM under a new `IDENTITY_LINK_ENCRYPTION_KEY`), a
@@ -108,14 +108,14 @@ coding request ever re-prompts the same user.
    `GITHUB_TOKEN` via `resolveGithubToken` (ADR 0016/0018); this decision
    just changes what populates that env var for identity-linked deployments
    — a specific user's token instead of a bot/App-installation token. Its
-   Helm chart (`charts/community-components/templates/agent-opencode-swe.yaml`)
+   Helm chart (`orchestrator/charts/community-components/templates/agent-opencode-swe.yaml`)
    gains an `identityLink.enabled` flag: when true, `identityProviders:
    [github]` is set on the Agent CR and its static `GITHUB_TOKEN`/App-
    installation `secretEnv` entries are omitted entirely (no shared
    credential baked in at all); `ANTHROPIC_API_KEY` (a model credential,
    unrelated to GitHub identity) is unaffected either way. Left disabled by
    default — existing PAT/App-installation deployments are unchanged.
-5. **The App JWT/installation-token machinery (`packages/github-app-auth`'s
+5. **The App JWT/installation-token machinery (`framework/github-app-auth`'s
    `signAppJwt`/`mintInstallationToken`, ADR 0018) is not removed.** It keeps
    serving `integration-gateway`'s own bot-identity use (posting issue
    comments as the gateway's own bot login) — a legitimately-bot concern,

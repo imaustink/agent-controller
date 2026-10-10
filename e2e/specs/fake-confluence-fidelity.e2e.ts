@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { ConfluenceDriver } from "../../apps/connection-broker/src/drivers/confluence.js";
-import { PermissionDeniedError } from "../../apps/connection-broker/src/drivers/types.js";
+import { ConfluenceDriver } from "../../orchestrator/apps/connection-broker/src/drivers/confluence.js";
+import { PermissionDeniedError } from "../../orchestrator/apps/connection-broker/src/drivers/types.js";
 
 /**
  * The fake Confluence, driven by the REAL Confluence driver.

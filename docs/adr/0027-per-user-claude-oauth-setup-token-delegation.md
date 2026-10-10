@@ -35,7 +35,7 @@ versions — the same caveat this repo already carries for the CLI's headless
 
 ## Decision
 
-1. **`apps/integration-gateway` gains a second, separate credential-broker
+1. **`orchestrator/apps/integration-gateway` gains a second, separate credential-broker
    surface, `src/claude-auth/`**, alongside (not merged into) `identity-link/`
    — the mechanics are different enough (a PTY subprocess vs. GitHub's HTTP
    device flow) that sharing one abstraction there would cost more than it
@@ -88,7 +88,7 @@ versions — the same caveat this repo already carries for the CLI's headless
    GitHub flow's own tests/behavior are unaffected.
 3. **Re-authentication on an expired/invalid credential, mid-run.** Because
    `claude-code-swe-agent` uses the plain `runAgent()` contract
-   (`packages/agent-runtime`), it signals this by throwing an `Error` with a
+   (`framework/agent-runtime`), it signals this by throwing an `Error` with a
    `code: "claude_auth_expired"` property when `claude-runner.ts` classifies
    an auth-looking failure; `runAgent()` already publishes any string
    `err.code` as the wire `failed.code` (previously it only ever hardcoded
@@ -217,7 +217,7 @@ It did not: `runtime.ts` hardcoded `agent_error`/`config_error`, and
 claude-code-swe-agent threw a plain `Error`. `handleAgentTurnFailure` was
 therefore dead code from the day it was written.
 
-- `packages/agent-runtime` exports `AgentFailure(code, message)`, and
+- `framework/agent-runtime` exports `AgentFailure(code, message)`, and
   `runAgent()` forwards its code onto the wire. Recognized by `instanceof` or
   `name === "AgentFailure"` (realm-safe), never by a bare `.code`, so Node's
   own `ENOENT`/`ECONNREFUSED` don't start leaking as failure codes.

@@ -1,11 +1,11 @@
 # temporal-dev-server.yaml — a single-node Temporal server for the e2e stack.
 #
-# `charts/agent-controller/values.yaml` defaults `temporal-engine.enabled: true`
+# `orchestrator/charts/agent-controller/values.yaml` defaults `temporal-engine.enabled: true`
 # and `agent-orchestrator.config.agentEngine: temporal` (docs/adr/0036), so every
 # e2e run now routes agent turns through the Temporal engine's worker/gateway —
 # but neither the temporal-engine subchart nor `e2e/scripts/up.sh` ever bundled
 # an actual Temporal server ("Assumes a reachable Temporal cluster; no server is
-# bundled", `charts/agent-controller/values.yaml`). Without one, the engine's
+# bundled", `orchestrator/charts/agent-controller/values.yaml`). Without one, the engine's
 # worker/gateway crashloop trying to reach a frontend that doesn't exist, and
 # nothing in the suite ever proves an Agent actually took the
 # `BridgedAgentWorkflow` path.

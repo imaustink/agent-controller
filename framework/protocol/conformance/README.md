@@ -30,7 +30,7 @@ Each case is:
 | -- | -------------- | ------ |
 | `proto-ts` | generated TS + `@bufbuild/protovalidate` | `framework/protocol/src/conformance.test.ts` |
 | `proto-go` | generated Go + `protovalidate-go` | `framework/protocol/go/conformance_test.go` |
-| `zod` | hand-written zod schemas in `@controller-agent/messaging` | `packages/messaging/src/conformance.test.ts` |
+| `zod` | hand-written zod schemas in `@controller-agent/messaging` | `framework/messaging/src/conformance.test.ts` |
 
 Every runner asserts, for every case:
 

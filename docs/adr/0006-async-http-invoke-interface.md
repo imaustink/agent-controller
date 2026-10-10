@@ -51,7 +51,7 @@ call the agent, the callback port only to Job pods in-cluster.
 
 ## Decision
 
-`apps/agent-orchestrator` runs as a long-lived process (unchanged from ADR
+`orchestrator/apps/agent-orchestrator` runs as a long-lived process (unchanged from ADR
 0001) exposing two independent HTTP listeners:
 
 - `InvokeServer` (`AGENT_HTTP_PORT`, default 8081) — consumer-facing.

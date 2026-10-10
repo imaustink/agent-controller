@@ -25,7 +25,7 @@ import { describe, expect, it } from "vitest";
  * milliseconds rather than after a deploy.
  */
 
-const CHARTS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "charts");
+const CHARTS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "orchestrator", "charts");
 
 /** Every values file under charts/, including subcharts. */
 function valuesFiles(dir: string): string[] {

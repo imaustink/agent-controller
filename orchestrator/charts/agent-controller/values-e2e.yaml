@@ -1,0 +1,464 @@
+# values-e2e.yaml — minikube overlay for the e2e suite (see e2e/README.md).
+#
+# Layered ON TOP of values-minikube-demo.yaml, not instead of it:
+#   helm upgrade --install agent-controller orchestrator/charts/agent-controller \
+#     -f orchestrator/charts/agent-controller/values-minikube-demo.yaml \
+#     -f orchestrator/charts/agent-controller/values-e2e.yaml
+#
+# The demo values exist to make a human-usable playground; this file adds only
+# what an automated test needs on top: an integration-gateway to receive
+# webhooks (the demo profile leaves it disabled, so there is nothing for a
+# webhook test to talk to), a GitHub API redirected at the in-cluster stub, and
+# deterministic identity/routing config.
+#
+# EVERY secret value referenced here is a throwaway generated at bring-up time
+# by `e2e/scripts/bootstrap-secrets.sh`. Nothing in this file is a real
+# credential, and none of it is shared with any other environment. The one
+# genuinely real key the stack needs (OPENAI_API_KEY, for the orchestrator's
+# planner) is created out-of-band by a human — see that script.
+
+temporal-engine:
+  # Knowledge bases (docs/adr/0039), served out of the connection-broker.
+  #
+  # ADR 0036 keeps the engines in parity, so a knowledge-base behaviour
+  # proven on one engine and never wired on the other is exactly the
+  # asymmetry this suite exists to catch — hence both, not one.
+  knowledgeBases:
+    enabled: true
+    brokerUrl: "http://agent-controller-connection-broker:8080"
+    brokerTokenSecret:
+      name: e2e-connection-broker-secrets
+      key: orchestratorToken
+  # MCP tools (docs/adr/0045), dispatched through the mcp-broker. On both engines
+  # for the same parity reason as knowledge bases above — a tool call proven on
+  # one engine and unwired on the other is exactly the asymmetry this suite
+  # catches. catalog-sync indexes MCPTools, the worker dispatches them.
+  mcp:
+    enabled: true
+    brokerUrl: "http://agent-controller-mcp-broker:8080"
+    brokerTokenSecret:
+      name: e2e-mcp-broker-secrets
+      key: orchestratorToken
+  # Points the worker/gateway at `e2e/manifests/temporal-dev-server.yaml`
+  # (applied by `e2e/scripts/up.sh` before this release is deployed) instead of
+  # the production default (a real `temporalio/helm-charts` release's frontend
+  # Service, `temporal-frontend.temporal.svc:7233`) -- there is no such cluster
+  # here, and the chart's own default address is unreachable in a hermetic
+  # minikube profile.
+  temporal:
+    address: temporal-dev-server.controller-agent.svc:7233
+    namespace: default
+  # The repository read gate asks the GitHub that issued the callers' tokens,
+  # which here is the in-cluster stub. Without this the worker would check a
+  # fake-github token against api.github.com and refuse every gated turn.
+  # defaultOwner lets a chat request name a repository without its owner.
+  github:
+    apiUrl: "http://fake-github.controller-agent.svc.cluster.local"
+    defaultOwner: e2e-org
+  llm:
+    # The subchart's own default (`agent-controller-agent-orchestrator`)
+    # assumes the `agent-orchestrator` subchart at its OWN release-name-derived
+    # secret name, but that subchart sets `fullnameOverride: agent-orchestrator`
+    # (`orchestrator/charts/agent-controller/values.yaml`), so its real Secret is
+    # `agent-orchestrator-secrets` -- the default name doesn't exist in ANY
+    # profile, e2e or otherwise, and the worker/gateway Pods CreateContainer-
+    # ConfigError on first boot without this override.
+    secretName: agent-orchestrator-secrets
+  callback:
+    # Same `fullnameOverride` gap as `llm.secretName` above, for the gateway's
+    # HMAC callback secret -- `agent-orchestrator-secrets` already carries
+    # `AGENT_CALLBACK_SECRET` (matching `callback.secretKey`'s default), since
+    # that's the same value agent-orchestrator's own tool-callback path signs
+    # with.
+    secretName: agent-orchestrator-secrets
+  nats:
+    # Empty by default -- `orchestrator/charts/agent-controller/charts/temporal-engine`'s own
+    # comment says this "disables bridged pod agents entirely, leaving the
+    # declarative loop and checkpoint-resume step tools", and the worker logs
+    # it plainly at startup ("AGENT_NATS_URL not set; bridged pod agents
+    # disabled"). This is the exact NATS the orchestrator itself is wired to
+    # (`agent-orchestrator.natsUrl` in values-minikube-demo.yaml derives the
+    # same Service) -- both engines have to speak to the same broker, since a
+    # bridged agent's Job publishes to AgentRun-id-keyed subjects regardless of
+    # which engine is driving the episode.
+    url: nats://agent-controller-nats.controller-agent.svc.cluster.local:4222
+  qdrant:
+    # Empty by default -- and every catalog-dependent activity (IntegrationRoute
+    # matching, Skill/Agent/Tool retrieval, delegation) needs it: without a
+    # Qdrant host, the worker logs "QDRANT_HOST not set; retrieval activities
+    # disabled" and every turn falls through the capability-need gate into a
+    # bare conversational answer, NEVER reaching delegateToAgent -- so no
+    # Agent, bridged or otherwise, is ever run. Reuses agent-orchestrator's own
+    # Qdrant instance (already deployed by this same release) rather than
+    # standing up a second one; `collectionPrefix` keeps its collections
+    # separate from the orchestrator's own (their payload schemas differ).
+    host: agent-controller-qdrant
+    port: 6334
+    collectionPrefix: te-
+  gateway:
+    senderAssertion:
+      # Without this, `GATEWAY_SENDER_ASSERTION_SECRET` is unset on the
+      # Temporal engine gateway, so it can never verify the signed assertion
+      # header agent-orchestrator's TemporalEngine sends (temporal-engine.ts:
+      # "the sender login travels as a SIGNED assertion, not a body field" --
+      # it never falls back to an unsigned body field for this hop). The
+      # gateway silently resolves an empty sender login instead, which is why
+      # `AGENT_ACTOR_LOGIN` never appears in a launched AgentRun's secretEnv
+      # for any webhook-driven turn. Same secret/value integration-gateway and
+      # agent-orchestrator already share for this exact purpose.
+      secretName: e2e-integration-gateway-secrets
+    identity:
+      # The Go gateway resolves ITS OWN caller identity from a bearer token --
+      # entirely separate from agent-orchestrator's own `config.staticIdentities`
+      # below, despite the identical JSON shape. But agent-orchestrator's
+      # internal hop to this gateway (`TemporalEngine`, orchestrator/apps/agent-orchestrator/
+      # src/engine/temporal-engine.ts) sends NO Authorization header at all
+      # unless `AGENT_TEMPORAL_ENGINE_TOKEN` is set, which nothing in this
+      # chart ever populates (its own secretKeyRef is `optional: true` against
+      # a key that doesn't exist). So EVERY call arrives tokenless, resolving
+      # to an EMPTY Caller.Subject -- and `runAgentTurn`
+      # (orchestrator/engines/temporal/internal/temporal/workflows/agentloop.go) treats an
+      # empty subject as "answer bare, skip the catalog entirely",
+      # unconditionally, regardless of the capability gate, retrieval, or a
+      # route's `forcedAgentId`. Without this, NOTHING ever delegates to any
+      # Agent under the Temporal engine -- not a bridged-agent-specific gap,
+      # a total one. `defaultSubject`/`defaultRoles` are exactly the
+      # documented lever for a tokenless caller (main.go: "give tokenless
+      # callers an identity — leave unset to fail closed to no
+      # capabilities"), matching the role agent-orchestrator's own shared
+      # `client-integration-gateway` subject plays for every webhook-driven
+      # turn today.
+      defaultSubject: client-integration-gateway
+      defaultRoles: reader,writer
+  worker:
+    # Must match agent-orchestrator.config.agentIdleTimeoutSeconds below: a
+    # bridged agent's Job speaks the same NATS protocol regardless of which
+    # engine drives the episode, and resilience.e2e.ts asserts on the exact
+    # window in the posted comment ("went silent for <IDLE_WINDOW_MS>ms")
+    # without caring which engine served the turn.
+    idleTimeoutSeconds: 30
+  identityLink:
+    # Without this the worker logs "IDENTITY_LINK_GATEWAY_URL not set; using
+    # the in-memory identity-link fake (dev only)" -- a completely separate,
+    # unseedable identity-link store from the one this e2e suite actually
+    # seeds into (e2e/support/credential-store.ts writes real Kubernetes
+    # Secrets that integration-gateway's identity-link API reads). Every
+    # Agent requiring `identityProviders` therefore parks on "link-required"
+    # forever under the fake, regardless of anything seeded. Mirrors
+    # agent-orchestrator's own `identityLink.gatewayUrl` above at the
+    # identical Service address, and reuses the same shared secret VALUE
+    # bootstrap-secrets.sh already wrote for the reverse direction (its own
+    # key name differs -- IDENTITY_LINK_GATEWAY_TOKEN vs
+    # GATEWAY_IDENTITY_LINK_TOKEN -- but both hold the one value both sides
+    # of this handshake must agree on).
+    gatewayUrl: "http://agent-controller-integration-gateway:8090"
+    tokenSecretName: e2e-integration-gateway-secrets
+
+integration-gateway:
+  # The whole point of this overlay. Off in every other profile.
+  enabled: true
+
+  # Fast trigger-label reconciler timing for the e2e suite: production defaults
+  # are a 10m grace + 5m sweep interval (label-reconciler.ts), so a stranded
+  # label would take ~15m to self-heal — far longer than label-durability.e2e.ts
+  # can wait. Shrink both to seconds so the durable-self-heal spec completes.
+  extraEnv:
+    - name: GATEWAY_LABEL_RECONCILER_INTERVAL_MS
+      value: "5000"
+    - name: GATEWAY_LABEL_RECONCILER_GRACE_MS
+      value: "5000"
+
+  config:
+    # Redirects ALL GitHub REST traffic at the in-cluster stub
+    # (e2e/manifests/fake-github.yaml), which both serves deterministic
+    # responses and records what we posted so tests can assert on it directly
+    # instead of scraping logs. Nothing reaches github.com from an e2e run.
+    githubApiUrl: "http://fake-github.controller-agent.svc.cluster.local"
+
+    # The OAuth/web host, redirected at the same stub. Without this the
+    # identity-link device flow calls real github.com/login/device/code with
+    # the placeholder client id below and gets a 404 -- and because `github`
+    # is the FIRST declared provider, that failure ends the turn before
+    # `claude`/`claude-remote` are ever reached, so no credential subject is
+    # ever keyed and the keying spec has nothing to observe.
+    githubBaseUrl: "http://fake-github.controller-agent.svc.cluster.local"
+
+    # Must match what the specs send. `fake-github` never originates events;
+    # the suite signs and posts them itself with the same HMAC the gateway
+    # verifies, so the signature path is exercised for real.
+    githubTriggerLabel: "ai-triage"
+
+    # Relays an issue labeled with this to the issue-review route, which
+    # community-components' values-e2e.yaml points at stub-swe-agent: the
+    # webhook half of the repository read gate (repo-read-gate.e2e.ts).
+    githubReviewLabel: "ai-review"
+
+    # Loop prevention: the gateway drops events sent by its own bot login.
+    # Specs deliberately use sender logins OTHER than this one, since an
+    # event from the bot is dropped before any identity resolution happens
+    # and the test would hang waiting for a run that was never going to start.
+    githubBotLogin: "e2e-bot"
+
+    # DEV-GRADE static allowlist (GithubIdentityResolver). Used here instead
+    # of team-membership resolution because the prod-grade resolver calls
+    # GitHub's org/team API for a real org — unavailable and undesirable in a
+    # hermetic test. These logins are exactly the ones the specs send as
+    # `sender.login`.
+    #
+    # `subject` is intentionally NOT a `github:*` value: the canonical
+    # credential subject must be DERIVED by resolveCredentialSubject from the
+    # webhook's senderLogin (ADR 0029), not handed to it preconfigured. If
+    # these subjects were already canonical the identity-keying spec would
+    # pass without the code under test doing anything.
+    githubIdentities: |
+      {
+        "e2e-user":       {"subject": "e2e-static-user",  "roles": ["reader", "writer"]},
+        "e2e-other-user": {"subject": "e2e-static-other", "roles": ["reader", "writer"]},
+        "E2E-User":       {"subject": "e2e-static-user",  "roles": ["reader", "writer"]}
+      }
+
+    # Aggressively short, and this is load-bearing for suite reliability.
+    #
+    # The gateway holds a relay open for the whole poll window. The negative
+    # controls deliberately trigger turns that never launch, so with a long
+    # window each one occupies the relay for its full duration and whichever
+    # positive spec runs afterwards queues behind that backlog -- observed as
+    # the LAST positive test timing out while identical earlier ones passed,
+    # which reads as a keying bug and is not one. A short window lets an
+    # abandoned turn release the relay promptly.
+    pollIntervalMs: 2000
+    # 90s was tuned to the maintainer's (fast) hardware; on a slower minikube
+    # (e.g. minikube-on-Mac) a rollout-recovery turn's re-attach + reply re-offer
+    # legitimately takes longer than 90s, so resilience.e2e.ts's "recovers the
+    # reply after a rollout" spec would see the gateway give up before recovery
+    # landed. Raised to give that recovery headroom on slower boxes. This only
+    # lengthens how long an ABANDONED turn holds the relay before the gateway
+    # gives up (parked-turn relay release is a separate knob, waitAndResume), and
+    # it is e2e-only: production keeps pollTimeoutMs at 900000. Keep the resilience
+    # spec's GATEWAY_POLL_BUDGET_MS and its "fabricate a timeout" commentOn wait in
+    # step with this value.
+    pollTimeoutMs: 240000
+
+    # The OTHER hold, and the one that actually starved this suite.
+    #
+    # Shortening pollTimeoutMs above fixed the completed-turn case but missed
+    # this: a turn that PARKS on a missing account link is held open separately,
+    # by waitAndResume, for a window that was hard-coded to TEN MINUTES --
+    # unaffected by anything above it. The identity-keying negative controls
+    # park by design, so each one pinned a relay for ten minutes, long outliving
+    # the spec that caused it and starving whatever triggered next.
+    #
+    # Diagnosis, since the symptom is so misleading: the starved spec times out
+    # waiting for an AgentRun while the orchestrator logs NO authorization
+    # verdict at all. No verdict means /invoke was never reached, so the stall is
+    # upstream in the relay -- not the gate, and not keying, which is what a
+    # positive keying assertion failing here looks like.
+    #
+    # 20s: long enough to be a real wait, short enough that a deliberately
+    # parked turn releases before the next spec's 60s absence-window.
+    resumeWaitMs: 20000
+
+  # Per-user credential brokering — required by the identity-keying spec,
+  # which asserts which subject each entry point keys a Claude credential
+  # under. Without this the /identity-link/* and /claude-auth/* APIs the
+  # orchestrator calls simply aren't served.
+  identityLink:
+    enabled: true
+    # GitHub App client ids are public by design (the chart documents this).
+    # This is a placeholder: no e2e spec completes a real OAuth round trip,
+    # they assert on the subject a flow is KEYED under, which is decided
+    # before any redirect happens.
+    githubAppClientId: "Iv23li-e2e-placeholder"
+    # Required for the authorization-code flow to START at all -- without it
+    # `startAuthCode` throws and /identity-link/github/start 500s, which is not a
+    # neutral gap: a spec whose caller needs a GitHub link then exercises the
+    # pre-flight's DEGRADE path (link could not be started) instead of the path
+    # production takes, so the prompt a real user sees is never produced and never
+    # asserted on. That is how the docs/adr/0031 re-prompt bug reproduced in
+    # production but not here.
+    #
+    # Points at fake-github so nothing dangles at a real host. No spec completes
+    # the redirect: the flow only has to start, which is where the subject is
+    # decided and where the prompt is emitted.
+    # Atlassian, so the gateway BUILDS that provider at all.
+    #
+    # No OAuth dance ever runs here — e2e seeds the credential directly
+    # (support/credential-store.ts) — but loadOAuthProviders only registers a
+    # provider whose client id AND secret are present, and the identity-link
+    # API answers "Unsupported identity provider" for anything unregistered.
+    # Both engines read that as "nothing linked", so every knowledge-base turn
+    # asks the caller to link an account that is already linked.
+    atlassianClientId: "e2e-atlassian-placeholder"
+    githubOauthRedirectUri: "http://fake-github.controller-agent.svc.cluster.local/identity-link/github/callback"
+
+  claudeAuth:
+    # Needed for `claude`/`claude-remote` flows to be startable at all. The
+    # PTY-driven `claude login` cannot succeed without a real Anthropic
+    # credential, and no spec expects it to — they assert on the subject a
+    # started flow is keyed under, which is decided before the PTY runs.
+    #
+    # It does mean the flows spawn REAL `claude` processes here, two of them at
+    # once for an Agent declaring both providers. That is deliberate and load
+    # bearing: it is the condition that broke production when the gateway's
+    # memory limit left no headroom for the second one, and it is what lets
+    # identity-keying.e2e.ts's "asks for both at once" spec catch a regression.
+    # This deployment takes the chart's DEFAULT resources on purpose — pinning
+    # smaller ones here would make the suite unable to see it.
+    enabled: true
+
+  sessionPage:
+    # claudeAuth.enabled requires this to be set or the chart refuses to
+    # render. Any reachable-looking value satisfies it; nothing in the suite
+    # loads the page.
+    publicBaseUrl: "http://agent-controller-integration-gateway.controller-agent.svc.cluster.local:8090"
+
+  secrets:
+    # Bring-your-own, exactly like prod — NOT chart-created.
+    #
+    # `create: true` here fails the deploy outright: bootstrap-secrets.sh has
+    # already made this secret, Helm then refuses to adopt an object it
+    # doesn't own ("invalid ownership metadata ... missing key
+    # meta.helm.sh/release-name"), and the whole release rolls back. Letting
+    # the script own the secret and Helm merely reference it sidesteps the
+    # conflict and keeps generated values out of version control.
+    #
+    # The name is deliberately NOT `agent-controller-integration-gateway` —
+    # that is the name the chart itself would generate, so reusing it invites
+    # the very ownership collision described above the moment anyone flips
+    # `create` back on.
+    create: false
+    existingSecret: e2e-integration-gateway-secrets
+
+agent-orchestrator:
+  # Knowledge bases (docs/adr/0039), served out of the connection-broker.
+  #
+  # ADR 0036 keeps the engines in parity, so a knowledge-base behaviour
+  # proven on one engine and never wired on the other is exactly the
+  # asymmetry this suite exists to catch — hence both, not one.
+  knowledgeBases:
+    enabled: true
+    brokerUrl: "http://agent-controller-connection-broker:8080"
+    brokerTokenSecret:
+      name: e2e-connection-broker-secrets
+      key: orchestratorToken
+  # MCP tools (docs/adr/0045), dispatched through the mcp-broker. See the
+  # temporal-engine.mcp note above — both engines, for parity.
+  mcp:
+    enabled: true
+    brokerUrl: "http://agent-controller-mcp-broker:8080"
+    brokerTokenSecret:
+      name: e2e-mcp-broker-secrets
+      key: orchestratorToken
+  # The orchestrator's CLIENT side of the identity-link channel. Enabling it
+  # only on the gateway (the server side) leaves the orchestrator with no
+  # gateway configured at all -- `hasIdentityLinkGateway: false` in its
+  # identity-gate debug log -- so no Agent's identityProviders can ever
+  # resolve and no credential flow starts. The identity-keying spec asserts
+  # on exactly those flows, so without this it can only ever time out.
+  identityLink:
+    enabled: true
+    # In-cluster Service DNS for the gateway deployed by this same release.
+    gatewayUrl: "http://agent-controller-integration-gateway:8090"
+  config:
+    # The gateway authenticates to /invoke with this bearer token, and the
+    # orchestrator must resolve it to a role the SWE agent allows.
+    #
+    # This is the shared service subject at the heart of the bug the suite
+    # exists to pin: EVERY webhook-driven turn arrives as this one identity,
+    # which is why `senderLogin` had to be plumbed through separately for
+    # per-user credential keying to be possible at all (ADR 0029). The
+    # identity-keying spec asserts that no Claude credential is ever keyed
+    # under this subject.
+    staticIdentities: '{"e2e-gateway-token":{"subject":"client-integration-gateway","roles":["reader","writer"]}}'
+    # Makes the CHAT entry point per-user, which is what the suite could not
+    # drive before (docs/adr/0031): with only the static map above, every chat
+    # caller collapses onto the shared `client-integration-gateway` subject, so
+    # the flow whose principal could not be resolved -- the entire bug ADR 0031
+    # fixes -- was unreachable from a test. With this set, a chat turn carrying
+    # `X-OpenWebUI-User-Jwt` resolves to `openwebui:<id>` and is asserted
+    # `perUser`, exactly as production's Open WebUI does.
+    openWebUiUserJwtSecretExistingSecret: e2e-openwebui-forward-jwt
+    openWebUiUserJwtSecretExistingSecretKey: AGENT_OPENWEBUI_USER_JWT_SECRET
+    # Shrunk from the 10-minute default so resilience.e2e.ts can wait out a
+    # silent agent inside a test's budget. It bounds SILENCE, not duration, so a
+    # narrating turn is still unaffected however long it runs -- which is itself
+    # one of the things that spec asserts, by pacing a stub turn well past this
+    # window and expecting it to succeed.
+    #
+    # Not lower than this. The clock starts when the orchestrator subscribes,
+    # which is BEFORE the AgentRun's Job is scheduled -- so this window also has
+    # to cover pod scheduling and container start, during which the agent has
+    # published nothing yet. 20s was tried and is too close to that startup cost
+    # to be anything but flaky.
+    agentIdleTimeoutSeconds: 30
+    # Left at the production 8h: nothing in the suite should ever reach a
+    # wall-clock ceiling, and a short one here would mask an idle-window bug by
+    # failing runs for the wrong reason.
+    agentRunTimeoutSeconds: 28800
+    # Lowered from the default 5 so caller-tools.e2e.ts can cross the top-K
+    # threshold with a 4-tool array instead of a 6-tool one (docs/adr/0035 §3).
+    #
+    # The threshold is the interesting boundary, not the number: below it the
+    # just-in-time index is skipped ENTIRELY (nothing to prune), above it a turn
+    # embeds, upserts and runs a filtered vector search. Both sides need
+    # exercising against a real Qdrant, and a smaller K makes each side reachable
+    # with fewer tools -- which is fewer real embedding calls per test, not just
+    # a shorter fixture.
+    callerToolTopK: 3
+
+core-controller:
+  corpusSync:
+    enabled: true
+    brokerUrl: "http://agent-controller-connection-broker:8080"
+    tokenSecret: e2e-connection-broker-sync-tokens
+
+# Both engines are told where the broker is. ADR 0036 keeps them in parity, so
+# a knowledge-base behaviour proven on one engine and never wired on the other
+# is exactly the asymmetry this suite exists to catch.
+# The MCP broker (orchestrator/apps/mcp-broker, docs/adr/0045): discovers the fake MCP
+# server's tools into MCPTool CRs and proxies tools/call under the caller's
+# delegated token. The MCPServer CR that points it at the fake server is applied
+# per-test by e2e/specs/mcp-crd.e2e.ts.
+mcp-broker:
+  enabled: true
+  image:
+    # The subchart defaults to Always (correct for the mutable :latest in prod),
+    # but skaffold builds a local-only SHA tag into minikube's docker, which
+    # Always then tries — and fails — to pull from a registry. Use the local
+    # image in e2e. (connection-broker carries the same prod default and needs
+    # the same override once its image is rebuilt here.)
+    pullPolicy: IfNotPresent
+  orchestratorTokenSecret:
+    name: e2e-mcp-broker-secrets
+    key: orchestratorToken
+
+connection-broker:
+  enabled: true
+  image:
+    # Same reason as mcp-broker above: the subchart defaults to Always (right for
+    # the mutable :latest in prod), but skaffold builds a local-only SHA tag that
+    # Always then fails to pull. This surfaced once the new mcp workspaces changed
+    # package-lock.json and forced a connection-broker rebuild to a fresh tag.
+    pullPolicy: IfNotPresent
+  qdrant:
+    url: "http://agent-controller-qdrant:6333"
+  # Pointed at the in-cluster stand-in (e2e/manifests/fake-confluence.yaml),
+  # the same way integration-gateway reaches fake-github through githubApiUrl.
+  # Nothing production-shaped changes: this is the Data Center/Server seam.
+  apiOrigins:
+    atlassian: "http://fake-confluence.controller-agent.svc.cluster.local"
+    slack: "http://fake-slack.controller-agent.svc.cluster.local/api"
+    gdrive: "http://fake-gdrive.controller-agent.svc.cluster.local"
+  embeddings:
+    # The key name the orchestrator's secret actually uses. Getting this wrong
+    # is not a runtime error — the Pod never starts, with
+    # CreateContainerConfigError and a message naming the key, which is at
+    # least honest but easy to miss behind a rollout timeout.
+    apiKeySecret:
+      name: agent-orchestrator-secrets
+      key: OPENAI_API_KEY
+  orchestratorTokenSecret:
+    name: e2e-connection-broker-secrets
+    key: orchestratorToken
+  syncTokenSecret:
+    name: e2e-connection-broker-sync-tokens

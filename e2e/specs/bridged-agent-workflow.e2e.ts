@@ -58,7 +58,7 @@ async function withTemporalPortForward<T>(localPort: number, body: () => Promise
  *
  * That fallback was a real, reproduced production bug: `stub-agent`/
  * `claude-code-swe-agent` missing the `durable-agents.dev/bridged` chart
- * annotation left `agentWorkflowNameFor` (engines/temporal/internal/temporal/
+ * annotation left `agentWorkflowNameFor` (orchestrator/engines/temporal/internal/temporal/
  * workflows/agent_workflow.go) defaulting to the declarative loop, which has
  * no real tools at all -- the planner then guessed at tool names ("gh",
  * "gh_repo_clone", "call_tool") and every guess was refused. The annotation
@@ -69,9 +69,9 @@ async function withTemporalPortForward<T>(localPort: number, body: () => Promise
  * (temporal-engine.nats.url, .qdrant.host, .gateway.identity.defaultSubject/
  * defaultRoles, .identityLink.gatewayUrl -- all in values-e2e.yaml), plus a
  * code fix for a claude-remote credential response-shape mismatch
- * (engines/temporal/internal/identitylink/identitylink.go) and a Job-name
+ * (orchestrator/engines/temporal/internal/identitylink/identitylink.go) and a Job-name
  * double-prefix bug that broke Job creation for ANY AgentRun this engine
- * launches (controllers/core-controller/internal/controller/
+ * launches (orchestrator/controllers/core-controller/internal/controller/
  * agentrun_controller.go).
  *
  * This spec is the actual proof point for all of that: it drives the same

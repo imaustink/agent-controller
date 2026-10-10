@@ -24,7 +24,7 @@ analogous to Copilot's `--deny-tool`.
 
 ## Decision
 
-Rename `apps/copilot-swe-agent` to `apps/opencode-swe-agent` and swap the
+Rename `apps/copilot-swe-agent` to `catalog/agents/opencode-swe-agent` and swap the
 underlying CLI, keeping the same Agent-SDK shape (bidirectional NATS, HITL via
 `session.ask()`, the `<!-- swe: ... -->` continuation marker).
 
@@ -71,7 +71,7 @@ fallback branch — tighten it against real output once observed.
   `opencode-swe-agent` ServiceAccount and `opencode-swe-secrets` Secret (now
   with both `GITHUB_TOKEN` and `ANTHROPIC_API_KEY` keys) and delete the old
   ones; see
-  `charts/community-components/templates/agent-opencode-swe.yaml`
+  `orchestrator/charts/community-components/templates/agent-opencode-swe.yaml`
   (`opencodeSweAgent.enabled`).
 - The `parseOpencodeLine` progress-narration quality depends on how closely
   the defensive parser matches opencode's real event stream; verify against

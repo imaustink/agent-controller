@@ -20,7 +20,7 @@ const STARTING_WORK_ACK = "Starting work on this now.";
 
 /**
  * The idle window this environment runs with — `agentIdleTimeoutSeconds` in
- * charts/agent-controller/values-e2e.yaml. Specs below pace turns relative to
+ * orchestrator/charts/agent-controller/values-e2e.yaml. Specs below pace turns relative to
  * it, so it lives here as a named constant rather than as scattered magic
  * numbers that would silently stop meaning anything if the value changed.
  */
@@ -85,7 +85,7 @@ function nextIssueNumber(): number {
  *
  * Every spec paces the stub agent so the turn is still running when the
  * disruption lands. Without that the turn completes in milliseconds and the
- * whole scenario is untestable -- which is why apps/stub-agent gained
+ * whole scenario is untestable -- which is why catalog/agents/stub-agent gained
  * pacing.ts.
  */
 describe("resilience: infrastructure moving under an in-flight agent turn", () => {
@@ -269,7 +269,7 @@ describe("resilience: infrastructure moving under an in-flight agent turn", () =
    * confirmed present in the deployed stub-agent bundle, so the AGENT side has
    * the reconnect hardening too, and it still failed. The orchestrator side of
    * this is separately proven against a real 23s outage in
-   * apps/agent-orchestrator/src/agents/nats-agent-channel.integration.test.ts
+   * orchestrator/apps/agent-orchestrator/src/agents/nats-agent-channel.integration.test.ts
    * (the client rides it out, resubscribes and receives the reply), so what is
    * unverified is specifically an agent POD surviving the loss of its NATS
    * server -- publishes issued while the server is gone, and whether the run
@@ -354,7 +354,7 @@ describe("resilience: infrastructure moving under an in-flight agent turn", () =
     // weakening -- it is the assertion this test used to make, before
     // docs/adr/0033 made it unreachable. The agent now HOLDS its concluding
     // message until someone acks it, re-offering every 10s and giving up only
-    // after `REPLY_ACK_TIMEOUT_MS` (10 minutes, packages/agent-runtime/runtime.ts).
+    // after `REPLY_ACK_TIMEOUT_MS` (10 minutes, framework/agent-runtime/runtime.ts).
     // Nothing acks here: this test rolls the orchestrator and never re-triggers,
     // so the new pod has no reason to re-attach. The run therefore stays Running
     // for ten minutes by design -- twice this test's whole budget, and past

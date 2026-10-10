@@ -39,7 +39,7 @@ CI skips this PR entirely (`paths-ignore: **/*.md`), which is correct.
 **`pr/2-import-engine`** · base `main` · 108 files, +17,396
 
 The engine arrives by `git subtree`, so its seven milestone commits and its own
-two ADRs are real history rather than one opaque drop — `git log engines/temporal`
+two ADRs are real history rather than one opaque drop — `git log orchestrator/engines/temporal`
 reads as what it is. Also: module renamed to this repo's convention, a CI job,
 and three images in the release matrix.
 
@@ -79,7 +79,7 @@ Temporal's event history), `agentruns` (only when the NATS bridge is enabled),
 and `integrationroutes` on a new gateway ServiceAccount. Each mirrors a grant
 agent-orchestrator already holds.
 
-Also adds the first CI job that renders `charts/agent-controller` at all.
+Also adds the first CI job that renders `orchestrator/charts/agent-controller` at all.
 
 ## PR 5 — Flip the default
 
@@ -114,7 +114,7 @@ Each stands on its own merits whether or not the engine is ever enabled:
    has no equivalent — so a Tool meant to act as a specific human runs with
    whatever static token its template carries. Fixed in the engine; worth fixing
    here too.
-2. **No CI job renders `charts/agent-controller`.** A broken template in any of
+2. **No CI job renders `orchestrator/charts/agent-controller`.** A broken template in any of
    its four subcharts ships silently. PR 4 covers the new one; the other three
    remain unguarded.
 3. **The two engines' Qdrant payload schemas differ**, so they must never share a
