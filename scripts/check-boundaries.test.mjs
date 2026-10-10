@@ -122,6 +122,13 @@ test("a go.mod replace pointing into another unit fails", () => {
   assert.ok(violations.some((v) => v.via.startsWith("go.mod replace") && v.to === "engine"));
 });
 
+test("a go.mod require of another unit's module path fails", () => {
+  const { violations } = run({
+    "packages/proto/go.mod": "module example.com/proto\n\ngo 1.22\n\nrequire example.com/engine v0.0.0\n",
+  });
+  assert.ok(violations.some((v) => v.via.startsWith("go.mod require") && v.to === "engine"));
+});
+
 test("Go imports in the allowed direction pass", () => {
   const { violations } = run({
     "packages/proto/go.mod": "module example.com/proto\n\ngo 1.22\n",
@@ -138,6 +145,52 @@ test("a Dockerfile COPYing another unit's directory fails; --from stages are ign
   assert.equal(violations.length, 1);
   assert.equal(violations[0].to, "apps/orch");
   assert.equal(violations[0].line, 3);
+});
+
+// The engine's Dockerfile COPYs a path whose first segments name a catalog
+// unit (tools/search). Built from the repo root that IS a cross-layer
+// reference; built from its own directory it is the engine's own file.
+const ENGINE_COPY = { "engine/Dockerfile": "FROM golang\nCOPY tools/search ./vendored\n" };
+const ENGINE_OWN_CONTEXT_SKAFFOLD =
+  "build:\n  artifacts:\n    - image: engine\n      context: engine\n      docker:\n        dockerfile: Dockerfile\n";
+
+test("a COPY is resolved against the repo root when no build config names the image's context", () => {
+  const { violations } = run(ENGINE_COPY);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].to, "tools/search");
+});
+
+test("a COPY is resolved against the build context skaffold.yaml declares", () => {
+  const { errors, violations } = run({ ...ENGINE_COPY, "skaffold.yaml": ENGINE_OWN_CONTEXT_SKAFFOLD });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(violations, []);
+});
+
+test("a COPY is resolved against the build context .github/release-images.json declares", () => {
+  const { violations } = run({
+    ...ENGINE_COPY,
+    ".github/release-images.json": JSON.stringify([{ image: "engine", dockerfile: "engine/Dockerfile", context: "engine" }]),
+  });
+  assert.deepEqual(violations, []);
+});
+
+test("a context-relative COPY that really leaves its context into another unit still fails", () => {
+  const { violations } = run({
+    "engine/Dockerfile": "FROM golang\nCOPY ../apps/orch/x ./x\nCOPY ../tools/search ./y\n",
+    "skaffold.yaml": ENGINE_OWN_CONTEXT_SKAFFOLD,
+  });
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].to, "tools/search");
+  assert.match(violations[0].via, /context engine/);
+});
+
+test("a Dockerfile built with different contexts by different configs is reported", () => {
+  const { errors } = run({
+    ...ENGINE_COPY,
+    "skaffold.yaml": ENGINE_OWN_CONTEXT_SKAFFOLD,
+    ".github/release-images.json": JSON.stringify([{ image: "engine", dockerfile: "engine/Dockerfile", context: "." }]),
+  });
+  assert.ok(errors.some((e) => e.kind === "config" && e.message.includes("engine/Dockerfile")));
 });
 
 test("a workspace that matches no unit is reported", () => {
