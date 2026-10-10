@@ -21,7 +21,10 @@ import {
 } from "./identity.js";
 import { OrchestratorClient } from "./orchestrator-client.js";
 import { OidcTokenProvider } from "./oidc-token-provider.js";
-import { GatewayServer } from "./server.js";
+import { OidcLoginClient } from "./connections/oidc-login.js";
+import { K8sSecretPrincipalDirectory } from "./connections/principal-directory.js";
+import { deriveKey } from "./connections/signed-token.js";
+import { GatewayServer, type GatewayServerOptions } from "./server.js";
 import { InMemorySessionPageStore, RedisSessionPageStore } from "./session-page-store.js";
 import { InMemoryPendingLabelStore, RedisPendingLabelStore } from "./label-reconciler.js";
 
@@ -343,6 +346,59 @@ async function main(): Promise<void> {
     console.error("Claude Code per-user OAuth linking enabled (setup-token + full-login/Remote Control)");
   }
 
+  // Connections page (docs/adr/0046). Opt-in by configuring its OIDC client;
+  // every piece is required, so a partial config is said out loud rather than
+  // leaving a page that 404s or a login that can never complete.
+  let connections: GatewayServerOptions["connections"];
+  const connectionsConfigured = [
+    config.connectionsOidcIssuer,
+    config.connectionsOidcClientId,
+    config.connectionsOidcClientSecret,
+  ];
+  const publicBase = config.publicUrl.replace(/\/+$/, "");
+  if (connectionsConfigured.every(Boolean)) {
+    if (!identityLinkStore || !publicBase || !config.identityLinkStateSecret) {
+      console.error(
+        "WARNING: Connections page OIDC is configured but identity-link, GATEWAY_PUBLIC_URL or " +
+          "IDENTITY_LINK_STATE_SECRET is not, so the page is disabled.",
+      );
+    } else {
+      const redirectUri = `${publicBase}/connections/callback`;
+      connections = {
+        store: identityLinkStore,
+        directory: new K8sSecretPrincipalDirectory({
+          namespace: config.credentialNamespace,
+          api: credentialStoreApis().api,
+        }),
+        oidc: new OidcLoginClient({
+          issuer: config.connectionsOidcIssuer,
+          clientId: config.connectionsOidcClientId,
+          clientSecret: config.connectionsOidcClientSecret,
+          redirectUri,
+          scopes: config.connectionsOidcScopes,
+          allowUnverifiedEmail: config.connectionsAllowUnverifiedEmail,
+        }),
+        // Derived from the state secret so the page needs no Secret key of its
+        // own; rotating that secret signs everyone out, which is acceptable.
+        cookieKey: deriveKey(config.identityLinkStateSecret, "connections-cookie"),
+        sessionTtlMs: config.connectionsSessionTtlSeconds * 1000,
+        githubAuthCode: Boolean(config.githubOauthRedirectUri && config.githubAppClientSecret),
+      };
+      console.error(
+        `Connections page enabled at ${publicBase}/connections ` +
+          `(OIDC issuer ${config.connectionsOidcIssuer}; register redirect URI ${redirectUri})`,
+      );
+      if (config.connectionsAllowUnverifiedEmail) {
+        console.error("WARNING: Connections page accepts UNVERIFIED IdP emails (GATEWAY_CONNECTIONS_ALLOW_UNVERIFIED_EMAIL).");
+      }
+    }
+  } else if (connectionsConfigured.some(Boolean)) {
+    console.error(
+      "WARNING: Connections page is partially configured -- GATEWAY_CONNECTIONS_OIDC_ISSUER, _CLIENT_ID and " +
+        "_CLIENT_SECRET must all be set -- so it is disabled.",
+    );
+  }
+
   const server = new GatewayServer({
     githubWebhookSecret: config.githubWebhookSecret,
     identityResolver,
@@ -358,6 +414,7 @@ async function main(): Promise<void> {
     ...(config.labelReconcilerGraceMs !== undefined ? { labelReconcilerGraceMs: config.labelReconcilerGraceMs } : {}),
     ...(claudeAuthFlows && claudeTokenStore ? { claudeAuthFlows, claudeAuthStore: claudeTokenStore } : {}),
     ...(claudeLoginFlows ? { claudeLoginFlows } : {}),
+    ...(connections ? { connections } : {}),
     resumeWaitMs: config.resumeWaitMs,
     claudeCredentialRefreshEnabled: config.claudeCredentialRefreshEnabled,
     claudeCredentialRefreshMarginMs: config.claudeCredentialRefreshMarginMs,

@@ -85,6 +85,22 @@ describe("knowledgeBaseLinkGate", () => {
     expect(out).toContain("atlassian, google already linked");
     expect(out).toContain("ask again now to search with just what you have");
   });
+
+  // Shares startKnowledgeBaseLinkClauses with the post-search prompt, so a
+  // chat caller gets the one Connections link here too (docs/adr/0046).
+  it("offers the Connections link to a chat caller and starts nothing", async () => {
+    const identityLinkGateway = gatewayStarting();
+    const out = await knowledgeBaseLinkGate(
+      { identityLinkGateway, connectionsUrl: "https://gw.example/connections" } as never,
+      "openwebui:42",
+      "Sierra Nevada Corporation",
+      ["atlassian"],
+      ["google", "slack"],
+    );
+
+    expect(out).toContain("[Connect google and slack](https://gw.example/connections/link?need=google%2Cslack)");
+    expect(identityLinkGateway.start).not.toHaveBeenCalled();
+  });
 });
 
 describe("enrichKnowledgeBaseResult", () => {
@@ -114,5 +130,32 @@ describe("enrichKnowledgeBaseResult", () => {
 
     expect(out).toBe("A complete answer with every provider linked.");
     expect(identityLinkGateway.start).not.toHaveBeenCalled();
+  });
+});
+
+describe("knowledgeBaseLinkPrompt with a Connections page", () => {
+  it("offers ONE link to the page naming every missing provider", async () => {
+    const identityLinkGateway = gatewayStarting();
+    const out = await knowledgeBaseLinkPrompt(
+      { identityLinkGateway, connectionsUrl: "https://gw.example/connections" } as never,
+      "openwebui:42",
+      ["atlassian", "google"],
+      BASE,
+    );
+
+    expect(out).toContain(BASE);
+    expect(out).toContain("[Connect atlassian and google](https://gw.example/connections/link?need=atlassian%2Cgoogle)");
+    expect(identityLinkGateway.start).not.toHaveBeenCalled();
+  });
+
+  it("keeps per-provider direct links for a subject the page cannot map", async () => {
+    const identityLinkGateway = gatewayStarting();
+    const out = await knowledgeBaseLinkPrompt(
+      { identityLinkGateway, connectionsUrl: "https://gw.example/connections" } as never,
+      "integration-gateway",
+      ["google"],
+      BASE,
+    );
+    expect(out).toContain("[link your google account](https://gw.example/link/google)");
   });
 });
