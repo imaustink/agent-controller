@@ -82,7 +82,7 @@ Then install the catalog on top: see
 ### Installing the published chart
 
 This chart is also published as an OCI artifact to GHCR on every merge to
-`main` that touches `charts/**`:
+`main` that touches `orchestrator/charts/**`:
 
 ```bash
 helm install agent-controller oci://ghcr.io/imaustink/charts/agent-controller \

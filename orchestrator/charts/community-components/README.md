@@ -27,7 +27,7 @@ cleanly removes all the `Tool`/`Skill`/`Agent` CRs it created.
 ### Installing the published chart
 
 This chart is also published as an OCI artifact to GHCR on every merge to
-`main` that touches `charts/**`:
+`main` that touches `orchestrator/charts/**`:
 
 ```bash
 helm install community-components oci://ghcr.io/imaustink/charts/community-components \
