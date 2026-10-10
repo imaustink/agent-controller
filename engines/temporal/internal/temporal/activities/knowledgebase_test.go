@@ -3,6 +3,7 @@ package activities_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -233,6 +234,47 @@ func TestSearchStartsLinksAndRendersClickablePrompts(t *testing.T) {
 	require.Len(t, links.Started, 2)
 }
 
+// With the Connections page configured, a chat caller gets ONE link naming
+// every missing source, and nothing is started at a provider (agent-controller
+// ADR 0046). PARITY: knowledgeBaseLinkPrompt in graph.ts.
+func TestSearchOffersOneConnectionsLinkForEveryMissingSource(t *testing.T) {
+	links, err := identitylink.NewFake("", "")
+	require.NoError(t, err)
+	kb := &activities.KnowledgeBaseActivities{
+		Corpora:        vectorstore.NewCorpora(nil, nil, 0),
+		Credentials:    &fakeResolver{token: ""},
+		BrokerURL:      "http://broker",
+		BrokerToken:    "orch",
+		IdentityLinks:  links,
+		ConnectionsURL: "https://gw.example/connections",
+	}
+	google := catalog.KnowledgeBaseExecMember{
+		ID: "g", Label: "#g", Collection: "cg", AllowedRoles: []string{"reader"},
+		Granularity: "resource", IdentityProviders: []string{"google"},
+	}
+	search := func(subject string) activities.SearchKnowledgeBaseOutput {
+		out, err := kb.SearchKnowledgeBase(context.Background(), activities.SearchKnowledgeBaseInput{
+			Caller: activities.Caller{Subject: subject, Roles: []string{"reader"}},
+			Tool:   searchTool(member("c", []string{"reader"}, "coll"), google),
+			Query:  "q",
+		})
+		require.NoError(t, err)
+		return out
+	}
+
+	out := search("openwebui:42")
+	// ONE clause for every missing provider, inside the shared link list.
+	require.Contains(t, out.Result,
+		"\n- [Connect atlassian and google](https://gw.example/connections/link?need=atlassian%2Cgoogle)\n")
+	require.Equal(t, 1, strings.Count(out.Result, "\n- "))
+	require.Empty(t, links.Started)
+
+	// A subject the page cannot map keeps its direct links.
+	out = search("oidc:integration-gateway")
+	require.Contains(t, out.Result, "[link your google account](https://example.invalid/link/google)")
+	require.NotContains(t, out.Result, "/connections/link")
+}
+
 func TestSearchFallsBackToPlainAskWhenNoLinkGateway(t *testing.T) {
 	// No IdentityLinks wired: the ask degrades to the plain message rather than
 	// failing the search.
@@ -378,6 +420,36 @@ func TestGateOnlyReportsTheUnlinkedProviderWithoutSearching(t *testing.T) {
 	require.Contains(t, out.Result, "already linked")
 	// ...but runs NO vector search: Corpora must be untouched on a gate pass.
 	require.Empty(t, corpora.opened, "GateOnly must not run the search")
+}
+
+// The pre-search gate shares linkClauses, so a chat caller gets the one
+// Connections link there too and nothing is started at the provider
+// (agent-controller ADR 0046).
+func TestGateOnlyOffersTheConnectionsLinkForAChatCaller(t *testing.T) {
+	links, err := identitylink.NewFake("", "")
+	require.NoError(t, err)
+	slack := member("chan", []string{"reader"}, "coll-chan")
+	slack.IdentityProviders = []string{"slack"}
+	slack.Granularity = "connection"
+
+	out, err := (&activities.KnowledgeBaseActivities{
+		Corpora:        &recordingCorpora{},
+		Credentials:    &perProviderResolver{linked: map[string]string{"atlassian": "at", "google": "g"}},
+		BrokerURL:      "http://broker",
+		BrokerToken:    "orch",
+		IdentityLinks:  links,
+		ConnectionsURL: "https://gw.example/connections",
+	}).SearchKnowledgeBase(context.Background(), activities.SearchKnowledgeBaseInput{
+		Caller:   activities.Caller{Subject: "openwebui:42", Roles: []string{"reader"}},
+		Tool:     searchTool(member("conf", []string{"reader"}, "coll-conf"), member("drive", []string{"reader"}, "coll-drive"), slack),
+		Query:    "q",
+		GateOnly: true,
+	})
+
+	require.NoError(t, err)
+	require.Contains(t, out.Result, "[Connect slack](https://gw.example/connections/link?need=slack)")
+	require.NotContains(t, out.Result, "example.invalid/link/slack")
+	require.Empty(t, links.Started)
 }
 
 func TestGateOnlyReturnsNothingWhenEveryProviderIsLinked(t *testing.T) {

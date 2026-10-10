@@ -4,6 +4,11 @@ import type { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.
 import { IdentityLinkApi } from "./identity-link/api.js";
 import type { OAuthAuthCodeLinker } from "./identity-link/oauth-authcode-linker.js";
 import { ClaudeAuthApi } from "./claude-auth/api.js";
+import { ConnectionsApi } from "./connections/api.js";
+import type { OidcLoginClient } from "./connections/oidc-login.js";
+import type { PrincipalDirectory } from "./connections/principal-directory.js";
+import { buildConnectionProviders } from "./connections/providers.js";
+import type { IdentityLinkStore } from "./identity-link/store.js";
 import type { ClaudeSetupTokenFlows } from "./claude-auth/pty-setup-token.js";
 import type { ClaudeLoginFlows } from "./claude-auth/pty-login.js";
 import type { ClaudeTokenStore } from "./claude-auth/store.js";
@@ -127,6 +132,20 @@ export interface GatewayServerOptions {
   sessionPageStore?: SessionPageStore;
   publicBaseUrl?: string;
   /**
+   * The Connections page (docs/adr/0046). Requires identity-link
+   * (`identityLinkLinker`/`identityLinkToken`) and `publicBaseUrl`; ignored
+   * without them. Absent keeps every route exactly as before.
+   */
+  connections?: {
+    store: IdentityLinkStore;
+    directory: PrincipalDirectory;
+    oidc: OidcLoginClient;
+    cookieKey: Buffer;
+    sessionTtlMs: number;
+    /** Whether GitHub's authcode flow is configured -- the page cannot run the device flow. */
+    githubAuthCode: boolean;
+  };
+  /**
    * Durable outbox of trigger-label removals still owed, enabling the
    * self-healing reconciler (label-reconciler.ts). Optional and additive: when
    * absent, label removal works exactly as before (the in-process `finally`),
@@ -164,6 +183,7 @@ export class GatewayServer {
   private server: Server | undefined;
   private readonly identityLinkApi: IdentityLinkApi | undefined;
   private readonly claudeAuthApi: ClaudeAuthApi | undefined;
+  private readonly connectionsApi: ConnectionsApi | undefined;
   private readonly claudeCredentialSweeper: ClaudeCredentialSweeper | undefined;
   private readonly labelReconciler: LabelReconciler | undefined;
 
@@ -199,6 +219,37 @@ export class GatewayServer {
             refresher,
           )
         : undefined;
+    const connections = options.connections;
+    if (connections && this.identityLinkApi && options.identityLinkToken && options.publicBaseUrl) {
+      const claudeAuthApi = this.claudeAuthApi;
+      const connectionsApi = new ConnectionsApi({
+        providers: buildConnectionProviders({
+          store: connections.store,
+          ...(connections.githubAuthCode && options.identityLinkLinker ? { githubLinker: options.identityLinkLinker } : {}),
+          ...(options.identityLinkAuthCodeLinkers ? { authCodeLinkers: options.identityLinkAuthCodeLinkers } : {}),
+          ...(claudeAuthApi && options.claudeAuthStore
+            ? {
+                claude: {
+                  store: options.claudeAuthStore,
+                  start: (subject, kind) => claudeAuthApi.startPageFlow(subject, kind),
+                  loginEnabled: Boolean(options.claudeLoginFlows),
+                },
+              }
+            : {}),
+        }),
+        directory: connections.directory,
+        oidc: connections.oidc,
+        cookieKey: connections.cookieKey,
+        internalToken: options.identityLinkToken,
+        publicBaseUrl: options.publicBaseUrl,
+        sessionTtlMs: connections.sessionTtlMs,
+      });
+      const back = connectionsApi.completionRedirect.bind(connectionsApi);
+      this.identityLinkApi.completionRedirect = back;
+      this.identityLinkApi.cancelRedirect = connectionsApi.cancelRedirect.bind(connectionsApi);
+      if (claudeAuthApi) claudeAuthApi.completionRedirect = back;
+      this.connectionsApi = connectionsApi;
+    }
     // The sweep renews credentials nothing is currently asking for, which is
     // the only thing that keeps an UNUSED link alive -- refresh-on-read above
     // fires only when something reads. Shares the refresher, so a sweep and a
@@ -294,6 +345,9 @@ export class GatewayServer {
         await this.handleSessionPrompt(req, res, promptMatch[1] as string);
         return;
       }
+    }
+    if (this.connectionsApi && (await this.connectionsApi.handle(req, res, url))) {
+      return;
     }
     // The authcode callback route is intercepted BEFORE the bearer-gated
     // dispatch below -- it's hit directly by the end user's browser (via

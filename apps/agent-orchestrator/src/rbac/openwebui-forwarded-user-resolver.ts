@@ -66,6 +66,11 @@ export class OpenWebUiForwardedUserResolver implements IdentityResolver {
     // `perUser`: this subject came from a per-request JWT Open WebUI mints for
     // one signed-in human, so it identifies exactly them -- which is what lets
     // the authorization pre-flight establish a principal against it (ADR 0031).
-    return { subject: `openwebui:${rawId}`, roles: this.roles, perUser: true };
+    //
+    // `email` is carried along (Open WebUI signs it with the id) so the
+    // Connections page can map an IdP sign-in back to this subject
+    // (docs/adr/0046).
+    const email = typeof payload.email === "string" && payload.email.includes("@") ? payload.email : undefined;
+    return { subject: `openwebui:${rawId}`, roles: this.roles, perUser: true, ...(email ? { email } : {}) };
   }
 }
