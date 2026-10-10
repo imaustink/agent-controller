@@ -66,6 +66,13 @@ identityLink:
   # Secret + key holding the bearer token for that gateway.
   tokenSecretName: ""
   tokenSecretKey: GATEWAY_IDENTITY_LINK_TOKEN
+  # integration-gateway's Connections page, e.g. "https://<gateway>/connections"
+  # (docs/adr/0046). Set, an Open WebUI chat caller's link prompt is ONE
+  # "/connections/link?need=..." link covering every missing provider, instead
+  # of a raw OAuth URL per provider. Same value as agent-orchestrator's
+  # identityLink.connectionsUrl, and only once integration-gateway's
+  # connections.enabled is true -- otherwise the link 404s.
+  connectionsUrl: ""
 
 catalogSync:
   enabled: true

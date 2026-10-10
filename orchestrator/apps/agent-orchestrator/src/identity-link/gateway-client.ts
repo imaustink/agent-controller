@@ -158,6 +158,20 @@ export class IdentityLinkGatewayClient implements IdentityLinkPort {
     return (await res.json()) as IdentityLinkStartResult;
   }
 
+  /**
+   * Tells the gateway which chat subject an email belongs to, for the
+   * Connections page (docs/adr/0046). Only ever called with values read from
+   * a signature-verified JWT.
+   */
+  async recordPrincipal(email: string, subject: string): Promise<void> {
+    const res = await this.fetchImpl(`${this.baseUrl}/connections/api/principals`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", authorization: `Bearer ${this.options.token}` },
+      body: JSON.stringify({ email, subject }),
+    });
+    if (!res.ok) throw new Error(`connections principal record failed: ${res.status} ${await res.text()}`);
+  }
+
   async getLinkedLogin(provider: string, subject: string): Promise<string | undefined> {
     const res = await this.fetchImpl(
       `${this.baseUrl}/identity-link/${provider}/identity?subject=${encodeURIComponent(subject)}`,

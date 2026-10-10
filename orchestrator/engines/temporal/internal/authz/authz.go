@@ -314,6 +314,13 @@ type Deps struct {
 	// Repos answers the read gate for agents that declare github. Required
 	// for them; a nil reader refuses to authorize such an agent at all.
 	Repos RepoReader
+
+	// ConnectionsURL is integration-gateway's Connections page
+	// ("https://<gw>/connections", agent-controller ADR 0046). When set, an
+	// Open WebUI chat caller's link prompt is one page link for every
+	// missing provider instead of a provider's own flow; see
+	// UsesConnectionsPage. Empty keeps direct links everywhere.
+	ConnectionsURL string
 }
 
 // Service is the pre-flight. Constructed once from deps; unreachable from any
@@ -335,6 +342,23 @@ func label(provider string) string {
 		return l
 	}
 	return provider
+}
+
+func labels(providers []string) []string {
+	out := make([]string, len(providers))
+	for i, p := range providers {
+		out[i] = label(p)
+	}
+	return out
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 // providerStep is one entry in the assessment plan. principalOnly marks the
@@ -381,7 +405,57 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 
 	plan, principal, principalLogin := s.planProviders(ctx, req, s.principalOf(req))
 
-	for _, step := range plan {
+	// One Connections-page link for the whole turn (agent-controller ADR
+	// 0046). When the page stands in for the providers' own flows, a missing
+	// provider is not offered on its own: it is held back until every
+	// provider has been assessed, then ONE "/connections/link?need=..." link
+	// covers them all and the page walks the user through each in turn.
+	flow := req.Flow
+	if flow == "" {
+		flow = identitylink.FlowAuthCode
+	}
+	viaPage := UsesConnectionsPage(s.deps.ConnectionsURL, req.Identity.Subject, flow)
+	type deferredLink struct {
+		step              providerStep
+		envVar            string
+		credentialSubject string
+	}
+	var deferred []deferredLink
+
+	// settle folds one resolved credential into the verdict: the principal
+	// mapping for the link-only principal step, otherwise the run's env.
+	settle := func(step providerStep, envVar, credentialSubject string, token *identitylink.Token) {
+		if step.principalOnly {
+			// Link-only: it contributes the mapping and nothing else. No
+			// credential entry, so no GITHUB_TOKEN reaches the run and the
+			// agent's delegated-write path stays unreachable.
+			if token.GitHubLogin != "" {
+				principalLogin = token.GitHubLogin
+				principal = CanonicalPrincipal(token.GitHubLogin)
+			} else {
+				log.Printf("[authorization] the %s link for this caller carries no login; "+
+					"continuing on the raw subject, without cross-entry-point sharing", PrincipalProvider)
+			}
+			return
+		}
+
+		if step.name == identitylink.ProviderGitHub && token.GitHubLogin != "" {
+			actorLoginFromLoop = token.GitHubLogin
+		}
+		credentials[envVar] = token.Value
+
+		if step.name == identitylink.ProviderClaudeRemote {
+			if grant := s.writeback(ctx, req, credentialSubject); grant != nil {
+				credentials[WritebackURLEnv] = grant.URL
+				credentials[WritebackTokenEnv] = grant.Token
+				if grant.SecretName != "" {
+					ownedSecretNames = append(ownedSecretNames, grant.SecretName)
+				}
+			}
+		}
+	}
+
+	for index, step := range plan {
 		envVar, supported := ProviderEnvVar[step.name]
 		if !supported {
 			return s.misconfigured(req, step.name, fmt.Sprintf("unsupported identity provider %q", step.name))
@@ -417,7 +491,15 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 			token = s.adopt(ctx, req, step.name, credentialSubject)
 		}
 
-		if token == nil {
+		// The page starts nothing at a provider, so there is never a second
+		// flow to race against the first: no anchor to re-check, and a fresh
+		// page link is the same link (less whatever has since been connected).
+		if token == nil && viaPage && !step.principalOnly {
+			deferred = append(deferred, deferredLink{step: step, envVar: envVar, credentialSubject: credentialSubject})
+			continue
+		}
+
+		if token == nil && !viaPage {
 			if anchor := s.matchingPending(req, step.name, credentialSubject); anchor != nil {
 				// A flow is already outstanding for this exact
 				// (provider, subject): re-check THAT ONE rather than
@@ -447,7 +529,27 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 		}
 
 		if token == nil {
-			started, ok := s.startLink(ctx, step.name, credentialSubject, req.Flow)
+			// On the page, only a pending PRINCIPAL gets here, and it is offered
+			// right away since nothing after it is assessed until it lands. Its
+			// link also names every provider after it: they are only names in
+			// the URL, not assessed or keyed here, and the page keys each one
+			// itself exactly as this package does (Claude on the GitHub
+			// principal), skipping any already connected. So the user still
+			// clicks once.
+			var pageProviders []string
+			var started identitylink.StartResult
+			var ok bool
+			if viaPage {
+				pageProviders = []string{step.name}
+				for _, rest := range plan[index+1:] {
+					if !containsString(pageProviders, rest.name) {
+						pageProviders = append(pageProviders, rest.name)
+					}
+				}
+				started, ok = ConnectionsPageStart(s.deps.ConnectionsURL, pageProviders)
+			} else {
+				started, ok = s.startLink(ctx, step.name, credentialSubject, req.Flow)
+			}
 			if !ok {
 				// A principal link that will not start must DEGRADE, not
 				// block: sharing is an improvement over per-entry-point
@@ -465,6 +567,9 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 			token = s.waitForLink(ctx, req, step.name, credentialSubject)
 			if token == nil {
 				linkText := linkPromptText(started, label(step.name))
+				if viaPage {
+					linkText = ConnectionsLinkText(started, labels(pageProviders))
+				}
 				pending = append(pending, pendingEntry{
 					provider: step.name,
 					linkText: linkText,
@@ -494,33 +599,49 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 			}
 		}
 
-		if step.principalOnly {
-			// Link-only: it contributes the mapping and nothing else. No
-			// credential entry, so no GITHUB_TOKEN reaches the run and the
-			// agent's delegated-write path stays unreachable.
-			if token.GitHubLogin != "" {
-				principalLogin = token.GitHubLogin
-				principal = CanonicalPrincipal(token.GitHubLogin)
-			} else {
-				log.Printf("[authorization] the %s link for this caller carries no login; "+
-					"continuing on the raw subject, without cross-entry-point sharing", PrincipalProvider)
-			}
-			continue
-		}
+		settle(step, envVar, credentialSubject, token)
+	}
 
-		if step.name == identitylink.ProviderGitHub && token.GitHubLogin != "" {
-			actorLoginFromLoop = token.GitHubLogin
+	// The deferred providers' single page link. Every provider is assessed by
+	// now, so the link can name them all. The keying is untouched: each one
+	// waits on, and is anchored against, exactly the credentialSubject it was
+	// read under in the loop above.
+	if len(deferred) > 0 {
+		names := make([]string, len(deferred))
+		for i, d := range deferred {
+			names[i] = d.step.name
 		}
-		credentials[envVar] = token.Value
-
-		if step.name == identitylink.ProviderClaudeRemote {
-			if grant := s.writeback(ctx, req, credentialSubject); grant != nil {
-				credentials[WritebackURLEnv] = grant.URL
-				credentials[WritebackTokenEnv] = grant.Token
-				if grant.SecretName != "" {
-					ownedSecretNames = append(ownedSecretNames, grant.SecretName)
-				}
+		started, ok := ConnectionsPageStart(s.deps.ConnectionsURL, names)
+		if !ok {
+			return s.misconfigured(req, "", fmt.Sprintf("the Connections page URL %q is not a valid URL", s.deps.ConnectionsURL))
+		}
+		linkText := ConnectionsLinkText(started, labels(names))
+		// One wait per provider, in the order the page links them. Once one
+		// does not land the user has not got that far, so the rest park
+		// without waiting again.
+		waiting := true
+		for _, d := range deferred {
+			var token *identitylink.Token
+			if waiting {
+				token = s.waitForLink(ctx, req, d.step.name, d.credentialSubject)
 			}
+			if token == nil {
+				waiting = false
+				pending = append(pending, pendingEntry{
+					provider: d.step.name,
+					linkText: linkText,
+					pending: PendingLink{
+						AgentID:   req.AgentID,
+						Provider:  d.step.name,
+						Flow:      started.Flow,
+						Subject:   d.credentialSubject,
+						ExpiresAt: time.Now().Add(time.Duration(started.ExpiresInSeconds) * time.Second).UnixMilli(),
+						LinkText:  linkText,
+					},
+				})
+				continue
+			}
+			settle(d.step, d.envVar, d.credentialSubject, token)
 		}
 	}
 
@@ -929,20 +1050,25 @@ func linkPromptText(started identitylink.StartResult, label string) string {
 func composeLinkRequired(pending []pendingEntry, failedToStart []string) string {
 	var parts []string
 
-	switch len(pending) {
+	// Deduplicated by link: on the Connections page several providers share
+	// ONE link (agent-controller ADR 0046), and it is offered once.
+	var texts []string
+	for _, p := range pending {
+		if !containsString(texts, p.linkText) {
+			texts = append(texts, p.linkText)
+		}
+	}
+
+	switch len(texts) {
 	case 0:
 	case 1:
 		parts = append(parts, fmt.Sprintf(
 			"To continue, please %s. This is a one-time step -- send any message once you're done.",
-			pending[0].linkText))
+			texts[0]))
 	default:
-		texts := make([]string, len(pending))
-		for i, p := range pending {
-			texts[i] = p.linkText
-		}
 		parts = append(parts, fmt.Sprintf(
 			"To continue, I need you to link %d accounts (one-time). Please %s. Send any message once you're done.",
-			len(pending), strings.Join(texts, ", and ")))
+			len(texts), strings.Join(texts, ", and ")))
 	}
 
 	if len(failedToStart) > 0 {
