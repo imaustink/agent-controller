@@ -119,8 +119,16 @@ func (b *Bridge) Detach(agentRunID string) {
 
 func (b *Bridge) handleUp(agentRunID string, data []byte) {
 	// The wire contract decides validity (see messaging.CheckContract); UpMessage
-	// is only how a valid message is carried into the workflow. Dropping an
-	// invalid message is the same outcome an undecodable one has always had.
+	// is only how a valid message is carried into the workflow. A message that
+	// violates it is dropped, exactly as the LangGraph engine has always dropped
+	// one that fails AgentUpMessageSchema (agent-orchestrator's
+	// nats-agent-channel.ts) -- the conformance fixtures hold the two rule sets
+	// identical. Before this gate the Go bridge forwarded such a message with its
+	// required fields zero-valued. No real producer sends one: the agent SDK and
+	// opencode-swe-agent both build up-messages through the typed AgentUpMessage,
+	// so a missing required field is a compile error there. A dropped concluding
+	// message (reply/failed) is not acked; the agent re-offers it until its own
+	// reply-ack timeout and then gives up, as it would if the bridge were down.
 	if err := messaging.CheckContract(data, &protocolv1.AgentUpMessage{}); err != nil {
 		log.Printf("[agent-bridge] %s: up-message violates the wire contract, dropped: %v", agentRunID, err)
 		return

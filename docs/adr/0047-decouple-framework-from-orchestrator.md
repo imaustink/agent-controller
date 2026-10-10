@@ -70,8 +70,9 @@ establish and *enforce* the boundary in the monorepo first, and defer the
 physical repo/registry split until the seam is proven.
 
 - **Framework** (reusable with no cluster): the wire protocols, the agent SDK
-  (`runAgent` / `AgentSession`), the tool-authoring SDK, `github-app-auth`, and
-  the example agents (`stub-agent`, the SWE agents) as reference implementations.
+  (`runAgent` / `AgentSession`), the tool-authoring SDK, and `github-app-auth`.
+  The example agents (`stub-agent`, the SWE agents) are reference implementations
+  that consume it, grouped under `catalog/` below.
 - **Orchestrator** (the product; needs K8s/Qdrant/Redis/Temporal): the LangGraph
   engine (`agent-orchestrator`), the Temporal engine (`orchestrator/engines/temporal`), the
   controller (`core-controller`), the brokers/gateways, `charts/`, `sidecars/`.
