@@ -1,4 +1,4 @@
-import { connect, JSONCodec, type NatsConnection, type Subscription } from "nats";
+import type { NatsConnection, Subscription } from "nats";
 import {
   AgentDownMessageSchema,
   NATS_RECONNECT_OPTIONS,
@@ -6,12 +6,13 @@ import {
   type AgentDownMessage,
   type AgentUpMessage,
 } from "@controller-agent/messaging";
-import type { AgentRuntimeConfig } from "./config.js";
+import { AgentConfigError, type AgentRuntimeConfig } from "./config.js";
 
 /**
  * Transport-agnostic two-way channel for one agent run. The runtime depends on
- * this interface (not NATS directly) so tests can inject a fake; {@link NatsChannel}
- * is the production implementation.
+ * this interface (not NATS directly): {@link NatsChannel} is the production
+ * implementation, and `createInProcessChannel` runs an agent with no broker at
+ * all.
  */
 export interface AgentChannel {
   /** Publish an up-message (agent -> orchestrator). */
@@ -22,9 +23,14 @@ export interface AgentChannel {
   close(): Promise<void>;
 }
 
-/** NATS-backed {@link AgentChannel}: publishes on the up subject, subscribes to the down subject. */
+/**
+ * NATS-backed {@link AgentChannel}: publishes on the up subject, subscribes to
+ * the down subject. The `nats` module is loaded by {@link connect}, not when
+ * this package is imported, so an agent on another transport never loads it.
+ */
 export class NatsChannel implements AgentChannel {
-  private readonly codec = JSONCodec<unknown>();
+  private readonly encoder = new TextEncoder();
+  private readonly decoder = new TextDecoder();
   private downHandler: ((msg: AgentDownMessage) => void) | undefined;
 
   private constructor(
@@ -36,14 +42,18 @@ export class NatsChannel implements AgentChannel {
   }
 
   static async connect(config: AgentRuntimeConfig): Promise<NatsChannel> {
+    if (!config.natsUrl) {
+      throw new AgentConfigError("NatsChannel needs config.natsUrl (AGENT_NATS_URL)");
+    }
     const { up, down } = agentSubjects(config.runId, config.subjectPrefix);
+    const { connect } = await import("nats");
     const nc = await connect({ servers: config.natsUrl, ...NATS_RECONNECT_OPTIONS });
     const sub = nc.subscribe(down);
     return new NatsChannel(nc, up, sub);
   }
 
   publishUp(msg: AgentUpMessage): Promise<void> {
-    this.nc.publish(this.upSubject, this.codec.encode(msg));
+    this.nc.publish(this.upSubject, this.encoder.encode(JSON.stringify(msg)));
     return Promise.resolve();
   }
 
@@ -59,7 +69,7 @@ export class NatsChannel implements AgentChannel {
     for await (const m of sub) {
       let decoded: unknown;
       try {
-        decoded = this.codec.decode(m.data);
+        decoded = JSON.parse(this.decoder.decode(m.data));
       } catch {
         continue; // ignore non-JSON garbage on the subject
       }
