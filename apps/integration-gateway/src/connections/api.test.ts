@@ -71,6 +71,7 @@ describe("ConnectionsApi", () => {
   let directory: MemDirectory;
   let github: ReturnType<typeof fakeProvider>;
   let google: ReturnType<typeof fakeProvider>;
+  let claude: ReturnType<typeof fakeProvider>;
   let oidc: { begin: ReturnType<typeof vi.fn>; complete: ReturnType<typeof vi.fn> };
   let jar: Jar;
 
@@ -78,6 +79,7 @@ describe("ConnectionsApi", () => {
     directory = new MemDirectory();
     github = fakeProvider("github", "GitHub");
     google = fakeProvider("google", "Google Drive");
+    claude = fakeProvider("claude", "Claude");
     oidc = {
       begin: vi.fn(async () => ({
         authorizeUrl: "https://idp.test/authorize?state=st-1",
@@ -86,7 +88,7 @@ describe("ConnectionsApi", () => {
       complete: vi.fn(async () => ({ ok: true, email: "ada@example.com", idpSubject: "idp-1" })),
     };
     api = new ConnectionsApi({
-      providers: [github, google],
+      providers: [github, google, claude],
       directory,
       oidc: oidc as unknown as OidcLoginClient,
       cookieKey: deriveKey("secret", "connections-cookie"),
@@ -98,7 +100,11 @@ describe("ConnectionsApi", () => {
       const url = new URL(req.url ?? "/", "http://gw.test");
       // Mirrors how GatewayServer consults the hook from a provider callback.
       if (url.pathname === "/fake-provider-callback") {
-        const back = api.completionRedirect(req, res, url.searchParams.get("provider") ?? "");
+        const provider = url.searchParams.get("provider") ?? "";
+        // `error` is how a provider reports the user declining, as on the real callback.
+        const back = url.searchParams.has("error")
+          ? api.cancelRedirect(req, res, provider)
+          : api.completionRedirect(req, res, provider);
         res.writeHead(back ? 303 : 200, back ? { location: back } : {}).end("linked");
         return;
       }
@@ -298,6 +304,117 @@ describe("ConnectionsApi", () => {
     it("records the mapping", async () => {
       expect((await recordPrincipal("ada@example.com", "openwebui:1")).status).toBe(204);
       expect(directory.map.get("ada@example.com")).toBe("openwebui:1");
+    });
+  });
+
+  describe("one-click deep link", () => {
+    /** A provider's callback: it lands the credential, then asks where to send the browser. */
+    const linked = async (p: ReturnType<typeof fakeProvider>) => {
+      p.state = { state: "connected" };
+      return get(`/fake-provider-callback?provider=${p.id}`);
+    };
+
+    it("signs in on the way and goes straight to the first missing provider's consent", async () => {
+      await recordPrincipal("ada@example.com", "openwebui:1");
+      // GitHub first whatever order chat asked in: Claude is keyed on its principal.
+      await signIn("/connections/link?need=claude,google,github");
+
+      const res = await get("/connections/link?need=claude,google,github");
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("https://github.test/authorize");
+      expect(github.connect).toHaveBeenCalledWith("openwebui:1");
+      expect(google.connect).not.toHaveBeenCalled();
+    });
+
+    it("skips what is connected and walks the rest, then says it's done", async () => {
+      await recordPrincipal("ada@example.com", "openwebui:1");
+      github.state = { state: "connected", account: "octocat" };
+      await signIn();
+
+      // Redirect providers before Claude's paste-the-code page.
+      const first = await get("/connections/link?need=claude,github,google");
+      expect(first.headers.get("location")).toBe("https://google.test/authorize");
+      expect(github.connect).not.toHaveBeenCalled();
+
+      const back = await linked(google);
+      expect(back.status).toBe(303);
+      expect(back.headers.get("location")).toBe("/connections/link/next");
+      const second = await get("/connections/link/next");
+      expect(second.headers.get("location")).toBe("https://claude.test/authorize");
+
+      expect((await linked(claude)).headers.get("location")).toBe("/connections/link/next");
+      const done = await get("/connections/link/next");
+      expect(done.status).toBe(200);
+      expect(await done.text()).toContain("You&#39;re all set");
+    });
+
+    it("stops the chain on the page when the user declines at a provider", async () => {
+      await recordPrincipal("ada@example.com", "openwebui:1");
+      await signIn();
+      await get("/connections/link?need=google,claude");
+
+      const back = await get("/fake-provider-callback?provider=google&error=access_denied");
+      expect(back.status).toBe(303);
+      expect(back.headers.get("location")).toBe("/connections?cancelled=google&need=google%2Cclaude");
+      expect(claude.connect).not.toHaveBeenCalled();
+      // The chain is gone, so nothing carries on from here.
+      expect((await get("/connections/link/next")).headers.get("location")).toBe("/connections");
+      expect(await (await get("/connections?cancelled=google&need=google,claude")).text()).toContain(
+        "Google Drive wasn&#39;t connected",
+      );
+    });
+
+    it("never sends the user through the same provider twice in one chain", async () => {
+      await recordPrincipal("ada@example.com", "openwebui:1");
+      await signIn();
+      await get("/connections/link?need=google,claude");
+
+      // The callback reported success, but nothing persisted.
+      expect((await get("/fake-provider-callback?provider=google")).headers.get("location")).toBe("/connections/link/next");
+      const next = await get("/connections/link/next");
+      expect(next.headers.get("location")).toBe("/connections?error=connect&need=google%2Cclaude");
+      expect(google.connect).toHaveBeenCalledTimes(1);
+      expect(claude.connect).not.toHaveBeenCalled();
+    });
+
+    it("stops on the page when a provider is blocked", async () => {
+      await recordPrincipal("ada@example.com", "openwebui:1");
+      claude.connect.mockResolvedValue({ blocked: "Connect GitHub first." } as never);
+      await signIn();
+      const res = await get("/connections/link?need=claude");
+      expect(res.headers.get("location")).toBe("/connections?blocked=claude&need=claude");
+      expect(jar.has("cx_return")).toBe(false);
+    });
+
+    it("stops on the page when a provider's flow won't start", async () => {
+      await recordPrincipal("ada@example.com", "openwebui:1");
+      google.connect.mockRejectedValue(new Error("boom"));
+      await signIn();
+      const res = await get("/connections/link?need=google");
+      expect(res.headers.get("location")).toBe("/connections?error=connect&need=google");
+    });
+
+    it("goes to the page when there is nothing it can link", async () => {
+      await recordPrincipal("ada@example.com", "openwebui:1");
+      await signIn();
+      expect((await get("/connections/link?need=notion")).headers.get("location")).toBe("/connections");
+      expect((await get("/connections/link/next")).headers.get("location")).toBe("/connections");
+    });
+
+    it("asks a user chat hasn't seen to send a message first", async () => {
+      await signIn();
+      const html = await (await get("/connections/link?need=google")).text();
+      expect(html).toContain("Send a chat message first");
+      expect(google.connect).not.toHaveBeenCalled();
+    });
+
+    it("does not let a provider's return token stand in for a chain step", async () => {
+      // A page-started (non-chain) link's cookie at /link/next is ignored.
+      await recordPrincipal("ada@example.com", "openwebui:1");
+      await signIn();
+      await post("/connections/google/connect", { csrf: await csrfFromPage() });
+      expect((await get("/connections/link/next")).headers.get("location")).toBe("/connections");
+      expect(google.connect).toHaveBeenCalledTimes(1);
     });
   });
 

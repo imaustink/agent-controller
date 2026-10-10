@@ -287,7 +287,8 @@ claudeAuth:
 # against any OIDC provider -- Pocket ID, or Keycloak with
 # issuer "https://<host>/realms/<realm>" -- using a CONFIDENTIAL client whose
 # redirect URI is exactly "<publicBaseUrl>/connections/callback". Its client
-# secret goes in the existing Secret under secrets.connectionsOidcClientSecretKey.
+# secret goes in the existing Secret under secrets.connectionsOidcClientSecretKey,
+# or in a Secret of its own (connections.oidc.clientSecretExistingSecret).
 #
 # The sign-in's VERIFIED email is matched to the Open WebUI account that
 # carries the same email, so both must sign in through the same IdP, and the
@@ -300,6 +301,13 @@ connections:
     clientId: ""
     # Empty uses "openid email profile". Must include openid and email.
     scopes: ""
+    # Read the client secret from its OWN Secret instead of secrets.existingSecret,
+    # e.g. one an IdP operator writes when it provisions the client (Bitovi's
+    # Keycloak composition writes `agent-connections-oidc` / `clientSecret`).
+    # Empty name: secrets.existingSecret (or the chart's own Secret). Empty key:
+    # secrets.connectionsOidcClientSecretKey.
+    clientSecretExistingSecret: ""
+    clientSecretExistingSecretKey: ""
   # Accept a sign-in whose email the IdP does not mark verified. Leave false:
   # the email decides whose credentials the page manages.
   allowUnverifiedEmail: false

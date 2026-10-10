@@ -185,6 +185,26 @@ describe("IdentityLinkApi with an authcode provider", () => {
     expect(api.completionRedirect).toHaveBeenCalledWith(expect.anything(), expect.anything(), "atlassian");
   });
 
+  it("sends a declined link back to the Connections page when it started the link", async () => {
+    api.cancelRedirect = vi.fn().mockReturnValue("/connections?cancelled=atlassian");
+    api.completionRedirect = vi.fn().mockReturnValue("/connections/link/next");
+    const res = await fetch(`${base}/identity-link/atlassian/callback?state=st&error=access_denied`, { redirect: "manual" });
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/connections?cancelled=atlassian");
+    expect(api.cancelRedirect).toHaveBeenCalledWith(expect.anything(), expect.anything(), "atlassian");
+    // Declining is never treated as linked, so a chain can't move on from it.
+    expect(api.completionRedirect).not.toHaveBeenCalled();
+    expect(atlassian.completeAuthCode).not.toHaveBeenCalled();
+  });
+
+  it("keeps the cancelled page for a declined link the page didn't start", async () => {
+    api.cancelRedirect = vi.fn().mockReturnValue(undefined);
+    const res = await fetch(`${base}/identity-link/atlassian/callback?state=st&error=access_denied`, { redirect: "manual" });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("link cancelled");
+  });
+
   it("never redirects a link that failed to complete", async () => {
     api.completionRedirect = vi.fn().mockReturnValue("/connections?connected=atlassian");
     atlassian.completeAuthCode.mockResolvedValue(undefined);

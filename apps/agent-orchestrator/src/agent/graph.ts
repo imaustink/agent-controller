@@ -41,6 +41,7 @@ import {
   type CredentialEnvEntry,
   linkPromptText,
   connectionsPageStart,
+  joinLabels,
 } from "./authorization-service.js";
 
 // Re-exported: several tests and callers import ACTOR_LOGIN_ENV from this
@@ -810,12 +811,6 @@ export async function knowledgeBaseLinkPrompt(
     prompts.map((prompt) => `- ${prompt}`).join("\n") +
     "\n\nOnce you've linked, ask again and I'll include those sources."
   );
-}
-
-/** "A", "A and B", "A, B and C". */
-function joinLabels(labels: string[]): string {
-  if (labels.length <= 1) return labels.join("");
-  return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
 }
 
 /**

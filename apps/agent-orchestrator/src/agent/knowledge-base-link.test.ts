@@ -106,7 +106,7 @@ describe("knowledgeBaseLinkPrompt with a Connections page", () => {
     );
 
     expect(out).toContain(BASE);
-    expect(out).toContain("[Connect atlassian and google](https://gw.example/connections?need=atlassian%2Cgoogle)");
+    expect(out).toContain("[Connect atlassian and google](https://gw.example/connections/link?need=atlassian%2Cgoogle)");
     expect(identityLinkGateway.start).not.toHaveBeenCalled();
   });
 
