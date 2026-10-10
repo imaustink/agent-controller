@@ -10,8 +10,11 @@
 //   - JS/TS import/require specifiers (bare package names and relative paths)
 //   - tsconfig*.json relative paths (extends, references, paths)
 //   - Go imports of another module's path, and go.mod `replace` targets
-//   - Dockerfile COPY/ADD sources naming another unit's directory (images
-//     build from the repo root, so those sources are repo-relative)
+//   - Dockerfile COPY/ADD sources naming another unit's directory, resolved
+//     against that image's build context: the context skaffold.yaml or
+//     .github/release-images.json builds it with, or the repo root when
+//     neither mentions it (most images build from the root; a few, like the
+//     Go services, build from their own directory)
 //
 // It also fails when a workspace / module / Dockerfile directory matches no
 // unit (so a new component cannot land unclassified) and when a configured
@@ -19,7 +22,7 @@
 // move). Dependency-free on purpose: it runs before `npm ci` would matter.
 
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
-import { join, relative, resolve, dirname, sep } from "node:path";
+import { join, relative, resolve, dirname, sep, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "bin", "vendor", "coverage", ".turbo"]);
@@ -61,6 +64,54 @@ function expandPattern(root, pattern) {
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
+}
+
+/**
+ * Maps each Dockerfile (repo-relative) to the build context(s) images are
+ * built from it with, per skaffold.yaml and .github/release-images.json.
+ *
+ * skaffold.yaml is read with a deliberately small line parser rather than a
+ * YAML library (this checker stays dependency-free): within each artifact
+ * (`- image:`), `context:` and `docker.dockerfile:` -- the only two keys that
+ * matter here, with skaffold's defaults `.` and `Dockerfile`.
+ */
+function dockerBuildContexts(root) {
+  const contexts = new Map();
+  const add = (dockerfile, context) => {
+    const df = posix.normalize(dockerfile);
+    const ctx = posix.normalize(context);
+    if (!contexts.has(df)) contexts.set(df, new Set());
+    contexts.get(df).add(ctx);
+  };
+
+  const skaffold = join(root, "skaffold.yaml");
+  if (existsSync(skaffold)) {
+    let current;
+    const flush = () => {
+      if (current) add(posix.join(current.context, current.dockerfile), current.context);
+    };
+    for (const line of readFileSync(skaffold, "utf8").split("\n")) {
+      if (/^\s*-\s*image:/.test(line)) {
+        flush();
+        current = { context: ".", dockerfile: "Dockerfile" };
+        continue;
+      }
+      if (!current) continue;
+      const ctx = /^\s*context:\s*["']?([^"'\s#]+)/.exec(line);
+      if (ctx) current.context = ctx[1];
+      const df = /^\s*dockerfile:\s*["']?([^"'\s#]+)/.exec(line);
+      if (df) current.dockerfile = df[1];
+    }
+    flush();
+  }
+
+  const releaseImages = join(root, ".github", "release-images.json");
+  if (existsSync(releaseImages)) {
+    for (const img of readJson(releaseImages)) {
+      if (img.dockerfile) add(img.dockerfile, img.context ?? ".");
+    }
+  }
+  return contexts;
 }
 
 /**
@@ -164,6 +215,16 @@ export function checkBoundaries(root, config = readJson(join(root, "boundaries.j
   };
   const relativeTarget = (file, spec) => ownerOf(relative(root, resolve(dirname(file), spec)));
 
+  const buildContexts = dockerBuildContexts(root);
+  for (const [dockerfile, ctxs] of buildContexts) {
+    if (ctxs.size > 1) {
+      errors.push({
+        kind: "config",
+        message: `${dockerfile} is built with different contexts (${[...ctxs].join(", ")}) by skaffold.yaml / release-images.json`,
+      });
+    }
+  }
+
   for (const unit of units) {
     walk(join(root, unit.path), (file) => {
       // A nested unit's files belong to it, not to this one.
@@ -206,12 +267,19 @@ export function checkBoundaries(root, config = readJson(join(root, "boundaries.j
           record(unit, goModuleFor(m[1]), file, lineOf(text, m.index), `go.mod require "${m[1]}"`);
         }
       } else if (/^Dockerfile/.test(name)) {
+        // COPY sources are relative to the build context, not the repo root.
+        const contexts = buildContexts.get(toPosix(relative(root, file))) ?? new Set(["."]);
         for (const m of text.matchAll(/^\s*(?:COPY|ADD)\s+(.+)$/gim)) {
           const args = m[1].trim().split(/\s+/);
           if (args.some((a) => a.startsWith("--from"))) continue;
           const sources = args.filter((a) => !a.startsWith("--")).slice(0, -1);
           for (const src of sources) {
-            record(unit, ownerOf(src.replace(/^\.\//, "")), file, lineOf(text, m.index), `Dockerfile ${src}`);
+            for (const context of contexts) {
+              const target = posix.normalize(posix.join(context, src));
+              if (target.startsWith("..")) continue; // outside the repo
+              const ctxNote = context === "." ? "" : ` (context ${context})`;
+              record(unit, ownerOf(target), file, lineOf(text, m.index), `Dockerfile ${src}${ctxNote}`);
+            }
           }
         }
       }
