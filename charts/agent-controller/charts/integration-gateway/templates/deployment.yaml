@@ -1,3 +1,6 @@
+{{- if and .Values.connections.enabled (not (and .Values.identityLink.enabled .Values.sessionPage.publicBaseUrl .Values.connections.oidc.issuer .Values.connections.oidc.clientId)) }}
+{{- fail "connections.enabled requires identityLink.enabled, sessionPage.publicBaseUrl, connections.oidc.issuer and connections.oidc.clientId (docs/adr/0046)" }}
+{{- end }}
 {{- if and .Values.claudeAuth.enabled (not (and .Values.identityLink.enabled .Values.sessionPage.publicBaseUrl)) }}
 {{- fail "claudeAuth.enabled requires identityLink.enabled and sessionPage.publicBaseUrl to also be set (docs/adr/0027)" }}
 {{- end }}
@@ -225,6 +228,29 @@ spec:
             {{- if .Values.claudeAuth.enabled }}
             - name: GATEWAY_CLAUDE_AUTH_ENABLED
               value: "true"
+            {{- end }}
+            {{- if .Values.connections.enabled }}
+            - name: GATEWAY_CONNECTIONS_OIDC_ISSUER
+              value: {{ .Values.connections.oidc.issuer | quote }}
+            - name: GATEWAY_CONNECTIONS_OIDC_CLIENT_ID
+              value: {{ .Values.connections.oidc.clientId | quote }}
+            {{- if .Values.connections.oidc.scopes }}
+            - name: GATEWAY_CONNECTIONS_OIDC_SCOPES
+              value: {{ .Values.connections.oidc.scopes | quote }}
+            {{- end }}
+            {{- if .Values.connections.allowUnverifiedEmail }}
+            - name: GATEWAY_CONNECTIONS_ALLOW_UNVERIFIED_EMAIL
+              value: "true"
+            {{- end }}
+            {{- if .Values.connections.sessionTtlSeconds }}
+            - name: GATEWAY_CONNECTIONS_SESSION_TTL_SECONDS
+              value: {{ .Values.connections.sessionTtlSeconds | quote }}
+            {{- end }}
+            - name: GATEWAY_CONNECTIONS_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.connections.oidc.clientSecretExistingSecret | default (.Values.secrets.existingSecret | default (include "integration-gateway.fullname" .)) }}
+                  key: {{ .Values.connections.oidc.clientSecretExistingSecretKey | default .Values.secrets.connectionsOidcClientSecretKey }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

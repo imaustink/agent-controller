@@ -59,6 +59,23 @@ describe("OpenWebUiForwardedUserResolver", () => {
       subject: "openwebui:alice@example.com",
       roles: ["reader", "writer"],
       perUser: true,
+      email: "alice@example.com",
+    });
+  });
+
+  // The shape Open WebUI actually mints (backend/open_webui/utils/headers.py):
+  // `sub` is the user id and `email` rides along under the same signature,
+  // which is what lets the Connections page map a sign-in back to this
+  // subject (docs/adr/0046).
+  it("carries the signed email alongside the id", async () => {
+    const resolver = new OpenWebUiForwardedUserResolver({ secret: SECRET, roles: ["reader"] });
+    const token = await sign({ sub: "u-1", email: "ada@example.com", name: "Ada", role: "user", iss: "open-webui" });
+
+    await expect(resolver.resolve(token)).resolves.toEqual({
+      subject: "openwebui:u-1",
+      roles: ["reader"],
+      perUser: true,
+      email: "ada@example.com",
     });
   });
 

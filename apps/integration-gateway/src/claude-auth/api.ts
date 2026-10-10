@@ -183,11 +183,36 @@ export class ClaudeAuthApi {
       const kind = kindForMode(mode);
       const record = kind === "login" ? { kind, credentialsJson: result.token, createdAt: new Date().toISOString() } : { kind, token: result.token, createdAt: new Date().toISOString() };
       await this.store.set(subject, record);
+      const back = this.completionRedirect?.(req, res, mode === "login" ? "claude-remote" : "claude");
+      if (back) {
+        res.writeHead(303, { location: back }).end();
+        return true;
+      }
       sendHtml(res, 200, renderClaudeAuthResultPage({ success: true, message: mode === "login" ? "Your Claude account is now linked (full login)." : "Your Claude account is now linked." }));
       return true;
     }
 
     return false;
+  }
+
+  /**
+   * Set by the Connections page (docs/adr/0046): where to send the browser
+   * once a link it started completes, instead of the "return to your chat"
+   * result page. `undefined` from it keeps that page.
+   */
+  completionRedirect?: (req: IncomingMessage, res: ServerResponse, provider: string) => string | undefined;
+
+  /**
+   * Starts a flow for `subject` and returns its paste-the-code page URL --
+   * the same thing `POST /claude-auth/api/start` answers, for an in-process
+   * caller (the Connections page) that has no bearer token to present.
+   */
+  async startPageFlow(subject: string, kind: ClaudeAuthKind): Promise<string> {
+    const mode: ClaudeAuthMode = kind === "login" ? "login" : "setup-token";
+    const flows = this.flowsFor(mode);
+    if (!flows) throw new Error(`claude-auth mode "${mode}" is not configured on this gateway`);
+    const { flowId, authorizeUrl } = await flows.start(subject);
+    return this.buildPageUrl(flowId, authorizeUrl, mode);
   }
 
   /** Builds the page URL to hand back from `start`, embedding the authorize URL (and, for non-default modes, `mode`) so `handlePage`'s GET doesn't need to re-derive either. */

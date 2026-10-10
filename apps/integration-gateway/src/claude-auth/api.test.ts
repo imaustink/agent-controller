@@ -165,6 +165,17 @@ describe("ClaudeAuthApi", () => {
   });
 
   describe("mode=login", () => {
+    // The Connections page's entry point (docs/adr/0046) must produce exactly
+    // what the bearer `start` route does for Remote Control: the full-login
+    // flow and a `mode=login` page, so the stored record is the real
+    // credentials file the session URL depends on.
+    it("startPageFlow('login') runs the same login flow as the start route", async () => {
+      const pageUrl = await api.startPageFlow("github:octocat", "login");
+      expect(loginFlows.start).toHaveBeenCalledWith("github:octocat");
+      expect(setupFlows.start).not.toHaveBeenCalled();
+      expect(new URL(pageUrl).searchParams.get("mode")).toBe("login");
+    });
+
     it("start with mode=login uses login flows and embeds mode in the pageUrl", async () => {
       const res = await fetch(`http://localhost:${port}/claude-auth/api/start`, {
         method: "POST",

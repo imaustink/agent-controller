@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/controller-agent/temporal-engine/internal/authz"
 	"github.com/controller-agent/temporal-engine/internal/catalog"
 	"github.com/controller-agent/temporal-engine/internal/corpus"
 	"github.com/controller-agent/temporal-engine/internal/identitylink"
@@ -87,6 +88,9 @@ type KnowledgeBaseActivities struct {
 	// the "needs link" answer carries a clickable link rather than a dead-end
 	// sentence. Optional: without it the ask degrades to the plain message.
 	IdentityLinks identitylink.Port
+	// ConnectionsURL is integration-gateway's Connections page; see
+	// authz.Deps.ConnectionsURL. Empty keeps direct per-provider links.
+	ConnectionsURL string
 }
 
 type SearchKnowledgeBaseInput struct {
@@ -316,7 +320,23 @@ func (a *KnowledgeBaseActivities) startLinks(ctx context.Context, caller Caller,
 // the gateway has every provider unconfigured, so a misconfiguration degrades
 // to the plain message rather than failing the turn.
 func (a *KnowledgeBaseActivities) linkClauses(ctx context.Context, caller Caller, providers []string) []string {
-	if a.IdentityLinks == nil || len(providers) == 0 {
+	if len(providers) == 0 {
+		return nil
+	}
+	// One link to the Connections page for every missing provider, rather
+	// than a clause per provider, each a raw OAuth URL (agent-controller ADR
+	// 0046). Nothing is started here: the page starts each flow for the same
+	// subject retrieval reads. PARITY: startKnowledgeBaseLinkClauses in graph.ts.
+	if authz.UsesConnectionsPage(a.ConnectionsURL, caller.Subject, identitylink.FlowAuthCode) {
+		if page, ok := authz.ConnectionsPageStart(a.ConnectionsURL, providers); ok {
+			names := make([]string, len(providers))
+			for i, p := range providers {
+				names[i] = authz.Label(p)
+			}
+			return []string{fmt.Sprintf("[Connect %s](%s)", authz.JoinLabels(names), page.PageURL)}
+		}
+	}
+	if a.IdentityLinks == nil {
 		return nil
 	}
 	var clauses []string
