@@ -1,4 +1,5 @@
 import type { ToolDescriptor } from "../tool-descriptor.js";
+import type { CitedSource } from "./cite.js";
 import type { DelegatedCredentialResolver } from "./searcher.js";
 import type { KnowledgeBaseExecMember } from "./exec.js";
 
@@ -17,6 +18,12 @@ export interface CorpusLookupResult {
   needsLink?: boolean;
   /** Providers to link when `needsLink`; the graph starts the flow from these. */
   linkProviders?: string[];
+  /**
+   * The hits, numbered from the `firstIndex` given, so an answer written from
+   * them can cite inline. Each title and URL is the source's own answer to a
+   * search run AS the caller, so it is theirs to see, like a probe's.
+   */
+  sources?: CitedSource[];
 }
 
 /** One hit, as the broker returns it. */
@@ -56,6 +63,8 @@ export class CorpusLookup {
     tool: ToolDescriptor,
     query: string,
     caller: { subject: string; roles: string[] },
+    /** The citation number the first hit takes: the turn's next unused one. */
+    firstIndex = 1,
   ): Promise<CorpusLookupResult> {
     const exec = tool.knowledgeBaseExec;
     if (!exec || exec.operation !== "lookup") {
@@ -123,7 +132,10 @@ export class CorpusLookup {
       };
     }
 
-    return { result: render(exec.displayName, trimmed, hits, unlinked, refused) };
+    return {
+      result: render(exec.displayName, trimmed, firstIndex, hits, unlinked, refused),
+      sources: hits.map((hit, i) => ({ n: firstIndex + i, title: hit.title ?? hit.id, url: hit.url ?? "" })),
+    };
   }
 
   /**
@@ -164,12 +176,40 @@ export class CorpusLookup {
       return { hits: [], note: "no live search for this source" };
     }
     if (!response.ok) {
-      return { hits: [], note: `refused (${response.status})` };
+      return { hits: [], note: refusalNote(response.status, await response.text().catch(() => "")) };
     }
 
     const body = (await response.json()) as { hits?: BrokerHit[] };
     return { hits: body.hits ?? [] };
   }
+}
+
+/** Bounds the broker's explanation carried into a refusal note. */
+const MAX_REFUSAL_DETAIL = 200;
+
+/**
+ * Names a refused source WITH the broker's reason when it gave one.
+ *
+ * The bare status hid the cause: the broker maps a source's non-denial failure
+ * to 503, so `refused (503)` read the same for an Atlassian outage, a 429, and a
+ * linked token missing `search:confluence` (Atlassian's 401 "scope does not
+ * match") — three different fixes. The driver already puts the source's own
+ * explanation in the error the broker returns; this stops throwing it away.
+ *
+ * PARITY: refusalNote in engines/temporal/internal/temporal/activities/corpus_lookup.go.
+ */
+export function refusalNote(status: number, body: string): string {
+  let detail = "";
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    if (typeof parsed.error === "string") detail = parsed.error.split(/\s+/).filter(Boolean).join(" ");
+  } catch {
+    // Not JSON: no reason to carry.
+  }
+  if (!detail) return `refused (${status})`;
+  const chars = [...detail];
+  if (chars.length > MAX_REFUSAL_DETAIL) detail = chars.slice(0, MAX_REFUSAL_DETAIL).join("") + "…";
+  return `refused (${status}): ${detail}`;
 }
 
 /**
@@ -182,6 +222,7 @@ export class CorpusLookup {
 function render(
   displayName: string,
   query: string,
+  firstIndex: number,
   hits: (BrokerHit & { member: string; corpus: string })[],
   unlinked: string[],
   refused: string[],
@@ -192,13 +233,15 @@ function render(
     parts.push(`Nothing in ${displayName} matches "${query}" right now.`);
   } else {
     parts.push(`Live results from ${displayName} for "${query}":`);
-    for (const hit of hits) {
-      const lines = [`\n- ${hit.title ?? hit.id} — ${hit.member}`];
+    // Each hit leads with its citation marker, `[n]`, numbered on from the
+    // turn's earlier results — what the model writes to cite it inline.
+    hits.forEach((hit, i) => {
+      const lines = [`\n- [${firstIndex + i}] ${hit.title ?? hit.id} — ${hit.member}`];
       lines.push(`  reference: ${hit.corpus}/${hit.id}`);
       if (hit.url) lines.push(`  ${hit.url}`);
       if (hit.excerpt) lines.push(`  ${hit.excerpt.split(/\s+/).join(" ").trim()}`);
       parts.push(lines.join("\n"));
-    }
+    });
   }
 
   // Stated rather than swallowed: a partial answer the caller believes is

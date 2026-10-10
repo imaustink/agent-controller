@@ -35,7 +35,18 @@ spec:
   # cannot self-trigger a review of it. The gateway removes the label when the
   # run ends, so re-applying it re-triggers the review.
   agentRef: {{ .Values.integrationRoutes.githubIssueLabeledReview.agentRef | default "opencode-swe-agent" }}
+  # The SWE-ENFORCED-MODE sentinel on the first line is CODE-ENFORCED by the SWE
+  # agent container, not just advice to the model: on an exact match the agent
+  # adds `git push`/`gh pr create`/`gh pr merge`/... to its permission deny list
+  # and mints a read-only (contents:read) GitHub token, so a push/merge fails at
+  # the CLI and credential layers (see apps/claude-code-swe-agent/src/claude.ts
+  # REVIEW_MODE_MARKER and apps/opencode-swe-agent/src/opencode.ts). The
+  # IntegrationRoute carries no env/mode field, so the rendered promptTemplate is
+  # the only per-route channel into the container; keep this string byte-for-byte
+  # identical to REVIEW_MODE_MARKER in both agents. It sits in the fixed, trusted
+  # part of the template above the body so event content cannot strip it.
   promptTemplate: |
+    SWE-ENFORCED-MODE: review-only
     GitHub issue {{`{{owner}}`}}/{{`{{repo}}`}}#{{`{{issueNumber}}`}} was labeled "{{`{{labelName}}`}}": "{{`{{title}}`}}"
 
     {{`{{body}}`}}

@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import type { Event } from "@controller-agent/messaging";
-import { extractContinuationToken, prependContinuationToken } from "../continuation.js";
+import { extractContinuationToken, prependContinuationToken, resolveContinuationKey } from "../continuation.js";
 import { SELF_IMPROVEMENT_FOOTER } from "../openai/chat-completions.js";
-import type { AgentOrchestratorChannel, AgentTurnResult } from "../agents/nats-agent-channel.js";
-import { AgentTurnFailedError, AgentTurnTimeoutError, AgentTurnTransportError } from "../agents/nats-agent-channel.js";
+import type { AgentOrchestratorChannel, AgentTurnResult, SubAgentApprovalCall } from "../agents/nats-agent-channel.js";
+import {
+  AgentTurnApprovalPendingError,
+  AgentTurnFailedError,
+  AgentTurnTimeoutError,
+  AgentTurnTransportError,
+} from "../agents/nats-agent-channel.js";
 import type { AgentDescriptor, AgentSearchResult, AgentStore } from "../agents/types.js";
 import type { PendingToolCall } from "../caller-tools/types.js";
 import { JobTimeoutError, type JobResultReceiver } from "../callback/receiver.js";
@@ -28,13 +33,25 @@ import type { BestEffortResponder } from "./best-effort-responder.js";
 import type { CapabilityNeedChecker } from "./capability-need-checker.js";
 import type { DelegateSelector } from "./delegate-selector.js";
 import type { ResponseComposer } from "./response-composer.js";
+import { finalizeCitations, type CitedSource } from "../knowledge-base/cite.js";
 import type { CorpusReader } from "../knowledge-base/reader.js";
 import type { CorpusLookup } from "../knowledge-base/lookup.js";
+import type { CorpusQuery } from "../knowledge-base/query.js";
+import type { MCPBrokerClient } from "../mcp/mcp-broker-client.js";
 import type { KnowledgeBaseSearcher } from "../knowledge-base/searcher.js";
+import { knowledgeBaseSkillId } from "../knowledge-base/types.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
-import { makeSubAgentToolCallHandler, type ToolCatalog } from "./dispatch-tool.js";
+import { dispatchResolvedTool, makeSubAgentToolCallHandler, type ToolCatalog } from "./dispatch-tool.js";
+import {
+  APPROVAL_DENIED_CODE,
+  APPROVAL_DENIED_MESSAGE,
+  approvalPrompt,
+  parseApprovalDecision,
+  requiresApproval,
+  resolveApproval,
+} from "./approval.js";
 import {
   ACTOR_LOGIN_ENV,
   AuthorizationService,
@@ -48,6 +65,68 @@ import {
 // module, and the constant's home is now the authorization service that owns
 // the decision to inject it.
 export { ACTOR_LOGIN_ENV };
+
+/**
+ * A tool call paused awaiting human approval (ADR 0003 + ADR 0004
+ * terminate-and-resume). Set by `runTool` when a gated call cannot run yet;
+ * persisted to the session store exactly like `pendingIdentityLink`, and
+ * consumed next turn by `checkPendingApproval`, which reads the user's reply as
+ * the decision. Carries everything the resume needs to re-dispatch the exact
+ * same call and continue the planner loop WITHOUT re-running retrieval/planning
+ * (which could pick a different tool or args than the user approved).
+ */
+export interface ApprovalPending {
+  /** Catalog id of the gated tool — also what the prompt names. */
+  toolId: string;
+  /** The exact args the gated call would run with (ADR 0008). */
+  toolArgs?: string;
+  /** Instance scope for the resumed call's continuation key (ADR 0017). */
+  instanceKey?: string;
+  /**
+   * The resolved tool descriptor, so the resume re-dispatches the SAME call
+   * rather than re-resolving it (which depends on this turn's throwaway
+   * "approve"/"deny" text). Plain JSON — safe to persist.
+   */
+  tool: ToolDescriptor;
+  /** The governing skill, restored so the planner loop can continue after the decision. */
+  skill?: SkillDescriptor;
+  /** The skill's loaded tools, restored for the same reason. */
+  skillTools?: ToolDescriptor[];
+  /**
+   * The subject this pause was stored under (mirrors `pendingIdentityLink.subject`)
+   * — the resume is honored only when the caller's freshly resolved subject matches.
+   */
+  subject?: string;
+}
+
+/**
+ * A tool call a RUNNING SUB-AGENT paused on, awaiting the caller's approval
+ * (ADR 0003 + sub-agent HITL). Set by `checkActiveAgentRun`/`delegateToAgent`
+ * when the sub-agent's own `tool_call` turns out to need approval; persisted to
+ * the session store (coexisting with the active-run anchor, since the run is
+ * still live and blocked on the orchestrator's unresolved `tool_result`) and
+ * consumed next turn by `checkPendingSubAgentApproval`, which reads the reply as
+ * the decision, resolves the held call, and re-attaches to the same run. Plain
+ * JSON — safe to persist. The `tool`/`input` are the raw `tool_call` fields;
+ * the descriptor is re-resolved from the catalog on approve (like a fresh
+ * sub-agent dispatch).
+ */
+export interface SubAgentApprovalPending {
+  /** The live AgentRun the paused sub-agent is running as — the subject the resolved `tool_result` is published to. */
+  runId: string;
+  /** Correlates the held `tool_call`/`tool_result` (docs/adr/0028). */
+  callId: string;
+  /** Tool name the sub-agent asked to run (validated against the agent's `toolRefs`). */
+  tool: string;
+  /** Raw tool input the gated call would run with. */
+  input: string;
+  /** Catalog id of the governing Agent — re-fetched under current roles before resume. */
+  agentId: string;
+  /** The subject the pause was stored under — the resume is honored only for that caller. */
+  subject: string;
+  /** ms-since-epoch deadline after which the background sweeper fails the held call out. */
+  expiresAt: number;
+}
 
 /**
  * Agent state threaded through the graph (docs/adr/0008, docs/adr/0012,
@@ -283,6 +362,51 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
+  /**
+   * Set by `runTool` when the deterministic knowledge-base link gate stops the
+   * turn to ask the caller to link an account: `result` holds the ask, and the
+   * turn must END with it rather than looping back to `planAction` (which would
+   * let the model recompose and drop the link). PARITY: the Temporal engine's
+   * `ConversationState.KnowledgeBaseLinkPrompts` gate, which returns directly.
+   */
+  linkGatePending: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
+  }),
+  /**
+   * Every knowledge-base result THIS turn retrieved that an answer may cite —
+   * numbered across the whole turn (each KB call continues from the last
+   * number), with the title and URL the source itself returned to the caller —
+   * plus what those retrievals could not see. Carried so they are applied in
+   * code to whatever the turn finally returns: the model's `[n]` markers become
+   * these links, and the caveats are appended whatever the model wrote. Without
+   * this, a `respond` answer (the planner recomposing in its own prose) could
+   * drop the citations/disclosure — the "finish vs respond" verbatim gap.
+   * APPENDED by each KB node, never replaced, so a later search or another
+   * tool cannot wipe an earlier search's sources. PARITY: `citations` in
+   * engines/temporal/internal/temporal/workflows/agentloop.go.
+   */
+  citationSources: Annotation<CitedSource[]>({
+    reducer: (current, update) => [...current, ...update],
+    default: () => [],
+  }),
+  citationCaveats: Annotation<string[]>({
+    reducer: (current, update) => [...current, ...update],
+    default: () => [],
+  }),
+  /**
+   * The verbatim result of a successful tool call THIS turn that round-tripped
+   * continuation state (ADR 0017) — a stateful refine-loop tool such as
+   * recipe-publisher. Carried so the tool's own output (the recipe/image
+   * Markdown next-turn intent detection depends on) reaches the user even when
+   * the planner chooses `respond` and would otherwise paraphrase it away. This
+   * is what lets the skill prompts stop carrying a load-bearing "you MUST choose
+   * finish" instruction. PARITY: `pendingVerbatim` in agentloop.go.
+   */
+  pendingVerbatimResult: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
   /** Descriptor of the sub-agent selected for this turn (agent delegation path). */
   selectedAgent: Annotation<AgentDescriptor | undefined>({
     reducer: (_current, update) => update,
@@ -469,6 +593,61 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => false,
   }),
   /**
+   * A tool call this conversation paused on, awaiting the caller's approval
+   * (ADR 0003). The resume anchor `checkPendingApproval` reads on the NEXT turn
+   * — set by `runTool` when a gated call cannot run yet, persisted like
+   * `pendingIdentityLink`, and cleared once the decision is read. See
+   * {@link ApprovalPending}.
+   */
+  approvalPending: Annotation<ApprovalPending | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * True for exactly the one re-dispatch that `checkPendingApproval` authorized
+   * after the caller approved: it tells `runTool` to skip the approval gate so
+   * an already-approved call does not re-prompt forever. Transient (never
+   * persisted) — a fresh turn always re-gates.
+   */
+  approvalGranted: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
+  }),
+  /**
+   * True when THIS turn ended still waiting on the caller to make an approval
+   * decision (`runTool` just gated a call, or `checkPendingApproval` re-asked
+   * on an ambiguous reply) — the turn's `result` is the approval prompt, so the
+   * server persists `approvalPending` rather than clearing it, exactly as it
+   * does for `identityLinkPending`.
+   */
+  approvalWaiting: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
+  }),
+  /**
+   * A tool call a RUNNING SUB-AGENT paused on, awaiting the caller's approval
+   * (ADR 0003 + sub-agent HITL). Set by `checkActiveAgentRun`/`delegateToAgent`
+   * when the sub-agent's own `tool_call` needs approval, read next turn by
+   * `checkPendingSubAgentApproval`. Unlike {@link approvalPending} it COEXISTS
+   * with the active-run anchor — the run is still live. See
+   * {@link SubAgentApprovalPending}.
+   */
+  subAgentApprovalPending: Annotation<SubAgentApprovalPending | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * True when THIS turn ended still waiting on the caller to decide a
+   * sub-agent's gated tool call (`checkActiveAgentRun`/`delegateToAgent` just
+   * parked one, or `checkPendingSubAgentApproval` re-asked on an ambiguous
+   * reply) — the turn's `result` is the approval prompt, so the server persists
+   * `subAgentApprovalPending`. Mirrors `approvalWaiting`.
+   */
+  subAgentApprovalWaiting: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
+  }),
+  /**
    * Per-turn override of which OAuth flow `delegateToAgent` starts when this
    * caller hasn't linked their identity yet. Absent means the default
    * ("authcode") applies at the point of use -- ordinary Open WebUI chat
@@ -554,6 +733,19 @@ export interface AgentGraphDeps {
    */
   corpusLookup?: CorpusLookup;
   /**
+   * Runs a knowledge base's structured query live, as the caller — filter and
+   * sort the sources' items by metadata. Absent when knowledge bases are not
+   * configured.
+   */
+  corpusQuery?: CorpusQuery;
+  /**
+   * Proxies an MCP tool call through the mcp-broker (docs/adr/0045). Absent when
+   * `AGENT_MCP_BROKER_URL` is unset, in which case an `mcpExec` tool fails
+   * gracefully rather than crashing the graph — and, matching the Go engine, is
+   * not indexed in the first place unless the broker is present to dispatch to.
+   */
+  mcpBrokerClient?: MCPBrokerClient;
+  /**
    * Resolves identity from Open WebUI's per-request signed
    * `X-OpenWebUI-User-Jwt` header (`OpenWebUiForwardedUserResolver`) rather
    * than its shared static `authToken`. Optional: absent -> `resolveIdentity`
@@ -622,6 +814,13 @@ export interface AgentGraphDeps {
    * see `agentAwaitReplyIdleTimeoutMs`.
    */
   agentIdleTimeoutSeconds?: number;
+  /**
+   * Global fallback (seconds) for how long the orchestrator holds a sub-agent's
+   * own gated tool call waiting for approval (ADR 0003 + sub-agent HITL) when
+   * the governing Agent sets no `approvalTimeoutSeconds`. Default 900 when
+   * absent. Threaded into the per-call `expiresAt` the sweeper enforces.
+   */
+  subAgentApprovalTimeoutSeconds?: number;
   /**
    * Records, before the wait begins, that this conversation is owed a reply by
    * a specific AgentRun — the resume anchor a later turn re-attaches to
@@ -781,36 +980,87 @@ export async function knowledgeBaseLinkPrompt(
   providers: string[],
   baseMessage: string,
 ): Promise<string> {
+  const clauses = await startKnowledgeBaseLinkClauses(deps, subject, providers);
+  if (clauses.length === 0) return baseMessage;
+  return (
+    `${baseMessage}\n\n` +
+    clauses.map((clause) => `- ${clause}`).join("\n") +
+    "\n\nOnce you've linked, ask again and I'll include those sources."
+  );
+}
+
+/**
+ * Starts an authcode flow per provider and returns one clickable clause each
+ * ("[link your slack account](url)"), skipping any whose flow could not be
+ * started or whose provider has no gateway. Shared by {@link knowledgeBaseLinkPrompt}
+ * and {@link knowledgeBaseLinkGate}.
+ */
+async function startKnowledgeBaseLinkClauses(
+  deps: AgentGraphDeps,
+  subject: string,
+  providers: string[],
+): Promise<string[]> {
   const catalog = resolveIdentityProviderCatalog(deps.identityProviderCatalog);
   // One link to the Connections page for every missing provider, rather than a
-  // bullet per provider, each a raw OAuth URL (docs/adr/0046).
+  // clause per provider, each a raw OAuth URL (docs/adr/0046). Nothing is
+  // started at the provider: the page starts each flow for the same subject.
   const page = connectionsPageStart(deps.connectionsUrl, subject, providers, "authcode");
   if (page) {
     const labels = providers.map((provider) => catalog.get(provider)?.label ?? provider);
-    return (
-      `${baseMessage}\n\n` +
-      `[Connect ${joinLabels(labels)}](${page.pageUrl}), then ask again and I'll include those sources.`
-    );
+    return [`[Connect ${joinLabels(labels)}](${page.pageUrl})`];
   }
-  const prompts: string[] = [];
+  const clauses: string[] = [];
   for (const provider of providers) {
     const gateway = identityGatewayFor(provider, deps);
     if (!gateway) continue;
     try {
       const started = await gateway.start(provider, subject, "authcode");
-      if (started) prompts.push(linkPromptText(started, catalog.get(provider)?.label ?? provider));
+      if (started) clauses.push(linkPromptText(started, catalog.get(provider)?.label ?? provider));
     } catch (err) {
       console.error(
         `[kb-link] could not start a link for ${provider}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
-  if (prompts.length === 0) return baseMessage;
-  return (
-    `${baseMessage}\n\n` +
-    prompts.map((prompt) => `- ${prompt}`).join("\n") +
-    "\n\nOnce you've linked, ask again and I'll include those sources."
-  );
+  return clauses;
+}
+
+/**
+ * The deterministic pre-search interrupt shown before a knowledge-base search
+ * when the caller is missing one or more of its accounts. Names what is already
+ * linked, starts a flow for each missing provider and renders a clickable link,
+ * and tells the caller they can link and ask again — or ask again as-is to search
+ * with just what they have.
+ *
+ * This is the deterministic half of "surface the link, don't hope the model
+ * does": the graph calls it before searching and ends the turn on its message,
+ * so a core auth behaviour never depends on the planner relaying a caveat.
+ *
+ * PARITY: `gatePrompt` in
+ * engines/temporal/internal/temporal/activities/knowledgebase.go.
+ */
+export async function knowledgeBaseLinkGate(
+  deps: AgentGraphDeps,
+  subject: string,
+  displayName: string,
+  linked: string[],
+  unlinked: string[],
+): Promise<string> {
+  const catalog = resolveIdentityProviderCatalog(deps.identityProviderCatalog);
+  const label = (provider: string) => catalog.get(provider)?.label ?? provider;
+  let message =
+    `Before I search the **${displayName}** knowledge base, link the account(s) it covers ` +
+    `that you haven't yet (${unlinked.map(label).join(", ")}):`;
+  const clauses = await startKnowledgeBaseLinkClauses(deps, subject, unlinked);
+  if (clauses.length > 0) {
+    message += `\n\n` + clauses.map((clause) => `- ${clause}`).join("\n");
+  }
+  if (linked.length > 0) {
+    message += `\n\n(${linked.map(label).join(", ")} already linked.)`;
+  }
+  message +=
+    "\n\nLink the account(s) above and ask again, or ask again now to search with just what you have linked.";
+  return message;
 }
 
 /**
@@ -887,8 +1137,24 @@ async function resolveToolIdentitySecretEnv(
  * single turn (docs/adr/0008 update: multi-step tool use) -- generous enough
  * for a realistic research chain (e.g. search, then fetch two candidate
  * pages) while bounding the worst case of a planner that never settles.
+ *
+ * Raised 4->8 so a knowledge-base turn can actually iterate: search, read what
+ * came back, search again with narrower terms, and read a live document -- the
+ * research loop the KB skill now asks for -- without the cap forcing an answer
+ * after one lookup. PARITY: maxToolSteps in the Temporal engine.
  */
-const MAX_TOOL_STEPS = 4;
+const MAX_TOOL_STEPS = 8;
+
+/**
+ * LangGraph's own recursion limit, which bounds graph super-steps per run and is
+ * separate from MAX_TOOL_STEPS. It is per-invoke and defaults to 25 — sized for
+ * the old 4-step cap. Each tool step is two super-steps (planAction + runTool)
+ * on top of the fixed pre-loop nodes and composeResponse, so a full
+ * MAX_TOOL_STEPS run now needs more than 25, and overshooting throws
+ * GraphRecursionError mid-turn. Derive it from the step cap with generous slack
+ * for the surrounding nodes; the step cap stays the real bound.
+ */
+const GRAPH_RECURSION_LIMIT = MAX_TOOL_STEPS * 2 + 20;
 
 /**
  * The consumer-supplied tools (docs/adr/0035) a given skill may be offered, or
@@ -915,6 +1181,74 @@ function lastHistoryResult(state: AgentState): { result?: unknown } {
   if (state.result !== undefined) return {};
   const last = state.actionHistory[state.actionHistory.length - 1];
   return last ? { result: last.result } : {};
+}
+
+/**
+ * How the plan loop ends when the planner did not `respond` — an explicit
+ * finish, the repeat guard, or the step cap.
+ *
+ * Normally that shows the last tool's result as-is. But a knowledge-base result
+ * (search, lookup or read) is retrieved material, never a finished answer, and
+ * finishing on it handed the user raw passages or a list of live hits. So when
+ * the last call was a knowledge-base tool, ask the planner once more,
+ * respond-only, and return its synthesis exactly as a `respond` would
+ * (citations re-applied by respondResult). A failed or empty synthesis degrades
+ * to the verbatim finish rather than failing the turn.
+ *
+ * PARITY: step 6b in engines/temporal/internal/temporal/workflows/agentloop.go.
+ */
+async function finishPlanLoop(deps: AgentGraphDeps, state: AgentState): Promise<Partial<AgentState>> {
+  const last = state.actionHistory[state.actionHistory.length - 1];
+  const lastTool = last ? state.skillTools.find((t) => t.id === last.toolId) : undefined;
+  if (lastTool?.knowledgeBaseExec && state.selectedSkill) {
+    try {
+      const planned = await deps.actionPlanner.plan(
+        state.request,
+        state.selectedSkill,
+        state.skillTools,
+        state.actionHistory,
+        { respondOnly: true },
+      );
+      if (planned.action === "respond" && planned.response.trim()) {
+        return { result: respondResult(state, planned.response), plannedAction: "respond" };
+      }
+    } catch {
+      // Degrade to the verbatim finish below: an unsynthesized answer beats none.
+    }
+  }
+  return { plannedAction: "finish", ...lastHistoryResult(state) };
+}
+
+/**
+ * The text a `respond` turn returns, after re-applying in code the deterministic
+ * output a tool produced this turn but that the planner's own prose would
+ * otherwise discard — the "finish vs respond" verbatim gap.
+ *
+ * Two guarantees, in priority order:
+ *  1. A stateful refine-loop tool's verbatim result (ADR 0017 continuation
+ *     round-trip, e.g. recipe-publisher) REPLACES the model's paraphrase: its
+ *     Markdown is the answer the next turn's intent detection reads, so the
+ *     planner recomposing it would break the loop.
+ *  2. Knowledge-base citations are applied to the model's synthesis: its `[n]`
+ *     markers become inline links to the retrieved sources (falling back to an
+ *     appended Sources list when it cited nothing), and what the retrievals
+ *     could not see is appended — so citations/disclosure (ADR 0040) survive
+ *     `respond` while useful synthesis is preserved.
+ *
+ * PARITY: `finalizeRespond` in agentloop.go.
+ */
+function respondResult(state: AgentState, response: string): string {
+  if (state.pendingVerbatimResult !== undefined) return state.pendingVerbatimResult;
+  if (state.citationSources.length === 0 && state.citationCaveats.length === 0) return response;
+  return finalizeCitations(response, state.citationSources, state.citationCaveats);
+}
+
+/**
+ * The citation number the turn's next knowledge-base result takes, so a second
+ * search never reuses the first's [1]. PARITY: `citations.next` in agentloop.go.
+ */
+function nextCitation(state: AgentState): number {
+  return state.citationSources.reduce((next, s) => Math.max(next, s.n + 1), 1);
 }
 
 /**
@@ -1167,6 +1501,41 @@ async function handleAgentTurnFailure(
  * request failed, try again", which would be the third variation on telling a
  * user their successful run failed.
  */
+/**
+ * Outcome for a turn whose live sub-agent paused on a gated tool call awaiting
+ * approval (ADR 0003 + sub-agent HITL). The `tool_call` was deliberately left
+ * UNRESOLVED (see `awaitReply`), so the run is still alive and blocked: this
+ * parks `subAgentApprovalPending` (persisted alongside the active-run anchor)
+ * and ends the turn with the approval prompt. Next turn, `checkPendingSubAgentApproval`
+ * reads the decision, resolves the held call, and re-attaches.
+ *
+ * `agentRunId` is set so the server's streaming/invoke paths treat this as a
+ * terminal agent turn; `agentAwaitingReply` is deliberately NOT set (there is no
+ * reply being awaited — the run is blocked on us), and persistence routes on
+ * `subAgentApprovalWaiting` ahead of the ordinary agent-run branches.
+ */
+function subAgentApprovalPause(
+  state: Pick<AgentState, "identity">,
+  agent: Pick<AgentDescriptor, "id">,
+  runId: string,
+  err: AgentTurnApprovalPendingError,
+): Partial<AgentState> {
+  return {
+    agentRunId: runId,
+    subAgentApprovalWaiting: true,
+    subAgentApprovalPending: {
+      runId,
+      callId: err.callId,
+      tool: err.tool,
+      input: err.input,
+      agentId: agent.id,
+      subject: state.identity?.subject ?? "",
+      expiresAt: err.expiresAt,
+    },
+    result: approvalPrompt(err.tool),
+  };
+}
+
 function resumableAgentTurnOutcome(state: Pick<AgentState, "progressListener">, agentRunId: string): Partial<AgentState> {
   const nudge = state.progressListener
     ? "Send any message and I'll pick up its reply where this left off."
@@ -1239,6 +1608,43 @@ function composeAgentTurnMessage(state: Pick<AgentState, "progressListener">, re
  */
 function agentAwaitReplyIdleTimeoutMs(deps: Pick<AgentGraphDeps, "agentIdleTimeoutSeconds">): number | undefined {
   return deps.agentIdleTimeoutSeconds ? deps.agentIdleTimeoutSeconds * 1000 : undefined;
+}
+
+/** Default sub-agent approval hold (15m) when neither the Agent nor config sets one. */
+const DEFAULT_SUBAGENT_APPROVAL_TIMEOUT_SECONDS = 900;
+
+/**
+ * How long THIS launch holds a gated sub-agent tool call for approval (ADR 0003
+ * + sub-agent HITL), most-specific-wins: the governing Agent's own
+ * `approvalTimeoutSeconds`, else the global `subAgentApprovalTimeoutSeconds`
+ * dep, else the 15-minute default. Returns milliseconds for `expiresAt`.
+ */
+function subAgentApprovalTimeoutMs(
+  deps: Pick<AgentGraphDeps, "subAgentApprovalTimeoutSeconds">,
+  agent: Pick<AgentDescriptor, "approvalTimeoutSeconds">,
+): number {
+  const seconds =
+    agent.approvalTimeoutSeconds ?? deps.subAgentApprovalTimeoutSeconds ?? DEFAULT_SUBAGENT_APPROVAL_TIMEOUT_SECONDS;
+  return seconds * 1000;
+}
+
+/**
+ * Builds the two wired-together signals a live sub-agent wait needs for HITL
+ * approval (ADR 0003 + sub-agent HITL): `onApprovalNeeded`, handed to
+ * {@link makeSubAgentToolCallHandler} so a gated `tool_call` is reported up
+ * instead of dispatched, and `approvalNeeded`, the promise `awaitReply` watches
+ * to end the wait and throw {@link AgentTurnApprovalPendingError}. Bridged by a
+ * single deferred, mirroring how `runFailed` ends a wait from the outside.
+ */
+function makeApprovalBridge(): {
+  onApprovalNeeded: (call: SubAgentApprovalCall) => void;
+  approvalNeeded: Promise<SubAgentApprovalCall>;
+} {
+  let onApprovalNeeded!: (call: SubAgentApprovalCall) => void;
+  const approvalNeeded = new Promise<SubAgentApprovalCall>((resolve) => {
+    onApprovalNeeded = resolve;
+  });
+  return { onApprovalNeeded, approvalNeeded };
 }
 
 /**
@@ -1511,6 +1917,108 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       if (await hasOutOfScopeToolMatch(state, skill, deps)) return {};
       return { selectedSkill: skill };
     })
+    .addNode("checkPendingApproval", async (state) => {
+      // Approval continuation (ADR 0003 + ADR 0004 terminate-and-resume), run
+      // early each turn alongside checkPendingIdentityLink: if the LAST turn
+      // paused a tool call awaiting approval, read THIS turn's message as the
+      // caller's decision. Every miss (no session, no pause, subject mismatch)
+      // falls through to the ordinary chain -- a miss is never an error.
+      if (!state.identity || !state.approvalPending) return {};
+      if (state.sessionSubject !== state.identity.subject) return {};
+      const pending = state.approvalPending;
+      // The subject the pause was STORED under, mirroring pendingIdentityLink --
+      // honor the resume only for the caller who owns it.
+      const pendingSubject = pending.subject ?? state.identity.subject;
+      if (pendingSubject !== state.identity.subject) return {};
+
+      const decision = parseApprovalDecision(state.request);
+      if (decision === "ambiguous") {
+        // Neither approve nor deny -> re-ask rather than guess. Keep the pause in
+        // place (re-emit it so the server re-persists) and prompt again.
+        return { approvalPending: pending, approvalWaiting: true, result: approvalPrompt(pending.toolId) };
+      }
+      if (decision === "deny") {
+        // Never silently drop: synthesize a failed tool result the planner can
+        // react to, append it to history, and continue the loop (or END if this
+        // was a skill-less fallback call with nowhere to re-plan).
+        return {
+          approvalPending: undefined,
+          result: APPROVAL_DENIED_MESSAGE,
+          actionHistory: [
+            ...state.actionHistory,
+            { toolId: pending.toolId, toolArgs: pending.toolArgs ?? "", result: APPROVAL_DENIED_MESSAGE },
+          ],
+          ...(pending.skill ? { selectedSkill: pending.skill } : {}),
+          ...(pending.skillTools ? { skillTools: pending.skillTools } : {}),
+        };
+      }
+      // Approved: re-dispatch the EXACT same call (not a re-planned one) with the
+      // gate suppressed, then let the loop continue so the planner sees the result.
+      return {
+        approvalPending: undefined,
+        approvalGranted: true,
+        selectedTool: pending.tool,
+        ...(pending.toolArgs !== undefined ? { toolArgs: pending.toolArgs } : {}),
+        ...(pending.instanceKey !== undefined ? { toolInstanceKey: pending.instanceKey } : {}),
+        ...(pending.skill ? { selectedSkill: pending.skill } : {}),
+        ...(pending.skillTools ? { skillTools: pending.skillTools } : {}),
+      };
+    })
+    .addNode("checkPendingSubAgentApproval", async (state) => {
+      // Sub-agent approval continuation (ADR 0003 + sub-agent HITL), run early
+      // each turn alongside checkPendingApproval: if a RUNNING sub-agent paused
+      // on a gated tool call last turn, read THIS turn's message as the caller's
+      // decision, answer the held `tool_call` accordingly, and re-enter the
+      // still-live run to collect its next reply. Every miss (no session,
+      // subject mismatch, channel can't answer) falls through to the ordinary
+      // chain -- a miss is never an error.
+      if (!state.identity || !state.subAgentApprovalPending) return {};
+      if (state.sessionSubject !== state.identity.subject) return {};
+      const pending = state.subAgentApprovalPending;
+      // Honor the resume only for the caller who owns it (mirrors checkPendingApproval).
+      if (pending.subject !== state.identity.subject) return {};
+      const channel = deps.agentChannel;
+      // No channel / no way to answer the held call -> fall through rather than
+      // strand the decision (the sweeper still bounds the hold).
+      if (!channel?.resolveToolCall) return {};
+
+      const decision = parseApprovalDecision(state.request);
+      if (decision === "ambiguous") {
+        // Re-ask rather than guess. Keep the pause (coexisting anchor stays put)
+        // and prompt again; the sweeper's deadline is unaffected.
+        return { subAgentApprovalPending: pending, subAgentApprovalWaiting: true, result: approvalPrompt(pending.tool) };
+      }
+      if (decision === "deny") {
+        // Never silently drop: hand the blocked sub-agent a FAILED tool_result
+        // it reasons over (graceful degradation), the same shape a timeout uses.
+        await channel.resolveToolCall(pending.runId, pending.callId, {
+          ok: false,
+          error: `${APPROVAL_DENIED_CODE}: ${APPROVAL_DENIED_MESSAGE}`,
+        });
+      } else {
+        // Approved: re-dispatch the EXACT same call with the gate suppressed,
+        // then deliver its outcome to the blocked sub-agent. A dispatch throw
+        // becomes a clean failed tool_result rather than crashing the resume.
+        const tool = deps.toolCatalog?.getById(pending.tool);
+        const outcome: { ok: true; result?: unknown } | { ok: false; error: string } = tool
+          ? await dispatchResolvedTool(tool, pending.input, deps, {
+              sessionId: state.sessionId,
+              callerSubject: state.identity.subject,
+              suppressApprovalGate: true,
+            }).catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) }))
+          : { ok: false, error: `tool "${pending.tool}" not found in the catalog` };
+        await channel.resolveToolCall(pending.runId, pending.callId, outcome);
+      }
+      // Decision applied and the held call answered: clear the pause and re-enter
+      // the still-live run in RE-ATTACH mode (awaitingReply -> no prompt sent) to
+      // collect the reply it produces now that its tool call unblocked.
+      return {
+        subAgentApprovalPending: undefined,
+        activeAgentId: pending.agentId,
+        activeAgentRunId: pending.runId,
+        activeAgentRunAwaitingReply: true,
+      };
+    })
     .addNode("checkPendingIdentityLink", async (state) => {
       // Identity-link continuation, run right after resolveIdentity and
       // before any skill/agent-run continuity check (mirrors
@@ -1629,6 +2137,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         }
       }
 
+      const approval = makeApprovalBridge();
       try {
         const awaitReply = awaitAgentReply(deps, deps.agentChannel, state.activeAgentRunId, found.agent.agentRunTemplate.namespace, {
           idleTimeoutMs: state.activeAgentRunAwaitingReply
@@ -1643,7 +2152,16 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               : undefined,
           onToolCall: makeSubAgentToolCallHandler(state.activeAgentRunId, found.agent, deps.agentChannel, deps.toolCatalog, deps, {
             sessionId: state.sessionId,
+            // The caller a sub-agent's own tool calls run AS — needed to resolve
+            // the delegated token an mcpExec tool is dispatched under (ADR 0045).
+            callerSubject: state.identity?.subject,
+            // Real HITL for a gated sub-agent tool call (ADR 0003 + sub-agent
+            // HITL): report up instead of dispatching, so the pod blocks until
+            // the caller decides.
+            onApprovalNeeded: approval.onApprovalNeeded,
+            approvalTimeoutMs: subAgentApprovalTimeoutMs(deps, found.agent),
           }),
+          approvalNeeded: approval.approvalNeeded,
         });
         // RE-ATTACH vs CONTINUE. Parked on a question -> this turn's text is the
         // answer, publish it. Owed a reply (a previous turn's wait lost its
@@ -1669,6 +2187,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
+        if (err instanceof AgentTurnApprovalPendingError) {
+          return subAgentApprovalPause(state, found.agent, state.activeAgentRunId, err);
+        }
         if (err instanceof AgentTurnTransportError) {
           return {
             agentRunId: state.activeAgentRunId,
@@ -1890,6 +2411,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       const priorToken = state.agentContinuations?.[agent.id];
       const goal = priorToken ? prependContinuationToken(priorToken, state.request) : state.request;
 
+      const approval = makeApprovalBridge();
       try {
         // Subscribe BEFORE creating the AgentRun CR so a fast-replying agent
         // can never publish before our subscription exists.
@@ -1904,7 +2426,14 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               : undefined,
           onToolCall: makeSubAgentToolCallHandler(runId, agent, deps.agentChannel, deps.toolCatalog, deps, {
             sessionId: state.sessionId,
+            // The caller a sub-agent's own tool calls run AS — needed to resolve
+            // the delegated token an mcpExec tool is dispatched under (ADR 0045).
+            callerSubject: state.identity?.subject,
+            // Real HITL for a gated sub-agent tool call (ADR 0003 + sub-agent HITL).
+            onApprovalNeeded: approval.onApprovalNeeded,
+            approvalTimeoutMs: subAgentApprovalTimeoutMs(deps, agent),
           }),
+          approvalNeeded: approval.approvalNeeded,
         });
         // Anchor the run to the conversation BEFORE creating it, for the same
         // reason the subscription above is opened first: the window this anchor
@@ -1974,6 +2503,12 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             : {}),
         };
       } catch (err) {
+        if (err instanceof AgentTurnApprovalPendingError) {
+          // The run was launched and is live, blocked on the unresolved
+          // tool_call; adopt `identity` so the persisted pause is keyed by the
+          // same subject the resume re-checks.
+          return { identity, selectedAgent: agent, ...subAgentApprovalPause({ identity }, agent, runId, err) };
+        }
         if (err instanceof AgentTurnTransportError) {
           return { agentRunId: runId, identity, selectedAgent: agent, ...resumableAgentTurnOutcome(state, runId) };
         }
@@ -2045,16 +2580,19 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // last tool's result rather than erroring, since a genuine answer is
       // already in hand.
       if (state.actionHistory.length >= MAX_TOOL_STEPS) {
-        return { plannedAction: "finish", ...lastHistoryResult(state) };
+        return finishPlanLoop(deps, state);
       }
       const planned = await deps.actionPlanner.plan(state.request, state.selectedSkill, state.skillTools, state.actionHistory, {
         callerToolRequired: state.callerToolChoiceRequired,
       });
       if (planned.action === "finish") {
-        return { plannedAction: "finish", ...lastHistoryResult(state) };
+        return finishPlanLoop(deps, state);
       }
       if (planned.action === "respond") {
-        return { result: planned.response, plannedAction: "respond" };
+        // Re-apply in code the deterministic output this turn produced that the
+        // planner's own prose would drop: a stateful tool's verbatim result, or a
+        // KB search's citation/disclosure block. See respondResult.
+        return { result: respondResult(state, planned.response), plannedAction: "respond" };
       }
       const tool = state.skillTools.find((t) => t.id === planned.toolId);
       if (!tool) {
@@ -2070,19 +2608,52 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // invocation, so `state.result` is unset and the answer lives only in
         // the seeded actionHistory. Without `lastHistoryResult` the blocking
         // facade would render `renderResult(undefined)` here.
-        return { plannedAction: "finish", ...lastHistoryResult(state) };
+        return finishPlanLoop(deps, state);
       }
       return {
         selectedTool: tool,
         toolArgs: planned.toolArgs,
         toolInstanceKey: planned.toolInstanceKey,
         plannedAction: "call_tool",
+        // A freshly PLANNED call must always re-gate (ADR 0003): clear any
+        // approval granted for the previous (just-executed) call so approving
+        // one tool never silently waves through the next one in the same turn.
+        approvalGranted: false,
       };
     })
     .addNode("runTool", async (state) => {
       const tool = state.selectedTool;
       if (!tool) {
         return { error: "no tool selected" };
+      }
+      // Declarative tool-approval gate (ADR 0003 + ADR 0004 HITL). Placed right
+      // after the tool is resolved and before the dispatch branches so it covers
+      // every dispatch kind at once. The top-level graph has no governing agent
+      // default, so resolution is `tool.approval` else `"never"`. Caller tools
+      // are EXEMPT — the caller's own client runs them, so there is nothing here
+      // to approve. Skipped for the one re-dispatch `checkPendingApproval` just
+      // authorized (`approvalGranted`).
+      if (!tool.callerTool && !state.approvalGranted) {
+        // TODO(ADR 0003 A3): consult evaluator — `auto` behaves as `always` for now.
+        if (requiresApproval(resolveApproval(tool.approval, undefined))) {
+          // Terminate-and-resume (ADR 0004), modeled on `pendingIdentityLink`:
+          // stash everything the resume needs, set `result` to the prompt, and
+          // let the runTool edge route the turn to END. The server persists
+          // `approvalPending` because `approvalWaiting` is set.
+          return {
+            approvalPending: {
+              toolId: tool.id,
+              ...(state.toolArgs !== undefined ? { toolArgs: state.toolArgs } : {}),
+              ...(state.toolInstanceKey !== undefined ? { instanceKey: state.toolInstanceKey } : {}),
+              tool,
+              ...(state.selectedSkill ? { skill: state.selectedSkill } : {}),
+              skillTools: state.skillTools,
+              ...(state.identity ? { subject: state.identity.subject } : {}),
+            },
+            approvalWaiting: true,
+            result: approvalPrompt(tool.id),
+          };
+        }
       }
       if (tool.callerTool) {
         // Consumer-supplied tool (docs/adr/0035): the ONE dispatch branch that
@@ -2111,11 +2682,18 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       }
 
       const rawInput = state.toolArgs ?? state.request;
-      // Scope the stored continuation to the planner's declared instance (if
-      // any) so a multi-instance tool's state for one instance (e.g. one
-      // recipe's Mealie slug) is never conflated with another instance's
-      // (a different recipe) within the same conversation (ADR 0017).
-      const continuationKey = state.toolInstanceKey ? `${tool.id}::${state.toolInstanceKey}` : tool.id;
+      // Scope the stored continuation to this tool's active instance (ADR 0017)
+      // so a multi-instance tool's state for one instance (e.g. one recipe's
+      // Mealie slug) is never conflated with another's (a different recipe) in
+      // the same conversation. The instance is resolved from SERVER-SIDE state
+      // (the session's own continuation entries), not from a URL the planner has
+      // to re-copy into `tool_instance_key` every turn — a refine turn continues
+      // the same publish target even when the model names no instance.
+      const continuationKey = resolveContinuationKey(
+        tool.id,
+        state.toolInstanceKey,
+        state.toolContinuations,
+      );
       // Re-inject this tool's saved continuation token (if any), so the tool
       // can resume state (e.g. an existing Mealie slug to update) without it
       // ever having round-tripped through the chat transcript.
@@ -2201,13 +2779,21 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // it as.
           return { error: `tool ${tool.id} requires a resolved caller identity` };
         }
-        const read = await deps.corpusReader.read(tool, input, {
-          subject: state.identity.subject,
-          roles: state.identity.roles,
-        });
+        const read = await deps.corpusReader.read(
+          tool,
+          input,
+          { subject: state.identity.subject, roles: state.identity.roles },
+          nextCitation(state),
+        );
         const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, read);
         return {
           result,
+          citationSources: read.sources ?? [],
+          // A live read round-trips no continuation state, so it clears any
+          // stale verbatim marker — otherwise an earlier stateful tool's output
+          // would win over the KB synthesis in respondResult. PARITY: the Go
+          // read face sets pendingVerbatim = "".
+          pendingVerbatimResult: undefined,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
         };
       }
@@ -2223,13 +2809,45 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // run it as.
           return { error: `tool ${tool.id} requires a resolved caller identity` };
         }
-        const found = await deps.corpusLookup.lookup(tool, input, {
-          subject: state.identity.subject,
-          roles: state.identity.roles,
-        });
+        const found = await deps.corpusLookup.lookup(
+          tool,
+          input,
+          { subject: state.identity.subject, roles: state.identity.roles },
+          nextCitation(state),
+        );
         const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, found);
         return {
           result,
+          citationSources: found.sources ?? [],
+          // Clears any stale verbatim marker, for the same reason as the read
+          // face above. PARITY: the Go lookup face sets pendingVerbatim = "".
+          pendingVerbatimResult: undefined,
+          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
+        };
+      }
+
+      // The LIVE structured query face. Beside lookup, which it replaced as a
+      // generated tool (lookup's branch stays for any in-flight tool list), and
+      // for the same reasons: it runs as the caller, and its items are material
+      // to answer from. PARITY: the Go "query" branch in agentloop.go.
+      if (tool.knowledgeBaseExec?.operation === "query") {
+        if (!deps.corpusQuery) {
+          return { error: `tool ${tool.id} queries a corpus but knowledge bases are not configured` };
+        }
+        if (!state.identity) {
+          return { error: `tool ${tool.id} requires a resolved caller identity` };
+        }
+        const found = await deps.corpusQuery.query(
+          tool,
+          input,
+          { subject: state.identity.subject, roles: state.identity.roles },
+          nextCitation(state),
+        );
+        const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, found);
+        return {
+          result,
+          citationSources: found.sources ?? [],
+          pendingVerbatimResult: undefined,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
         };
       }
@@ -2262,16 +2880,83 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // check the results against.
           return { error: `tool ${tool.id} requires a resolved caller identity` };
         }
-        const found = await deps.knowledgeBaseSearcher.search(tool, input, {
-          // Already resolved for this turn, and the same identity every other
-          // RBAC decision on it was made against.
-          subject: state.identity.subject,
-          roles: state.identity.roles,
-        });
+
+        // Deterministic link gate: when this knowledge base is being engaged
+        // FRESH this turn (its skill was not already active from a prior turn),
+        // check whether the caller is missing any provider it covers and, if so,
+        // stop and ask them to link it BEFORE searching — rather than returning a
+        // partial answer whose "link this too" line the planner might drop. A
+        // follow-up ask keeps the skill active, so it proceeds with whatever they
+        // have linked (link, or just ask again, to get through). PARITY: the
+        // Temporal engine's GateOnly pre-search check.
+        const kbSkillId = knowledgeBaseSkillId(tool.knowledgeBaseExec.knowledgeBaseId);
+        if (state.activeSkillId !== kbSkillId) {
+          const links = await deps.knowledgeBaseSearcher.checkLinks(tool, {
+            subject: state.identity.subject,
+            roles: state.identity.roles,
+          });
+          if (links.linkProviders.length > 0) {
+            const gate = await knowledgeBaseLinkGate(
+              deps,
+              state.identity.subject,
+              tool.knowledgeBaseExec.displayName,
+              links.linkedProviders,
+              links.linkProviders,
+            );
+            return {
+              result: gate,
+              linkGatePending: true,
+              actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: gate }],
+            };
+          }
+        }
+
+        const found = await deps.knowledgeBaseSearcher.search(
+          tool,
+          input,
+          {
+            // Already resolved for this turn, and the same identity every other
+            // RBAC decision on it was made against.
+            subject: state.identity.subject,
+            roles: state.identity.roles,
+          },
+          nextCitation(state),
+        );
         const result = await enrichKnowledgeBaseResult(deps, state.identity.subject, found);
         return {
           result,
+          // Carry the probe-derived sources and caveats so the turn applies them
+          // in code even if the planner then recomposes via `respond` (ADR 0040
+          // survives finish/respond alike). APPENDED to the turn's, not
+          // replacing them: the answer may cite any search. A search never
+          // round-trips continuation state, so it clears any stale verbatim marker.
+          citationSources: found.sources ?? [],
+          citationCaveats: found.caveats ?? [],
+          pendingVerbatimResult: undefined,
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result }],
+        };
+      }
+
+      // MCP tool (docs/adr/0045): proxied to a Model Context Protocol server
+      // through the mcp-broker. Beside the knowledge-base read/lookup faces and
+      // for the same reasons — it runs AS the caller, in-process rather than any
+      // kind of launch, and never touches the continuation-token machinery (a
+      // sessionless tools/call has no resumable state). The engine never speaks
+      // MCP; a tool-level error or a missing link comes back as prose the model
+      // can act on, not a thrown turn.
+      if (tool.mcpExec) {
+        if (!deps.mcpBrokerClient) {
+          return { error: `tool ${tool.id} is an MCP tool but the mcp-broker is not configured` };
+        }
+        if (!state.identity) {
+          // Fail closed: a per-user MCP call runs AS someone, and there is
+          // nobody to run it as (docs/adr/0045 §5).
+          return { error: `tool ${tool.id} requires a resolved caller identity` };
+        }
+        const called = await deps.mcpBrokerClient.call(tool, input, { subject: state.identity.subject });
+        return {
+          result: called.result,
+          actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: called.result }],
         };
       }
 
@@ -2386,9 +3071,21 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // key. Non-string (structured) results have no such marker.
       if (typeof event.result === "string") {
         const { token, text } = extractContinuationToken(event.result);
+        const surfaced = state.wasFallback ? appendSelfImprovementSuggestion(text) : text;
+        // A tool that round-trips continuation state (ADR 0017) — a prior token
+        // was injected, or this call banked a new one — is a stateful refine-loop
+        // tool (recipe-publisher, …) whose own output IS the answer: the next
+        // turn's intent detection reads the recipe/image Markdown it returned. So
+        // guarantee that output reaches the user verbatim even if the planner
+        // chooses `respond` (see the respond branch in planAction), rather than
+        // depending on a "you MUST choose finish" instruction the model may drop.
+        // A one-shot tool (web-search, web-fetch) banks no token and keeps the
+        // planner's synthesis.
+        const roundTrippedContinuation = Boolean(priorToken) || Boolean(token);
         return {
           jobId,
-          result: state.wasFallback ? appendSelfImprovementSuggestion(text) : text,
+          result: surfaced,
+          pendingVerbatimResult: roundTrippedContinuation ? surfaced : undefined,
           extractedContinuation: { toolId: continuationKey, token: token ?? "" },
           actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: text }],
         };
@@ -2442,22 +3139,53 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     .addConditionalEdges("checkIntegrationRoute", (state) =>
       state.error
         ? END
-        : // A conversation still owed a reply by a run re-attaches FIRST, even on
-          // a route-driven turn. The route's whole purpose is to skip retrieval
-          // and dispatch deterministically, but dispatching again while an
-          // earlier run of this same conversation is holding an answer would do
-          // the work twice -- a second branch and a second PR on a real coding
-          // agent. This is the path a re-applied trigger label takes
-          // (docs/adr/0033), and `checkActiveAgentRun` falls back to the route's
-          // own target below if the anchor turns out to be stale.
-          state.activeAgentRunAwaitingReply && state.activeAgentRunId
-          ? "checkActiveAgentRun"
-          : state.selectedAgent
-            ? "delegateToAgent"
-            : state.selectedSkill
-              ? "loadSkillTools"
-              : "checkPendingIdentityLink",
+        : // A sub-agent paused on a gated tool call resumes FIRST (ADR 0003 +
+          // sub-agent HITL), ahead of the re-attach below: the coexisting anchor
+          // also sets `activeAgentRunAwaitingReply`, so without this a route turn
+          // would re-attach and wait on a run that is blocked on US rather than
+          // reading the approval decision.
+          state.subAgentApprovalPending
+          ? "checkPendingSubAgentApproval"
+          : // A conversation still owed a reply by a run re-attaches FIRST, even on
+            // a route-driven turn. The route's whole purpose is to skip retrieval
+            // and dispatch deterministically, but dispatching again while an
+            // earlier run of this same conversation is holding an answer would do
+            // the work twice -- a second branch and a second PR on a real coding
+            // agent. This is the path a re-applied trigger label takes
+            // (docs/adr/0033), and `checkActiveAgentRun` falls back to the route's
+            // own target below if the anchor turns out to be stale.
+            state.activeAgentRunAwaitingReply && state.activeAgentRunId
+            ? "checkActiveAgentRun"
+            : state.selectedAgent
+              ? "delegateToAgent"
+              : state.selectedSkill
+                ? "loadSkillTools"
+                : "checkPendingApproval",
     )
+    // An awaited approval decision resumes FIRST (ADR 0003): approve ->
+    // re-dispatch the stored call (runTool, gate suppressed); deny -> continue
+    // the planner with the synthesized failure (planAction) or END if there is
+    // no skill to re-plan; a re-ask (ambiguous reply) -> END with the prompt
+    // again; a miss -> fall through to the identity-link check exactly as before.
+    .addConditionalEdges("checkPendingApproval", (state) => {
+      if (state.error) return END;
+      if (state.approvalGranted) return "runTool";
+      if (state.approvalWaiting) return END;
+      if (state.result !== undefined) return state.selectedSkill ? "planAction" : END;
+      return "checkPendingIdentityLink";
+    })
+    // A sub-agent approval decision (ADR 0003 + sub-agent HITL): a re-ask
+    // (ambiguous reply) ends the turn with the prompt again; approve/deny both
+    // answered the held tool_call and cleared the pause, so re-attach to the
+    // still-live run (reattach mode) to collect its next reply; a miss (subject
+    // mismatch, no channel) leaves the pause set and falls through to the
+    // ordinary approval/identity-link chain.
+    .addConditionalEdges("checkPendingSubAgentApproval", (state) => {
+      if (state.error) return END;
+      if (state.subAgentApprovalWaiting) return END;
+      if (state.subAgentApprovalPending === undefined) return "checkActiveAgentRun";
+      return "checkPendingApproval";
+    })
     // A pending device-flow link either just completed (an agent was
     // re-selected -> resume straight into delegateToAgent), is still being
     // waited on (identityLinkPending -> END, same "still waiting" result as
@@ -2537,10 +3265,22 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     // The turn resumes as a NEW invocation when the client resends.
     .addConditionalEdges("runTool", (state) => {
       if (state.error || state.pendingToolCalls.length > 0) return END;
+      // Gated on approval (ADR 0003): the turn paused with the prompt as its
+      // result, to resume next turn via checkPendingApproval. END, like the
+      // caller-tool and link-gate terminators above.
+      if (state.approvalPending) return END;
+      // The deterministic knowledge-base link gate stops the turn on its ask:
+      // END with that message rather than looping to planAction, where the model
+      // would recompose and could drop the link (the whole point of the gate).
+      if (state.linkGatePending) return END;
       if (state.result === undefined) return END;
       return state.selectedSkill ? "planAction" : "composeResponse";
     })
     .addEdge("composeResponse", END);
 
-  return graph.compile();
+  // Bind the recursion limit here so every caller — the server's invoke and
+  // stream paths, and the tests — shares it without threading config through
+  // each call site. withConfig returns the same runnable type, so invoke/stream
+  // and their signatures are unchanged.
+  return graph.compile().withConfig({ recursionLimit: GRAPH_RECURSION_LIMIT });
 }

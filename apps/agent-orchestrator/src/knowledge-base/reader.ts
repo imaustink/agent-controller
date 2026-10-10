@@ -1,4 +1,5 @@
 import type { ToolDescriptor } from "../tool-descriptor.js";
+import type { CitedSource } from "./cite.js";
 import type { DelegatedCredentialResolver } from "./searcher.js";
 
 export interface CorpusReaderOptions {
@@ -16,6 +17,8 @@ export interface CorpusReadResult {
   needsLink?: boolean;
   /** Providers to link when `needsLink`; the graph starts the flow from these. */
   linkProviders?: string[];
+  /** The document read, when the source returned one, so an answer can cite it inline. */
+  sources?: CitedSource[];
 }
 
 /**
@@ -58,6 +61,8 @@ export class CorpusReader {
     tool: ToolDescriptor,
     reference: string,
     caller: { subject: string; roles: string[] },
+    /** The citation number the document takes: the turn's next unused one. */
+    firstIndex = 1,
   ): Promise<CorpusReadResult> {
     const exec = tool.knowledgeBaseExec;
     if (!exec || exec.operation !== "read") {
@@ -143,11 +148,18 @@ export class CorpusReader {
     // The fetch route returns a Document: the resource normalised to Markdown,
     // with the citation the source itself reported.
     const document = (await response.json()) as { markdown?: string; url?: string; title?: string };
-    const citation = document.url ? ` — ${document.url}` : "";
+    const title = document.title ?? sourceId;
+    // A document the source actually returned is citable like any passage: it
+    // takes the turn's next number, and its title and URL are the source's own
+    // answer to a read run AS the caller. No URL, nothing to cite.
+    if (!document.url) {
+      return { result: `Live read from ${member.label}: ${title}\n\n${document.markdown ?? ""}` };
+    }
     return {
       result:
-        `Live read from ${member.label}: ${document.title ?? sourceId}${citation}\n\n` +
+        `[${firstIndex}] Live read from ${member.label}: ${title} — ${document.url}\n\n` +
         `${document.markdown ?? ""}`,
+      sources: [{ n: firstIndex, title, url: document.url }],
     };
   }
 }

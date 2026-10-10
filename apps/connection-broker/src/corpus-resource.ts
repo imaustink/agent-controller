@@ -96,7 +96,7 @@ export async function toBinding(
   return {
     name,
     connection: connection.metadata.name,
-    driver: driverFor(name, connection),
+    driver: driverFor(name, connection, serviceToken),
     scope,
     allowedRoles: corpus.spec.allowedRoles ?? [],
     serviceToken,
@@ -135,7 +135,7 @@ function assertWithinConnectionScopes(
   );
 }
 
-function driverFor(name: string, connection: ConnectionCustomResource): Driver {
+function driverFor(name: string, connection: ConnectionCustomResource, serviceToken: string): Driver {
   const spec = connection.spec;
   switch (spec.provider) {
     case "confluence": {
@@ -180,6 +180,9 @@ function driverFor(name: string, connection: ConnectionCustomResource): Driver {
         // the one write this driver can perform, and it is a property of the
         // credential rather than of any one channel.
         autoJoin: spec.autoJoin ?? false,
+        // Name lookups only (see SlackDriverOptions.directoryToken): a caller's
+        // link is scoped for search, so live hits otherwise show raw user ids.
+        directoryToken: serviceToken,
       });
 
     case "gdrive":

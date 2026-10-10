@@ -263,3 +263,62 @@ describe("OpenAiActionPlanner — consumer-supplied tools (docs/adr/0035)", () =
     expect(sentPrompt(withoutTools).system).not.toContain("requested that a tool be called");
   });
 });
+
+// The respond-only step finishPlanLoop takes when a turn would end on a raw
+// knowledge-base result: the schema is pinned to `respond`, the model is told
+// the turn is over, and anything else the model returns becomes an EMPTY
+// response so the caller degrades to the verbatim finish.
+// PARITY: TestPlanActionRespondOnlyIsEnforced on the Temporal engine.
+describe("OpenAiActionPlanner respondOnly", () => {
+  function sentRequest(client: OpenAI): {
+    system: string;
+    actionEnum: string[];
+  } {
+    const call = (client.chat.completions.create as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]?.[0] as {
+      messages: { role: string; content: string }[];
+      response_format: { json_schema: { schema: { properties: { action: { enum: string[] } } } } };
+    };
+    return {
+      system: call.messages.find((m) => m.role === "system")?.content ?? "",
+      actionEnum: call.response_format.json_schema.schema.properties.action.enum,
+    };
+  }
+
+  const history = [{ toolId: "kb:globex/search", toolArgs: "auth", result: "### [1] Auth design" }];
+
+  it("pins the schema to respond and tells the model the turn is over", async () => {
+    const client = fakeClient({ action: "respond", response: "Auth uses OIDC.", tool_id: null, tool_args: null, tool_instance_key: null });
+    const planner = new OpenAiActionPlanner({ client });
+
+    const result = await planner.plan("how does auth work?", skill, tools, history, { respondOnly: true });
+
+    expect(result).toEqual({ action: "respond", response: "Auth uses OIDC." });
+    expect(sentRequest(client).actionEnum).toEqual(["respond"]);
+    expect(sentRequest(client).system).toContain("no more tools can be called");
+  });
+
+  // The control: without respondOnly the full action set is offered, so the
+  // pinned-enum assertion above is not vacuous.
+  it("offers the full action set when not respond-only", async () => {
+    const client = fakeClient({ action: "finish", response: null, tool_id: null, tool_args: null, tool_instance_key: null });
+    const planner = new OpenAiActionPlanner({ client });
+
+    await planner.plan("how does auth work?", skill, tools, history);
+
+    expect(sentRequest(client).actionEnum).toEqual(["respond", "call_tool", "finish"]);
+    expect(sentRequest(client).system).not.toContain("no more tools can be called");
+  });
+
+  it.each([
+    ["call_tool", { action: "call_tool", response: null, tool_id: "recipe-scraper", tool_args: "x", tool_instance_key: null }],
+    ["finish", { action: "finish", response: null, tool_id: null, tool_args: null, tool_instance_key: null }],
+  ])("degrades a %s the model returns despite the schema to an empty response", async (_label, response) => {
+    const planner = new OpenAiActionPlanner({ client: fakeClient(response) });
+
+    const result = await planner.plan("how does auth work?", skill, tools, history, { respondOnly: true });
+
+    // Empty, not a tool call or a verbatim finish: finishPlanLoop treats an
+    // empty response as a failed synthesis and falls back.
+    expect(result).toEqual({ action: "respond", response: "" });
+  });
+});

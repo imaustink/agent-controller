@@ -53,6 +53,15 @@ contract) and never imports from a sibling tool/app directly — only from
   (`accepted → progress* / warning* → succeeded | failed`) implemented once
   in `@controller-agent/messaging` — see [docs/messaging.md](../docs/messaging.md).
   Depend on the package; don't reimplement the protocol.
+- **Make core behavior deterministic, not prompt-dependent.** For anything
+  core — auth/account-linking, access disclosure, citations, tool gating — do
+  NOT rely on the agent following a system-prompt instruction to produce the
+  required behavior; the model may not comply and a core feature must not
+  depend on that. When the orchestrator already has the structured signal
+  (e.g. a KB search activity returns `needsLink` / `linkProviders`), surface or
+  gate on it deterministically in code (append the message, interrupt the turn)
+  rather than adding guidance text and hoping the model relays it. Reserve
+  prompt instructions for genuinely generative/judgment work.
 - Never invent unverified auth/identity shortcuts. `apps/agent-orchestrator/src/rbac/static-identity-resolver.ts`
   is explicitly a DEV/TEST-ONLY stub (no signature verification) — treat it
   as a documented gap, not a pattern to copy for real auth.

@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JSONCodec } from "nats";
 import {
+  AgentTurnApprovalPendingError,
   AgentTurnFailedError,
   AgentTurnTimeoutError,
   AgentTurnTransportError,
   NatsAgentChannel,
+  type SubAgentApprovalCall,
 } from "./nats-agent-channel.js";
 
 /**
@@ -143,6 +145,49 @@ describe("NatsAgentChannel", () => {
 
     publishUp(nc, "run-1", { type: "reply", message: "done", final: true });
     await expect(pending).resolves.toMatchObject({ message: "done" });
+  });
+
+  it("throws AgentTurnApprovalPendingError when a sub-agent tool call needs approval, leaving the call UNRESOLVED (sub-agent HITL)", async () => {
+    const { channel, nc } = makeChannel();
+    const codec = JSONCodec<unknown>();
+    // The handler decides a dispatched tool_call needs approval and signals it
+    // through `approvalNeeded` instead of resolving it.
+    let signal!: (call: SubAgentApprovalCall) => void;
+    const approvalNeeded = new Promise<SubAgentApprovalCall>((resolve) => {
+      signal = resolve;
+    });
+    const pending = channel.awaitReply("run-1", {
+      idleTimeoutMs: 60_000,
+      onToolCall: (c) => signal({ ...c, expiresAt: 4242 }),
+      approvalNeeded,
+    });
+    await new Promise((r) => setImmediate(r));
+
+    // Capture the down subject to PROVE awaitReply never resolved the call.
+    const down: unknown[] = [];
+    const downSub = nc.subscribe("agent.run-1.down");
+    void (async () => {
+      for await (const m of downSub) down.push(codec.decode(m.data));
+    })();
+
+    publishUp(nc, "run-1", { type: "tool_call", callId: "c1", tool: "kubectl", input: "{}" });
+
+    const err = await pending.then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(AgentTurnApprovalPendingError);
+    expect(err).toMatchObject({ callId: "c1", tool: "kubectl", input: "{}", expiresAt: 4242 });
+    // awaitReply left the tool_call unresolved — no tool_result was published.
+    expect(down).toEqual([]);
+
+    // The standalone resolveToolCall still delivers afterward (approve/deny/timeout).
+    await channel.resolveToolCall("run-1", "c1", { ok: false, error: "approval_timeout: nope" });
+    await new Promise((r) => setImmediate(r));
+    expect(down).toEqual([
+      expect.objectContaining({ type: "tool_result", callId: "c1", ok: false, error: "approval_timeout: nope" }),
+    ]);
+    downSub.unsubscribe();
   });
 
   it("resolveToolCall publishes a correlated tool_result down-message", async () => {

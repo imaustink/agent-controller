@@ -12,10 +12,13 @@ import {
   type ProbeGranularity,
   type ProbeResult,
   type Scope,
+  type QueryResult,
   type SearchHit,
+  type SourceQuery,
   type WebhookEvent,
   type WebhookRequest,
 } from "./types.js";
+import { resolveQuery } from "./query.js";
 import { hmacHex, signaturesMatch } from "./webhook-signature.js";
 
 /** Minimal HTTP surface, injectable so the driver is testable without a tenant. */
@@ -535,6 +538,64 @@ export class ConfluenceDriver implements Driver {
       .filter((hit): hit is SearchHit => hit !== undefined);
   }
 
+  /**
+   * A structured CQL query over the space, as the caller (see
+   * Driver.queryAsUser).
+   *
+   * The same endpoint, the same space bound, and the same hit mapping as
+   * `searchAsUser` — every reason recorded there applies here too — with each
+   * filter as one more CQL clause:
+   *
+   *   text   → `text ~ "…"`              title  → `title ~ "…"`
+   *   author → `creator.fullname ~ "…"`  after  → `lastmodified >= "D"`
+   *   before → `lastmodified < "D"`      type   → `type = page|blogpost`
+   *
+   * `type` defaults to `page`, for the reason search pins it: unconstrained,
+   * folders and attachments come back with ids nothing can read. Any type
+   * other than page or blogpost is refused rather than ignored.
+   *
+   * Newest/oldest become `order by lastmodified desc|asc`; relevance (with
+   * words) sends no order clause, which is CQL's own relevance ranking.
+   * `lastModified` comes back on each result, which is what makes a hit's
+   * `updatedAt` honest.
+   *
+   * Every user-supplied string is escaped as search escapes its words; the
+   * space key needs none, since validateScope restricts it to a character set
+   * with no quote or backslash in it, and dates are validated YYYY-MM-DD.
+   */
+  async queryAsUser(credentials: Credentials, scope: Scope, query: SourceQuery): Promise<QueryResult> {
+    this.validateScope(scope);
+    if (!credentials.delegated) {
+      throw new Error("a confluence query requires the calling user's delegated token");
+    }
+    const q = resolveQuery(query);
+
+    const type = q.type ?? "page";
+    if (type !== "page" && type !== "blogpost") return { hits: [], unsupported: ["type"] };
+
+    const clauses = [`space = "${scope.space}"`, `type = ${type}`];
+    if (q.text !== undefined) clauses.push(`text ~ "${cqlString(q.text)}"`);
+    if (q.title !== undefined) clauses.push(`title ~ "${cqlString(q.title)}"`);
+    if (q.author !== undefined) clauses.push(`creator.fullname ~ "${cqlString(q.author)}"`);
+    if (q.after !== undefined) clauses.push(`lastmodified >= "${q.after}"`);
+    if (q.before !== undefined) clauses.push(`lastmodified < "${q.before}"`);
+
+    let cql = clauses.join(" AND ");
+    if (q.sort !== "relevance") cql += ` order by lastmodified ${q.sort === "oldest" ? "asc" : "desc"}`;
+
+    const apiBase = await this.apiBaseFor(credentials.delegated);
+    const url = `${apiBase}/rest/api/search?cql=${encodeURIComponent(cql)}&limit=${q.limit}`;
+    const body = (await this.request(url, credentials.delegated)) as {
+      results?: ConfluenceSearchResult[];
+    };
+
+    const hits = (body.results ?? [])
+      .map((result) => toSearchHit(result, this.siteBaseUrl))
+      .filter((hit): hit is SearchHit => hit !== undefined)
+      .slice(0, q.limit);
+    return { hits };
+  }
+
   private async request(url: string, token: string | undefined): Promise<unknown> {
     if (!token) throw new Error("no credential supplied for a confluence request");
 
@@ -677,6 +738,16 @@ interface ConfluenceSearchResult {
  * already filtered by what that person can see — the mirror's pre-filter
  * exists for the INDEX, where the reader is not the one who fetched.
  */
+/**
+ * A caller-supplied string, made safe inside a double-quoted CQL literal.
+ *
+ * Escaped, not stripped, exactly as searchAsUser escapes its words: a quote or
+ * backslash would otherwise end the literal and let the rest read as syntax.
+ */
+function cqlString(value: string): string {
+  return value.replace(/["\\]/g, "\\$&");
+}
+
 function toSearchHit(result: ConfluenceSearchResult, siteBaseUrl: string): SearchHit | undefined {
   const id = result.content?.id;
   if (!id) return undefined;

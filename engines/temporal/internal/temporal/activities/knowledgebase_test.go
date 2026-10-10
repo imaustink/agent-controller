@@ -3,6 +3,7 @@ package activities_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -262,8 +263,10 @@ func TestSearchOffersOneConnectionsLinkForEveryMissingSource(t *testing.T) {
 	}
 
 	out := search("openwebui:42")
+	// ONE clause for every missing provider, inside the shared link list.
 	require.Contains(t, out.Result,
-		"[Connect atlassian and google](https://gw.example/connections/link?need=atlassian%2Cgoogle), then ask again")
+		"\n- [Connect atlassian and google](https://gw.example/connections/link?need=atlassian%2Cgoogle)\n")
+	require.Equal(t, 1, strings.Count(out.Result, "\n- "))
 	require.Empty(t, links.Started)
 
 	// A subject the page cannot map keeps its direct links.
@@ -387,6 +390,90 @@ func TestSearchOffersAFreshLinkForTheUnlinkedProviderOnAPartialAnswer(t *testing
 	require.Equal(t, []string{"google"}, out.LinkProviders)
 	require.Contains(t, out.Result, "[link your google account](https://example.invalid/link/google)")
 	require.Len(t, links.Started, 1)
+}
+
+func TestGateOnlyReportsTheUnlinkedProviderWithoutSearching(t *testing.T) {
+	links, err := identitylink.NewFake("", "")
+	require.NoError(t, err)
+	corpora := &recordingCorpora{}
+	slack := member("chan", []string{"reader"}, "coll-chan")
+	slack.IdentityProviders = []string{"slack"}
+	slack.Granularity = "connection"
+
+	out, err := (&activities.KnowledgeBaseActivities{
+		Corpora:       corpora,
+		Credentials:   &perProviderResolver{linked: map[string]string{"atlassian": "at", "google": "g"}},
+		BrokerURL:     "http://broker",
+		BrokerToken:   "orch",
+		IdentityLinks: links,
+	}).SearchKnowledgeBase(context.Background(), activities.SearchKnowledgeBaseInput{
+		Caller:   activities.Caller{Subject: "openwebui:42", Roles: []string{"reader"}},
+		Tool:     searchTool(member("conf", []string{"reader"}, "coll-conf"), member("drive", []string{"reader"}, "coll-drive"), slack),
+		Query:    "q",
+		GateOnly: true,
+	})
+
+	require.NoError(t, err)
+	// The gate reports what is missing and renders the clickable ask...
+	require.Equal(t, []string{"slack"}, out.LinkProviders)
+	require.Contains(t, out.Result, "[link your slack account](https://example.invalid/link/slack)")
+	require.Contains(t, out.Result, "already linked")
+	// ...but runs NO vector search: Corpora must be untouched on a gate pass.
+	require.Empty(t, corpora.opened, "GateOnly must not run the search")
+}
+
+// The pre-search gate shares linkClauses, so a chat caller gets the one
+// Connections link there too and nothing is started at the provider
+// (agent-controller ADR 0046).
+func TestGateOnlyOffersTheConnectionsLinkForAChatCaller(t *testing.T) {
+	links, err := identitylink.NewFake("", "")
+	require.NoError(t, err)
+	slack := member("chan", []string{"reader"}, "coll-chan")
+	slack.IdentityProviders = []string{"slack"}
+	slack.Granularity = "connection"
+
+	out, err := (&activities.KnowledgeBaseActivities{
+		Corpora:        &recordingCorpora{},
+		Credentials:    &perProviderResolver{linked: map[string]string{"atlassian": "at", "google": "g"}},
+		BrokerURL:      "http://broker",
+		BrokerToken:    "orch",
+		IdentityLinks:  links,
+		ConnectionsURL: "https://gw.example/connections",
+	}).SearchKnowledgeBase(context.Background(), activities.SearchKnowledgeBaseInput{
+		Caller:   activities.Caller{Subject: "openwebui:42", Roles: []string{"reader"}},
+		Tool:     searchTool(member("conf", []string{"reader"}, "coll-conf"), member("drive", []string{"reader"}, "coll-drive"), slack),
+		Query:    "q",
+		GateOnly: true,
+	})
+
+	require.NoError(t, err)
+	require.Contains(t, out.Result, "[Connect slack](https://gw.example/connections/link?need=slack)")
+	require.NotContains(t, out.Result, "example.invalid/link/slack")
+	require.Empty(t, links.Started)
+}
+
+func TestGateOnlyReturnsNothingWhenEveryProviderIsLinked(t *testing.T) {
+	corpora := &recordingCorpora{}
+	drive := member("drive", []string{"reader"}, "coll-drive")
+	drive.IdentityProviders = []string{"google"}
+
+	out, err := (&activities.KnowledgeBaseActivities{
+		Corpora:     corpora,
+		Credentials: &perProviderResolver{linked: map[string]string{"atlassian": "at", "google": "g"}},
+		BrokerURL:   "http://broker",
+		BrokerToken: "orch",
+	}).SearchKnowledgeBase(context.Background(), activities.SearchKnowledgeBaseInput{
+		Caller:   activities.Caller{Subject: "s", Roles: []string{"reader"}},
+		Tool:     searchTool(member("conf", []string{"reader"}, "coll-conf"), drive),
+		Query:    "q",
+		GateOnly: true,
+	})
+
+	require.NoError(t, err)
+	// Nothing missing: empty LinkProviders signals the workflow to proceed to the
+	// real search, and the gate itself searched nothing.
+	require.Empty(t, out.LinkProviders)
+	require.Empty(t, corpora.opened)
 }
 
 func TestSearchSearchesEveryMemberWhenAllProvidersAreLinked(t *testing.T) {

@@ -17,7 +17,13 @@ const SearchKnowledgeBaseActivityName = "SearchKnowledgeBase"
 
 // defaultKnowledgeBaseLimit is how many passages an answer gets. The candidate
 // set probed to produce them is this times corpus.DefaultCandidateMultiplier.
-const defaultKnowledgeBaseLimit = 6
+//
+// Six starved multi-document questions: a "what are all our projects for X"
+// drew on one source and read as thin. Twelve gives the model enough spread to
+// synthesise across sources while staying well inside the context budget (a
+// chunk is capped at 800 tokens at ingest). PARITY: DEFAULT_LIMIT in the TS
+// searcher.
+const defaultKnowledgeBaseLimit = 12
 
 // DelegatedCredentialResolver hands back the calling user's own token for a
 // provider.
@@ -95,6 +101,20 @@ type SearchKnowledgeBaseInput struct {
 	Tool  catalog.ToolDescriptor `json:"tool"`
 	Query string                 `json:"query"`
 	Limit int                    `json:"limit,omitempty"`
+	// GateOnly runs the deterministic pre-search link check and nothing else:
+	// it resolves which of this knowledge base's providers the caller has not
+	// linked and renders the clickable ask, WITHOUT running the vector query or
+	// probe. The workflow calls it once per knowledge base per conversation and
+	// stops the turn when LinkProviders comes back non-empty, so the caller is
+	// told what to link rather than handed a partial answer whose "link this
+	// too" line the planner might drop (a core auth behaviour must not depend on
+	// the model echoing a caveat). An empty LinkProviders means nothing is
+	// missing and the caller should proceed to the real search.
+	GateOnly bool `json:"gateOnly,omitempty"`
+	// FirstIndex is the citation number this search's first passage takes: the
+	// turn's next unused number, so a second search's passages never reuse [1]
+	// (see corpus.RenderInput.FirstIndex). Zero means 1.
+	FirstIndex int `json:"firstIndex,omitempty"`
 }
 
 // SearchKnowledgeBaseOutput carries prose, never a credential.
@@ -107,6 +127,22 @@ type SearchKnowledgeBaseOutput struct {
 	NeedsLink bool `json:"needsLink,omitempty"`
 	// LinkProviders are the providers the caller must link, when NeedsLink.
 	LinkProviders []string `json:"linkProviders,omitempty"`
+	// Sources are this search's citable passages, numbered from FirstIndex, with
+	// the probe's title and URL; Caveats are what it could not see. Both are
+	// carried out separately so the workflow applies them in CODE to whatever the
+	// turn finally returns — the model's `[n]` markers become these links, and
+	// the caveats are appended whatever the model wrote (ADR 0040 survives
+	// finish/respond alike). Empty for the needs-link asks (nothing was searched).
+	Sources []corpus.Source `json:"sources,omitempty"`
+	Caveats []string        `json:"caveats,omitempty"`
+	// LegacyCitations is the pre-rendered `Sources:` + caveats block this
+	// activity returned before Sources/Caveats replaced it. Never written now —
+	// read only, so a turn in flight across the deploy whose search completed on
+	// the old worker (its result already in history in the old shape) still
+	// appends that block, rather than losing its citations AND its access
+	// disclosure (ADR 0040). Remove once no workflow from before the change can
+	// still be open, alongside the version guards in workflows/agentloop.go.
+	LegacyCitations string `json:"citations,omitempty"`
 }
 
 // SearchKnowledgeBase probes and renders one knowledge-base search.
@@ -138,17 +174,26 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 
 	visible, withheld := visibleMembers(exec.Members, in.Caller.Roles)
 	if len(visible) == 0 {
+		renderInput := corpus.RenderInput{
+			Withheld: withheld,
+			Disclose: exec.DisclosePartialVisibility,
+		}
 		return SearchKnowledgeBaseOutput{
-			Result: corpus.Render(corpus.RenderInput{
-				Withheld: withheld,
-				Disclose: exec.DisclosePartialVisibility,
-			}),
+			Result:  corpus.Render(renderInput),
+			Caveats: corpus.CaveatLines(renderInput),
 		}, nil
 	}
 
 	tokens, err := a.Credentials.DelegatedTokens(ctx, in.Caller, providersOf(visible))
 	if err != nil {
 		return SearchKnowledgeBaseOutput{}, err
+	}
+	// Deterministic pre-search link gate (ADR 0040 §5): before spending a query,
+	// report what the caller is missing so the workflow can stop and ask. Done
+	// here, not in the planner's prose, because this is auth — it must happen
+	// whether or not the model would have mentioned it.
+	if in.GateOnly {
+		return a.linkGate(ctx, in.Caller, exec.DisplayName, visible, tokens), nil
 	}
 	if len(tokens) == 0 {
 		// Without the caller's own credential nothing can be probed, and probing
@@ -203,15 +248,25 @@ func (a *KnowledgeBaseActivities) SearchKnowledgeBase(
 	// at a time (e.g. Slack after Confluence and Drive), and a link that expired
 	// before the caller finished is simply replaced on the next ask.
 	unlinkedProviders := providersToLink(notLinked, tokens)
-	result := corpus.Render(corpus.RenderInput{
-		Outcome:  outcome,
-		Withheld: withheld,
-		Disclose: exec.DisclosePartialVisibility,
-		Unlinked: &corpus.Unlinked{Providers: unlinkedProviders, Sources: len(notLinked)},
-	})
+	renderInput := corpus.RenderInput{
+		Outcome:    outcome,
+		Withheld:   withheld,
+		Disclose:   exec.DisclosePartialVisibility,
+		Unlinked:   &corpus.Unlinked{Providers: unlinkedProviders, Sources: len(notLinked)},
+		FirstIndex: in.FirstIndex,
+	}
+	result := corpus.Render(renderInput)
 	result = a.startLinks(ctx, in.Caller, unlinkedProviders, result)
 
-	return SearchKnowledgeBaseOutput{Result: result, LinkProviders: unlinkedProviders}, nil
+	// Sources and caveats carried separately so the workflow applies them in
+	// code when the planner recomposes via Respond (ADR 0040 survives
+	// finish/respond alike).
+	return SearchKnowledgeBaseOutput{
+		Result:        result,
+		LinkProviders: unlinkedProviders,
+		Sources:       corpus.Sources(renderInput),
+		Caveats:       corpus.CaveatLines(renderInput),
+	}, nil
 }
 
 // needsLink is the honest response when the caller has linked none of the
@@ -250,27 +305,41 @@ func needsLinkAsk(displayName string, providers []string) SearchKnowledgeBaseOut
 // provider unconfigured, or no IdentityLinks was wired), so a misconfiguration
 // degrades rather than failing the search.
 func (a *KnowledgeBaseActivities) startLinks(ctx context.Context, caller Caller, providers []string, baseMessage string) string {
-	if len(providers) == 0 {
+	clauses := a.linkClauses(ctx, caller, providers)
+	if len(clauses) == 0 {
 		return baseMessage
 	}
+	return baseMessage + "\n\n- " + strings.Join(clauses, "\n- ") +
+		"\n\nOnce you've linked, ask again and I'll include those sources."
+}
+
+// linkClauses starts an authcode flow per provider and returns one rendered
+// clickable clause each ("[link your slack account](url)"), skipping any whose
+// flow could not be started. Authcode because atlassian/google/slack are
+// redirect-based with nothing to poll. Empty when no IdentityLinks was wired or
+// the gateway has every provider unconfigured, so a misconfiguration degrades
+// to the plain message rather than failing the turn.
+func (a *KnowledgeBaseActivities) linkClauses(ctx context.Context, caller Caller, providers []string) []string {
+	if len(providers) == 0 {
+		return nil
+	}
 	// One link to the Connections page for every missing provider, rather
-	// than a bullet per provider, each a raw OAuth URL (agent-controller ADR
+	// than a clause per provider, each a raw OAuth URL (agent-controller ADR
 	// 0046). Nothing is started here: the page starts each flow for the same
-	// subject retrieval reads. PARITY: knowledgeBaseLinkPrompt in graph.ts.
+	// subject retrieval reads. PARITY: startKnowledgeBaseLinkClauses in graph.ts.
 	if authz.UsesConnectionsPage(a.ConnectionsURL, caller.Subject, identitylink.FlowAuthCode) {
 		if page, ok := authz.ConnectionsPageStart(a.ConnectionsURL, providers); ok {
 			names := make([]string, len(providers))
 			for i, p := range providers {
 				names[i] = authz.Label(p)
 			}
-			return fmt.Sprintf("%s\n\n[Connect %s](%s), then ask again and I'll include those sources.",
-				baseMessage, authz.JoinLabels(names), page.PageURL)
+			return []string{fmt.Sprintf("[Connect %s](%s)", authz.JoinLabels(names), page.PageURL)}
 		}
 	}
 	if a.IdentityLinks == nil {
-		return baseMessage
+		return nil
 	}
-	var prompts []string
+	var clauses []string
 	for _, provider := range providers {
 		// Start the link against the SAME subject the credential resolver looks
 		// it up by, or the token would land under a key retrieval never reads.
@@ -278,13 +347,53 @@ func (a *KnowledgeBaseActivities) startLinks(ctx context.Context, caller Caller,
 		if err != nil {
 			continue
 		}
-		prompts = append(prompts, linkPrompt(started, provider))
+		clauses = append(clauses, linkPrompt(started, provider))
 	}
-	if len(prompts) == 0 {
-		return baseMessage
+	return clauses
+}
+
+// linkGate is the deterministic pre-search check behind SearchKnowledgeBaseInput
+// .GateOnly. It reports which of this knowledge base's providers the caller has
+// NOT linked and renders the clickable ask, without running the search. An empty
+// LinkProviders means nothing is missing and the caller should proceed.
+func (a *KnowledgeBaseActivities) linkGate(
+	ctx context.Context,
+	caller Caller,
+	displayName string,
+	visible []catalog.KnowledgeBaseExecMember,
+	tokens map[string]DelegatedCredential,
+) SearchKnowledgeBaseOutput {
+	unlinked := providersToLink(visible, tokens)
+	if len(unlinked) == 0 {
+		return SearchKnowledgeBaseOutput{}
 	}
-	return baseMessage + "\n\n- " + strings.Join(prompts, "\n- ") +
-		"\n\nOnce you've linked, ask again and I'll include those sources."
+	linked := linkedProviders(visible, tokens)
+	return SearchKnowledgeBaseOutput{
+		Result:        a.gatePrompt(ctx, caller, displayName, linked, unlinked),
+		LinkProviders: unlinked,
+		NeedsLink:     len(linked) == 0,
+	}
+}
+
+// gatePrompt is the deterministic interrupt shown before a search when the
+// caller is missing one or more of a knowledge base's accounts. It names what
+// is already linked, starts a flow for each missing provider and renders a
+// clickable link, and tells the caller they can link and ask again — or ask
+// again as-is to search with just what they have.
+func (a *KnowledgeBaseActivities) gatePrompt(ctx context.Context, caller Caller, displayName string, linked, unlinked []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Before I search the **%s** knowledge base, link the account(s) it covers "+
+		"that you haven't yet (%s):", displayName, strings.Join(unlinked, ", "))
+
+	if clauses := a.linkClauses(ctx, caller, unlinked); len(clauses) > 0 {
+		b.WriteString("\n\n- " + strings.Join(clauses, "\n- "))
+	}
+	if len(linked) > 0 {
+		fmt.Fprintf(&b, "\n\n(%s already linked.)", strings.Join(linked, ", "))
+	}
+	b.WriteString("\n\nLink the account(s) above and ask again, or ask again now to search with " +
+		"just what you have linked.")
+	return b.String()
 }
 
 // linkPrompt renders one started flow as a clickable clause. PARITY:
@@ -392,6 +501,20 @@ func providersToLink(members []catalog.KnowledgeBaseExecMember, linked map[strin
 	for _, member := range members {
 		for _, provider := range member.IdentityProviders {
 			if _, ok := linked[provider]; !ok {
+				set[provider] = struct{}{}
+			}
+		}
+	}
+	return sortedKeys(set)
+}
+
+// linkedProviders is the providers these members need that the caller HAS
+// linked, sorted — the "already linked" half of the gate prompt.
+func linkedProviders(members []catalog.KnowledgeBaseExecMember, linked map[string]DelegatedCredential) []string {
+	set := map[string]struct{}{}
+	for _, member := range members {
+		for _, provider := range member.IdentityProviders {
+			if _, ok := linked[provider]; ok {
 				set[provider] = struct{}{}
 			}
 		}

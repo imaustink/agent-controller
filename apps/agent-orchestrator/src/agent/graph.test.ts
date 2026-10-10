@@ -15,17 +15,21 @@ import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { AgentDescriptor, AgentStore } from "../agents/types.js";
 import type { DelegateSelector } from "./delegate-selector.js";
 import {
+  AgentTurnApprovalPendingError,
   AgentTurnFailedError,
   AgentTurnTimeoutError,
   AgentTurnTransportError,
   type AgentOrchestratorChannel,
   type AgentTurnResult,
+  type SubAgentApprovalCall,
 } from "../agents/nats-agent-channel.js";
 import type { AgentRunLauncherPort } from "../k8s/agentrun-launcher.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
 import type { BestEffortResponder } from "./best-effort-responder.js";
 import type { CapabilityNeedChecker } from "./capability-need-checker.js";
 import type { IdentityLinkPort } from "../identity-link/gateway-client.js";
+import type { KnowledgeBaseSearcher } from "../knowledge-base/searcher.js";
+import { knowledgeBaseSearchToolId, knowledgeBaseSkillId } from "../knowledge-base/types.js";
 
 const scraperTool: ToolDescriptor = {
   id: "recipe-scraper",
@@ -527,6 +531,92 @@ describe("buildAgentGraph", () => {
     expect(final.error).toMatch(/local execution is not configured/);
     expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
+
+  it("dispatches an MCP tool through the broker as the caller instead of launching anything (ADR 0045)", async () => {
+    const mcpTool: ToolDescriptor = {
+      id: "mcp:github/create_issue",
+      name: "mcp:github/create_issue",
+      description: "Opens a GitHub issue",
+      allowedRoles: ["reader"],
+      identityProviders: ["github"],
+      mcpExec: { serverRef: "github", remoteToolName: "create_issue" },
+    };
+    const mcpSkill: SkillDescriptor = { ...skill, id: "github-skill", toolIds: ["mcp:github/create_issue"] };
+    const mcpBrokerClient = { call: vi.fn().mockResolvedValue({ result: "Issue #7 created" }) };
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: mcpSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([mcpSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(mcpSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn(),
+        getByIds: vi.fn().mockResolvedValue([{ tool: mcpTool, score: 1 }]),
+      },
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "mcp:github/create_issue",
+          toolArgs: '{"title":"Bug"}',
+        } satisfies PlannedAction),
+      },
+      mcpBrokerClient: mcpBrokerClient as unknown as AgentGraphDeps["mcpBrokerClient"],
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "open an issue", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.result).toBe("Issue #7 created");
+    // Proxied under the resolved caller's subject, never launched as a Job/sidecar.
+    expect(mcpBrokerClient.call).toHaveBeenCalledWith(mcpTool, '{"title":"Bug"}', { subject: "alice" });
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+
+  it("fails gracefully when an MCP tool is selected but no broker is configured", async () => {
+    const mcpTool: ToolDescriptor = {
+      id: "mcp:github/create_issue",
+      name: "mcp:github/create_issue",
+      description: "Opens a GitHub issue",
+      allowedRoles: ["reader"],
+      identityProviders: ["github"],
+      mcpExec: { serverRef: "github", remoteToolName: "create_issue" },
+    };
+    const mcpSkill: SkillDescriptor = { ...skill, id: "github-skill", toolIds: ["mcp:github/create_issue"] };
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: mcpSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([mcpSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(mcpSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn(),
+        getByIds: vi.fn().mockResolvedValue([{ tool: mcpTool, score: 1 }]),
+      },
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({
+          action: "call_tool",
+          toolId: "mcp:github/create_issue",
+          toolArgs: "{}",
+        } satisfies PlannedAction),
+      },
+      mcpBrokerClient: undefined,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "open an issue", authToken: "tok" });
+
+    expect(final.error).toMatch(/mcp-broker is not configured/);
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildAgentGraph multi-step tool use (docs/adr/0008 update: fixes the single-tool-call limit)", () => {
@@ -706,7 +796,7 @@ describe("buildAgentGraph multi-step tool use (docs/adr/0008 update: fixes the s
     expect(final.error).toBeUndefined();
     // The planner never settles (always a fresh call_tool with new args, so
     // the identical-repeat guard never kicks in) -- the loop still stops.
-    expect(plan.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(plan.mock.calls.length).toBeLessThanOrEqual(8);
     expect(deps.containerToolLauncher.launch).toHaveBeenCalledTimes(plan.mock.calls.length);
     expect(final.result).toBe(`page ${plan.mock.calls.length} content`);
   });
@@ -4271,7 +4361,7 @@ describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
       request: "weather?",
       authToken: "tok",
       callerTools: [weatherTool],
-      actionHistory: Array.from({ length: 4 }, (_, i) => ({
+      actionHistory: Array.from({ length: 8 }, (_, i) => ({
         toolId: "caller:get_weather",
         toolArgs: `{"n":${i}}`,
         result: `r${i}`,
@@ -4281,7 +4371,7 @@ describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
     // MAX_TOOL_STEPS reached -> finish without ever consulting the planner.
     expect(deps.actionPlanner.plan).not.toHaveBeenCalled();
     expect(final.pendingToolCalls).toEqual([]);
-    expect(final.result).toBe("r3");
+    expect(final.result).toBe("r7");
   });
 
   it("passes tool_choice: required through to the planner as a directive", async () => {
@@ -4312,5 +4402,741 @@ describe("buildAgentGraph — consumer-supplied tools (docs/adr/0035)", () => {
 
     expect(final.pendingToolCalls).toEqual([]);
     expect(final.result).toEqual({ title: "Pancakes" });
+  });
+
+  // PART A: a KB answer the planner recomposes via `respond` must STILL carry
+  // the probe-derived Sources list and the "What this answer could not see"
+  // disclosure — the deterministic block is appended in code, not left to the
+  // model to echo (ADR 0040). The sibling `finish` path already surfaces it
+  // verbatim; this covers the respond-after-search gap.
+  it("appends the probe-derived Sources + disclosure to a KB answer returned via respond", async () => {
+    const kbTool: ToolDescriptor = {
+      id: "kb:globex/search",
+      name: "kb:globex/search",
+      description: "search the GLOBEX knowledge base",
+      allowedRoles: ["reader"],
+      knowledgeBaseExec: {
+        knowledgeBaseId: "globex",
+        displayName: "GLOBEX",
+        operation: "search",
+        members: [],
+        disclosePartialVisibility: true,
+      },
+    };
+    const kbSkill: SkillDescriptor = {
+      id: "kb:globex",
+      name: "GLOBEX knowledge base",
+      description: "search GLOBEX",
+      markdown: "# GLOBEX",
+      toolIds: ["kb:globex/search"],
+      agentIds: [],
+    };
+    const search = vi.fn().mockResolvedValue({
+      result: "### [1] Auth design\n```text\nWe use OIDC.\n```\n",
+      sources: [{ n: 1, title: "Auth design", url: "https://wiki/auth" }],
+      caveats: [
+        "2 source(s) in this knowledge base are outside your access, so there may be more you cannot see.",
+        "3 source(s) need an account you have not linked (slack); link it and ask again to include them.",
+      ],
+    });
+    const checkLinks = vi.fn().mockResolvedValue({ linkProviders: [], linkedProviders: ["atlassian"] });
+
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: kbSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([kbSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(kbSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([{ tool: kbTool, score: 1 }]),
+      },
+      actionPlanner: {
+        plan: vi
+          .fn()
+          .mockResolvedValueOnce({ action: "call_tool", toolId: "kb:globex/search", toolArgs: "how does auth work" } satisfies PlannedAction)
+          // The model synthesizes its own answer and DROPS the citations — the gap.
+          .mockResolvedValueOnce({ action: "respond", response: "Auth uses OIDC." } satisfies PlannedAction),
+      },
+      knowledgeBaseSearcher: { search, checkLinks } as unknown as AgentGraphDeps["knowledgeBaseSearcher"],
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "how does auth work?", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.plannedAction).toBe("respond");
+    // Model synthesis preserved…
+    expect(final.result).toContain("Auth uses OIDC.");
+    // …and the probe-derived citations/disclosure survive the respond path.
+    expect(final.result).toContain("Sources:");
+    expect(final.result).toContain("[Auth design](https://wiki/auth)");
+    expect(final.result).toContain("outside your access");
+    expect(final.result).toContain("need an account you have not linked (slack)");
+  });
+
+  // A knowledge-base result is material to answer from, never the answer. When
+  // the planner picks `finish` after a search, the turn used to show the raw
+  // passages verbatim. It must instead re-plan respond-only and return the
+  // synthesis (citations re-applied). This CAN fail: without finishPlanLoop the
+  // turn routes to composeResponse with the fenced passages as the result.
+  it("synthesizes instead of finishing verbatim on a knowledge-base result", async () => {
+    const kbTool: ToolDescriptor = {
+      id: "kb:globex/search",
+      name: "kb:globex/search",
+      description: "search the GLOBEX knowledge base",
+      allowedRoles: ["reader"],
+      knowledgeBaseExec: {
+        knowledgeBaseId: "globex",
+        displayName: "GLOBEX",
+        operation: "search",
+        members: [],
+        disclosePartialVisibility: true,
+      },
+    };
+    const kbSkill: SkillDescriptor = {
+      id: "kb:globex",
+      name: "GLOBEX knowledge base",
+      description: "search GLOBEX",
+      markdown: "# GLOBEX",
+      toolIds: ["kb:globex/search"],
+      agentIds: [],
+    };
+    const search = vi.fn().mockResolvedValue({
+      result: "### [1] Auth design\n```text\nWe use OIDC.\n```\n",
+      sources: [{ n: 1, title: "Auth design", url: "https://wiki/auth" }],
+    });
+    const checkLinks = vi.fn().mockResolvedValue({ linkProviders: [], linkedProviders: ["atlassian"] });
+    const plan = vi
+      .fn()
+      .mockResolvedValueOnce({ action: "call_tool", toolId: "kb:globex/search", toolArgs: "how does auth work" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "finish" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "respond", response: "Auth uses OIDC, per the design doc." } satisfies PlannedAction);
+
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: kbSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([kbSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(kbSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([{ tool: kbTool, score: 1 }]),
+      },
+      actionPlanner: { plan },
+      knowledgeBaseSearcher: { search, checkLinks } as unknown as AgentGraphDeps["knowledgeBaseSearcher"],
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "how does auth work?", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.plannedAction).toBe("respond");
+    expect(final.result).toContain("Auth uses OIDC, per the design doc.");
+    expect(final.result).toContain("[Auth design](https://wiki/auth)");
+    expect(final.result).not.toContain("```text");
+    expect(plan).toHaveBeenCalledTimes(3);
+    expect(plan.mock.calls[2]?.[4]).toEqual({ respondOnly: true });
+  });
+
+  // Inline citations across a multi-search turn: the second search continues
+  // the turn's numbering, the model's [n] markers become the probe's links, an
+  // invented number is dropped, no Sources list is appended (it cited inline),
+  // and the disclosure is appended regardless. This CAN fail: the old respond
+  // path ignored markers and appended the last search's block verbatim.
+  it("links [n] markers inline across the turn's searches", async () => {
+    const kbTool: ToolDescriptor = {
+      id: "kb:globex/search",
+      name: "kb:globex/search",
+      description: "search the GLOBEX knowledge base",
+      allowedRoles: ["reader"],
+      knowledgeBaseExec: {
+        knowledgeBaseId: "globex",
+        displayName: "GLOBEX",
+        operation: "search",
+        members: [],
+        disclosePartialVisibility: true,
+      },
+    };
+    const kbSkill: SkillDescriptor = {
+      id: "kb:globex",
+      name: "GLOBEX knowledge base",
+      description: "search GLOBEX",
+      markdown: "# GLOBEX",
+      toolIds: ["kb:globex/search"],
+      agentIds: [],
+    };
+    const search = vi
+      .fn()
+      .mockResolvedValueOnce({
+        result: "### [1] Auth design",
+        sources: [{ n: 1, title: "Auth design", url: "https://wiki/auth" }],
+        caveats: ["2 source(s) in this knowledge base are outside your access, so there may be more you cannot see."],
+      })
+      .mockResolvedValueOnce({
+        result: "### [2] Rotation runbook",
+        sources: [{ n: 2, title: "Rotation runbook", url: "https://wiki/rotate" }],
+      });
+    const checkLinks = vi.fn().mockResolvedValue({ linkProviders: [], linkedProviders: ["atlassian"] });
+    const plan = vi
+      .fn()
+      .mockResolvedValueOnce({ action: "call_tool", toolId: "kb:globex/search", toolArgs: "auth" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "call_tool", toolId: "kb:globex/search", toolArgs: "rotation" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "respond", response: "OIDC [1], rotated hourly [2], audited [9]." } satisfies PlannedAction);
+
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: kbSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([kbSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(kbSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([{ tool: kbTool, score: 1 }]),
+      },
+      actionPlanner: { plan },
+      knowledgeBaseSearcher: { search, checkLinks } as unknown as AgentGraphDeps["knowledgeBaseSearcher"],
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "how does auth work?", authToken: "tok" });
+
+    expect(final.error).toBeUndefined();
+    expect(search.mock.calls.map((call) => call[3])).toEqual([1, 2]);
+    expect(final.result).toContain(
+      "OIDC [Auth design](https://wiki/auth), rotated hourly [Rotation runbook](https://wiki/rotate), audited.",
+    );
+    expect(final.result).not.toContain("Sources:");
+    expect(final.result).toContain("outside your access");
+  });
+
+  // PART B: a stateful refine-loop tool's publish target is keyed from
+  // SERVER-SIDE continuation state (not a URL the model re-supplies), and its
+  // returned Markdown survives the planner choosing `respond` verbatim — so the
+  // skill prompt need not carry "copy the URL" / "you MUST choose finish".
+  it("keys a recipe publish from server state and surfaces its result verbatim on respond", async () => {
+    let launchedArgs: string[] | undefined;
+    const deps = baseDeps({
+      actionPlanner: {
+        plan: vi
+          .fn()
+          // The model names NO instance key — continuity is recovered from state.
+          .mockResolvedValueOnce({ action: "call_tool", toolId: "recipe-publisher", toolArgs: "add salt" } satisfies PlannedAction)
+          // …then paraphrases, which would drop the recipe Markdown without the guarantee.
+          .mockResolvedValueOnce({ action: "respond", response: "I added salt for you." } satisfies PlannedAction),
+      },
+      containerToolLauncher: {
+        launch: vi.fn().mockImplementation((_tmpl: unknown, opts: { args: string[] }) => {
+          launchedArgs = opts.args;
+          return Promise.resolve({ name: "tool-1", namespace: "default" });
+        }),
+      } as unknown as ContainerToolLauncher,
+      jobResultReceiver: {
+        awaitJob: vi.fn().mockResolvedValue({
+          type: "succeeded",
+          job_id: "job-1",
+          seq: 1,
+          ts: new Date().toISOString(),
+          // The publisher banks a fresh slug and returns the live recipe Markdown.
+          result: "<!-- continuation: slug-pasta -->\n\n# Pasta\nBoil. Add salt.\n\n✅ Updated on Mealie: [link](https://mealie/pasta)",
+        } satisfies Event),
+      } as unknown as JobResultReceiver,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "add salt to it",
+      authToken: "tok",
+      // Persisted from the first-publish turn, keyed by the source URL the model
+      // supplied THEN. This turn supplies no key.
+      toolContinuations: { "recipe-publisher::https://example.com/pasta": "slug-pasta" },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(final.plannedAction).toBe("respond");
+    // Keyed from server state: the stored slug was recovered and re-injected,
+    // though the planner named no instance this turn.
+    expect(launchedArgs?.[0]).toBe("<!-- continuation: slug-pasta -->\n\nadd salt");
+    // The tool's Markdown survived the respond verbatim (token stripped), not the
+    // model's paraphrase — so next-turn intent detection still sees the recipe.
+    expect(final.result).toContain("# Pasta");
+    expect(final.result).toContain("Add salt");
+    expect(final.result).not.toContain("I added salt for you.");
+    expect(final.result).not.toContain("continuation:");
+  });
+
+  // A KB live face after a stateful tool must clear the stateful tool's verbatim
+  // marker, or respondResult returns that stale Markdown and silently discards
+  // the KB synthesis the turn ends on. PARITY: the Go read/lookup faces set
+  // pendingVerbatim = "". This CAN fail: without the reset the result is the
+  // recipe Markdown, not the synthesis.
+  it("clears a stateful tool's verbatim result when a KB live face runs after it", async () => {
+    const kbLookupTool: ToolDescriptor = {
+      id: "kb:globex/lookup",
+      name: "kb:globex/lookup",
+      description: "live keyword search of the GLOBEX sources",
+      allowedRoles: ["reader"],
+      knowledgeBaseExec: {
+        knowledgeBaseId: "globex",
+        displayName: "GLOBEX",
+        operation: "lookup",
+        members: [],
+        disclosePartialVisibility: true,
+      },
+    };
+    const lookup = vi.fn().mockResolvedValue({ result: 'Live results from GLOBEX for "salt": …' });
+    const plan = vi
+      .fn()
+      .mockResolvedValueOnce({ action: "call_tool", toolId: "recipe-publisher", toolArgs: "add salt" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "call_tool", toolId: "kb:globex/lookup", toolArgs: "salt" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "finish" } satisfies PlannedAction)
+      .mockResolvedValueOnce({ action: "respond", response: "Salt was added; the GLOBEX runbook covers why." } satisfies PlannedAction);
+    const deps = baseDeps({
+      actionPlanner: { plan },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([
+          { tool: publisherTool, score: 1 },
+          { tool: kbLookupTool, score: 1 },
+        ]),
+      },
+      corpusLookup: { lookup } as unknown as AgentGraphDeps["corpusLookup"],
+      jobResultReceiver: {
+        awaitJob: vi.fn().mockResolvedValue({
+          type: "succeeded",
+          job_id: "job-1",
+          seq: 1,
+          ts: new Date().toISOString(),
+          // Round-trips continuation state, so the publisher's Markdown becomes
+          // the turn's pending verbatim result.
+          result: "<!-- continuation: slug-pasta -->\n\n# Pasta\nBoil. Add salt.",
+        } satisfies Event),
+      } as unknown as JobResultReceiver,
+    });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "add salt and tell me why",
+      authToken: "tok",
+      toolContinuations: { "recipe-publisher::https://example.com/pasta": "slug-pasta" },
+    });
+
+    expect(final.error).toBeUndefined();
+    expect(lookup).toHaveBeenCalled();
+    expect(plan.mock.calls[3]?.[4]).toEqual({ respondOnly: true });
+    expect(final.result).toBe("Salt was added; the GLOBEX runbook covers why.");
+    expect(final.result).not.toContain("# Pasta");
+  });
+});
+
+// Graph-level coverage for the deterministic knowledge-base link gate wired in
+// runTool (the `state.activeSkillId !== kbSkillId` block and the
+// `linkGatePending` -> END edge). The unit test in knowledge-base-link.test.ts
+// only exercises the prose rendering with a stubbed gateway; these assert the
+// behaviour that matters — a FRESH KB engagement stops at runTool on the ask
+// without searching or looping back to planAction (the bug this PR fixes),
+// while an already-active KB skill skips the gate and searches. PARITY: the
+// Temporal engine's TestKnowledgeBaseSearchNeedingALinkEndsTheTurnOnTheAsk and
+// TestKnowledgeBaseLinkGateRunsOncePerConversation.
+describe("buildAgentGraph: deterministic knowledge-base link gate", () => {
+  const kbSearchTool: ToolDescriptor = {
+    id: knowledgeBaseSearchToolId("globex"),
+    name: knowledgeBaseSearchToolId("globex"),
+    description: "Search the GLOBEX knowledge base.",
+    allowedRoles: ["reader"],
+    knowledgeBaseExec: {
+      knowledgeBaseId: "globex",
+      displayName: "GLOBEX",
+      operation: "search",
+      members: [],
+      disclosePartialVisibility: true,
+    },
+  };
+  const kbSkill: SkillDescriptor = {
+    id: knowledgeBaseSkillId("globex"),
+    name: "GLOBEX knowledge base",
+    description: "Search the GLOBEX knowledge base",
+    markdown: "# GLOBEX knowledge base",
+    toolIds: [kbSearchTool.id],
+    agentIds: [],
+  };
+
+  function identityLinkGateway(): IdentityLinkPort {
+    return {
+      start: vi.fn(async (provider: string) => ({
+        flow: "authcode" as const,
+        authorizeUrl: `https://gw.example/link/${provider}`,
+        expiresInSeconds: 600,
+      })),
+      poll: vi.fn(),
+      getToken: vi.fn(),
+    } as unknown as IdentityLinkPort;
+  }
+
+  function kbDeps(searcher: KnowledgeBaseSearcher, overrides: Partial<AgentGraphDeps> = {}) {
+    return baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: kbSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([kbSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(kbSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
+        getByIds: vi.fn().mockResolvedValue([{ tool: kbSearchTool, score: 1 }]),
+      },
+      knowledgeBaseSearcher: searcher,
+      identityLinkGateway: identityLinkGateway(),
+      ...overrides,
+    });
+  }
+
+  it("stops a FRESH engagement on the ask without searching or looping back to planAction", async () => {
+    const checkLinks = vi.fn().mockResolvedValue({ linkProviders: ["slack"], linkedProviders: ["atlassian", "google"] });
+    const search = vi.fn();
+    const searcher = { checkLinks, search } as unknown as KnowledgeBaseSearcher;
+    const actionPlanner: ActionPlanner = {
+      plan: vi.fn().mockResolvedValue({ action: "call_tool", toolId: kbSearchTool.id, toolArgs: "how is auth configured" } satisfies PlannedAction),
+    };
+    const deps = kbDeps(searcher, { actionPlanner });
+    const graph = buildAgentGraph(deps);
+
+    // No activeSkillId -> the KB skill is engaged fresh this turn.
+    const final = await graph.invoke({ request: "what does GLOBEX say about auth?", authToken: "tok" });
+
+    expect(checkLinks).toHaveBeenCalledTimes(1);
+    // The gate fired BEFORE searching: nothing was retrieved.
+    expect(search).not.toHaveBeenCalled();
+    expect(final.linkGatePending).toBe(true);
+    expect(typeof final.result).toBe("string");
+    expect(final.result as string).toContain("Before I search the **GLOBEX** knowledge base");
+    expect(final.result as string).toContain("[link your slack account](https://gw.example/link/slack)");
+    // The turn ENDED on the ask — it did not loop back to re-plan (and let the
+    // model recompose, dropping the link). planAction ran exactly once.
+    expect(actionPlanner.plan).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the gate and searches when the KB skill is already active from a prior turn", async () => {
+    const checkLinks = vi.fn();
+    const search = vi.fn().mockResolvedValue({ result: "Found 1 passage.\n\nSources:\n- [Auth](https://wiki/auth)\n" });
+    const searcher = { checkLinks, search } as unknown as KnowledgeBaseSearcher;
+    const actionPlanner: ActionPlanner = {
+      plan: vi
+        .fn()
+        .mockResolvedValueOnce({ action: "call_tool", toolId: kbSearchTool.id, toolArgs: "how is auth configured" } satisfies PlannedAction)
+        .mockResolvedValueOnce({ action: "finish" } satisfies PlannedAction),
+    };
+    const deps = kbDeps(searcher, { actionPlanner });
+    const graph = buildAgentGraph(deps);
+
+    // activeSkillId already equals the KB skill id (persisted from a prior turn),
+    // and the session subject matches the resolved identity.
+    const final = await graph.invoke({
+      request: "how is auth configured for GLOBEX?",
+      authToken: "tok",
+      activeSkillId: kbSkill.id,
+      sessionSubject: "alice",
+    });
+
+    expect(checkLinks).not.toHaveBeenCalled();
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(search).toHaveBeenCalledWith(
+      kbSearchTool,
+      "how is auth configured",
+      { subject: "alice", roles: ["reader"] },
+      1, // the turn's first citation number
+    );
+    expect(final.linkGatePending).toBeFalsy();
+  });
+});
+
+describe("buildAgentGraph — tool-approval gate (ADR 0003)", () => {
+  const approvalTool: ToolDescriptor = { ...scraperTool, approval: "always" };
+  const PROMPT = 'Approval required: run tool "recipe-scraper"? Reply "approve" or "deny".';
+  const DENIED = "Tool call was denied by the user.";
+
+  function approvalDeps(overrides: Partial<AgentGraphDeps> = {}): AgentGraphDeps {
+    const deps = baseDeps(overrides);
+    // The selected skill's toolIds resolve to the always-approval tool.
+    deps.vectorStore.getByIds = vi.fn().mockResolvedValue([{ tool: approvalTool, score: 1 }]);
+    return deps;
+  }
+
+  it("an always-approval tool returns the prompt and does NOT execute", async () => {
+    const deps = approvalDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.result).toBe(PROMPT);
+    expect(final.approvalPending?.toolId).toBe("recipe-scraper");
+    expect(final.approvalWaiting).toBe(true);
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+
+  it("a never-approval tool runs unchanged (no gate, no pause)", async () => {
+    // scraperTool declares no approval -> resolves to "never" -> today's path.
+    const deps = baseDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({ request: "extract the recipe at https://example.com/recipe", authToken: "tok" });
+
+    expect(final.approvalPending).toBeUndefined();
+    expect(final.result).toEqual({ title: "Pancakes" });
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalled();
+  });
+
+  it("approve resumes and executes the exact stored call", async () => {
+    const deps = approvalDeps({ actionPlanner: { plan: vi.fn().mockResolvedValue({ action: "finish" }) } });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "approve",
+      authToken: "tok",
+      sessionSubject: "alice",
+      approvalPending: {
+        toolId: "recipe-scraper",
+        toolArgs: "https://example.com/recipe",
+        tool: approvalTool,
+        skill,
+        skillTools: [approvalTool],
+        subject: "alice",
+      },
+    });
+
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(
+      approvalTool.jobTemplate,
+      expect.objectContaining({ args: ["https://example.com/recipe"] }),
+    );
+    expect(final.approvalPending).toBeUndefined();
+    expect(final.result).toEqual({ title: "Pancakes" });
+  });
+
+  it("deny synthesizes an approval_denied failure, does not execute, and feeds the planner", async () => {
+    const plan = vi.fn().mockResolvedValue({ action: "finish" });
+    const deps = approvalDeps({ actionPlanner: { plan } });
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "deny",
+      authToken: "tok",
+      sessionSubject: "alice",
+      approvalPending: {
+        toolId: "recipe-scraper",
+        toolArgs: "https://example.com/recipe",
+        tool: approvalTool,
+        skill,
+        skillTools: [approvalTool],
+        subject: "alice",
+      },
+    });
+
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+    expect(final.approvalPending).toBeUndefined();
+    expect(final.actionHistory.some((r) => r.result === DENIED)).toBe(true);
+    // The planner saw the denial (it reacts to the failure rather than the turn
+    // silently dropping it): history passed to plan() carries the denied record.
+    expect(plan).toHaveBeenCalled();
+    const history = plan.mock.calls[0][3] as { result: string }[];
+    expect(history.some((r) => r.result === DENIED)).toBe(true);
+  });
+
+  it("an ambiguous reply re-asks and keeps the pause in place", async () => {
+    const deps = approvalDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "hmmmm not sure",
+      authToken: "tok",
+      sessionSubject: "alice",
+      approvalPending: { toolId: "recipe-scraper", tool: approvalTool, subject: "alice" },
+    });
+
+    expect(final.result).toBe(PROMPT);
+    expect(final.approvalPending?.toolId).toBe("recipe-scraper");
+    expect(final.approvalWaiting).toBe(true);
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+});
+
+describe("buildAgentGraph sub-agent tool-approval HITL (ADR 0003 + sub-agent HITL)", () => {
+  const gatedTool: ToolDescriptor = {
+    id: "kubectl-readonly",
+    name: "kubectl-readonly",
+    description: "Runs a kubectl command.",
+    allowedRoles: ["reader"],
+    // Gated: the sub-agent's own call to it must be approved before it runs.
+    approval: "always",
+    jobTemplate: { image: "example.com/kubectl:latest", namespace: "default", serviceAccountName: "sa" },
+  };
+  const hitlAgent: AgentDescriptor = {
+    id: "ops-agent",
+    name: "ops-agent",
+    description: "Runs ops tasks via its own tools",
+    allowedRoles: ["reader"],
+    toolRefs: ["kubectl-readonly"],
+    agentRunTemplate: { namespace: "default", agentRef: "ops-agent" },
+  };
+  const PROMPT = 'Approval required: run tool "kubectl-readonly"? Reply "approve" or "deny".';
+
+  /** deps whose awaitReply simulates the sub-agent emitting the gated tool_call, then pausing for approval. */
+  function pausingDeps() {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: hitlAgent }]),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn((_runId: string, opts?: { onToolCall?: (c: { callId: string; tool: string; input: string }) => void; approvalNeeded?: Promise<SubAgentApprovalCall> }) => {
+        // The sub-agent calls its gated tool; the wired handler signals approval
+        // needed instead of resolving, which resolves `approvalNeeded`.
+        opts?.onToolCall?.({ callId: "call-1", tool: "kubectl-readonly", input: "get pods" });
+        return (opts?.approvalNeeded ?? new Promise<SubAgentApprovalCall>(() => {})).then((call) => {
+          throw new AgentTurnApprovalPendingError(call.callId, call.tool, call.input, call.expiresAt);
+        });
+      }),
+      resolveToolCall: vi.fn().mockResolvedValue(undefined),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      agentStore,
+      agentChannel,
+      agentRunLauncher,
+      toolCatalog: { getById: (id) => (id === "kubectl-readonly" ? gatedTool : undefined) },
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+      subAgentApprovalTimeoutSeconds: 600,
+    });
+  }
+
+  /** deps for a resume turn: checkActiveAgentRun reattaches and the sub-agent gives a final reply. */
+  function resumeDeps() {
+    const agentStore: AgentStore = {
+      upsert: vi.fn(),
+      query: vi.fn().mockResolvedValue([]),
+      getByIds: vi.fn().mockResolvedValue([{ agent: hitlAgent }]),
+    };
+    const agentChannel: AgentOrchestratorChannel = {
+      awaitReply: vi.fn().mockResolvedValue({ message: "pods listed", final: true, narration: [] } satisfies AgentTurnResult),
+      resolveToolCall: vi.fn().mockResolvedValue(undefined),
+      sendPrompt: vi.fn(),
+      close: vi.fn(),
+    };
+    const agentRunLauncher: AgentRunLauncherPort = {
+      launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }),
+    };
+    return baseDeps({
+      agentStore,
+      agentChannel,
+      agentRunLauncher,
+      toolCatalog: { getById: (id) => (id === "kubectl-readonly" ? gatedTool : undefined) },
+      callbackBaseUrl: "http://orchestrator",
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+  }
+
+  function resumeInput(request: string) {
+    return {
+      request,
+      authToken: "tok",
+      sessionSubject: "alice",
+      activeAgentId: "ops-agent",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+      subAgentApprovalPending: {
+        runId: "run-1",
+        callId: "call-1",
+        tool: "kubectl-readonly",
+        input: "get pods",
+        agentId: "ops-agent",
+        subject: "alice",
+        expiresAt: Date.now() + 600_000,
+      },
+    };
+  }
+
+  it("pauses the turn with the approval prompt when a sub-agent's own tool call needs approval — the call is NOT dispatched or resolved", async () => {
+    const deps = pausingDeps();
+    const final = await buildAgentGraph(deps).invoke({ request: "list the pods", authToken: "tok", forcedAgentId: "ops-agent" });
+
+    expect(final.error).toBeUndefined();
+    expect(final.subAgentApprovalWaiting).toBe(true);
+    expect(final.result).toBe(PROMPT);
+    expect(final.subAgentApprovalPending).toMatchObject({
+      callId: "call-1",
+      tool: "kubectl-readonly",
+      input: "get pods",
+      agentId: "ops-agent",
+      subject: "alice",
+      expiresAt: expect.any(Number),
+    });
+    // The run WAS launched, but the sub-agent's gated tool was neither
+    // dispatched nor answered — the pod stays blocked on its callTool promise.
+    expect(deps.agentRunLauncher!.launch).toHaveBeenCalled();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+    expect(deps.agentChannel!.resolveToolCall).not.toHaveBeenCalled();
+  });
+
+  it("APPROVE: next turn dispatches the held call, answers it with the outcome, and re-attaches to collect the reply", async () => {
+    const deps = resumeDeps();
+    const final = await buildAgentGraph(deps).invoke(resumeInput("approve"));
+
+    expect(final.error).toBeUndefined();
+    // Dispatched the EXACT held call (gate suppressed) ...
+    expect(deps.containerToolLauncher.launch).toHaveBeenCalledWith(gatedTool.jobTemplate, expect.anything());
+    // ... and handed its outcome back to the blocked sub-agent.
+    expect(deps.agentChannel!.resolveToolCall).toHaveBeenCalledWith("run-1", "call-1", {
+      ok: true,
+      result: { title: "Pancakes" },
+    });
+    // Re-attached and collected the sub-agent's follow-up reply; pause cleared.
+    expect(final.subAgentApprovalPending).toBeUndefined();
+    expect(final.result).toContain("pods listed");
+  });
+
+  it("DENY: next turn answers the held call with a failed tool_result, NEVER dispatches the tool, and re-attaches", async () => {
+    const deps = resumeDeps();
+    const final = await buildAgentGraph(deps).invoke(resumeInput("deny"));
+
+    expect(final.error).toBeUndefined();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+    const [[runId, callId, outcome]] = (deps.agentChannel!.resolveToolCall as ReturnType<typeof vi.fn>).mock.calls;
+    expect([runId, callId]).toEqual(["run-1", "call-1"]);
+    expect(outcome).toMatchObject({ ok: false, error: expect.stringContaining("approval_denied") });
+    expect(final.subAgentApprovalPending).toBeUndefined();
+    expect(final.result).toContain("pods listed");
+  });
+
+  it("AMBIGUOUS: next turn re-asks and keeps the pause, resolving nothing", async () => {
+    const deps = resumeDeps();
+    const final = await buildAgentGraph(deps).invoke(resumeInput("hmm, not sure yet"));
+
+    expect(final.error).toBeUndefined();
+    expect(final.subAgentApprovalWaiting).toBe(true);
+    expect(final.result).toBe(PROMPT);
+    expect(final.subAgentApprovalPending).toMatchObject({ callId: "call-1" });
+    expect(deps.agentChannel!.resolveToolCall).not.toHaveBeenCalled();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
 });

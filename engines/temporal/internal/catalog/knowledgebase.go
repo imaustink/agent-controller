@@ -41,14 +41,22 @@ func KnowledgeBaseFetchToolID(name string) string { return KnowledgeBaseIDPrefix
 // (ADR 0038 §5): one per knowledge base, not one per member.
 func KnowledgeBaseReadToolID(name string) string { return KnowledgeBaseIDPrefix + name + "/read" }
 
-// KnowledgeBaseLookupToolID is the LIVE search a KnowledgeBase generates.
-//
-// Named "lookup" rather than "search" on purpose. Two tools whose ids and
-// descriptions both say "search" is the near-identical-description problem
-// ADR 0039 §5 warns about, and here it would be self-inflicted: the planner
-// picks by embedding, so the one word that must differ is the verb.
+// KnowledgeBaseLookupToolID is the id the LIVE keyword search used to carry.
+// No lookup tool is generated any more — the structured query face subsumes
+// it (a lookup is a query with only keywords) — and the id is retained so
+// DeleteKnowledgeBase and re-indexing remove records written by an earlier
+// build. Its dispatch path stays so in-flight and recorded turns still run.
 func KnowledgeBaseLookupToolID(name string) string {
 	return KnowledgeBaseIDPrefix + name + "/lookup"
+}
+
+// KnowledgeBaseQueryToolID is the LIVE structured query a KnowledgeBase
+// generates: filter and sort the sources' items by metadata — keywords, title,
+// author, date range, type, newest/oldest — asked of the sources themselves.
+// The index cannot answer these: it ranks by relevance only, its metadata is
+// not queryable, and it lags by a sync interval.
+func KnowledgeBaseQueryToolID(name string) string {
+	return KnowledgeBaseIDPrefix + name + "/query"
 }
 
 // CorpusGetToolID is the id a PER-MEMBER read tool used to carry. No such tool
@@ -274,7 +282,7 @@ func DeriveKnowledgeBaseSkill(kb KnowledgeBaseDescriptor, connections map[string
 	// the lookup id left it generated, hidden and uncallable — a knowledge base
 	// that could search its index and never ask the source what was there now.
 	if readable {
-		toolIDs = append(toolIDs, KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseLookupToolID(kb.ID))
+		toolIDs = append(toolIDs, KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseQueryToolID(kb.ID))
 	}
 
 	skill := SkillDescriptor{
@@ -395,26 +403,63 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []CorpusDescripto
 		b.WriteString("\n")
 	}
 
-	fmt.Fprintf(&b, "## Answering\n\n"+
-		"1. Search with `%s`, passing the user's question. Narrow to particular\n"+
-		"   sources with its `connections` argument when the user named one.\n"+
-		"2. Answer **only** from the chunks it returns. When they do not cover the\n"+
-		"   question, say what is missing — never fill the gap from your own\n"+
-		"   knowledge, which is not this client's material and will read as though\n"+
-		"   it were.\n"+
-		"3. End every answer with a `Sources:` list, using each result's title and\n"+
-		"   URL **exactly as the search result gave them**. An uncited claim is not\n"+
-		"   an acceptable answer here.\n\n",
-		KnowledgeBaseSearchToolID(kb.ID))
+	readable := anyReadable(members)
 
-	b.WriteString("Every result you get back was checked against your caller's own access\n" +
-		"to the source at the moment you searched, and its title and URL came back\n" +
-		"from that check. So: never build a citation out of anything else. Do not\n" +
-		"construct a URL, do not reuse a title or link you saw earlier in the\n" +
-		"conversation, and do not cite a document that search did not return to\n" +
-		"you on this turn. A link is content — citing one the caller may\n" +
-		"not open discloses exactly what checking their access was meant to\n" +
-		"prevent.\n\n")
+	b.WriteString("## Answering\n\n")
+	b.WriteString("Treat this as a research task, not a single lookup. One search rarely\n" +
+		"surfaces everything; keep searching until you have enough to answer well,\n" +
+		"or have confirmed the material simply is not here.\n\n")
+	fmt.Fprintf(&b,
+		"1. Search with `%s`, passing the user's question. Narrow to particular\n"+
+			"   sources with its `connections` argument when the user named one.\n",
+		KnowledgeBaseSearchToolID(kb.ID))
+	b.WriteString("2. Read what comes back and judge whether it actually covers the\n" +
+		"   question. If it is thin, partial, or answers only part of what was\n" +
+		"   asked, **search again before answering** — rephrase, split a broad\n" +
+		"   question into parts, and reuse the specific names, systems and dates\n" +
+		"   the first results surfaced. Several focused searches beat one broad\n" +
+		"   one, and you have several tool calls to spend.\n")
+	if readable {
+		fmt.Fprintf(&b,
+			"   `%s` asks the sources directly with a **structured query**: keywords,\n"+
+				"   a title, an author, a date range, a type, sorted newest, oldest or by\n"+
+				"   relevance, optionally in one source. Use it when the question names any\n"+
+				"   of those (\"pages titled retro\", \"what Brad posted last week\", \"what\n"+
+				"   changed since September\"), or when the index looks stale or thin.\n"+
+				"   `%s` reads a full document when a passage is cut off or you need detail\n"+
+				"   a chunk leaves out.\n"+
+				"   **Passages are fragments of documents.** When the question is about\n"+
+				"   particular documents — a retro, meeting notes, a proposal, a plan, \"the\n"+
+				"   action items\" — find them, then read each one in full with `%s`,\n"+
+				"   passing the `reference:` its result shows, before you answer. Do not\n"+
+				"   summarise a document from the one or two passages that matched.\n"+
+				"   **Search cannot tell what is newest** — it ranks by relevance, not time.\n"+
+				"   For \"latest\", \"most recent\", \"what changed\" or \"what's new\" questions,\n"+
+				"   query with `\"sort\": \"newest\"` (and the source, e.g. a channel) and answer\n"+
+				"   from the dates it returns; never pick \"the latest\" from search results.\n",
+			KnowledgeBaseQueryToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseReadToolID(kb.ID))
+	}
+	b.WriteString("3. Answer **only** from what the tools returned. When they do not cover\n" +
+		"   the question, say what is missing — never fill the gap from your own\n" +
+		"   knowledge, which is not this client's material and will read as though\n" +
+		"   it were.\n" +
+		"4. **Cite inline, by number.** Every result carries a marker — `[1]`, `[2]`,\n" +
+		"   … — in its heading. Put a result's marker where you use it, and place it\n" +
+		"   where the source's name would read naturally, because it is replaced by\n" +
+		"   the source's title as a link: \"the demo runs through September, per\n" +
+		"   [3]\", or \"two engagements are active [1][4].\" Ground every claim in a\n" +
+		"   result returned this turn; an ungrounded claim is not an acceptable\n" +
+		"   answer here. A note on what the search could not see is appended\n" +
+		"   automatically.\n\n")
+
+	b.WriteString("Write ONLY the bracketed number. Every result you get back was checked\n" +
+		"against your caller's own access to the source at the moment you\n" +
+		"searched, and the link a marker becomes comes from that check — so never\n" +
+		"write a URL or a title-as-link yourself, never reuse a link you saw\n" +
+		"earlier in the conversation, and never use a number no result was given\n" +
+		"this turn (it is removed, not linked). A link is content — citing one the\n" +
+		"caller may not open discloses exactly what checking their access was\n" +
+		"meant to prevent.\n\n")
 
 	b.WriteString("## What you must admit\n\n")
 	if kb.DisclosePartialVisibility {
@@ -425,17 +470,21 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []CorpusDescripto
 			"  an incomplete one.\n")
 	}
 	b.WriteString("- A result marked **stale** is one the caller may read, but the source has\n" +
-		"  changed since it was indexed. Say the passage may be out of date; where\n" +
-		"  the member offers a `get` tool, read the live object with it and answer\n" +
-		"  from that instead.\n" +
+		"  changed since it was indexed. Say the passage may be out of date")
+	if readable {
+		fmt.Fprintf(&b, "; read the live document with `%s` and answer from that instead",
+			KnowledgeBaseReadToolID(kb.ID))
+	}
+	b.WriteString(".\n" +
 		"- When search reports sources it could not check, say so. Those are not\n" +
 		"  results that were withheld — they are results nobody could confirm\n" +
 		"  either way, so the answer may be missing evidence that exists.\n")
 
-	if anyAPIEnabled(members) {
-		b.WriteString("- Retrieval shows this material as of the last sync. When the question\n" +
-			"  is about what is true *right now*, read the live object with the\n" +
-			"  corpus's own `get` tool instead of trusting a chunk.\n")
+	if readable {
+		fmt.Fprintf(&b, "- Retrieval shows this material as of the last sync. When the question\n"+
+			"  is about what is true *right now*, read the live object with `%s` or run\n"+
+			"  a fresh query with `%s` instead of trusting a chunk.\n",
+			KnowledgeBaseReadToolID(kb.ID), KnowledgeBaseQueryToolID(kb.ID))
 	}
 
 	b.WriteString("\n## Rules\n\n" +
@@ -451,9 +500,15 @@ func knowledgeBaseMarkdown(kb KnowledgeBaseDescriptor, members []CorpusDescripto
 	return b.String()
 }
 
-func anyAPIEnabled(members []CorpusDescriptor) bool {
+// anyReadable reports whether any member can serve a live, per-user read or
+// lookup — the exact condition DeriveKnowledgeBaseSkill uses to decide whether
+// the `read`/`lookup` tools are generated. The prompt must gate its live-face
+// guidance on the SAME condition: naming those tools when APIEnabled is set but
+// no identity provider is configured would tell the planner to call a tool it
+// was never given.
+func anyReadable(members []CorpusDescriptor) bool {
 	for _, member := range members {
-		if member.APIEnabled {
+		if member.APIEnabled && len(member.IdentityProviders) > 0 {
 			return true
 		}
 	}

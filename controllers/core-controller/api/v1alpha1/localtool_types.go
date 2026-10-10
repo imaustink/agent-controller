@@ -59,6 +59,15 @@ type LocalToolSpec struct {
 	// +optional
 	Tier string `json:"tier,omitempty"`
 
+	// approval sets whether a human must approve each call to this LocalTool
+	// before it executes (ADR 0003). "never" (and the empty default) runs
+	// silently; "always" pauses the turn for approval; "auto" consults an
+	// optional evaluator and escalates to a human when unsure. Empty means
+	// "never".
+	// +optional
+	// +kubebuilder:validation:Enum=never;always;auto
+	Approval string `json:"approval,omitempty"`
+
 	// runtime selects which executor sidecar runs this tool. Each runtime
 	// resolves `package`/`version` (or `sourceURL`/`checksum` for shell)
 	// against its own registry and toolchain.

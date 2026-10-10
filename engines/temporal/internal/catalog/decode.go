@@ -16,23 +16,26 @@ type toolSpec struct {
 	Output            string   `json:"output"`
 	AllowedRoles      []string `json:"allowedRoles"`
 	Tier              string   `json:"tier,omitempty"`
+	Approval          string   `json:"approval,omitempty"`
 	AgentRef          string   `json:"agentRef,omitempty"`
 	IdentityProviders []string `json:"identityProviders,omitempty"`
 }
 
 type agentSpec struct {
-	Description        string   `json:"description"`
-	Input              string   `json:"input"`
-	Output             string   `json:"output"`
-	AllowedRoles       []string `json:"allowedRoles"`
-	Tier               string   `json:"tier,omitempty"`
-	OrchestratorPrompt string   `json:"orchestratorPrompt,omitempty"`
-	AgentPrompt        string   `json:"agentPrompt,omitempty"`
-	SkillRefs          []string `json:"skillRefs,omitempty"`
-	Model              string   `json:"model,omitempty"`
-	MaxIterations      int32    `json:"maxIterations,omitempty"`
-	IdentityProviders  []string `json:"identityProviders,omitempty"`
-	ToolRefs           []string `json:"toolRefs,omitempty"`
+	Description            string   `json:"description"`
+	Input                  string   `json:"input"`
+	Output                 string   `json:"output"`
+	AllowedRoles           []string `json:"allowedRoles"`
+	Tier                   string   `json:"tier,omitempty"`
+	ApprovalDefault        string   `json:"approvalDefault,omitempty"`
+	ApprovalTimeoutSeconds int32    `json:"approvalTimeoutSeconds,omitempty"`
+	OrchestratorPrompt     string   `json:"orchestratorPrompt,omitempty"`
+	AgentPrompt            string   `json:"agentPrompt,omitempty"`
+	SkillRefs              []string `json:"skillRefs,omitempty"`
+	Model                  string   `json:"model,omitempty"`
+	MaxIterations          int32    `json:"maxIterations,omitempty"`
+	IdentityProviders      []string `json:"identityProviders,omitempty"`
+	ToolRefs               []string `json:"toolRefs,omitempty"`
 }
 
 type envVarSpec struct {
@@ -57,6 +60,7 @@ type localToolSpec struct {
 	Output         string             `json:"output"`
 	AllowedRoles   []string           `json:"allowedRoles"`
 	Tier           string             `json:"tier,omitempty"`
+	Approval       string             `json:"approval,omitempty"`
 	Runtime        string             `json:"runtime"`
 	Package        string             `json:"package,omitempty"`
 	Version        string             `json:"version,omitempty"`
@@ -67,6 +71,21 @@ type localToolSpec struct {
 	SecretEnv      []secretEnvVarSpec `json:"secretEnv,omitempty"`
 	Network        bool               `json:"network,omitempty"`
 	TimeoutSeconds int32              `json:"timeoutSeconds,omitempty"`
+}
+
+// mcpToolSpec mirrors controllers/core-controller/api/v1alpha1.MCPToolSpec
+// (ADR 0045) — catalog fields plus the proxy coordinates the engine forwards to
+// the mcp-broker. These objects are broker-written and owned by an MCPServer.
+type mcpToolSpec struct {
+	ServerRef         string   `json:"serverRef"`
+	RemoteToolName    string   `json:"remoteToolName"`
+	Description       string   `json:"description"`
+	InputSchema       string   `json:"inputSchema,omitempty"`
+	AllowedRoles      []string `json:"allowedRoles"`
+	Hidden            bool     `json:"hidden,omitempty"`
+	Tier              string   `json:"tier,omitempty"`
+	Approval          string   `json:"approval,omitempty"`
+	IdentityProviders []string `json:"identityProviders,omitempty"`
 }
 
 type skillSpec struct {
@@ -99,6 +118,7 @@ func DecodeTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 		Output:            spec.Output,
 		AllowedRoles:      spec.AllowedRoles,
 		Tier:              spec.Tier,
+		Approval:          spec.Approval,
 		AgentRef:          spec.AgentRef,
 		IdentityProviders: spec.IdentityProviders,
 	}, nil
@@ -133,6 +153,7 @@ func DecodeLocalTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 		Output:       spec.Output,
 		AllowedRoles: spec.AllowedRoles,
 		Tier:         spec.Tier,
+		Approval:     spec.Approval,
 		LocalExec: &LocalExecSpec{
 			Runtime:        spec.Runtime,
 			Package:        spec.Package,
@@ -148,27 +169,62 @@ func DecodeLocalTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 	}, nil
 }
 
+// DecodeMCPTool reads an MCPTool CR (ADR 0045) into the same ToolDescriptor
+// shape every other tool kind produces, so a skill's toolRefs reference it
+// transparently — MCPExec is the marker that distinguishes it, as LocalExec
+// marks a LocalTool and AgentRef an agent-backed Tool. The IdentityProviders it
+// carries are resolved into the caller's own delegated token at dispatch, never
+// baked in here.
+func DecodeMCPTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
+	var spec mcpToolSpec
+	if err := decodeSpec(obj, &spec); err != nil {
+		return ToolDescriptor{}, err
+	}
+	return ToolDescriptor{
+		ID:          obj.GetName(),
+		Description: spec.Description,
+		// Input carries the schema so EmbeddingText() vectorizes
+		// "description\n\nInput: <schema>" — byte-identical to the text the TS
+		// engine embeds (toMCPToolDescriptor folds inputSchema into the embedded
+		// description), so the same MCPTool CR ranks the same in retrieval on
+		// either engine (ADR 0045 §2).
+		Input:             spec.InputSchema,
+		AllowedRoles:      spec.AllowedRoles,
+		Tier:              spec.Tier,
+		Approval:          spec.Approval,
+		Hidden:            spec.Hidden,
+		IdentityProviders: spec.IdentityProviders,
+		MCPExec: &MCPExecSpec{
+			ServerRef:      spec.ServerRef,
+			RemoteToolName: spec.RemoteToolName,
+			InputSchema:    spec.InputSchema,
+		},
+	}, nil
+}
+
 func DecodeAgent(obj *unstructured.Unstructured) (AgentDescriptor, error) {
 	var spec agentSpec
 	if err := decodeSpec(obj, &spec); err != nil {
 		return AgentDescriptor{}, err
 	}
 	return AgentDescriptor{
-		ID:                 obj.GetName(),
-		StepToolRef:        obj.GetAnnotations()[StepToolAnnotation],
-		Bridged:            obj.GetAnnotations()[BridgedAnnotation] == "true",
-		Description:        spec.Description,
-		Input:              spec.Input,
-		Output:             spec.Output,
-		AllowedRoles:       spec.AllowedRoles,
-		Tier:               spec.Tier,
-		OrchestratorPrompt: spec.OrchestratorPrompt,
-		AgentPrompt:        spec.AgentPrompt,
-		SkillRefs:          spec.SkillRefs,
-		Model:              spec.Model,
-		MaxIterations:      spec.MaxIterations,
-		IdentityProviders:  spec.IdentityProviders,
-		ToolRefs:           spec.ToolRefs,
+		ID:                     obj.GetName(),
+		StepToolRef:            obj.GetAnnotations()[StepToolAnnotation],
+		Bridged:                obj.GetAnnotations()[BridgedAnnotation] == "true",
+		Description:            spec.Description,
+		Input:                  spec.Input,
+		Output:                 spec.Output,
+		AllowedRoles:           spec.AllowedRoles,
+		Tier:                   spec.Tier,
+		ApprovalDefault:        spec.ApprovalDefault,
+		ApprovalTimeoutSeconds: spec.ApprovalTimeoutSeconds,
+		OrchestratorPrompt:     spec.OrchestratorPrompt,
+		AgentPrompt:            spec.AgentPrompt,
+		SkillRefs:              spec.SkillRefs,
+		Model:                  spec.Model,
+		MaxIterations:          spec.MaxIterations,
+		IdentityProviders:      spec.IdentityProviders,
+		ToolRefs:               spec.ToolRefs,
 	}, nil
 }
 

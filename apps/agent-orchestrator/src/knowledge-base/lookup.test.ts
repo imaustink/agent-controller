@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CorpusLookup } from "./lookup.js";
+import { CorpusLookup, refusalNote } from "./lookup.js";
 import type { ToolDescriptor } from "../tool-descriptor.js";
 
 const tool = {
@@ -56,6 +56,27 @@ const status = (code: number) =>
   ({ ok: false, status: code, json: async () => ({}), text: async () => "" }) as Response;
 
 describe("lookup", () => {
+  // Live hits are citable inline like indexed passages: numbered on from the
+  // turn's earlier results, and returned as sources the answer's [n] markers
+  // are linked against. PARITY: TestLookupNumbersHitsFromTheTurnsNextCitation.
+  it("numbers hits from the turn's next citation", async () => {
+    const http = vi.fn(async () =>
+      hits(
+        { id: "1", title: "Runbook", url: "https://wiki/1" },
+        { id: "2", title: "Postmortem", url: "https://wiki/2" },
+      ),
+    );
+
+    const result = await lookup(http as unknown as typeof fetch).lookup(tool, "deploy", READER, 5);
+
+    expect(result.result).toContain("- [5] Runbook");
+    expect(result.result).toContain("- [6] Postmortem");
+    expect(result.sources).toEqual([
+      { n: 5, title: "Runbook", url: "https://wiki/1" },
+      { n: 6, title: "Postmortem", url: "https://wiki/2" },
+    ]);
+  });
+
   it("asks every member the caller may reach, and cites readable references", async () => {
     const http = vi.fn(async (url: string) =>
       url.includes("globex-confluence")
@@ -178,5 +199,27 @@ describe("lookup", () => {
     await expect(
       lookup(vi.fn() as unknown as typeof fetch).lookup(bare, "q", READER),
     ).rejects.toThrow(/not a knowledge-base lookup/);
+  });
+});
+
+// A refused source carries the broker's reason, not just a status: the broker
+// maps a source's non-denial failure to 503, so a bare "refused (503)" read the
+// same for an outage and for a token missing `search:confluence`.
+describe("refusalNote", () => {
+  it("carries the broker's reason", () => {
+    expect(refusalNote(503, '{"error":"confluence returned 401: scope does not match"}')).toBe(
+      "refused (503): confluence returned 401: scope does not match",
+    );
+  });
+
+  it("falls back to the bare status when there is no reason", () => {
+    expect(refusalNote(503, "")).toBe("refused (503)");
+    expect(refusalNote(502, "<html>bad gateway</html>")).toBe("refused (502)");
+  });
+
+  it("bounds a long reason", () => {
+    const note = refusalNote(503, JSON.stringify({ error: "x".repeat(500) }));
+    expect(note.length).toBeLessThan(230);
+    expect(note.endsWith("…")).toBe(true);
   });
 });

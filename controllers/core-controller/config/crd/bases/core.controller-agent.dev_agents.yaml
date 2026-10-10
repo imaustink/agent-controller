@@ -53,6 +53,27 @@ spec:
                   type: string
                 minItems: 1
                 type: array
+              approvalDefault:
+                description: |-
+                  approvalDefault is the fallback tool-approval policy (ADR 0003) for tools
+                  this agent calls that do not set their own `approval`. "never" (and the
+                  empty default) runs tools silently; "always" requires human approval;
+                  "auto" consults an optional evaluator. A tool's own `approval` always wins
+                  over this default (most-specific-wins).
+                enum:
+                - never
+                - always
+                - auto
+                type: string
+              approvalTimeoutSeconds:
+                description: |-
+                  approvalTimeoutSeconds bounds how long this agent's tool calls wait for a
+                  human approval decision (ADR 0003) before degrading gracefully — a timed-out
+                  approval becomes a failed tool result the agent reasons over, never a hang.
+                  Zero (unset) uses the engine default (15 minutes).
+                format: int32
+                minimum: 1
+                type: integer
               description:
                 description: description is fed to the orchestrator's embedder for
                   RAG retrieval.

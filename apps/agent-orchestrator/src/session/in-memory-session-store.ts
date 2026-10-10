@@ -1,3 +1,4 @@
+import type { SubAgentApprovalPending } from "../agent/graph.js";
 import type { SessionRecord, SessionStore } from "./types.js";
 
 export interface InMemorySessionStoreOptions {
@@ -46,5 +47,17 @@ export class InMemorySessionStore implements SessionStore {
       this.sessions.delete(oldest);
     }
     return Promise.resolve();
+  }
+
+  /** Scans the map for sessions holding a sub-agent-approval pause (index.ts sweeper). */
+  listSubAgentApprovals(): Promise<Array<{ sessionId: string; pending: SubAgentApprovalPending }>> {
+    const out: Array<{ sessionId: string; pending: SubAgentApprovalPending }> = [];
+    for (const [sessionId, record] of this.sessions) {
+      // Skip TTL-expired records: they'd be dropped on next `get` anyway, and a
+      // timed-out session has no live run worth resolving a tool call against.
+      if (this.now() - record.updatedAt > this.opts.ttlMs) continue;
+      if (record.subAgentApprovalPending) out.push({ sessionId, pending: record.subAgentApprovalPending });
+    }
+    return Promise.resolve(out);
   }
 }

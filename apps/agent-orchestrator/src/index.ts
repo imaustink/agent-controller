@@ -7,6 +7,7 @@ import { ToolRunLauncher } from "./k8s/toolrun-launcher.js";
 import { LocalToolExecutor, K8sSecretReader } from "./local/local-tool-executor.js";
 import { CrdToolRegistry } from "./registry/crd-tool-registry.js";
 import { CrdLocalToolRegistry } from "./registry/crd-local-tool-registry.js";
+import { CrdMCPToolRegistry } from "./registry/crd-mcp-tool-registry.js";
 import { loadStaticIdentitiesFromEnv, StaticIdentityResolver } from "./rbac/static-identity-resolver.js";
 import { OidcIdentityResolver } from "./rbac/oidc-identity-resolver.js";
 import { CompositeIdentityResolver } from "./rbac/composite-identity-resolver.js";
@@ -41,9 +42,11 @@ import { ClaudeAuthGatewayClient } from "./identity-link/claude-auth-gateway-cli
 import { ClaudeRemoteGatewayClient } from "./identity-link/claude-remote-gateway-client.js";
 import { OpenAiEmbedder } from "./vector-store/openai-embedder.js";
 import { CorpusLookup } from "./knowledge-base/lookup.js";
+import { CorpusQuery } from "./knowledge-base/query.js";
 import { CorpusReader } from "./knowledge-base/reader.js";
 import { KnowledgeBaseSearcher } from "./knowledge-base/searcher.js";
 import { LinkedCredentials } from "./knowledge-base/linked-credentials.js";
+import { MCPBrokerClient } from "./mcp/mcp-broker-client.js";
 import { QdrantCorpusStore } from "./knowledge-base/qdrant-corpus-store.js";
 import { QdrantToolStore } from "./vector-store/qdrant-store.js";
 import { QdrantCallerToolStore } from "./caller-tools/qdrant-caller-tool-store.js";
@@ -64,7 +67,11 @@ import { RedisInvocationStore } from "./invocation/redis-invocation-store.js";
 import { InMemoryAgentReplyStore, RedisAgentReplyStore, type AgentReplyStore } from "./agents/reply-store.js";
 import { InMemoryInvocationStore, type InvocationStore } from "./invocation/types.js";
 import type { SessionStore } from "./session/types.js";
-import { clearAgentRunAwaitingReply, markAgentRunAwaitingReply } from "./session/inflight-agent-run.js";
+import {
+  clearAgentRunAwaitingReply,
+  markAgentRunAwaitingReply,
+  sweepExpiredSubAgentApprovals,
+} from "./session/inflight-agent-run.js";
 import { InvokeServer, type AgentGraphLike } from "./server.js";
 import { retryWithBackoff } from "./retry.js";
 import type { ToolDescriptor } from "./tool-descriptor.js";
@@ -159,6 +166,17 @@ async function main(): Promise<void> {
     config.crdVersion,
     kubeConfig,
   );
+  // MCPTools (ADR 0045): remote Model Context Protocol tools the mcp-broker
+  // materialized into catalog records, dispatched by relaying one tools/call
+  // through the broker instead of a Job/sidecar. Unioned with the catalog below
+  // so skills reference them transparently and the RBAC retrieval filter applies
+  // for free. Gated (config.mcpEnabled), mirroring the Go engine's
+  // AGENT_MCP_ENABLED watch gate: a materialized MCPTool carries only an mcpExec,
+  // so indexing one before the broker exists lets the planner pick a tool it
+  // cannot dispatch.
+  const mcpToolRegistry = config.mcpEnabled
+    ? CrdMCPToolRegistry.fromKubeConfig(config.namespace, config.crdGroup, config.crdVersion, kubeConfig)
+    : undefined;
   // callbackSecretRefName is only used by ToolRunLauncher's HTTP callback
   // path -- when NATS is configured it's never embedded into ToolRun CRs.
   // Passing an empty string as a safe sentinel is fine: if a NATS ToolRun
@@ -215,9 +233,10 @@ async function main(): Promise<void> {
   // (ADR 0020, wired up below) instead of only refreshing on restart.
   const tools = await registry.listAll();
   const localTools = await localToolRegistry.listAll();
-  // One RAG index over both kinds; getByIds/query return whichever descriptor
-  // shape (jobTemplate vs localExec) the tool was registered with.
-  const allTools = [...tools, ...localTools];
+  const mcpTools = mcpToolRegistry ? await mcpToolRegistry.listAll() : [];
+  // One RAG index over every kind; getByIds/query return whichever descriptor
+  // shape (jobTemplate vs localExec vs mcpExec) the tool was registered with.
+  const allTools = [...tools, ...localTools, ...mcpTools];
   await vectorStore.upsert(allTools);
 
   // In-memory mirror of the tool catalog, kept current by the watches below
@@ -355,6 +374,11 @@ async function main(): Promise<void> {
   const toolWatch = registry.watch(handleToolChange, (err) => console.error("Tool watch error:", err));
   const localToolWatch = localToolRegistry.watch(handleToolChange, (err) =>
     console.error("LocalTool watch error:", err),
+  );
+  // Same live-catalog path as Tools/LocalTools (ADR 0020): a broker-written
+  // MCPTool created/edited/deleted after startup takes effect immediately.
+  const mcpToolWatch = mcpToolRegistry?.watch(handleToolChange, (err) =>
+    console.error("MCPTool watch error:", err),
   );
   const skillWatch = skillRegistry.watch(
     (event) => {
@@ -756,6 +780,40 @@ async function main(): Promise<void> {
         })
       : undefined;
 
+  const corpusQuery =
+    config.knowledgeBasesEnabled && config.connectionBrokerUrl && identityLinkGateway
+      ? new CorpusQuery({
+          brokerUrl: config.connectionBrokerUrl,
+          brokerToken: config.connectionBrokerToken ?? "",
+          credentials: new LinkedCredentials(identityLinkGateway),
+        })
+      : undefined;
+
+  // MCP tool dispatch (ADR 0045): proxies one tools/call through the mcp-broker
+  // under the caller's own delegated token. Built only when there is a broker to
+  // talk to — and, like the knowledge-base faces, it needs the identity-link
+  // gateway to resolve that per-user credential (fail-closed §5), reusing the
+  // same LinkedCredentials path. Dispatch is gated on the broker URL exactly as
+  // the Go engine gates it on MCP_BROKER_URL.
+  const mcpBrokerClient =
+    config.mcpBrokerUrl && identityLinkGateway
+      ? new MCPBrokerClient({
+          brokerUrl: config.mcpBrokerUrl,
+          brokerToken: config.mcpBrokerToken ?? "",
+          credentials: new LinkedCredentials(identityLinkGateway),
+        })
+      : undefined;
+
+  if (config.mcpEnabled && !mcpBrokerClient) {
+    // Not fatal — a deployment may index without dispatching — but worth saying,
+    // because the symptom is otherwise an MCP tool the planner can select and
+    // then cannot run.
+    console.error(
+      "WARNING: MCP tools are enabled but AGENT_MCP_BROKER_URL or the identity-link " +
+        "gateway is unset, so no MCP tool can be dispatched.",
+    );
+  }
+
   if (config.knowledgeBasesEnabled && !knowledgeBaseSearcher) {
     // Not fatal — a deployment may index without serving — but worth saying,
     // because the symptom is otherwise a knowledge base that fills up fine and
@@ -796,6 +854,8 @@ async function main(): Promise<void> {
     ...(knowledgeBaseSearcher ? { knowledgeBaseSearcher } : {}),
     ...(corpusReader ? { corpusReader } : {}),
     ...(corpusLookup ? { corpusLookup } : {}),
+    ...(corpusQuery ? { corpusQuery } : {}),
+    ...(mcpBrokerClient ? { mcpBrokerClient } : {}),
     ...(claudeAuthGateway ? { claudeAuthGateway } : {}),
     ...(claudeRemoteGateway ? { claudeRemoteGateway } : {}),
     // Same client, passed a second time under its non-IdentityLinkPort
@@ -813,6 +873,7 @@ async function main(): Promise<void> {
           agentTopK: config.agentTopK,
           agentRunTimeoutSeconds: config.agentRunTimeoutSeconds,
           agentIdleTimeoutSeconds: config.agentIdleTimeoutSeconds,
+          subAgentApprovalTimeoutSeconds: config.subAgentApprovalTimeoutSeconds,
           // Resume anchor for an agent turn whose wait is interrupted (a
           // rollout, a lost NATS channel): written before the wait, read by the
           // next turn's `checkActiveAgentRun` to re-attach instead of failing a
@@ -856,6 +917,28 @@ async function main(): Promise<void> {
     config.callerToolPruneIntervalSeconds * 1_000,
   );
   callerToolPruneTimer.unref();
+
+  // Sub-agent approval timeout sweeper (ADR 0003 + sub-agent HITL). A sub-agent
+  // that paused on a gated tool call is blocked on the orchestrator's unresolved
+  // `tool_result` across turns; if nobody ever approves/denies, this bounds the
+  // hold. Each tick resolves every expired pause with a FAILED `tool_result`
+  // (graceful degradation — the pod keeps reasoning, never a hard kill) and
+  // clears the pause, LEAVING the active-run anchor so the next user turn
+  // re-attaches and collects whatever reply the sub-agent produces. Always on
+  // but inert unless agent delegation, a scannable session store, and a channel
+  // that can answer calls are all present. `unref()` so an idle timer never
+  // holds the process open; cleared explicitly at shutdown below.
+  const subAgentApprovalChannel = agentDelegation?.agentChannel;
+  const subAgentApprovalSweepTimer = setInterval(
+    () => {
+      if (!subAgentApprovalChannel) return;
+      void sweepExpiredSubAgentApprovals(sessionStore, subAgentApprovalChannel).catch((err: unknown) =>
+        console.warn("sub-agent approval sweep failed:", err),
+      );
+    },
+    config.subAgentApprovalSweepIntervalSeconds * 1_000,
+  );
+  subAgentApprovalSweepTimer.unref();
 
   // Which agent loop runs a turn (docs/adr/0036). `langgraph` is the default,
   // so enabling the engine is always an explicit act and this whole block is
@@ -927,6 +1010,7 @@ async function main(): Promise<void> {
     // watch error.
     toolWatch.stop();
     localToolWatch.stop();
+    mcpToolWatch?.stop();
     skillWatch.stop();
     connectionWatch?.stop();
     knowledgeBaseWatch?.stop();
@@ -935,6 +1019,7 @@ async function main(): Promise<void> {
     identityProviderWatch.stop();
     if (skillReindexTimer) clearTimeout(skillReindexTimer);
     clearInterval(callerToolPruneTimer);
+    clearInterval(subAgentApprovalSweepTimer);
 
     // Refuse NEW turns first. Durable invocation records make an answer
     // retrievable from any replica; they do not make a turn whose graph died

@@ -64,12 +64,66 @@ describe("QdrantToolStore", () => {
             jobTemplate: tool.jobTemplate,
             localExec: null,
             agentRunTemplate: null,
+            mcpExec: null,
+            identityProviders: null,
             tier: null,
           },
         },
       ],
       wait: true,
     });
+  });
+
+  it("round-trips an MCP tool's mcpExec + identityProviders through upsert and query (so a retrieved MCP tool can be dispatched and fails closed)", async () => {
+    const mcpTool: ToolDescriptor = {
+      id: "mcp:github/create_issue",
+      name: "mcp:github/create_issue",
+      description: "Opens a GitHub issue",
+      allowedRoles: ["writer"],
+      identityProviders: ["github"],
+      mcpExec: { serverRef: "github", remoteToolName: "create_issue", inputSchema: '{"type":"object"}' },
+    };
+    const client = {
+      upsert: vi.fn().mockResolvedValue(true),
+      search: vi.fn().mockResolvedValue([
+        {
+          id: toQdrantPointId("mcp:github/create_issue"),
+          score: 0.88,
+          payload: {
+            id: "mcp:github/create_issue",
+            name: "mcp:github/create_issue",
+            description: mcpTool.description,
+            allowedRoles: ["writer"],
+            jobTemplate: null,
+            localExec: null,
+            agentRunTemplate: null,
+            mcpExec: mcpTool.mcpExec,
+            identityProviders: ["github"],
+            tier: null,
+          },
+        },
+      ]),
+    } as unknown as QdrantClient;
+    const store = new QdrantToolStore({ url: "http://q", collection: "tools", vectorSize: 3 }, fakeEmbedder(), client);
+
+    await store.upsert([mcpTool]);
+    expect(client.upsert).toHaveBeenCalledWith(
+      "tools",
+      expect.objectContaining({
+        points: [
+          expect.objectContaining({
+            payload: expect.objectContaining({ mcpExec: mcpTool.mcpExec, identityProviders: ["github"] }),
+          }),
+        ],
+      }),
+    );
+
+    const results = await store.query("open an issue", { callerRoles: ["writer"] });
+    expect(results).toEqual([{ tool: { ...mcpTool, hidden: false }, score: 0.88 }]);
+    // Without these surviving retrieval, dispatch would lose the server/tool
+    // coordinates and the identity requirement the broker call fails closed on.
+    expect(results[0]!.tool.mcpExec).toEqual({ serverRef: "github", remoteToolName: "create_issue", inputSchema: '{"type":"object"}' });
+    expect(results[0]!.tool.identityProviders).toEqual(["github"]);
   });
 
   it("round-trips an agent-backed tool's agentRunTemplate through upsert and query (regression: this field was silently dropped before)", async () => {

@@ -115,6 +115,22 @@ spec:
                   name: {{ .Values.knowledgeBases.brokerTokenSecret.name }}
                   key: {{ .Values.knowledgeBases.brokerTokenSecret.key }}
             {{- end }}
+            {{- if .Values.mcp.enabled }}
+            # MCP tools (docs/adr/0045). The worker registers its RunMCPTool
+            # activity only when the broker URL is set, and logs that it has
+            # disabled it otherwise — so a worker never told about the mcp-broker
+            # fails every MCP tool call with an unregistered activity rather than
+            # anything that names the cause. The token is this engine's gate to
+            # the broker, distinct from the per-user delegated token it forwards
+            # per call (ADR 0045 §5).
+            - name: MCP_BROKER_URL
+              value: {{ .Values.mcp.brokerUrl | quote }}
+            - name: MCP_BROKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mcp.brokerTokenSecret.name }}
+                  key: {{ .Values.mcp.brokerTokenSecret.key }}
+            {{- end }}
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:

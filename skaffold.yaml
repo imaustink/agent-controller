@@ -183,6 +183,18 @@ profiles:
         - image: connection-broker
           docker:
             dockerfile: apps/connection-broker/Dockerfile
+        # values-e2e.yaml turns the mcp-broker on so the MCP specs can discover
+        # and call the fake MCP server below; an unbuilt image would sit in
+        # ImagePullBackOff until up.sh times out (ADR 0045).
+        - image: mcp-broker
+          docker:
+            dockerfile: apps/mcp-broker/Dockerfile
+        # The in-cluster MCP server the mcp-broker discovers and proxies to —
+        # the only MCP stub, deterministic, built here so skaffold rewrites its
+        # image in the community-components fixture.
+        - image: fake-mcp-server
+          docker:
+            dockerfile: apps/fake-mcp-server/Dockerfile
         - image: opencode-swe-agent
           docker:
             dockerfile: apps/opencode-swe-agent/Dockerfile
@@ -299,6 +311,15 @@ profiles:
               integration-gateway.image.tag: "{{.IMAGE_TAG_integration_gateway}}"
               connection-broker.image.repository: "{{.IMAGE_REPO_connection_broker}}"
               connection-broker.image.tag: "{{.IMAGE_TAG_connection_broker}}"
+              # The chart defaults connection-broker to pullPolicy Always (its
+              # production :latest tag needs freshness). skaffold builds a local,
+              # digest-tagged image that exists only in minikube's runtime and in
+              # no registry, so Always makes the kubelet try to pull it and fail
+              # ("can't be pulled"). Every other image here is IfNotPresent by
+              # default; override the broker to match for the e2e/minikube path.
+              connection-broker.image.pullPolicy: "IfNotPresent"
+              mcp-broker.image.repository: "{{.IMAGE_REPO_mcp_broker}}"
+              mcp-broker.image.tag: "{{.IMAGE_TAG_mcp_broker}}"
               temporal-engine.worker.image.repository: "{{.IMAGE_REPO_temporal_engine_worker}}"
               temporal-engine.worker.image.tag: "{{.IMAGE_TAG_temporal_engine_worker}}"
               temporal-engine.gateway.image.repository: "{{.IMAGE_REPO_temporal_engine_gateway}}"
@@ -332,6 +353,7 @@ profiles:
             setValueTemplates:
               stubAgent.image: "{{.IMAGE_FULLY_QUALIFIED_stub_agent}}"
               stubSweAgent.image: "{{.IMAGE_FULLY_QUALIFIED_stub_agent}}"
+              fakeMcpServer.image: "{{.IMAGE_FULLY_QUALIFIED_fake_mcp_server}}"
               claudeCodeSweAgent.image: "{{.IMAGE_FULLY_QUALIFIED_claude_code_swe_agent}}"
               recipeScraper.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_scraper}}"
               recipePublisher.image: "{{.IMAGE_FULLY_QUALIFIED_recipe_publisher}}"

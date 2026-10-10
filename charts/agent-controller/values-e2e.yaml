@@ -29,6 +29,16 @@ temporal-engine:
     brokerTokenSecret:
       name: e2e-connection-broker-secrets
       key: orchestratorToken
+  # MCP tools (docs/adr/0045), dispatched through the mcp-broker. On both engines
+  # for the same parity reason as knowledge bases above — a tool call proven on
+  # one engine and unwired on the other is exactly the asymmetry this suite
+  # catches. catalog-sync indexes MCPTools, the worker dispatches them.
+  mcp:
+    enabled: true
+    brokerUrl: "http://agent-controller-mcp-broker:8080"
+    brokerTokenSecret:
+      name: e2e-mcp-broker-secrets
+      key: orchestratorToken
   # Points the worker/gateway at `e2e/manifests/temporal-dev-server.yaml`
   # (applied by `e2e/scripts/up.sh` before this release is deployed) instead of
   # the production default (a real `temporalio/helm-charts` release's frontend
@@ -148,6 +158,16 @@ integration-gateway:
   # The whole point of this overlay. Off in every other profile.
   enabled: true
 
+  # Fast trigger-label reconciler timing for the e2e suite: production defaults
+  # are a 10m grace + 5m sweep interval (label-reconciler.ts), so a stranded
+  # label would take ~15m to self-heal — far longer than label-durability.e2e.ts
+  # can wait. Shrink both to seconds so the durable-self-heal spec completes.
+  extraEnv:
+    - name: GATEWAY_LABEL_RECONCILER_INTERVAL_MS
+      value: "5000"
+    - name: GATEWAY_LABEL_RECONCILER_GRACE_MS
+      value: "5000"
+
   config:
     # Redirects ALL GitHub REST traffic at the in-cluster stub
     # (e2e/manifests/fake-github.yaml), which both serves deterministic
@@ -207,7 +227,17 @@ integration-gateway:
     # which reads as a keying bug and is not one. A short window lets an
     # abandoned turn release the relay promptly.
     pollIntervalMs: 2000
-    pollTimeoutMs: 90000
+    # 90s was tuned to the maintainer's (fast) hardware; on a slower minikube
+    # (e.g. minikube-on-Mac) a rollout-recovery turn's re-attach + reply re-offer
+    # legitimately takes longer than 90s, so resilience.e2e.ts's "recovers the
+    # reply after a rollout" spec would see the gateway give up before recovery
+    # landed. Raised to give that recovery headroom on slower boxes. This only
+    # lengthens how long an ABANDONED turn holds the relay before the gateway
+    # gives up (parked-turn relay release is a separate knob, waitAndResume), and
+    # it is e2e-only: production keeps pollTimeoutMs at 900000. Keep the resilience
+    # spec's GATEWAY_POLL_BUDGET_MS and its "fabricate a timeout" commentOn wait in
+    # step with this value.
+    pollTimeoutMs: 240000
 
     # The OTHER hold, and the one that actually starved this suite.
     #
@@ -311,6 +341,14 @@ agent-orchestrator:
     brokerTokenSecret:
       name: e2e-connection-broker-secrets
       key: orchestratorToken
+  # MCP tools (docs/adr/0045), dispatched through the mcp-broker. See the
+  # temporal-engine.mcp note above — both engines, for parity.
+  mcp:
+    enabled: true
+    brokerUrl: "http://agent-controller-mcp-broker:8080"
+    brokerTokenSecret:
+      name: e2e-mcp-broker-secrets
+      key: orchestratorToken
   # The orchestrator's CLIENT side of the identity-link channel. Enabling it
   # only on the gateway (the server side) leaves the orchestrator with no
   # gateway configured at all -- `hasIdentityLinkGateway: false` in its
@@ -377,8 +415,31 @@ core-controller:
 # Both engines are told where the broker is. ADR 0036 keeps them in parity, so
 # a knowledge-base behaviour proven on one engine and never wired on the other
 # is exactly the asymmetry this suite exists to catch.
+# The MCP broker (apps/mcp-broker, docs/adr/0045): discovers the fake MCP
+# server's tools into MCPTool CRs and proxies tools/call under the caller's
+# delegated token. The MCPServer CR that points it at the fake server is applied
+# per-test by e2e/specs/mcp-crd.e2e.ts.
+mcp-broker:
+  enabled: true
+  image:
+    # The subchart defaults to Always (correct for the mutable :latest in prod),
+    # but skaffold builds a local-only SHA tag into minikube's docker, which
+    # Always then tries — and fails — to pull from a registry. Use the local
+    # image in e2e. (connection-broker carries the same prod default and needs
+    # the same override once its image is rebuilt here.)
+    pullPolicy: IfNotPresent
+  orchestratorTokenSecret:
+    name: e2e-mcp-broker-secrets
+    key: orchestratorToken
+
 connection-broker:
   enabled: true
+  image:
+    # Same reason as mcp-broker above: the subchart defaults to Always (right for
+    # the mutable :latest in prod), but skaffold builds a local-only SHA tag that
+    # Always then fails to pull. This surfaced once the new mcp workspaces changed
+    # package-lock.json and forced a connection-broker rebuild to a fresh tag.
+    pullPolicy: IfNotPresent
   qdrant:
     url: "http://agent-controller-qdrant:6333"
   # Pointed at the in-cluster stand-in (e2e/manifests/fake-confluence.yaml),

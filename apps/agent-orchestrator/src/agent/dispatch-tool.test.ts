@@ -32,6 +32,19 @@ const agentBackedTool: ToolDescriptor = {
   agentRunTemplate: { namespace: "default", agentRef: "opencode-swe-agent" },
 };
 
+const mcpTool: ToolDescriptor = {
+  id: "mcp:github/create_issue",
+  name: "mcp:github/create_issue",
+  description: "Opens a GitHub issue.",
+  allowedRoles: ["writer"],
+  identityProviders: ["github"],
+  mcpExec: { serverRef: "github", remoteToolName: "create_issue" },
+};
+
+function fakeMCPBrokerClient(result = "Issue #7 created") {
+  return { call: vi.fn().mockResolvedValue({ result }) } as unknown as import("../mcp/mcp-broker-client.js").MCPBrokerClient;
+}
+
 function fakeContainerToolLauncher(): ContainerToolLauncher {
   return { launch: vi.fn().mockResolvedValue({ jobId: "job-1" }) };
 }
@@ -108,6 +121,37 @@ describe("dispatchResolvedTool", () => {
       containerTool.jobTemplate,
       expect.objectContaining({ callbackSecret: "shh" }),
     );
+  });
+
+  it("dispatches an MCP tool through the broker as the caller and returns its prose result", async () => {
+    const mcpBrokerClient = fakeMCPBrokerClient("Issue #7 created");
+    const outcome = await dispatchResolvedTool(mcpTool, '{"title":"Bug"}', {
+      containerToolLauncher: fakeContainerToolLauncher(),
+      jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "unused" }),
+      mcpBrokerClient,
+    }, { callerSubject: "openwebui:42" });
+
+    expect(outcome).toEqual({ ok: true, result: "Issue #7 created" });
+    expect(mcpBrokerClient.call).toHaveBeenCalledWith(mcpTool, '{"title":"Bug"}', { subject: "openwebui:42" });
+  });
+
+  it("reports an MCP tool as unconfigured when no broker client is provided", async () => {
+    const outcome = await dispatchResolvedTool(mcpTool, "{}", {
+      containerToolLauncher: fakeContainerToolLauncher(),
+      jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "x" }),
+    }, { callerSubject: "openwebui:42" });
+    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("mcp-broker is not configured") });
+  });
+
+  it("FAILS CLOSED on an MCP tool with no resolved caller subject", async () => {
+    const mcpBrokerClient = fakeMCPBrokerClient();
+    const outcome = await dispatchResolvedTool(mcpTool, "{}", {
+      containerToolLauncher: fakeContainerToolLauncher(),
+      jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "x" }),
+      mcpBrokerClient,
+    });
+    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("resolved caller identity") });
+    expect(mcpBrokerClient.call).not.toHaveBeenCalled();
   });
 
   it("reports a container tool's failed event as ok: false", async () => {
@@ -187,5 +231,73 @@ describe("makeSubAgentToolCallHandler", () => {
 
     expect(() => handler({ callId: "call-1", tool: "kubectl-readonly", input: "get pods" })).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it("DEFERS a gated (approval: always) tool call — signals approval-needed and leaves the call UNRESOLVED (sub-agent HITL)", async () => {
+    const channel = fakeChannel();
+    const launcher = fakeContainerToolLauncher();
+    const onApprovalNeeded = vi.fn();
+    const gated = { ...containerTool, approval: "always" };
+    const handler = makeSubAgentToolCallHandler(
+      "run-1",
+      agent,
+      channel,
+      { getById: () => gated },
+      { ...baseDeps, containerToolLauncher: launcher },
+      { onApprovalNeeded, approvalTimeoutMs: 900_000 },
+    );
+
+    handler({ callId: "call-1", tool: "kubectl-readonly", input: "get pods -n default" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Reported up for approval, NOT resolved and NOT dispatched — the pod stays blocked.
+    expect(onApprovalNeeded).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: "call-1", tool: "kubectl-readonly", input: "get pods -n default", expiresAt: expect.any(Number) }),
+    );
+    expect(channel.resolveToolCall).not.toHaveBeenCalled();
+    expect(launcher.launch).not.toHaveBeenCalled();
+  });
+
+  it("dispatches a NON-gated (approval: never) tool unchanged even when a HITL channel is wired", async () => {
+    const channel = fakeChannel();
+    const onApprovalNeeded = vi.fn();
+    const ungated = { ...containerTool, approval: "never" };
+    const handler = makeSubAgentToolCallHandler("run-1", agent, channel, { getById: () => ungated }, baseDeps, {
+      onApprovalNeeded,
+      approvalTimeoutMs: 900_000,
+    });
+
+    handler({ callId: "call-1", tool: "kubectl-readonly", input: "get pods -n default" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(onApprovalNeeded).not.toHaveBeenCalled();
+    expect(channel.resolveToolCall).toHaveBeenCalledWith("run-1", "call-1", { ok: true, result: { ok: true } });
+  });
+});
+
+describe("dispatchResolvedTool — approval gate (ADR 0003, sub-agent loop)", () => {
+  it("fails closed (does not execute) when the tool's own approval is always", async () => {
+    const launcher = fakeContainerToolLauncher();
+    const outcome = await dispatchResolvedTool(
+      { ...containerTool, approval: "always" },
+      "get pods",
+      { containerToolLauncher: launcher, jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "x" }) },
+    );
+    expect(outcome).toEqual({ ok: false, error: 'Approval required: run tool "kubectl-readonly"? Reply "approve" or "deny".' });
+    expect(launcher.launch).not.toHaveBeenCalled();
+  });
+
+  it("gates on the governing agent's approvalDefault when the tool sets none", async () => {
+    const executor: LocalToolExecutor = { run: vi.fn().mockResolvedValue({ type: "succeeded", job_id: "j", result: {} }) };
+    const outcome = await dispatchResolvedTool(localTool, "https://x", { containerToolLauncher: fakeContainerToolLauncher(), jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: {} }), localToolExecutor: executor }, { agentApprovalDefault: "always" });
+    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("Approval required") });
+    expect(executor.run).not.toHaveBeenCalled();
+  });
+
+  it("a tool's own never beats an agent default of always (runs)", async () => {
+    const executor: LocalToolExecutor = { run: vi.fn().mockResolvedValue({ type: "succeeded", job_id: "j", result: { ok: true } }) };
+    const outcome = await dispatchResolvedTool({ ...localTool, approval: "never" }, "https://x", { containerToolLauncher: fakeContainerToolLauncher(), jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: {} }), localToolExecutor: executor }, { agentApprovalDefault: "always" });
+    expect(outcome).toEqual({ ok: true, result: { ok: true } });
+    expect(executor.run).toHaveBeenCalled();
   });
 });

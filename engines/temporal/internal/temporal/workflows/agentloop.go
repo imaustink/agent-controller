@@ -2,21 +2,46 @@ package workflows
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/controller-agent/temporal-engine/internal/approval"
 	"github.com/controller-agent/temporal-engine/internal/callertools"
 	"github.com/controller-agent/temporal-engine/internal/catalog"
 	"github.com/controller-agent/temporal-engine/internal/continuation"
+	"github.com/controller-agent/temporal-engine/internal/corpus"
 	"github.com/controller-agent/temporal-engine/internal/llm"
 	"github.com/controller-agent/temporal-engine/internal/messaging"
 	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 )
 
 // maxToolSteps bounds the plan⇄runTool loop per turn (upstream MAX_TOOL_STEPS).
-const maxToolSteps = 4
+//
+// Raised 4→8 so a knowledge-base turn can actually iterate: search, read what
+// came back, search again with narrower terms, and read a live document — the
+// research loop the KB skill now asks for — without the cap forcing an answer
+// after one lookup. Still a runaway guard, just a looser one. PARITY:
+// MAX_TOOL_STEPS in the TS graph.
+const maxToolSteps = 8
+
+// Change IDs for workflow.GetVersion, one per change that alters the commands a
+// turn issues. A conversation in flight across a deploy replays its earlier
+// turns on the new code, and a turn that now schedules a different activity
+// than its history recorded fails replay (a nondeterminism error) and wedges
+// the conversation. Each guard replays history recorded before the change
+// exactly as it ran, while new turns take the new path. Once no workflow
+// started before a change can still be open, its guard can be removed.
+const (
+	// Live lookup/read results feed back into the loop instead of ending the
+	// turn as the reply.
+	versionKBLiveFacesLoop = "kb-live-faces-loop"
+	// A turn that would end on a raw knowledge-base result asks the planner once
+	// more, respond-only, instead of composing that result verbatim.
+	versionKBSynthesizeFinish = "kb-synthesize-finish"
+)
 
 // TurnMeta reports what the agent loop did, for TurnResult/debugging.
 type TurnMeta struct {
@@ -49,11 +74,14 @@ type TurnMeta struct {
 // active-skill fit check → capability gate → retrieve → select → resolve
 // tools → plan⇄runTool → compose. It returns the reply plus which skill (if
 // any) stays active. Mirrors agent-controller's graph nodes.
-func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput, note func(string)) (string, TurnMeta, []callertools.PendingCall, error) {
+func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput, note func(string), emit func(messaging.TurnEvent)) (string, TurnMeta, []callertools.PendingCall, error) {
 	logger := workflow.GetLogger(ctx)
 	meta := TurnMeta{Path: "bare"}
 	if note == nil {
 		note = func(string) {}
+	}
+	if emit == nil {
+		emit = func(messaging.TurnEvent) {}
 	}
 
 	// 0. Mid-episode agent takes the turn outright (upstream's
@@ -82,6 +110,14 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	}
 
 	var skillTools *activities.SkillTools
+
+	// Tool-approval resume state (ADR 0003), set by step 0.7 below and read by
+	// the approval gate inside the plan⇄runTool loop. approvedCall is a one-shot:
+	// the single tool call the user just approved, which the gate lets through
+	// without re-prompting. deniedCalls names tools the user denied this turn, so
+	// the gate surfaces them to the planner as failed rather than re-prompting.
+	var approvedCall *PendingApproval
+	deniedCalls := map[string]bool{}
 
 	// 0.5. Deterministic dispatch (ADR 0024). The gateway matched this turn's
 	// event descriptor to an IntegrationRoute and named a target; re-resolve
@@ -133,6 +169,28 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	if skillTools == nil && state.PendingIdentityLink != nil && in.Caller.Subject != "" {
 		if reply, m, handled, err := resumePendingLink(ctx, actx, state, in, &meta, note); handled {
 			return reply, m, nil, err
+		}
+	}
+
+	// 0.7. A turn that paused for tool approval resumes here (ADR 0003). The
+	// decision re-arms the normal loop below: an approved call becomes a one-shot
+	// the gate lets through; a denied call is remembered so the gate surfaces it
+	// as failed. Re-resolves the skill under current roles rather than trusting
+	// the anchor, exactly as the pending-link resume above does.
+	if skillTools == nil && state.PendingApproval != nil && in.Caller.Subject != "" {
+		resolved, approved, deniedID, reply, handled, err := resumePendingApproval(ctx, actx, state, &in, &meta, note)
+		if handled {
+			return reply, meta, nil, err
+		}
+		if resolved != nil {
+			skillTools = resolved
+			approvedCall = approved
+			if deniedID != "" {
+				deniedCalls[deniedID] = true
+				emit(messaging.ApprovalResolved(0, "", deniedID, false))
+			} else if approved != nil {
+				emit(messaging.ApprovalResolved(0, "", approved.ToolID, true))
+			}
 		}
 	}
 
@@ -308,6 +366,19 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	// client cannot drive an unbounded planner loop by resending.
 	history := seedHistory(in.PriorCallerToolCalls)
 	var lastSuccess *ToolOutcome
+	// lastWasKnowledgeBase marks lastSuccess as a knowledge-base result
+	// (search, lookup or read). Such a result is retrieved material, never a
+	// finished answer, so a turn that would end on it verbatim — a finish, the
+	// repeat guard, or the step cap — is synthesized instead (see below).
+	var lastWasKnowledgeBase bool
+	// Deterministic output produced this turn that the planner's own prose would
+	// otherwise discard on a Respond (the "finish vs respond" verbatim gap):
+	// pendingVerbatim is a stateful tool's result that must REPLACE a paraphrase;
+	// cited is every knowledge-base result this turn retrieved, numbered across
+	// the whole turn, whose `[n]` markers the model's synthesis is linked against;
+	// caveats are what those retrievals could not see. Applied by finalizeRespond.
+	var pendingVerbatim string
+	var cited citations
 	for step := len(history); step < maxToolSteps; step++ {
 		var plan activities.PlannedAction
 		if err := workflow.ExecuteActivity(actx, activities.PlanActionActivityName, activities.PlanActionInput{
@@ -322,7 +393,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		}
 
 		if plan.Action == activities.ActionRespond {
-			return plan.Response, meta, nil, nil
+			return finalizeRespond(plan.Response, pendingVerbatim, cited), meta, nil, nil
 		}
 		if plan.Action == activities.ActionFinish {
 			break
@@ -382,6 +453,39 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 
 		tool := *findTool(plan.ToolID, skillTools)
 
+		// Approval gate (ADR 0003): a tool whose policy requires a human pauses
+		// the turn here — ahead of every dispatch branch (KB, MCP, container,
+		// local, agent-backed) — so one check covers them all. Deterministic,
+		// single-owner control flow: no planner can skip or reorder it. The
+		// top-level conversation has no governing agent, so there is no agent
+		// default to fall back to (the sub-agent loop passes its agent's default).
+		if deniedCalls[plan.ToolID] {
+			// Denied earlier this turn: surface as a failed call so the planner
+			// moves on, and never re-prompt for the same tool in one turn.
+			logger.Info("tool was denied this turn; surfacing as failed", "toolId", plan.ToolID)
+			history = append(history, activities.ActionRecord{
+				ToolID: plan.ToolID, Input: plan.ToolInput,
+				Error: approval.DeniedCode + ": " + approval.DeniedMessage,
+			})
+			note(plan.ToolID + " was denied")
+			continue
+		}
+		if approval.RequiresHuman(approval.Resolve(tool.Approval, "")) {
+			if approvedCall != nil && approvedCall.ToolID == plan.ToolID && approvedCall.ToolInput == plan.ToolInput {
+				approvedCall = nil // one-shot consumed — fall through and run it
+			} else {
+				state.PendingApproval = &PendingApproval{
+					OriginalRequest: in.Message,
+					SkillID:         skillTools.Skill.ID,
+					ToolID:          plan.ToolID,
+					ToolInput:       plan.ToolInput,
+					ToolInstanceKey: plan.ToolInstanceKey,
+				}
+				emit(messaging.ApprovalRequired(0, "", plan.ToolID, approval.Prompt(plan.ToolID)))
+				return approval.Prompt(plan.ToolID), meta, nil, nil
+			}
+		}
+
 		// A knowledge base's generated tool (ADR 0039 §3) has nothing to
 		// launch: its work is a vector query plus a per-user probe, both
 		// network calls, so it runs as an activity rather than a ToolRun.
@@ -401,19 +505,41 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			var read activities.ReadCorpusOutput
 			if err := workflow.ExecuteActivity(actx, activities.ReadCorpusActivityName,
 				activities.ReadCorpusInput{
-					Caller:   in.Caller,
-					Tool:     tool,
-					SourceID: plan.ToolInput,
+					Caller:     in.Caller,
+					Tool:       tool,
+					SourceID:   plan.ToolInput,
+					FirstIndex: cited.next(),
 				}).Get(ctx, &read); err != nil {
 				return "", meta, nil, err
 			}
 			meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
 
 			if read.NeedsLink {
+				// Nothing was read, so there is nothing to answer from — ending
+				// the turn on the ask is the honest outcome.
 				note(plan.ToolID + " needs a linked account")
 				return read.Result, meta, nil, nil
 			}
-			return read.Result, meta, nil, nil
+			if workflow.GetVersion(ctx, versionKBLiveFacesLoop, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+				// History recorded before this change ended the turn here, on the
+				// raw result. Replay it as it ran.
+				return read.Result, meta, nil, nil
+			}
+			// Back into the loop like a search, NOT returned as the answer: a
+			// live document is material to answer from. Returning it ended the
+			// turn on a raw dump the moment the planner reached for the live
+			// face, with no synthesis and no further steps. PARITY: the TS graph
+			// appends read results to actionHistory and re-plans.
+			outcome := ToolOutcome{Succeeded: true, Result: read.Result}
+			lastSuccess, lastWasKnowledgeBase = &outcome, true
+			pendingVerbatim = ""
+			cited.add(read.Sources, nil)
+			history = append(history, activities.ActionRecord{
+				ToolID: plan.ToolID, Input: plan.ToolInput,
+				Succeeded: true, Result: read.Result,
+			})
+			note(plan.ToolID + " finished")
+			continue
 		}
 
 		// The LIVE search face. Beside the read branch, and before the generic
@@ -424,9 +550,55 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			var found activities.LookupCorpusOutput
 			if err := workflow.ExecuteActivity(actx, activities.LookupCorpusActivityName,
 				activities.LookupCorpusInput{
-					Caller: in.Caller,
-					Tool:   tool,
-					Query:  plan.ToolInput,
+					Caller:     in.Caller,
+					Tool:       tool,
+					Query:      plan.ToolInput,
+					FirstIndex: cited.next(),
+				}).Get(ctx, &found); err != nil {
+				return "", meta, nil, err
+			}
+			meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
+
+			if found.NeedsLink {
+				// NeedsLink means NO member could be searched — nothing to answer
+				// from, so the turn ends on the ask.
+				note(plan.ToolID + " needs a linked account")
+				return found.Result, meta, nil, nil
+			}
+			if workflow.GetVersion(ctx, versionKBLiveFacesLoop, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+				// History recorded before this change ended the turn here, on the
+				// raw hit list. Replay it as it ran.
+				return found.Result, meta, nil, nil
+			}
+			// Back into the loop, for the same reason as the read face above:
+			// live hits are material to answer from, not the answer.
+			outcome := ToolOutcome{Succeeded: true, Result: found.Result}
+			lastSuccess, lastWasKnowledgeBase = &outcome, true
+			pendingVerbatim = ""
+			cited.add(found.Sources, nil)
+			history = append(history, activities.ActionRecord{
+				ToolID: plan.ToolID, Input: plan.ToolInput,
+				Succeeded: true, Result: found.Result,
+			})
+			note(plan.ToolID + " finished")
+			continue
+		}
+
+		// The LIVE structured query face. Beside lookup, which it replaced as a
+		// generated tool (lookup's branch stays for in-flight and recorded
+		// turns), and for the same reasons: it runs as the caller inside the
+		// activity, and its items are material to answer from, so they feed back
+		// into the loop. No version guard: this tool is new, so no recorded
+		// history can have scheduled it.
+		if tool.KnowledgeBaseExec != nil && tool.KnowledgeBaseExec.Operation == "query" {
+			note("Querying " + tool.KnowledgeBaseExec.DisplayName + "…")
+			var found activities.QueryCorpusOutput
+			if err := workflow.ExecuteActivity(actx, activities.QueryCorpusActivityName,
+				activities.QueryCorpusInput{
+					Caller:     in.Caller,
+					Tool:       tool,
+					Query:      plan.ToolInput,
+					FirstIndex: cited.next(),
 				}).Get(ctx, &found); err != nil {
 				return "", meta, nil, err
 			}
@@ -434,8 +606,18 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 
 			if found.NeedsLink {
 				note(plan.ToolID + " needs a linked account")
+				return found.Result, meta, nil, nil
 			}
-			return found.Result, meta, nil, nil
+			outcome := ToolOutcome{Succeeded: true, Result: found.Result}
+			lastSuccess, lastWasKnowledgeBase = &outcome, true
+			pendingVerbatim = ""
+			cited.add(found.Sources, nil)
+			history = append(history, activities.ActionRecord{
+				ToolID: plan.ToolID, Input: plan.ToolInput,
+				Succeeded: true, Result: found.Result,
+			})
+			note(plan.ToolID + " finished")
+			continue
 		}
 
 		// Everything else with an exec spec is the INDEXED search. Guarded on
@@ -451,13 +633,44 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		}
 
 		if tool.KnowledgeBaseExec != nil {
+			// Deterministic link gate: before searching, check ONCE per knowledge
+			// base per conversation whether the caller is missing any provider
+			// this knowledge base covers. If so, stop the turn and ask them to
+			// link it rather than quietly returning a partial answer whose "link
+			// this too" line the planner might drop — a core auth behaviour must
+			// not depend on the model echoing a caveat. Keyed in conversation
+			// state so a follow-up ask proceeds with whatever they have linked.
+			kbID := tool.KnowledgeBaseExec.KnowledgeBaseID
+			if !state.KnowledgeBaseLinkPrompts[kbID] {
+				var gate activities.SearchKnowledgeBaseOutput
+				if err := workflow.ExecuteActivity(actx, activities.SearchKnowledgeBaseActivityName,
+					activities.SearchKnowledgeBaseInput{
+						Caller:   in.Caller,
+						Tool:     tool,
+						Query:    plan.ToolInput,
+						GateOnly: true,
+					}).Get(ctx, &gate); err != nil {
+					return "", meta, nil, err
+				}
+				if state.KnowledgeBaseLinkPrompts == nil {
+					state.KnowledgeBaseLinkPrompts = map[string]bool{}
+				}
+				state.KnowledgeBaseLinkPrompts[kbID] = true
+				if len(gate.LinkProviders) > 0 {
+					meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
+					note(plan.ToolID + " needs a linked account")
+					return gate.Result, meta, nil, nil
+				}
+			}
+
 			note("Searching " + tool.KnowledgeBaseExec.DisplayName + "…")
 			var found activities.SearchKnowledgeBaseOutput
 			if err := workflow.ExecuteActivity(actx, activities.SearchKnowledgeBaseActivityName,
 				activities.SearchKnowledgeBaseInput{
-					Caller: in.Caller,
-					Tool:   tool,
-					Query:  plan.ToolInput,
+					Caller:     in.Caller,
+					Tool:       tool,
+					Query:      plan.ToolInput,
+					FirstIndex: cited.next(),
 				}).Get(ctx, &found); err != nil {
 				return "", meta, nil, err
 			}
@@ -471,10 +684,55 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 			}
 
 			outcome := ToolOutcome{Succeeded: true, Result: found.Result}
-			lastSuccess = &outcome
+			lastSuccess, lastWasKnowledgeBase = &outcome, true
+			// Carry the probe-derived sources and caveats so a later Respond still
+			// cites and discloses (ADR 0040). ACCUMULATED across the turn's
+			// searches, not replaced: the answer may cite any of them. A search
+			// round-trips no continuation state, so it clears any stale verbatim
+			// marker.
+			cited.add(found.Sources, found.Caveats)
+			if found.LegacyCitations != "" {
+				cited.legacy = append(cited.legacy, found.LegacyCitations)
+			}
+			pendingVerbatim = ""
 			history = append(history, activities.ActionRecord{
 				ToolID: plan.ToolID, Input: plan.ToolInput,
 				Succeeded: true, Result: found.Result,
+			})
+			note(plan.ToolID + " finished")
+			continue
+		}
+
+		// MCP tools (ADR 0045) are proxied through the mcp-broker. Placed beside
+		// the knowledge-base branches and before the identity gate for the same
+		// reason: the caller's delegated token is resolved INSIDE the activity and
+		// never handed back to the workflow, where the gate below resolves a Tool
+		// CR's providers into secretEnv for a Job.
+		if tool.MCPExec != nil {
+			note("Calling " + plan.ToolID + "…")
+			var out activities.RunMCPToolOutput
+			if err := workflow.ExecuteActivity(actx, activities.RunMCPToolActivityName,
+				activities.RunMCPToolInput{
+					Caller:    in.Caller,
+					Tool:      tool,
+					Arguments: plan.ToolInput,
+				}).Get(ctx, &out); err != nil {
+				return "", meta, nil, err
+			}
+			meta.ToolCalls = append(meta.ToolCalls, plan.ToolID)
+
+			if out.NeedsLink {
+				note(plan.ToolID + " needs a linked account")
+				return out.Result, meta, nil, nil
+			}
+
+			outcome := ToolOutcome{Succeeded: out.Succeeded, Result: out.Result}
+			if out.Succeeded {
+				lastSuccess, lastWasKnowledgeBase = &outcome, false
+			}
+			history = append(history, activities.ActionRecord{
+				ToolID: plan.ToolID, Input: plan.ToolInput,
+				Succeeded: out.Succeeded, Result: out.Result,
 			})
 			note(plan.ToolID + " finished")
 			continue
@@ -499,13 +757,53 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		record := activities.ActionRecord{ToolID: plan.ToolID, Input: plan.ToolInput, Succeeded: outcome.Succeeded}
 		if outcome.Succeeded {
 			record.Result = outcome.Result
-			lastSuccess = &outcome
+			lastSuccess, lastWasKnowledgeBase = &outcome, false
+			// A stateful refine-loop tool's output must survive a later Respond
+			// verbatim (its Markdown is what the next turn's intent detection
+			// reads); a one-shot tool keeps the planner's synthesis.
+			if outcome.Verbatim {
+				pendingVerbatim = outcome.Result
+			} else {
+				pendingVerbatim = ""
+			}
+			// Deliberately do NOT touch `cited` here: a KB search's probe-derived
+			// sources/disclosure must survive a LATER non-KB tool in the same turn
+			// (e.g. [KB search -> other tool -> respond]), or the turn emits an
+			// uncited answer and drops the ADR 0040 guarantee. Only knowledge-base
+			// results add to it, matching the TS engine, where the KB nodes are the
+			// sole writers.
 			note(plan.ToolID + " finished")
 		} else {
 			record.Error = outcome.ErrorCode + ": " + outcome.ErrorMessage
 			note(plan.ToolID + " failed: " + outcome.ErrorCode)
 		}
 		history = append(history, record)
+	}
+
+	// 6b. A knowledge-base result is never the answer as-is. The loop ended on
+	// one without the planner responding — it chose finish, repeated itself,
+	// or hit the step cap — and composing it verbatim below would hand the
+	// user raw passages or a list of live hits instead of an answer. Ask the
+	// planner once more, restricted to `respond`, to write the answer from
+	// everything gathered, then finalize exactly as a Respond would (probe
+	// citations appended). A planner failure degrades to the verbatim compose
+	// rather than failing the turn. History recorded before this change composed
+	// directly, so the version guard replays it that way.
+	if lastSuccess != nil && lastWasKnowledgeBase &&
+		workflow.GetVersion(ctx, versionKBSynthesizeFinish, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		note("Writing the answer…")
+		var final activities.PlannedAction
+		err := workflow.ExecuteActivity(actx, activities.PlanActionActivityName, activities.PlanActionInput{
+			Request:       in.Message,
+			SkillMarkdown: skillTools.Skill.Markdown,
+			Tools:         planCandidates,
+			History:       history,
+			RespondOnly:   true,
+		}).Get(ctx, &final)
+		if err == nil && strings.TrimSpace(final.Response) != "" {
+			return finalizeRespond(final.Response, pendingVerbatim, cited), meta, nil, nil
+		}
+		logger.Warn("knowledge-base synthesis failed; composing the raw result", "error", err)
 	}
 
 	// 7. Compose (ADR 0015): additive prefix/suffix around the verbatim
@@ -576,12 +874,14 @@ func runToolWithContinuation(
 	creds credentials,
 	note func(string),
 ) (ToolOutcome, error) {
-	continuationKey := tool.ID
-	if instanceKey != "" {
-		continuationKey = tool.ID + "::" + instanceKey
-	}
-	if token := state.ToolContinuations[continuationKey]; token != "" {
-		toolInput = continuation.Prepend(token, toolInput)
+	// Resolve the instance scope from SERVER-SIDE state (the conversation's own
+	// continuation entries), not from a URL the planner re-copies each turn, so a
+	// refine turn continues the same publish target even when the model names no
+	// instance. See continuation.ResolveKey.
+	continuationKey := continuation.ResolveKey(tool.ID, instanceKey, state.ToolContinuations)
+	priorToken := state.ToolContinuations[continuationKey]
+	if priorToken != "" {
+		toolInput = continuation.Prepend(priorToken, toolInput)
 	}
 
 	var outcome ToolOutcome
@@ -618,6 +918,10 @@ func runToolWithContinuation(
 		state.ToolContinuations[continuationKey] = token
 	}
 	outcome.Result = stripped
+	// A continuation round-trip (a prior token injected, or a new one banked)
+	// marks a stateful refine-loop tool whose output must reach the user verbatim
+	// even on a Respond — see finalizeRespond.
+	outcome.Verbatim = priorToken != "" || token != ""
 	return outcome, nil
 }
 
@@ -818,6 +1122,71 @@ func adaptAgentAsTool(agent catalog.AgentDescriptor) catalog.ToolDescriptor {
 		AgentRef:          agent.ID,
 		IdentityProviders: agent.IdentityProviders,
 	}
+}
+
+// finalizeRespond re-applies, in code, the deterministic output this turn
+// produced that the planner's own Respond prose would otherwise discard — the
+// "finish vs respond" verbatim gap.
+//
+// Two guarantees, in priority order:
+//  1. A stateful refine-loop tool's verbatim result (ADR 0017 continuation
+//     round-trip, e.g. recipe-publisher) REPLACES the model's paraphrase: its
+//     Markdown is the answer the next turn's intent detection reads.
+//  2. Knowledge-base citations are applied to the model's synthesis: its
+//     `[n]` markers become inline links to the retrieved sources (falling back
+//     to an appended Sources list when it cited nothing), and what the
+//     retrievals could not see is appended — so citations/disclosure (ADR 0040)
+//     survive Respond while useful synthesis is preserved.
+//
+// PARITY: respondResult in apps/agent-orchestrator/src/agent/graph.ts.
+func finalizeRespond(response, verbatim string, cited citations) string {
+	if verbatim != "" {
+		return verbatim
+	}
+	if len(cited.sources) == 0 && len(cited.caveats) == 0 && len(cited.legacy) == 0 {
+		return response
+	}
+	out := response
+	if len(cited.sources) > 0 || len(cited.caveats) > 0 {
+		out = corpus.FinalizeCitations(response, cited.sources, cited.caveats)
+	}
+	// A search that completed on the pre-inline worker returned its citations
+	// as one pre-rendered block: append it as that code did, de-duped.
+	for _, block := range cited.legacy {
+		if !strings.Contains(out, block) {
+			out = strings.TrimRight(out, "\n") + "\n\n" + block
+		}
+	}
+	return out
+}
+
+// citations is everything a turn's knowledge-base calls retrieved that an
+// answer may cite, plus what they could not see.
+//
+// Numbers run across the whole turn (next), so a second search's passages
+// never reuse the first's [1] — the model cites by number, and a collision
+// would link a claim to the wrong source.
+type citations struct {
+	sources []corpus.Source
+	caveats []string
+	// legacy holds pre-rendered blocks from searches that completed on the
+	// pre-inline worker (activities.SearchKnowledgeBaseOutput.LegacyCitations).
+	legacy []string
+}
+
+func (c *citations) next() int {
+	n := 1
+	for _, s := range c.sources {
+		if s.N >= n {
+			n = s.N + 1
+		}
+	}
+	return n
+}
+
+func (c *citations) add(sources []corpus.Source, caveats []string) {
+	c.sources = append(c.sources, sources...)
+	c.caveats = append(c.caveats, caveats...)
 }
 
 func repeatsLastCall(history []activities.ActionRecord, plan activities.PlannedAction) bool {

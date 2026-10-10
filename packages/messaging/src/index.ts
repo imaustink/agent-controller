@@ -1,6 +1,14 @@
 export { ArtifactRefSchema, type ArtifactRef } from "./artifact.js";
 export { EventSchema, type Event } from "./event.js";
 export {
+  TurnEventSchema,
+  TURN_EVENT_KINDS,
+  renderTurnEvent,
+  approvalRequiredLine,
+  type TurnEvent,
+  type TurnEventKind,
+} from "./turn-event.js";
+export {
   AgentUpMessageSchema,
   AgentDownMessageSchema,
   agentSubjects,

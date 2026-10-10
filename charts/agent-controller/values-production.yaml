@@ -317,6 +317,21 @@ integration-gateway:
     # as the orchestrator's old "produced no reply" timeout: a bound shorter
     # than the work it's bounding turns a success into a visible failure.
     # 8h5m leaves a 5-minute buffer past the agent-run ceiling.
+    #
+    # DELIBERATELY NOT shortened to shrink the trigger-label "orphan window":
+    # this gateway holds its relay (and so its in-process label-removal
+    # `finally`) for as long as a poll runs, so a shorter bound would shrink how
+    # long a stranded label waits -- BUT only by reintroducing exactly the
+    # false-timeout bug above for every legitimate run between the new bound and
+    # the real 8h run ceiling (agentRunTimeoutSeconds is unset here, so the Job
+    # really can run the full 8h). The orphan window is now closed the right way
+    # instead: label removal is retried on transient GitHub failures
+    # (github-client.ts) and, if the pod dies before the `finally` runs at all, a
+    # durable reconciling sweep (integration-gateway's label-reconciler.ts)
+    # removes the stranded label on the next pass -- neither of which depends on
+    # this value. If this ever IS lowered to ~1h, lower agentRunTimeoutSeconds
+    # (agent-orchestrator subchart) to match in the SAME change, or long runs
+    # regress to the false-timeout comment.
     pollTimeoutMs: "29100000"
 
   # Automatic OIDC client_credentials token fetch/refresh (previously a
@@ -589,6 +604,21 @@ openwebui:
   extraEnvVars:
     - name: GOOGLE_REDIRECT_URI
       value: "https://chat.kurpuis.com/oauth/google/login/callback"
+    # Pocket ID is the only way in. A local password account carries an email
+    # nobody verified, and the Connections page (docs/adr/0046) maps a
+    # Pocket ID sign-in to the Open WebUI account with the same email -- so a
+    # password account registered under someone else's address could
+    # receive their connections.
+    #
+    # Blocks password SIGN-IN (and LDAP) only. SIGN-UP is gated by "Enable
+    # New Sign Ups" and the login-form setting, which live in Open WebUI's
+    # database and ignore env after first boot -- an admin must turn sign-ups
+    # off in Admin Settings > General (routers/auths.py, checked at v0.10.2).
+    #
+    # No local-admin break-glass remains: if Pocket ID is down, nobody can
+    # log in until it is back.
+    - name: ENABLE_PASSWORD_AUTH
+      value: "false"
     - name: ENABLE_FORWARD_USER_INFO_HEADERS
       value: "true"
     # Switches ENABLE_FORWARD_USER_INFO_HEADERS from the legacy plaintext

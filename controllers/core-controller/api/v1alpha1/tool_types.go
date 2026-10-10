@@ -97,6 +97,16 @@ type ToolSpec struct {
 	// +optional
 	Tier string `json:"tier,omitempty"`
 
+	// approval sets whether a human must approve each call to this Tool before it
+	// executes (ADR 0003). "never" (and the empty default) runs silently;
+	// "always" pauses the turn and asks the user to approve or deny; "auto"
+	// consults an optional evaluator and escalates to a human when unsure (until
+	// an evaluator is configured it behaves as "always"). Empty means "never", so
+	// existing Tools keep running without approval.
+	// +optional
+	// +kubebuilder:validation:Enum=never;always;auto
+	Approval string `json:"approval,omitempty"`
+
 	// agentRef names an Agent CR (same namespace) this Tool wraps — the
 	// orchestrator dispatches calls to this Tool as an AgentRun against that
 	// Agent instead of launching a container Job. Mutually exclusive with

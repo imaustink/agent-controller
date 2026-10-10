@@ -243,6 +243,23 @@ spec:
                   name: {{ .Values.knowledgeBases.brokerTokenSecret.name }}
                   key: {{ .Values.knowledgeBases.brokerTokenSecret.key }}
             {{- end }}
+            {{- if .Values.mcp.enabled }}
+            # MCP tools (docs/adr/0045). AGENT_MCP_ENABLED gates the MCPTool watch
+            # (so MCP tools union into the catalog); the broker URL gates
+            # dispatch. Without the URL the orchestrator indexes MCP tools and
+            # then fails every call with "mcp broker not configured" — so both are
+            # wired together here. The token is the orchestrator→broker gate,
+            # distinct from the per-user delegated token forwarded per call.
+            - name: AGENT_MCP_ENABLED
+              value: "true"
+            - name: AGENT_MCP_BROKER_URL
+              value: {{ .Values.mcp.brokerUrl | quote }}
+            - name: AGENT_MCP_BROKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mcp.brokerTokenSecret.name }}
+                  key: {{ .Values.mcp.brokerTokenSecret.key }}
+            {{- end }}
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:

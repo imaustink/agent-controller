@@ -196,12 +196,32 @@ func main() {
 				activity.RegisterOptions{Name: activities.ReadCorpusActivityName})
 			w.RegisterActivityWithOptions(kb.LookupCorpus,
 				activity.RegisterOptions{Name: activities.LookupCorpusActivityName})
+			w.RegisterActivityWithOptions(kb.QueryCorpus,
+				activity.RegisterOptions{Name: activities.QueryCorpusActivityName})
 			log.Printf("knowledge-base activities enabled: broker=%s", brokerURL)
 		} else {
 			// Not an error: a deployment may index nothing. But it is worth
 			// saying, because the symptom otherwise is a knowledge base that
 			// indexes fine and cannot be asked anything.
 			log.Printf("CONNECTION_BROKER_URL not set; knowledge-base activities disabled")
+		}
+
+		// MCP tools (ADR 0045) are dispatched by proxying to the mcp-broker.
+		// Registered beside knowledge bases and gated the same way: a deployment
+		// without the broker set must not have indexed MCP tools the planner could
+		// select and then fail to dispatch. The broker holds the MCP session; this
+		// activity resolves the caller's delegated token and relays one call.
+		if mcpBrokerURL := os.Getenv("MCP_BROKER_URL"); mcpBrokerURL != "" {
+			mcp := &activities.MCPActivities{
+				Credentials: &activities.LinkedCredentials{Links: links},
+				BrokerURL:   mcpBrokerURL,
+				BrokerToken: os.Getenv("MCP_BROKER_TOKEN"),
+			}
+			w.RegisterActivityWithOptions(mcp.RunMCPTool,
+				activity.RegisterOptions{Name: activities.RunMCPToolActivityName})
+			log.Printf("mcp activities enabled: broker=%s", mcpBrokerURL)
+		} else {
+			log.Printf("MCP_BROKER_URL not set; mcp activities disabled")
 		}
 
 		log.Printf("retrieval activities enabled: qdrant=%s:%d", qdrantHost, qdrantPort)

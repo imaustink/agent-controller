@@ -13,6 +13,10 @@ export interface AgentCustomResource {
     output: string;
     allowedRoles: string[];
     tier?: string;
+    /** Mirrors AgentDescriptor.approvalDefault — the fallback tool-approval policy (ADR 0003) for tools this agent calls. */
+    approvalDefault?: string;
+    /** Mirrors AgentDescriptor.approvalTimeoutSeconds — the per-Agent HITL approval timeout (ADR 0003 + sub-agent HITL). */
+    approvalTimeoutSeconds?: number;
     orchestratorPrompt?: string;
     /** Mirrors AgentDescriptor.identityProviders — see that field's doc comment. */
     identityProviders?: string[];
@@ -109,6 +113,8 @@ export function toAgentDescriptor(cr: AgentCustomResource, namespace: string): A
     description: `${spec.description}\n\nInput: ${spec.input}\nOutput: ${spec.output}`,
     allowedRoles: spec.allowedRoles ?? [],
     tier: spec.tier,
+    approvalDefault: spec.approvalDefault,
+    approvalTimeoutSeconds: spec.approvalTimeoutSeconds,
     orchestratorPrompt: spec.orchestratorPrompt,
     identityProviders: spec.identityProviders,
     toolRefs: spec.toolRefs,

@@ -1,6 +1,6 @@
 import type { SkillAccess } from "../skills/types.js";
 import {
-  knowledgeBaseLookupToolId,
+  knowledgeBaseQueryToolId,
   knowledgeBaseReadToolId,
   connectionLabel,
   knowledgeBaseLabel,
@@ -68,7 +68,7 @@ export function deriveKnowledgeBaseSkill(
   // search and could never read or look anything up, with the skill pointing
   // at a tool that did not exist.
   const liveToolIds = readable
-    ? [knowledgeBaseReadToolId(kb.id), knowledgeBaseLookupToolId(kb.id)]
+    ? [knowledgeBaseReadToolId(kb.id), knowledgeBaseQueryToolId(kb.id)]
     : [];
 
   return {
@@ -185,29 +185,65 @@ function knowledgeBaseMarkdown(
     parts.push("");
   }
 
-  parts.push(
-    "## Answering\n\n" +
-      `1. Search with \`${knowledgeBaseSearchToolId(kb.id)}\`, passing the user's question.\n` +
-      "   Narrow to particular sources with its `connections` argument when the user\n" +
-      "   named one.\n" +
-      "2. Answer **only** from the chunks it returns. When they do not cover the\n" +
-      "   question, say what is missing — never fill the gap from your own\n" +
-      "   knowledge, which is not this client's material and will read as though\n" +
-      "   it were.\n" +
-      "3. End every answer with a `Sources:` list, using each result's title and\n" +
-      "   URL **exactly as the search result gave them**. An uncited claim is not\n" +
-      "   an acceptable answer here.\n",
+  const readable = members.some(
+    (member) => member.apiEnabled && (member.identityProviders?.length ?? 0) > 0,
   );
 
   parts.push(
-    "Every result you get back was checked against your caller's own access\n" +
-      "to the source at the moment you searched, and its title and URL came back\n" +
-      "from that check. So: never build a citation out of anything else. Do not\n" +
-      "construct a URL, do not reuse a title or link you saw earlier in the\n" +
-      "conversation, and do not cite a document that search did not return to\n" +
-      "you on this turn. A link is content — citing one the caller may\n" +
-      "not open discloses exactly what checking their access was meant to\n" +
-      "prevent.\n",
+    "## Answering\n\n" +
+      "Treat this as a research task, not a single lookup. One search rarely\n" +
+      "surfaces everything; keep searching until you have enough to answer well,\n" +
+      "or have confirmed the material simply is not here.\n\n" +
+      `1. Search with \`${knowledgeBaseSearchToolId(kb.id)}\`, passing the user's question.\n` +
+      "   Narrow to particular sources with its `connections` argument when the user\n" +
+      "   named one.\n" +
+      "2. Read what comes back and judge whether it actually covers the question.\n" +
+      "   If it is thin, partial, or answers only part of what was asked,\n" +
+      "   **search again before answering** — rephrase, split a broad question into\n" +
+      "   parts, and reuse the specific names, systems and dates the first results\n" +
+      "   surfaced. Several focused searches beat one broad one, and you have\n" +
+      "   several tool calls to spend.\n" +
+      (readable
+        ? `   \`${knowledgeBaseQueryToolId(kb.id)}\` asks the sources directly with a **structured query**: keywords,\n` +
+          "   a title, an author, a date range, a type, sorted newest, oldest or by\n" +
+          "   relevance, optionally in one source. Use it when the question names any\n" +
+          '   of those ("pages titled retro", "what Brad posted last week", "what\n' +
+          '   changed since September"), or when the index looks stale or thin.\n' +
+          `   \`${knowledgeBaseReadToolId(kb.id)}\` reads a full document when a passage is cut off or you need detail\n` +
+          "   a chunk leaves out.\n" +
+          "   **Passages are fragments of documents.** When the question is about\n" +
+          "   particular documents — a retro, meeting notes, a proposal, a plan, \"the\n" +
+          `   action items\" — find them, then read each one in full with \`${knowledgeBaseReadToolId(kb.id)}\`,\n` +
+          "   passing the `reference:` its result shows, before you answer. Do not\n" +
+          "   summarise a document from the one or two passages that matched.\n" +
+          "   **Search cannot tell what is newest** — it ranks by relevance, not time.\n" +
+          "   For \"latest\", \"most recent\", \"what changed\" or \"what's new\" questions,\n" +
+          '   query with `"sort": "newest"` (and the source, e.g. a channel) and answer\n' +
+          "   from the dates it returns; never pick \"the latest\" from search results.\n"
+        : "") +
+      "3. Answer **only** from what the tools returned. When they do not cover the\n" +
+      "   question, say what is missing — never fill the gap from your own\n" +
+      "   knowledge, which is not this client's material and will read as though\n" +
+      "   it were.\n" +
+      "4. **Cite inline, by number.** Every result carries a marker — `[1]`, `[2]`,\n" +
+      "   … — in its heading. Put a result's marker where you use it, and place it\n" +
+      "   where the source's name would read naturally, because it is replaced by\n" +
+      "   the source's title as a link: \"the demo runs through September, per\n" +
+      "   [3]\", or \"two engagements are active [1][4].\" Ground every claim in a\n" +
+      "   result returned this turn; an ungrounded claim is not an acceptable\n" +
+      "   answer here. A note on what the search could not see is appended\n" +
+      "   automatically.\n",
+  );
+
+  parts.push(
+    "Write ONLY the bracketed number. Every result you get back was checked\n" +
+      "against your caller's own access to the source at the moment you\n" +
+      "searched, and the link a marker becomes comes from that check — so never\n" +
+      "write a URL or a title-as-link yourself, never reuse a link you saw\n" +
+      "earlier in the conversation, and never use a number no result was given\n" +
+      "this turn (it is removed, not linked). A link is content — citing one the\n" +
+      "caller may not open discloses exactly what checking their access was\n" +
+      "meant to prevent.\n",
   );
 
   parts.push("## What you must admit\n");
@@ -222,18 +258,21 @@ function knowledgeBaseMarkdown(
   }
   parts.push(
     "- A result marked **stale** is one the caller may read, but the source has\n" +
-      "  changed since it was indexed. Say the passage may be out of date; where\n" +
-      "  the member offers a `get` tool, read the live object with it and answer\n" +
-      "  from that instead.\n" +
+      "  changed since it was indexed. Say the passage may be out of date" +
+      (readable
+        ? `; read the live document with \`${knowledgeBaseReadToolId(kb.id)}\` and answer from that instead`
+        : "") +
+      ".\n" +
       "- When search reports sources it could not check, say so. Those are not\n" +
       "  results that were withheld — they are results nobody could confirm\n" +
       "  either way, so the answer may be missing evidence that exists.",
   );
-  if (members.some((member) => member.apiEnabled)) {
+  if (readable) {
     parts.push(
       "- Retrieval shows this material as of the last sync. When the question\n" +
-        "  is about what is true *right now*, read the live object with the\n" +
-        "  connection's own `get` tool instead of trusting a chunk.",
+        `  is about what is true *right now*, read the live object with \`${knowledgeBaseReadToolId(kb.id)}\`\n` +
+        `  or run a fresh query with \`${knowledgeBaseQueryToolId(kb.id)}\` instead of\n` +
+        "  trusting a chunk.",
     );
   }
 

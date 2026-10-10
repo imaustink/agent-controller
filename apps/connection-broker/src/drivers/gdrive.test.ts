@@ -289,6 +289,209 @@ describe("searchAsUser", () => {
   });
 });
 
+describe("queryAsUser", () => {
+  /**
+   * F1 holds 40 subfolders, so the tree is 41 folders and the file query must
+   * split into two batches. Each batch answers with the files whose parent it
+   * names, newest first, the way Drive's orderBy would.
+   */
+  function wideTree(files: { id: string; parents: string[]; modifiedTime: string; mimeType?: string }[]) {
+    const subs = Array.from({ length: 40 }, (_, i) => ({ id: `S${i}` }));
+    return vi.fn(async (url: string) => {
+      const q = new URL(String(url)).searchParams.get("q") ?? "";
+      if (q.includes("mimeType = 'application/vnd.google-apps.folder'")) {
+        const parent = /'([^']+)' in parents/.exec(q)?.[1] ?? "";
+        return respond({ files: parent === "F1" ? subs : [] });
+      }
+      const named = new Set([...q.matchAll(/'([^']+)' in parents/g)].map((m) => m[1]));
+      return respond({
+        files: files
+          .filter((f) => f.parents.some((p) => named.has(p)))
+          .map((f) => ({ name: f.id, mimeType: "text/plain", ...f }))
+          .sort((a, b) => b.modifiedTime.localeCompare(a.modifiedTime)),
+      });
+    }) as unknown as FetchLike;
+  }
+
+  const fileQueries = (http: FetchLike) =>
+    (http as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .map((c: unknown[]) => new URL(String(c[0])).searchParams)
+      .filter((p: URLSearchParams) => !(p.get("q") ?? "").includes("mimeType = 'application/vnd.google-apps.folder'"));
+
+  it("with no filters, asks Drive for the folder tree's files, newest first, as the caller", async () => {
+    const http = wideTree([]);
+    await driver(http).queryAsUser({ delegated: "user-token" }, { folderID: "F1" }, {});
+
+    const queries = fileQueries(http);
+    expect(queries.length).toBeGreaterThan(0);
+    for (const params of queries) {
+      expect(params.get("orderBy")).toBe("modifiedTime desc");
+      expect(params.get("includeItemsFromAllDrives")).toBe("true");
+      expect(params.get("q")).toMatch(/^\('[^']+' in parents( or '[^']+' in parents)*\) and .*trashed = false$/);
+    }
+    // Every folder in the tree is named exactly once across the batches.
+    const named = queries.flatMap((p: URLSearchParams) =>
+      [...(p.get("q") ?? "").matchAll(/'([^']+)' in parents/g)].map((m) => m[1]),
+    );
+    expect(named.sort()).toEqual(["F1", ...Array.from({ length: 40 }, (_, i) => `S${i}`)].sort());
+
+    // Run on the CALLER's token, folder walk included.
+    for (const call of (http as unknown as ReturnType<typeof vi.fn>).mock.calls) {
+      expect((call[1] as { headers: Record<string, string> }).headers.Authorization).toBe("Bearer user-token");
+    }
+  });
+
+  it("batches a wide tree's parent clause rather than sending it in one query", async () => {
+    const http = wideTree([]);
+    await driver(http).queryAsUser({ delegated: "u" }, { folderID: "F1" }, {});
+
+    expect(fileQueries(http)).toHaveLength(2);
+  });
+
+  it("writes every filter as a Drive clause on every batch, still inside the tree", async () => {
+    const http = wideTree([]);
+    await driver(http).queryAsUser({ delegated: "u" }, { folderID: "F1" }, {
+      text: "budget",
+      title: "Q3",
+      author: "ana@example.com",
+      after: "2026-03-01",
+      before: "2026-04-01",
+      type: "spreadsheet",
+      sort: "oldest",
+    });
+
+    const queries = fileQueries(http);
+    expect(queries).toHaveLength(2);
+    for (const params of queries) {
+      const q = params.get("q")!;
+      expect(q).toMatch(/^\('[^']+' in parents( or '[^']+' in parents)*\) and /);
+      expect(q.replace(/^\([^)]*\) and /, "")).toBe(
+        "mimeType != 'application/vnd.google-apps.folder' and trashed = false and " +
+          "fullText contains 'budget' and name contains 'Q3' and " +
+          "modifiedTime >= '2026-03-01T00:00:00' and modifiedTime < '2026-04-01T00:00:00' and " +
+          "mimeType = 'application/vnd.google-apps.spreadsheet' and 'ana@example.com' in owners",
+      );
+      expect(params.get("orderBy")).toBe("modifiedTime asc");
+    }
+  });
+
+  it.each([
+    ["document", "application/vnd.google-apps.document"],
+    ["presentation", "application/vnd.google-apps.presentation"],
+    ["pdf", "application/pdf"],
+  ])("maps type %s to its mimeType", async (type, mime) => {
+    const http = wideTree([]);
+    await driver(http).queryAsUser({ delegated: "u" }, { folderID: "F1" }, { type });
+    expect(fileQueries(http)[0]!.get("q")).toContain(`and mimeType = '${mime}'`);
+  });
+
+  it("escapes quotes and backslashes in every caller-supplied string", async () => {
+    // Unescaped, `'` would end the literal and the rest would read as query
+    // syntax — e.g. an `or` that escapes the parents clause.
+    const http = wideTree([]);
+    await driver(http).queryAsUser({ delegated: "u" }, { folderID: "F1" }, {
+      text: "it's",
+      title: "a\\b",
+      author: "o'brien@example.com",
+    });
+
+    const q = fileQueries(http)[0]!.get("q")!;
+    expect(q).toContain("fullText contains 'it\\'s'");
+    expect(q).toContain("name contains 'a\\\\b'");
+    expect(q).toContain("'o\\'brien@example.com' in owners");
+  });
+
+  it("keeps Drive's relevance order when there are words and no sort was asked for", async () => {
+    // No orderBy (naming one would replace relevance), and no re-sort: the
+    // older file Drive ranked first stays first.
+    const http = wideTree([
+      { id: "older-but-better", parents: ["F1"], modifiedTime: "2026-01-01T00:00:00Z" },
+      { id: "newer", parents: ["F1"], modifiedTime: "2026-09-01T00:00:00Z" },
+    ]);
+    // wideTree answers newest first; reverse it to stand in for a relevance rank.
+    const ranked = vi.fn(async (url: string, init?: unknown) => {
+      const res = await (http as unknown as (u: string, i?: unknown) => Promise<{ json: () => Promise<{ files: unknown[] }> }>)(url, init);
+      const body = await res.json();
+      return respond({ files: [...body.files].reverse() });
+    }) as unknown as FetchLike;
+
+    const { hits } = await driver(ranked).queryAsUser({ delegated: "u" }, { folderID: "F1" }, { text: "budget" });
+
+    for (const params of fileQueries(ranked)) expect(params.get("orderBy")).toBeNull();
+    expect(hits.map((h) => h.id)).toEqual(["older-but-better", "newer"]);
+  });
+
+  it("treats relevance without words as newest", async () => {
+    const http = wideTree([]);
+    await driver(http).queryAsUser({ delegated: "u" }, { folderID: "F1" }, { sort: "relevance" });
+    expect(fileQueries(http)[0]!.get("orderBy")).toBe("modifiedTime desc");
+  });
+
+  it.each([
+    [{ author: "Ana Lopez" }, ["author"]],
+    [{ type: "page" }, ["type"]],
+    [{ type: "blogpost" }, ["type"]],
+    [{ type: "message", author: "ana" }, ["author", "type"]],
+  ])("refuses %j rather than ignoring it, without calling Drive", async (query, unsupported) => {
+    const http = wideTree([]);
+
+    const result = await driver(http).queryAsUser({ delegated: "u" }, { folderID: "F1" }, query);
+
+    expect(result).toEqual({ hits: [], unsupported });
+    expect(http).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed date rather than writing it into the query", async () => {
+    const http = wideTree([]);
+    await expect(
+      driver(http).queryAsUser({ delegated: "u" }, { folderID: "F1" }, { after: "2026-1-1" }),
+    ).rejects.toThrow(/YYYY-MM-DD/);
+    expect(http).not.toHaveBeenCalled();
+  });
+
+  it("merges the batches oldest first when asked", async () => {
+    const http = wideTree([
+      { id: "new-top", parents: ["F1"], modifiedTime: "2026-09-01T00:00:00Z" },
+      { id: "oldest-deep", parents: ["S39"], modifiedTime: "2025-01-01T00:00:00Z" },
+      { id: "mid", parents: ["S2"], modifiedTime: "2026-02-01T00:00:00Z" },
+    ]);
+    // wideTree answers newest first regardless of orderBy; the merge must still
+    // re-sort into the order asked for.
+    const { hits } = await driver(http).queryAsUser({ delegated: "u" }, { folderID: "F1" }, { sort: "oldest" });
+    expect(hits.map((h) => h.id)).toEqual(["oldest-deep", "mid", "new-top"]);
+  });
+
+  it("merges the batches newest first, capped at the limit, with updatedAt on every hit", async () => {
+    // The newest file lives in the SECOND batch; a merge that concatenated
+    // without re-sorting would put it last.
+    const http = wideTree([
+      { id: "old-top", parents: ["F1"], modifiedTime: "2026-01-01T00:00:00Z" },
+      { id: "mid-sub", parents: ["S5"], modifiedTime: "2026-05-01T00:00:00Z" },
+      { id: "newest-deep", parents: ["S39"], modifiedTime: "2026-09-30T00:00:00Z" },
+      { id: "second-deep", parents: ["S35"], modifiedTime: "2026-08-01T00:00:00Z" },
+      { id: "photo", parents: ["S1"], modifiedTime: "2026-10-01T00:00:00Z", mimeType: "image/png" },
+    ]);
+
+    const { hits } = await driver(http).queryAsUser({ delegated: "u" }, { folderID: "F1" }, { limit: 3 });
+
+    // The image is newest of all but not indexable, so it is not a hit.
+    expect(hits.map((h) => h.id)).toEqual(["newest-deep", "second-deep", "mid-sub"]);
+    expect(hits.map((h) => h.updatedAt)).toEqual([
+      "2026-09-30T00:00:00Z",
+      "2026-08-01T00:00:00Z",
+      "2026-05-01T00:00:00Z",
+    ]);
+  });
+
+  it("refuses the service credential", async () => {
+    const http = vi.fn() as unknown as FetchLike;
+    await expect(
+      driver(http).queryAsUser({ service: "s" }, { folderID: "F1" }, {}),
+    ).rejects.toThrow(/delegated token/);
+    expect(http).not.toHaveBeenCalled();
+  });
+});
+
 describe("recursive listing", () => {
   /** Answers folder-enumeration queries and the file query separately. */
   function tree(children: Record<string, { id: string }[]>, files: unknown[]) {

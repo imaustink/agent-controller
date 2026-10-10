@@ -8,4 +8,6 @@ resources:
 - tool_v1alpha1_integrationroute.yaml
 - core_v1alpha1_connection.yaml
 - core_v1alpha1_knowledgebase.yaml
+- core_v1alpha1_mcpserver.yaml
+- core_v1alpha1_mcptool.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

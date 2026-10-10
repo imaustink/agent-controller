@@ -72,6 +72,25 @@ export interface LocalToolSpec {
 }
 
 /**
+ * Everything dispatching an MCP tool needs: which server to reach and which
+ * remote tool to call. Mirrors the Go `MCPExecSpec`
+ * (`engines/temporal/internal/catalog/descriptors.go`, ADR 0045) and the
+ * dispatch-relevant fields of `MCPToolSpec`
+ * (`controllers/core-controller/api/v1alpha1/mcptool_types.go`).
+ *
+ * The mcp-broker holds the MCP session; this carries only what the proxy call
+ * needs. The caller's delegated token is resolved from
+ * {@link ToolDescriptor.identityProviders} at dispatch and never rides this
+ * descriptor.
+ */
+export interface MCPExecSpec {
+  serverRef: string;
+  remoteToolName: string;
+  /** The remote tool's raw JSON Schema, carried verbatim from discovery; empty when the server advertised none. */
+  inputSchema?: string;
+}
+
+/**
  * A single tool or sub-agent that can be launched as a k8s Job. This is what
  * gets embedded/upserted into the RAG index (see ADR 0003/0004).
  */
@@ -124,9 +143,20 @@ export interface ToolDescriptor {
   /**
    * Local execution spec (LocalTools, ADR 0014). Set for tools run in-pod by
    * an executor sidecar; absent otherwise. Exactly one of `jobTemplate` /
-   * `localExec` / `agentRunTemplate` / `callerTool` is present.
+   * `localExec` / `agentRunTemplate` / `callerTool` / `mcpExec` is present.
    */
   localExec?: LocalToolSpec;
+  /**
+   * MCP proxy spec (MCPTools, ADR 0045) — set when this descriptor was derived
+   * from an `MCPTool` CR, the broker-written catalog form of one exposed Model
+   * Context Protocol tool. Like `localExec`/`agentRunTemplate` it is the marker
+   * that selects a dispatch path — here, one `tools/call` relayed through the
+   * mcp-broker under the caller's own delegated token. The engine never speaks
+   * MCP. The `identityProviders` the broker presents are resolved from the
+   * top-level {@link ToolDescriptor.identityProviders} at dispatch, exactly as a
+   * container Tool's are, not baked in here.
+   */
+  mcpExec?: MCPExecSpec;
   /**
    * Agent-backed tool template (`Tool.spec.agentRef`) — set when this Tool
    * wraps an `Agent` CR instead of launching its own container/Job. The
@@ -154,10 +184,27 @@ export interface ToolDescriptor {
    * `agentRefs` resolves an Agent into a ToolDescriptor (`loadSkillTools`).
    * For a container Tool, populated directly from `Tool.spec.identityProviders`
    * (`CrdToolRegistry`) -- e.g. the `github` Tool, which needs the calling
-   * user's own linked GitHub token rather than a shared credential. Absent
-   * for LocalTools and for tools with no identity requirement.
+   * user's own linked GitHub token rather than a shared credential. For an
+   * `mcpExec` tool, populated from `MCPTool.spec.identityProviders` and resolved
+   * into the caller's delegated token the mcp-broker presents on `tools/call`
+   * (ADR 0045 §5, fail-closed). Absent for LocalTools and for tools with no
+   * identity requirement.
    */
   identityProviders?: string[];
   /** Optional coarse risk/cost tier, for future quota/authorization use. */
   tier?: string;
+  /**
+   * Declarative tool-approval policy (ADR 0003): whether a human must approve
+   * each call to this tool before it executes. `"never"` (and the empty
+   * default) runs silently — today's behavior, so existing CRs are unaffected;
+   * `"always"` pauses the turn for human approval; `"auto"` is treated as
+   * `"always"` until the deferred evaluator phase lands. Resolution is
+   * most-specific-wins (see `agent/approval.ts`): a tool's own `approval`
+   * always beats the governing agent's `approvalDefault`.
+   *
+   * For a container/LocalTool it is read straight from the CR spec; for an
+   * `mcpExec` tool it is carried from the MCPServer exposure entry (mirrors
+   * `tier`). PARITY: `approval` on the Go Tool/LocalTool/MCPTool descriptors.
+   */
+  approval?: string;
 }

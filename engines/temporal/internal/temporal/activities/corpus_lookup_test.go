@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/corpus"
 	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 	"github.com/controller-agent/temporal-engine/internal/vectorstore"
 )
@@ -94,6 +95,35 @@ func TestLookupFansOutAcrossMembersAndCitesReadableReferences(t *testing.T) {
 	require.Contains(t, out.Result, "Runbook")
 }
 
+// Live hits are citable inline like indexed passages: numbered on from the
+// turn's earlier results, and returned as sources the answer's `[n]` markers
+// are linked against.
+func TestLookupNumbersHitsFromTheTurnsNextCitation(t *testing.T) {
+	srv, _ := brokerStub(t, map[string]any{
+		"wiki": hits(
+			map[string]string{"id": "1", "title": "Runbook", "url": "https://wiki/1"},
+			map[string]string{"id": "2", "title": "Postmortem", "url": "https://wiki/2"},
+		),
+	})
+
+	out, err := lookupActivities(srv, &fakeResolver{token: "user-token"}).LookupCorpus(
+		context.Background(),
+		activities.LookupCorpusInput{
+			Caller:     activities.Caller{Subject: "s", Roles: []string{"reader"}},
+			Tool:       lookupTool(member("wiki", []string{"reader"}, "c1")),
+			Query:      "deploy",
+			FirstIndex: 5,
+		})
+
+	require.NoError(t, err)
+	require.Contains(t, out.Result, "- [5] Runbook")
+	require.Contains(t, out.Result, "- [6] Postmortem")
+	require.Equal(t, []corpus.Source{
+		{N: 5, Title: "Runbook", URL: "https://wiki/1"},
+		{N: 6, Title: "Postmortem", URL: "https://wiki/2"},
+	}, out.Sources)
+}
+
 func TestLookupSkipsMembersTheCallerHoldsNoRoleFor(t *testing.T) {
 	srv, asked := brokerStub(t, map[string]any{
 		"wiki": hits(map[string]string{"id": "1", "title": "ok", "url": "u"}),
@@ -143,6 +173,32 @@ func TestLookupReportsWhatItCouldNotSearchRatherThanLookingComplete(t *testing.T
 	// says what it could not reach.
 	require.Contains(t, out.Result, "Could not search")
 	require.Contains(t, out.Result, "no live search")
+}
+
+// A refused source carries the broker's reason, not just a status. The broker
+// maps a source's non-denial failure to 503, so a bare "refused (503)" read the
+// same for an outage and for a linked token missing `search:confluence` — the
+// exact report that needed a cluster login to diagnose.
+//
+// This CAN fail: the old note was the bare status and dropped the body.
+func TestLookupCarriesTheBrokersReasonForARefusal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"confluence returned 401: Unauthorized; scope does not match"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	out, err := lookupActivities(srv, &fakeResolver{token: "user-token"}).LookupCorpus(
+		context.Background(),
+		activities.LookupCorpusInput{
+			Caller: activities.Caller{Subject: "s", Roles: []string{"reader"}},
+			Tool:   lookupTool(member("wiki", []string{"reader"}, "c1")),
+			Query:  "q",
+		})
+
+	require.NoError(t, err)
+	require.Contains(t, out.Result, "refused (503): confluence returned 401: Unauthorized; scope does not match")
 }
 
 func TestLookupAsksForALinkOnlyWhenNothingCouldBeSearched(t *testing.T) {

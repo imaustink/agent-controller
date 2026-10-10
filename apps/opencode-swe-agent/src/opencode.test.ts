@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildOpencodeConfig, buildPrompt, DENY_BASH_PATTERNS } from "./opencode.js";
+import {
+  buildOpencodeConfig,
+  buildPrompt,
+  DENY_BASH_PATTERNS,
+  isReviewMode,
+  REVIEW_DENY_BASH_PATTERNS,
+  REVIEW_MODE_MARKER,
+} from "./opencode.js";
 
 describe("buildOpencodeConfig", () => {
   it("pins the model and bakes in bash deny rules alongside a blanket allow", () => {
@@ -15,6 +22,41 @@ describe("buildOpencodeConfig", () => {
     for (const pattern of DENY_BASH_PATTERNS) {
       expect(bash[pattern]).toBe("deny");
     }
+  });
+
+  // FIX 1: a review run is code-enforced read-only via opencode's own bash deny
+  // globs. Without the reviewMode branch these are absent and a review could push.
+  it("denies git push / gh pr create / gh pr merge when reviewMode is set", () => {
+    const config = buildOpencodeConfig({ model: "anthropic/claude-sonnet-5", reviewMode: true }) as {
+      permission: { bash: Record<string, string> };
+    };
+    const bash = config.permission.bash;
+    expect(bash["git push*"]).toBe("deny");
+    expect(bash["gh pr create*"]).toBe("deny");
+    expect(bash["gh pr merge*"]).toBe("deny");
+    for (const pattern of REVIEW_DENY_BASH_PATTERNS) expect(bash[pattern]).toBe("deny");
+  });
+
+  it("omits the review denies on a change run (push/PR-create stay allowed)", () => {
+    const config = buildOpencodeConfig({ model: "anthropic/claude-sonnet-5" }) as {
+      permission: { bash: Record<string, string> };
+    };
+    expect(config.permission.bash["git push*"]).toBeUndefined();
+    expect(config.permission.bash["gh pr create*"]).toBeUndefined();
+  });
+});
+
+describe("isReviewMode", () => {
+  it("detects the exact sentinel a review IntegrationRoute injects", () => {
+    expect(isReviewMode(`${REVIEW_MODE_MARKER}\nPull request acme/widgets#7 ...`)).toBe(true);
+  });
+
+  it("is false for an ordinary change/triage goal", () => {
+    expect(isReviewMode("Pick this pull request back up and get it ready to merge.")).toBe(false);
+  });
+
+  it("uses the same marker string as claude-code-swe-agent and the chart templates", () => {
+    expect(REVIEW_MODE_MARKER).toBe("SWE-ENFORCED-MODE: review-only");
   });
 });
 

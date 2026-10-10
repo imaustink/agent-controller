@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { enrichKnowledgeBaseResult, knowledgeBaseLinkPrompt } from "./graph.js";
+import { enrichKnowledgeBaseResult, knowledgeBaseLinkGate, knowledgeBaseLinkPrompt } from "./graph.js";
 import type { IdentityLinkPort } from "../identity-link/gateway-client.js";
 
 const BASE = "I need you to link the account behind Sierra Nevada Corporation (atlassian, google) before I can search it.";
@@ -62,6 +62,44 @@ describe("knowledgeBaseLinkPrompt", () => {
     // (a misconfiguration degrades, it does not swallow the turn).
     const out = await knowledgeBaseLinkPrompt({} as never, "openwebui:42", ["atlassian"], BASE);
     expect(out).toBe(BASE);
+  });
+});
+
+describe("knowledgeBaseLinkGate", () => {
+  it("names what is missing and already linked, with a clickable link and a proceed hint", async () => {
+    const identityLinkGateway = gatewayStarting();
+
+    const out = await knowledgeBaseLinkGate(
+      { identityLinkGateway } as never,
+      "openwebui:42",
+      "Sierra Nevada Corporation",
+      ["atlassian", "google"],
+      ["slack"],
+    );
+
+    // Starts the flow for the missing provider and renders a clickable link.
+    expect(identityLinkGateway.start).toHaveBeenCalledWith("slack", "openwebui:42", "authcode");
+    expect(out).toContain("Before I search the **Sierra Nevada Corporation** knowledge base");
+    expect(out).toContain("[link your slack account](https://gw.example/link/slack)");
+    // Names what is already linked, and tells the caller how to proceed as-is.
+    expect(out).toContain("atlassian, google already linked");
+    expect(out).toContain("ask again now to search with just what you have");
+  });
+
+  // Shares startKnowledgeBaseLinkClauses with the post-search prompt, so a
+  // chat caller gets the one Connections link here too (docs/adr/0046).
+  it("offers the Connections link to a chat caller and starts nothing", async () => {
+    const identityLinkGateway = gatewayStarting();
+    const out = await knowledgeBaseLinkGate(
+      { identityLinkGateway, connectionsUrl: "https://gw.example/connections" } as never,
+      "openwebui:42",
+      "Sierra Nevada Corporation",
+      ["atlassian"],
+      ["google", "slack"],
+    );
+
+    expect(out).toContain("[Connect google and slack](https://gw.example/connections/link?need=google%2Cslack)");
+    expect(identityLinkGateway.start).not.toHaveBeenCalled();
   });
 });
 

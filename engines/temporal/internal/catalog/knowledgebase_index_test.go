@@ -133,7 +133,7 @@ func TestUpsertKnowledgeBaseIndexesASkillAndItsTools(t *testing.T) {
 	require.ElementsMatch(t, []string{"lead", "reader", "writer"}, skill.Roles)
 
 	require.ElementsMatch(t, []string{
-		"kb:globex/search", "kb:globex/read", "kb:globex/lookup",
+		"kb:globex/search", "kb:globex/read", "kb:globex/query",
 	}, h.tools.ids())
 	require.NotContains(t, h.tools.ids(), "kb:globex/fetch",
 		"fetch has no dispatch path, so no fetch tool is generated")
@@ -360,7 +360,7 @@ func mustGet(t *testing.T, store *recordingStore, id string) vectorstore.Record 
 	return rec
 }
 
-func TestLookupToolIsDistinctFromTheIndexedSearch(t *testing.T) {
+func TestQueryToolIsDistinctFromTheIndexedSearch(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
@@ -369,27 +369,44 @@ func TestLookupToolIsDistinctFromTheIndexedSearch(t *testing.T) {
 
 	searchRec, ok := h.tools.get("kb:globex/search")
 	require.True(t, ok)
-	lookupRec, ok := h.tools.get("kb:globex/lookup")
+	queryRec, ok := h.tools.get("kb:globex/query")
 	require.True(t, ok)
 	search := decodeTool(t, searchRec)
-	lookup := decodeTool(t, lookupRec)
+	query := decodeTool(t, queryRec)
 
 	// Both are chosen by embedding, so the text a planner sees must actually
-	// distinguish them. Sharing the verb is how the near-identical-description
-	// problem of ADR 0039 §5 gets reproduced one level down.
-	require.NotEqual(t, search.Description, lookup.Description)
-	require.Contains(t, lookup.Description, "instead of the search index")
-	require.NotContains(t, lookup.Description, "Search the")
+	// distinguish them: the query face leads with what only it does — filter
+	// and sort by metadata — and documents its structured input.
+	require.NotEqual(t, search.Description, query.Description)
+	require.Contains(t, query.Description, "by their metadata")
+	require.Contains(t, query.Description, "cannot filter or sort")
+	require.NotContains(t, query.Description, "Search the")
+	require.Contains(t, query.Input, `"sort": "newest"|"oldest"|"relevance"`)
 
-	require.Equal(t, "lookup", lookup.KnowledgeBaseExec.Operation,
+	require.Equal(t, "query", query.KnowledgeBaseExec.Operation,
 		"dispatch fails closed on an unrecognised operation")
 }
 
-func TestLookupToolIsOmittedWhenNoMemberCanServeIt(t *testing.T) {
+// Lookup is retired into query: no longer generated, and a record an earlier
+// build wrote is removed on the next re-index, so the planner never sees two
+// keyword-capable tools. This CAN fail: without the id in the owned list the
+// stale record would survive.
+func TestLookupIsRetiredAndItsStaleRecordRemoved(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+	require.NoError(t, h.tools.Upsert(ctx, []vectorstore.Record{{ID: "kb:globex/lookup", Hidden: true}}))
+
+	require.NoError(t, h.ix.UpsertCorpus(ctx, confluenceConnectionDescriptor()))
+	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, indexedKnowledgeBase()))
+
+	require.NotContains(t, h.tools.ids(), "kb:globex/lookup")
+}
+
+func TestLiveFacesAreOmittedWhenNoMemberCanServeThem(t *testing.T) {
 	h := newIndexerHarness()
 	ctx := context.Background()
 
-	// A corpus with no API face cannot answer a live search any more than a
+	// A corpus with no API face cannot answer a live query any more than a
 	// live read, so offering the tool would offer something that always fails.
 	require.NoError(t, h.ix.UpsertCorpus(ctx, leadsConnectionDescriptor()))
 	require.NoError(t, h.ix.UpsertKnowledgeBase(ctx, catalog.KnowledgeBaseDescriptor{
@@ -397,7 +414,7 @@ func TestLookupToolIsOmittedWhenNoMemberCanServeIt(t *testing.T) {
 		CorpusRefs: []string{leadsConnectionDescriptor().ID},
 	}))
 
-	require.NotContains(t, h.tools.ids(), "kb:leadsonly/lookup")
+	require.NotContains(t, h.tools.ids(), "kb:leadsonly/query")
 	require.NotContains(t, h.tools.ids(), "kb:leadsonly/read")
 }
 
@@ -417,4 +434,29 @@ func TestDeleteKnowledgeBaseRemovesEveryToolItOwns(t *testing.T) {
 	require.Empty(t, h.tools.ids(), "every generated tool goes with the knowledge base")
 	_, ok := h.skills.get("kb:globex")
 	require.False(t, ok)
+}
+
+// An MCPTool (ADR 0045) unions into the Tools collection like any other tool;
+// a hidden exposure stays referenceable-by-id but out of retrieval, carried as
+// Record.Hidden — the same visibility a knowledge base's scoped tools get.
+func TestUpsertToolCarriesHiddenFlag(t *testing.T) {
+	h := newIndexerHarness()
+	ctx := context.Background()
+
+	require.NoError(t, h.ix.UpsertTool(ctx, catalog.ToolDescriptor{
+		ID: "mcp:github/search_issues", Description: "search", AllowedRoles: []string{"eng"},
+		MCPExec: &catalog.MCPExecSpec{ServerRef: "github-mcp", RemoteToolName: "search_issues"},
+	}))
+	require.NoError(t, h.ix.UpsertTool(ctx, catalog.ToolDescriptor{
+		ID: "mcp:github/secret_op", Description: "secret", AllowedRoles: []string{"eng"}, Hidden: true,
+		MCPExec: &catalog.MCPExecSpec{ServerRef: "github-mcp", RemoteToolName: "secret_op"},
+	}))
+
+	visible, ok := h.tools.get("mcp:github/search_issues")
+	require.True(t, ok)
+	require.False(t, visible.Hidden, "an un-hidden MCP tool is retrievable")
+
+	hidden, ok := h.tools.get("mcp:github/secret_op")
+	require.True(t, ok)
+	require.True(t, hidden.Hidden, "a hidden MCP tool is referenceable but not retrievable")
 }

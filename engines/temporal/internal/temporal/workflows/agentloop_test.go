@@ -17,6 +17,7 @@ import (
 	"github.com/controller-agent/temporal-engine/internal/authz"
 	"github.com/controller-agent/temporal-engine/internal/callertools"
 	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/controller-agent/temporal-engine/internal/corpus"
 	"github.com/controller-agent/temporal-engine/internal/messaging"
 	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
 	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
@@ -34,13 +35,20 @@ type loopEnv struct {
 	launched *activities.LaunchToolRunInput
 	launches []activities.LaunchToolRunInput
 
-	retrieveCalls        int
-	retrieveAgentCalls   int
-	fitCalls             int
-	planCalls            int
-	composeCalls         int
-	kbSearchInputs       []activities.SearchKnowledgeBaseInput
-	kbSearchResult       activities.SearchKnowledgeBaseOutput
+	retrieveCalls      int
+	retrieveAgentCalls int
+	fitCalls           int
+	planCalls          int
+	composeCalls       int
+	kbSearchInputs     []activities.SearchKnowledgeBaseInput
+	kbSearchResult     activities.SearchKnowledgeBaseOutput
+	// kbSearchSeq, when set, answers successive (non-gate) searches in order —
+	// for turns that search more than once.
+	kbSearchSeq          []activities.SearchKnowledgeBaseOutput
+	kbSearchCalls        int
+	kbLookupResult       activities.LookupCorpusOutput
+	kbQueryInputs        []activities.QueryCorpusInput
+	kbQueryResult        activities.QueryCorpusOutput
 	runLocalToolInputs   []activities.RunLocalToolInput
 	runLocalToolResult   *messaging.Event
 	resolveAgentCalls    int
@@ -215,7 +223,19 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	})
 	reg(activities.SearchKnowledgeBaseActivityName, func(_ context.Context, in activities.SearchKnowledgeBaseInput) (activities.SearchKnowledgeBaseOutput, error) {
 		le.kbSearchInputs = append(le.kbSearchInputs, in)
+		if len(le.kbSearchSeq) > 0 && !in.GateOnly {
+			out := le.kbSearchSeq[min(le.kbSearchCalls, len(le.kbSearchSeq)-1)]
+			le.kbSearchCalls++
+			return out, nil
+		}
 		return le.kbSearchResult, nil
+	})
+	reg(activities.LookupCorpusActivityName, func(context.Context, activities.LookupCorpusInput) (activities.LookupCorpusOutput, error) {
+		return le.kbLookupResult, nil
+	})
+	reg(activities.QueryCorpusActivityName, func(_ context.Context, in activities.QueryCorpusInput) (activities.QueryCorpusOutput, error) {
+		le.kbQueryInputs = append(le.kbQueryInputs, in)
+		return le.kbQueryResult, nil
 	})
 	reg(activities.ComposeResponseActivityName, func(context.Context, activities.ComposeResponseInput) (activities.ComposedResponse, error) {
 		le.composeCalls++
@@ -554,6 +574,486 @@ func TestToolInstanceKeyScopesContinuationSeparately(t *testing.T) {
 
 	require.Equal(t, "<!-- continuation: tok-pasta -->\n\npublish it", le.launches[2].Args[0],
 		"turn 3 must resume the pasta instance's token, not soup's")
+}
+
+func kbSkillTools() *activities.SkillTools {
+	return &activities.SkillTools{
+		Skill: catalog.SkillDescriptor{
+			ID: "kb:globex", Description: "globex knowledge base",
+			Markdown: "# GLOBEX\nSearch it.",
+			ToolIDs:  []string{"kb:globex/search"},
+		},
+		Tools: []catalog.ToolDescriptor{{
+			ID: "kb:globex/search", Description: "search the GLOBEX knowledge base",
+			AllowedRoles: []string{"cook"},
+			KnowledgeBaseExec: &catalog.KnowledgeBaseExecSpec{
+				KnowledgeBaseID: "globex", DisplayName: "GLOBEX", Operation: "search",
+				DisclosePartialVisibility: true,
+			},
+		}},
+	}
+}
+
+// PART A: a KB answer the planner recomposes via Respond must STILL carry the
+// probe-derived Sources list and the "What this answer could not see"
+// disclosure. The block is appended in code (ADR 0040), not left to the model
+// to echo. The Finish path already surfaces it verbatim; this covers the
+// respond-after-search gap.
+func TestKnowledgeBaseCitationsSurviveRespondPath(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skills = []catalog.SkillDescriptor{kbSkillTools().Skill}
+	le.selected = "kb:globex"
+	le.skillTools = kbSkillTools()
+	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
+		Result:  "### [1] Auth design\n```text\nWe use OIDC.\n```\n",
+		Sources: []corpus.Source{{N: 1, Title: "Auth design", URL: "https://wiki/auth"}},
+		Caveats: []string{
+			"2 source(s) in this knowledge base are outside your access, so there may be more you cannot see.",
+			"3 source(s) need an account you have not linked (slack); link it and ask again to include them.",
+		},
+		// No LinkProviders: the pre-search gate passes and the query runs.
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "how does auth work"},
+		// The model synthesizes its own answer and DROPS the citations — the gap.
+		{Action: activities.ActionRespond, Response: "Auth uses OIDC."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	// Model synthesis preserved…
+	require.Contains(t, res.Reply, "Auth uses OIDC.")
+	// …and the probe-derived citations/disclosure survive the Respond path.
+	require.Contains(t, res.Reply, "Sources:")
+	require.Contains(t, res.Reply, "[Auth design](https://wiki/auth)")
+	require.Contains(t, res.Reply, "outside your access")
+	require.Contains(t, res.Reply, "need an account you have not linked (slack)")
+}
+
+// A KB search's citations/disclosure must survive a LATER non-KB tool call in
+// the same turn — the exact gap PR review flagged: the loop used to clear
+// pendingCitations after ANY successful tool, so [KB search -> other tool ->
+// respond] emitted an uncited answer. Only the next KB search may overwrite them.
+func TestKnowledgeBaseCitationsSurviveALaterNonKBToolCall(t *testing.T) {
+	le := newLoopEnv(t)
+	skill := kbSkillTools()
+	// Add a non-KB (local) tool to the same skill so the planner can chain it
+	// between the KB search and the final Respond.
+	skill.Skill.ToolIDs = append(skill.Skill.ToolIDs, "note-taker")
+	skill.Tools = append(skill.Tools, catalog.ToolDescriptor{
+		ID: "note-taker", Description: "jot a note", AllowedRoles: []string{"cook"},
+		LocalExec: &catalog.LocalExecSpec{Runtime: "node", Package: "p", Version: "1.0.0"},
+	})
+	le.skills = []catalog.SkillDescriptor{skill.Skill}
+	le.selected = "kb:globex"
+	le.skillTools = skill
+
+	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
+		Result:  "### [1] Auth design\n```text\nWe use OIDC.\n```\n",
+		Sources: []corpus.Source{{N: 1, Title: "Auth design", URL: "https://wiki/auth"}},
+		Caveats: []string{"3 source(s) need an account you have not linked (slack); link it and ask again to include them."},
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "how does auth work"},
+		// A non-KB tool runs AFTER the KB search — this is what used to wipe the citations.
+		{Action: activities.ActionCallTool, ToolID: "note-taker", ToolInput: "note"},
+		{Action: activities.ActionRespond, Response: "Auth uses OIDC."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Contains(t, res.Reply, "Auth uses OIDC.")
+	// The citations/disclosure survived the intervening non-KB tool.
+	require.Contains(t, res.Reply, "Sources:")
+	require.Contains(t, res.Reply, "[Auth design](https://wiki/auth)")
+	require.Contains(t, res.Reply, "need an account you have not linked (slack)")
+}
+
+// A knowledge-base result is material to answer from, never the answer. When
+// the planner picks finish after a search, the turn used to compose the raw
+// passages verbatim ("Here you go: Found 12 passage(s)… ```text …```"). It must
+// instead ask the planner once more, respond-only, and finalize like a Respond.
+//
+// This CAN fail: without the synthesis step the reply is the composed raw
+// result — it contains the fenced passage and compose is called.
+func TestKnowledgeBaseFinishIsSynthesizedNotDumped(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skills = []catalog.SkillDescriptor{kbSkillTools().Skill}
+	le.selected = "kb:globex"
+	le.skillTools = kbSkillTools()
+	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
+		Result:  "### [1] Auth design\n```text\nWe use OIDC.\n```\n",
+		Sources: []corpus.Source{{N: 1, Title: "Auth design", URL: "https://wiki/auth"}},
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "how does auth work"},
+		{Action: activities.ActionFinish},
+		{Action: activities.ActionRespond, Response: "Auth uses OIDC, per the design doc."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Contains(t, res.Reply, "Auth uses OIDC, per the design doc.")
+	require.Contains(t, res.Reply, "[Auth design](https://wiki/auth)", "probe citations still appended")
+	require.NotContains(t, res.Reply, "```text", "raw passages must not reach the user")
+	require.Zero(t, le.composeCalls, "a KB result is synthesized, not composed verbatim")
+	require.Len(t, le.planInputs, 3)
+	require.True(t, le.planInputs[2].RespondOnly, "the synthesis step is pinned to respond")
+}
+
+// Inline citations: the model writes `[n]`, code substitutes the probe's title
+// and URL, and no Sources list is appended because the answer cited inline.
+//
+// This CAN fail: the old finalize ignored markers and always appended the list.
+// A turn in flight across the deploy can have its search completed on the
+// pre-inline worker: that result sits in history in the OLD shape, a single
+// pre-rendered `citations` block and no Sources/Caveats. The new worker must
+// still cite and disclose from it rather than ship an uncited answer with no
+// access disclosure.
+//
+// Decoded from the old JSON, as replay would, so this pins the json tag too.
+// This CAN fail: without LegacyCitations the old key is dropped on decode and
+// the reply is the bare "Auth uses OIDC."
+func TestKnowledgeBaseSearchFromThePreInlineWorkerStillCitesAndDiscloses(t *testing.T) {
+	block := "Sources:\n- [Auth design](https://wiki/auth)\n\n" +
+		"What this answer could not see:\n" +
+		"- 2 source(s) in this knowledge base are outside your access, so there may be more you cannot see."
+	recorded, err := json.Marshal(map[string]any{"result": "### 1. Auth design", "citations": block})
+	require.NoError(t, err)
+	var old activities.SearchKnowledgeBaseOutput
+	require.NoError(t, json.Unmarshal(recorded, &old))
+	require.Equal(t, block, old.LegacyCitations, "the old `citations` key decodes into the compat field")
+
+	le := newLoopEnv(t)
+	le.skills = []catalog.SkillDescriptor{kbSkillTools().Skill}
+	le.selected = "kb:globex"
+	le.skillTools = kbSkillTools()
+	le.kbSearchResult = old
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "auth"},
+		{Action: activities.ActionRespond, Response: "Auth uses OIDC."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Contains(t, res.Reply, "Auth uses OIDC.")
+	require.Contains(t, res.Reply, "[Auth design](https://wiki/auth)")
+	require.Contains(t, res.Reply, "outside your access", "the access disclosure survives the deploy")
+}
+
+func TestKnowledgeBaseAnswerCitesInline(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skills = []catalog.SkillDescriptor{kbSkillTools().Skill}
+	le.selected = "kb:globex"
+	le.skillTools = kbSkillTools()
+	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
+		Result:  "### [1] Auth design\n```text\nWe use OIDC.\n```\n",
+		Sources: []corpus.Source{{N: 1, Title: "Auth design", URL: "https://wiki/auth"}},
+		Caveats: []string{"2 source(s) in this knowledge base are outside your access, so there may be more you cannot see."},
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "auth"},
+		{Action: activities.ActionRespond, Response: "Auth uses OIDC, per [1]. Tokens rotate hourly [7]."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Contains(t, res.Reply, "Auth uses OIDC, per [Auth design](https://wiki/auth).")
+	require.Contains(t, res.Reply, "Tokens rotate hourly.", "an invented [7] is dropped, not left dangling")
+	require.NotContains(t, res.Reply, "Sources:", "cited inline, so no list")
+	require.Contains(t, res.Reply, "outside your access", "disclosure is appended whatever the model wrote")
+}
+
+// A second search continues the turn's numbering, and a marker from it links to
+// ITS source — not to whatever the first search numbered the same.
+//
+// This CAN fail: without FirstIndex both searches would number from 1 and [2]
+// would be ambiguous.
+func TestKnowledgeBaseCitationNumbersRunAcrossTheTurn(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skills = []catalog.SkillDescriptor{kbSkillTools().Skill}
+	le.selected = "kb:globex"
+	le.skillTools = kbSkillTools()
+	le.kbSearchSeq = []activities.SearchKnowledgeBaseOutput{
+		{Result: "### [1] Auth design", Sources: []corpus.Source{{N: 1, Title: "Auth design", URL: "https://wiki/auth"}}},
+		{Result: "### [2] Rotation runbook", Sources: []corpus.Source{{N: 2, Title: "Rotation runbook", URL: "https://wiki/rotate"}}},
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "auth"},
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "token rotation"},
+		{Action: activities.ActionRespond, Response: "OIDC [1], rotated hourly [2]."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	var firsts []int
+	for _, in := range le.kbSearchInputs {
+		if !in.GateOnly {
+			firsts = append(firsts, in.FirstIndex)
+		}
+	}
+	require.Equal(t, []int{1, 2}, firsts, "the second search starts after the first's last number")
+	require.Equal(t, "OIDC [Auth design](https://wiki/auth), rotated hourly [Rotation runbook](https://wiki/rotate).", res.Reply)
+}
+
+// "What was the most recent message in #team-snc?" — the query face takes the
+// planner's structured filter verbatim, continues the turn's citation
+// numbering, feeds back into the loop, and its items are linked inline like any
+// other result. This CAN fail: without the dispatch branch the "query"
+// operation has no path and the turn errors.
+func TestKnowledgeBaseQueryAnswersNewestFirstQuestions(t *testing.T) {
+	le := newLoopEnv(t)
+	skill := kbSkillTools()
+	skill.Skill.ToolIDs = append(skill.Skill.ToolIDs, "kb:globex/query")
+	skill.Tools = append(skill.Tools, catalog.ToolDescriptor{
+		ID: "kb:globex/query", Description: "query items by metadata, sorted newest/oldest/relevance",
+		AllowedRoles: []string{"cook"},
+		KnowledgeBaseExec: &catalog.KnowledgeBaseExecSpec{
+			KnowledgeBaseID: "globex", DisplayName: "GLOBEX", Operation: "query",
+		},
+	})
+	le.skills = []catalog.SkillDescriptor{skill.Skill}
+	le.selected = "kb:globex"
+	le.skillTools = skill
+	le.kbQueryResult = activities.QueryCorpusOutput{
+		Result:  "Results from GLOBEX (#team-snc) — newest first:\n\n- [1] has joined the channel — #team-snc · changed 2026-09-21T18:00:00Z",
+		Sources: []corpus.Source{{N: 1, Title: "has joined the channel", URL: "https://slack/join"}},
+	}
+	filter := `{"source":"#team-snc","sort":"newest","limit":1}`
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/query", ToolInput: filter},
+		{Action: activities.ActionRespond, Response: "The latest message is a channel join on Sep 21 [1]."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "what was the most recent message in #team-snc?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Len(t, le.kbQueryInputs, 1)
+	require.Equal(t, filter, le.kbQueryInputs[0].Query)
+	require.Equal(t, 1, le.kbQueryInputs[0].FirstIndex)
+	require.Equal(t, 2, le.planCalls, "the planner saw the items and wrote the answer")
+	require.Equal(t, "The latest message is a channel join on Sep 21 [has joined the channel](https://slack/join).", res.Reply)
+}
+
+// The live lookup face used to END the turn on its raw hit list ("Live results
+// from … reference: … reference: …"), so the planner never saw the hits, never
+// wrote an answer, and could not take another step. It must feed back into the
+// loop like a search. Lookup is no longer generated, but its branch still runs
+// for in-flight and recorded turns.
+//
+// This CAN fail: the old branch returned the lookup result after one planner
+// call, so the reply was the raw list and planCalls was 1.
+
+func TestKnowledgeBaseLookupFeedsBackIntoTheLoop(t *testing.T) {
+	le := newLoopEnv(t)
+	skill := kbSkillTools()
+	skill.Skill.ToolIDs = append(skill.Skill.ToolIDs, "kb:globex/lookup")
+	skill.Tools = append(skill.Tools, catalog.ToolDescriptor{
+		ID: "kb:globex/lookup", Description: "live keyword search of the GLOBEX sources",
+		AllowedRoles: []string{"cook"},
+		KnowledgeBaseExec: &catalog.KnowledgeBaseExecSpec{
+			KnowledgeBaseID: "globex", DisplayName: "GLOBEX", Operation: "lookup",
+		},
+	})
+	le.skills = []catalog.SkillDescriptor{skill.Skill}
+	le.selected = "kb:globex"
+	le.skillTools = skill
+	le.kbLookupResult = activities.LookupCorpusOutput{
+		Result: "Live results from GLOBEX for \"auth\":\n\n- Auth design — GLOBEX Confluence\n  reference: globex-confluence/123",
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/lookup", ToolInput: "auth"},
+		{Action: activities.ActionRespond, Response: "The Auth design page covers it."},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "The Auth design page covers it.", res.Reply)
+	require.Equal(t, 2, le.planCalls, "the planner saw the lookup result and wrote the answer")
+	require.Contains(t, le.planInputs[1].History[0].Result, "Live results from GLOBEX")
+}
+
+// The synthesis step is only for knowledge-base results: a tool whose output IS
+// the answer still finishes verbatim through compose, with no extra planner call.
+// A conversation in flight across the deploy replays turns recorded before the
+// synthesis step existed: those composed the KB result directly, and replay
+// must issue exactly that, or the workflow fails with a nondeterminism error.
+// Pinning the change to DefaultVersion stands in for that recorded history.
+//
+// This CAN fail: without the version guard the turn schedules the extra
+// respond-only planner call, which history does not contain.
+func TestKnowledgeBaseFinishReplaysPreSynthesisHistoryAsItRan(t *testing.T) {
+	le := newLoopEnv(t)
+	le.env.OnGetVersion("kb-synthesize-finish", workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
+	le.skills = []catalog.SkillDescriptor{kbSkillTools().Skill}
+	le.selected = "kb:globex"
+	le.skillTools = kbSkillTools()
+	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{Result: "### 1. Auth design\n```text\nWe use OIDC.\n```\n"}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "auth"},
+		{Action: activities.ActionFinish},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, 2, le.planCalls, "no respond-only call on the old version")
+	require.Equal(t, 1, le.composeCalls, "the old path composed the result")
+}
+
+// Likewise for the live faces: history recorded before they fed back into the
+// loop ended the turn on the raw lookup result.
+//
+// This CAN fail: without the guard the turn re-plans after the lookup.
+func TestKnowledgeBaseLookupReplaysPreLoopHistoryAsItRan(t *testing.T) {
+	le := newLoopEnv(t)
+	le.env.OnGetVersion("kb-live-faces-loop", workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
+	skill := kbSkillTools()
+	skill.Skill.ToolIDs = append(skill.Skill.ToolIDs, "kb:globex/lookup")
+	skill.Tools = append(skill.Tools, catalog.ToolDescriptor{
+		ID: "kb:globex/lookup", Description: "live keyword search of the GLOBEX sources",
+		AllowedRoles: []string{"cook"},
+		KnowledgeBaseExec: &catalog.KnowledgeBaseExecSpec{
+			KnowledgeBaseID: "globex", DisplayName: "GLOBEX", Operation: "lookup",
+		},
+	})
+	le.skills = []catalog.SkillDescriptor{skill.Skill}
+	le.selected = "kb:globex"
+	le.skillTools = skill
+	le.kbLookupResult = activities.LookupCorpusOutput{Result: "Live results from GLOBEX for \"auth\": …"}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/lookup", ToolInput: "auth"},
+		{Action: activities.ActionRespond, Response: "never reached on the old version"},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "how does auth work?", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "Live results from GLOBEX for \"auth\": …", res.Reply)
+	require.Equal(t, 1, le.planCalls)
+}
+
+func TestNonKnowledgeBaseFinishStillComposesVerbatim(t *testing.T) {
+	le := newLoopEnv(t)
+	skill := kbSkillTools()
+	skill.Skill.ToolIDs = []string{"note-taker"}
+	skill.Tools = []catalog.ToolDescriptor{{
+		ID: "note-taker", Description: "jot a note", AllowedRoles: []string{"cook"},
+		LocalExec: &catalog.LocalExecSpec{Runtime: "node", Package: "p", Version: "1.0.0"},
+	}}
+	le.skills = []catalog.SkillDescriptor{skill.Skill}
+	le.selected = "kb:globex"
+	le.skillTools = skill
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "note-taker", ToolInput: "note"},
+		{Action: activities.ActionFinish},
+	}
+
+	var res workflows.TurnResult
+	le.sendTurn(t, "turn-1", "take a note", &res, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, 1, le.composeCalls)
+	require.Equal(t, 2, le.planCalls, "no synthesis call for a non-KB result")
+	for _, in := range le.planInputs {
+		require.False(t, in.RespondOnly)
+	}
+}
+
+// PART B: a stateful refine-loop tool's publish target is keyed from SERVER-SIDE
+// continuation state (not a URL the model re-supplies each turn), and its
+// returned Markdown survives the planner choosing Respond verbatim — so the
+// skill prompt need not carry "copy the URL" / "you MUST choose finish".
+func TestRecipePublishKeysFromServerStateAndSurvivesRespond(t *testing.T) {
+	le := newLoopEnv(t)
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.selected = "recipes"
+	le.skillTools = recipesSkillTools()
+	le.fits = true // turn 2 rides the active skill
+	le.plans = []activities.PlannedAction{
+		// Turn 1: first publish, keyed by the source URL the model supplies THEN.
+		{Action: activities.ActionCallTool, ToolID: "recipe-scraper", ToolInput: "# Pasta", ToolInstanceKey: "https://example.com/pasta"},
+		{Action: activities.ActionFinish},
+		// Turn 2: refine WITHOUT re-supplying the key, then Respond (paraphrase).
+		{Action: activities.ActionCallTool, ToolID: "recipe-scraper", ToolInput: "add salt"},
+		{Action: activities.ActionRespond, Response: "I added salt for you."},
+	}
+
+	var first, second workflows.TurnResult
+	le.sendTurn(t, "turn-1", "publish the pasta recipe", &first, time.Millisecond)
+	le.env.RegisterDelayedCallback(func() {
+		le.signalToolSuccess(0, `"<!-- continuation: slug-pasta -->\n\n# Pasta\nBoil."`)
+	}, time.Second)
+
+	le.sendTurn(t, "turn-2", "add salt to it", &second, 2*time.Second)
+	le.env.RegisterDelayedCallback(func() {
+		le.signalToolSuccess(1, `"<!-- continuation: slug-pasta -->\n\n# Pasta\nBoil. Add salt."`)
+	}, 3*time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	// Keyed from server state: turn 2 recovered the stored slug and re-injected
+	// it, though the planner named no instance.
+	require.Equal(t, "<!-- continuation: slug-pasta -->\n\nadd salt", le.launches[1].Args[0],
+		"turn 2 must recover the publish target from state, not require a model URL")
+	// The tool's Markdown survived the Respond verbatim (token stripped), not the
+	// paraphrase — so next-turn intent detection still sees the recipe.
+	require.Contains(t, second.Reply, "# Pasta")
+	require.Contains(t, second.Reply, "Add salt")
+	require.NotContains(t, second.Reply, "I added salt for you.")
+	require.NotContains(t, second.Reply, "continuation")
 }
 
 // TS unions LocalTool CRs into the same tool catalog (docs/adr/0014) and
@@ -1618,8 +2118,8 @@ func TestSeededHistoryBoundsTheResumedLoop(t *testing.T) {
 	le.skillTools = recipesSkillTools()
 	le.callerTools = []callertools.Descriptor{webSearchCallerTool(t)}
 
-	// Already at the step cap.
-	for i := 0; i < 4; i++ {
+	// Already at the step cap (maxToolSteps, kept in sync with the workflow).
+	for i := 0; i < 8; i++ {
 		le.priorCallerCalls = append(le.priorCallerCalls, callertools.PriorCall{
 			ID: "c" + string(rune('1'+i)), Name: "web_search",
 			Arguments: `{"query":"q"}`, Result: "result " + string(rune('1'+i)),
@@ -1877,9 +2377,13 @@ func TestKnowledgeBaseSearchRunsAsAnActivityNotALaunch(t *testing.T) {
 	require.True(t, le.env.IsWorkflowCompleted())
 	require.NoError(t, le.env.GetWorkflowError())
 
-	require.Len(t, le.kbSearchInputs, 1)
-	require.Equal(t, "how is auth configured", le.kbSearchInputs[0].Query)
-	require.Equal(t, "kb:globex/search", le.kbSearchInputs[0].Tool.ID)
+	// Two activity calls: the deterministic pre-search link gate (GateOnly),
+	// which finds nothing missing here, then the real search.
+	require.Len(t, le.kbSearchInputs, 2)
+	require.True(t, le.kbSearchInputs[0].GateOnly, "the first call is the link gate")
+	require.False(t, le.kbSearchInputs[1].GateOnly, "the second call is the real search")
+	require.Equal(t, "how is auth configured", le.kbSearchInputs[1].Query)
+	require.Equal(t, "kb:globex/search", le.kbSearchInputs[1].Tool.ID)
 	require.Nil(t, le.launched, "a knowledge-base search must never create a ToolRun")
 	require.Contains(t, result.Reply, "Sources:")
 }
@@ -1892,8 +2396,9 @@ func TestKnowledgeBaseSearchNeedingALinkEndsTheTurnOnTheAsk(t *testing.T) {
 	le.skills = []catalog.SkillDescriptor{knowledgeBaseSkillTools().Skill}
 	le.skillTools = knowledgeBaseSkillTools()
 	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
-		NeedsLink: true,
-		Result:    "I need you to link the account behind GLOBEX before I can search it.",
+		NeedsLink:     true,
+		LinkProviders: []string{"atlassian"},
+		Result:        "I need you to link the account behind GLOBEX before I can search it.",
 	}
 	le.plans = []activities.PlannedAction{
 		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "q"},
@@ -1906,6 +2411,52 @@ func TestKnowledgeBaseSearchNeedingALinkEndsTheTurnOnTheAsk(t *testing.T) {
 	require.True(t, le.env.IsWorkflowCompleted())
 	require.NoError(t, le.env.GetWorkflowError())
 
+	// The deterministic gate stops the turn on the ask before any search runs:
+	// one GateOnly call, no real search, nothing framed.
+	require.Len(t, le.kbSearchInputs, 1)
+	require.True(t, le.kbSearchInputs[0].GateOnly)
 	require.Contains(t, result.Reply, "link the account")
 	require.Zero(t, le.composeCalls, "nothing was retrieved, so there is nothing to frame")
+}
+
+// The deterministic gate fires ONCE per knowledge base per conversation even on
+// the all-linked happy path: the GateOnly activity resolves delegated tokens via
+// the broker, so re-running it before every subsequent search would be wasteful
+// and divergent from LangGraph (which skips checkLinks once activeSkillId is
+// persisted). Two searches in one turn must produce exactly one GateOnly call.
+func TestKnowledgeBaseLinkGateRunsOncePerConversation(t *testing.T) {
+	le := newLoopEnv(t)
+	le.selected = "kb:globex"
+	le.skills = []catalog.SkillDescriptor{knowledgeBaseSkillTools().Skill}
+	le.skillTools = knowledgeBaseSkillTools()
+	le.kbSearchResult = activities.SearchKnowledgeBaseOutput{
+		Result: "Found 1 passage.\n\nSources:\n- [Auth](https://wiki/auth)\n",
+	}
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "how is auth configured"},
+		{Action: activities.ActionCallTool, ToolID: "kb:globex/search", ToolInput: "where are the runbooks"},
+		{Action: activities.ActionFinish},
+	}
+
+	var result workflows.TurnResult
+	le.sendTurn(t, "turn-1", "two things about GLOBEX", &result, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	// Expected calls: one GateOnly (first search only), then a real search per
+	// planned query — the second search skips the gate because the KB was
+	// already marked checked.
+	require.Len(t, le.kbSearchInputs, 3)
+	gateOnly := 0
+	for _, in := range le.kbSearchInputs {
+		if in.GateOnly {
+			gateOnly++
+		}
+	}
+	require.Equal(t, 1, gateOnly, "the gate must run once per KB per conversation")
+	require.True(t, le.kbSearchInputs[0].GateOnly, "the gate runs before the first search")
+	require.False(t, le.kbSearchInputs[1].GateOnly)
+	require.False(t, le.kbSearchInputs[2].GateOnly)
 }

@@ -119,7 +119,44 @@ describe("mintInstallationToken", () => {
     expect(init.headers["Content-Type"]).toBe("application/json");
   });
 
-  it("omits a body entirely when opts.repositories is not set", async () => {
+  it("scopes the request to the given permissions when opts.permissions is set (the read-only review token)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ token: "ghs_readonly", expires_at: "" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await mintInstallationToken({ appId: "1", privateKey, installationId: "999" }, "https://api.github.com", Date.now(), {
+      permissions: { contents: "read", pull_requests: "write" },
+    });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({ permissions: { contents: "read", pull_requests: "write" } });
+    expect(init.headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("sends repositories and permissions together in one body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ token: "ghs_both", expires_at: "" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await mintInstallationToken({ appId: "1", privateKey, installationId: "999" }, "https://api.github.com", Date.now(), {
+      repositories: ["widgets"],
+      permissions: { contents: "read", pull_requests: "write", issues: "write" },
+    });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({
+      repositories: ["widgets"],
+      permissions: { contents: "read", pull_requests: "write", issues: "write" },
+    });
+  });
+
+  it("omits a body entirely when neither repositories nor permissions is set", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 201,

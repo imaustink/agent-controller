@@ -515,6 +515,131 @@ describe("GatewayServer", () => {
       await failing.close();
     }
   });
+
+  // The pre-try throw hole: `getOrCreate` ran BEFORE the try/finally, so a store
+  // hiccup there skipped label removal entirely and stranded the trigger label
+  // -- a chunk of the "only works ~3/4 of the time" bug. getOrCreate is now
+  // best-effort and inside the finally's guarantee: the label must still come
+  // off, and the turn must still run and report.
+  it("removes the trigger label even when sessionPageStore.getOrCreate throws (pre-try throw must not skip the finally)", async () => {
+    const onBackgroundError = vi.fn();
+    const throwingGetOrCreate = vi.fn().mockRejectedValue(new Error("redis unavailable"));
+    const localRemoveLabel = vi.fn().mockResolvedValue(undefined);
+    const localServer = new GatewayServer({
+      githubWebhookSecret: SECRET,
+      identityResolver,
+      orchestratorClient: { invoke } as unknown as OrchestratorClient,
+      githubReplyClient: {
+        postIssueComment,
+        removeIssueLabel: localRemoveLabel,
+      } as unknown as GithubReplyClient,
+      githubTriggerLabel: "ai-triage",
+      // A session page store that fails on getOrCreate -- the exact pre-try
+      // throw that used to strand the label.
+      sessionPageStore: {
+        getOrCreate: throwingGetOrCreate,
+        addTurn: vi.fn().mockResolvedValue(undefined),
+        completeTurn: vi.fn().mockResolvedValue(undefined),
+        getByToken: vi.fn(),
+        setLive: vi.fn(),
+      } as unknown as InMemorySessionPageStore,
+      publicBaseUrl: "https://gateway.example.com",
+      onBackgroundError,
+    });
+    await localServer.listen(0);
+    const localPort = (localServer as unknown as { server: { address: () => AddressInfo } }).server.address().port;
+    try {
+      await postWebhook(localPort, "issues", {
+        action: "labeled",
+        repository: { owner: { login: "acme" }, name: "widgets" },
+        sender: { login: "alice", type: "User" },
+        issue: { number: 7, title: "t", body: "b" },
+        label: { name: "ai-triage" },
+      });
+      await flush();
+      // The label came off despite getOrCreate throwing...
+      expect(localRemoveLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-triage");
+      // ...the store failure was reported, not swallowed silently...
+      expect(onBackgroundError).toHaveBeenCalledWith(expect.objectContaining({ message: "redis unavailable" }));
+      // ...and the turn still ran and reported its result (degraded, no page).
+      expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  // The durable half, wired through the real server: a label-triggered run
+  // records an owed removal up front and clears it once the label is off, so a
+  // crash between the two leaves exactly the record the reconciler heals from.
+  it("records then clears a pending-label-removal around a successful turn", async () => {
+    const record = vi.fn().mockResolvedValue(undefined);
+    const clear = vi.fn().mockResolvedValue(undefined);
+    const localServer = new GatewayServer({
+      githubWebhookSecret: SECRET,
+      identityResolver,
+      orchestratorClient: { invoke } as unknown as OrchestratorClient,
+      githubReplyClient: { postIssueComment, removeIssueLabel } as unknown as GithubReplyClient,
+      githubTriggerLabel: "ai-triage",
+      pendingLabelStore: { record, clear, list: vi.fn().mockResolvedValue([]) },
+    });
+    await localServer.listen(0);
+    const localPort = (localServer as unknown as { server: { address: () => AddressInfo } }).server.address().port;
+    try {
+      await postWebhook(localPort, "issues", {
+        action: "labeled",
+        repository: { owner: { login: "acme" }, name: "widgets" },
+        sender: { login: "alice", type: "User" },
+        issue: { number: 7, title: "t", body: "b" },
+        label: { name: "ai-triage" },
+      });
+      await flush();
+      expect(record).toHaveBeenCalledWith(
+        expect.objectContaining({ owner: "acme", repo: "widgets", issueNumber: 7, label: "ai-triage", sessionId: sessionIdFor("acme", "widgets", 7) }),
+      );
+      expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-triage");
+      expect(clear).toHaveBeenCalledWith(sessionIdFor("acme", "widgets", 7), "ai-triage");
+    } finally {
+      await localServer.close();
+    }
+  });
+
+  // If the label removal itself exhausts its retries and throws, the owed-removal
+  // record must be LEFT so the reconciler finishes the job later.
+  it("keeps the pending-label record when removal fails, so the reconciler can heal it", async () => {
+    const record = vi.fn().mockResolvedValue(undefined);
+    const clear = vi.fn().mockResolvedValue(undefined);
+    const onBackgroundError = vi.fn();
+    const localServer = new GatewayServer({
+      githubWebhookSecret: SECRET,
+      identityResolver,
+      orchestratorClient: { invoke } as unknown as OrchestratorClient,
+      githubReplyClient: {
+        postIssueComment,
+        removeIssueLabel: vi.fn().mockRejectedValue(new Error("502 after retries")),
+      } as unknown as GithubReplyClient,
+      githubTriggerLabel: "ai-triage",
+      pendingLabelStore: { record, clear, list: vi.fn().mockResolvedValue([]) },
+      onBackgroundError,
+    });
+    await localServer.listen(0);
+    const localPort = (localServer as unknown as { server: { address: () => AddressInfo } }).server.address().port;
+    try {
+      await postWebhook(localPort, "issues", {
+        action: "labeled",
+        repository: { owner: { login: "acme" }, name: "widgets" },
+        sender: { login: "alice", type: "User" },
+        issue: { number: 7, title: "t", body: "b" },
+        label: { name: "ai-triage" },
+      });
+      await flush();
+      expect(record).toHaveBeenCalled();
+      // Removal threw, so the record is NOT cleared -- the reconciler owns it now.
+      expect(clear).not.toHaveBeenCalled();
+      expect(onBackgroundError).toHaveBeenCalledWith(expect.objectContaining({ message: "502 after retries" }));
+    } finally {
+      await localServer.close();
+    }
+  });
 });
 
 describe("GatewayServer session pages", () => {

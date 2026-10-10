@@ -215,6 +215,41 @@ describe("KnowledgeBaseSearcher", () => {
     expect(out.linkProviders).toEqual(["google"]);
   });
 
+  it("checkLinks reports the unlinked and linked providers without searching", async () => {
+    const credentials = partialResolver({ atlassian: "at", google: "g" });
+    const { searcher, openCorpus } = searcherWith(credentials);
+
+    const check = await searcher.checkLinks(
+      searchTool(
+        member("conf", ["reader"], "coll-conf"),
+        member("drive", ["reader"], "coll-drive", { identityProviders: ["google"] }),
+        member("chan", ["reader"], "coll-chan", { identityProviders: ["slack"], granularity: "connection" }),
+      ),
+      reader,
+    );
+
+    expect(check.linkProviders).toEqual(["slack"]);
+    expect(check.linkedProviders).toEqual(["atlassian", "google"]);
+    // The gate check never runs the query — nothing is opened.
+    expect(openCorpus).not.toHaveBeenCalled();
+  });
+
+  it("checkLinks reports nothing to link when every provider is linked", async () => {
+    const credentials = partialResolver({ atlassian: "at", google: "g" });
+    const { searcher } = searcherWith(credentials);
+
+    const check = await searcher.checkLinks(
+      searchTool(
+        member("conf", ["reader"], "coll-conf"),
+        member("drive", ["reader"], "coll-drive", { identityProviders: ["google"] }),
+      ),
+      reader,
+    );
+
+    expect(check.linkProviders).toEqual([]);
+    expect(check.linkedProviders).toEqual(["atlassian", "google"]);
+  });
+
   it("searches every member when all providers are linked", async () => {
     const credentials = partialResolver({ atlassian: "at", google: "g", slack: "s" });
     const { searcher, openCorpus } = searcherWith(credentials);

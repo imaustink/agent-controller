@@ -56,6 +56,28 @@ export interface AppConfig {
   /** Authenticates THIS orchestrator to the broker. Never a corpus credential. */
   connectionBrokerToken: string | undefined;
   /**
+   * Whether `MCPTool` CRs (docs/adr/0045) are indexed.
+   *
+   * Off by default, and for the same reason {@link knowledgeBasesEnabled} is: a
+   * materialized MCPTool descriptor carries no image and no localExec, only an
+   * `mcpExec` that dispatches through the mcp-broker. Indexing one before the
+   * broker is deployed lets the planner select a tool and then fail at dispatch.
+   * Turn it on once the mcp-broker is deployed. Mirrors the Go engine's
+   * `AGENT_MCP_ENABLED` gate on the MCPTool catalog watch.
+   */
+  mcpEnabled: boolean;
+  /**
+   * The mcp-broker Service, the only MCP speaker (docs/adr/0045 §3): it holds
+   * every MCP session and proxies one `tools/call` per dispatch under the
+   * caller's own delegated token.
+   *
+   * Unset means an MCPTool can be indexed but never dispatched — so dispatch is
+   * gated on this exactly as the Go engine gates it on `MCP_BROKER_URL`.
+   */
+  mcpBrokerUrl: string | undefined;
+  /** Authenticates THIS orchestrator to the mcp-broker. Never a per-user delegated token. */
+  mcpBrokerToken: string | undefined;
+  /**
    * Max consumer-supplied tools that may reach the action planner
    * (docs/adr/0035 §3). Doubles as the threshold below which the caller-tool
    * index is skipped ENTIRELY: with this many tools or fewer there is nothing to
@@ -117,6 +139,17 @@ export interface AppConfig {
    * minutes is a safe floor given real agent narration cadences.
    */
   agentIdleTimeoutSeconds: number;
+  /**
+   * Global fallback (seconds) for how long the orchestrator holds a sub-agent's
+   * own gated tool call waiting for human approval (ADR 0003 + sub-agent HITL),
+   * when the governing Agent CR sets no `approvalTimeoutSeconds`. On expiry a
+   * background sweeper resolves the pending call with a FAILED `tool_result`
+   * (graceful degradation — the sub-agent keeps reasoning) rather than running
+   * it unapproved. Default 900 (15 minutes).
+   */
+  subAgentApprovalTimeoutSeconds: number;
+  /** How often the sub-agent-approval sweeper scans for timed-out pending approvals. Default 60s. */
+  subAgentApprovalSweepIntervalSeconds: number;
   /**
    * On SIGTERM, how long to let in-flight HTTP requests finish before tearing
    * down the NATS/Redis connections they depend on. Must stay under the pod's
@@ -298,6 +331,9 @@ export const config: AppConfig = {
   knowledgeBasesEnabled: process.env.AGENT_KNOWLEDGE_BASES_ENABLED === "true",
   connectionBrokerUrl: process.env.AGENT_CONNECTION_BROKER_URL,
   connectionBrokerToken: process.env.AGENT_CONNECTION_BROKER_TOKEN,
+  mcpEnabled: process.env.AGENT_MCP_ENABLED === "true",
+  mcpBrokerUrl: process.env.AGENT_MCP_BROKER_URL,
+  mcpBrokerToken: process.env.AGENT_MCP_BROKER_TOKEN,
   callerToolTopK: num(process.env.AGENT_CALLER_TOOL_TOP_K, 5),
   agentEngine: process.env.AGENT_ENGINE === "temporal" ? "temporal" : "langgraph",
   temporalEngineUrl: process.env.AGENT_TEMPORAL_ENGINE_URL,
@@ -310,6 +346,8 @@ export const config: AppConfig = {
   agentTopK: num(process.env.AGENT_TOP_K, 3),
   agentRunTimeoutSeconds: num(process.env.AGENT_RUN_TIMEOUT_SECONDS, 28800), // 8h wall-clock backstop
   agentIdleTimeoutSeconds: num(process.env.AGENT_IDLE_TIMEOUT_SECONDS, 600), // 10m of silence
+  subAgentApprovalTimeoutSeconds: num(process.env.SUBAGENT_APPROVAL_TIMEOUT_SECONDS, 900), // 15m to approve a sub-agent tool call
+  subAgentApprovalSweepIntervalSeconds: num(process.env.SUBAGENT_APPROVAL_SWEEP_INTERVAL_SECONDS, 60),
   shutdownDrainMs: num(process.env.AGENT_SHUTDOWN_DRAIN_MS, 25_000), // under the 30s grace period
   sessionTtlSeconds: num(process.env.AGENT_SESSION_TTL_SECONDS, 1800),
   invocationTtlSeconds: num(process.env.AGENT_INVOCATION_TTL_SECONDS, 3600),

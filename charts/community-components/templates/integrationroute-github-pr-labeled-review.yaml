@@ -30,7 +30,22 @@ spec:
   # the gateway drops bot-authored events, so the agent that opened the PR
   # cannot self-trigger a review of its own pull request.
   agentRef: {{ .Values.integrationRoutes.githubPrLabeledReview.agentRef | default "opencode-swe-agent" }}
+  # The SWE-ENFORCED-MODE sentinel on the first line is NOT a mere instruction
+  # to the model: the SWE agent container matches this exact string in its goal
+  # and, when present, CODE-ENFORCES read-only mode -- it adds `git push`/`gh pr
+  # create`/`gh pr merge`/... to the generated permission deny list AND mints a
+  # read-only (contents:read) GitHub token, so a push/merge fails at the CLI and
+  # credential layers regardless of what the model is told (see
+  # apps/claude-code-swe-agent/src/claude.ts REVIEW_MODE_MARKER and
+  # apps/opencode-swe-agent/src/opencode.ts). This is the ONLY per-route signal
+  # that reaches the container (IntegrationRoute has no env/mode field; the
+  # rendered promptTemplate is the only channel), so the string MUST stay
+  # byte-for-byte identical to REVIEW_MODE_MARKER in both agents. It is
+  # deliberately in the fixed, trusted part of the template, above the body, so
+  # event content cannot remove it; a change run can only ever gain it (which
+  # fails safe, read-only), never shed it.
   promptTemplate: |
+    SWE-ENFORCED-MODE: review-only
     Pull request {{`{{owner}}`}}/{{`{{repo}}`}}#{{`{{prNumber}}`}} was labeled "{{`{{labelName}}`}}": "{{`{{title}}`}}"
 
     {{`{{body}}`}}

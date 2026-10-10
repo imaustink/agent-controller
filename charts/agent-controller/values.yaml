@@ -276,3 +276,14 @@ extraManifests: []
 # third-party credentials, so it should be turned on deliberately.
 connection-broker:
   enabled: false
+
+# MCP broker (apps/mcp-broker, ADR 0045). Off by default: it is only needed once
+# MCPServer CRs exist, and it is the one process that speaks the Model Context
+# Protocol and holds servers' discovery credentials, so it should be turned on
+# deliberately. Enabling it is only half the switch — also set
+# temporal-engine.mcp.enabled / the engine's AGENT_MCP_ENABLED so the catalog
+# actually indexes MCP tools, and point the engines' MCP_BROKER_URL at this
+# Service (`<release>-mcp-broker:8080`). It writes derived MCPTool CRs into the
+# MCP namespace (global.knowledgeBaseNamespace, or mcp-broker.mcpNamespace).
+mcp-broker:
+  enabled: false

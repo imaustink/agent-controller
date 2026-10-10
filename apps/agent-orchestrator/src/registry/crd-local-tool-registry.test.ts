@@ -147,3 +147,14 @@ describe("CrdLocalToolRegistry", () => {
     });
   });
 });
+
+describe("toLocalToolDescriptor — approval (ADR 0003)", () => {
+  it("round-trips approval onto the descriptor", () => {
+    const d = toLocalToolDescriptor({ ...nodeTool, spec: { ...nodeTool.spec, approval: "always" } });
+    expect(d?.approval).toBe("always");
+  });
+
+  it("leaves approval undefined when the CR sets none (existing CRs unaffected)", () => {
+    expect(toLocalToolDescriptor(nodeTool)?.approval).toBeUndefined();
+  });
+});

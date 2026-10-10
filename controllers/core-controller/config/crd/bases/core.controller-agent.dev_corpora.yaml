@@ -15,7 +15,7 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.provider
+    - jsonPath: .status.provider
       name: Provider
       type: string
     - jsonPath: .status.resources

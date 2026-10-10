@@ -82,6 +82,7 @@ export class K8sSecretIdentityLinkStore implements IdentityLinkStore {
       refreshExpiresAt: fields.refreshExpiresAt || undefined,
       token: decryptField(this.key, fields.token ?? ""),
       refreshToken: fields.refreshToken ? decryptField(this.key, fields.refreshToken) : undefined,
+      ...(fields.accountId ? { accountId: fields.accountId } : {}),
     };
   }
 
@@ -111,6 +112,9 @@ export class K8sSecretIdentityLinkStore implements IdentityLinkStore {
       // indistinguishable on read.
       if (cred.refreshExpiresAt) fields.refreshExpiresAt = cred.refreshExpiresAt;
       if (cred.refreshToken) fields.refreshToken = encryptField(this.key, cred.refreshToken);
+      // Plaintext like githubLogin: an account id is not secret, and the KB ACL
+      // pre-filter and the `/identity` route both read it back.
+      if (cred.accountId) fields.accountId = cred.accountId;
       await this.storeFor(provider).put(subject, fields);
     } catch (err) {
       console.error(
