@@ -30,6 +30,10 @@ export const TURN_EVENT_KINDS = [
   "approval-required",
   "approval-resolved",
   "turn-completed",
+  // A free-text status line with no richer structure yet. The Temporal engine
+  // routes every narration call site through it; the canonical contract
+  // (framework/protocol, ADR 0047) includes it so both engines agree.
+  "narration",
 ] as const;
 
 export type TurnEventKind = (typeof TURN_EVENT_KINDS)[number];

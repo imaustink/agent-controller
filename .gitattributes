@@ -1,0 +1,4 @@
+# Generated from framework/protocol/proto by `npm run generate -w @controller-agent/protocol`.
+# Collapsed in GitHub diffs; CI fails if they drift from the .proto sources.
+framework/protocol/src/gen/** linguist-generated=true
+framework/protocol/go/**/*.pb.go linguist-generated=true

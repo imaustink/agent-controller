@@ -54,6 +54,77 @@ jobs:
       - name: Check boundaries
         run: npm run check:boundaries
 
+  protocol:
+    name: Protocol (buf lint, breaking, codegen drift, Go conformance)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: framework/protocol
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      # Go is needed twice over: protoc-gen-go runs via `go run` during
+      # generation, and the generated Go module has its own conformance test.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: framework/protocol/go/go.mod
+          cache-dependency-path: framework/protocol/go/go.sum
+
+      - run: npm ci
+        working-directory: .
+
+      - name: buf lint
+        run: npx buf lint
+
+      # The .proto files are a published contract (ADR 0047): other languages
+      # and other people's orchestrators build against them, so a change that
+      # breaks the JSON wire must fail here rather than in someone else's
+      # deployment. Compared with WIRE_JSON rules (buf.yaml) against the PR's
+      # base branch; skipped only while the base branch has no contract yet.
+      - name: buf breaking (vs base branch)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF:$BASE_REF"
+          if git cat-file -e "$BASE_REF:framework/protocol/buf.yaml" 2>/dev/null; then
+            npx buf breaking --against "../../.git#branch=$BASE_REF,subdir=framework/protocol"
+          else
+            echo "::notice::$BASE_REF has no framework/protocol yet; nothing to compare against."
+          fi
+
+      # Generated code is committed (ADR 0047), so a .proto edit without a
+      # regeneration -- or a hand edit to generated output -- would ship a
+      # contract the bindings don't implement. Regenerate and require no diff,
+      # untracked files included.
+      - name: Generated code is up to date
+        run: |
+          npm run generate
+          if [ -n "$(git status --porcelain -- .)" ]; then
+            echo "::error::Generated code is stale. Run 'npm run generate -w @controller-agent/protocol' and commit the result."
+            git status --porcelain -- .
+            git diff -- . | head -100
+            exit 1
+          fi
+
+      # The TypeScript and zod legs of the conformance suite run in the `node`
+      # job with every other workspace's tests; this is the Go leg.
+      - name: Go (gofmt, vet, conformance)
+        working-directory: framework/protocol/go
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-clean; run 'gofmt -w .':"
+            echo "$unformatted"
+            exit 1
+          fi
+          go vet ./...
+          go test ./...
+
   node:
     name: Node (build, typecheck, test)
     runs-on: ubuntu-latest
