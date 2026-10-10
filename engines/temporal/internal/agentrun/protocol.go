@@ -43,6 +43,12 @@ package agentrun
 import (
 	"encoding/json"
 	"fmt"
+
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
+
+	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/agentcontroller/protocol/v1"
 )
 
 // Up-message types (agent → orchestrator).
@@ -80,15 +86,19 @@ type UpMessage struct {
 	// progress / warning / reply / failed
 	Stage   string `json:"stage,omitempty"`
 	Message string `json:"message,omitempty"`
-	Pct     *int   `json:"pct,omitempty"`
-	Code    string `json:"code,omitempty"`
+	// A float, as on the wire: an agent may report 42.5, which an *int could
+	// not decode -- the whole message used to be dropped as undecodable.
+	Pct  *float64 `json:"pct,omitempty"`
+	Code string   `json:"code,omitempty"`
 
 	// reply. Final=false means the agent awaits a further prompt — including
 	// the case where Message is a question for the user. HITL is expressed
 	// without a dedicated ask/answer pair, because a human may take
 	// arbitrarily long and answer across chat turns, so no reply timeout can
 	// apply.
-	Final  bool            `json:"final,omitempty"`
+	// Not omitempty: the contract requires `final` on every reply, and a
+	// non-final reply (a question) is exactly the one omitempty would strip.
+	Final  bool            `json:"final"`
 	Result json.RawMessage `json:"result,omitempty"`
 
 	// tool_call
@@ -133,6 +143,48 @@ type DownMessage struct {
 	OK     *bool           `json:"ok,omitempty"`
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  string          `json:"error,omitempty"`
+}
+
+// wire returns m as the canonical contract message (framework/protocol), with
+// exactly the fields m's type carries. Encoding through the contract rather
+// than this struct's omitempty tags is what guarantees a prompt always carries
+// `message`, even an empty one: the agent requires the key, and omitempty used
+// to drop it.
+func (m DownMessage) wire() (*protocolv1.AgentDownMessage, error) {
+	w := &protocolv1.AgentDownMessage{
+		AgentRunId: proto.String(m.AgentRunID),
+		Seq:        proto.Uint32(uint32(m.Seq)),
+		Ts:         proto.String(m.TS),
+		Type:       proto.String(m.Type),
+	}
+	switch m.Type {
+	case DownPrompt:
+		w.Message = proto.String(m.Message)
+	case DownCancel:
+		if m.Reason != "" {
+			w.Reason = proto.String(m.Reason)
+		}
+	case DownSignal:
+		w.Name = proto.String(m.Name)
+	case DownReplyAck:
+		if m.AckSeq != nil {
+			w.AckSeq = proto.Uint32(uint32(*m.AckSeq))
+		}
+	case DownToolResult:
+		w.CallId = proto.String(m.CallID)
+		w.Ok = m.OK
+		if len(m.Result) > 0 {
+			v := &structpb.Value{}
+			if err := protojson.Unmarshal(m.Result, v); err != nil {
+				return nil, fmt.Errorf("tool_result result: %w", err)
+			}
+			w.Result = v
+		}
+		if m.Error != "" {
+			w.Error = proto.String(m.Error)
+		}
+	}
+	return w, nil
 }
 
 // Subjects are the two NATS subjects for one agent run.

@@ -1,13 +1,15 @@
-// Package messaging is the Go port of agent-controller's
-// @controller-agent/messaging wire contracts: the tool event stream
-// (accepted → progress*/warning* → succeeded|failed) and its HMAC callback
-// signing. Tool containers keep emitting exactly what they emit today; only
-// the receiver changed.
+// Package messaging holds the engine's side of the wire: the tool event stream
+// (accepted → progress*/warning* → succeeded|failed), its HMAC callback
+// signing, and the turn lifecycle envelope. Validity is decided by the
+// canonical contract in framework/protocol (see CheckContract); the structs
+// here are this engine's internal representation of messages that passed it.
 package messaging
 
 import (
 	"encoding/json"
 	"fmt"
+
+	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/agentcontroller/protocol/v1"
 )
 
 const (
@@ -26,8 +28,8 @@ type ArtifactRef struct {
 	ContentType string `json:"content_type"`
 }
 
-// Event is the TS discriminated union flattened into one struct; Validate
-// enforces the per-type requirements.
+// Event is the wire's flat, type-tagged event as one struct. Which fields each
+// type requires is the contract's business (ParseEvent), not this struct's.
 type Event struct {
 	JobID string `json:"job_id"`
 	Seq   int    `json:"seq"`
@@ -67,45 +69,16 @@ func (e Event) ResultText() string {
 	return string(e.Result)
 }
 
-func (e Event) Validate() error {
-	if e.JobID == "" {
-		return fmt.Errorf("event missing job_id")
-	}
-	if e.Seq < 0 {
-		return fmt.Errorf("event seq must be non-negative, got %d", e.Seq)
-	}
-	if e.TS == "" {
-		return fmt.Errorf("event missing ts")
-	}
-	switch e.Type {
-	case EventAccepted, EventProgress:
-		return nil
-	case EventWarning:
-		if e.Message == "" {
-			return fmt.Errorf("warning event missing message")
-		}
-	case EventSucceeded:
-		if len(e.Result) == 0 {
-			return fmt.Errorf("succeeded event missing result")
-		}
-	case EventFailed:
-		if e.Code == "" || e.Message == "" {
-			return fmt.Errorf("failed event missing code/message")
-		}
-	default:
-		return fmt.Errorf("unknown event type %q", e.Type)
-	}
-	return nil
-}
-
-// ParseEvent decodes and validates one callback body.
+// ParseEvent validates one callback body against the wire contract, then
+// decodes it into an Event. The result keeps the tool's raw `result` bytes
+// exactly as sent.
 func ParseEvent(raw []byte) (Event, error) {
+	if err := CheckContract(raw, &protocolv1.Event{}); err != nil {
+		return Event{}, fmt.Errorf("event violates the wire contract: %w", err)
+	}
 	var e Event
 	if err := json.Unmarshal(raw, &e); err != nil {
 		return Event{}, fmt.Errorf("decode event: %w", err)
-	}
-	if err := e.Validate(); err != nil {
-		return Event{}, err
 	}
 	return e, nil
 }
