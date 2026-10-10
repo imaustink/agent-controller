@@ -138,6 +138,10 @@ func main() {
 		// caller's own token, so it must reach the same GitHub the tokens were
 		// issued by (fake-github in e2e).
 		Repos: authz.GitHubRepoReader{APIURL: getenv("GITHUB_API_URL", "https://api.github.com")},
+		// integration-gateway's Connections page (agent-controller ADR 0046):
+		// chat link prompts become one page link. Same variable, and value, as
+		// agent-orchestrator's.
+		ConnectionsURL: os.Getenv("AGENT_CONNECTIONS_URL"),
 	})}
 	w.RegisterActivityWithOptions(authorize.Authorize, activity.RegisterOptions{Name: activities.AuthorizeActivityName})
 	w.RegisterActivityWithOptions(authorize.ResolveLinked, activity.RegisterOptions{Name: activities.ResolveLinkedActivityName})
@@ -179,11 +183,12 @@ func main() {
 		// with no runnable activity behind it is worse than a missing one.
 		if brokerURL := os.Getenv("CONNECTION_BROKER_URL"); brokerURL != "" {
 			kb := &activities.KnowledgeBaseActivities{
-				Corpora:       vectorstore.NewCorpora(qdrantClient, embedder, llm.DefaultEmbedDims),
-				Credentials:   &activities.LinkedCredentials{Links: links},
-				BrokerURL:     brokerURL,
-				BrokerToken:   os.Getenv("CONNECTION_BROKER_TOKEN"),
-				IdentityLinks: links,
+				Corpora:        vectorstore.NewCorpora(qdrantClient, embedder, llm.DefaultEmbedDims),
+				Credentials:    &activities.LinkedCredentials{Links: links},
+				BrokerURL:      brokerURL,
+				BrokerToken:    os.Getenv("CONNECTION_BROKER_TOKEN"),
+				IdentityLinks:  links,
+				ConnectionsURL: os.Getenv("AGENT_CONNECTIONS_URL"),
 			}
 			w.RegisterActivityWithOptions(kb.SearchKnowledgeBase,
 				activity.RegisterOptions{Name: activities.SearchKnowledgeBaseActivityName})

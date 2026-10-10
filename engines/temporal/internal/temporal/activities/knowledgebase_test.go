@@ -233,6 +233,45 @@ func TestSearchStartsLinksAndRendersClickablePrompts(t *testing.T) {
 	require.Len(t, links.Started, 2)
 }
 
+// With the Connections page configured, a chat caller gets ONE link naming
+// every missing source, and nothing is started at a provider (agent-controller
+// ADR 0046). PARITY: knowledgeBaseLinkPrompt in graph.ts.
+func TestSearchOffersOneConnectionsLinkForEveryMissingSource(t *testing.T) {
+	links, err := identitylink.NewFake("", "")
+	require.NoError(t, err)
+	kb := &activities.KnowledgeBaseActivities{
+		Corpora:        vectorstore.NewCorpora(nil, nil, 0),
+		Credentials:    &fakeResolver{token: ""},
+		BrokerURL:      "http://broker",
+		BrokerToken:    "orch",
+		IdentityLinks:  links,
+		ConnectionsURL: "https://gw.example/connections",
+	}
+	google := catalog.KnowledgeBaseExecMember{
+		ID: "g", Label: "#g", Collection: "cg", AllowedRoles: []string{"reader"},
+		Granularity: "resource", IdentityProviders: []string{"google"},
+	}
+	search := func(subject string) activities.SearchKnowledgeBaseOutput {
+		out, err := kb.SearchKnowledgeBase(context.Background(), activities.SearchKnowledgeBaseInput{
+			Caller: activities.Caller{Subject: subject, Roles: []string{"reader"}},
+			Tool:   searchTool(member("c", []string{"reader"}, "coll"), google),
+			Query:  "q",
+		})
+		require.NoError(t, err)
+		return out
+	}
+
+	out := search("openwebui:42")
+	require.Contains(t, out.Result,
+		"[Connect atlassian and google](https://gw.example/connections/link?need=atlassian%2Cgoogle), then ask again")
+	require.Empty(t, links.Started)
+
+	// A subject the page cannot map keeps its direct links.
+	out = search("oidc:integration-gateway")
+	require.Contains(t, out.Result, "[link your google account](https://example.invalid/link/google)")
+	require.NotContains(t, out.Result, "/connections/link")
+}
+
 func TestSearchFallsBackToPlainAskWhenNoLinkGateway(t *testing.T) {
 	// No IdentityLinks wired: the ask degrades to the plain message rather than
 	// failing the search.

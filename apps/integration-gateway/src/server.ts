@@ -229,6 +229,7 @@ export class GatewayServer {
       });
       const back = connectionsApi.completionRedirect.bind(connectionsApi);
       this.identityLinkApi.completionRedirect = back;
+      this.identityLinkApi.cancelRedirect = connectionsApi.cancelRedirect.bind(connectionsApi);
       if (claudeAuthApi) claudeAuthApi.completionRedirect = back;
       this.connectionsApi = connectionsApi;
     }

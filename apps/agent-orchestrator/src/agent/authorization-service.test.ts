@@ -920,7 +920,7 @@ describe("AuthorizationService with a Connections page", () => {
 
     expect(verdict.kind).toBe("link-required");
     if (verdict.kind !== "link-required") return;
-    expect(verdict.message).toContain("(https://gw.example/connections?need=claude)");
+    expect(verdict.message).toContain("(https://gw.example/connections/link?need=claude)");
     // A PTY `claude setup-token` would otherwise sit unused until it expired.
     expect(claude.start).not.toHaveBeenCalled();
     // Still parked like any other link, so the resume path is unchanged.
@@ -939,7 +939,7 @@ describe("AuthorizationService with a Connections page", () => {
       progressListener: progress,
     });
 
-    expect(progress).toHaveBeenCalledWith("identity-link", expect.stringContaining(`${PAGE}?need=claude`));
+    expect(progress).toHaveBeenCalledWith("identity-link", expect.stringContaining(`${PAGE}/link?need=claude`));
     expect(claude.waitForCompletion).toHaveBeenCalledWith("claude", "openwebui:alice", 600_000);
     expect(verdict.kind).toBe("authorized");
   });
@@ -974,5 +974,142 @@ describe("AuthorizationService with a Connections page", () => {
     });
 
     expect(github.start).toHaveBeenCalledWith("github", "openwebui:alice", "device");
+  });
+});
+
+/**
+ * With the page, a turn missing several providers offers ONE deep link that
+ * covers them all (docs/adr/0046) -- while keeping every invariant a direct
+ * link has: the principal goes first, each provider waits on and is parked
+ * against the exact subject it was read under, and a streaming turn still
+ * resumes in place.
+ */
+describe("AuthorizationService with a Connections page -- one link per turn", () => {
+  const PAGE = "https://gw.example/connections";
+  const links = (text: string) => text.match(/\]\(https:\/\/[^)]+\)/g) ?? [];
+
+  it("names every missing provider in a single link and starts none of them", async () => {
+    const github = gateway({});
+    const claude = gateway({});
+    const remote = gateway({});
+    const svc = new AuthorizationService({
+      identityLinkGateway: github,
+      claudeAuthGateway: claude,
+      claudeRemoteGateway: remote,
+      connectionsUrl: PAGE,
+    });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["github", "claude", "claude-remote"] },
+      identity: identity(),
+      request: "r",
+    });
+
+    if (verdict.kind !== "link-required") throw new Error(verdict.kind);
+    expect(links(verdict.message)).toEqual([
+      "](https://gw.example/connections/link?need=github%2Cclaude%2Cclaude-remote)",
+    ]);
+    expect(verdict.message).toContain("[connect your GitHub, Claude and Claude Remote Control accounts]");
+    for (const g of [github, claude, remote]) expect(g.start).not.toHaveBeenCalled();
+    expect(verdict.pending).toMatchObject({ provider: "github", flow: "page", subject: "openwebui:alice" });
+  });
+
+  it("surfaces the link once and resumes the same turn when every provider lands", async () => {
+    const github = gateway({ github: { waitResolvesTo: { token: "gho_x", githubLogin: "alice" } } });
+    const claude = gateway({ claude: { waitResolvesTo: { token: "sk-ant-oat01-x" } } });
+    const progress = vi.fn();
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude, connectionsUrl: PAGE });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["github", "claude"] },
+      identity: identity(),
+      request: "r",
+      progressListener: progress,
+    });
+
+    expect(progress).toHaveBeenCalledTimes(1);
+    expect(progress.mock.calls[0]![1]).toContain(`${PAGE}/link?need=github%2Cclaude`);
+    expect(github.waitForCompletion).toHaveBeenCalledWith("github", "openwebui:alice", 600_000);
+    expect(claude.waitForCompletion).toHaveBeenCalledWith("claude", "openwebui:alice", 600_000);
+    if (verdict.kind !== "authorized") throw new Error(verdict.kind);
+    expect(verdict.secretEnv?.map((e) => e.name)).toEqual(["GITHUB_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", ACTOR_LOGIN_ENV]);
+  });
+
+  it("stops waiting once the user stops, and parks every provider still missing", async () => {
+    const github = gateway({});
+    const claude = gateway({ claude: { waitResolvesTo: { token: "sk-ant-oat01-x" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude, connectionsUrl: PAGE });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["github", "claude"] },
+      identity: identity(),
+      request: "r",
+      progressListener: vi.fn(),
+    });
+
+    expect(claude.waitForCompletion).not.toHaveBeenCalled();
+    if (verdict.kind !== "link-required") throw new Error(verdict.kind);
+    expect(verdict.message).toContain("I haven't received your GitHub and Claude account links yet");
+    expect(verdict.pending).toMatchObject({ provider: "github", subject: "openwebui:alice" });
+  });
+
+  it("parks a provider against the principal it was read under, not the chat subject", async () => {
+    // An existing GitHub link establishes the principal; Claude is read, waited
+    // on and anchored at `github:alice`. Re-deriving it downstream as the raw
+    // subject is the PR #144 re-auth loop.
+    const github = gateway({ github: { token: { token: "gho_x", githubLogin: "alice" } } });
+    const claude = gateway({});
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude, connectionsUrl: PAGE });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ perUser: true }),
+      request: "r",
+      progressListener: vi.fn(),
+    });
+
+    expect(claude.waitForCompletion).toHaveBeenCalledWith("claude", "github:alice", 600_000);
+    if (verdict.kind !== "link-required") throw new Error(verdict.kind);
+    expect(verdict.pending).toMatchObject({ provider: "claude", subject: "github:alice", flow: "page" });
+  });
+
+  it("offers the principal first, names what follows it, and assesses none of it yet", async () => {
+    const github = gateway({ github: {} });
+    const claude = gateway({ claude: {} });
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude, connectionsUrl: PAGE });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ perUser: true }),
+      request: "r",
+    });
+
+    if (verdict.kind !== "link-required") throw new Error(verdict.kind);
+    expect(links(verdict.message)).toEqual(["](https://gw.example/connections/link?need=github%2Cclaude)"]);
+    // Principal-first (docs/adr/0031): nothing after it is read or keyed until it lands.
+    expect(claude.getToken).not.toHaveBeenCalled();
+    expect(verdict.pending).toMatchObject({ provider: "github", subject: "openwebui:alice" });
+  });
+
+  it("does not offer a second link for what the principal's link already named", async () => {
+    // The user is mid-way through the one link: GitHub landed, and the page has
+    // moved them on to Claude. The turn just waits for it.
+    const github = gateway({ github: { waitResolvesTo: { token: "gho_x", githubLogin: "Alice" } } });
+    const claude = gateway({ claude: { waitResolvesTo: { token: "sk-ant-oat01-x" } } });
+    const progress = vi.fn();
+    const svc = new AuthorizationService({ identityLinkGateway: github, claudeAuthGateway: claude, connectionsUrl: PAGE });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["claude"] },
+      identity: identity({ perUser: true }),
+      request: "r",
+      progressListener: progress,
+    });
+
+    expect(progress).toHaveBeenCalledTimes(1);
+    expect(claude.waitForCompletion).toHaveBeenCalledWith("claude", "github:alice", 600_000);
+    if (verdict.kind !== "authorized") throw new Error(verdict.kind);
+    expect(verdict.principal).toBe("github:alice");
+    expect(verdict.secretEnv?.map((e) => e.name)).toEqual(["CLAUDE_CODE_OAUTH_TOKEN", ACTOR_LOGIN_ENV]);
   });
 });

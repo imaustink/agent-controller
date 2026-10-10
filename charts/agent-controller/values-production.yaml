@@ -426,10 +426,11 @@ integration-gateway:
   # OFF until its Pocket ID client exists -- enabling it first would point the
   # pod at a Secret key that isn't there. To turn on:
   #   1. Create a confidential Pocket ID OIDC client "agent-connections" with
-  #      callback URL https://gateway.kurpuis.com/connections/callback (same
-  #      X-API-Key REST calls as provision-openwebui-sso.sh in imaustink/homelab).
+  #      callback URL https://gateway.kurpuis.com/connections/callback:
+  #      imaustink/homelab's
+  #      kubernetes/manifests/services/pocket-id/provision-agent-connections.sh.
   #   2. Add its secret to integration-gateway-secrets as
-  #      GATEWAY_CONNECTIONS_OIDC_CLIENT_SECRET.
+  #      GATEWAY_CONNECTIONS_OIDC_CLIENT_SECRET (the script prints the command).
   #   3. Set enabled: true here, and agent-orchestrator.identityLink.connectionsUrl
   #      (near the top of this file) to "https://gateway.kurpuis.com/connections".
   # Pocket ID users must have a verified email (the page refuses unverified

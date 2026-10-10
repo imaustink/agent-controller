@@ -4,7 +4,7 @@ import { checkBearer } from "../identity-link/api.js";
 import type { OidcLoginClient, PendingLogin } from "./oidc-login.js";
 import { renderConnectionsPage, renderMessagePage, type ConnectionRow } from "./page.js";
 import type { PrincipalDirectory } from "./principal-directory.js";
-import type { ConnectionProvider } from "./providers.js";
+import type { ConnectionProvider, ConnectionStatus } from "./providers.js";
 import { signToken, verifyToken } from "./signed-token.js";
 
 /**
@@ -30,6 +30,36 @@ const LOGIN_TTL_MS = 10 * 60 * 1000;
 /** Matches the identity-link `state` lifetime: a link that outlives it fails anyway. */
 const RETURN_TTL_MS = 10 * 60 * 1000;
 const PROVIDER_ID = /^[a-z0-9-]{1,40}$/;
+/**
+ * Signs the `cx_return` cookie between two steps of a one-click chain. A
+ * different purpose from a provider's return token, so neither can stand in
+ * for the other.
+ */
+const CHAIN_PURPOSE = "cx_chain";
+
+/** A one-click link in progress: what chat asked for, and what this chain already sent the user through. */
+interface Chain {
+  need: string[];
+  attempted: string[];
+}
+
+function readChain(payload: Record<string, unknown> | undefined): Chain | undefined {
+  const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === "string");
+  if (!payload || !strings(payload.chainNeed) || !strings(payload.attempted)) return undefined;
+  return { need: payload.chainNeed, attempted: payload.attempted };
+}
+
+/**
+ * The order a chain links providers in. GitHub first, because Claude's
+ * credentials are filed under the principal a GitHub link establishes
+ * (docs/adr/0031). The redirect-based providers next. Claude and then Remote
+ * Control last: theirs are paste-the-code pages rather than a consent screen
+ * that bounces straight back, so they are where a user is most likely to stop.
+ */
+function chainOrder(ids: string[]): string[] {
+  const rank = (id: string) => (id === "github" ? 0 : id === "claude" ? 2 : id === "claude-remote" ? 3 : 1);
+  return [...ids].sort((a, b) => rank(a) - rank(b));
+}
 
 export interface ConnectionsApiOptions {
   providers: ConnectionProvider[];
@@ -76,6 +106,10 @@ export class ConnectionsApi {
     }
 
     if (req.method === "GET" && segments.length === 1) await this.handlePage(req, res, url);
+    else if (req.method === "GET" && segments[1] === "link" && segments.length === 2) await this.handleLink(req, res, url);
+    else if (req.method === "GET" && segments[1] === "link" && segments[2] === "next" && segments.length === 3) {
+      await this.handleLinkNext(req, res, url);
+    }
     else if (req.method === "GET" && segments[1] === "login" && segments.length === 2) await this.handleLogin(res, url);
     else if (req.method === "GET" && segments[1] === "callback" && segments.length === 2) await this.handleCallback(req, res, url);
     else if (req.method === "POST" && segments[1] === "logout" && segments.length === 2) await this.handleLogout(req, res);
@@ -95,14 +129,45 @@ export class ConnectionsApi {
    * redirected here by a stale one.
    */
   completionRedirect(req: IncomingMessage, res: ServerResponse, provider: string): string | undefined {
+    const payload = this.takeReturn(req, res, provider);
+    if (!payload) return undefined;
+    // Mid-way through a one-click chain: on to the next provider, carrying the
+    // chain forward in a fresh signed cookie rather than in the URL.
+    const chain = readChain(payload);
+    if (chain) {
+      const token = signToken({ chainNeed: chain.need, attempted: chain.attempted }, CHAIN_PURPOSE, this.options.cookieKey, this.now() + RETURN_TTL_MS);
+      res.appendHeader("set-cookie", this.cookie(RETURN_COOKIE, token, { path: "/", maxAgeSeconds: RETURN_TTL_MS / 1000 }));
+      return "/connections/link/next";
+    }
+    const target = new URLSearchParams({ connected: provider });
+    if (typeof payload.need === "string" && payload.need) target.set("need", payload.need);
+    return `/connections?${target}`;
+  }
+
+  /**
+   * Where a provider's callback should send the browser when the user DECLINED
+   * a link this page started: back to the page, which still highlights what
+   * chat needs. A one-click chain stops here -- the user said no, so moving on
+   * to the next provider's consent would be the wrong answer. Whatever the
+   * chain already connected stays connected.
+   */
+  cancelRedirect(req: IncomingMessage, res: ServerResponse, provider: string): string | undefined {
+    const payload = this.takeReturn(req, res, provider);
+    if (!payload) return undefined;
+    const need = readChain(payload)?.need.join(",") ?? (typeof payload.need === "string" ? payload.need : "");
+    const target = new URLSearchParams({ cancelled: provider });
+    if (need) target.set("need", need);
+    return `/connections?${target}`;
+  }
+
+  /** Consumes the return cookie; its payload only if it was issued for `provider`. */
+  private takeReturn(req: IncomingMessage, res: ServerResponse, provider: string): Record<string, unknown> | undefined {
     const raw = readCookie(req, RETURN_COOKIE);
     if (!raw) return undefined;
     res.appendHeader("set-cookie", this.cookie(RETURN_COOKIE, "", { path: "/", maxAgeSeconds: 0 }));
     const payload = verifyToken(raw, RETURN_COOKIE, this.options.cookieKey, this.now());
     if (!payload || payload.provider !== provider) return undefined;
-    const target = new URLSearchParams({ connected: provider });
-    if (typeof payload.need === "string" && payload.need) target.set("need", payload.need);
-    return `/connections?${target}`;
+    return payload;
   }
 
   // ---- internal ---------------------------------------------------------
@@ -142,31 +207,17 @@ export class ConnectionsApi {
     }
     const subject = await this.options.directory.lookup(session.email);
     if (!subject) {
-      this.sendPage(
-        res,
-        200,
-        renderMessagePage(
-          "Send a chat message first",
-          `You're signed in as ${session.email}, but we haven't seen that account in chat yet. Send any message in chat, then reload this page.`,
-          { href: url.pathname + url.search, label: "Reload" },
-        ),
-      );
+      this.sendUnknownSubject(res, session, url);
       return;
     }
 
     const rows: ConnectionRow[] = await Promise.all(
       [...this.providers.values()].map(async (provider) => ({
         provider,
-        status: await provider.status(subject).catch((err: unknown) => {
-          console.error(`connections: status for ${provider.id} failed:`, err instanceof Error ? err.message : err);
-          return { state: "not-connected" as const };
-        }),
+        status: await this.statusOf(provider, subject),
       })),
     );
-    const needed = (url.searchParams.get("need") ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => this.providers.has(s));
+    const needed = this.knownProviders(url.searchParams.get("need"));
     this.sendPage(
       res,
       200,
@@ -186,12 +237,149 @@ export class ConnectionsApi {
     if (connected) return { flash: { kind: "ok", message: `${connected} is connected.` } };
     const disconnected = label(url.searchParams.get("disconnected"));
     if (disconnected) return { flash: { kind: "ok", message: `${disconnected} is disconnected.` } };
+    const cancelled = label(url.searchParams.get("cancelled"));
+    if (cancelled) return { flash: { kind: "error", message: `${cancelled} wasn't connected, because the request was declined.` } };
     const blocked = label(url.searchParams.get("blocked"));
     if (blocked) return { flash: { kind: "error", message: `${blocked} can't be connected yet. Connect GitHub first.` } };
     if (url.searchParams.get("error")) {
       return { flash: { kind: "error", message: "Something went wrong. Please try again." } };
     }
     return {};
+  }
+
+  /**
+   * `GET /connections/link?need=a,b`: the one link a chat prompt carries. It
+   * connects everything `need` names that isn't connected yet, one provider
+   * after another, without stopping on this page in between.
+   *
+   * Sign-in goes through the ordinary login with `next` pointing back here, so
+   * a user with a live IdP session never sees it. Then each step re-reads
+   * status, skips what is connected, and redirects straight to the next
+   * provider's own consent; its callback brings the browser back through
+   * `/connections/link/next`.
+   *
+   * A GET that starts a link is safe here because it can only ever act for
+   * the signed-in user's OWN subject, and the provider still asks that user
+   * for consent: a forged navigation can at worst show someone a consent
+   * screen for their own account. Nothing is disconnected, and the POST
+   * routes keep their CSRF token.
+   */
+  private async handleLink(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const session = this.session(req);
+    if (!session) {
+      redirect(res, `/connections/login?${new URLSearchParams({ next: `${url.pathname}${url.search}` })}`);
+      return;
+    }
+    const subject = await this.options.directory.lookup(session.email);
+    if (!subject) {
+      this.sendUnknownSubject(res, session, url);
+      return;
+    }
+    const need = chainOrder(this.knownProviders(url.searchParams.get("need")));
+    if (need.length === 0) {
+      redirect(res, "/connections");
+      return;
+    }
+    await this.advanceChain(res, subject, { need, attempted: [] });
+  }
+
+  /** Where a provider's callback lands mid-chain; see {@link completionRedirect}. */
+  private async handleLinkNext(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const session = this.session(req);
+    if (!session) {
+      redirect(res, `/connections/login?${new URLSearchParams({ next: url.pathname })}`);
+      return;
+    }
+    const raw = readCookie(req, RETURN_COOKIE);
+    res.appendHeader("set-cookie", this.cookie(RETURN_COOKIE, "", { path: "/", maxAgeSeconds: 0 }));
+    const chain = raw ? readChain(verifyToken(raw, CHAIN_PURPOSE, this.options.cookieKey, this.now())) : undefined;
+    const subject = await this.options.directory.lookup(session.email);
+    if (!chain || !subject) {
+      redirect(res, "/connections");
+      return;
+    }
+    // Signed by us, but a provider can be configured away mid-chain.
+    await this.advanceChain(res, subject, { ...chain, need: chain.need.filter((id) => this.providers.has(id)) });
+  }
+
+  /**
+   * One step of a chain: re-read every needed provider's status, then either
+   * finish, stop on the page, or send the browser to the next provider.
+   *
+   * A provider is tried at most once per chain. If one this chain already
+   * sent the user through still isn't connected -- its link reported success
+   * but nothing persisted -- the chain stops on the page rather than offering
+   * it again, which would otherwise loop forever.
+   */
+  private async advanceChain(res: ServerResponse, subject: string, chain: Chain): Promise<void> {
+    const missing: string[] = [];
+    for (const id of chain.need) {
+      const status = await this.statusOf(this.providers.get(id)!, subject);
+      if (status.state !== "connected") missing.push(id);
+    }
+    if (missing.length === 0) {
+      this.sendPage(
+        res,
+        200,
+        renderMessagePage("You're all set", "Everything your chat needed is connected. Go back to your chat to carry on.", {
+          href: "/connections",
+          label: "Manage your connections",
+        }),
+      );
+      return;
+    }
+    const stop = (flash: string) => redirect(res, withNeed(`/connections?${flash}`, missing.join(",")));
+    const next = missing[0]!;
+    if (chain.attempted.includes(next)) {
+      console.error(`connections: ${next} still isn't connected after this chain linked it; stopping on the page`);
+      stop(`error=connect`);
+      return;
+    }
+    let started;
+    try {
+      started = await this.providers.get(next)!.connect(subject);
+    } catch (err) {
+      console.error(`connections: connect ${next} failed:`, err instanceof Error ? err.message : err);
+      stop(`error=connect`);
+      return;
+    }
+    if ("blocked" in started) {
+      stop(`blocked=${encodeURIComponent(next)}`);
+      return;
+    }
+    const token = signToken(
+      { provider: next, need: missing.join(","), chainNeed: chain.need, attempted: [...chain.attempted, next] },
+      RETURN_COOKIE,
+      this.options.cookieKey,
+      this.now() + RETURN_TTL_MS,
+    );
+    res.appendHeader("set-cookie", this.cookie(RETURN_COOKIE, token, { path: "/", maxAgeSeconds: RETURN_TTL_MS / 1000 }));
+    redirect(res, started.redirect);
+  }
+
+  private statusOf(provider: ConnectionProvider, subject: string): Promise<ConnectionStatus> {
+    return provider.status(subject).catch((err: unknown) => {
+      console.error(`connections: status for ${provider.id} failed:`, err instanceof Error ? err.message : err);
+      return { state: "not-connected" as const };
+    });
+  }
+
+  /** The providers a `need` list names that this gateway can link, de-duplicated, in the order given. */
+  private knownProviders(need: string | null): string[] {
+    const ids = (need ?? "").split(",").map((s) => s.trim());
+    return [...new Set(ids.filter((s) => this.providers.has(s)))];
+  }
+
+  private sendUnknownSubject(res: ServerResponse, session: Session, url: URL): void {
+    this.sendPage(
+      res,
+      200,
+      renderMessagePage(
+        "Send a chat message first",
+        `You're signed in as ${session.email}, but we haven't seen that account in chat yet. Send any message in chat, then reload this page.`,
+        { href: url.pathname + url.search, label: "Reload" },
+      ),
+    );
   }
 
   private async handleLogin(res: ServerResponse, url: URL): Promise<void> {

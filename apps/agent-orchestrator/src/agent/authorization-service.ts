@@ -1,4 +1,4 @@
-import type { IdentityLinkPageStart, IdentityLinkPort, IdentityLinkStartResult } from "../identity-link/gateway-client.js";
+import type { IdentityLinkPageStart, IdentityLinkPort, IdentityLinkStartResult, IdentityLinkToken } from "../identity-link/gateway-client.js";
 import { canonicalSubjectForLogin, isCanonicalPrincipal, resolveActorLogin } from "../identity-link/credential-subject.js";
 import {
   resolveIdentityGateway,
@@ -269,10 +269,39 @@ export function connectionsPageStart(
   providers: string[],
   flow: "device" | "authcode",
 ): IdentityLinkPageStart | undefined {
-  if (!connectionsUrl || flow === "device" || !callerSubject.startsWith("openwebui:")) return undefined;
+  if (!connectionsUrl || !usesConnectionsPage(connectionsUrl, callerSubject, flow)) return undefined;
+  // The page's deep link, not the page itself: one click signs the user in
+  // (invisibly, on an existing IdP session), skips whatever is already
+  // connected and goes straight to the first provider's consent, then on to
+  // the next. `AGENT_CONNECTIONS_URL` names the page, `https://<gw>/connections`.
   const url = new URL(connectionsUrl);
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}/link`;
   url.searchParams.set("need", providers.join(","));
   return { flow: "page", pageUrl: url.toString(), expiresInSeconds: CONNECTIONS_LINK_TTL_SECONDS };
+}
+
+/** Whether {@link connectionsPageStart} applies to this caller at all; see there for why. */
+export function usesConnectionsPage(
+  connectionsUrl: string | undefined,
+  callerSubject: string,
+  flow: "device" | "authcode",
+): boolean {
+  return Boolean(connectionsUrl) && flow !== "device" && callerSubject.startsWith("openwebui:");
+}
+
+/**
+ * The prompt clause for a Connections-page link: {@link linkPromptText}'s
+ * wording for one provider, or one link naming all of them.
+ */
+export function connectionsLinkText(started: IdentityLinkPageStart, labels: string[]): string {
+  if (labels.length <= 1) return linkPromptText(started, labels[0] ?? "");
+  return `[connect your ${joinLabels(labels)} accounts](${started.pageUrl})`;
+}
+
+/** "A", "A and B", "A, B and C". */
+export function joinLabels(labels: string[]): string {
+  if (labels.length <= 1) return labels.join("");
+  return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
 }
 
 export class AuthorizationService {
@@ -413,7 +442,98 @@ export class AuthorizationService {
       providerPlan.unshift({ name: PRINCIPAL_PROVIDER, principalOnly: true });
     }
 
-    for (const entry of providerPlan) {
+    // Ordinary Open WebUI chat turns never set `identityLinkFlow`, so they
+    // default to the browser-redirect authcode flow; a headless direct
+    // `/invoke` caller (e.g. integration-gateway's own GitHub-issue relay)
+    // can force the device flow instead, since it has no browser to
+    // redirect. Ignored by the `claude` provider's gateway client (it only
+    // has one flow shape).
+    const flow = req.identityLinkFlow ?? "authcode";
+
+    // ── One Connections-page link for the whole turn (docs/adr/0046) ────────
+    // When the page stands in for the providers' own flows, a missing provider
+    // is not offered on its own: it is held back here until every provider has
+    // been assessed, then ONE `/connections/link?need=...` link covers them all
+    // and the page walks the user through each in turn.
+    const viaPage = usesConnectionsPage(this.deps.connectionsUrl, identity.subject, flow);
+    const deferred: { provider: string; gateway: IdentityLinkPort; credentialSubject: string }[] = [];
+    /** Providers a page link already surfaced on this turn names, so the turn never offers them twice. */
+    const offered = new Set<string>();
+
+    /**
+     * Folds one resolved credential into the verdict: the principal mapping for
+     * the link-only principal step, otherwise the run's env. Returns an outcome
+     * only to end the turn as misconfigured.
+     */
+    const settle = async (
+      entry: { name: string; principalOnly?: boolean },
+      provider: string,
+      credentialSubject: string,
+      existing: IdentityLinkToken,
+    ): Promise<AuthorizationOutcome | undefined> => {
+      // A link-only principal step: it contributes the mapping and nothing else.
+      // No `secretEnv` entry, so no `GITHUB_TOKEN` reaches the run and the
+      // agent's delegated-write path stays unreachable (docs/adr/0030 §5).
+      if (entry.principalOnly) {
+        if (existing.githubLogin) {
+          principalLogin = existing.githubLogin;
+          principal = canonicalSubjectForLogin(existing.githubLogin);
+        } else {
+          // A link with no login on it can't produce a mapping. Degrade to the
+          // raw subject rather than failing a turn over a missing nicety.
+          console.error(
+            `[authorization] the ${PRINCIPAL_PROVIDER} link for this caller carries no login; continuing keyed by the raw subject, without cross-entry-point sharing`,
+          );
+        }
+        return undefined;
+      }
+
+      // Capture the login off whichever way this credential arrived. On a
+      // streaming turn it lands via waitForCompletion, so the standalone lookup
+      // below would miss it -- but that lookup is still needed for Agents that
+      // do NOT declare `github` at all (docs/adr/0030).
+      if (provider === "github" && existing.githubLogin) actorLoginFromLoop = existing.githubLogin;
+
+      const envVarName = catalog.get(provider)?.envVar;
+      if (!envVarName) {
+        this.logVerdict("misconfigured", agent.id, { provider, reason: "no env var mapping" });
+        return { kind: "misconfigured", error: `agent ${agent.id} declares unsupported identity provider "${provider}"` };
+      }
+      secretEnv = [...(secretEnv ?? []), { name: envVarName, value: existing.token }];
+
+      // `claude-remote` only: its credential is a whole
+      // `~/.claude/.credentials.json` that the run's own CLI refreshes in place,
+      // and Anthropic rotates the refresh token when it does -- so without a way
+      // to write the result back, the copy resolved above is dead the moment
+      // this run refreshes it and every later run fails with "Login expired ·
+      // Please run /login". Best-effort by design: no grant simply means no
+      // write-back.
+      if (provider === "claude-remote" && this.deps.claudeRemoteWriteback) {
+        // Same canonical subject the credential was READ from above -- a grant
+        // minted against the raw subject would write the refreshed credentials
+        // to a record nothing ever reads, and the shared one would keep serving
+        // the pre-refresh copy until it died.
+        const grant = await this.deps.claudeRemoteWriteback.createWritebackGrant(
+          credentialSubject,
+          (this.deps.agentRunTimeoutSeconds ?? 0) + WRITEBACK_GRANT_MARGIN_SECONDS,
+        );
+        if (grant) {
+          secretEnv = [
+            ...secretEnv,
+            { name: CREDENTIALS_WRITEBACK_ENV.url, value: grant.url },
+            { name: CREDENTIALS_WRITEBACK_ENV.token, value: grant.token },
+          ];
+          // Hand the grant's own object to the run, so it is collected with it
+          // rather than accumulating one Secret per launch forever
+          // (docs/adr/0034). Absent from an older gateway, which is why this is
+          // conditional and not an assertion.
+          if (grant.secretName) ownedSecretNames.push(grant.secretName);
+        }
+      }
+      return undefined;
+    };
+
+    for (const [index, entry] of providerPlan.entries()) {
       const provider = entry.name;
       const gateway = this.gatewayFor(provider);
       if (!gateway) {
@@ -472,13 +592,10 @@ export class AuthorizationService {
         // being set up. Safe to fire before we even have the link URL.
         req.reportIdentityLinkPending?.({ provider, subject: credentialSubject });
 
-        // Ordinary Open WebUI chat turns never set `identityLinkFlow`, so they
-        // default to the browser-redirect authcode flow; a headless direct
-        // `/invoke` caller (e.g. integration-gateway's own GitHub-issue relay)
-        // can force the device flow instead, since it has no browser to
-        // redirect. Ignored by the `claude` provider's gateway client (it only
-        // has one flow shape).
-        const flow = req.identityLinkFlow ?? "authcode";
+        if (viaPage && !entry.principalOnly) {
+          deferred.push({ provider, gateway, credentialSubject });
+          continue;
+        }
 
         // Starting the link flow can itself fail before there is any URL to
         // show. For "github" this is a plain HTTP call and rarely throws; for
@@ -488,9 +605,18 @@ export class AuthorizationService {
         // That must NOT crash the turn into a raw "Something went wrong" -- on
         // the fire-and-forget GitHub-issue triage path that error is what gets
         // posted to the ticket.
-        const started =
-          connectionsPageStart(this.deps.connectionsUrl, identity.subject, [provider], flow) ??
-          (await this.startWithRetry(gateway, provider, credentialSubject, flow));
+        //
+        // On the page, a pending PRINCIPAL is offered on its own link right
+        // away, since nothing after it is assessed until it lands (below). That
+        // link also names every provider after it: they are only names in the
+        // URL, not assessed or keyed here, and the page keys each one itself
+        // exactly as this class does (Claude on the GitHub principal), skipping
+        // any already connected. So the user still clicks once.
+        const pageProviders = viaPage ? [...new Set([provider, ...providerPlan.slice(index + 1).map((p) => p.name)])] : [];
+        const pageStart = viaPage
+          ? connectionsPageStart(this.deps.connectionsUrl, identity.subject, pageProviders, flow)
+          : undefined;
+        const started = pageStart ?? (await this.startWithRetry(gateway, provider, credentialSubject, flow));
         if (!started) {
           // A principal link that won't start must DEGRADE, not block: sharing
           // is an improvement over per-entry-point keying, and refusing the
@@ -507,7 +633,10 @@ export class AuthorizationService {
         }
 
         const label = catalog.get(provider)?.label ?? provider;
-        const linkUrlText = linkPromptText(started, label);
+        const linkUrlText = pageStart
+          ? connectionsLinkText(pageStart, pageProviders.map((p) => catalog.get(p)?.label ?? p))
+          : linkPromptText(started, label);
+        for (const p of pageProviders) offered.add(p);
 
         // How the link reaches the caller depends on whether this turn has a
         // live channel (a streaming `progressListener`):
@@ -531,21 +660,7 @@ export class AuthorizationService {
             "identity-link",
             `To continue, please ${linkUrlText}. This is a one-time step — I'll continue automatically once you finish.`,
           );
-          try {
-            existing = await gateway.waitForCompletion?.(provider, credentialSubject, started.expiresInSeconds * 1000);
-          } catch (err) {
-            // The long-held wait is inherently fragile: the gateway pod can roll
-            // (a deploy mid-flow), an intermediary can drop an idle connection,
-            // or undici can abort a multi-minute request on its own headers
-            // timeout -- all surface here as a thrown "fetch failed". None of
-            // that means the LINK failed: the user can still complete it in
-            // their browser. So swallow the throw and fall through to the same
-            // pending-link state a plain timeout produces.
-            console.error(
-              `[authorization] waitForCompletion threw for provider ${provider}; treating as not-yet-linked and parking pending: ${err instanceof Error ? err.message : String(err)}`,
-            );
-            existing = undefined;
-          }
+          existing = await this.waitForLink(gateway, provider, credentialSubject, started.expiresInSeconds * 1000);
         }
 
         if (!existing) {
@@ -582,64 +697,62 @@ export class AuthorizationService {
         }
       }
 
-      // A link-only principal step: it contributes the mapping and nothing else.
-      // No `secretEnv` entry, so no `GITHUB_TOKEN` reaches the run and the
-      // agent's delegated-write path stays unreachable (docs/adr/0030 §5).
-      if (entry.principalOnly) {
-        if (existing.githubLogin) {
-          principalLogin = existing.githubLogin;
-          principal = canonicalSubjectForLogin(existing.githubLogin);
-        } else {
-          // A link with no login on it can't produce a mapping. Degrade to the
-          // raw subject rather than failing a turn over a missing nicety.
-          console.error(
-            `[authorization] the ${PRINCIPAL_PROVIDER} link for this caller carries no login; continuing keyed by the raw subject, without cross-entry-point sharing`,
-          );
-        }
-        continue;
-      }
+      const settled = await settle(entry, provider, credentialSubject, existing);
+      if (settled) return settled;
+    }
 
-      // Capture the login off whichever way this credential arrived. On a
-      // streaming turn it lands via waitForCompletion, so the standalone lookup
-      // below would miss it -- but that lookup is still needed for Agents that
-      // do NOT declare `github` at all (docs/adr/0030).
-      if (provider === "github" && existing.githubLogin) actorLoginFromLoop = existing.githubLogin;
-
-      const envVarName = catalog.get(provider)?.envVar;
-      if (!envVarName) {
-        this.logVerdict("misconfigured", agent.id, { provider, reason: "no env var mapping" });
-        return { kind: "misconfigured", error: `agent ${agent.id} declares unsupported identity provider "${provider}"` };
-      }
-      secretEnv = [...(secretEnv ?? []), { name: envVarName, value: existing.token }];
-
-      // `claude-remote` only: its credential is a whole
-      // `~/.claude/.credentials.json` that the run's own CLI refreshes in place,
-      // and Anthropic rotates the refresh token when it does -- so without a way
-      // to write the result back, the copy resolved above is dead the moment
-      // this run refreshes it and every later run fails with "Login expired ·
-      // Please run /login". Best-effort by design: no grant simply means no
-      // write-back.
-      if (provider === "claude-remote" && this.deps.claudeRemoteWriteback) {
-        // Same canonical subject the credential was READ from above -- a grant
-        // minted against the raw subject would write the refreshed credentials
-        // to a record nothing ever reads, and the shared one would keep serving
-        // the pre-refresh copy until it died.
-        const grant = await this.deps.claudeRemoteWriteback.createWritebackGrant(
-          credentialSubject,
-          (this.deps.agentRunTimeoutSeconds ?? 0) + WRITEBACK_GRANT_MARGIN_SECONDS,
+    // ── The deferred providers' single page link (docs/adr/0046) ────────────
+    // Every provider is assessed by now, so the link can name them all. The
+    // keying is untouched: each one waits on, and is parked against, exactly the
+    // `credentialSubject` it was read under in the loop above.
+    if (deferred.length > 0) {
+      const started = connectionsPageStart(
+        this.deps.connectionsUrl,
+        identity.subject,
+        deferred.map((d) => d.provider),
+        flow,
+      )!;
+      const linkUrlText = connectionsLinkText(
+        started,
+        deferred.map((d) => catalog.get(d.provider)?.label ?? d.provider),
+      );
+      // Not when the principal's link already named every one of them: the
+      // page is walking the user through those right now.
+      if (req.progressListener && deferred.some((d) => !offered.has(d.provider))) {
+        req.progressListener(
+          "identity-link",
+          `To continue, please ${linkUrlText}. This is a one-time step — I'll continue automatically once you finish.`,
         );
-        if (grant) {
-          secretEnv = [
-            ...secretEnv,
-            { name: CREDENTIALS_WRITEBACK_ENV.url, value: grant.url },
-            { name: CREDENTIALS_WRITEBACK_ENV.token, value: grant.token },
-          ];
-          // Hand the grant's own object to the run, so it is collected with it
-          // rather than accumulating one Secret per launch forever
-          // (docs/adr/0034). Absent from an older gateway, which is why this is
-          // conditional and not an assertion.
-          if (grant.secretName) ownedSecretNames.push(grant.secretName);
+      }
+      // One wait per provider, in the order the page links them. Once one times
+      // out the user has stopped, so the rest park without waiting again.
+      let waiting = Boolean(req.progressListener);
+      for (const d of deferred) {
+        const existing = waiting
+          ? await this.waitForLink(d.gateway, d.provider, d.credentialSubject, started.expiresInSeconds * 1000)
+          : undefined;
+        if (!existing) {
+          waiting = false;
+          pendingLinks.push({
+            provider: d.provider,
+            label: catalog.get(d.provider)?.label ?? d.provider,
+            linkUrlText,
+            surfacedLive: Boolean(req.progressListener),
+            pending: {
+              agentId: agent.id,
+              provider: d.provider,
+              flow: started.flow,
+              expiresAt: Date.now() + started.expiresInSeconds * 1000,
+              // The subject this provider was read under -- see the loop's own
+              // anchor for why it must never be recomputed.
+              subject: d.credentialSubject,
+              request: req.request,
+            },
+          });
+          continue;
         }
+        const settled = await settle({ name: d.provider }, d.provider, d.credentialSubject, existing);
+        if (settled) return settled;
       }
     }
 
@@ -765,6 +878,33 @@ export class AuthorizationService {
   }
 
   /**
+   * Blocks on the gateway until `provider` lands a credential for
+   * `credentialSubject`, or the wait ends -- `undefined` either way it ends.
+   */
+  private async waitForLink(
+    gateway: IdentityLinkPort,
+    provider: string,
+    credentialSubject: string,
+    timeoutMs: number,
+  ): Promise<IdentityLinkToken | undefined> {
+    try {
+      return await gateway.waitForCompletion?.(provider, credentialSubject, timeoutMs);
+    } catch (err) {
+      // The long-held wait is inherently fragile: the gateway pod can roll
+      // (a deploy mid-flow), an intermediary can drop an idle connection,
+      // or undici can abort a multi-minute request on its own headers
+      // timeout -- all surface here as a thrown "fetch failed". None of
+      // that means the LINK failed: the user can still complete it in
+      // their browser. So swallow the throw and fall through to the same
+      // pending-link state a plain timeout produces.
+      console.error(
+        `[authorization] waitForCompletion threw for provider ${provider}; treating as not-yet-linked and parking pending: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
    * One line per authorization decision, at every exit.
    *
    * Deliberately permanent, and deliberately at the verdict rather than
@@ -839,7 +979,11 @@ export class AuthorizationService {
     if (pendingLinks.length > 0) {
       // Anything already surfaced live via progressListener is not repeated
       // here -- otherwise a streaming caller renders the same link twice.
-      const toPrint = pendingLinks.filter((l) => !l.surfacedLive);
+      // Deduplicated by link: on the Connections page, several providers share
+      // ONE link (docs/adr/0046), and it is offered once.
+      const toPrint = pendingLinks.filter(
+        (l, i) => !l.surfacedLive && pendingLinks.findIndex((o) => o.linkUrlText === l.linkUrlText) === i,
+      );
       if (toPrint.length === 1) {
         parts.push(`To continue, please ${toPrint[0]!.linkUrlText}. This is a one-time step -- send any message once you're done.`);
       } else if (toPrint.length > 1) {

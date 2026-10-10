@@ -101,6 +101,9 @@ export class IdentityLinkApi {
    */
   completionRedirect?: (req: IncomingMessage, res: ServerResponse, provider: string) => string | undefined;
 
+  /** The same, for a link the user declined at the provider. */
+  cancelRedirect?: (req: IncomingMessage, res: ServerResponse, provider: string) => string | undefined;
+
   /** A provider this gateway can actually link. */
   private supports(provider: string): boolean {
     return provider === DEVICE_FLOW_PROVIDER || this.authCodeLinkers.has(provider);
@@ -145,6 +148,15 @@ export class IdentityLinkApi {
     if (error) {
       // GitHub's denial redirect (e.g. the user clicked "Cancel"). This is a
       // completed-but-declined flow, not really an error condition, so 200.
+      //
+      // A link the Connections page started goes back to the page instead --
+      // and, mid-way through a one-click chain, stops the chain there rather
+      // than moving on to the next provider (docs/adr/0046).
+      const back = this.cancelRedirect?.(req, res, provider);
+      if (back) {
+        res.writeHead(303, { location: back }).end();
+        return true;
+      }
       sendHtml(
         res,
         200,
