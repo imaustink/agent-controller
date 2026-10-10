@@ -5,6 +5,7 @@ import type { OrchestratorClient } from "../orchestrator-client.js";
 import type { GithubReplyClient } from "../github-client.js";
 import { GatewayServer } from "../server.js";
 import type { GithubDeviceFlowLinker } from "./device-flow-linker.js";
+import type { OAuthAuthCodeLinker } from "./oauth-authcode-linker.js";
 
 /**
  * Every request in this file goes over a fresh TCP connection — see the long
@@ -361,6 +362,65 @@ describe("GatewayServer identity-link authcode callback", () => {
   it("400s on an unsupported provider", async () => {
     const res = await fetch(url("/identity-link/bitbucket/callback?code=the-code&state=the-state"));
     expect(res.status).toBe(400);
+    expect(completeAuthCode).not.toHaveBeenCalled();
+  });
+});
+
+describe("GatewayServer identity-link callback result page names the real provider", () => {
+  let server: GatewayServer;
+  let port: number;
+  let completeAuthCode: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    // An authcode provider other than github, to prove the result page reflects
+    // the `:provider` path segment rather than a hardcoded "GitHub".
+    completeAuthCode = vi.fn().mockResolvedValue({ subject: "user-1" });
+
+    server = new GatewayServer({
+      githubWebhookSecret: "unused",
+      identityResolver: {} as unknown as GithubIdentityResolver,
+      orchestratorClient: {} as unknown as OrchestratorClient,
+      githubReplyClient: {} as unknown as GithubReplyClient,
+      identityLinkLinker: {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getValidToken: vi.fn(),
+        getLinkedLogin: vi.fn(),
+        startAuthCode: vi.fn(),
+        completeAuthCode: vi.fn(),
+      } as unknown as GithubDeviceFlowLinker,
+      identityLinkAuthCodeLinkers: new Map([
+        ["atlassian", { completeAuthCode } as unknown as OAuthAuthCodeLinker],
+      ]),
+      identityLinkToken: TOKEN,
+    });
+    await server.listen(0);
+    port = (server as unknown as { server: { address: () => AddressInfo } }).server.address().port;
+  });
+
+  afterEach(async () => {
+    await server.close();
+  });
+
+  function url(path: string): string {
+    return `http://localhost:${port}${path}`;
+  }
+
+  it("titles the success page with the provider's own display name, not GitHub", async () => {
+    const res = await fetch(url("/identity-link/atlassian/callback?code=the-code&state=the-state"));
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("Atlassian account linked");
+    expect(body).not.toContain("GitHub");
+    expect(completeAuthCode).toHaveBeenCalledWith("the-state", "the-code");
+  });
+
+  it("titles the cancelled page with the provider's own display name, not GitHub", async () => {
+    const res = await fetch(url("/identity-link/atlassian/callback?error=access_denied&state=the-state"));
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("Atlassian link cancelled");
+    expect(body).not.toContain("GitHub");
     expect(completeAuthCode).not.toHaveBeenCalled();
   });
 });

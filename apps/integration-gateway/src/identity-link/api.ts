@@ -10,6 +10,21 @@ import type { OAuthAuthCodeLinker } from "./oauth-authcode-linker.js";
  */
 const DEVICE_FLOW_PROVIDER = "github";
 
+/**
+ * Human-facing provider names for the callback result pages. The `:provider`
+ * path segment is lowercase (the CR name, e.g. `atlassian`), which title-cases
+ * cleanly for every provider except `github`'s brand capitalisation. Anything
+ * not listed falls back to title-casing the segment, so a newly registered
+ * provider still renders a reasonable name without a code change here.
+ */
+const PROVIDER_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  github: "GitHub",
+};
+
+function providerDisplayName(provider: string): string {
+  return PROVIDER_DISPLAY_NAMES[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
 /** Hard ceiling on `/wait`'s `timeoutMs`, matching the authcode `state` TTL -- a caller can't hold this route open longer than a link attempt could possibly still be valid for. */
 const MAX_WAIT_MS = 10 * 60 * 1000;
 
@@ -105,6 +120,7 @@ export class IdentityLinkApi {
       res.writeHead(400, { "content-type": "text/plain" }).end(`Unsupported identity provider: ${provider}`);
       return true;
     }
+    const displayName = providerDisplayName(provider);
 
     const state = url.searchParams.get("state");
     if (!state) {
@@ -118,12 +134,12 @@ export class IdentityLinkApi {
 
     const error = url.searchParams.get("error");
     if (error) {
-      // GitHub's denial redirect (e.g. the user clicked "Cancel"). This is a
-      // completed-but-declined flow, not really an error condition, so 200.
+      // The provider's denial redirect (e.g. the user clicked "Cancel"). This is
+      // a completed-but-declined flow, not really an error condition, so 200.
       sendHtml(
         res,
         200,
-        htmlPage("GitHub link cancelled", "You declined the request. You can try again from chat whenever you're ready."),
+        htmlPage(`${displayName} link cancelled`, "You declined the request. You can try again from chat whenever you're ready."),
       );
       return true;
     }
@@ -154,7 +170,7 @@ export class IdentityLinkApi {
     sendHtml(
       res,
       200,
-      htmlPage("GitHub account linked", "You can close this tab and return to your chat."),
+      htmlPage(`${displayName} account linked`, "You can close this tab and return to your chat."),
     );
     return true;
   }
