@@ -76,6 +76,41 @@ func TestAnUpMessageViolatingTheContractIsDroppedAndNotAcked(t *testing.T) {
 	require.Empty(t, conn.acks())
 }
 
+// Every up-message type, built the way the agent SDK and opencode-swe-agent
+// build it, passes the gate and reaches the workflow -- so the gate can only
+// ever drop a message no real agent sends. Concluding types are also acked.
+func TestEveryValidUpMessageTypePassesTheGate(t *testing.T) {
+	cases := map[string]struct {
+		body       string
+		concluding bool
+	}{
+		"ready":             {body: `"type":"ready"`},
+		"progress":          {body: `"type":"progress","message":"cloning","stage":"setup","pct":12.5`},
+		"progress (bare)":   {body: `"type":"progress","message":"Starting opencode…"`},
+		"warning":           {body: `"type":"warning","message":"flaky test"`},
+		"reply (question)":  {body: `"type":"reply","message":"Which branch?","final":false`, concluding: true},
+		"reply (final)":     {body: `"type":"reply","message":"done","final":true,"result":{"pr":12}`, concluding: true},
+		"failed":            {body: `"type":"failed","code":"agent_error","message":"boom"`, concluding: true},
+		"tool_call":         {body: `"type":"tool_call","callId":"c1","tool":"web-search","input":"{\"q\":\"x\"}"`},
+		"opencode_event":    {body: `"type":"opencode_event","event":{"type":"message.part"}`},
+		"opencode_response": {body: `"type":"opencode_response","requestId":"q1","status":503,"body":{"error":"not ready"}`},
+		"session_idle":      {body: `"type":"session_idle","liveUntil":"2026-10-10T01:00:00Z"`},
+		"session_ended":     {body: `"type":"session_ended","reason":"idle timeout"`},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, conn, signaler, subjects := attached(t)
+			conn.deliverRaw(t, subjects.Up, `{"agent_run_id":"`+runID+`","seq":3,"ts":"t",`+c.body+`}`)
+			require.Equal(t, 1, signaler.count(), "a valid %s must be signalled", name)
+			if c.concluding {
+				require.Equal(t, []int{3}, conn.acks())
+			} else {
+				require.Empty(t, conn.acks(), "narration is never acked")
+			}
+		})
+	}
+}
+
 // The struct still encodes a non-final reply with `final` present.
 func TestANonFinalReplyStructEncodesFinal(t *testing.T) {
 	raw, err := json.Marshal(agentrun.UpMessage{AgentRunID: runID, Seq: 1, TS: "t", Type: agentrun.UpReply, Message: "which branch?"})
