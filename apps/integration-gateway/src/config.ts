@@ -184,6 +184,24 @@ export interface AppConfig {
    */
   claudeAuthEnabled: boolean;
   /**
+   * The Connections page's sign-in (docs/adr/0046): any OIDC issuer -- Pocket
+   * ID, Keycloak (`https://<host>/realms/<realm>`), etc. The page is enabled
+   * only when the issuer, client id and client secret are ALL set, on top of
+   * identity-link and `publicUrl`; its redirect URI is derived as
+   * `<publicUrl>/connections/callback` and must be registered with the client.
+   */
+  connectionsOidcIssuer: string;
+  connectionsOidcClientId: string;
+  connectionsOidcClientSecret: string;
+  /** Space-separated; must include `openid` and `email`. */
+  connectionsOidcScopes: string;
+  /**
+   * Accept sign-ins whose email the IdP does not mark verified. Leave off: the
+   * email decides whose credentials the page manages (docs/adr/0046).
+   */
+  connectionsAllowUnverifiedEmail: boolean;
+  connectionsSessionTtlSeconds: number;
+  /**
    * How often the trigger-label reconciler sweeps for owed removals whose
    * in-process `finally` never ran (pod restart/OOM mid-turn). Undefined ->
    * {@link LabelReconciler}'s own default. See label-reconciler.ts.
@@ -253,6 +271,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     publicUrl: env.GATEWAY_PUBLIC_URL ?? "",
     sessionPageRedisUrl: env.SESSION_PAGE_REDIS_URL,
     claudeAuthEnabled: env.GATEWAY_CLAUDE_AUTH_ENABLED === "true",
+    connectionsOidcIssuer: env.GATEWAY_CONNECTIONS_OIDC_ISSUER ?? "",
+    connectionsOidcClientId: env.GATEWAY_CONNECTIONS_OIDC_CLIENT_ID ?? "",
+    connectionsOidcClientSecret: env.GATEWAY_CONNECTIONS_OIDC_CLIENT_SECRET ?? "",
+    connectionsOidcScopes: env.GATEWAY_CONNECTIONS_OIDC_SCOPES || "openid email profile",
+    connectionsAllowUnverifiedEmail: env.GATEWAY_CONNECTIONS_ALLOW_UNVERIFIED_EMAIL === "true",
+    connectionsSessionTtlSeconds: num(env.GATEWAY_CONNECTIONS_SESSION_TTL_SECONDS, 8 * 60 * 60),
     labelReconcilerIntervalMs: numOrUndefined(env.GATEWAY_LABEL_RECONCILER_INTERVAL_MS),
     labelReconcilerGraceMs: numOrUndefined(env.GATEWAY_LABEL_RECONCILER_GRACE_MS),
   };

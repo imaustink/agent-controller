@@ -97,6 +97,10 @@ spec:
                   name: {{ . }}
                   key: {{ $.Values.identityLink.tokenSecretKey }}
             {{- end }}
+            {{- with .Values.identityLink.connectionsUrl }}
+            - name: AGENT_CONNECTIONS_URL
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.knowledgeBases.enabled }}
             # Knowledge bases (docs/adr/0039). The worker registers its
             # knowledge-base activities only when the broker URL is set, and

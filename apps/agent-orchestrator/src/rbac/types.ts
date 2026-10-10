@@ -47,6 +47,13 @@ export interface Identity {
    * a credential.
    */
   perUser?: true;
+  /**
+   * The caller's email, when the resolver read it from a SIGNED claim (today
+   * only Open WebUI's forwarded-user JWT). Never used for authorization here;
+   * it lets the Connections page find this subject from an IdP sign-in
+   * (docs/adr/0046).
+   */
+  email?: string;
 }
 
 /**
