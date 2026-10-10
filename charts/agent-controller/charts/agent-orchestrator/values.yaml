@@ -205,6 +205,14 @@ identityLink:
   # and has no redirect URI, so it is unaffected by that registration -- the
   # flow to pick when the Callback URL can't be corrected.
   defaultFlow: ""
+  # Public URL of integration-gateway's Connections page (docs/adr/0046),
+  # e.g. "https://gateway.example.com/connections". Set it only once that
+  # page is enabled (integration-gateway's connections.enabled). Then:
+  #   - each verified Open WebUI caller's email is recorded with the gateway,
+  #     which is how the page finds their stored credentials, and
+  #   - chat link prompts for Open WebUI users point at the page instead of
+  #     straight at the provider (webhook/device-flow callers keep direct links).
+  connectionsUrl: ""
   # Secrets: IDENTITY_LINK_GATEWAY_TOKEN (see secrets block below). Must
   # match the value configured as integration-gateway's
   # identityLink.secrets.identityLinkToken (GATEWAY_IDENTITY_LINK_TOKEN env

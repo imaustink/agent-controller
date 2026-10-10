@@ -12,6 +12,7 @@ import { loadStaticIdentitiesFromEnv, StaticIdentityResolver } from "./rbac/stat
 import { OidcIdentityResolver } from "./rbac/oidc-identity-resolver.js";
 import { CompositeIdentityResolver } from "./rbac/composite-identity-resolver.js";
 import { OpenWebUiForwardedUserResolver } from "./rbac/openwebui-forwarded-user-resolver.js";
+import { PrincipalRecordingResolver } from "./identity-link/principal-recording-resolver.js";
 import type { IdentityResolver } from "./rbac/types.js";
 import { createRemoteJWKSet } from "jose";
 import { CrdSkillRegistry } from "./skills/crd-skill-registry.js";
@@ -563,7 +564,7 @@ async function main(): Promise<void> {
   // makes it usable by every other Open WebUI user with no auth check.
   // Absent config -> resolveIdentity falls back to the shared-subject path,
   // same as before this resolver existed.
-  const forwardedUserIdentityResolver = config.openWebUiUserJwtSecret
+  const openWebUiResolver = config.openWebUiUserJwtSecret
     ? new OpenWebUiForwardedUserResolver({ secret: config.openWebUiUserJwtSecret, roles: config.openWebUiUserRoles })
     : undefined;
 
@@ -607,6 +608,20 @@ async function main(): Promise<void> {
           token: config.identityLinkGatewayToken,
         })
       : undefined;
+
+  // The Connections page (docs/adr/0046) finds a chat user's credentials from
+  // an IdP sign-in by email; this records each verified caller's email for it.
+  // Wrapped once here so both engines' resolvers record through it.
+  const forwardedUserIdentityResolver =
+    openWebUiResolver && identityLinkGateway && config.connectionsUrl
+      ? new PrincipalRecordingResolver(openWebUiResolver, identityLinkGateway)
+      : openWebUiResolver;
+  if (config.connectionsUrl && !(openWebUiResolver && identityLinkGateway)) {
+    console.warn(
+      "AGENT_CONNECTIONS_URL is set but the Open WebUI JWT secret or identity-link gateway is not, " +
+        "so no chat user can be found from the Connections page",
+    );
+  }
 
   // Said out loud at startup because the failure it guards against is
   // otherwise SILENT: an authcode link dies at GitHub's own consent screen
@@ -834,6 +849,7 @@ async function main(): Promise<void> {
     bestEffortResponder,
     capabilityNeedChecker,
     identityProviderCatalog,
+    ...(config.connectionsUrl ? { connectionsUrl: config.connectionsUrl } : {}),
     ...(identityLinkGateway ? { identityLinkGateway } : {}),
     ...(knowledgeBaseSearcher ? { knowledgeBaseSearcher } : {}),
     ...(corpusReader ? { corpusReader } : {}),

@@ -53,11 +53,18 @@ function sendHtml(res: ServerResponse, status: number, html: string): void {
   res.writeHead(status, { "content-type": "text/html; charset=utf-8" }).end(html);
 }
 
+function escapeHtml(raw: string): string {
+  return raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function htmlPage(title: string, message: string): string {
+  title = escapeHtml(title);
+  message = escapeHtml(message);
   return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem; color: #1a1a1a; }
@@ -90,6 +97,15 @@ export class IdentityLinkApi {
      */
     private readonly authCodeLinkers: ReadonlyMap<string, OAuthAuthCodeLinker> = new Map(),
   ) {}
+
+  /**
+   * Set by the Connections page (docs/adr/0046): where to send the browser
+   * once a link it started completes. `undefined` keeps the result page below.
+   */
+  completionRedirect?: (req: IncomingMessage, res: ServerResponse, provider: string) => string | undefined;
+
+  /** The same, for a link the user declined at the provider. */
+  cancelRedirect?: (req: IncomingMessage, res: ServerResponse, provider: string) => string | undefined;
 
   /** A provider this gateway can actually link. */
   private supports(provider: string): boolean {
@@ -136,10 +152,19 @@ export class IdentityLinkApi {
     if (error) {
       // The provider's denial redirect (e.g. the user clicked "Cancel"). This is
       // a completed-but-declined flow, not really an error condition, so 200.
+      //
+      // A link the Connections page started goes back to the page instead --
+      // and, mid-way through a one-click chain, stops the chain there rather
+      // than moving on to the next provider (docs/adr/0046).
+      const back = this.cancelRedirect?.(req, res, provider);
+      if (back) {
+        res.writeHead(303, { location: back }).end();
+        return true;
+      }
       sendHtml(
         res,
         200,
-        htmlPage(`${displayName} link cancelled`, "You declined the request. You can try again from chat whenever you're ready."),
+        htmlPage(`${displayName} link cancelled`, "You declined the request. You can try again whenever you're ready."),
       );
       return true;
     }
@@ -167,6 +192,11 @@ export class IdentityLinkApi {
       return true;
     }
 
+    const back = this.completionRedirect?.(req, res, provider);
+    if (back) {
+      res.writeHead(303, { location: back }).end();
+      return true;
+    }
     sendHtml(
       res,
       200,
