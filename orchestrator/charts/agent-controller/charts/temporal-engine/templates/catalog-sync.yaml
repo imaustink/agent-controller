@@ -23,7 +23,7 @@ rules:
   # LIST 403s, WaitForCacheSync fails and catalog-sync crashloops. (The
   # agent-orchestrator gates its localtools grant behind localTool.enabled
   # because its watch is gated; this watcher's is not.)
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["tools", "skills", "agents", "localtools"]
     verbs: ["get", "list", "watch"]
   {{- if and .Values.knowledgeBases.enabled (eq $kbNs $catalogNs) }}
@@ -38,7 +38,7 @@ rules:
   #
   # Only here when the KB namespace is the catalog namespace; a distinct KB
   # namespace gets its own Role/RoleBinding below.
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["connections", "corpora", "knowledgebases"]
     verbs: ["get", "list", "watch"]
   {{- end }}
@@ -50,7 +50,7 @@ rules:
   # knowledge bases: a deployment may run MCP servers with no knowledge base.
   # Only here when the KB namespace is the catalog namespace; a distinct KB
   # namespace gets its own Role/RoleBinding below.
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["mcptools"]
     verbs: ["get", "list", "watch"]
   {{- end }}
@@ -86,12 +86,12 @@ metadata:
     {{- include "temporal-engine.labels" . | nindent 4 }}
 rules:
   {{- if .Values.knowledgeBases.enabled }}
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["connections", "corpora", "knowledgebases"]
     verbs: ["get", "list", "watch"]
   {{- end }}
   {{- if .Values.mcp.enabled }}
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["mcptools"]
     verbs: ["get", "list", "watch"]
   {{- end }}

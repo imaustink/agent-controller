@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Build from the REPO ROOT (this tool depends on the shared
-# @controller-agent/messaging and @controller-agent/github-app-auth workspace
+# @roverkit/messaging and @roverkit/github-app-auth workspace
 # packages):
 #
 #   docker build -f catalog/tools/github/Dockerfile -t github:latest .
@@ -23,21 +23,21 @@ COPY framework/github-app-auth framework/github-app-auth
 COPY catalog/tools/github/tsconfig.json catalog/tools/github/tsconfig.json
 COPY catalog/tools/github/src catalog/tools/github/src
 
-RUN npm run build --workspace=@controller-agent/messaging \
-  && npm run build --workspace=@controller-agent/github-app-auth \
+RUN npm run build --workspace=@roverkit/messaging \
+  && npm run build --workspace=@roverkit/github-app-auth \
   && npm run build --workspace=github \
   && npm prune --omit=dev \
   # Materialize the workspace packages into real directories (not the
   # npm-created symlinks) so they survive being copied into the runtime stage
   # below.
-  && rm -rf node_modules/@controller-agent/messaging \
-  && mkdir -p node_modules/@controller-agent/messaging \
-  && cp -r framework/messaging/dist node_modules/@controller-agent/messaging/dist \
-  && cp framework/messaging/package.json node_modules/@controller-agent/messaging/package.json \
-  && rm -rf node_modules/@controller-agent/github-app-auth \
-  && mkdir -p node_modules/@controller-agent/github-app-auth \
-  && cp -r framework/github-app-auth/dist node_modules/@controller-agent/github-app-auth/dist \
-  && cp framework/github-app-auth/package.json node_modules/@controller-agent/github-app-auth/package.json
+  && rm -rf node_modules/@roverkit/messaging \
+  && mkdir -p node_modules/@roverkit/messaging \
+  && cp -r framework/messaging/dist node_modules/@roverkit/messaging/dist \
+  && cp framework/messaging/package.json node_modules/@roverkit/messaging/package.json \
+  && rm -rf node_modules/@roverkit/github-app-auth \
+  && mkdir -p node_modules/@roverkit/github-app-auth \
+  && cp -r framework/github-app-auth/dist node_modules/@roverkit/github-app-auth/dist \
+  && cp framework/github-app-auth/package.json node_modules/@roverkit/github-app-auth/package.json
 
 ############################
 # Runtime stage

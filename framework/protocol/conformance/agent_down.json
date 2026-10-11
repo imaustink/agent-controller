@@ -1,5 +1,5 @@
 {
-  "message": "agentcontroller.protocol.v1.AgentDownMessage",
+  "message": "roverkit.protocol.v1.AgentDownMessage",
   "cases": [
     { "name": "prompt", "valid": true, "json": { "agent_run_id": "r1", "seq": 0, "ts": "t", "type": "prompt", "message": "Fix the flaky test" } },
     { "name": "prompt with an empty message", "valid": true, "json": { "agent_run_id": "r1", "seq": 0, "ts": "t", "type": "prompt", "message": "" } },

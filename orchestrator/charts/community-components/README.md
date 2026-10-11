@@ -12,7 +12,7 @@ The `agent-controller` chart must already be installed in the cluster --
 this chart's CRs (`Tool`/`Skill`/`Agent`) require the
 `Tool`/`Skill`/`Agent`/`ToolRun`/`AgentRun`/`LocalTool` CRDs that chart's
 `core-controller` subchart installs. Installing this chart first will fail
-(the API group `core.controller-agent.dev/v1alpha1` won't exist yet).
+(the API group `core.roverkit.io/v1alpha1` won't exist yet).
 
 ## Install
 

@@ -24,21 +24,21 @@ rules:
   # without a restart (docs/adr/0020). A missing verb here 403s the registry's
   # watch at startup and crashloops the process — loud, which is how a gap like
   # this is found.
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["mcpservers"]
     verbs: ["get", "list", "watch"]
   # Reporting discovered tools and Ready/Degraded back onto the server.
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["mcpservers/status"]
     verbs: ["get", "patch", "update"]
   # The broker OWNS MCPTools: it materializes the exposed tools, reconciles them
   # on every discovery pass, and deletes the ones a server stops advertising
   # (the existence rule, ADR 0045 §6). This is the one place in the system that
   # writes this kind.
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["mcptools"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["mcptools/status"]
     verbs: ["get", "patch", "update"]
   # The DISCOVERY credentials MCPServers name (spec.secretEnv). Read only, and in

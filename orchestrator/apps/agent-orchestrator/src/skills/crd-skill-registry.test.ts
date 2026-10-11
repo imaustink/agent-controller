@@ -16,12 +16,12 @@ describe("CrdSkillRegistry", () => {
   it("maps Skill custom resources to SkillDescriptors", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [validSkill] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdSkillRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const skills = await registry.listAll();
 
     expect(listNamespacedCustomObject).toHaveBeenCalledWith({
-      group: "core.controller-agent.dev",
+      group: "core.roverkit.io",
       version: "v1alpha1",
       namespace: "default",
       plural: "skills",
@@ -49,7 +49,7 @@ describe("CrdSkillRegistry", () => {
     };
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [agentBacked] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdSkillRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const skills = await registry.listAll();
 
@@ -64,7 +64,7 @@ describe("CrdSkillRegistry", () => {
     };
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [respondOnly] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdSkillRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const skills = await registry.listAll();
 
@@ -79,7 +79,7 @@ describe("CrdSkillRegistry", () => {
     } as SkillCustomResource;
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [malformed, validSkill] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdSkillRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const skills = await registry.listAll();
 
@@ -98,7 +98,7 @@ describe("CrdSkillRegistry", () => {
     };
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [withIo] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdSkillRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const skills = await registry.listAll();
 
@@ -110,7 +110,7 @@ describe("CrdSkillRegistry", () => {
   it("returns an empty catalog when there are zero Skill resources", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdSkillRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     expect(await registry.listAll()).toEqual([]);
   });
@@ -124,7 +124,7 @@ describe("CrdSkillRegistry", () => {
         onEvent = cb;
         return { stop: vi.fn() };
       };
-      const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const registry = new CrdSkillRegistry("default", "core.roverkit.io", "v1alpha1", api, watchFn);
       const onChange = vi.fn();
       registry.watch(onChange);
 
@@ -140,7 +140,7 @@ describe("CrdSkillRegistry", () => {
 
     it("throws when constructed without a watchFn", () => {
       const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
-      const registry = new CrdSkillRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      const registry = new CrdSkillRegistry("default", "core.roverkit.io", "v1alpha1", api);
       expect(() => registry.watch(() => {})).toThrow();
     });
   });

@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/agentcontroller/protocol/v1"
+	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/roverkit/protocol/v1"
 	"github.com/nats-io/nats.go"
 
-	"github.com/controller-agent/temporal-engine/internal/messaging"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/messaging"
 )
 
 // Signaler is the slice of the Temporal client the bridge needs.

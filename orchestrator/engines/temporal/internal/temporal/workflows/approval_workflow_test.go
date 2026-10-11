@@ -7,10 +7,10 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	"github.com/controller-agent/temporal-engine/internal/approval"
-	"github.com/controller-agent/temporal-engine/internal/catalog"
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
-	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/approval"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/workflows"
 )
 
 // approvalSkillTools is recipesSkillTools with the scraper carrying a given

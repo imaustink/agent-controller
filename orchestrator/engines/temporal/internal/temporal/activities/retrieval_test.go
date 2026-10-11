@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/controller-agent/temporal-engine/internal/catalog"
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
-	"github.com/controller-agent/temporal-engine/internal/vectorstore"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/vectorstore"
 )
 
 // fakeStore serves canned records with the same visibility semantics as the

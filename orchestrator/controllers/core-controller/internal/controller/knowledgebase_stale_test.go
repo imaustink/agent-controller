@@ -22,7 +22,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	corev1alpha1 "github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 // TestCorpusIsStale is a plain (non-envtest) unit test of the staleness

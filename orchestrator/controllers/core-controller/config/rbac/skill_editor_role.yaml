@@ -1,7 +1,7 @@
 # This rule is not used by the project core-controller itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants permissions to create, update, and delete resources within the core.controller-agent.dev.
+# Grants permissions to create, update, and delete resources within the core.roverkit.io.
 # This role is intended for users who need to manage these resources
 # but should not control RBAC or manage permissions for others.
 
@@ -14,7 +14,7 @@ metadata:
   name: skill-editor-role
 rules:
 - apiGroups:
-  - core.controller-agent.dev
+  - core.roverkit.io
   resources:
   - skills
   verbs:
@@ -26,7 +26,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - core.controller-agent.dev
+  - core.roverkit.io
   resources:
   - skills/status
   verbs:

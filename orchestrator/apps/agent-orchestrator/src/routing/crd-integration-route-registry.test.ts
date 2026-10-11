@@ -20,12 +20,12 @@ describe("CrdIntegrationRouteRegistry", () => {
   it("maps IntegrationRoute custom resources", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [labeledRoute] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdIntegrationRouteRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const routes = await registry.listAll();
 
     expect(listNamespacedCustomObject).toHaveBeenCalledWith({
-      group: "core.controller-agent.dev",
+      group: "core.roverkit.io",
       version: "v1alpha1",
       namespace: "default",
       plural: "integrationroutes",
@@ -52,7 +52,7 @@ describe("CrdIntegrationRouteRegistry", () => {
     } as IntegrationRouteCustomResource;
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [malformed, labeledRoute] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdIntegrationRouteRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const routes = await registry.listAll();
 
@@ -64,7 +64,7 @@ describe("CrdIntegrationRouteRegistry", () => {
     it("returns the route whose action matches exactly", async () => {
       const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [labeledRoute] });
       const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-      const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      const registry = new CrdIntegrationRouteRegistry("default", "core.roverkit.io", "v1alpha1", api);
       await registry.listAll();
 
       expect(registry.match("github", "issues", "labeled")?.id).toBe("github-issue-labeled-triage");
@@ -73,7 +73,7 @@ describe("CrdIntegrationRouteRegistry", () => {
     it("returns undefined when no route matches source/event/action", async () => {
       const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [labeledRoute] });
       const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-      const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      const registry = new CrdIntegrationRouteRegistry("default", "core.roverkit.io", "v1alpha1", api);
       await registry.listAll();
 
       expect(registry.match("github", "issues", "opened")).toBeUndefined();
@@ -91,7 +91,7 @@ describe("CrdIntegrationRouteRegistry", () => {
       };
       const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [wildcard, labeledRoute] });
       const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-      const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      const registry = new CrdIntegrationRouteRegistry("default", "core.roverkit.io", "v1alpha1", api);
       await registry.listAll();
 
       expect(registry.match("github", "issues", "labeled")?.id).toBe("github-issue-labeled-triage");
@@ -120,7 +120,7 @@ describe("CrdIntegrationRouteRegistry", () => {
 
       async function registryWith(items: IntegrationRouteCustomResource[]): Promise<CrdIntegrationRouteRegistry> {
         const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn().mockResolvedValue({ items }) };
-        const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+        const registry = new CrdIntegrationRouteRegistry("default", "core.roverkit.io", "v1alpha1", api);
         await registry.listAll();
         return registry;
       }
@@ -214,7 +214,7 @@ describe("CrdIntegrationRouteRegistry", () => {
       };
       const registry = new CrdIntegrationRouteRegistry(
         "default",
-        "core.controller-agent.dev",
+        "core.roverkit.io",
         "v1alpha1",
         api,
         watchFn,
@@ -230,7 +230,7 @@ describe("CrdIntegrationRouteRegistry", () => {
 
     it("throws when constructed without a watchFn", () => {
       const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
-      const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      const registry = new CrdIntegrationRouteRegistry("default", "core.roverkit.io", "v1alpha1", api);
       expect(() => registry.watch(() => {})).toThrow();
     });
   });

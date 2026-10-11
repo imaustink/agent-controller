@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/controller-agent/temporal-engine/internal/identitylink"
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/identitylink"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
 )
 
 type stubLinks struct {

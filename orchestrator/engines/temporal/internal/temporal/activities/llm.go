@@ -6,7 +6,7 @@ package activities
 import (
 	"context"
 
-	"github.com/controller-agent/temporal-engine/internal/llm"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/llm"
 )
 
 const CompleteTurnActivityName = "CompleteTurn"

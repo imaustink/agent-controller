@@ -38,7 +38,7 @@ See `src/config.ts` for the full list. Notable ones:
   identity resolver, to a role allowed to reach the SWE agent).
 - `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_APP_INSTALLATION_ID`
   (preferred) or `GITHUB_TOKEN` (PAT fallback) — used only to post issue
-  comments (`@controller-agent/github-app-auth`, ADR 0018). Reuses the same
+  comments (`@roverkit/github-app-auth`, ADR 0018). Reuses the same
   App as `catalog/agents/opencode-swe-agent` if you extend it with `Issues: read &
   write` and subscribe it to the `issues`/`issue_comment` webhook events,
   rather than registering a second App.

@@ -105,7 +105,7 @@ jobs:
         run: |
           npm run generate
           if [ -n "$(git status --porcelain -- .)" ]; then
-            echo "::error::Generated code is stale. Run 'npm run generate -w @controller-agent/protocol' and commit the result."
+            echo "::error::Generated code is stale. Run 'npm run generate -w @roverkit/protocol' and commit the result."
             git status --porcelain -- .
             git diff -- . | head -100
             exit 1

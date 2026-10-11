@@ -57,7 +57,7 @@ orchestrator:
    episode is a fresh Job/process each time (ADR 0013), so its "reply" already
    carries a structured, out-of-band `result` field alongside the chat
    `message` (`framework/messaging/src/agent-protocol.ts`'s `reply.result`,
-   `AgentReply.result` in `@controller-agent/agent-runtime`) — a side channel
+   `AgentReply.result` in `@roverkit/agent-runtime`) — a side channel
    the chat transcript never sees. `opencode-swe-agent` now returns
    `{ message, result: encodeSweContinuation(marker) }` instead of embedding a
    `<!-- swe: ... -->` marker in `message`. `graph.ts`'s `delegateToAgent` (and

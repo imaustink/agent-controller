@@ -1,6 +1,6 @@
 # One Google Drive folder as a Corpus (ADR 0043), drawn through the Drive
 # Connection that holds the credential.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Corpus
 metadata:
   labels:

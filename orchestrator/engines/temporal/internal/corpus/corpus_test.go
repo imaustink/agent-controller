@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/controller-agent/temporal-engine/internal/corpus"
-	"github.com/controller-agent/temporal-engine/internal/vectorstore"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/corpus"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/vectorstore"
 )
 
 // fakeStore is one member collection. It records the roles it was queried with

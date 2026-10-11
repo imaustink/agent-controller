@@ -8,8 +8,8 @@ for the full layout and [docs/orchestrator.md](../docs/orchestrator.md) +
 
 - `framework/*` — what agents and tools are built with: the canonical wire
   contract (`framework/protocol`, `.proto` + generated TS/Go), the tool event
-  protocol and sinks (`@controller-agent/messaging`), the agent SDK
-  (`@controller-agent/agent-runtime`) and `@controller-agent/github-app-auth`.
+  protocol and sinks (`@roverkit/messaging`), the agent SDK
+  (`@roverkit/agent-runtime`) and `@roverkit/github-app-auth`.
   Depends on nothing else in this repo. Depend on these instead of
   copy-pasting logic between tools/agents.
 - `catalog/*` — reference implementations built on the framework:
@@ -37,7 +37,7 @@ contract) and never imports from a sibling directly — only from `framework/*`.
   workspaces. Scope to one with `--workspace=<name>` (e.g.
   `--workspace=agent-orchestrator`).
 - Build the shared package before typechecking/testing a dependent workspace
-  if you've changed it: `npm run build --workspace=@controller-agent/messaging`.
+  if you've changed it: `npm run build --workspace=@roverkit/messaging`.
 - Docker builds use the **repo root** as build context (not the tool/app
   dir), because images need to COPY in `framework/messaging`:
   `docker build -f catalog/tools/recipe-scraper/Dockerfile -t recipe-scraper:latest .`
@@ -57,7 +57,7 @@ contract) and never imports from a sibling directly — only from `framework/*`.
   follow the same discipline in new tools/apps rather than re-deriving it.
 - Tool/app-to-parent communication uses the shared event protocol
   (`accepted → progress* / warning* → succeeded | failed`) implemented once
-  in `@controller-agent/messaging` — see [docs/messaging.md](../docs/messaging.md).
+  in `@roverkit/messaging` — see [docs/messaging.md](../docs/messaging.md).
   Depend on the package; don't reimplement the protocol.
 - **Make core behavior deterministic, not prompt-dependent.** For anything
   core — auth/account-linking, access disclosure, citations, tool gating — do

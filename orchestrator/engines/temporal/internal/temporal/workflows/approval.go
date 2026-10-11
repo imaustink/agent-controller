@@ -5,8 +5,8 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/controller-agent/temporal-engine/internal/approval"
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/approval"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
 )
 
 // PendingApproval anchors a turn that paused to ask the user to approve a tool

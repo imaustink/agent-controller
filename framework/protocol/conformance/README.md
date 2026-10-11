@@ -1,6 +1,6 @@
 # Wire-contract conformance fixtures
 
-Shared JSON cases that every implementation of the `agentcontroller.protocol.v1`
+Shared JSON cases that every implementation of the `roverkit.protocol.v1`
 contract must agree on (ADR 0047). One file per message:
 
 | File | Message |
@@ -30,7 +30,7 @@ Each case is:
 | -- | -------------- | ------ |
 | `proto-ts` | generated TS + `@bufbuild/protovalidate` | `framework/protocol/src/conformance.test.ts` |
 | `proto-go` | generated Go + `protovalidate-go` | `framework/protocol/go/conformance_test.go` |
-| `zod` | hand-written zod schemas in `@controller-agent/messaging` | `framework/messaging/src/conformance.test.ts` |
+| `zod` | hand-written zod schemas in `@roverkit/messaging` | `framework/messaging/src/conformance.test.ts` |
 
 Every runner asserts, for every case:
 

@@ -14,14 +14,14 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/controller-agent/temporal-engine/internal/authz"
-	"github.com/controller-agent/temporal-engine/internal/callertools"
-	"github.com/controller-agent/temporal-engine/internal/catalog"
-	"github.com/controller-agent/temporal-engine/internal/corpus"
-	"github.com/controller-agent/temporal-engine/internal/messaging"
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
-	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
-	"github.com/controller-agent/temporal-engine/internal/toolrun"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/authz"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/callertools"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/corpus"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/messaging"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/workflows"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/toolrun"
 )
 
 // registerOpts names an activity registration.

@@ -22,7 +22,7 @@ interface ChatMessage {
 export function listModelsResponse(): unknown {
   return {
     object: "list",
-    data: [{ id: MODEL_ID, object: "model", created: Math.floor(Date.now() / 1000), owned_by: "controller-agent" }],
+    data: [{ id: MODEL_ID, object: "model", created: Math.floor(Date.now() / 1000), owned_by: "roverkit" }],
   };
 }
 

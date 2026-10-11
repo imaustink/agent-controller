@@ -1,5 +1,5 @@
 import { connect, JSONCodec, type NatsConnection, type Subscription } from "nats";
-import { EventSchema, NATS_RECONNECT_OPTIONS, type Event } from "@controller-agent/messaging";
+import { EventSchema, NATS_RECONNECT_OPTIONS, type Event } from "@roverkit/messaging";
 import { DEFAULT_JOB_TIMEOUT_MS, JobTimeoutError, type JobResultReceiver, type ProgressHandler } from "./receiver.js";
 
 type PendingJob = {

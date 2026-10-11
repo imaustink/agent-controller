@@ -61,7 +61,9 @@ func (s *QdrantStore) EnsureCollection(ctx context.Context) error {
 }
 
 // pointID derives a stable UUID from the content hash. Qdrant point ids must
-// be UUIDs or integers; the hash itself also rides the payload.
+// be UUIDs or integers; the hash itself also rides the payload. The seed is
+// this module's pre-roverkit path and must never change: it is part of every
+// point id already on disk.
 func (s *QdrantStore) pointID(hash string) string {
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("github.com/controller-agent/temporal-engine/callertools/"+hash)).String()
 }

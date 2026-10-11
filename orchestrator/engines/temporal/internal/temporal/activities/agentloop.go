@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/controller-agent/temporal-engine/internal/callertools"
-	"github.com/controller-agent/temporal-engine/internal/catalog"
-	"github.com/controller-agent/temporal-engine/internal/llm"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/callertools"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/llm"
 )
 
 // Activity names for the agent loop's LLM decision nodes — ports of

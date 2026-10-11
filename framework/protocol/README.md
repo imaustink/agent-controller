@@ -1,4 +1,4 @@
-# `agentcontroller.protocol.v1` — the wire contract
+# `roverkit.protocol.v1` — the wire contract
 
 The canonical definition of every message that crosses the framework /
 orchestrator boundary ([ADR 0047](../../docs/adr/0047-decouple-framework-from-orchestrator.md)).
@@ -16,17 +16,17 @@ builds against these `.proto` files.
 ## Layout
 
 ```
-proto/agentcontroller/protocol/v1/   the contract (edit these)
-src/gen/                             generated TypeScript (@controller-agent/protocol)
-go/agentcontroller/protocol/v1/      generated Go
+proto/roverkit/protocol/v1/   the contract (edit these)
+src/gen/                             generated TypeScript (@roverkit/protocol)
+go/roverkit/protocol/v1/      generated Go
 conformance/                         fixtures every implementation must agree on
 ```
 
 Generated code is committed. After editing a `.proto`:
 
 ```sh
-npm run generate -w @controller-agent/protocol   # needs Go on PATH for protoc-gen-go
-npm run lint -w @controller-agent/protocol       # buf lint
+npm run generate -w @roverkit/protocol   # needs Go on PATH for protoc-gen-go
+npm run lint -w @roverkit/protocol       # buf lint
 ```
 
 CI fails if the generated code is stale, if `buf lint` fails, or if the change
@@ -44,7 +44,7 @@ rules rather than `oneof`s. See the ADR for the reasoning.
 Decode with unknown fields **ignored**, and validate:
 
 ```ts
-import { decode, EventSchema } from "@controller-agent/protocol";
+import { decode, EventSchema } from "@roverkit/protocol";
 
 const r = decode(EventSchema, JSON.parse(body));
 if (!r.ok) throw new Error(r.error);
@@ -64,6 +64,6 @@ JSON nor protobuf binary is canonical across implementations.
 
 [`conformance/`](conformance/README.md) holds the shared fixtures. The generated
 TypeScript, the generated Go and the hand-written zod schemas in
-`@controller-agent/messaging` all run them, and must agree, except for each
+`@roverkit/messaging` all run them, and must agree, except for each
 documented divergence. The Go module needs Go 1.26 because `protovalidate-go`
 1.4 does.

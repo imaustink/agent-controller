@@ -32,7 +32,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	corev1alpha1 "github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 const knowledgeBaseConditionReady = "Ready"
@@ -52,10 +52,10 @@ type KnowledgeBaseReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=knowledgebases,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=knowledgebases/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=knowledgebases/finalizers,verbs=update
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=connections,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=knowledgebases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=knowledgebases/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=knowledgebases/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=connections,verbs=get;list;watch
 
 // Reconcile resolves a KnowledgeBase's corpusRefs and aggregates what its
 // members report, so one read of the knowledge base answers "what is in here,

@@ -5,7 +5,7 @@
 # scope.channel and its own allowedRoles — and NOT another credential. That is
 # what lets #globex-eng and #exec-private live in one workspace with different
 # audiences, which is why roles sit here rather than on the Connection.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Corpus
 metadata:
   labels:

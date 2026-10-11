@@ -66,7 +66,7 @@ Not "Confluence" — *this space*. Several Connections of the same provider are
 ordinary and expected.
 
 ```yaml
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Connection
 metadata:
   name: globex-slack-eng

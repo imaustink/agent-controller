@@ -37,7 +37,7 @@ import {
 import { SENDER_ASSERTION_HEADER, verifySenderAssertion } from "./rbac/sender-assertion.js";
 import type { TaskCompleter } from "./openai/task-completer.js";
 import { withHeartbeat } from "./openai/with-heartbeat.js";
-import { renderTurnEvent, type TurnEvent, type TurnEventKind } from "@controller-agent/messaging";
+import { renderTurnEvent, type TurnEvent, type TurnEventKind } from "@roverkit/messaging";
 
 /**
  * Builds a {@link TurnEvent} for a lifecycle point the orchestrator narrates

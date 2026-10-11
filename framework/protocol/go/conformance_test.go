@@ -15,7 +15,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/agentcontroller/protocol/v1"
+	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/roverkit/protocol/v1"
 )
 
 const impl = "proto-go"
@@ -23,10 +23,10 @@ const impl = "proto-go"
 var knownImpls = map[string]bool{"proto-ts": true, "proto-go": true, "zod": true}
 
 var schemas = map[string]func() proto.Message{
-	"agentcontroller.protocol.v1.Event":            func() proto.Message { return &protocolv1.Event{} },
-	"agentcontroller.protocol.v1.TurnEvent":        func() proto.Message { return &protocolv1.TurnEvent{} },
-	"agentcontroller.protocol.v1.AgentUpMessage":   func() proto.Message { return &protocolv1.AgentUpMessage{} },
-	"agentcontroller.protocol.v1.AgentDownMessage": func() proto.Message { return &protocolv1.AgentDownMessage{} },
+	"roverkit.protocol.v1.Event":            func() proto.Message { return &protocolv1.Event{} },
+	"roverkit.protocol.v1.TurnEvent":        func() proto.Message { return &protocolv1.TurnEvent{} },
+	"roverkit.protocol.v1.AgentUpMessage":   func() proto.Message { return &protocolv1.AgentUpMessage{} },
+	"roverkit.protocol.v1.AgentDownMessage": func() proto.Message { return &protocolv1.AgentDownMessage{} },
 }
 
 type fixtureCase struct {

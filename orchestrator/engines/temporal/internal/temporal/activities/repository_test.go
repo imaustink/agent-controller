@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
 )
 
 func extract(t *testing.T, payload, defaultOwner, request string) (string, *fakeLLM) {

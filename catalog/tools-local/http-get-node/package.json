@@ -1,5 +1,5 @@
 {
-  "name": "@controller-agent/http-get",
+  "name": "@roverkit/http-get",
   "version": "0.1.0",
   "private": true,
   "type": "module",

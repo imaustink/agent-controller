@@ -13,7 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@controller-agent/github-app-auth": "0.1.0",
+    "@roverkit/github-app-auth": "0.1.0",
     "@kubernetes/client-node": "^1.0.0",
     "ioredis": "^5.11.1",
     "marked": "^18.0.7",

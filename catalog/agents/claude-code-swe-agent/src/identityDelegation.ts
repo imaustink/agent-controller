@@ -8,7 +8,7 @@ import {
   resolveDelegatedWriteToken,
   resolveGithubToken,
   type GithubAppCredentials,
-} from "@controller-agent/github-app-auth";
+} from "@roverkit/github-app-auth";
 import type { AgentToolConfig } from "./config.js";
 
 export { AuthorizationError };

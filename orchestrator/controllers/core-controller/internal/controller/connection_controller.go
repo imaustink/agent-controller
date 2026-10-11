@@ -33,13 +33,13 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	corev1alpha1 "github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 const connectionConditionReady = "Ready"
 
 // connectionFinalizer holds a Connection open while Corpora still draw from it.
-const connectionFinalizer = "core.controller-agent.dev/corpora-exist"
+const connectionFinalizer = "core.roverkit.io/corpora-exist"
 
 // ConnectionReconciler reconciles a Connection object
 type ConnectionReconciler struct {
@@ -47,10 +47,10 @@ type ConnectionReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=connections,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=connections/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=connections/finalizers,verbs=update
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=corpora,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=connections,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=connections/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=connections/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=corpora,verbs=get;list;watch
 
 // Reconcile counts what draws from this Connection, and refuses to let it
 // vanish underneath them.

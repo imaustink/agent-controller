@@ -13,9 +13,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/controller-agent/temporal-engine/internal/catalog"
-	"github.com/controller-agent/temporal-engine/internal/localtool"
-	"github.com/controller-agent/temporal-engine/internal/messaging"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/localtool"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/messaging"
 )
 
 // fakeSecretReader is a static map, mirroring the TS tests' SecretReader fake.

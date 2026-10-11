@@ -31,7 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	toolv1alpha1 "github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 // imagePullPolicy resolves the run Job's ImagePullPolicy from AGENT_IMAGE_PULL_POLICY
@@ -57,7 +57,7 @@ func imagePullPolicy() corev1.PullPolicy {
 // (docs/adr/0012) through to the Job/Pod it launches, for debugging/log
 // correlation via `kubectl describe`. Copied verbatim by toolrun_controller.go
 // / agentrun_controller.go from the CR's own annotations, if present.
-const SessionIDAnnotation = "controller-agent.dev/session-id"
+const SessionIDAnnotation = "roverkit.io/session-id"
 
 // runJobParams is everything the shared hardened-Job builder needs, shaped
 // so both ToolRun (tool image + args) and AgentRun (agent image + goal)

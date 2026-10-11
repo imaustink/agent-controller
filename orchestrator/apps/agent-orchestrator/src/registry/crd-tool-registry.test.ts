@@ -22,12 +22,12 @@ describe("CrdToolRegistry", () => {
   it("maps Tool custom resources to ToolDescriptors", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [validTool] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdToolRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const tools = await registry.listAll();
 
     expect(listNamespacedCustomObject).toHaveBeenCalledWith({
-      group: "core.controller-agent.dev",
+      group: "core.roverkit.io",
       version: "v1alpha1",
       namespace: "default",
       plural: "tools",
@@ -58,7 +58,7 @@ describe("CrdToolRegistry", () => {
     };
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [malformed, validTool] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdToolRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const tools = await registry.listAll();
 
@@ -79,7 +79,7 @@ describe("CrdToolRegistry", () => {
     };
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [agentBacked] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdToolRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const tools = await registry.listAll();
 
@@ -108,7 +108,7 @@ describe("CrdToolRegistry", () => {
     };
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [identityLinked] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdToolRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const tools = await registry.listAll();
 
@@ -119,7 +119,7 @@ describe("CrdToolRegistry", () => {
   it("omits identityProviders when the Tool CR does not declare any", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [validTool] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdToolRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const tools = await registry.listAll();
 
@@ -129,7 +129,7 @@ describe("CrdToolRegistry", () => {
   it("returns an empty catalog when there are zero Tool resources", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdToolRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     expect(await registry.listAll()).toEqual([]);
   });
@@ -137,7 +137,7 @@ describe("CrdToolRegistry", () => {
   describe("watch", () => {
     it("throws when constructed without a watchFn", () => {
       const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
-      const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      const registry = new CrdToolRegistry("default", "core.roverkit.io", "v1alpha1", api);
       expect(() => registry.watch(() => {})).toThrow();
     });
 
@@ -145,11 +145,11 @@ describe("CrdToolRegistry", () => {
       const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
       let onEvent!: (phase: string, obj: unknown) => void;
       const watchFn: WatchCrdFn = (opts, cb) => {
-        expect(opts).toEqual({ group: "core.controller-agent.dev", version: "v1alpha1", namespace: "default", plural: "tools" });
+        expect(opts).toEqual({ group: "core.roverkit.io", version: "v1alpha1", namespace: "default", plural: "tools" });
         onEvent = cb;
         return { stop: vi.fn() };
       };
-      const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const registry = new CrdToolRegistry("default", "core.roverkit.io", "v1alpha1", api, watchFn);
       const onChange = vi.fn();
       registry.watch(onChange);
 
@@ -168,7 +168,7 @@ describe("CrdToolRegistry", () => {
         onEvent = cb;
         return { stop: vi.fn() };
       };
-      const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const registry = new CrdToolRegistry("default", "core.roverkit.io", "v1alpha1", api, watchFn);
       const onChange = vi.fn();
       registry.watch(onChange);
 
@@ -184,7 +184,7 @@ describe("CrdToolRegistry", () => {
         onEvent = cb;
         return { stop: vi.fn() };
       };
-      const registry = new CrdToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const registry = new CrdToolRegistry("default", "core.roverkit.io", "v1alpha1", api, watchFn);
       const onChange = vi.fn();
       registry.watch(onChange);
 

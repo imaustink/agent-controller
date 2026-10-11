@@ -13,7 +13,7 @@
 
 enabled: true
 
-crdApiVersion: core.controller-agent.dev/v1alpha1
+crdApiVersion: core.roverkit.io/v1alpha1
 
 # Chart now templates recipe-scraper/recipe-publisher/opencode-swe-agent/
 # web-search's ServiceAccounts itself (serviceAccount.create default true per

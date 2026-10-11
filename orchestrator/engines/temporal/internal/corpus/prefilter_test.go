@@ -3,7 +3,7 @@ package corpus_test
 import (
 	"testing"
 
-	"github.com/controller-agent/temporal-engine/internal/corpus"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/corpus"
 )
 
 func hit(principals []string, permissive bool) corpus.Hit {

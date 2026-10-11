@@ -12,7 +12,7 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 	"github.com/stretchr/testify/require"
 
-	"github.com/controller-agent/temporal-engine/internal/vectorstore"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/vectorstore"
 )
 
 // fakeEmbedder is deterministic: same text, same vector. Good enough to

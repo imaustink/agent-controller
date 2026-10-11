@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { normalizePem } from "@controller-agent/github-app-auth";
+import { normalizePem } from "@roverkit/github-app-auth";
 
 /**
  * Tool-specific configuration for the claude-code-swe-agent. The generic
  * agent runtime config (NATS connection, run id, goal) is handled by
- * `@controller-agent/agent-runtime`'s `loadConfig()` and injected by the Go
+ * `@roverkit/agent-runtime`'s `loadConfig()` and injected by the Go
  * core-controller into the Job's environment. This only covers the
  * tool-specific settings that are fixed via the Agent CR's `env`/`secretEnv`.
  */
@@ -41,7 +41,7 @@ export interface AgentToolConfig {
   /**
    * GitHub App credentials, used instead of `githubToken` when all three are
    * set: a short-lived installation access token is minted per run (see
-   * @controller-agent/github-app-auth) rather than using a long-lived static
+   * @roverkit/github-app-auth) rather than using a long-lived static
    * PAT. Empty strings when unset — `resolveGithubToken` falls back to
    * `githubToken` in that case, so existing PAT-based deployments keep
    * working unmodified.

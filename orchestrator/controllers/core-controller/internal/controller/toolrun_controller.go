@@ -31,7 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	toolv1alpha1 "github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 const (
@@ -54,10 +54,10 @@ type ToolRunReconciler struct {
 	PodReader client.Reader
 }
 
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=toolruns,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=toolruns/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=toolruns/finalizers,verbs=update
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=tools,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=toolruns,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=toolruns/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=toolruns/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=tools,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=pods,verbs=list
@@ -225,8 +225,8 @@ func buildJob(run *toolv1alpha1.ToolRun, tool *toolv1alpha1.Tool) (*batchv1.Job,
 		namespace:   run.Namespace,
 		annotations: sessionIDAnnotations(run.Annotations),
 		labels: map[string]string{
-			"core.controller-agent.dev/toolrun": run.Name,
-			"core.controller-agent.dev/tool":    tool.Name,
+			"core.roverkit.io/toolrun": run.Name,
+			"core.roverkit.io/tool":    tool.Name,
 		},
 		image:              tool.Spec.Image,
 		serviceAccountName: tool.Spec.ServiceAccountName,

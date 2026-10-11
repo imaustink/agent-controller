@@ -22,6 +22,7 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -29,7 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	corev1alpha1 "github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 const providerSlack = "slack"
@@ -284,6 +285,54 @@ var _ = Describe("Corpus sync CronJob", func() {
 		Expect(cj.OwnerReferences).To(HaveLen(1))
 		Expect(cj.OwnerReferences[0].Name).To(Equal("cron-owned"))
 		Expect(*cj.OwnerReferences[0].Controller).To(BeTrue())
+	})
+
+	It("adopts a CronJob another owner left behind", func() {
+		// The roverkit API-group move (ADR 0047) recreates every Corpus under
+		// the new group while the old-group Corpus still owns the CronJob of
+		// the same name. Keeping that owner would let deleting the old Corpus
+		// garbage-collect the live schedule.
+		conn := confluenceConnection("cron-adopt-src")
+		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, conn) }()
+
+		isController := true
+		stale := &batchv1.CronJob{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      SyncCronJobName("cron-adopt"),
+				Namespace: "default",
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "core.controller-agent.dev/v1alpha1",
+					Kind:       "Corpus",
+					Name:       "cron-adopt",
+					UID:        types.UID("00000000-0000-0000-0000-00000000dead"),
+					Controller: &isController,
+				}},
+			},
+			Spec: batchv1.CronJobSpec{
+				Schedule: "0 0 * * *",
+				JobTemplate: batchv1.JobTemplateSpec{Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						RestartPolicy: corev1.RestartPolicyNever,
+						Containers:    []corev1.Container{{Name: "kick", Image: "curlimages/curl:8.11.1"}},
+					},
+				}}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, stale)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, stale) }()
+
+		corpus := syncing("cron-adopt-src", "cron-adopt", 6*time.Hour)
+		Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, corpus) }()
+
+		reconcileCorpus("cron-adopt")
+
+		cj, err := cronJob("cron-adopt")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cj.OwnerReferences).To(HaveLen(1))
+		Expect(cj.OwnerReferences[0].UID).To(Equal(corpus.UID))
+		Expect(cj.OwnerReferences[0].APIVersion).To(Equal(corev1alpha1.GroupVersion.String()))
 	})
 
 	It("forbids concurrent passes", func() {

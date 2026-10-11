@@ -31,7 +31,7 @@ We want two things the current shape does not give us:
 
 The good news is that the seam is already physical. Nothing on the agent or tool
 side imports Kubernetes or Temporal; everything crosses the boundary through the
-JSON wire protocols defined in `@controller-agent/messaging`. The orchestration
+JSON wire protocols defined in `@roverkit/messaging`. The orchestration
 machinery sits entirely on the far side of those protocols. So this is not a
 teardown — it is naming a boundary that mostly exists and paying down the debts
 that keep either half from standing alone.
@@ -95,7 +95,7 @@ The repository is regrouped physically into three top-level trees:
 
 The allowed import directions are **catalog → framework** and
 **orchestrator → framework**; **framework → anything** and **catalog ↔
-orchestrator** are violations. npm package names (`@controller-agent/*`) are
+orchestrator** are violations. npm package names (`@roverkit/*`) are
 unchanged — the directory and the check are the boundary, not the scope.
 
 The move lands *last* in its implementation sequence, so every earlier step can
@@ -133,8 +133,8 @@ Specifics, chosen deliberately:
   discriminated-union types authors actually use. This keeps the wire
   byte-compatible with every running agent and tool — no dual-read, no cutover.
   Moving to `oneof` later is a versioned (`v2`) decision, not a prerequisite.
-- **Package `agentcontroller.protocol.v1`**, under
-  `framework/protocol/proto/agentcontroller/protocol/v1/`, beside the
+- **Package `roverkit.protocol.v1`**, under
+  `framework/protocol/proto/roverkit/protocol/v1/`, beside the
   generated TypeScript package, the generated Go module and the shared
   conformance fixtures. The package name is permanent once third
   parties depend on it.
@@ -219,6 +219,62 @@ schemas + a stdio/in-process transport; the orchestrator takes schemas + NATS.
 Delivering this also delivers the "run an agent locally without a cluster" goal,
 by giving the framework a non-NATS `AgentChannel` and `Sink`.
 
+### 6. One brand: roverkit
+
+The project is **roverkit**, a modular platform for building and running
+**durable** agents. Durability is the headline because it is what the platform
+does that an agent library does not: turns that outlive the pods running them,
+pauses for human approval, and resumption after restarts (ADR 0033, ADR 0036).
+The tagline is "Durable AI agents." Each part takes a descriptive sub-name rather than a product name of its
+own (the pattern of Temporal Server / Temporal SDKs):
+
+| Part | Directory | What it is |
+|-|-|-|
+| **roverkit SDK** | `framework/` | protocol, agent runtime, messaging transports: what an agent or tool is built with |
+| **roverkit orchestrator** | `orchestrator/` | keeps agents running durably in production on Kubernetes |
+| **roverkit catalog** | `catalog/` | reference agents and tools |
+
+"Platform" names the whole because the whole is more than a framework: a control
+plane, durable execution, identity linking and a catalog. "Kit" carries the
+à-la-carte point, so the platform never reads as all-or-nothing. An agent is a
+rover: it works autonomously on long missions, waits out storms and blackouts,
+and takes commands that arrive with a delay, as an agent does when it pauses for
+approval. The SDK is the kit it is built from, and the orchestrator keeps the
+fleet running. In prose, "the framework" (this ADR's term) is the roverkit SDK; the
+`framework/` directory keeps its name. The future repositories follow the
+directory split: `roverkit/sdk`, `roverkit/catalog`, `roverkit/orchestrator`.
+
+Names that live **in code** move now, because each only gets more expensive
+once a third party depends on it:
+
+| Was | Now |
+|-|-|
+| proto package `agentcontroller.protocol.v1` | `roverkit.protocol.v1` |
+| npm scope `@controller-agent/*` | `@roverkit/*` |
+| Go modules `github.com/controller-agent/<module>` | `github.com/roverkit/<repo>/<path>` (the future repo layout) |
+| CRD API group `core.controller-agent.dev` | `core.roverkit.io` |
+| label/annotation/finalizer keys under `controller-agent.dev`, `controller-agent.io` | `roverkit.io` |
+
+The proto rename is invisible on the wire (proto3 JSON never carries the package
+name; `buf breaking` at WIRE_JSON passes). The API group rename is not: every
+cluster recreates its CRs under the new group and relabels its credential
+Secrets, via `scripts/migrate-to-roverkit.sh` (see
+[the migration guide](../roverkit-migration.md)).
+
+Deliberately **unchanged**:
+
+- **Deployment addresses** — namespace, Helm release and chart names
+  (`agent-controller`, `community-components`), image paths. These are set per
+  deployment or by where the repository lives, and change with the repository
+  split, not in code.
+- **The protocol Go module path**
+  (`github.com/imaustink/agent-controller/framework/protocol/go`). It is fetched
+  by its real location, so it moves when the repository does.
+- **Identifiers that are stored data.** The Qdrant point-id seeds (part of every
+  point id on disk; changing them orphans every vector) and the controller's
+  leader-election lease name (a new one would let old and new pods both lead
+  during a rolling upgrade).
+
 ## Consequences
 
 - **The framework can stand alone, in four languages.** A `.proto`-defined
@@ -295,3 +351,4 @@ directory move can merge without touching deployment paths:
 5. `messaging` split into schemas and transports, with an in-process
    `AgentChannel`/`Sink` so an agent runs without NATS.
 6. The `framework/` / `orchestrator/` / `catalog/` directory move.
+7. The roverkit rename (§6), with the cluster migration script.

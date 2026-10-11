@@ -5,11 +5,11 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/controller-agent/temporal-engine/internal/authz"
-	"github.com/controller-agent/temporal-engine/internal/catalog"
-	"github.com/controller-agent/temporal-engine/internal/continuation"
-	"github.com/controller-agent/temporal-engine/internal/identitylink"
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/authz"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/continuation"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/identitylink"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
 )
 
 // agentActsOnGitHub reports whether an agent's runs work in a GitHub

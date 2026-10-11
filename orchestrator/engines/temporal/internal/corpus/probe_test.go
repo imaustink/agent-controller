@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/controller-agent/temporal-engine/internal/corpus"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/corpus"
 )
 
 // fakeProber answers per (connection, source), counts the probes it was

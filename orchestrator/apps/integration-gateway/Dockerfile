@@ -35,15 +35,15 @@ COPY framework/github-app-auth framework/github-app-auth
 COPY orchestrator/apps/integration-gateway/tsconfig.json orchestrator/apps/integration-gateway/tsconfig.json
 COPY orchestrator/apps/integration-gateway/src         orchestrator/apps/integration-gateway/src
 
-RUN npm run build --workspace=@controller-agent/github-app-auth \
+RUN npm run build --workspace=@roverkit/github-app-auth \
   && npm run build --workspace=integration-gateway \
   && npm prune --omit=dev \
   # Materialize the workspace package as a real directory (not a symlink) so
   # it survives the copy into the runtime stage.
-  && rm -rf node_modules/@controller-agent/github-app-auth \
-  && mkdir -p node_modules/@controller-agent/github-app-auth \
-  && cp -r framework/github-app-auth/dist        node_modules/@controller-agent/github-app-auth/dist \
-  && cp framework/github-app-auth/package.json   node_modules/@controller-agent/github-app-auth/package.json
+  && rm -rf node_modules/@roverkit/github-app-auth \
+  && mkdir -p node_modules/@roverkit/github-app-auth \
+  && cp -r framework/github-app-auth/dist        node_modules/@roverkit/github-app-auth/dist \
+  && cp framework/github-app-auth/package.json   node_modules/@roverkit/github-app-auth/package.json
 
 ############################
 # Runtime stage

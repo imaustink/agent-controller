@@ -38,7 +38,7 @@ A **`KnowledgeBase`** is a named, RBAC-gated composition of Connections, and it
 is what the agent queries.
 
 ```yaml
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: KnowledgeBase
 metadata:
   name: globex

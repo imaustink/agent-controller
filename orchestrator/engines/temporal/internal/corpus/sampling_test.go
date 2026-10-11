@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/controller-agent/temporal-engine/internal/corpus"
-	"github.com/controller-agent/temporal-engine/internal/vectorstore"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/corpus"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/vectorstore"
 )
 
 // aclHit is chunkHit plus the mirror fields this file is about.

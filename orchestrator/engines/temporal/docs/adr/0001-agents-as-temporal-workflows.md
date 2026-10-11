@@ -40,7 +40,7 @@ Rebuild the agent half on Temporal; keep the tool half as-is.
    We reuse *contracts*, not TS code: the messaging `Event` wire schema
    (`job_id`/`seq`/`ts`; `accepted|progress|warning|succeeded|failed`), the
    HMAC callback convention (`x-signature: sha256=…`,
-   `Idempotency-Key: <job_id>:<seq>`), the `core.controller-agent.dev/v1alpha1`
+   `Idempotency-Key: <job_id>:<seq>`), the `core.roverkit.io/v1alpha1`
    API group, and the Qdrant collection/payload-filter design.
 2. **One long-lived `ConversationWorkflow` per chat session**, started via
    update-with-start; each user turn is a workflow Update returning the

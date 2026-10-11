@@ -11,7 +11,7 @@ enabled: true
 # apiVersion of the Tool/Skill/Agent/IdentityProvider CRDs. Must match what the
 # agent-controller chart's core-controller subchart installs
 # (config.crdGroup/crdVersion on the orchestrator side too).
-crdApiVersion: core.controller-agent.dev/v1alpha1
+crdApiVersion: core.roverkit.io/v1alpha1
 
 # The three IdentityProvider CRs (github, claude, claude-remote) agent-
 # orchestrator's dynamic catalog needs for every built-in identityLink path

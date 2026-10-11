@@ -16,7 +16,7 @@ const nodeTool: LocalToolCustomResource = {
     allowedRoles: ["reader"],
     tier: "standard",
     runtime: "node",
-    package: "@controller-agent/http-get",
+    package: "@roverkit/http-get",
     version: "1.0.0",
     env: [{ name: "FOO", value: "bar" }],
     secretEnv: [{ name: "TOKEN", secretRef: { name: "s", key: "k" } }],
@@ -44,12 +44,12 @@ describe("CrdLocalToolRegistry", () => {
   it("maps LocalTool custom resources to ToolDescriptors with a localExec spec", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [nodeTool] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdLocalToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdLocalToolRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const tools = await registry.listAll();
 
     expect(listNamespacedCustomObject).toHaveBeenCalledWith({
-      group: "core.controller-agent.dev",
+      group: "core.roverkit.io",
       version: "v1alpha1",
       namespace: "default",
       plural: "localtools",
@@ -62,7 +62,7 @@ describe("CrdLocalToolRegistry", () => {
       tier: "standard",
       localExec: {
         runtime: "node",
-        package: "@controller-agent/http-get",
+        package: "@roverkit/http-get",
         version: "1.0.0",
         env: { FOO: "bar" },
         secretEnv: [{ name: "TOKEN", secretRef: { name: "s", key: "k" } }],
@@ -109,7 +109,7 @@ describe("CrdLocalToolRegistry", () => {
       .fn()
       .mockResolvedValue({ items: [malformed as unknown as LocalToolCustomResource, nodeTool] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdLocalToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdLocalToolRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const tools = await registry.listAll();
 
@@ -126,7 +126,7 @@ describe("CrdLocalToolRegistry", () => {
         onEvent = cb;
         return { stop: vi.fn() };
       };
-      const registry = new CrdLocalToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const registry = new CrdLocalToolRegistry("default", "core.roverkit.io", "v1alpha1", api, watchFn);
       const onChange = vi.fn();
       registry.watch(onChange);
 
@@ -142,7 +142,7 @@ describe("CrdLocalToolRegistry", () => {
 
     it("throws when constructed without a watchFn", () => {
       const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
-      const registry = new CrdLocalToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      const registry = new CrdLocalToolRegistry("default", "core.roverkit.io", "v1alpha1", api);
       expect(() => registry.watch(() => {})).toThrow();
     });
   });

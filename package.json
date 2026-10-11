@@ -1,5 +1,5 @@
 {
-  "name": "controller-agent",
+  "name": "roverkit",
   "private": true,
   "version": "0.0.0",
   "workspaces": [
@@ -11,7 +11,7 @@
     "e2e"
   ],
   "scripts": {
-    "build:libs": "npm run build -w @controller-agent/protocol -w @controller-agent/messaging -w @controller-agent/github-app-auth -w @controller-agent/agent-runtime",
+    "build:libs": "npm run build -w @roverkit/protocol -w @roverkit/messaging -w @roverkit/github-app-auth -w @roverkit/agent-runtime",
     "build": "npm run build:libs && npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",

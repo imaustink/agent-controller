@@ -2,7 +2,7 @@
 #
 # Every indexed folder is a Corpus over this object, sharing this credential —
 # the same shape as the Slack workspace next door.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Connection
 metadata:
   labels:

@@ -1,5 +1,5 @@
 {
-  "message": "agentcontroller.protocol.v1.TurnEvent",
+  "message": "roverkit.protocol.v1.TurnEvent",
   "cases": [
     { "name": "turn-started", "valid": true, "json": { "seq": 0, "ts": "t", "kind": "turn-started" } },
     { "name": "skill-selected with skillId", "valid": true, "json": { "seq": 1, "ts": "t", "kind": "skill-selected", "skillId": "recipes" } },

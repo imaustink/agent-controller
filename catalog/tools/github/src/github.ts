@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { resolveGithubToken } from "@controller-agent/github-app-auth";
+import { resolveGithubToken } from "@roverkit/github-app-auth";
 import type { AppConfig } from "./config.js";
 
 export class GhExecError extends Error {

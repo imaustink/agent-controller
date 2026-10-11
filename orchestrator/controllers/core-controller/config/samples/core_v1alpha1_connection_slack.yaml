@@ -3,7 +3,7 @@
 # Every indexed channel is a Corpus over this object, sharing this credential.
 # Ten channels is ten Corpora and one bot token, not ten of each — which is the
 # duplication the split exists to remove.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Connection
 metadata:
   labels:

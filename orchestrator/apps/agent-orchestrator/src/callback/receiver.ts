@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { EventSchema, type Event } from "@controller-agent/messaging";
+import { EventSchema, type Event } from "@roverkit/messaging";
 
 export class CallbackAuthError extends Error {}
 
@@ -43,7 +43,7 @@ export interface JobResultReceiver {
 
 /**
  * Verifies the `x-signature: sha256=<hmac>` header written by
- * `@controller-agent/messaging`'s `CallbackSink`, then validates the body against
+ * `@roverkit/messaging`'s `CallbackSink`, then validates the body against
  * the shared `EventSchema`. Kept as a pure function so it's testable without
  * binding a real socket.
  */

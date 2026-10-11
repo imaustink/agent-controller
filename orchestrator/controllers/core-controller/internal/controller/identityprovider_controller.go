@@ -29,7 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	toolv1alpha1 "github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 const identityProviderConditionReady = "Ready"
@@ -49,9 +49,9 @@ type IdentityProviderReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=identityproviders,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=identityproviders/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=identityproviders/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=identityproviders,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=identityproviders/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=identityproviders/finalizers,verbs=update
 
 // Reconcile validates that no other IdentityProvider in the same namespace
 // shares this one's envVar or label, and sets a Ready condition accordingly.

@@ -5,7 +5,7 @@ container is one ephemeral tool call: some input goes in, a stream of
 structured events comes out.
 
 The protocol is implemented **once**, as the shared
-[@controller-agent/messaging](../framework/messaging/) workspace package (`Sink`,
+[@roverkit/messaging](../framework/messaging/) workspace package (`Sink`,
 `JobEmitter`, `StdoutSink`/`FileSink`/`CallbackSink`, `EventSchema`). Any tool
 depends on it rather than reimplementing the protocol; `recipe-scraper`
 ([catalog/tools/recipe-scraper/src/messaging/index.ts](../catalog/tools/recipe-scraper/src/messaging/index.ts))
@@ -92,7 +92,7 @@ the same container code runs everywhere.
 | (in-process)       | `MemorySink`   | none: events kept in memory    | tests, embedding a tool           |
 
 `NatsSink` loads the NATS client only when it first emits, so importing
-`@controller-agent/messaging` never loads it (ADR 0047). A tool on any other
+`@roverkit/messaging` never loads it (ADR 0047). A tool on any other
 transport, or code that only needs the protocol schemas, doesn't carry it.
 
 Planned: a durable broker sink (JetStream or Redis Streams) for replayable,
@@ -106,14 +106,14 @@ Both halves of the framework run with no broker and no cluster:
   JSON round-tripped and validated against the wire schema, so a stream that
   works in memory works on the wire.
 - **An agent:** `startLocalAgent(handler, { goal, onAsk, tools })` from
-  `@controller-agent/agent-runtime` runs a handler to completion against an
+  `@roverkit/agent-runtime` runs a handler to completion against an
   in-process peer that plays the orchestrator's part. It acknowledges replies,
   answers `session.ask()` through `onAsk`, and serves `session.callTool()` from
   `tools`. For finer control, `createInProcessChannel()` returns the channel to
   hand `runAgent` and a `peer` to drive it from.
 
 ```ts
-import { startLocalAgent } from "@controller-agent/agent-runtime";
+import { startLocalAgent } from "@roverkit/agent-runtime";
 
 const { outcome } = startLocalAgent(myAgent, {
   goal: "Summarize the open issues",

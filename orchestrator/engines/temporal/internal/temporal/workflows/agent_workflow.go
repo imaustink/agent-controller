@@ -8,11 +8,11 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/controller-agent/temporal-engine/internal/approval"
-	"github.com/controller-agent/temporal-engine/internal/catalog"
-	"github.com/controller-agent/temporal-engine/internal/continuation"
-	"github.com/controller-agent/temporal-engine/internal/messaging"
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/approval"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/continuation"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/messaging"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
 )
 
 // AgentWorkflow replaces agent-controller's AgentRun pod + bidirectional

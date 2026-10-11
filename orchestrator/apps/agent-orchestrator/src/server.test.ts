@@ -389,7 +389,7 @@ describe("InvokeServer", () => {
 describe("InvokeServer /invoke event field -> IntegrationRoute dispatch (ADR 0024)", () => {
   async function routeRegistry(routes: unknown[]) {
     const { CrdIntegrationRouteRegistry } = await import("./routing/crd-integration-route-registry.js");
-    const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", {
+    const registry = new CrdIntegrationRouteRegistry("default", "core.roverkit.io", "v1alpha1", {
       listNamespacedCustomObject: vi.fn().mockResolvedValue({ items: routes }),
     });
     await registry.listAll();

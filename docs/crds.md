@@ -1,7 +1,7 @@
 # Custom resource reference
 
 Every workload and every piece of catalog in this system is a Kubernetes custom
-resource in the group **`core.controller-agent.dev/v1alpha1`**. They are all
+resource in the group **`core.roverkit.io/v1alpha1`**. They are all
 **namespaced**. The CRD definitions ship in the `core-controller` chart's
 install-only `crds/` directory (generated from
 `orchestrator/controllers/core-controller/api/v1alpha1/*_types.go`), so installing that chart

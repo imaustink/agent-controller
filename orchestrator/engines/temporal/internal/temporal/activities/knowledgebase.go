@@ -6,11 +6,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/controller-agent/temporal-engine/internal/authz"
-	"github.com/controller-agent/temporal-engine/internal/catalog"
-	"github.com/controller-agent/temporal-engine/internal/corpus"
-	"github.com/controller-agent/temporal-engine/internal/identitylink"
-	"github.com/controller-agent/temporal-engine/internal/vectorstore"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/authz"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/corpus"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/identitylink"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/vectorstore"
 )
 
 const SearchKnowledgeBaseActivityName = "SearchKnowledgeBase"

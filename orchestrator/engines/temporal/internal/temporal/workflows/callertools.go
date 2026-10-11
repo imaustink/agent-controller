@@ -8,8 +8,8 @@ import (
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/controller-agent/temporal-engine/internal/callertools"
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/callertools"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
 )
 
 // seedHistory turns calls the client already executed into planner history

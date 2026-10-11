@@ -17,7 +17,7 @@
 #   shared DISCOVERY credential used only for tools/list). If a caller's token
 #   cannot be resolved or has expired the call fails closed — it never falls
 #   back to the discovery credential.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: MCPServer
 metadata:
   labels:

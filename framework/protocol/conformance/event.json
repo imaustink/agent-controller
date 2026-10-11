@@ -1,5 +1,5 @@
 {
-  "message": "agentcontroller.protocol.v1.Event",
+  "message": "roverkit.protocol.v1.Event",
   "cases": [
     {
       "name": "accepted with url",

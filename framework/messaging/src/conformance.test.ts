@@ -13,10 +13,10 @@ const IMPL = "zod";
 const DIR = fileURLToPath(new URL("../../../framework/protocol/conformance/", import.meta.url));
 
 const SCHEMAS: Record<string, ZodTypeAny> = {
-  "agentcontroller.protocol.v1.Event": EventSchema,
-  "agentcontroller.protocol.v1.TurnEvent": TurnEventSchema,
-  "agentcontroller.protocol.v1.AgentUpMessage": AgentUpMessageSchema,
-  "agentcontroller.protocol.v1.AgentDownMessage": AgentDownMessageSchema,
+  "roverkit.protocol.v1.Event": EventSchema,
+  "roverkit.protocol.v1.TurnEvent": TurnEventSchema,
+  "roverkit.protocol.v1.AgentUpMessage": AgentUpMessageSchema,
+  "roverkit.protocol.v1.AgentDownMessage": AgentDownMessageSchema,
 };
 
 interface Case {

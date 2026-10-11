@@ -28,11 +28,11 @@ rules:
   # `corpora` here does not degrade anything — the registry's watch 403s at
   # startup and the process crashloops, which is at least loud, and is how this
   # was found.
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["connections", "corpora"]
     verbs: ["get", "list", "watch"]
   # Reporting sync results back onto the Corpus that asked for them.
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["corpora/status"]
     verbs: ["get", "patch", "update"]
   # The ingestion credentials those Connections name. Read only, and in this

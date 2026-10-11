@@ -1,4 +1,4 @@
-import { signState, verifyState } from "@controller-agent/github-app-auth";
+import { signState, verifyState } from "@roverkit/github-app-auth";
 import type { IdentityLinkStore } from "./store.js";
 import type { OAuthProviderConfig } from "./providers.js";
 

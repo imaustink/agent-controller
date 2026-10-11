@@ -5,7 +5,7 @@
 #   docker build -f catalog/agents/stub-agent/Dockerfile -t stub-agent:latest .
 #
 # E2E ONLY. This agent speaks the real NATS agent protocol
-# (@controller-agent/agent-runtime) and returns a canned reply -- no model call,
+# (@roverkit/agent-runtime) and returns a canned reply -- no model call,
 # no credential of its own, no network egress beyond NATS. It exists so the
 # happy-path e2e spec can assert the whole webhook -> triage -> AgentRun ->
 # reply -> issue-comment chain hermetically; see catalog/agents/stub-agent/src/index.ts.
@@ -31,20 +31,20 @@ COPY framework/agent-runtime  framework/agent-runtime
 COPY catalog/agents/stub-agent/tsconfig.json catalog/agents/stub-agent/tsconfig.json
 COPY catalog/agents/stub-agent/src           catalog/agents/stub-agent/src
 
-RUN npm run build --workspace=@controller-agent/messaging \
-  && npm run build --workspace=@controller-agent/agent-runtime \
+RUN npm run build --workspace=@roverkit/messaging \
+  && npm run build --workspace=@roverkit/agent-runtime \
   && npm run build --workspace=stub-agent \
   && npm prune --omit=dev \
   # Materialize workspace packages as real directories (not symlinks) so they
   # survive the copy into the runtime stage.
-  && rm -rf node_modules/@controller-agent/messaging \
-  && mkdir -p node_modules/@controller-agent/messaging \
-  && cp -r framework/messaging/dist      node_modules/@controller-agent/messaging/dist \
-  && cp framework/messaging/package.json node_modules/@controller-agent/messaging/package.json \
-  && rm -rf node_modules/@controller-agent/agent-runtime \
-  && mkdir -p node_modules/@controller-agent/agent-runtime \
-  && cp -r framework/agent-runtime/dist      node_modules/@controller-agent/agent-runtime/dist \
-  && cp framework/agent-runtime/package.json node_modules/@controller-agent/agent-runtime/package.json
+  && rm -rf node_modules/@roverkit/messaging \
+  && mkdir -p node_modules/@roverkit/messaging \
+  && cp -r framework/messaging/dist      node_modules/@roverkit/messaging/dist \
+  && cp framework/messaging/package.json node_modules/@roverkit/messaging/package.json \
+  && rm -rf node_modules/@roverkit/agent-runtime \
+  && mkdir -p node_modules/@roverkit/agent-runtime \
+  && cp -r framework/agent-runtime/dist      node_modules/@roverkit/agent-runtime/dist \
+  && cp framework/agent-runtime/package.json node_modules/@roverkit/agent-runtime/package.json
 
 ############################
 # Runtime stage

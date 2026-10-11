@@ -1,4 +1,4 @@
-module github.com/controller-agent/temporal-engine
+module github.com/roverkit/orchestrator/engines/temporal
 
 go 1.26.0
 
@@ -6,7 +6,7 @@ require (
 	buf.build/go/protovalidate v1.4.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/google/uuid v1.6.0
-	github.com/imaustink/agent-controller/framework/protocol/go v0.0.0-20261008042517-c8a087c2cb9f
+	github.com/imaustink/agent-controller/framework/protocol/go v0.0.0-20261011055724-8ee59be1ebf4
 	github.com/nats-io/nats.go v1.52.0
 	github.com/qdrant/go-client v1.18.3
 	github.com/stretchr/testify v1.12.1

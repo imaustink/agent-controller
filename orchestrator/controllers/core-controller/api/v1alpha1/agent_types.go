@@ -119,7 +119,7 @@ type AgentSpec struct {
 	// call at run time — mirrors Skill.spec.toolRefs, but scopes the
 	// sub-agent's callable set instead of the parent orchestrator's planner.
 	// Dispatched via the tool_call/tool_result protocol pair
-	// (@controller-agent/agent-runtime's AgentSession.callTool()), re-validated
+	// (@roverkit/agent-runtime's AgentSession.callTool()), re-validated
 	// against this list by the orchestrator at call time — like skillRefs,
 	// this CRD-level check is a static-config sanity check, not the
 	// authorization boundary itself (docs/adr/0028).

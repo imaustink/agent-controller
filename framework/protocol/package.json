@@ -1,13 +1,13 @@
 {
-  "name": "@controller-agent/protocol",
+  "name": "@roverkit/protocol",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Canonical agent/tool wire contract (agentcontroller.protocol.v1): .proto sources plus generated TypeScript, with protovalidate rules. See ADR 0047.",
+  "description": "Canonical agent/tool wire contract (roverkit.protocol.v1): .proto sources plus generated TypeScript, with protovalidate rules. See ADR 0047.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "generate": "rm -rf src/gen go/agentcontroller && buf generate && cd go && gofmt -w agentcontroller",
+    "generate": "rm -rf src/gen go/roverkit && buf generate && cd go && gofmt -w roverkit",
     "lint": "buf lint",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",

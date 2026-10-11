@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/controller-agent/temporal-engine/internal/catalog"
-	"github.com/controller-agent/temporal-engine/internal/corpus"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/corpus"
 )
 
 // ReadCorpusActivityName is the GET face a Corpus exposes (ADR 0038 §5).

@@ -5,7 +5,7 @@
 # core_v1alpha1_connection.yaml and are shared by every Corpus over it. What
 # IS here is what legitimately differs between subsets — the scope, and who may
 # read it.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Corpus
 metadata:
   labels:

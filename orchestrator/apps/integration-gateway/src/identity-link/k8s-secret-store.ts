@@ -61,10 +61,10 @@ export class K8sSecretIdentityLinkStore implements IdentityLinkStore {
     const created = new SecretRecordStore({
       namespace: this.namespace,
       namePrefix: `identity-link-${slug}`,
-      keyLabel: "controller-agent.io/subject",
+      keyLabel: "roverkit.io/subject",
       commonLabels: {
-        "controller-agent.io/credential": "identity-link",
-        "controller-agent.io/provider": slug,
+        "roverkit.io/credential": "identity-link",
+        "roverkit.io/provider": slug,
       },
       api: this.api,
       ...(this.watcher ? { watch: this.watcher } : {}),

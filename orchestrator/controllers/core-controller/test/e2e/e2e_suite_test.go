@@ -28,7 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/controller-agent/core-controller/test/utils"
+	"github.com/roverkit/orchestrator/controllers/core-controller/test/utils"
 )
 
 var (

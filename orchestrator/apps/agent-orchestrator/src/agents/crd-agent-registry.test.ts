@@ -20,12 +20,12 @@ describe("CrdAgentRegistry", () => {
   it("maps Agent custom resources to AgentDescriptors", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [validAgent] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdAgentRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdAgentRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const agents = await registry.listAll();
 
     expect(listNamespacedCustomObject).toHaveBeenCalledWith({
-      group: "core.controller-agent.dev",
+      group: "core.roverkit.io",
       version: "v1alpha1",
       namespace: "default",
       plural: "agents",
@@ -47,7 +47,7 @@ describe("CrdAgentRegistry", () => {
     const malformed: AgentCustomResource = { metadata: { name: "broken" }, spec: { ...validAgent.spec, description: "" } };
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [malformed, validAgent] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdAgentRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdAgentRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const agents = await registry.listAll();
 
@@ -58,7 +58,7 @@ describe("CrdAgentRegistry", () => {
   it("returns an empty catalog when there are zero Agent resources", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdAgentRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdAgentRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     expect(await registry.listAll()).toEqual([]);
   });
@@ -72,7 +72,7 @@ describe("CrdAgentRegistry", () => {
         onEvent = cb;
         return { stop: vi.fn() };
       };
-      const registry = new CrdAgentRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const registry = new CrdAgentRegistry("default", "core.roverkit.io", "v1alpha1", api, watchFn);
       const onChange = vi.fn();
       registry.watch(onChange);
 
@@ -88,7 +88,7 @@ describe("CrdAgentRegistry", () => {
 
     it("throws when constructed without a watchFn", () => {
       const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
-      const registry = new CrdAgentRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      const registry = new CrdAgentRegistry("default", "core.roverkit.io", "v1alpha1", api);
       expect(() => registry.watch(() => {})).toThrow();
     });
   });

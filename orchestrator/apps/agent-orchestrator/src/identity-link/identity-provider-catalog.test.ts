@@ -19,12 +19,12 @@ describe("CrdIdentityProviderRegistry", () => {
   it("maps IdentityProvider custom resources to configs, defaulting flow to oauth", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [glyph] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdIdentityProviderRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdIdentityProviderRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const providers = await registry.listAll();
 
     expect(listNamespacedCustomObject).toHaveBeenCalledWith({
-      group: "core.controller-agent.dev",
+      group: "core.roverkit.io",
       version: "v1alpha1",
       namespace: "default",
       plural: "identityproviders",
@@ -45,7 +45,7 @@ describe("CrdIdentityProviderRegistry", () => {
       },
     };
     const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn().mockResolvedValue({ items: [claudeRemote] }) };
-    const registry = new CrdIdentityProviderRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdIdentityProviderRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const providers = await registry.listAll();
 
@@ -62,7 +62,7 @@ describe("CrdIdentityProviderRegistry", () => {
     const api: CustomObjectsApiLike = {
       listNamespacedCustomObject: vi.fn().mockResolvedValue({ items: [malformed, glyph] }),
     };
-    const registry = new CrdIdentityProviderRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdIdentityProviderRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const providers = await registry.listAll();
 
@@ -80,7 +80,7 @@ describe("CrdIdentityProviderRegistry", () => {
         onEvent = cb;
         return { stop: vi.fn() };
       };
-      const registry = new CrdIdentityProviderRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const registry = new CrdIdentityProviderRegistry("default", "core.roverkit.io", "v1alpha1", api, watchFn);
       const onChange = vi.fn();
       registry.watch(onChange);
 
@@ -96,7 +96,7 @@ describe("CrdIdentityProviderRegistry", () => {
 
     it("throws when constructed without a watchFn", () => {
       const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
-      const registry = new CrdIdentityProviderRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      const registry = new CrdIdentityProviderRegistry("default", "core.roverkit.io", "v1alpha1", api);
       expect(() => registry.watch(() => {})).toThrow();
     });
   });

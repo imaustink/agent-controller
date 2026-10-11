@@ -3,7 +3,7 @@ package workflows
 import (
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/controller-agent/temporal-engine/internal/messaging"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/messaging"
 )
 
 const (

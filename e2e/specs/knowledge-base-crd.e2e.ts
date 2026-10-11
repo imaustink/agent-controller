@@ -33,7 +33,7 @@ const CORPUS = "alpha-docs";
 const KB = "e2e-alpha";
 
 const connectionManifest = (name = CONNECTION) => `
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Connection
 metadata:
   name: ${name}
@@ -54,7 +54,7 @@ spec:
 `;
 
 const corpusManifest = (name = CORPUS, connection = CONNECTION, space = "ALPHA") => `
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Corpus
 metadata:
   name: ${name}
@@ -110,9 +110,9 @@ describe("the CRDs this branch generates are the ones installed", () => {
     // applied against it fails with a bare `404 page not found`.
     const names = await kubectl(["get", "crd", "-o", "name"]);
 
-    expect(names).toContain("corpora.core.controller-agent.dev");
-    expect(names).toContain("connections.core.controller-agent.dev");
-    expect(names).toContain("knowledgebases.core.controller-agent.dev");
+    expect(names).toContain("corpora.core.roverkit.io");
+    expect(names).toContain("connections.core.roverkit.io");
+    expect(names).toContain("knowledgebases.core.roverkit.io");
   });
 
   it("serves the fields the broker reads", async () => {
@@ -122,7 +122,7 @@ describe("the CRDs this branch generates are the ones installed", () => {
     const crd = await kubectl([
       "get",
       "crd",
-      "corpora.core.controller-agent.dev",
+      "corpora.core.roverkit.io",
       "-o",
       "jsonpath={.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties}",
     ]);
@@ -182,7 +182,7 @@ describe("the chart grants the controller what it watches", () => {
 
     const granted = new Set(
       rules.rules
-        .filter((rule) => rule.apiGroups.includes("core.controller-agent.dev"))
+        .filter((rule) => rule.apiGroups.includes("core.roverkit.io"))
         .flatMap((rule) => rule.resources),
     );
 
@@ -244,7 +244,7 @@ describe("every process that watches these kinds is granted them", () => {
   const grantedKinds = (role: { rules: { apiGroups: string[]; resources: string[] }[] }) =>
     new Set(
       role.rules
-        .filter((rule) => rule.apiGroups.includes("core.controller-agent.dev"))
+        .filter((rule) => rule.apiGroups.includes("core.roverkit.io"))
         .flatMap((rule) => rule.resources),
     );
 
@@ -306,7 +306,7 @@ describe("reconciling a Corpus", () => {
           "get",
           "cronjob",
           "-l",
-          `core.controller-agent.dev/corpus=${CORPUS}`,
+          `core.roverkit.io/corpus=${CORPUS}`,
           "-o",
           "json",
         ]);
@@ -326,7 +326,7 @@ describe("reconciling a Corpus", () => {
     // nothing reads, spending a client's credential forever.
     const cronjobs = await kubectlJson<{
       items: { metadata: { ownerReferences?: { kind: string; name: string }[] } }[];
-    }>(["get", "cronjob", "-l", `core.controller-agent.dev/corpus=${CORPUS}`, "-o", "json"]);
+    }>(["get", "cronjob", "-l", `core.roverkit.io/corpus=${CORPUS}`, "-o", "json"]);
 
     const owners = cronjobs.items[0]?.metadata.ownerReferences ?? [];
     expect(owners.some((o) => o.kind === "Corpus" && o.name === CORPUS)).toBe(true);
@@ -401,7 +401,7 @@ describe("a Corpus whose Connection is missing", () => {
       "get",
       "cronjob",
       "-l",
-      `core.controller-agent.dev/corpus=${ORPHAN}`,
+      `core.roverkit.io/corpus=${ORPHAN}`,
       "-o",
       "json",
     ]);

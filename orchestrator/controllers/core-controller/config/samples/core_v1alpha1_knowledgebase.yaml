@@ -14,7 +14,7 @@
 # Roles could not live here even if we wanted them to: a chunk is stamped once,
 # at ingest, and two knowledge bases selecting the same corpus would have no
 # single value to write (ADR 0043 §2).
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: KnowledgeBase
 metadata:
   labels:

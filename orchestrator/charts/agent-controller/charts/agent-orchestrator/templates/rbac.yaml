@@ -20,7 +20,7 @@ metadata:
   labels:
     {{- include "agent-orchestrator.labels" . | nindent 4 }}
 rules:
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["tools", "skills", "agents", "integrationroutes", "identityproviders"]
     verbs: ["get", "list", "watch"]
   {{- if and .Values.knowledgeBases.enabled (eq $kbNs $toolNs) }}
@@ -32,7 +32,7 @@ rules:
   #
   # Only here when the KB namespace is the tool namespace; a distinct KB
   # namespace gets its own Role/RoleBinding below instead.
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["connections", "corpora", "knowledgebases"]
     verbs: ["get", "list", "watch"]
   {{- end }}
@@ -42,14 +42,14 @@ rules:
   # mcp enabled and this missing it crashloops on a 403 at startup, not degrades.
   # Only here when the KB namespace is the tool namespace; a distinct KB
   # namespace gets its own Role/RoleBinding below instead.
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["mcptools"]
     verbs: ["get", "list", "watch"]
   {{- end }}
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["toolruns"]
     verbs: ["create", "get", "list", "watch", "delete"]
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["agentruns"]
     verbs: ["create", "get", "list", "watch", "delete"]
   {{- if .Values.localTool.enabled }}
@@ -57,7 +57,7 @@ rules:
   # LocalTool's secretEnv before passing the values to the executor sidecar
   # (the sidecars have no k8s identity of their own). This `secrets: get` grant
   # widens the orchestrator's blast radius -- only added when LocalTools are on.
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["localtools"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
@@ -112,12 +112,12 @@ metadata:
     {{- include "agent-orchestrator.labels" . | nindent 4 }}
 rules:
   {{- if .Values.knowledgeBases.enabled }}
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["connections", "corpora", "knowledgebases"]
     verbs: ["get", "list", "watch"]
   {{- end }}
   {{- if .Values.mcp.enabled }}
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.roverkit.io"]
     resources: ["mcptools"]
     verbs: ["get", "list", "watch"]
   {{- end }}

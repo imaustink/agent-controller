@@ -76,7 +76,7 @@ spec:
        scope tied to the literal ad-hoc request will never match the next,
        differently-worded request.
     2. The full YAML for a new `Skill` custom resource, `apiVersion:
-       core.controller-agent.dev/v1alpha1`, `kind: Skill`, to be created at
+       core.roverkit.io/v1alpha1`, `kind: Skill`, to be created at
        `orchestrator/apps/agent-orchestrator/config/samples/<name>.yaml`:
        - `spec.description` / `spec.input` / `spec.output`: written for the
          GENERAL capability identified in step 1 (not restated in terms of
@@ -104,7 +104,7 @@ spec:
          GENERAL capability (not just the literal ad-hoc example), call the
          right tool, never fabricate. Do not copy this skill's own markdown.
        - `metadata.annotations`: include
-         `controller-agent.dev/generated-by: self-improvement-skill` so the
+         `roverkit.io/generated-by: self-improvement-skill` so the
          provenance of an auto-drafted skill is visible on the CR itself.
     3. An instruction to commit that new file under
        `orchestrator/apps/agent-orchestrator/config/samples/` and open a pull request

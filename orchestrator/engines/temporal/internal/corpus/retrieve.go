@@ -3,7 +3,7 @@ package corpus
 import (
 	"context"
 
-	"github.com/controller-agent/temporal-engine/internal/vectorstore"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/vectorstore"
 )
 
 // Retrieve is the whole read path for a knowledge base: fan out, merge, probe,
