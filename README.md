@@ -2,9 +2,19 @@
 
 > [github.com/imaustink/agent-controller](https://github.com/imaustink/agent-controller)
 
-**roverkit** is a framework for building AI agents (rovers) and the tools they
-call, and **roverkit orchestrator** is the Kubernetes system that runs them at
-scale. Either half works without the other ([ADR 0047](docs/adr/0047-decouple-framework-from-orchestrator.md)).
+**roverkit** is an open-source, modular platform for building and running AI
+agents (rovers). Take the whole thing or only the parts you need
+([ADR 0047](docs/adr/0047-decouple-framework-from-orchestrator.md)):
+
+- **roverkit SDK** ([`framework/`](framework/)): the wire protocol, agent
+  runtime and messaging transports you build an agent or tool with. It runs
+  anywhere, in-process included.
+- **roverkit orchestrator** ([`orchestrator/`](orchestrator/)): runs agents in
+  production on Kubernetes, with the controller and CRDs, the execution engines,
+  the gateways and brokers, and the Helm charts.
+- **roverkit catalog** ([`catalog/`](catalog/)): ready-made agents and tools to
+  use as they are or copy.
+
 The project was called agent-controller; the repository, chart and image names
 still carry that name until the repository split.
 

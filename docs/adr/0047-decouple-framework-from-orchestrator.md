@@ -221,13 +221,23 @@ by giving the framework a non-NATS `AgentChannel` and `Sink`.
 
 ### 6. One brand: roverkit
 
-The project is **roverkit**. The framework is roverkit itself; the orchestrator
-is **roverkit orchestrator**: one brand with a descriptive sub-name rather than
-a second product name (the pattern of Temporal Server / Temporal SDKs). An agent
-is a rover, the framework is the kit it is built from, and the orchestrator
-operates the fleet. The future repositories follow the directory split:
-`roverkit/roverkit` (or `roverkit/framework`), `roverkit/catalog`,
-`roverkit/orchestrator`.
+The project is **roverkit**, a modular platform for building and running
+agents. Each part takes a descriptive sub-name rather than a product name of its
+own (the pattern of Temporal Server / Temporal SDKs):
+
+| Part | Directory | What it is |
+|-|-|-|
+| **roverkit SDK** | `framework/` | protocol, agent runtime, messaging transports: what an agent or tool is built with |
+| **roverkit orchestrator** | `orchestrator/` | runs agents in production on Kubernetes |
+| **roverkit catalog** | `catalog/` | reference agents and tools |
+
+"Platform" names the whole because the whole is more than a framework: a control
+plane, durable execution, identity linking and a catalog. "Kit" carries the
+à-la-carte point, so the platform never reads as all-or-nothing. An agent is a
+rover, the SDK is the kit it is built from, and the orchestrator operates the
+fleet. In prose, "the framework" (this ADR's term) is the roverkit SDK; the
+`framework/` directory keeps its name. The future repositories follow the
+directory split: `roverkit/sdk`, `roverkit/catalog`, `roverkit/orchestrator`.
 
 Names that live **in code** move now, because each only gets more expensive
 once a third party depends on it:
