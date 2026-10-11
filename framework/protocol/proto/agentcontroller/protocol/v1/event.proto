@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+package agentcontroller.protocol.v1;
+
+import "agentcontroller/protocol/v1/artifact.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/imaustink/agent-controller/framework/protocol/go/agentcontroller/protocol/v1;protocolv1";
+
+// One event in a TOOL call's one-way stream:
+//
+//   accepted -> progress* / warning* -> (succeeded | failed)
+//
+// The same JSON is used on every transport (broker message, NDJSON line, HTTP
+// callback body).
+//
+// Wire shape (ADR 0047): today's JSON is a flat object discriminated by the
+// `type` string. proto3 JSON cannot produce that from a oneof (it nests) or an
+// enum (it writes EVENT_TYPE_*), so this is ONE flat message: `type` is a
+// string, every per-type field is optional with an explicit json_name, and the
+// message-level rules below say which fields each type requires. Fields that
+// do not belong to a type are tolerated, not rejected, matching the receivers
+// that have always ignored them.
+//
+// `result`, `stage` and `code` are deliberately loose: a tool owns the shape of
+// its own result and the vocabulary of its own stages and failure codes. The
+// shared contract is the envelope.
+message Event {
+  option (buf.validate.message).cel = {
+    id: "event.accepted_requires_url"
+    message: "an accepted event requires url"
+    expression: "this.type != 'accepted' || has(this.url)"
+  };
+  option (buf.validate.message).cel = {
+    id: "event.progress_requires_stage"
+    message: "a progress event requires stage"
+    expression: "this.type != 'progress' || has(this.stage)"
+  };
+  option (buf.validate.message).cel = {
+    id: "event.warning_requires_message"
+    message: "a warning event requires message"
+    expression: "this.type != 'warning' || has(this.message)"
+  };
+  option (buf.validate.message).cel = {
+    id: "event.succeeded_requires_result"
+    message: "a succeeded event requires result"
+    expression: "this.type != 'succeeded' || has(this.result)"
+  };
+  option (buf.validate.message).cel = {
+    id: "event.failed_requires_code_and_message"
+    message: "a failed event requires code and message"
+    expression: "this.type != 'failed' || (has(this.code) && has(this.message))"
+  };
+
+  // Correlation id shared by every event of a single tool call.
+  optional string job_id = 1 [
+    json_name = "job_id",
+    (buf.validate.field).required = true
+  ];
+  // Monotonic per-job sequence number; gives ordering and dedupe.
+  optional uint32 seq = 2 [
+    json_name = "seq",
+    (buf.validate.field).required = true
+  ];
+  // ISO 8601 emission timestamp.
+  optional string ts = 3 [
+    json_name = "ts",
+    (buf.validate.field).required = true
+  ];
+  optional string type = 4 [
+    json_name = "type",
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      in: ["accepted", "progress", "warning", "succeeded", "failed"]
+    }
+  ];
+
+  // accepted: where the caller can poll or follow the job.
+  optional string url = 5 [json_name = "url"];
+
+  // progress: a tool-defined pipeline stage, and an optional completion
+  // percentage.
+  optional string stage = 6 [json_name = "stage"];
+  optional double pct = 7 [
+    json_name = "pct",
+    (buf.validate.field).double = {
+      gte: 0
+      lte: 100
+    }
+  ];
+
+  // progress / warning / failed.
+  optional string message = 8 [json_name = "message"];
+
+  // succeeded: whatever the tool produces (any JSON value), plus references to
+  // anything too large to inline.
+  google.protobuf.Value result = 9 [json_name = "result"];
+  repeated ArtifactRef artifacts = 10 [json_name = "artifacts"];
+
+  // failed: a tool-defined failure code.
+  optional string code = 11 [json_name = "code"];
+}

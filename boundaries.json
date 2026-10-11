@@ -19,6 +19,7 @@
     }
   },
   "units": [
+    { "path": "framework/protocol", "layer": "framework" },
     { "path": "packages/messaging", "layer": "framework" },
     { "path": "packages/agent-runtime", "layer": "framework" },
     { "path": "packages/github-app-auth", "layer": "framework" },

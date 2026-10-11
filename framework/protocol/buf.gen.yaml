@@ -1,0 +1,21 @@
+# Run via `npm run generate -w @controller-agent/protocol`. Both plugins are
+# pinned and run locally, so generation needs no remote plugin service; the
+# only network fetch is the protovalidate dependency pinned in buf.lock.
+version: v2
+inputs:
+  - directory: proto
+plugins:
+  # TypeScript. include_imports also emits buf/validate/validate_pb.ts so the
+  # generated package is self-contained.
+  - local: protoc-gen-es
+    out: src/gen
+    include_imports: true
+    opt:
+      - target=ts
+      - import_extension=js
+  # Go. The generated package imports buf/validate from its published Go
+  # module, so only our own files are emitted here.
+  - local: ["go", "run", "google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12"]
+    out: go
+    opt:
+      - module=github.com/imaustink/agent-controller/framework/protocol/go

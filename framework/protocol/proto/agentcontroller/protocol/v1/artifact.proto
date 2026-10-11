@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package agentcontroller.protocol.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "github.com/imaustink/agent-controller/framework/protocol/go/agentcontroller/protocol/v1;protocolv1";
+
+// Reference to a large or binary payload delivered out-of-band (object store,
+// mounted volume, etc.). Bytes never travel on an event channel -- only this
+// reference does, so the receiver can fetch and verify by hash.
+message ArtifactRef {
+  optional string uri = 1 [
+    json_name = "uri",
+    (buf.validate.field).required = true
+  ];
+  optional string sha256 = 2 [
+    json_name = "sha256",
+    (buf.validate.field).required = true
+  ];
+  // A double rather than a 64-bit integer on purpose: proto3 JSON writes
+  // int64/uint64 as quoted strings, which would change the wire shape every
+  // existing consumer parses as a number. A double is exact to 2^53 bytes.
+  optional double bytes = 3 [
+    json_name = "bytes",
+    (buf.validate.field).required = true,
+    (buf.validate.field).double.gte = 0,
+    (buf.validate.field).cel = {
+      id: "artifact_ref.bytes_integer"
+      message: "bytes must be a whole number"
+      expression: "this == double(int(this))"
+    }
+  ];
+  optional string content_type = 4 [
+    json_name = "content_type",
+    (buf.validate.field).required = true
+  ];
+}

@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package agentcontroller.protocol.v1;
+
+import "agentcontroller/protocol/v1/artifact.proto";
+import "buf/validate/validate.proto";
+
+option go_package = "github.com/imaustink/agent-controller/framework/protocol/go/agentcontroller/protocol/v1;protocolv1";
+
+// One point in a TURN's lifecycle (temporal engine ADR 0004).
+//
+// Where Event is one tool call's stream, a TurnEvent is the envelope an
+// orchestrator narrates over a whole turn: a skill was selected, a tool
+// started / progressed / finished / failed, a warning, the two approval-gate
+// transitions (temporal engine ADR 0003), free-text narration, and the turn
+// boundaries. Both engines render each one to the status line clients already
+// receive, so adopting it changed no client-visible text.
+//
+// Field names are camelCase on the wire (`skillId`, `toolId`). Until this
+// contract existed the Go engine wrote `skill_id`/`tool_id` while TypeScript
+// wrote `skillId`/`toolId`; the JSON had not yet reached a client, so this
+// contract settles on the TypeScript spelling (ADR 0047).
+message TurnEvent {
+  // Monotonic per-turn sequence number; gives ordering and dedupe.
+  optional uint32 seq = 1 [
+    json_name = "seq",
+    (buf.validate.field).required = true
+  ];
+  // ISO 8601 emission timestamp.
+  optional string ts = 2 [
+    json_name = "ts",
+    (buf.validate.field).required = true
+  ];
+  optional string kind = 3 [
+    json_name = "kind",
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      in: [
+        "turn-started",
+        "skill-selected",
+        "tool-started",
+        "tool-progress",
+        "tool-finished",
+        "tool-failed",
+        "warning",
+        "approval-required",
+        "approval-resolved",
+        "turn-completed",
+        // A free-text status line with no richer structure yet: lets every
+        // narration call site flow through this one envelope while specific
+        // kinds are adopted incrementally.
+        "narration"
+      ]
+    }
+  ];
+
+  optional string skill_id = 4 [json_name = "skillId"];
+  optional string tool_id = 5 [json_name = "toolId"];
+  optional string stage = 6 [json_name = "stage"];
+  optional double pct = 7 [
+    json_name = "pct",
+    (buf.validate.field).double = {
+      gte: 0
+      lte: 100
+    }
+  ];
+  // approval-resolved carries the decision here (e.g. "approved", "denied");
+  // tool-failed carries the tool's failure code.
+  optional string code = 8 [json_name = "code"];
+  optional string message = 9 [json_name = "message"];
+  repeated ArtifactRef artifacts = 10 [json_name = "artifacts"];
+}

@@ -1,0 +1,126 @@
+{
+  "message": "agentcontroller.protocol.v1.Event",
+  "cases": [
+    {
+      "name": "accepted with url",
+      "valid": true,
+      "json": { "job_id": "j1", "seq": 0, "ts": "2026-10-07T00:00:00Z", "type": "accepted", "url": "http://x/jobs/j1" }
+    },
+    {
+      "name": "progress with stage only",
+      "valid": true,
+      "json": { "job_id": "j1", "seq": 1, "ts": "2026-10-07T00:00:01Z", "type": "progress", "stage": "fetch" }
+    },
+    {
+      "name": "progress with fractional pct and message",
+      "valid": true,
+      "json": { "job_id": "j1", "seq": 2, "ts": "t", "type": "progress", "stage": "parse", "pct": 42.5, "message": "halfway" }
+    },
+    {
+      "name": "progress pct at the lower bound",
+      "valid": true,
+      "json": { "job_id": "j1", "seq": 2, "ts": "t", "type": "progress", "stage": "s", "pct": 0 }
+    },
+    {
+      "name": "progress pct at the upper bound",
+      "valid": true,
+      "json": { "job_id": "j1", "seq": 2, "ts": "t", "type": "progress", "stage": "s", "pct": 100 }
+    },
+    {
+      "name": "warning with message",
+      "valid": true,
+      "json": { "job_id": "j1", "seq": 3, "ts": "t", "type": "warning", "message": "slow upstream" }
+    },
+    {
+      "name": "succeeded with an object result",
+      "valid": true,
+      "json": { "job_id": "j1", "seq": 4, "ts": "t", "type": "succeeded", "result": { "title": "Soup", "servings": 4, "tags": ["a", "b"], "nested": { "ok": true } } }
+    },
+    {
+      "name": "succeeded with a string result",
+      "valid": true,
+      "json": { "job_id": "j1", "seq": 4, "ts": "t", "type": "succeeded", "result": "plain text" }
+    },
+    {
+      "name": "succeeded with a null result",
+      "valid": true,
+      "json": { "job_id": "j1", "seq": 4, "ts": "t", "type": "succeeded", "result": null }
+    },
+    {
+      "name": "succeeded with artifacts",
+      "valid": true,
+      "json": {
+        "job_id": "j1", "seq": 4, "ts": "t", "type": "succeeded", "result": {},
+        "artifacts": [{ "uri": "s3://b/k", "sha256": "abc", "bytes": 1024, "content_type": "image/png" }]
+      }
+    },
+    {
+      "name": "failed with code and message",
+      "valid": true,
+      "json": { "job_id": "j1", "seq": 5, "ts": "t", "type": "failed", "code": "UPSTREAM_TIMEOUT", "message": "gave up" }
+    },
+    {
+      "name": "empty-string fields are present, not missing",
+      "valid": true,
+      "json": { "job_id": "", "seq": 0, "ts": "", "type": "warning", "message": "" }
+    },
+    {
+      "name": "fields the contract doesn't define are tolerated",
+      "valid": true,
+      "roundTrip": false,
+      "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "accepted", "url": "u", "future_field": 1 }
+    },
+    {
+      "name": "fields belonging to another type are tolerated",
+      "valid": true,
+      "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "accepted", "url": "u", "stage": "irrelevant" }
+    },
+    { "name": "missing job_id", "valid": false, "json": { "seq": 0, "ts": "t", "type": "accepted", "url": "u" } },
+    { "name": "missing seq", "valid": false, "json": { "job_id": "j1", "ts": "t", "type": "accepted", "url": "u" } },
+    { "name": "missing ts", "valid": false, "json": { "job_id": "j1", "seq": 0, "type": "accepted", "url": "u" } },
+    { "name": "missing type", "valid": false, "json": { "job_id": "j1", "seq": 0, "ts": "t", "url": "u" } },
+    { "name": "unknown type", "valid": false, "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "done" } },
+    { "name": "negative seq", "valid": false, "json": { "job_id": "j1", "seq": -1, "ts": "t", "type": "accepted", "url": "u" } },
+    { "name": "fractional seq", "valid": false, "json": { "job_id": "j1", "seq": 1.5, "ts": "t", "type": "accepted", "url": "u" } },
+    { "name": "job_id of the wrong JSON type", "valid": false, "json": { "job_id": 7, "seq": 0, "ts": "t", "type": "accepted", "url": "u" } },
+    {
+      "name": "seq encoded as a string",
+      "valid": false,
+      "json": { "job_id": "j1", "seq": "3", "ts": "t", "type": "accepted", "url": "u" },
+      "divergences": {
+        "proto-ts": "proto3 JSON parsing accepts integers written as strings. Harmless as a lenient reader; every emitter writes a number.",
+        "proto-go": "proto3 JSON parsing accepts integers written as strings. Harmless as a lenient reader; every emitter writes a number."
+      }
+    },
+    { "name": "accepted without url", "valid": false, "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "accepted" } },
+    { "name": "progress without stage", "valid": false, "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "progress", "message": "m" } },
+    { "name": "warning without message", "valid": false, "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "warning" } },
+    {
+      "name": "succeeded without result",
+      "valid": false,
+      "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "succeeded" },
+      "divergences": {
+        "zod": "`result: z.unknown()` admits a missing key. The canonical rule (result required) is what the Temporal engine has always enforced in production; tightening zod is deferred to replacing it with protovalidate-es (ADR 0047), so a tool that relies on the LangGraph engine's leniency is not broken by a contract-only change."
+      }
+    },
+    { "name": "failed without code", "valid": false, "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "failed", "message": "m" } },
+    { "name": "failed without message", "valid": false, "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "failed", "code": "C" } },
+    { "name": "pct above 100", "valid": false, "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "progress", "stage": "s", "pct": 101 } },
+    { "name": "pct below 0", "valid": false, "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "progress", "stage": "s", "pct": -0.5 } },
+    {
+      "name": "artifact missing sha256",
+      "valid": false,
+      "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "succeeded", "result": 1, "artifacts": [{ "uri": "u", "bytes": 1, "content_type": "c" }] }
+    },
+    {
+      "name": "artifact with negative bytes",
+      "valid": false,
+      "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "succeeded", "result": 1, "artifacts": [{ "uri": "u", "sha256": "h", "bytes": -1, "content_type": "c" }] }
+    },
+    {
+      "name": "artifact with fractional bytes",
+      "valid": false,
+      "json": { "job_id": "j1", "seq": 0, "ts": "t", "type": "succeeded", "result": 1, "artifacts": [{ "uri": "u", "sha256": "h", "bytes": 1.5, "content_type": "c" }] }
+    }
+  ]
+}
