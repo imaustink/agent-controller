@@ -1,3 +1,3 @@
-module github.com/controller-agent/localtool-executor
+module github.com/roverkit/orchestrator/sidecars/localtool-executor
 
 go 1.24

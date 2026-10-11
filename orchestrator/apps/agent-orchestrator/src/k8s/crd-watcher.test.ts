@@ -40,12 +40,12 @@ describe("makeCrdWatcher", () => {
   it("builds the watch path from group/version/namespace/plural and forwards ADDED/MODIFIED/DELETED", async () => {
     const watchFn = makeCrdWatcher({} as never);
     const events: Array<[string, unknown]> = [];
-    watchFn({ group: "core.controller-agent.dev", version: "v1alpha1", namespace: "default", plural: "tools" }, (phase, obj) =>
+    watchFn({ group: "core.roverkit.io", version: "v1alpha1", namespace: "default", plural: "tools" }, (phase, obj) =>
       events.push([phase, obj]),
     );
     await vi.waitFor(() => expect(watchCalls).toHaveLength(1));
 
-    expect(watchCalls[0]!.path).toBe("/apis/core.controller-agent.dev/v1alpha1/namespaces/default/tools");
+    expect(watchCalls[0]!.path).toBe("/apis/core.roverkit.io/v1alpha1/namespaces/default/tools");
 
     watchCalls[0]!.callback("ADDED", { metadata: { name: "a" } });
     watchCalls[0]!.callback("MODIFIED", { metadata: { name: "a" } });

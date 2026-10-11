@@ -31,7 +31,7 @@ const SLACK_CORPUS = "eng-chat";
 const DRIVE_CORPUS = "delivery-drive";
 
 const manifests = `
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Connection
 metadata:
   name: e2e-fake-slack
@@ -52,7 +52,7 @@ spec:
   identityProviders:
     - slack
 ---
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Corpus
 metadata:
   name: ${SLACK_CORPUS}
@@ -70,7 +70,7 @@ spec:
   api:
     enabled: true
 ---
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Connection
 metadata:
   name: e2e-fake-gdrive
@@ -86,7 +86,7 @@ spec:
   identityProviders:
     - google
 ---
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Corpus
 metadata:
   name: ${DRIVE_CORPUS}
@@ -112,7 +112,7 @@ async function syncNow(corpus: string): Promise<void> {
       "get",
       "cronjob",
       "-l",
-      `core.controller-agent.dev/corpus=${corpus}`,
+      `core.roverkit.io/corpus=${corpus}`,
       "-o",
       "jsonpath={.items[0].metadata.name}",
     ])

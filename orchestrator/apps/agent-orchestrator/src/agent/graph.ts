@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
-import type { Event } from "@controller-agent/messaging";
+import type { Event } from "@roverkit/messaging";
 import { extractContinuationToken, prependContinuationToken, resolveContinuationKey } from "../continuation.js";
 import { SELF_IMPROVEMENT_FOOTER } from "../openai/chat-completions.js";
 import type { AgentOrchestratorChannel, AgentTurnResult, SubAgentApprovalCall } from "../agents/nats-agent-channel.js";

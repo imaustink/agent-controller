@@ -6,12 +6,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
 )
 
 func toolCR(name string, spec map[string]any) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "core.controller-agent.dev/v1alpha1",
+		"apiVersion": "core.roverkit.io/v1alpha1",
 		"kind":       "Tool",
 		"metadata":   map[string]any{"name": name},
 		"spec":       spec,
@@ -53,7 +53,7 @@ func TestDecodeToolIdentityProviders(t *testing.T) {
 // need only branch on LocalExec being set.
 func TestDecodeLocalTool(t *testing.T) {
 	tool, err := catalog.DecodeLocalTool(&unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "core.controller-agent.dev/v1alpha1",
+		"apiVersion": "core.roverkit.io/v1alpha1",
 		"kind":       "LocalTool",
 		"metadata":   map[string]any{"name": "http-get-node"},
 		"spec": map[string]any{
@@ -93,7 +93,7 @@ func TestDecodeLocalTool(t *testing.T) {
 // other tool kind produces, so a skill's toolRefs reference it transparently.
 func TestDecodeMCPTool(t *testing.T) {
 	tool, err := catalog.DecodeMCPTool(&unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "core.controller-agent.dev/v1alpha1",
+		"apiVersion": "core.roverkit.io/v1alpha1",
 		"kind":       "MCPTool",
 		"metadata":   map[string]any{"name": "mcp-github-search-issues"},
 		"spec": map[string]any{
@@ -131,7 +131,7 @@ func TestDecodeMCPTool(t *testing.T) {
 // ADR 0028), which is a different question from skillRefs' prompt material.
 func TestDecodeAgentToolRefs(t *testing.T) {
 	agent, err := catalog.DecodeAgent(&unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "core.controller-agent.dev/v1alpha1",
+		"apiVersion": "core.roverkit.io/v1alpha1",
 		"kind":       "Agent",
 		"metadata":   map[string]any{"name": "cluster-debug"},
 		"spec": map[string]any{
@@ -148,7 +148,7 @@ func TestDecodeAgentToolRefs(t *testing.T) {
 
 func TestDecodeSkill(t *testing.T) {
 	skill, err := catalog.DecodeSkill(&unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "core.controller-agent.dev/v1alpha1",
+		"apiVersion": "core.roverkit.io/v1alpha1",
 		"kind":       "Skill",
 		"metadata":   map[string]any{"name": "recipe-refining"},
 		"spec": map[string]any{
@@ -170,7 +170,7 @@ func TestDecodeSkill(t *testing.T) {
 func TestDecodeSkillAllowCallerTools(t *testing.T) {
 	skillCR := func(spec map[string]any) *unstructured.Unstructured {
 		return &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "core.controller-agent.dev/v1alpha1",
+			"apiVersion": "core.roverkit.io/v1alpha1",
 			"kind":       "Skill",
 			"metadata":   map[string]any{"name": "s"},
 			"spec":       spec,
@@ -193,7 +193,7 @@ func TestDecodeSkillAllowCallerTools(t *testing.T) {
 
 func routeCR(name string, spec map[string]any) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "core.controller-agent.dev/v1alpha1",
+		"apiVersion": "core.roverkit.io/v1alpha1",
 		"kind":       "IntegrationRoute",
 		"metadata":   map[string]any{"name": name},
 		"spec":       spec,

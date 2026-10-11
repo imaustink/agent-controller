@@ -1,4 +1,4 @@
-import { normalizePem } from "@controller-agent/github-app-auth";
+import { normalizePem } from "@roverkit/github-app-auth";
 
 /** Central configuration for the GitHub Issues integration gateway. */
 export interface AppConfig {
@@ -19,7 +19,7 @@ export interface AppConfig {
    * `/login/oauth/access_token`). Distinct from `githubApiUrl`: on GitHub
    * Enterprise Server the REST API lives at `https://<host>/api/v3` while
    * these OAuth routes stay on `https://<host>`, so one value cannot serve
-   * both. Defaults to github.com, matching `@controller-agent/github-app-auth`'s
+   * both. Defaults to github.com, matching `@roverkit/github-app-auth`'s
    * own default, so existing deployments are unaffected.
    */
   githubBaseUrl: string;

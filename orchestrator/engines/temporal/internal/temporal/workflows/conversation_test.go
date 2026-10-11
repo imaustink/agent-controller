@@ -11,8 +11,8 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
-	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/workflows"
 )
 
 func newTestEnv(t *testing.T, fakeLLM func(context.Context, activities.CompleteTurnInput) (string, error)) *testsuite.TestWorkflowEnvironment {

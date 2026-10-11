@@ -22,12 +22,12 @@
 # Neither declares toolRefs/agentRefs, which makes both UNRESTRICTED (ADR 0011):
 # visible to any caller with a resolved identity, and needing no authorization
 # pre-flight. That is what lets these specs run without seeding a credential.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Skill
 metadata:
   name: e2e-caller-tool-telemetry
   labels:
-    e2e.controller-agent.dev/fixture: caller-tools
+    e2e.roverkit.io/fixture: caller-tools
 spec:
   description: >-
     Reads live battery telemetry for a numbered device in the e2e-widget test
@@ -52,12 +52,12 @@ spec:
   # spec pass without exercising the unset-means-allowed path at all, which is
   # the one every existing Skill CR in the world takes.
 ---
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Skill
 metadata:
   name: e2e-caller-tool-refused
   labels:
-    e2e.controller-agent.dev/fixture: caller-tools
+    e2e.roverkit.io/fixture: caller-tools
 spec:
   description: >-
     Reads sealed diagnostic counters for a numbered chassis in the e2e-sealed

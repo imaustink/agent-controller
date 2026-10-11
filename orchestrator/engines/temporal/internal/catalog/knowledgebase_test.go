@@ -6,12 +6,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
 )
 
 func connectionCR(name string, spec, status map[string]any) *unstructured.Unstructured {
 	obj := map[string]any{
-		"apiVersion": "core.controller-agent.dev/v1alpha1",
+		"apiVersion": "core.roverkit.io/v1alpha1",
 		"kind":       "Connection",
 		"metadata":   map[string]any{"name": name},
 		"spec":       spec,
@@ -24,7 +24,7 @@ func connectionCR(name string, spec, status map[string]any) *unstructured.Unstru
 
 func knowledgeBaseCR(name string, spec map[string]any) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "core.controller-agent.dev/v1alpha1",
+		"apiVersion": "core.roverkit.io/v1alpha1",
 		"kind":       "KnowledgeBase",
 		"metadata":   map[string]any{"name": name},
 		"spec":       spec,

@@ -39,7 +39,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/controller-agent/temporal-engine/internal/identitylink"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/identitylink"
 )
 
 // CrossEntryPointProviders are keyed by PRINCIPAL rather than by the entry

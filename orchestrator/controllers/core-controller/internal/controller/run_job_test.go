@@ -19,7 +19,7 @@ package controller
 import (
 	"testing"
 
-	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	toolv1alpha1 "github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 // TestSessionIDAnnotations is a plain (non-envtest) unit test of the helper

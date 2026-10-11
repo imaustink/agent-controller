@@ -1,5 +1,5 @@
 {
-  "message": "agentcontroller.protocol.v1.AgentUpMessage",
+  "message": "roverkit.protocol.v1.AgentUpMessage",
   "cases": [
     { "name": "ready", "valid": true, "json": { "agent_run_id": "r1", "seq": 0, "ts": "t", "type": "ready" } },
     { "name": "progress with message only", "valid": true, "json": { "agent_run_id": "r1", "seq": 1, "ts": "t", "type": "progress", "message": "cloning" } },

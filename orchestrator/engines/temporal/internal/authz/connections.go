@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/controller-agent/temporal-engine/internal/identitylink"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/identitylink"
 )
 
 // connectionsLinkTTLSeconds is how long a Connections-page link prompt's anchor

@@ -3,98 +3,98 @@
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
 cliVersion: 4.14.0
-domain: controller-agent.dev
+domain: roverkit.io
 layout:
 - go.kubebuilder.io/v4
 projectName: core-controller
-repo: github.com/controller-agent/core-controller
+repo: github.com/roverkit/orchestrator/controllers/core-controller
 resources:
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: controller-agent.dev
+  domain: roverkit.io
   group: core
   kind: Tool
-  path: github.com/controller-agent/core-controller/api/v1alpha1
+  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: controller-agent.dev
+  domain: roverkit.io
   group: core
   kind: Skill
-  path: github.com/controller-agent/core-controller/api/v1alpha1
+  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: controller-agent.dev
+  domain: roverkit.io
   group: core
   kind: ToolRun
-  path: github.com/controller-agent/core-controller/api/v1alpha1
+  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: controller-agent.dev
+  domain: roverkit.io
   group: core
   kind: Agent
-  path: github.com/controller-agent/core-controller/api/v1alpha1
+  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: controller-agent.dev
+  domain: roverkit.io
   group: core
   kind: AgentRun
-  path: github.com/controller-agent/core-controller/api/v1alpha1
+  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: controller-agent.dev
+  domain: roverkit.io
   group: core
   kind: LocalTool
-  path: github.com/controller-agent/core-controller/api/v1alpha1
+  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: controller-agent.dev
+  domain: roverkit.io
   group: core
   kind: Connection
-  path: github.com/controller-agent/core-controller/api/v1alpha1
+  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: controller-agent.dev
+  domain: roverkit.io
   group: core
   kind: KnowledgeBase
-  path: github.com/controller-agent/core-controller/api/v1alpha1
+  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
-  domain: controller-agent.dev
+  domain: roverkit.io
   group: core
   kind: MCPServer
-  path: github.com/controller-agent/core-controller/api/v1alpha1
+  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
-  domain: controller-agent.dev
+  domain: roverkit.io
   group: core
   kind: MCPTool
-  path: github.com/controller-agent/core-controller/api/v1alpha1
+  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 version: "3"

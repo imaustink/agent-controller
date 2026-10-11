@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Event } from "@controller-agent/messaging";
+import type { Event } from "@roverkit/messaging";
 import type { ContainerToolLauncher } from "../k8s/container-tool-launcher.js";
 import type { JobResultReceiver } from "../callback/receiver.js";
 import type { LocalToolExecutor } from "../local/local-tool-executor.js";

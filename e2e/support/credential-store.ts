@@ -37,7 +37,7 @@ const PREFIX = {
 } as const;
 
 /** Label every credential Secret carries, so a sweep can find them all. */
-const CREDENTIAL_LABEL = "controller-agent.io/credential";
+const CREDENTIAL_LABEL = "roverkit.io/credential";
 
 /** Field carrying a record's exact plaintext subject -- see `RECORD_KEY_FIELD` in the app. */
 const RECORD_KEY_FIELD = "_recordKey";
@@ -75,7 +75,7 @@ async function putRecord(prefix: string, subject: string, fields: Record<string,
       name: nameFor(prefix, subject),
       labels: {
         [CREDENTIAL_LABEL]: prefix.startsWith("identity-link") ? "identity-link" : "claude-auth",
-        "controller-agent.io/e2e-seeded": "true",
+        "roverkit.io/e2e-seeded": "true",
       },
     },
     stringData: { ...fields, [RECORD_KEY_FIELD]: subject },

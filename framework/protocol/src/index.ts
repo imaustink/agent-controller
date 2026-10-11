@@ -1,10 +1,10 @@
 import { fromJson, toJson, type DescMessage, type JsonValue, type MessageShape } from "@bufbuild/protobuf";
 import { createValidator } from "@bufbuild/protovalidate";
 
-export * from "./gen/agentcontroller/protocol/v1/artifact_pb.js";
-export * from "./gen/agentcontroller/protocol/v1/event_pb.js";
-export * from "./gen/agentcontroller/protocol/v1/turn_event_pb.js";
-export * from "./gen/agentcontroller/protocol/v1/agent_protocol_pb.js";
+export * from "./gen/roverkit/protocol/v1/artifact_pb.js";
+export * from "./gen/roverkit/protocol/v1/event_pb.js";
+export * from "./gen/roverkit/protocol/v1/turn_event_pb.js";
+export * from "./gen/roverkit/protocol/v1/agent_protocol_pb.js";
 
 const validator = createValidator();
 

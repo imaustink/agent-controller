@@ -9,11 +9,11 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/controller-agent/temporal-engine/internal/authz"
-	"github.com/controller-agent/temporal-engine/internal/callertools"
-	"github.com/controller-agent/temporal-engine/internal/llm"
-	"github.com/controller-agent/temporal-engine/internal/messaging"
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/authz"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/callertools"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/llm"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/messaging"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
 )
 
 // remoteControlUrlNarrationPrefix is the exact narration line shape

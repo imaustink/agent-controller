@@ -10,8 +10,8 @@ function makeStore(api = new FakeSecretApi(), watch?: FakeWatch): SecretRecordSt
   return new SecretRecordStore({
     namespace: NS,
     namePrefix: "identity-link-github",
-    keyLabel: "controller-agent.io/subject",
-    commonLabels: { "controller-agent.io/credential": "identity-link" },
+    keyLabel: "roverkit.io/subject",
+    commonLabels: { "roverkit.io/credential": "identity-link" },
     api,
     ...(watch ? { watch } : {}),
     // Production polls every 5s, which outlives the default test timeout. The
@@ -88,8 +88,8 @@ describe("SecretRecordStore", () => {
     const api = new FakeSecretApi();
     await makeStore(api).put("openwebui:1234", { token: "abc" });
     const stored = [...api.secrets.values()][0]!;
-    expect(stored.metadata.labels?.["controller-agent.io/subject"]).toBe("openwebui-1234");
-    expect(stored.metadata.labels?.["controller-agent.io/credential"]).toBe("identity-link");
+    expect(stored.metadata.labels?.["roverkit.io/subject"]).toBe("openwebui-1234");
+    expect(stored.metadata.labels?.["roverkit.io/credential"]).toBe("identity-link");
   });
 
   // The label is lossy (charset-sanitized, truncated at 63 chars) and the object
@@ -235,8 +235,8 @@ describe("SecretRecordStore.listRecords", () => {
     const other = new SecretRecordStore({
       namespace: NS,
       namePrefix: "claude-auth-login",
-      keyLabel: "controller-agent.io/subject",
-      commonLabels: { "controller-agent.io/credential": "claude-auth" },
+      keyLabel: "roverkit.io/subject",
+      commonLabels: { "roverkit.io/credential": "claude-auth" },
       api,
     });
     await other.put("github:bob", { credentialsJson: "{}" });
@@ -247,7 +247,7 @@ describe("SecretRecordStore.listRecords", () => {
     // The bookkeeping field is stripped, exactly as `get` strips it.
     expect(records[0]?.fields[RECORD_KEY_FIELD]).toBeUndefined();
     expect(records.find((r) => r.key === "github:alice")?.fields.token).toBe("a");
-    expect(api.calls).toContain("list:controller-agent.io/credential=identity-link");
+    expect(api.calls).toContain("list:roverkit.io/credential=identity-link");
   });
 
   // The object name is a one-way hash, so a record without its plaintext key
@@ -256,7 +256,7 @@ describe("SecretRecordStore.listRecords", () => {
   it("skips a record whose plaintext key was never stored, rather than guessing", async () => {
     const api = new FakeSecretApi();
     api.secrets.set(`${NS}/identity-link-github-deadbeefdeadbeef`, {
-      metadata: { name: "identity-link-github-deadbeefdeadbeef", labels: { "controller-agent.io/credential": "identity-link" } },
+      metadata: { name: "identity-link-github-deadbeefdeadbeef", labels: { "roverkit.io/credential": "identity-link" } },
       data: { token: Buffer.from("orphan", "utf8").toString("base64") },
     });
 

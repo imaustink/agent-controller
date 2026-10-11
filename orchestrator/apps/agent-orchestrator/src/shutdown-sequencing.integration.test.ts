@@ -10,7 +10,7 @@
  * difference in outcome for an in-flight turn.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { agentSubjects } from "@controller-agent/messaging";
+import { agentSubjects } from "@roverkit/messaging";
 import { FakeNatsServer } from "./agents/fake-nats-server.js";
 import { AgentTurnTransportError, NatsAgentChannel } from "./agents/nats-agent-channel.js";
 

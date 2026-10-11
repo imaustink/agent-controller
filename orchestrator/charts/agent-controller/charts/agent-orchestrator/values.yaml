@@ -94,7 +94,7 @@ config:
   callbackBaseUrl: ""
   # API group/version for the Tool/Skill/ToolRun CRDs (ADR 0010). Must match
   # charts/core-controller's installed CRDs.
-  crdGroup: core.controller-agent.dev
+  crdGroup: core.roverkit.io
   crdVersion: v1alpha1
   # Agent-run timeouts. Leave empty to use the orchestrator's own defaults
   # (8h wall clock, 10m of silence, 25s shutdown drain) -- these exist so the

@@ -23,7 +23,7 @@ import { z } from "zod";
  * Human-in-the-loop is expressed WITHOUT a dedicated ask/answer message pair:
  * an agent asks the user a question simply by emitting a `reply` with
  * `final: false` (the question text becomes the turn's assistant message); the
- * user's answer arrives as the next `prompt`. The `@controller-agent/agent-runtime`
+ * user's answer arrives as the next `prompt`. The `@roverkit/agent-runtime`
  * SDK layers an ergonomic `askUser()` helper over exactly this. Modeling a
  * question as "a non-final reply awaiting the next prompt" (rather than a
  * synchronous request/reply) is deliberate: a human may take arbitrarily long
@@ -47,7 +47,7 @@ import { z } from "zod";
  * completely different purpose: letting a sub-agent's OWN internal loop call
  * a `Tool` CR named in its launching `Agent.spec.toolRefs`, dispatched by the
  * orchestrator exactly the way a Skill's tool call already is. The
- * `@controller-agent/agent-runtime` SDK layers `AgentSession.callTool()` over
+ * `@roverkit/agent-runtime` SDK layers `AgentSession.callTool()` over
  * this pair the same way it layers `askUser()` over a non-final `reply` --
  * the agent author never sees the up/down round-trip.
  */

@@ -3,7 +3,7 @@ import {
   AgentUpMessageSchema,
   type AgentDownMessage,
   type AgentUpMessage,
-} from "@controller-agent/messaging";
+} from "@roverkit/messaging";
 import type { AgentChannel } from "./channel.js";
 import { runAgent, type AgentHandler } from "./runtime.js";
 

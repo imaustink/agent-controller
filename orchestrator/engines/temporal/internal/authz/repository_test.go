@@ -10,8 +10,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/controller-agent/temporal-engine/internal/authz"
-	"github.com/controller-agent/temporal-engine/internal/identitylink"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/authz"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/identitylink"
 )
 
 // fakeRepos answers the read gate from a fixed table, recording each check.

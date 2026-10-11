@@ -135,7 +135,7 @@ export interface OwnerReference {
   blockOwnerDeletion?: boolean;
 }
 
-export const GROUP = "core.controller-agent.dev";
+export const GROUP = "core.roverkit.io";
 export const VERSION = "v1alpha1";
 export const MCPSERVER_PLURAL = "mcpservers";
 export const MCPTOOL_PLURAL = "mcptools";
@@ -143,7 +143,7 @@ export const MCPSERVER_KIND = "MCPServer";
 export const MCPTOOL_KIND = "MCPTool";
 
 /** Label stamped on every derived MCPTool, so a server's tools can be listed. */
-export const SERVER_LABEL = "mcpserver.core.controller-agent.dev/name";
+export const SERVER_LABEL = "mcpserver.core.roverkit.io/name";
 
 /**
  * Whether an exposure entry currently materializes its tool.

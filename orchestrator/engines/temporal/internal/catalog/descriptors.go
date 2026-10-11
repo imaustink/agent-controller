@@ -1,5 +1,5 @@
 // Package catalog decodes agent-controller's Tool/Skill/Agent custom
-// resources (core.controller-agent.dev/v1alpha1) into the descriptors this
+// resources (core.roverkit.io/v1alpha1) into the descriptors this
 // system indexes and retrieves. Launch details (image, env, resources) stay
 // with the upstream controller — a ToolRun only needs the tool's name — so
 // descriptors carry catalog metadata only.
@@ -8,7 +8,7 @@ package catalog
 import "k8s.io/apimachinery/pkg/runtime/schema"
 
 const (
-	Group   = "core.controller-agent.dev"
+	Group   = "core.roverkit.io"
 	Version = "v1alpha1"
 )
 

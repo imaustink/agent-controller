@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { loadConfig, NatsChannel, type AgentChannel } from "@controller-agent/agent-runtime";
-import type { AgentDownMessage, AgentUpMessage } from "@controller-agent/messaging";
+import { loadConfig, NatsChannel, type AgentChannel } from "@roverkit/agent-runtime";
+import type { AgentDownMessage, AgentUpMessage } from "@roverkit/messaging";
 import { buildOpencodeConfig, buildPrompt, isReviewMode } from "./opencode.js";
 import {
   createSession,

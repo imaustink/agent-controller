@@ -65,7 +65,7 @@ describe("core-controller RBAC parity (no cluster)", () => {
       "tools",
     ]) {
       expect(sorted(markers), `markers for ${kind}`).toContain(
-        `core.controller-agent.dev/${kind}:list`,
+        `core.roverkit.io/${kind}:list`,
       );
     }
   });

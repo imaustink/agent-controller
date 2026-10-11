@@ -5,7 +5,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  *
  * Used for the Connections page's own browser state (the session cookie and
  * the in-flight OIDC login), which is why it is not `signState` from
- * `@controller-agent/github-app-auth`: that one is fixed to a
+ * `@roverkit/github-app-auth`: that one is fixed to a
  * `{provider, subject}` payload for OAuth `state`, and these carry other fields.
  *
  * `purpose` is folded into the MAC so a token minted for one use (a login

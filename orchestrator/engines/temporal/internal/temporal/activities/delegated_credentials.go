@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/controller-agent/temporal-engine/internal/authz"
-	"github.com/controller-agent/temporal-engine/internal/identitylink"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/authz"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/identitylink"
 )
 
 // LinkedCredentials resolves the calling user's own credential for a knowledge

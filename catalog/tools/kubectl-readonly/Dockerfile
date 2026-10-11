@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Build from the REPO ROOT (this tool depends on the shared
-# @controller-agent/messaging workspace package):
+# @roverkit/messaging workspace package):
 #
 #   docker build -f catalog/tools/kubectl-readonly/Dockerfile -t kubectl-readonly:latest .
 
@@ -20,15 +20,15 @@ COPY framework/messaging framework/messaging
 COPY catalog/tools/kubectl-readonly/tsconfig.json catalog/tools/kubectl-readonly/tsconfig.json
 COPY catalog/tools/kubectl-readonly/src catalog/tools/kubectl-readonly/src
 
-RUN npm run build --workspace=@controller-agent/messaging \
+RUN npm run build --workspace=@roverkit/messaging \
   && npm run build --workspace=kubectl-readonly \
   && npm prune --omit=dev \
   # Materialize the workspace package into a real directory (not the npm-created
   # symlink) so it survives being copied into the runtime stage below.
-  && rm -rf node_modules/@controller-agent/messaging \
-  && mkdir -p node_modules/@controller-agent/messaging \
-  && cp -r framework/messaging/dist node_modules/@controller-agent/messaging/dist \
-  && cp framework/messaging/package.json node_modules/@controller-agent/messaging/package.json
+  && rm -rf node_modules/@roverkit/messaging \
+  && mkdir -p node_modules/@roverkit/messaging \
+  && cp -r framework/messaging/dist node_modules/@roverkit/messaging/dist \
+  && cp framework/messaging/package.json node_modules/@roverkit/messaging/package.json
 
 ############################
 # Runtime stage

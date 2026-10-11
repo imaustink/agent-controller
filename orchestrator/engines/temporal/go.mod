@@ -1,4 +1,4 @@
-module github.com/controller-agent/temporal-engine
+module github.com/roverkit/orchestrator/engines/temporal
 
 go 1.26.0
 

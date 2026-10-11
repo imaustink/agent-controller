@@ -1,5 +1,5 @@
 {
-  "name": "@controller-agent/e2e",
+  "name": "@roverkit/e2e",
   "private": true,
   "type": "module",
   "scripts": {

@@ -12,7 +12,7 @@ export interface AppConfig {
    * deployments are unchanged.
    */
   knowledgeBaseNamespace: string;
-  /** API group for the Tool/Skill/ToolRun CRDs (ADR 0010), e.g. `core.controller-agent.dev`. */
+  /** API group for the Tool/Skill/ToolRun CRDs (ADR 0010), e.g. `core.roverkit.io`. */
   crdGroup: string;
   /** API version for the Tool/Skill/ToolRun CRDs (ADR 0010), e.g. `v1alpha1`. */
   crdVersion: string;
@@ -319,7 +319,7 @@ export const config: AppConfig = {
   namespace: process.env.AGENT_NAMESPACE ?? "default",
   knowledgeBaseNamespace:
     process.env.KNOWLEDGE_BASE_NAMESPACE || process.env.AGENT_NAMESPACE || "default",
-  crdGroup: process.env.AGENT_CRD_GROUP ?? "core.controller-agent.dev",
+  crdGroup: process.env.AGENT_CRD_GROUP ?? "core.roverkit.io",
   crdVersion: process.env.AGENT_CRD_VERSION ?? "v1alpha1",
   qdrantUrl: process.env.AGENT_QDRANT_URL ?? "http://localhost:6333",
   qdrantApiKey: process.env.AGENT_QDRANT_API_KEY,

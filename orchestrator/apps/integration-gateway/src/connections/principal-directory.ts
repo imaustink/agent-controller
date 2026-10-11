@@ -30,8 +30,8 @@ export class K8sSecretPrincipalDirectory implements PrincipalDirectory {
     this.store = new SecretRecordStore({
       namespace: opts.namespace,
       namePrefix: "connections-principal",
-      keyLabel: "controller-agent.io/email",
-      commonLabels: { "controller-agent.io/credential": "connections-principal" },
+      keyLabel: "roverkit.io/email",
+      commonLabels: { "roverkit.io/credential": "connections-principal" },
       api: opts.api,
     });
   }

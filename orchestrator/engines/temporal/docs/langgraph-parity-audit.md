@@ -276,7 +276,7 @@ silently diverge.
 - **#21 — Unified lifecycle event stream (ADR 0004).** A typed `TurnEvent`
   envelope (kinds: turn-started, skill-selected, tool-started/-progress/
   -finished/-failed, warning, approval-required/-resolved, turn-completed,
-  narration) defined once in `@controller-agent/messaging` and its Go port.
+  narration) defined once in `@roverkit/messaging` and its Go port.
   Go: the conversation workflow emits typed events as the single source and
   DERIVES the legacy narration `Lines` via `Render()` (byte-for-byte unchanged
   for existing consumers, B1); completed events fold into a bounded, offset-

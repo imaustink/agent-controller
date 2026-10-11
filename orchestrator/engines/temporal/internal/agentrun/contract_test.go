@@ -6,10 +6,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/agentcontroller/protocol/v1"
+	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/roverkit/protocol/v1"
 
-	"github.com/controller-agent/temporal-engine/internal/agentrun"
-	"github.com/controller-agent/temporal-engine/internal/messaging"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/agentrun"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/messaging"
 )
 
 // The bridge speaks the canonical wire contract (framework/protocol, ADR 0047)

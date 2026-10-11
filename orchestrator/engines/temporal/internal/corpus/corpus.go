@@ -15,7 +15,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/controller-agent/temporal-engine/internal/vectorstore"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/vectorstore"
 )
 
 // Chunk is one indexed passage: the payload stored alongside a corpus point.

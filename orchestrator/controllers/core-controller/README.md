@@ -59,7 +59,7 @@ Deployment"]
     Controller["core-controller
 Deployment"]
 
-    subgraph CRDs["Custom Resources (core.controller-agent.dev/v1alpha1)"]
+    subgraph CRDs["Custom Resources (core.roverkit.io/v1alpha1)"]
         ToolCR["Tool CR
 image · SA · env · secretEnv
 allowedRoles · description"]
@@ -116,7 +116,7 @@ The orchestrator discovers `Tool` CRs at startup, embeds their
 filters candidates by `allowedRoles` against the caller's identity.
 
 ```yaml
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Tool
 metadata:
   name: recipe-scraper
@@ -165,7 +165,7 @@ positional args.
 ## Result reporting
 
 Tools and agents report results over the
-[@controller-agent/messaging](../../../framework/messaging/) HMAC callback protocol
+[@roverkit/messaging](../../../framework/messaging/) HMAC callback protocol
 (ADR 0006): the controller injects `RECIPE_CALLBACK_URL` and
 `RECIPE_CALLBACK_SECRET` into every Job, and the container POSTs signed
 event payloads back to the orchestrator's callback receiver on port 8080.

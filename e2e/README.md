@@ -255,7 +255,7 @@ e2e run too.
 
 Its script is a mounted ConfigMap, and a running `node` process does not re-read
 a mounted file. `ensureFakeGithub()` therefore substitutes a hash of the whole
-manifest into the pod template's `e2e.controller-agent.dev/config-checksum`
+manifest into the pod template's `e2e.roverkit.io/config-checksum`
 annotation, so an edited script changes the pod spec and the Deployment rolls by
 itself. Do not replace that with `kubectl rollout restart` after the apply: the
 restart can beat the ConfigMap write it was meant to pick up, which is how a

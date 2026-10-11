@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/controller-agent/temporal-engine/internal/vectorstore"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/vectorstore"
 )
 
 // SampleResult is one canned query's answer about the ACL mirror's accuracy.

@@ -42,7 +42,7 @@ extensible without touching the orchestrator's reasoning graph.
 
 - Reuse the existing catalog (`Tool`/`Skill`/`Agent` CRs), launch mechanism
   (`ToolRun`/`AgentRun` + core-controller), and event protocol
-  (`@controller-agent/messaging`) — this is new **entry points**, not a new
+  (`@roverkit/messaging`) — this is new **entry points**, not a new
   execution model.
 - One new component owns *all* channel-specific concerns (auth verification,
   payload parsing, reply formatting) so `agent-orchestrator`'s graph stays
@@ -142,7 +142,7 @@ this is an additive sibling, not a rework:
 
 ### 2. `InboundEvent` — the shared normalized shape
 
-A small package-level type (candidate: a new `@controller-agent/messaging`
+A small package-level type (candidate: a new `@roverkit/messaging`
 addition, or a sibling package if it grows independent versioning needs —
 see [Open questions](#open-questions)) that every adapter produces and every
 router/reply path consumes:
@@ -247,7 +247,7 @@ turning a reply path into a new SSRF/exfil surface.
 | Tool/Skill/Agent catalog, RBAC filtering | `Tool`/`Skill`/`Agent` CRs, `CrdToolRegistry`, `resolveIdentity` | — |
 | Skill retrieval, action planning | LangGraph graph, `VectorStore` | — |
 | Job launching, hardening | `ToolRun`/`AgentRun` + core-controller | — |
-| Container ↔ parent event protocol | `@controller-agent/messaging` (`Sink`, `CallbackSink`, `EventSchema`) | — |
+| Container ↔ parent event protocol | `@roverkit/messaging` (`Sink`, `CallbackSink`, `EventSchema`) | — |
 | Session continuity, continuation tokens | `SessionStore`, ADR 0012, ADR 0017 mechanism | New producer of `session_id` (external thread id) |
 | Consumer-facing HTTP pattern | ADR 0006 async accept/poll shape | Reused for the `faas` channel's `POST /fn/:id` |
 | Channel-specific auth/parsing/reply | — | Per-adapter code in `orchestrator/apps/integration-gateway` |
@@ -461,7 +461,7 @@ GitHub Issues adapter, actionable ONLY on an explicit label application:
 - Result delivery is **polling** `GET /invoke/:id`, not push — the "Polling
   vs. push" open question above is deliberately left unresolved and worked
   around with a bounded poll timeout.
-- `@controller-agent/github-app-auth` (extracted from
+- `@roverkit/github-app-auth` (extracted from
   `catalog/agents/opencode-swe-agent`) is shared by both apps for GitHub App JWT
   signing / installation-token minting (ADR 0018), rather than duplicating
   that security-sensitive code.
@@ -498,5 +498,5 @@ channel (Slack, email, job webhooks).
   [0017](adr/0017-continuation-tokens-via-session-store.md) — the session/
   continuation mechanisms the conversational path reuses unchanged.
 - [docs/adr/0018](adr/0018-github-app-auth-fallback.md) — the GitHub App
-  auth mechanism `@controller-agent/github-app-auth` shares between
+  auth mechanism `@roverkit/github-app-auth` shares between
   `catalog/agents/opencode-swe-agent` and `orchestrator/apps/integration-gateway`.

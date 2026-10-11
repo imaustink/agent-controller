@@ -112,11 +112,11 @@ pointing at agent-controller's integration-gateway. Dev fallback:
 
 ## Adapting opencode-swe-agent (upstream follow-ups)
 
-The current image speaks `@controller-agent/agent-runtime` (NATS). The
+The current image speaks `@roverkit/agent-runtime` (NATS). The
 adapter change: replace `runAgent(handler)` with the tool contract —
 `extractContinuationToken(argv[1])` (already exists as `marker.ts` +
 `continuation.ts` logic), run one opencode step, and emit the envelope via
-the existing `@controller-agent/messaging` CallbackSink instead of a NATS
+the existing `@roverkit/messaging` CallbackSink instead of a NATS
 reply. `session.ask()` becomes "return a question envelope and exit."
 
 Known upstream gaps:

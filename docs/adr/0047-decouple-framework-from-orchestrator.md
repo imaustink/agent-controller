@@ -31,7 +31,7 @@ We want two things the current shape does not give us:
 
 The good news is that the seam is already physical. Nothing on the agent or tool
 side imports Kubernetes or Temporal; everything crosses the boundary through the
-JSON wire protocols defined in `@controller-agent/messaging`. The orchestration
+JSON wire protocols defined in `@roverkit/messaging`. The orchestration
 machinery sits entirely on the far side of those protocols. So this is not a
 teardown — it is naming a boundary that mostly exists and paying down the debts
 that keep either half from standing alone.
@@ -95,7 +95,7 @@ The repository is regrouped physically into three top-level trees:
 
 The allowed import directions are **catalog → framework** and
 **orchestrator → framework**; **framework → anything** and **catalog ↔
-orchestrator** are violations. npm package names (`@controller-agent/*`) are
+orchestrator** are violations. npm package names (`@roverkit/*`) are
 unchanged — the directory and the check are the boundary, not the scope.
 
 The move lands *last* in its implementation sequence, so every earlier step can
@@ -133,8 +133,8 @@ Specifics, chosen deliberately:
   discriminated-union types authors actually use. This keeps the wire
   byte-compatible with every running agent and tool — no dual-read, no cutover.
   Moving to `oneof` later is a versioned (`v2`) decision, not a prerequisite.
-- **Package `agentcontroller.protocol.v1`**, under
-  `framework/protocol/proto/agentcontroller/protocol/v1/`, beside the
+- **Package `roverkit.protocol.v1`**, under
+  `framework/protocol/proto/roverkit/protocol/v1/`, beside the
   generated TypeScript package, the generated Go module and the shared
   conformance fixtures. The package name is permanent once third
   parties depend on it.

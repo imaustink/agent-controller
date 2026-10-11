@@ -17,7 +17,7 @@
 #   site this token can reach": nothing has confirmed that site is this tenant,
 #   and a credential issued for another org fits that description exactly. Read
 #   it from `node orchestrator/apps/connection-broker/scripts/verify-confluence.mjs GLOBEX`.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: Connection
 metadata:
   labels:

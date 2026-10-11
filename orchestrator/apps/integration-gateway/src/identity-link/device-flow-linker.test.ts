@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import * as deviceFlow from "@controller-agent/github-app-auth";
+import * as deviceFlow from "@roverkit/github-app-auth";
 import { GithubDeviceFlowLinker } from "./device-flow-linker.js";
 import type { IdentityLinkStore, LinkedCredential } from "./store.js";
 

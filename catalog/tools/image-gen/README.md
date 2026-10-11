@@ -82,7 +82,7 @@ place next to where the bucket is provisioned. The messaging-transport vars
 ## Build
 
 ```bash
-# from the repo root (depends on the @controller-agent/messaging workspace pkg)
+# from the repo root (depends on the @roverkit/messaging workspace pkg)
 docker build -f catalog/tools/image-gen/Dockerfile -t image-gen:latest .
 ```
 

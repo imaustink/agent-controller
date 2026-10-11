@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/controller-agent/temporal-engine/internal/messaging"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/messaging"
 )
 
 func TestSignVerifyRoundTrip(t *testing.T) {
@@ -20,7 +20,7 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 	require.Error(t, messaging.Verify("", body, sig), "empty secret must fail closed")
 }
 
-// Signature must match what @controller-agent/messaging's CallbackSink
+// Signature must match what @roverkit/messaging's CallbackSink
 // produces (createHmac("sha256", secret).update(body).digest("hex")).
 func TestSignMatchesUpstreamVector(t *testing.T) {
 	// printf '%s' 'hello' | openssl dgst -sha256 -hmac 'key'

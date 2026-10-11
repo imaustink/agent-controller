@@ -24,12 +24,12 @@ describe("CrdMCPToolRegistry", () => {
   it("maps MCPTool custom resources to ToolDescriptors with an mcpExec spec", async () => {
     const listNamespacedCustomObject = vi.fn().mockResolvedValue({ items: [createIssue] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdMCPToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdMCPToolRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const tools = await registry.listAll();
 
     expect(listNamespacedCustomObject).toHaveBeenCalledWith({
-      group: "core.controller-agent.dev",
+      group: "core.roverkit.io",
       version: "v1alpha1",
       namespace: "default",
       plural: "mcptools",
@@ -86,7 +86,7 @@ describe("CrdMCPToolRegistry", () => {
       .fn()
       .mockResolvedValue({ items: [malformed as unknown as MCPToolCustomResource, createIssue] });
     const api: CustomObjectsApiLike = { listNamespacedCustomObject };
-    const registry = new CrdMCPToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+    const registry = new CrdMCPToolRegistry("default", "core.roverkit.io", "v1alpha1", api);
 
     const tools = await registry.listAll();
 
@@ -103,7 +103,7 @@ describe("CrdMCPToolRegistry", () => {
         onEvent = cb;
         return { stop: vi.fn() };
       };
-      const registry = new CrdMCPToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api, watchFn);
+      const registry = new CrdMCPToolRegistry("default", "core.roverkit.io", "v1alpha1", api, watchFn);
       const onChange = vi.fn();
       registry.watch(onChange);
 
@@ -119,7 +119,7 @@ describe("CrdMCPToolRegistry", () => {
 
     it("throws when constructed without a watchFn", () => {
       const api: CustomObjectsApiLike = { listNamespacedCustomObject: vi.fn() };
-      const registry = new CrdMCPToolRegistry("default", "core.controller-agent.dev", "v1alpha1", api);
+      const registry = new CrdMCPToolRegistry("default", "core.roverkit.io", "v1alpha1", api);
       expect(() => registry.watch(() => {})).toThrow();
     });
   });

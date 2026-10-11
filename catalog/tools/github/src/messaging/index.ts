@@ -5,12 +5,12 @@ import {
   NatsSink,
   StdoutSink,
   type Sink,
-} from "@controller-agent/messaging";
+} from "@roverkit/messaging";
 import type { AppConfig } from "../config.js";
 import type { ErrorCode, Stage } from "../schema.js";
 import { clip } from "../security/redact.js";
 
-export type { Sink } from "@controller-agent/messaging";
+export type { Sink } from "@roverkit/messaging";
 
 /** This tool's concrete emitter: the result is `gh`'s own stdout text (or
  * JSON), wrapped in Markdown by index.ts before it reaches `succeeded`. */

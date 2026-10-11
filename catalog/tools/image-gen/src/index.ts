@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ArtifactRef } from "@controller-agent/messaging";
+import type { ArtifactRef } from "@roverkit/messaging";
 import { config } from "./config.js";
 import { createSink, JobEmitter } from "./messaging/index.js";
 import { editImage, generateImage } from "./openai/images.js";

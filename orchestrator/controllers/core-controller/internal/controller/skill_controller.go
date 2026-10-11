@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	toolv1alpha1 "github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 const skillConditionReady = "Ready"
@@ -41,11 +41,11 @@ type SkillReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=skills,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=skills/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=skills/finalizers,verbs=update
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=tools,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agents,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=skills,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=skills/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=skills/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=tools,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.roverkit.io,resources=agents,verbs=get;list;watch
 
 // Reconcile validates that every name in a Skill's toolRefs/agentRefs
 // corresponds to an existing Tool/Agent CR in the same namespace, and sets a

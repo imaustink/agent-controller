@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/agentcontroller/protocol/v1"
+	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/roverkit/protocol/v1"
 )
 
 const (

@@ -14,11 +14,11 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 
-	"github.com/controller-agent/temporal-engine/internal/callertools"
-	"github.com/controller-agent/temporal-engine/internal/catalog"
-	"github.com/controller-agent/temporal-engine/internal/rbac"
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
-	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/callertools"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/rbac"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/workflows"
 )
 
 // The async accept/poll interface an adapter (integration-gateway) uses for a

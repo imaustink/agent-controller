@@ -13,17 +13,17 @@ import (
 
 	"k8s.io/client-go/dynamic"
 
-	"github.com/controller-agent/temporal-engine/internal/agentrun"
-	"github.com/controller-agent/temporal-engine/internal/authz"
-	"github.com/controller-agent/temporal-engine/internal/identitylink"
-	"github.com/controller-agent/temporal-engine/internal/kubeconfig"
-	"github.com/controller-agent/temporal-engine/internal/llm"
-	"github.com/controller-agent/temporal-engine/internal/localtool"
-	"github.com/controller-agent/temporal-engine/internal/temporal"
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
-	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
-	"github.com/controller-agent/temporal-engine/internal/toolrun"
-	"github.com/controller-agent/temporal-engine/internal/vectorstore"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/agentrun"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/authz"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/identitylink"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/kubeconfig"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/llm"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/localtool"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/workflows"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/toolrun"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/vectorstore"
 )
 
 func main() {

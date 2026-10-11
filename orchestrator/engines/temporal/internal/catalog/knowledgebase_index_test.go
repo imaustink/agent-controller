@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/controller-agent/temporal-engine/internal/catalog"
-	"github.com/controller-agent/temporal-engine/internal/vectorstore"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/vectorstore"
 )
 
 // recordingStore captures what the indexer wrote, keyed by record id, so a test

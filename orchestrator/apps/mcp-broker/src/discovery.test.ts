@@ -90,7 +90,7 @@ function makeServer(
   identityProviders?: string[],
 ): MCPServerCustomResource {
   return {
-    apiVersion: "core.controller-agent.dev/v1alpha1",
+    apiVersion: "core.roverkit.io/v1alpha1",
     kind: "MCPServer",
     metadata: { name: "github-mcp", uid: "srv-uid", generation: 3 },
     spec: {
@@ -269,7 +269,7 @@ describe("discovery", () => {
   it("runAll continues past a failing server", async () => {
     const good = makeServer([{ remoteToolName: "search_issues", allowedRoles: ["eng"] }]);
     const bad: MCPServerCustomResource = {
-      apiVersion: "core.controller-agent.dev/v1alpha1",
+      apiVersion: "core.roverkit.io/v1alpha1",
       kind: "MCPServer",
       metadata: { name: "bad-mcp", uid: "bad-uid", generation: 1 },
       spec: {

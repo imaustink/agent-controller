@@ -68,7 +68,7 @@ envelope and make the user-facing stream durable and offset-addressable.
 ## Governance
 
 Applied to **both engines**: the unified `TurnEvent` envelope is defined once in
-the shared `@controller-agent/messaging` contract (and its Go port), and each
+the shared `@roverkit/messaging` contract (and its Go port), and each
 engine emits it. Although the two engines stream over different machinery
 (Temporal queries/signals vs. LangGraph node transitions), the event *schema*
 the client observes is identical, so a consumer cannot tell them apart.

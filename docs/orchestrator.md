@@ -47,7 +47,7 @@ sequenceDiagram
     O->>O: action-planner (skill markdown as system prompt) decides: respond, or call one of the skill's tools
     O->>K: create Job (tool image, args, callback URL, resource limits) — only if a tool was chosen
     K-->>T: schedule + start container
-    T->>O: progress/result events (@controller-agent/messaging callback sink)
+    T->>O: progress/result events (@roverkit/messaging callback sink)
     O->>K: watch Job status (completion/failure, logs fallback)
     O->>O: fold result into agent state
     U->>O: GET /invoke/:id (poll)
@@ -171,7 +171,7 @@ Which tools even show up as retrieval candidates depends on **who is asking**:
 - The `ToolRun` carries the per-call args and a result-callback URL; the HMAC
   callback secret travels by `secretRef` (never plaintext in the CR) and is
   wired into the Job by the controller. The tool container reports back over
-  the existing [`@controller-agent/messaging`](../framework/messaging/) callback
+  the existing [`@roverkit/messaging`](../framework/messaging/) callback
   protocol ([messaging.md](messaging.md)) — the orchestrator reuses that
   channel rather than adding a new one.
 - Job retry/backoff and TTL cleanup (`ttlSecondsAfterFinished`) are owned by the
@@ -207,7 +207,7 @@ rather than as a Job:
   `automountServiceAccountToken: false` and no cluster credentials.
 - The tool speaks the same stdio ABI as any LocalTool (input on stdin, one JSON
   envelope on stdout); the executor maps that envelope onto the same
-  [`@controller-agent/messaging`](../framework/messaging/) `Event` the Job path
+  [`@roverkit/messaging`](../framework/messaging/) `Event` the Job path
   produces, so the graph's `runTool` node treats both identically.
 
 See [ADR 0014](adr/0014-local-tool-sidecar-execution.md) and the

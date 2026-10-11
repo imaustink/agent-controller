@@ -1,4 +1,4 @@
-# Run via `npm run generate -w @controller-agent/protocol`. Both plugins are
+# Run via `npm run generate -w @roverkit/protocol`. Both plugins are
 # pinned and run locally, so generation needs no remote plugin service; the
 # only network fetch is the protovalidate dependency pinned in buf.lock.
 version: v2

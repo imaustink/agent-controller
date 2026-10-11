@@ -38,7 +38,7 @@ rules:
   verbs:
   - get
 - apiGroups:
-  - core.controller-agent.dev
+  - core.roverkit.io
   resources:
   - agentruns
   - agents
@@ -60,7 +60,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - core.controller-agent.dev
+  - core.roverkit.io
   resources:
   - agentruns/finalizers
   - agents/finalizers
@@ -76,7 +76,7 @@ rules:
   verbs:
   - update
 - apiGroups:
-  - core.controller-agent.dev
+  - core.roverkit.io
   resources:
   - agentruns/status
   - agents/status

@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/controller-agent/temporal-engine/internal/identitylink"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/identitylink"
 )
 
 // The route's real response shape (integration-gateway's ClaudeAuthStore.rekey

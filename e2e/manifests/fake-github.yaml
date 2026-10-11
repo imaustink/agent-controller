@@ -198,7 +198,7 @@ spec:
         # script is unchanged (which is every call but the first).
         #
         # Same technique as Helm's `checksum/config` annotation convention.
-        e2e.controller-agent.dev/config-checksum: "REPLACED_AT_APPLY"
+        e2e.roverkit.io/config-checksum: "REPLACED_AT_APPLY"
     spec:
       containers:
         - name: fake-github

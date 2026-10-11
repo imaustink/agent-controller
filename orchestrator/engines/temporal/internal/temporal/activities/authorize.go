@@ -3,8 +3,8 @@ package activities
 import (
 	"context"
 
-	"github.com/controller-agent/temporal-engine/internal/authz"
-	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/authz"
+	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
 )
 
 const (

@@ -9,7 +9,7 @@
 # App credential (git/gh operations), and an Anthropic API key (opencode's
 # model credential -- the two are independent secrets, unlike the old Copilot
 # CLI which used one PAT for both). The agent runtime
-# (@controller-agent/agent-runtime) connects to NATS (AGENT_NATS_URL) and
+# (@roverkit/agent-runtime) connects to NATS (AGENT_NATS_URL) and
 # receives its run id + initial goal via env (AGENT_RUN_ID, AGENT_GOAL) --
 # injected by the Go core-controller into the k8s Job when it reconciles the
 # AgentRun CR (Phase 7).
@@ -33,25 +33,25 @@ COPY framework/github-app-auth framework/github-app-auth
 COPY catalog/agents/opencode-swe-agent/tsconfig.json catalog/agents/opencode-swe-agent/tsconfig.json
 COPY catalog/agents/opencode-swe-agent/src           catalog/agents/opencode-swe-agent/src
 
-RUN npm run build --workspace=@controller-agent/messaging \
-  && npm run build --workspace=@controller-agent/agent-runtime \
-  && npm run build --workspace=@controller-agent/github-app-auth \
+RUN npm run build --workspace=@roverkit/messaging \
+  && npm run build --workspace=@roverkit/agent-runtime \
+  && npm run build --workspace=@roverkit/github-app-auth \
   && npm run build --workspace=opencode-swe-agent \
   && npm prune --omit=dev \
   # Materialize workspace packages as real directories (not symlinks) so they
   # survive the copy into the runtime stage.
-  && rm -rf node_modules/@controller-agent/messaging \
-  && mkdir -p node_modules/@controller-agent/messaging \
-  && cp -r framework/messaging/dist        node_modules/@controller-agent/messaging/dist \
-  && cp framework/messaging/package.json   node_modules/@controller-agent/messaging/package.json \
-  && rm -rf node_modules/@controller-agent/agent-runtime \
-  && mkdir -p node_modules/@controller-agent/agent-runtime \
-  && cp -r framework/agent-runtime/dist    node_modules/@controller-agent/agent-runtime/dist \
-  && cp framework/agent-runtime/package.json node_modules/@controller-agent/agent-runtime/package.json \
-  && rm -rf node_modules/@controller-agent/github-app-auth \
-  && mkdir -p node_modules/@controller-agent/github-app-auth \
-  && cp -r framework/github-app-auth/dist        node_modules/@controller-agent/github-app-auth/dist \
-  && cp framework/github-app-auth/package.json   node_modules/@controller-agent/github-app-auth/package.json
+  && rm -rf node_modules/@roverkit/messaging \
+  && mkdir -p node_modules/@roverkit/messaging \
+  && cp -r framework/messaging/dist        node_modules/@roverkit/messaging/dist \
+  && cp framework/messaging/package.json   node_modules/@roverkit/messaging/package.json \
+  && rm -rf node_modules/@roverkit/agent-runtime \
+  && mkdir -p node_modules/@roverkit/agent-runtime \
+  && cp -r framework/agent-runtime/dist    node_modules/@roverkit/agent-runtime/dist \
+  && cp framework/agent-runtime/package.json node_modules/@roverkit/agent-runtime/package.json \
+  && rm -rf node_modules/@roverkit/github-app-auth \
+  && mkdir -p node_modules/@roverkit/github-app-auth \
+  && cp -r framework/github-app-auth/dist        node_modules/@roverkit/github-app-auth/dist \
+  && cp framework/github-app-auth/package.json   node_modules/@roverkit/github-app-auth/package.json
 
 ############################
 # Runtime stage

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { normalizePem } from "@controller-agent/github-app-auth";
+import { normalizePem } from "@roverkit/github-app-auth";
 
 /**
  * Central configuration. Kept deliberately narrow: this container's only
@@ -55,7 +55,7 @@ export interface AppConfig {
    * three are set, this container mints a short-lived installation token per
    * invocation and `GITHUB_TOKEN` is neither needed nor read. A partial set
    * is rejected rather than silently falling back to the PAT -- see
-   * `resolveGithubToken` in @controller-agent/github-app-auth.
+   * `resolveGithubToken` in @roverkit/github-app-auth.
    *
    * Orthogonal to identity linking: when the orchestrator injects the calling
    * user's own delegated token via `ToolRunSpec.secretEnv`, that arrives as

@@ -1,5 +1,5 @@
 {
-  "name": "@controller-agent/messaging",
+  "name": "@roverkit/messaging",
   "version": "0.1.0",
   "private": true,
   "type": "module",

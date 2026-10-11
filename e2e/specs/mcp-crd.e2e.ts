@@ -45,7 +45,7 @@ const FAKE_URL = "http://fake-mcp-server.controller-agent.svc.cluster.local:8080
 const toolName = (remote: string) => `mcp-${SERVER}-${remote}`;
 
 const serverManifest = (exposure: string) => `
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: MCPServer
 metadata:
   name: ${SERVER}
@@ -94,15 +94,15 @@ afterAll(async () => {
 describe("the CRDs this branch generates are the ones installed", () => {
   it("has the mcpservers and mcptools CRDs", async () => {
     const names = await kubectl(["get", "crd", "-o", "name"]);
-    expect(names).toContain("mcpservers.core.controller-agent.dev");
-    expect(names).toContain("mcptools.core.controller-agent.dev");
+    expect(names).toContain("mcpservers.core.roverkit.io");
+    expect(names).toContain("mcptools.core.roverkit.io");
   });
 
   it("serves the MCPServer.spec fields the broker reads", async () => {
     const props = await kubectl([
       "get",
       "crd",
-      "mcpservers.core.controller-agent.dev",
+      "mcpservers.core.roverkit.io",
       "-o",
       "jsonpath={.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties}",
     ]);
@@ -139,7 +139,7 @@ async function roleForSelector(selector: string): Promise<{
 const grantedKinds = (role: { rules: { apiGroups: string[]; resources: string[] }[] }) =>
   new Set(
     role.rules
-      .filter((rule) => rule.apiGroups.includes("core.controller-agent.dev"))
+      .filter((rule) => rule.apiGroups.includes("core.roverkit.io"))
       .flatMap((rule) => rule.resources),
   );
 

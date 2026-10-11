@@ -6,7 +6,7 @@
  * semantics, not in our control flow.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { agentSubjects } from "@controller-agent/messaging";
+import { agentSubjects } from "@roverkit/messaging";
 import { FakeNatsServer } from "./fake-nats-server.js";
 import { AgentTurnTimeoutError, AgentTurnTransportError, NatsAgentChannel } from "./nats-agent-channel.js";
 

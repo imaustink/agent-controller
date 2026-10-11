@@ -11,7 +11,7 @@
 # catalog tool (description + allowedRoles drive RAG retrieval and its RBAC
 # filter) whose dispatch happens to be mcpExec = { serverRef, remoteToolName,
 # inputSchema }.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.roverkit.io/v1alpha1
 kind: MCPTool
 metadata:
   labels:
