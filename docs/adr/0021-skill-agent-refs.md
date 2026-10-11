@@ -21,7 +21,7 @@ without first wrapping the agent in a tool.
 
 ## Decision
 
-Add `Skill.spec.agentRefs []string` (`controllers/core-controller/api/v1alpha1/skill_types.go`),
+Add `Skill.spec.agentRefs []string` (`orchestrator/controllers/core-controller/api/v1alpha1/skill_types.go`),
 naming `Agent` CRs a Skill may delegate to directly, alongside the existing
 `toolRefs`. A Skill may declare either, both, or neither (respond-only).
 

@@ -28,7 +28,7 @@ import {
  *     broker → the upstream server — and arrives as the CALLER, which the fake
  *     server's `whoami` reflects back so the test can see it.
  *
- * The only stub is the MCP server itself (apps/fake-mcp-server), deployed by the
+ * The only stub is the MCP server itself (orchestrator/apps/fake-mcp-server), deployed by the
  * community-components e2e overlay. Everything else runs for real. Objects are
  * namespaced and deleted in afterAll.
  */

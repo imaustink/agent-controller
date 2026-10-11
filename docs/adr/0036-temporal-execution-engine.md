@@ -57,7 +57,7 @@ between them with `AGENT_ENGINE=langgraph|temporal`. The default is
 `agent-orchestrator` keeps `/v1/chat/completions`, `/invoke`, identity and RBAC
 resolution, the authorization pre-flight (ADR 0030/0031), the credential store
 (0034), both launchers, and session pages. `AGENT_ENGINE` chooses only whether a
-turn runs `buildAgentGraph()` or is forwarded to `engines/temporal`.
+turn runs `buildAgentGraph()` or is forwarded to `orchestrator/engines/temporal`.
 
 This is where the reviewable-change argument lives. The claim is about the loop.
 Every layer above it is where the last six weeks of work landed, and bundling

@@ -1,0 +1,170 @@
+# values-e2e.yaml — community-components overlay for the e2e suite.
+#
+# Layered on top of values-minikube-demo.yaml (see orchestrator/charts/agent-controller/
+# values-e2e.yaml for the sibling overlay and the umbrella rationale).
+#
+# The demo profile triages with opencode-swe-agent, which declares no
+# identityProviders at all. That makes it useless for the identity-keying
+# spec: the gate's provider loop iterates an empty list and goes straight to
+# launch (`hasIdentitySecretEnv: false`), so no Claude credential flow is ever
+# started and there is nothing to assert a subject against.
+#
+# Production triages with claude-code-swe-agent carrying the Claude providers,
+# and that is precisely the path ADR 0029 changed — so the e2e environment
+# mirrors it rather than the demo shortcut.
+
+# The agent the triage route actually launches here.
+#
+# The identity gate is the thing under test, so it must see production-shaped
+# Agents -- but a REAL Claude run cannot terminate in this cluster: there is no
+# Anthropic credential, by design (see the comment on anthropicSecretKey). A
+# claude-code-swe-agent run therefore never reached a terminal phase, so the
+# happy-path spec could not assert the chain at all and was skipped.
+#
+# The stubs close that gap without weakening the gate: each declares a
+# production agent's identityProviders, so the pre-flight resolves the same
+# credentials, injects the same secretEnv names, and still refuses to launch
+# when a credential is missing (the keying spec's negative controls). Only the
+# model turn is replaced. stub-agent is a Claude agent that never touches
+# GitHub; stub-swe-agent (below) is claude-code-swe-agent.
+stubAgent:
+  enabled: true
+  acknowledgeNotForProduction: true
+  # Overwritten by skaffold's setValueTemplates with the freshly-built tag.
+  image: stub-agent:latest
+  identityLink:
+    enabled: true
+    # The providers of a Claude agent that does NOT act on GitHub, so its turns
+    # never meet the repository read gate. That is what the identity-keying and
+    # identity-continuity specs need: they assert WHICH SUBJECT a Claude
+    # credential resolves under, and a gate refusing the turn first would make
+    # a no-launch assertion pass for the wrong reason. stubSweAgent below is
+    # the one that mirrors claude-code-swe-agent.
+    providers:
+      - claude
+      - claude-remote
+  # 90s, well under the runtime's 10-minute default. resilience.e2e.ts's rollout
+  # spec deliberately strands a reply with no orchestrator to collect it; the
+  # stub holds it (that hold is what makes the turn resumable), which keeps the
+  # Job's pod alive and the AgentRun non-terminal until the hold ends. Long
+  # enough for the spec's follow-up trigger to re-attach and collect, short
+  # enough that a spec which fails to collect still reaches a terminal phase
+  # inside its own budget instead of timing out on a working hold.
+  replyAckTimeoutMs: 90000
+
+# The stand-in for claude-code-swe-agent AS PRODUCTION RUNS IT. Its providers
+# MUST match what a production deployment declares for that agent (github,
+# claude, claude-remote; ADR 0042), not claudeCodeSweAgent below, which is
+# kept Claude-only in this file for the reason given there. Drifting from
+# production makes the read gate take a different path for the agent under test
+# than for the one production runs, which is the whole point of the stub.
+# Reached by name from chat, and by the issue-review route below from a webhook.
+stubSweAgent:
+  enabled: true
+  acknowledgeNotForProduction: true
+  # Overwritten by skaffold's setValueTemplates with the freshly-built tag.
+  image: stub-agent:latest
+  serviceAccountName: stub-agent
+  # Unlike stub-agent, this one must be reachable from chat: the read gate's
+  # chat half is only exercised by a turn that lands on an agent declaring
+  # `github`, and this is the only one in the e2e catalog. The default stub
+  # guidance ("do not delegate to this agent") made the planner route every
+  # such request to claude-code-swe-agent instead.
+  orchestratorPrompt: |
+    An end-to-end test double for claude-code-swe-agent. Delegate to it only
+    when the request names stub-swe-agent explicitly; it then returns a canned
+    reply without doing the requested work.
+  identityLink:
+    enabled: true
+    providers:
+      - github
+      - claude
+      - claude-remote
+  replyAckTimeoutMs: 90000
+
+# Removed from the e2e catalog entirely, not merely bypassed by the triage route.
+#
+# The comment at the top of this file explains why it is useless for the
+# identity-keying spec: it declares no identityProviders, so the pre-flight
+# iterates an empty list and launches with nothing to assert a subject against.
+# Re-pointing the route at stub-agent was enough while every spec arrived through
+# an IntegrationRoute -- but a CHAT turn has no route, so its agent is chosen by
+# the planner, and observed runs picked THIS agent over the named stub (its
+# description is the closest match for any "fix the failing repo" request).
+# A turn that lands here produces no credential flow at all, which is not a
+# weaker version of the test -- it is a different, silently-passing one.
+#
+# An agent that cannot exercise the behaviour under test does not belong in the
+# catalog the tests select from.
+opencodeSweAgent:
+  enabled: false
+
+claudeCodeSweAgent:
+  # Enabled, and it matters more than it looks: the planner never picks a stub
+  # that says "do not delegate to this agent", so the identity-keying and
+  # identity-continuity chat specs' "Delegate this to stub-agent" turns land
+  # HERE, and their assertions are about this agent's Claude credentials.
+  enabled: true
+  # Overwritten by skaffold's setValueTemplates with the freshly-built tag.
+  # Left as the chart default here so a plain `helm template` still renders.
+  image: claude-code-swe-agent:latest
+  secretName: claude-code-swe-secrets
+  secretKey: GITHUB_TOKEN
+  # No static Anthropic credential on purpose: with "claude" among the
+  # identityProviders below, the gate refuses to launch until a credential is
+  # linked. A static fallback would mask exactly the gate behaviour under test.
+  anthropicSecretKey: ""
+  claudeCodeOAuthTokenSecretKey: ""
+  githubAppIdSecretKey: GITHUB_APP_ID
+  githubAppPrivateKeySecretKey: GITHUB_APP_PRIVATE_KEY
+  githubAppInstallationIdSecretKey: GITHUB_APP_INSTALLATION_ID
+  githubAppSlug: e2e-bot
+  model: ""
+  # The pre-OOM-fix sizing, not the chart default: e2e runs are short chat
+  # turns on a 6GB minikube (scripts/dev-up.sh), where a 2Gi request per run
+  # could leave pods unschedulable.
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+      ephemeral-storage: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+      ephemeral-storage: "8Gi"
+  goMemLimit: "1536MiB"
+  identityLink:
+    enabled: true
+    # Claude only, which is NOT production's shape: production declares
+    # `github` too (ADR 0042), putting every run behind the repository read
+    # gate. Kept Claude-only here because the chat identity specs land on this
+    # agent (see `enabled` above) and assert on its Claude credential keying;
+    # declaring github would put the read gate in front of every one of them.
+    # stubSweAgent carries production's exact providers, and the read-gate
+    # spec reaches it by name.
+    providers:
+      - claude
+      - claude-remote
+
+integrationRoutes:
+  githubIssueLabeledTriage:
+    enabled: true
+    # stub-agent, not the demo default and not claude-code-swe-agent: it carries
+    # the same Claude identityProviders (so the credential gate is exercised
+    # exactly as production exercises it) AND terminates hermetically (so the
+    # chain past the launch -- reply, relay, issue comment -- is assertable).
+    agentRef: stub-agent
+  # The webhook half of the read gate: a labeled issue dispatched to the
+  # GitHub-acting stub, whose repository comes from the event (the one
+  # integration-gateway verified the sender on) rather than the prompt.
+  githubIssueLabeledReview:
+    enabled: true
+    agentRef: stub-swe-agent
+    labelName: ai-review
+
+# The in-cluster MCP server the mcp-broker discovers and proxies to (ADR 0045).
+# The MCPServer CR that points at it is applied per-test by
+# e2e/specs/mcp-crd.e2e.ts, so the suite owns its exposure map and lifecycle.
+fakeMcpServer:
+  enabled: true
+  acknowledgeNotForProduction: true

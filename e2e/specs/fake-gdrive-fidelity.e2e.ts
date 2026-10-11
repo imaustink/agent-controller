@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startFake, type FakeProvider } from "../support/fake-provider.js";
-import { GDriveDriver } from "../../apps/connection-broker/src/drivers/gdrive.js";
-import { PermissionDeniedError } from "../../apps/connection-broker/src/drivers/types.js";
+import { GDriveDriver } from "../../orchestrator/apps/connection-broker/src/drivers/gdrive.js";
+import { PermissionDeniedError } from "../../orchestrator/apps/connection-broker/src/drivers/types.js";
 
 /**
  * The fake Drive, driven by the REAL Drive driver.

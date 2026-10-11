@@ -23,21 +23,21 @@ coverage
 *.swo
 *~
 
-# Go workspace (applies to controllers/ subproject)
+# Go workspace (applies to orchestrator/controllers/ subproject)
 go.work
 go.work.sum
 
 # Fetched Helm chart dependencies (run `helm dependency build` to refetch);
 # Chart.lock IS committed to pin versions, the downloaded .tgz artifacts are not.
 # Recursive so the umbrella chart's nested subchart deps are covered too
-# (e.g. charts/controller-agent/charts/agent-orchestrator/charts/qdrant-*.tgz).
-charts/**/charts/*.tgz
+# (e.g. orchestrator/charts/agent-controller/charts/agent-orchestrator/charts/qdrant-*.tgz).
+orchestrator/charts/**/charts/*.tgz
 
-# Generated copy of the CRDs from controllers/core-controller/config/crd/bases/
+# Generated copy of the CRDs from orchestrator/controllers/core-controller/config/crd/bases/
 # (run `make manifests` there, or `make sync-crds` to just refresh the copy,
 # before `helm install`/`helm template`/`helm package` against this chart --
-# see charts/agent-controller/charts/core-controller/crds/README.md).
-charts/agent-controller/charts/core-controller/crds/*.yaml
+# see orchestrator/charts/agent-controller/charts/core-controller/crds/README.md).
+orchestrator/charts/agent-controller/charts/core-controller/crds/*.yaml
 .claude/settings.local.json
 
 # Python bytecode from the helm-values-form tool test run

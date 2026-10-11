@@ -1,0 +1,94 @@
+# Values file for the local minikube demo of the `agent-controller` system
+# chart release (namespace `controller-agent`). Merges the two former
+# per-chart demo files (charts/agent-orchestrator/values-minikube-demo.yaml
+# and charts/core-controller/values-minikube-demo.yaml) under their subchart
+# keys, now that both are subcharts of one release.
+#
+# The catalog (Tool/Skill/Agent CRs) is a separate chart+release -- see
+# ../community-components/values-minikube-demo.yaml -- installed after this
+# one.
+#
+# IMPORTANT LESSON (hit for real): `helm upgrade` with only a FEW `--set`
+# flags and no `-f`/`--reuse-values` REPLACES the entire computed values tree
+# with just those flags on the chart defaults -- it does NOT merge with the
+# previous revision. Always upgrade with:
+#   helm upgrade agent-controller orchestrator/charts/agent-controller -n controller-agent -f orchestrator/charts/agent-controller/values-minikube-demo.yaml
+# (edit this file first for any new setting, then run the same command --
+# never hand-assemble a fresh pile of `--set` flags from memory).
+#
+# Nothing here is a real secret: the Google client ID is public-by-design in
+# the OAuth flow, and `openwebui-dev-token` is the pre-existing dev/test-only
+# fake-auth stub. Real secrets stay in k8s Secrets referenced by name.
+
+agent-orchestrator:
+  enabled: true
+  image:
+    tag: latest
+  qdrant:
+    enabled: true
+  nats:
+    enabled: true
+  # Redis-backed conversation-session store (docs/adr/0016), tested here
+  # against the chart's bundled Redis Deployment (templates/redis.yaml).
+  redis:
+    enabled: true
+  secrets:
+    existingSecret: agent-orchestrator-secrets
+  # DEV/TEST ONLY -- maps the Open WebUI bearer token to a reader+writer
+  # identity so the StaticIdentityResolver stub accepts it. Must include
+  # "writer" because recipe-publisher's allowedRoles=["writer"], making the
+  # recipe-refining-skill's derived effectiveRoles=["writer"] (ADR 0011) --
+  # a reader-only token returns 0 candidate skills.
+  config:
+    staticIdentities: '{"openwebui-dev-token":{"subject":"open-webui","roles":["reader","writer"]}}'
+  # LocalTool executor sidecars (ADR 0014): node/python/go/shell executors run
+  # in the orchestrator pod and run LocalTool CRs in a bubblewrap sandbox.
+  # Images built into minikube by dev-up.sh / manual `docker build` of
+  # orchestrator/sidecars/localtool-executor (one per runtime). Requires unprivileged user
+  # namespaces on the node for the per-tool network sandbox.
+  localTool:
+    enabled: true
+
+core-controller:
+  enabled: true
+  image:
+    tag: latest
+  # Must match the in-cluster NATS Service the orchestrator itself connects
+  # to (agent-orchestrator.natsUrl helper derives
+  # "<release>-nats.<namespace>.svc.cluster.local"). Without this, AgentRun
+  # Jobs fall back to the chart default "nats://nats:4222", which doesn't
+  # resolve, and every delegated agent crashes on startup.
+  nats:
+    agentUrl: "nats://agent-controller-nats.controller-agent.svc.cluster.local:4222"
+
+# Top-level NATS server (nats subchart). The agent-orchestrator.nats.enabled
+# above controls URL derivation in the orchestrator; this enables the actual
+# server pod. Both must be true for NATS-based result delivery.
+nats:
+  enabled: true
+
+openwebui:
+  enabled: true
+  # Must match a key in agent-orchestrator.config.staticIdentities above.
+  openaiApiKey: openwebui-dev-token
+  extraEnvVars:
+    - name: GOOGLE_REDIRECT_URI
+      value: "http://localhost:8080/oauth/google/login/callback"
+    - name: ENABLE_FORWARD_USER_INFO_HEADERS
+      value: "true"
+  sso:
+    enabled: true
+    google:
+      enabled: true
+      clientId: 916932714292-6900thjm1dq3e4fnqrcj3ipe4iud70o8.apps.googleusercontent.com
+      # Secret created out-of-band (never via --set/chat):
+      #   kubectl create secret generic agent-controller-openwebui-google-oauth \
+      #     -n controller-agent --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
+      clientExistingSecret: agent-controller-openwebui-google-oauth
+
+searxng:
+  enabled: true
+  # Secret created out-of-band (never via --set/chat):
+  #   kubectl create secret generic searxng-secrets \
+  #     -n controller-agent --from-literal=secret-key="$(openssl rand -hex 32)"
+  secretKeyExistingSecret: searxng-secrets

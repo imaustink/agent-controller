@@ -7,7 +7,7 @@
 `recipe-scraper` uses the raw OpenAI SDK directly (function calling /
 Structured Outputs) with no extra framework, because its LLM usage is a single
 bounded call (format extracted content into a schema) — see
-[tools/recipe-scraper/src/llm](../../tools/recipe-scraper/src/llm). The
+[catalog/tools/recipe-scraper/src/llm](../../catalog/tools/recipe-scraper/src/llm). The
 orchestrator's job is different in kind: a multi-step loop that resolves
 identity, retrieves candidate tools via RAG, decides which to invoke
 (possibly repeatedly), launches k8s Jobs, waits on results, and may recurse
@@ -35,8 +35,8 @@ framework mandate.
 ## Consequences
 
 - New dependency (`@langchain/langgraph` and friends) isolated to the
-  orchestrator's own `apps/agent-orchestrator/package.json` — not added to
-  `packages/messaging` or `recipe-scraper`.
+  orchestrator's own `orchestrator/apps/agent-orchestrator/package.json` — not added to
+  `framework/messaging` or `recipe-scraper`.
 - Graph nodes map directly to the flow in
   [orchestrator.md](../orchestrator.md#1-agent-core--langgraphjs): resolve
   identity → retrieve tools (RAG) → plan/select → launch Job → await result →

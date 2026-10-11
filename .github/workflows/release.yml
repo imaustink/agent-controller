@@ -27,7 +27,7 @@ permissions:
 jobs:
   changes:
     # Cheap, network-light job: figures out which images actually need a
-    # rebuild, and whether charts/ changed, so downstream jobs only do work
+    # rebuild, and whether orchestrator/charts/ changed, so downstream jobs only do work
     # when relevant. Runs on a GitHub-hosted runner since it doesn't touch
     # the internal registry or cluster.
     runs-on: ubuntu-latest
@@ -46,94 +46,94 @@ jobs:
             agent-orchestrator:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/messaging/**'
-              - 'apps/agent-orchestrator/**'
+              - 'framework/messaging/**'
+              - 'orchestrator/apps/agent-orchestrator/**'
             opencode-swe-agent:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/messaging/**'
-              - 'packages/agent-runtime/**'
-              - 'packages/github-app-auth/**'
-              - 'apps/opencode-swe-agent/**'
+              - 'framework/messaging/**'
+              - 'framework/agent-runtime/**'
+              - 'framework/github-app-auth/**'
+              - 'catalog/agents/opencode-swe-agent/**'
             claude-code-swe-agent:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/messaging/**'
-              - 'packages/agent-runtime/**'
-              - 'packages/github-app-auth/**'
-              - 'apps/claude-code-swe-agent/**'
+              - 'framework/messaging/**'
+              - 'framework/agent-runtime/**'
+              - 'framework/github-app-auth/**'
+              - 'catalog/agents/claude-code-swe-agent/**'
             integration-gateway:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/github-app-auth/**'
-              - 'apps/integration-gateway/**'
+              - 'framework/github-app-auth/**'
+              - 'orchestrator/apps/integration-gateway/**'
             connection-broker:
               - 'package.json'
               - 'package-lock.json'
-              - 'apps/connection-broker/**'
+              - 'orchestrator/apps/connection-broker/**'
             mcp-broker:
               - 'package.json'
               - 'package-lock.json'
-              - 'apps/mcp-broker/**'
+              - 'orchestrator/apps/mcp-broker/**'
             recipe-scraper:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/messaging/**'
-              - 'tools/recipe-scraper/**'
+              - 'framework/messaging/**'
+              - 'catalog/tools/recipe-scraper/**'
             recipe-publisher:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/messaging/**'
-              - 'tools/recipe-publisher/**'
+              - 'framework/messaging/**'
+              - 'catalog/tools/recipe-publisher/**'
             web-search:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/messaging/**'
-              - 'tools/web-search/**'
+              - 'framework/messaging/**'
+              - 'catalog/tools/web-search/**'
             web-fetch:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/messaging/**'
-              - 'tools/web-fetch/**'
+              - 'framework/messaging/**'
+              - 'catalog/tools/web-fetch/**'
             image-gen:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/messaging/**'
-              - 'tools/image-gen/**'
+              - 'framework/messaging/**'
+              - 'catalog/tools/image-gen/**'
             kubectl-readonly:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/messaging/**'
-              - 'tools/kubectl-readonly/**'
+              - 'framework/messaging/**'
+              - 'catalog/tools/kubectl-readonly/**'
             signoz-query:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/messaging/**'
-              - 'tools/signoz-query/**'
+              - 'framework/messaging/**'
+              - 'catalog/tools/signoz-query/**'
             github-tool:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/messaging/**'
-              - 'packages/github-app-auth/**'
-              - 'tools/github/**'
+              - 'framework/messaging/**'
+              - 'framework/github-app-auth/**'
+              - 'catalog/tools/github/**'
             glyph:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/messaging/**'
-              - 'tools/glyph/**'
+              - 'framework/messaging/**'
+              - 'catalog/tools/glyph/**'
             ssh-tool:
               - 'package.json'
               - 'package-lock.json'
-              - 'packages/messaging/**'
-              - 'tools/ssh/**'
+              - 'framework/messaging/**'
+              - 'catalog/tools/ssh/**'
             core-controller:
-              - 'controllers/core-controller/**'
+              - 'orchestrator/controllers/core-controller/**'
             temporal-engine:
-              - 'engines/temporal/**'
+              - 'orchestrator/engines/temporal/**'
             localtool-executor:
-              - 'sidecars/localtool-executor/**'
+              - 'orchestrator/sidecars/localtool-executor/**'
             charts:
-              - 'charts/**'
+              - 'orchestrator/charts/**'
 
       - name: Compute image matrix
         id: matrix
@@ -307,9 +307,9 @@ jobs:
           fi
 
   publish-charts:
-    # Publishes the two Helm charts (charts/agent-controller,
-    # charts/community-components) as OCI artifacts to ghcr.io whenever
-    # something under charts/ changes on main. Runs on a GitHub-hosted
+    # Publishes the two Helm charts (orchestrator/charts/agent-controller,
+    # orchestrator/charts/community-components) as OCI artifacts to ghcr.io whenever
+    # something under orchestrator/charts/ changes on main. Runs on a GitHub-hosted
     # runner, like the image jobs above -- it only needs outbound internet to
     # ghcr.io and a GITHUB_TOKEN, not access to the internal cluster (only
     # `deploy` needs that, which is why it alone stays self-hosted).
@@ -352,7 +352,7 @@ jobs:
         # validated the build (below), and before the OCI push.
         run: |
           set -euo pipefail
-          for chart in charts/agent-controller charts/community-components; do
+          for chart in orchestrator/charts/agent-controller orchestrator/charts/community-components; do
             f="$chart/Chart.yaml"
             base=$(awk '/^version:/{print $2; exit}' "$f")
             major=${base%%.*}; rest=${base#*.}; minor=${rest%%.*}; patch=${rest#*.}
@@ -361,15 +361,15 @@ jobs:
             esac
             new="${major}.${minor}.$((patch + 1))"
             sed -i "s/^version:.*/version: ${new}/" "$f"
-            echo "${chart#charts/}: ${base} -> ${new}"
+            echo "${chart#orchestrator/charts/}: ${base} -> ${new}"
           done
 
       - name: Sync core-controller CRDs into the Helm chart
-        # charts/agent-controller/charts/core-controller/crds/*.yaml is
+        # orchestrator/charts/agent-controller/charts/core-controller/crds/*.yaml is
         # generated (not committed, see its README.md) -- Helm's crds/
         # convention needs the files physically present before `helm
         # dependency update`/`helm package` will pick them up.
-        run: cp controllers/core-controller/config/crd/bases/*.yaml charts/agent-controller/charts/core-controller/crds/
+        run: cp orchestrator/controllers/core-controller/config/crd/bases/*.yaml orchestrator/charts/agent-controller/charts/core-controller/crds/
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
@@ -386,8 +386,8 @@ jobs:
           # Helm doesn't recurse into file:// subchart dependencies, so the
           # agent-orchestrator subchart's own qdrant dependency needs its own
           # `dependency update` before the parent chart's.
-          helm dependency update charts/agent-controller/charts/agent-orchestrator
-          helm dependency update charts/agent-controller
+          helm dependency update orchestrator/charts/agent-controller/charts/agent-orchestrator
+          helm dependency update orchestrator/charts/agent-controller
 
       - name: Package charts
         # Uses the bumped versions now in each Chart.yaml. Done before the git
@@ -395,8 +395,8 @@ jobs:
         # committed a version to main.
         run: |
           mkdir -p /tmp/charts
-          helm package charts/agent-controller -d /tmp/charts
-          helm package charts/community-components -d /tmp/charts
+          helm package orchestrator/charts/agent-controller -d /tmp/charts
+          helm package orchestrator/charts/community-components -d /tmp/charts
 
       - name: Commit the version bump back to main
         # git BEFORE the OCI push: the version is claimed in git first, so a
@@ -405,13 +405,13 @@ jobs:
         # failure AFTER this leaves an unpublished version (a harmless gap in the
         # sequence), never an overwrite.
         #
-        # [skip ci] so this commit — which only touches Chart.yaml under charts/
+        # [skip ci] so this commit — which only touches Chart.yaml under orchestrator/charts/
         # — does not re-trigger this workflow and loop.
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add charts/agent-controller/Chart.yaml charts/community-components/Chart.yaml
+          git add orchestrator/charts/agent-controller/Chart.yaml orchestrator/charts/community-components/Chart.yaml
           git commit -m "chore(release): bump chart versions [skip ci]"
           git push origin HEAD:main
 
@@ -462,19 +462,19 @@ jobs:
       - uses: azure/setup-kubectl@v4
 
       - name: Sync core-controller CRDs into the Helm chart
-        # charts/agent-controller/charts/core-controller/crds/*.yaml is
+        # orchestrator/charts/agent-controller/charts/core-controller/crds/*.yaml is
         # generated (not committed, see its README.md) -- Helm's crds/
         # convention needs the files physically present before `helm
         # dependency update`/`helm upgrade` will pick them up. Same step
         # publish-charts runs before packaging.
         #
         # This only covers a FIRST install. See the next step for why.
-        run: cp controllers/core-controller/config/crd/bases/*.yaml charts/agent-controller/charts/core-controller/crds/
+        run: cp orchestrator/controllers/core-controller/config/crd/bases/*.yaml orchestrator/charts/agent-controller/charts/core-controller/crds/
 
       - name: Apply CRDs
         # Helm's crds/ directory is INSTALL-ONLY: `helm upgrade` never creates a
         # newly-added CRD and never updates an existing one
-        # (charts/agent-controller/charts/core-controller/crds/README.md). On a
+        # (orchestrator/charts/agent-controller/charts/core-controller/crds/README.md). On a
         # cluster whose release predates a CRD, that CRD simply never arrives,
         # and a CRD that gained a field keeps serving the old schema -- so the
         # API server silently PRUNES the new field out of every CR written to
@@ -544,7 +544,7 @@ jobs:
           fi
 
           kubectl apply --server-side --force-conflicts \
-            -f controllers/core-controller/config/crd/bases/
+            -f orchestrator/controllers/core-controller/config/crd/bases/
 
           # An established CRD is the precondition for community-components'
           # Tool/Skill/Agent/IntegrationRoute CRs below. Without the wait, a
@@ -552,7 +552,7 @@ jobs:
           # the first CR against it, which surfaces as a "no matches for kind"
           # failure that succeeds on a re-run -- the shape of flake that gets
           # dismissed as infrastructure noise.
-          for crd in controllers/core-controller/config/crd/bases/*.yaml; do
+          for crd in orchestrator/controllers/core-controller/config/crd/bases/*.yaml; do
             name=$(kubectl get -f "$crd" -o jsonpath='{.metadata.name}')
             kubectl wait --for=condition=established --timeout=60s "crd/$name"
           done
@@ -562,8 +562,8 @@ jobs:
           # Helm doesn't recurse into file:// subchart dependencies, so the
           # agent-orchestrator subchart's own qdrant dependency needs its own
           # `dependency update` before the parent chart's.
-          helm dependency update charts/agent-controller/charts/agent-orchestrator
-          helm dependency update charts/agent-controller
+          helm dependency update orchestrator/charts/agent-controller/charts/agent-orchestrator
+          helm dependency update orchestrator/charts/agent-controller
 
       # --create-namespace on both: `-n controller-agent` does not create the
       # namespace, so on a cluster that has never had this stack the very first
@@ -572,15 +572,15 @@ jobs:
       - name: Helm upgrade agent-controller
         id: upgrade_agent
         run: |
-          helm upgrade --install agent-controller charts/agent-controller \
-            -f charts/agent-controller/values-production.yaml \
+          helm upgrade --install agent-controller orchestrator/charts/agent-controller \
+            -f orchestrator/charts/agent-controller/values-production.yaml \
             -n controller-agent --create-namespace --timeout 5m
 
       - name: Helm upgrade community-components
         id: upgrade_community
         run: |
-          helm upgrade --install community-components charts/community-components \
-            -f charts/community-components/values-production.yaml \
+          helm upgrade --install community-components orchestrator/charts/community-components \
+            -f orchestrator/charts/community-components/values-production.yaml \
             -n controller-agent --create-namespace --timeout 5m
 
       # Tool/Agent Jobs (recipe-scraper, web-search, web-fetch,

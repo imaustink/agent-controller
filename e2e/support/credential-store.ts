@@ -15,7 +15,7 @@ import { kubectl, kubectlApplyStdin } from "./k8s.js";
 
 /**
  * Object names are `<prefix>-<sha256(subject)[:16]>`, mirroring
- * `SecretRecordStore.nameFor` (apps/integration-gateway/src/credential-store/).
+ * `SecretRecordStore.nameFor` (orchestrator/apps/integration-gateway/src/credential-store/).
  *
  * Duplicated here deliberately, rather than imported from the app: this is a
  * black-box suite against a deployed image, and computing the name INDEPENDENTLY

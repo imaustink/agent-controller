@@ -86,7 +86,7 @@ catalog stays current without a restart:
   without one — this should never happen outside a test that doesn't need
   it).
 - No RBAC changes needed: the orchestrator's Role
-  (`charts/agent-controller/charts/agent-orchestrator/templates/rbac.yaml`)
+  (`orchestrator/charts/agent-controller/charts/agent-orchestrator/templates/rbac.yaml`)
   already granted `watch` alongside `get`/`list` on `tools`/`skills`/`agents`/
   `localtools` — it had just gone unused until now.
 - The docstrings/READMEs/ADRs (0009, 0010, 0011) that previously called out

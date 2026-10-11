@@ -2,26 +2,32 @@
 
 ## Architecture
 
-npm workspaces monorepo, three kinds of members (see [README.md](../README.md)
+npm workspaces monorepo in three layers (ADR 0047; see [README.md](../README.md)
 for the full layout and [docs/orchestrator.md](../docs/orchestrator.md) +
 [docs/adr/](../docs/adr/) for the orchestrator's design rationale):
 
-- `packages/*` — shared libraries (currently `@controller-agent/messaging`, the
-  transport-agnostic tool-call event protocol). Depend on these instead of
-  copy-pasting logic between tools/apps.
-- `tools/*` — one Docker container per **on-demand, single-shot** tool call
-  (e.g. `recipe-scraper`: URL in, recipe JSON out, process exits).
-- `apps/*` — **long-lived services** and **sub-agent containers**:
-  `agent-orchestrator` (the parent agent: RAG-selects a skill/sub-agent,
-  launches it, awaits its result) and `opencode-swe-agent` (the first concrete
-  sub-agent on the `@controller-agent/agent-runtime` SDK: an opencode-CLI
-  coding agent, calling Anthropic Claude directly, that communicates
-  bidirectionally with the orchestrator over NATS). Don't confuse with
-  `tools/*` — apps are not on-demand single-shot containers.
+- `framework/*` — what agents and tools are built with: the canonical wire
+  contract (`framework/protocol`, `.proto` + generated TS/Go), the tool event
+  protocol and sinks (`@controller-agent/messaging`), the agent SDK
+  (`@controller-agent/agent-runtime`) and `@controller-agent/github-app-auth`.
+  Depends on nothing else in this repo. Depend on these instead of
+  copy-pasting logic between tools/agents.
+- `catalog/*` — reference implementations built on the framework:
+  `catalog/tools/*` (one Docker container per **on-demand, single-shot** tool
+  call, e.g. `recipe-scraper`: URL in, recipe JSON out, process exits),
+  `catalog/agents/*` (**sub-agent containers** on the agent SDK, e.g.
+  `opencode-swe-agent`, an opencode-CLI coding agent that communicates
+  bidirectionally with the orchestrator over NATS) and `catalog/tools-local/*`.
+- `orchestrator/*` — what runs them at scale: `orchestrator/apps/*`
+  (**long-lived services**: `agent-orchestrator`, the parent agent that
+  RAG-selects a skill/sub-agent, launches it and awaits its result; the
+  gateways and brokers), `orchestrator/engines/temporal`,
+  `orchestrator/controllers/core-controller`, `orchestrator/sidecars/*` and
+  `orchestrator/charts/*`.
 
-Every tool/app is self-contained (own deps, own image, own hardened run
-contract) and never imports from a sibling tool/app directly — only from
-`packages/*`.
+Every tool/agent/app is self-contained (own deps, own image, own hardened run
+contract) and never imports from a sibling directly — only from `framework/*`.
+`npm run check:boundaries` enforces the layering (`boundaries.json`).
 
 ## Build and test (run from repo root)
 
@@ -33,9 +39,9 @@ contract) and never imports from a sibling tool/app directly — only from
 - Build the shared package before typechecking/testing a dependent workspace
   if you've changed it: `npm run build --workspace=@controller-agent/messaging`.
 - Docker builds use the **repo root** as build context (not the tool/app
-  dir), because images need to COPY in `packages/messaging`:
-  `docker build -f tools/recipe-scraper/Dockerfile -t recipe-scraper:latest .`
-  (same pattern for `apps/agent-orchestrator/Dockerfile`).
+  dir), because images need to COPY in `framework/messaging`:
+  `docker build -f catalog/tools/recipe-scraper/Dockerfile -t recipe-scraper:latest .`
+  (same pattern for `orchestrator/apps/agent-orchestrator/Dockerfile`).
 - This repo is **not a git repository** — use `mv`/`cp`, not `git mv`, when
   restructuring files. After moving a workspace package, reinstall; if
   `package-lock.json` still references the old path afterward, do a full
@@ -62,7 +68,7 @@ contract) and never imports from a sibling tool/app directly — only from
   gate on it deterministically in code (append the message, interrupt the turn)
   rather than adding guidance text and hoping the model relays it. Reserve
   prompt instructions for genuinely generative/judgment work.
-- Never invent unverified auth/identity shortcuts. `apps/agent-orchestrator/src/rbac/static-identity-resolver.ts`
+- Never invent unverified auth/identity shortcuts. `orchestrator/apps/agent-orchestrator/src/rbac/static-identity-resolver.ts`
   is explicitly a DEV/TEST-ONLY stub (no signature verification) — treat it
   as a documented gap, not a pattern to copy for real auth.
 - k8s API access goes through `@kubernetes/client-node` in-process (object-param

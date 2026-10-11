@@ -43,8 +43,8 @@ function describeMissing(label: string, missing: Grant[]): string {
     `${label} is missing ${missing.length} grant(s) the controller's markers declare:`,
     ...missing.map((g) => `  - ${g}`),
     "",
-    "Regenerate with `make manifests` in controllers/core-controller, then mirror the",
-    "result into charts/agent-controller/charts/core-controller/templates/rbac.yaml.",
+    "Regenerate with `make manifests` in orchestrator/controllers/core-controller, then mirror the",
+    "result into orchestrator/charts/agent-controller/charts/core-controller/templates/rbac.yaml.",
   ].join("\n");
 }
 
@@ -72,7 +72,7 @@ describe("core-controller RBAC parity (no cluster)", () => {
 
   it("generated role.yaml grants everything the markers declare", () => {
     const missing = missingFrom(markers, grantsFromGeneratedRole());
-    expect(missing, describeMissing("controllers/core-controller/config/rbac/role.yaml", missing)).toEqual([]);
+    expect(missing, describeMissing("orchestrator/controllers/core-controller/config/rbac/role.yaml", missing)).toEqual([]);
   });
 
   it("the Helm chart's ClusterRole grants everything the markers declare", () => {

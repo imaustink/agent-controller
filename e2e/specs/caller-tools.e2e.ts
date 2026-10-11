@@ -5,8 +5,8 @@ import { fetchThrough, kubectl, kubectlApplyStdin, waitFor, type PortForward } f
 import { chatToolTurn, type ChatMessage, type ChatToolDefinition } from "../support/chat.js";
 import { invokeStatus, invokeTurn } from "../support/invoke.js";
 import { COLLECTIONS, allPointCounts, listCollections, openQdrant, payloadNames, withQdrant } from "../support/qdrant.js";
-import { QdrantCallerToolStore } from "../../apps/agent-orchestrator/src/caller-tools/qdrant-caller-tool-store.js";
-import { makeCallerTool } from "../../apps/agent-orchestrator/src/caller-tools/parse.js";
+import { QdrantCallerToolStore } from "../../orchestrator/apps/agent-orchestrator/src/caller-tools/qdrant-caller-tool-store.js";
+import { makeCallerTool } from "../../orchestrator/apps/agent-orchestrator/src/caller-tools/parse.js";
 
 // Module scope, before any fixture: a suite pointed at the wrong cluster must
 // fail on import, not after it has started creating objects.
@@ -15,7 +15,7 @@ requireMinikubeContext();
 /**
  * Consumer-supplied tools (docs/adr/0035), end to end.
  *
- * `apps/agent-orchestrator`'s unit tests cover the decisions; they cannot cover
+ * `orchestrator/apps/agent-orchestrator`'s unit tests cover the decisions; they cannot cover
  * either half of what actually breaks this feature in a cluster:
  *
  * - **Qdrant accepts the queries.** Those tests mock the Qdrant client outright,

@@ -166,8 +166,8 @@ API for freshness.
 > leaks as surely as a passage does. The union-to-invoke rule below is
 > unaffected.
 
-`DeriveSkillAccess` (`engines/temporal/internal/catalog/derive.go:11-39`,
-mirrored in `apps/agent-orchestrator/src/skills/derive-access.ts`) computes a
+`DeriveSkillAccess` (`orchestrator/engines/temporal/internal/catalog/derive.go:11-39`,
+mirrored in `orchestrator/apps/agent-orchestrator/src/skills/derive-access.ts`) computes a
 Skill's audience as the **intersection** of its refs' roles: "visible iff the
 caller can use EVERY tool the skill declares." Applied unchanged to a generated
 KB-skill, one restricted Slack Connection would make an entire client knowledge
@@ -298,8 +298,8 @@ references it.
 **Both engines must derive the same skill.** ADR 0036 left two implementations
 of the agent loop, and a knowledge base has to behave identically whichever one
 serves the turn — so the derivation, the union-access rule and the fan-out exist
-twice, in `engines/temporal/internal/{catalog,corpus}` and
-`apps/agent-orchestrator/src/knowledge-base`. The generated markdown is the part
+twice, in `orchestrator/engines/temporal/internal/{catalog,corpus}` and
+`orchestrator/apps/agent-orchestrator/src/knowledge-base`. The generated markdown is the part
 that matters most and the part most likely to drift, because it is **prompt
 material**: a phrase added on one side and not the other means the same
 knowledge base cites differently, or stops disclosing withheld sources, purely

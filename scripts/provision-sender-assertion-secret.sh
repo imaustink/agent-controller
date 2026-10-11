@@ -56,7 +56,7 @@ read -r -p "Patch the sender-assertion secret into both Secrets and roll both de
 for s in "$GW_SECRET" "$ORCH_SECRET"; do
   kubectl -n "$NS" get secret "$s" >/dev/null 2>&1 || {
     echo "✗ Secret $s not found in $NS. Nothing patched." >&2
-    echo "  These Secrets are hand-created -- see charts/agent-controller/values-production.yaml." >&2
+    echo "  These Secrets are hand-created -- see orchestrator/charts/agent-controller/values-production.yaml." >&2
     exit 1
   }
 done

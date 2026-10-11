@@ -1,0 +1,158 @@
+import type { SweMarker } from "./marker.js";
+
+/**
+ * Guardrails baked into every invocation, as `permissions.deny` rules in the
+ * generated Claude Code settings JSON (see {@link buildClaudeSettings}).
+ * Claude Code's permission rules take the form `Tool(prefix:*)` and an
+ * explicit `deny` entry is enforced regardless of `--permission-mode`
+ * (confirmed against `claude -p --help`'s own `--allowedTools`/
+ * `--disallowedTools` examples, e.g. `"Bash(git *) Edit"`), so this is the
+ * reliable lever for "no irreversible actions" even though this agent runs
+ * fully non-interactively (`--permission-mode bypassPermissions`). It is
+ * intentionally NOT configurable by the caller. Defense-in-depth: the GitHub
+ * App's permissions and server-side branch/repo protection rules are the
+ * other layers (see docs/security.md).
+ */
+export const DENY_BASH_PATTERNS: string[] = [
+  "Bash(git push --force:*)",
+  "Bash(git push -f:*)",
+  "Bash(git push --force-with-lease:*)",
+  "Bash(git push --force-if-includes:*)",
+  "Bash(git reset --hard:*)",
+  "Bash(git branch -D:*)",
+  "Bash(git update-ref -d:*)",
+  "Bash(rm -rf:*)",
+  "Bash(gh repo delete:*)",
+  "Bash(gh api -X DELETE:*)",
+  "Bash(gh api --method DELETE:*)",
+];
+
+/**
+ * The exact sentinel a review IntegrationRoute (the "ai-review" label routes,
+ * see orchestrator/charts/community-components/templates/integrationroute-github-*-labeled-
+ * review.yaml) places at the top of the rendered prompt. The IntegrationRoute
+ * CRD carries no env/mode field, so the rendered goal is the ONLY per-route
+ * channel that reaches this container -- this string is how a review run is
+ * recognised STRUCTURALLY (an exact substring the chart controls), rather than
+ * by heuristically reading the model's prose or the configurable label value.
+ * It MUST stay byte-for-byte identical to the chart templates' first line and
+ * to opencode-swe-agent's own copy.
+ */
+export const REVIEW_MODE_MARKER = "SWE-ENFORCED-MODE: review-only";
+
+/**
+ * True when this run is a code-enforced read-only review. Detected by an exact
+ * match of {@link REVIEW_MODE_MARKER} in the goal. Fail-safe by construction:
+ * the marker only ever ADDS deny rules / drops write scope, so the worst a
+ * forged marker in attacker-controlled event text can do is make a change run
+ * read-only (a no-op DoS), never grant a review run write access. The marker
+ * lives above the event `body` in the trusted part of the template, so a real
+ * review run cannot have it stripped.
+ */
+export function isReviewMode(goal: string): boolean {
+  return goal.includes(REVIEW_MODE_MARKER);
+}
+
+/**
+ * Extra `permissions.deny` rules layered on for a review run, on top of
+ * {@link DENY_BASH_PATTERNS}. A review may still READ the repo and POST its
+ * findings (`gh pr review`, `gh api ... /reviews`, `gh pr comment`), but must
+ * not push, open/merge/alter a pull request, or otherwise mutate the repo.
+ * `Bash(git push:*)` denies every push (not just the force variants above),
+ * which is the single most important lever here. These are enforced regardless
+ * of `--permission-mode bypassPermissions` (an explicit `deny` always wins),
+ * so they hold even though this agent answers no permission prompts.
+ */
+export const REVIEW_DENY_BASH_PATTERNS: string[] = [
+  "Bash(git push:*)",
+  "Bash(gh pr create:*)",
+  "Bash(gh pr merge:*)",
+  "Bash(gh pr close:*)",
+  "Bash(gh pr reopen:*)",
+  "Bash(gh pr ready:*)",
+  "Bash(gh pr edit:*)",
+];
+
+/**
+ * Builds the `--settings` JSON handed to `claude -p`. Non-negotiable
+ * `permissions.deny` bash guardrails plus, since this agent runs headless
+ * with nobody to answer a permission prompt, `bypassPermissions` is also set
+ * here (in addition to being passed as `--permission-mode` — belt and
+ * braces, matching how CLI flags and settings.json can each independently
+ * express the same setting).
+ *
+ * NOTE for Remote Control (`--bg`, see claude-runner.ts's
+ * `runClaudeTurnRemoteControlled`): `claude --bg` combined with
+ * `bypassPermissions` separately requires
+ * `skipDangerousModePermissionPrompt: true` in the REAL on-disk
+ * `~/.claude/settings.json` file -- confirmed empirically that passing it
+ * via `--settings` here (as this function's return value is passed) does
+ * NOT satisfy that check, only the literal file does. That's written
+ * directly by `index.ts`'s handler, not here -- see its comment for why.
+ */
+export function buildClaudeSettings(reviewMode = false): object {
+  return {
+    permissions: {
+      defaultMode: "bypassPermissions",
+      deny: reviewMode ? [...DENY_BASH_PATTERNS, ...REVIEW_DENY_BASH_PATTERNS] : DENY_BASH_PATTERNS,
+    },
+  };
+}
+
+/**
+ * The task prompt handed to Claude Code. The user's instruction is embedded
+ * as data; the surrounding text is fixed, trusted policy (the git workflow,
+ * the "never destructive" rules, and the scope-discipline rules that keep the
+ * headless agent from over-reaching — stay in scope, and when blocked or
+ * unsure STOP and surface the blocker for a human rather than improvising a
+ * workaround). On a continuation turn the marker pins
+ * the repo/branch/PR so Claude Code resumes the same work (this agent has no
+ * long-lived local session to `--resume` across separate AgentRun Jobs — see
+ * marker.ts — so continuity comes entirely from this re-framing plus
+ * re-cloning the repo).
+ *
+ * `skill`, when set, is a Claude Code skill the caller invoked as `/<skill>`
+ * (see skills.ts's splitSkillInvocation). It goes in front of everything
+ * else, since that's the only place the CLI expands it; the rest of the
+ * prompt becomes the skill's arguments, unchanged.
+ */
+export function buildPrompt(instruction: string, marker: SweMarker | null, skill: string | null = null): string {
+  const context = marker
+    ? `You are CONTINUING work on an existing pull request.\n` +
+      `- Repository: ${marker.repo}\n` +
+      `- Branch: ${marker.branch}\n` +
+      (marker.pr ? `- Pull request: #${marker.pr}\n` : ``) +
+      `Clone the repository into the current directory (if not already present), check out that branch, and continue.`
+    : `If the task needs an existing repository, clone it into the current directory. ` +
+      `If it needs a NEW repository, create it with \`gh repo create\` (a private repo unless told otherwise) and clone it.`;
+
+  const prompt = [
+    `You are an autonomous software-engineering agent running headless in a container.`,
+    `Complete the task below end-to-end and open (or update) a GitHub pull request with the result.`,
+    ``,
+    `## Task`,
+    instruction.trim(),
+    ``,
+    `## Repository context`,
+    context,
+    ``,
+    `## Environment`,
+    `This container already has the following installed -- use them directly, do not apt-get/install/download them yourself:`,
+    `git, gh (GitHub CLI, authenticated), curl, python3 + pip, node + npm, go, make, build-essential (gcc/g++), jq, unzip, zip, ripgrep (rg), less.`,
+    `A headless browser is also available for screenshots (e.g. to verify a UI change). Run \`screenshot <url> [out.png] [width] [height]\` -- it drives the bundled Chromium (also at \`$CHROME_BIN\` / \`/usr/bin/chromium\`, and used by Puppeteer/Playwright via \`executablePath\`) with the flags this sandboxed container needs, so prefer it over invoking Chromium yourself. Width/height are viewport CSS px (default 1280x800); pass a mobile size like \`390 844\` to audit mobile layouts.`,
+    `If a task genuinely needs something outside this list, install it yourself, but check this list first.`,
+    ``,
+    `## Rules (must follow)`,
+    `- Stay within the scope of the task as given. Do the task that was asked and no more: do not add unrequested features, refactors, cleanups, or "while I'm here" changes. If you notice other things worth doing, list them in your final summary instead of doing them.`,
+    `- When you are blocked or unsure, STOP rather than improvising. Missing repository access or permissions, an instruction that looks wrong or ambiguous, a command that keeps failing, or anything that tempts you to work around the task as stated all mean you are done for this turn. Do NOT substitute a different repository, create a new repository the task didn't call for, broaden the task, or guess at the intent to keep making progress.`,
+    `- When you stop this way, surface the blocker instead of hiding it: explain plainly in your final reply (and, where the task provides a channel such as an issue or pull request, in a comment there) exactly what is blocking you or what you need clarified, so a human can decide and re-trigger you. A halted turn with a clear question or blocker is a successful outcome, not a failure — prefer it over doing more than was asked.`,
+    `- Work only inside the current working directory.`,
+    `- Never commit directly to the default branch; use a dedicated feature branch.`,
+    `- Commit with clear messages and push the branch to the remote.`,
+    `- Open a pull request with \`gh pr create\` describing the change, or push to the existing PR branch if one is already open. Do NOT merge it.`,
+    `- NEVER force-push, delete branches/repositories, run \`git reset --hard\`, or run other destructive/irreversible commands.`,
+    `- You get exactly ONE turn to complete this task, and this process exits as soon as you reply -- there is no scheduler, cron, or webhook that will wake it back up later. You cannot pause partway through and wait for something external (a CI run, a build, a test job) to finish. Finish the task now with whatever information is available; if something is still pending, say so as a caveat in your final reply instead of deferring completion on it. Do NOT say you'll "resume automatically", "finalize later", or "when the check completes" -- that will never happen, and it leaves the task looking incomplete with no way for anyone to know a human needs to re-trigger you.`,
+    `- When finished, print a short summary of what you changed and the pull request URL.`,
+  ].join("\n");
+  return skill ? `/${skill} ${prompt}` : prompt;
+}

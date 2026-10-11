@@ -25,7 +25,7 @@ Two problems had accumulated:
    identical visibility, and a turn could read a repo the person who asked
    could not.
 2. **The authorization check that existed was dead code.**
-   `resolveDelegatedWriteToken` (`packages/github-app-auth`) already verified
+   `resolveDelegatedWriteToken` (`framework/github-app-auth`) already verified
    the caller's own write permission before minting a repo-scoped App token.
    But `isDelegating()` requires a per-user `GITHUB_TOKEN`, which only exists
    when the Agent declares the `github` provider — and `catalog-values.yaml`

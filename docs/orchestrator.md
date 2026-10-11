@@ -1,7 +1,7 @@
 # Agent Orchestrator (design)
 
 > **Status:** first implementation exists at
-> [apps/agent-orchestrator/](../apps/agent-orchestrator/) (see its README for
+> [orchestrator/apps/agent-orchestrator/](../orchestrator/apps/agent-orchestrator/) (see its README for
 > what's implemented vs. still a known gap). This document describes the
 > target architecture referenced throughout [README.md](../README.md),
 > [messaging.md](messaging.md), and [security.md](security.md). See
@@ -162,7 +162,7 @@ Which tools even show up as retrieval candidates depends on **who is asking**:
   `ToolRunLauncher` — creates the `ToolRun` via `@kubernetes/client-node`
   (`CustomObjectsApi`, no shelling out to `kubectl`); it **never creates a Job
   itself**.
-- The Go **core-controller** (`controllers/core-controller/`) reconciles each
+- The Go **core-controller** (`orchestrator/controllers/core-controller/`) reconciles each
   `ToolRun` into a hardened one-shot **Job** — image + ServiceAccount from the
   referenced `Tool` CR, plus the existing hardened container contract from
   [security.md](security.md) (drop all capabilities, read-only root filesystem,
@@ -171,7 +171,7 @@ Which tools even show up as retrieval candidates depends on **who is asking**:
 - The `ToolRun` carries the per-call args and a result-callback URL; the HMAC
   callback secret travels by `secretRef` (never plaintext in the CR) and is
   wired into the Job by the controller. The tool container reports back over
-  the existing [`@controller-agent/messaging`](../packages/messaging/) callback
+  the existing [`@controller-agent/messaging`](../framework/messaging/) callback
   protocol ([messaging.md](messaging.md)) — the orchestrator reuses that
   channel rather than adding a new one.
 - Job retry/backoff and TTL cleanup (`ttlSecondsAfterFinished`) are owned by the
@@ -184,7 +184,7 @@ Which tools even show up as retrieval candidates depends on **who is asking**:
   `ToolRunLauncher.launch()`'s `options.secretEnv`, which creates a per-run k8s
   Secret and references it from `ToolRunSpec.secretEnv` — the Go controller
   merges that over the Tool's own static `secretEnv` when building the Job.
-  The `github` Tool (`tools/github/`) is the reference implementation: it runs
+  The `github` Tool (`catalog/tools/github/`) is the reference implementation: it runs
   `gh` authenticated as the caller's own GitHub identity rather than a shared
   bot credential.
 
@@ -207,7 +207,7 @@ rather than as a Job:
   `automountServiceAccountToken: false` and no cluster credentials.
 - The tool speaks the same stdio ABI as any LocalTool (input on stdin, one JSON
   envelope on stdout); the executor maps that envelope onto the same
-  [`@controller-agent/messaging`](../packages/messaging/) `Event` the Job path
+  [`@controller-agent/messaging`](../framework/messaging/) `Event` the Job path
   produces, so the graph's `runTool` node treats both identically.
 
 See [ADR 0014](adr/0014-local-tool-sidecar-execution.md) and the
@@ -347,7 +347,7 @@ existing SSRF/prompt-injection mitigations:
 
 - ~~Identity/auth mechanism: which IdP, how tokens map to roles/scopes.~~
   Resolved for the "verify a real token" half: `OidcIdentityResolver`
-  (`apps/agent-orchestrator/src/rbac/oidc-identity-resolver.ts`) verifies
+  (`orchestrator/apps/agent-orchestrator/src/rbac/oidc-identity-resolver.ts`) verifies
   caller bearer tokens as JWTs against a configurable OIDC issuer's JWKS —
   issuer/audience/JWKS URL and the roles-claim path are all config, so it
   works with any standards-compliant IdP without a vendor-specific SDK.

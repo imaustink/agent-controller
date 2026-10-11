@@ -1,7 +1,7 @@
 # Event Integrations & FAAS Gateway (design proposal)
 
 > **Status:** the **conversational GitHub Issues path** described below is
-> implemented — see [apps/integration-gateway](../apps/integration-gateway)
+> implemented — see [orchestrator/apps/integration-gateway](../orchestrator/apps/integration-gateway)
 > and the "Implementation status" section at the end of this document. The
 > declarative **`IntegrationRoute` CRD** (ADR 0024) is also implemented,
 > letting a configured label applied to a GitHub issue dispatch
@@ -82,7 +82,7 @@ graph TD
     Job[CI / job webhook\ne.g. GitHub Actions, Argo]
     FAAS[Direct FAAS call\nPOST /fn/:toolOrAgentId]
 
-    subgraph GW["apps/integration-gateway (new, long-lived)"]
+    subgraph GW["orchestrator/apps/integration-gateway (new, long-lived)"]
         Verify[Per-adapter signature/\nauth verification]
         Normalize[Adapters normalize to\nInboundEvent]
         Router[Router: conversational vs. one-off,\nresolve identity, resolve session id]
@@ -112,7 +112,7 @@ graph TD
     Reply --> FAAS
 ```
 
-### 1. `apps/integration-gateway` — a new long-lived service
+### 1. `orchestrator/apps/integration-gateway` — a new long-lived service
 
 A new app, following the existing convention (own image, own hardened run
 contract, no direct imports from `agent-orchestrator` or any `tools/*`/
@@ -250,7 +250,7 @@ turning a reply path into a new SSRF/exfil surface.
 | Container ↔ parent event protocol | `@controller-agent/messaging` (`Sink`, `CallbackSink`, `EventSchema`) | — |
 | Session continuity, continuation tokens | `SessionStore`, ADR 0012, ADR 0017 mechanism | New producer of `session_id` (external thread id) |
 | Consumer-facing HTTP pattern | ADR 0006 async accept/poll shape | Reused for the `faas` channel's `POST /fn/:id` |
-| Channel-specific auth/parsing/reply | — | Per-adapter code in `apps/integration-gateway` |
+| Channel-specific auth/parsing/reply | — | Per-adapter code in `orchestrator/apps/integration-gateway` |
 | Direct-by-id tool/agent invocation | `ToolRun`/`AgentRun` launch mechanics | New "launch by id, skip retrieval" component |
 
 ## Security considerations (extends `security.md` and `orchestrator.md`)
@@ -316,7 +316,7 @@ turning a reply path into a new SSRF/exfil surface.
   polling; that's a stand-in, not the intended long-term answer.
 - **Where `InboundEvent` and adapter interfaces live** — a new
   `packages/integrations` shared package (parse/reply contracts only, no
-  channel SDKs) vs. keeping them inside `apps/integration-gateway` until a
+  channel SDKs) vs. keeping them inside `orchestrator/apps/integration-gateway` until a
   second consumer needs them. Given `packages/*` is meant for logic reused
   across workspace members (per repo conventions) and today there's exactly
   one consumer, starting inside the app and extracting later is likely
@@ -336,7 +336,7 @@ turning a reply path into a new SSRF/exfil surface.
 
 ## Suggested phasing
 
-1. **FAAS path first** (`apps/integration-gateway` with only the `faas`
+1. **FAAS path first** (`orchestrator/apps/integration-gateway` with only the `faas`
    adapter): validates the direct-by-id `ToolRun`/`AgentRun` launch
    component and the async accept/poll extension in isolation, with no new
    external-trust surface (caller is already an authenticated API client).
@@ -360,7 +360,7 @@ convention (see [docs/adr/](adr/)).
 
 ## Implementation status
 
-**Implemented:** [apps/integration-gateway](../apps/integration-gateway) — a
+**Implemented:** [orchestrator/apps/integration-gateway](../orchestrator/apps/integration-gateway) — a
 GitHub Issues adapter, actionable ONLY on an explicit label application:
 
 - `POST /webhooks/github` verifies GitHub's `X-Hub-Signature-256` HMAC, then
@@ -462,7 +462,7 @@ GitHub Issues adapter, actionable ONLY on an explicit label application:
   vs. push" open question above is deliberately left unresolved and worked
   around with a bounded poll timeout.
 - `@controller-agent/github-app-auth` (extracted from
-  `apps/opencode-swe-agent`) is shared by both apps for GitHub App JWT
+  `catalog/agents/opencode-swe-agent`) is shared by both apps for GitHub App JWT
   signing / installation-token minting (ADR 0018), rather than duplicating
   that security-sensitive code.
 - **Triage agent improvements (issue #81).** The `issues.labeled` path now
@@ -499,4 +499,4 @@ channel (Slack, email, job webhooks).
   continuation mechanisms the conversational path reuses unchanged.
 - [docs/adr/0018](adr/0018-github-app-auth-fallback.md) — the GitHub App
   auth mechanism `@controller-agent/github-app-auth` shares between
-  `apps/opencode-swe-agent` and `apps/integration-gateway`.
+  `catalog/agents/opencode-swe-agent` and `orchestrator/apps/integration-gateway`.

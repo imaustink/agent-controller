@@ -1,0 +1,153 @@
+# syntax=docker/dockerfile:1
+#
+# Build from the REPO ROOT:
+#
+#   docker build -f catalog/agents/claude-code-swe-agent/Dockerfile -t claude-code-swe-agent:latest .
+#
+# This is a PRIVILEGED agent (docs/security.md): it needs outbound network to
+# GitHub + the Anthropic API, a writable workspace (/tmp emptyDir), a GitHub
+# App credential (git/gh operations), and a Claude model credential -- either
+# an Anthropic API key or a delegated Claude Code OAuth token (from
+# `claude setup-token`), independent secrets from the GitHub one. The agent
+# runtime (@controller-agent/agent-runtime) connects to NATS (AGENT_NATS_URL)
+# and receives its run id + initial goal via env (AGENT_RUN_ID, AGENT_GOAL)
+# -- injected by the Go core-controller into the k8s Job when it reconciles
+# the AgentRun CR.
+#
+# The Claude Code CLI's headless `--output-format stream-json` shape isn't a
+# stable public API across versions (same caveat as its `setup-token` TUI
+# output) -- CLAUDE_CODE_VERSION below is pinned deliberately; treat bumping
+# it as something to re-test (see claude-runner.test.ts), not a routine
+# version bump.
+
+############################
+# Build stage
+############################
+# node:22, not :20 (unlike opencode-swe-agent) -- @anthropic-ai/claude-code
+# requires Node >=22 (npm install warns EBADENGINE and the CLI is unverified
+# to actually run correctly on 20).
+FROM node:22-bookworm-slim AS build
+WORKDIR /repo
+
+COPY package.json package-lock.json* ./
+COPY framework/messaging/package.json   framework/messaging/package.json
+COPY framework/agent-runtime/package.json framework/agent-runtime/package.json
+COPY framework/github-app-auth/package.json framework/github-app-auth/package.json
+COPY catalog/agents/claude-code-swe-agent/package.json catalog/agents/claude-code-swe-agent/package.json
+RUN npm ci
+
+COPY framework/messaging   framework/messaging
+COPY framework/agent-runtime framework/agent-runtime
+COPY framework/github-app-auth framework/github-app-auth
+COPY catalog/agents/claude-code-swe-agent/tsconfig.json catalog/agents/claude-code-swe-agent/tsconfig.json
+COPY catalog/agents/claude-code-swe-agent/src           catalog/agents/claude-code-swe-agent/src
+
+RUN npm run build --workspace=@controller-agent/messaging \
+  && npm run build --workspace=@controller-agent/agent-runtime \
+  && npm run build --workspace=@controller-agent/github-app-auth \
+  && npm run build --workspace=claude-code-swe-agent \
+  && npm prune --omit=dev \
+  # Materialize workspace packages as real directories (not symlinks) so they
+  # survive the copy into the runtime stage.
+  && rm -rf node_modules/@controller-agent/messaging \
+  && mkdir -p node_modules/@controller-agent/messaging \
+  && cp -r framework/messaging/dist        node_modules/@controller-agent/messaging/dist \
+  && cp framework/messaging/package.json   node_modules/@controller-agent/messaging/package.json \
+  && rm -rf node_modules/@controller-agent/agent-runtime \
+  && mkdir -p node_modules/@controller-agent/agent-runtime \
+  && cp -r framework/agent-runtime/dist    node_modules/@controller-agent/agent-runtime/dist \
+  && cp framework/agent-runtime/package.json node_modules/@controller-agent/agent-runtime/package.json \
+  && rm -rf node_modules/@controller-agent/github-app-auth \
+  && mkdir -p node_modules/@controller-agent/github-app-auth \
+  && cp -r framework/github-app-auth/dist        node_modules/@controller-agent/github-app-auth/dist \
+  && cp framework/github-app-auth/package.json   node_modules/@controller-agent/github-app-auth/package.json
+
+############################
+# Runtime stage
+############################
+FROM node:22-bookworm-slim AS runtime
+
+ARG GH_VERSION=2.63.2
+ARG GO_VERSION=1.24.5
+ARG CLAUDE_CODE_VERSION=2.1.218
+
+# Common dev-tool baseline for the agent's own use during a task (build
+# tooling, archive handling, JSON munging, searching a checkout, editing) --
+# so Claude Code doesn't discover a missing tool mid-task and try to apt-get
+# install it itself (slow, and it may not know it's even allowed to). See
+# the `## Environment` section of buildPrompt (claude.ts) which tells the
+# agent exactly what's installed here, so it doesn't have to probe/guess.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+     ca-certificates curl git python3 python3-pip make build-essential \
+     jq unzip zip less ripgrep \
+     # util-linux provides `script`, which the Remote Control path uses to
+     # give interactive `claude --remote-control` a real pty (see
+     # claude-runner.ts). Present in the base image already, but pinned
+     # explicitly since the feature hard-depends on it.
+     util-linux \
+     # Headless browser so the agent can screenshot the UI it changes (e.g.
+     # verifying a mobile-layout fix) instead of reasoning about geometry
+     # blind. Debian's `chromium` package pulls in the exact matching shared
+     # libraries (libnss3, libgbm1, libasound2, the X/GTK stack, ...), which
+     # is why a Playwright/Puppeteer-downloaded Chromium failed at runtime
+     # here -- those libs weren't present and the read-only rootfs + non-root
+     # uid leave no way to add them mid-task. fonts-liberation gives it a
+     # sane default font so rendered text isn't tofu. Drive it via the
+     # `screenshot` helper below (it sets the flags the hardened Job needs).
+     chromium fonts-liberation \
+  # GitHub CLI -- installed from the official release tarball for a hermetic build.
+  # curl retries transient network resets (common on flaky CI runners) instead
+  # of failing the whole build on a single dropped connection. Arch is
+  # detected at build time so this also builds correctly on amd64 runners/nodes.
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+     "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_$(dpkg --print-architecture).tar.gz" \
+     -o /tmp/gh.tar.gz \
+  && tar -xzf /tmp/gh.tar.gz -C /tmp \
+  && rm -f /tmp/gh.tar.gz \
+  && mv "/tmp/gh_${GH_VERSION}_linux_$(dpkg --print-architecture)/bin/gh" /usr/local/bin/gh \
+  && rm -rf "/tmp/gh_${GH_VERSION}_linux_$(dpkg --print-architecture)" \
+  # Go toolchain -- installed from the official tarball; arch is detected at build time.
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+     "https://go.dev/dl/go${GO_VERSION}.linux-$(dpkg --print-architecture).tar.gz" \
+     -o /tmp/go.tar.gz \
+  && tar -xzf /tmp/go.tar.gz -C /usr/local \
+  && rm -f /tmp/go.tar.gz \
+  # Claude Code CLI, pinned (see the note above this Dockerfile's header).
+  && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+  && npm cache clean --force \
+  # curl is kept at runtime -- the agent's tasks routinely need it (hitting
+  # APIs, downloading assets) and network egress is already unrestricted for
+  # this Job (docs/security.md), so purging it would only cost the agent a
+  # working tool without adding any real containment.
+  && apt-get autoremove -y \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PATH="/usr/local/go/bin:$PATH"
+ENV GOPATH="/tmp/go"
+
+# Point the common browser-automation libraries at the system Chromium and stop
+# them trying to download their own (which would fail on the read-only rootfs).
+ENV CHROME_BIN=/usr/bin/chromium
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+# `screenshot <url> [out.png] [w] [h]` -- headless-Chromium capture helper that
+# bakes in the flags this hardened Job requires (see the script header).
+COPY --chmod=755 catalog/agents/claude-code-swe-agent/bin/screenshot /usr/local/bin/screenshot
+
+COPY --from=build /repo/node_modules                        ./node_modules
+COPY --from=build /repo/catalog/agents/claude-code-swe-agent/dist      ./dist
+COPY --from=build /repo/catalog/agents/claude-code-swe-agent/package.json ./package.json
+
+# The core-controller's hardened Job securityContext runs as uid 10001 with a
+# read-only root filesystem + emptyDir at /tmp. All writable state (workspace,
+# git credentials, Claude Code's own config dir, NATS connection) goes under
+# /tmp.
+USER node
+
+ENTRYPOINT ["node", "dist/index.js"]

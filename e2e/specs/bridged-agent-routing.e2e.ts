@@ -19,7 +19,7 @@ requireMinikubeContext();
  * handed the planner that same prompt but an EMPTY tool list -- so it tried
  * to call "gh" as a declarative Tool and got refused with "tool not
  * available to this agent". That is a real incident this asserts against,
- * not a hypothetical: charts/community-components/templates/
+ * not a hypothetical: orchestrator/charts/community-components/templates/
  * agent-claude-code-swe.yaml and agent-opencode-swe.yaml never set the
  * annotation until this fix.
  *
@@ -37,7 +37,7 @@ describe("pod-based agents are annotated for BridgedAgentWorkflow routing", () =
   // opencode-swe-agent is intentionally excluded here: it is disabled in this
   // suite's deployed values (no built image to enable it with), so no live CR
   // exists to assert against. Its routing contract is instead pinned
-  // hermetically in engines/temporal/internal/temporal/workflows/
+  // hermetically in orchestrator/engines/temporal/internal/temporal/workflows/
   // agent_workflow_routing_test.go (TestPodAgentsRouteBridged), alongside
   // claude-code-swe-agent.
   const BRIDGED_AGENTS = ["claude-code-swe-agent", "stub-agent", "stub-swe-agent"];

@@ -6,13 +6,13 @@ import type { Server } from "node:http";
 import { createHmac } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createBrokerServer, DELEGATED_TOKEN_HEADER } from "../../apps/connection-broker/src/server.js";
-import { StaticCorpusRegistry } from "../../apps/connection-broker/src/registry.js";
-import { SlackDriver } from "../../apps/connection-broker/src/drivers/slack.js";
-import { HttpResourceSource } from "../../apps/connection-broker/src/sync/http-source.js";
-import { BrokerProber } from "../../apps/agent-orchestrator/src/knowledge-base/retrieve.js";
-import { CorpusReader } from "../../apps/agent-orchestrator/src/knowledge-base/reader.js";
-import { CorpusLookup } from "../../apps/agent-orchestrator/src/knowledge-base/lookup.js";
+import { createBrokerServer, DELEGATED_TOKEN_HEADER } from "../../orchestrator/apps/connection-broker/src/server.js";
+import { StaticCorpusRegistry } from "../../orchestrator/apps/connection-broker/src/registry.js";
+import { SlackDriver } from "../../orchestrator/apps/connection-broker/src/drivers/slack.js";
+import { HttpResourceSource } from "../../orchestrator/apps/connection-broker/src/sync/http-source.js";
+import { BrokerProber } from "../../orchestrator/apps/agent-orchestrator/src/knowledge-base/retrieve.js";
+import { CorpusReader } from "../../orchestrator/apps/agent-orchestrator/src/knowledge-base/reader.js";
+import { CorpusLookup } from "../../orchestrator/apps/agent-orchestrator/src/knowledge-base/lookup.js";
 
 /**
  * Every client of the connection-broker, driven against the REAL broker server.
@@ -269,7 +269,7 @@ describe("the ingestion credential never reaches a user-facing read", () => {
 describe("the Go engine addresses the same routes", () => {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
   const brokerGo = readFileSync(
-    join(repoRoot, "engines/temporal/internal/corpus/broker.go"),
+    join(repoRoot, "orchestrator/engines/temporal/internal/corpus/broker.go"),
     "utf8",
   );
 

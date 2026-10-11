@@ -19,12 +19,12 @@ Two things make this newly tractable:
    serve` + its `/doc` OpenAPI spec): it's a genuine headless REST+SSE
    server — `POST /session`, `POST /session/{id}/prompt_async`,
    `GET /event` (SSE), permission request/reply endpoints, session
-   history — everything a live view needs. `apps/opencode-swe-agent` today
+   history — everything a live view needs. `catalog/agents/opencode-swe-agent` today
    only ever invokes the one-shot, non-interactive `opencode run` CLI
    (`src/opencode.ts`) and exits after a single turn.
 2. **The NATS channel between an agent Job and `agent-orchestrator` is
    already a live, bidirectional, cluster-boundary-crossing pipe**
-   (`packages/messaging/src/agent-protocol.ts`, one subject pair per
+   (`framework/messaging/src/agent-protocol.ts`, one subject pair per
    `AgentRun`). It already carries incremental `progress` narration and a
    `prompt`/non-final-`reply` HITL loop for the life of a Job.
 
@@ -42,7 +42,7 @@ language layer (TypeScript) instead of two.
 
 ## Decision
 
-**Extend the existing agent protocol** (`packages/messaging/src/
+**Extend the existing agent protocol** (`framework/messaging/src/
 agent-protocol.ts`), fully backward compatible — every new variant is
 additive to the discriminated unions, nothing existing changes shape:
 
@@ -54,10 +54,10 @@ additive to the discriminated unions, nothing existing changes shape:
 - down (orchestrator → agent): `opencode_request` (forward an HTTP call —
   method/path/body — into the agent's local opencode server).
 
-**`apps/opencode-swe-agent` becomes long-lived**, bypassing `runAgent()`
+**`catalog/agents/opencode-swe-agent` becomes long-lived**, bypassing `runAgent()`
 (whose contract is deliberately "one goal in, one reply out, then exit" —
 generalizing that would ripple into every other agent using
-`packages/agent-runtime`). Instead it drives the lower-level primitives
+`framework/agent-runtime`). Instead it drives the lower-level primitives
 `runAgent` itself is built on (`loadConfig()` + `NatsChannel.connect()`,
 both already exported) directly:
 
@@ -117,7 +117,7 @@ ADR 0025's exact turn-history behavior unchanged.
   subject pair that already exists and is already trusted for `progress`/
   `prompt`/`reply`.
 - No Go/CRD/RBAC/NetworkPolicy changes — the entire feature lives in
-  `packages/messaging` and three TypeScript apps.
+  `framework/messaging` and three TypeScript apps.
 - Fully additive: anyone who never opens the live page gets `opencode-swe-agent`'s
   exact pre-existing behavior (final reply → issue comment → continuation
   token → fresh Job next time); the only observable difference is the Pod

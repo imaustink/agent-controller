@@ -31,7 +31,7 @@ Third-party services are stubbed; nothing else is.
 | A consumer's own tools | The test IS the consumer | Caller-supplied tools (ADR 0035) are executed by the client, not by this cluster, so a spec sending `tools` and running the returned call itself is not a stub — it is the real other half of the contract. `support/chat.ts`'s `chatToolTurn` sends a full `messages` array precisely so it can resume by resending the result the way a real client does. |
 | GitHub REST API | `fake-github` in-cluster service | Tests must assert *what we posted* (comments, labels) without writing to a real repo, and must serve deterministic `/user` + permission responses. Pointed at via the existing `githubApiUrl` value — no production code changes. |
 | GitHub webhooks | Signed locally by `support/webhook.ts` | The signature path is real (same HMAC the gateway verifies); only the sender is us. |
-| Anthropic / Claude Code CLI | `stub-agent` image (`apps/stub-agent`) | A real agent run needs a real paid credential and makes the test slow and nondeterministic — and in a cluster holding no credential it never reaches a terminal phase at all, which is why the happy-path spec was once skipped. The stub speaks the **real** NATS agent protocol and declares the **same** `identityProviders` as the agent it stands in for, so everything between the webhook and the reply — routing, RBAC, the identity gate (including its refusal to launch), AgentRun creation, secret injection, the callback — is exercised for real. |
+| Anthropic / Claude Code CLI | `stub-agent` image (`catalog/agents/stub-agent`) | A real agent run needs a real paid credential and makes the test slow and nondeterministic — and in a cluster holding no credential it never reaches a terminal phase at all, which is why the happy-path spec was once skipped. The stub speaks the **real** NATS agent protocol and declares the **same** `identityProviders` as the agent it stands in for, so everything between the webhook and the reply — routing, RBAC, the identity gate (including its refusal to launch), AgentRun creation, secret injection, the callback — is exercised for real. |
 | OpenAI (planner/selector) | Real, against the dev key | Routing decisions are part of what we're testing. Tests assert on deterministic `IntegrationRoute` dispatch rather than on RAG retrieval, so model nondeterminism doesn't make them flaky. |
 
 The line is: **stub what we don't own and can't make deterministic; run
@@ -122,7 +122,7 @@ manifests/
 
 ### `caller-tools.e2e.ts` is the only thing that validates the Qdrant filter DSL
 
-`apps/agent-orchestrator`'s unit tests mock the Qdrant client outright, which
+`orchestrator/apps/agent-orchestrator`'s unit tests mock the Qdrant client outright, which
 means they prove *which method the code meant to call* and nothing about whether
 the query is valid. Caller-supplied tools (ADR 0035) added three hand-written
 filter shapes — `has_id` for the id-restricted search, a payload-only
@@ -232,7 +232,7 @@ real SIGTERM.
 Two consequences worth knowing before editing it:
 
 - **It needs a slow turn.** The stub replies in milliseconds, which leaves no
-  window to disrupt anything, so `apps/stub-agent` takes pacing env vars
+  window to disrupt anything, so `catalog/agents/stub-agent` takes pacing env vars
   (`pacing.ts`) and the spec PATCHES them onto the `stub-agent` Agent CR per
   test. `afterAll` resets them — leaving pacing on the CR makes every later
   spec slow, and a leftover silent phase makes them fail outright.
@@ -243,9 +243,9 @@ Two consequences worth knowing before editing it:
   asserts exactly that by pacing a narrating turn to five times the window and
   expecting it to succeed.
 
-`stub-agent` is NOT here: it is a real image (`apps/stub-agent`) built by the
+`stub-agent` is NOT here: it is a real image (`catalog/agents/stub-agent`) built by the
 skaffold `e2e` profile, and its Agent CR is a chart template
-(`charts/community-components/templates/agent-stub.yaml`) enabled by
+(`orchestrator/charts/community-components/templates/agent-stub.yaml`) enabled by
 `values-e2e.yaml`. Keeping it in the chart rather than in a hand-applied
 manifest is the point — the CR the suite exercises is produced by the same
 templating production uses, so a change that breaks Agent rendering breaks the

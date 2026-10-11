@@ -10,8 +10,8 @@ requireMinikubeContext();
  * create`/`gh pr merge`/... to its permission deny list AND mints a
  * `contents: "read"` GitHub token) when, and only when, it sees the exact
  * sentinel `SWE-ENFORCED-MODE: review-only` in its goal -- see
- * apps/claude-code-swe-agent/src/claude.ts (REVIEW_MODE_MARKER / isReviewMode /
- * REVIEW_DENY_BASH_PATTERNS) and apps/opencode-swe-agent/src/opencode.ts.
+ * catalog/agents/claude-code-swe-agent/src/claude.ts (REVIEW_MODE_MARKER / isReviewMode /
+ * REVIEW_DENY_BASH_PATTERNS) and catalog/agents/opencode-swe-agent/src/opencode.ts.
  *
  * The IntegrationRoute CRD carries no env/mode field, so the ONLY per-route
  * channel that reaches the container is the rendered promptTemplate. That makes

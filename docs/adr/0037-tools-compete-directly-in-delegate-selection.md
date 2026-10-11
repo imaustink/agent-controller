@@ -80,7 +80,7 @@ out-of-scope-tool detection, an orthogonal concern.
 
 ## Temporal engine
 
-The Temporal execution engine (ADR 0036, `engines/temporal`) is a second
+The Temporal execution engine (ADR 0036, `orchestrator/engines/temporal`) is a second
 implementation of the same agent loop and had the identical asymmetry:
 `runAgentTurn` (`internal/temporal/workflows/agentloop.go`) retrieved only
 skills and agents, `SelectDelegate` chose skill-vs-agent, and a bare Tool was

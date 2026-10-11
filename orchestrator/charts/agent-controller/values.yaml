@@ -1,0 +1,289 @@
+# Values for the agent-controller system chart. Each top-level key maps to a
+# subchart (by its dependency name/alias in Chart.yaml); set `<key>.enabled`
+# to toggle that component. Anything nested under a key is passed straight
+# through to that subchart -- see each subchart's own values.yaml for the full
+# set of knobs (charts/agent-orchestrator, charts/core-controller, and the
+# upstream open-webui chart).
+#
+# The Tool/Skill/Agent catalog itself is a separate top-level chart --
+# see ../community-components -- installed as its own release after this one.
+
+# Helm global: one place to put the namespace that KnowledgeBase/Corpus/
+# Connection CRs live in, when you want them separate from where this release is
+# installed. Both the agent-orchestrator (which reads KnowledgeBase/Corpus to
+# generate search tools) and the connection-broker (which reads Corpus/Connection
+# + their credential Secrets) are pointed at it, and each gets a namespaced
+# Role/RoleBinding there — never a ClusterRole, and the broker never reads
+# outside this one namespace. Empty = the release namespace (unchanged behavior).
+# The namespace must already exist. Per-subchart overrides:
+# agent-orchestrator.knowledgeBases.namespace and
+# connection-broker.knowledgeBaseNamespace.
+global:
+  knowledgeBaseNamespace: ""
+
+# ---------------------------------------------------------------------------
+# Parent orchestrator (charts/agent-orchestrator). Bundles an optional Qdrant
+# under agent-orchestrator.qdrant.* (off by default).
+# ---------------------------------------------------------------------------
+agent-orchestrator:
+  enabled: true
+  # Pin the resource names to `agent-orchestrator-*` regardless of the umbrella
+  # release name, so the invoke/callback Service names stay stable -- the
+  # openwebui.openaiBaseApiUrl below and the in-cluster callback URL both
+  # depend on `agent-orchestrator-invoke` / `agent-orchestrator-callback`.
+  fullnameOverride: agent-orchestrator
+  config:
+    # Route turns to the Temporal engine (docs/adr/0036).
+    #
+    # BOTH halves are required and neither does anything alone: the
+    # `temporal-engine` subchart below deploys the worker and gateway, and this
+    # tells the orchestrator to use them. Setting only one is a no-op in either
+    # direction — which is deliberate, so the engine can be deployed and watched
+    # before any turn depends on it.
+    agentEngine: temporal
+    # NOTE: this Service name is `<release>-temporal-engine-gateway`, so it is
+    # coupled to the release being named `agent-controller`. The
+    # agent-orchestrator subchart avoids that with `fullnameOverride` (see
+    # above) for exactly this reason; temporal-engine should get the same
+    # treatment as a follow-up, at which point this becomes a stable name.
+    temporalEngineUrl: http://agent-controller-temporal-engine-gateway:8080
+  # Common overrides live under here, e.g.:
+  #   image: { tag: latest }
+  #   qdrant: { enabled: true }
+  #   secrets: { existingSecret: agent-orchestrator-secrets }
+  #   config: { staticIdentities: "..." }
+
+# ---------------------------------------------------------------------------
+# Core-controller operator (charts/core-controller). Installs the Tool/Skill/
+# ToolRun/Agent/AgentRun/LocalTool CRDs (from its crds/ dir) before anything
+# else in the release.
+# ---------------------------------------------------------------------------
+core-controller:
+  enabled: true
+  # Pin the resource names to `core-controller-*` regardless of the umbrella
+  # release name, keeping the Deployment named `core-controller` (rollout
+  # scripts and docs reference it directly).
+  fullnameOverride: core-controller
+
+# ---------------------------------------------------------------------------
+# The Temporal-workflow agent engine (charts/temporal-engine, docs/adr/0036).
+#
+# ON as of docs/adr/0036's rollout. Enabling is TWO independent steps, and
+# this is the first:
+#   1. temporal-engine.enabled=true            -- deploy worker + gateway
+#   2. agent-orchestrator.config.agentEngine=temporal
+#                                              -- route turns to it (above)
+#
+# Step 1 alone changes no behaviour, which is what makes the rollout
+# reversible: the engine can be deployed, watched, and rolled back before any
+# turn depends on it. Everything outside the agent loop (the OpenAI facade,
+# /invoke, identity, RBAC, credentials, both launchers) stays in
+# agent-orchestrator either way.
+#
+# TO ROLL BACK: clear agent-orchestrator.config.agentEngine above. That alone
+# returns every turn to the in-process LangGraph loop; leaving this subchart
+# enabled costs two idle pods and nothing else. Rolling back the subchart too
+# is the slower, optional second step.
+#
+# Assumes a reachable Temporal cluster; no server is bundled.
+# ---------------------------------------------------------------------------
+temporal-engine:
+  enabled: true
+  # Common overrides live under here, e.g.:
+  #   temporal: { address: temporal-frontend.temporal.svc:7233 }
+  #   qdrant: { host: agent-controller-qdrant, collectionPrefix: te- }
+  #   nats: { url: nats://agent-controller-nats:4222 }
+
+# ---------------------------------------------------------------------------
+# GitHub Issues adapter (charts/integration-gateway) -- phase 1 of
+# docs/integrations-gateway.md's conversational path. Off by default: enable
+# alongside agent-orchestrator (its default config.orchestratorUrl above
+# points at that subchart's pinned `agent-orchestrator-invoke` Service name).
+# ---------------------------------------------------------------------------
+integration-gateway:
+  enabled: false
+  # Common overrides live under here, e.g.:
+  #   config: { githubBotLogin: "agent-controller[bot]", githubIdentities: "..." }
+  #   secrets: { existingSecret: integration-gateway-secrets }
+  #   ingress: { enabled: true, host: "gateway.example.com" }
+
+# ---------------------------------------------------------------------------
+# Optional Open WebUI chat UI (upstream open-webui chart, aliased `openwebui`)
+# in front of the orchestrator's OpenAI-compatible facade (ADR 0007). Off by
+# default. Run `helm dependency update orchestrator/charts/agent-controller` once so the
+# subchart tarball is fetched.
+#
+# IMPORTANT auth caveat: Open WebUI sends `openaiApiKey` as a plain
+# `Authorization: Bearer <key>` header on every request, and the
+# orchestrator's StaticIdentityResolver (dev/test-only) rejects any token not
+# in agent-orchestrator.config.staticIdentities. Set the token below AND add
+# the same value as a key in that map.
+#
+# Bring your own Secret via `openaiApiKeyExistingSecret`/Key (e.g. populated
+# by an external-secrets operator / sealed secrets / `kubectl create secret`)
+# rather than setting `openaiApiKey` directly -- that value lands in
+# plaintext in the Helm release's stored values, which is not appropriate
+# for production. See the upstream open-webui chart's values.yaml for the
+# full field docs.
+# ---------------------------------------------------------------------------
+openwebui:
+  enabled: false
+  openaiApiKey: ""
+  openaiApiKeyExistingSecret: ""
+  openaiApiKeyExistingSecretKey: ""
+  # Base URL Open WebUI targets for the OpenAI-compatible API. Points at the
+  # orchestrator's invoke Service (pinned to `agent-orchestrator-invoke` via
+  # agent-orchestrator.fullnameOverride above), same namespace as this release.
+  openaiBaseApiUrl: "http://agent-orchestrator-invoke:8081/v1"
+  # No local model runner / Pipelines needed -- Open WebUI only talks to the
+  # orchestrator's OpenAI-compatible facade above.
+  ollama:
+    enabled: false
+  pipelines:
+    enabled: false
+  persistence:
+    size: 2Gi
+  service:
+    type: ClusterIP
+  # Open WebUI loads a sentence-transformers embedding model at startup for
+  # its (unused-by-us) local RAG feature even when it's otherwise idle --
+  # 1Gi was observed OOMKilling the container (exit 137) in a live minikube
+  # deploy. 2Gi request / 3Gi limit is comfortable headroom.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 2Gi
+    limits:
+      cpu: "1"
+      memory: 3Gi
+  # Optional Google OAuth login (adds a "Continue with Google" button; does
+  # NOT disable local email/password accounts). Disabled by default.
+  #
+  # Setup (do this yourself, never paste the client secret in chat):
+  # 1. Google Cloud Console -> APIs & Services -> Credentials -> Create
+  #    Credentials -> OAuth client ID -> Application type "Web application".
+  # 2. Authorized redirect URI must exactly match how you reach Open WebUI.
+  #    For the documented port-forward workflow:
+  #      http://localhost:8080/oauth/google/login/callback
+  # 3. Create the client secret as a k8s Secret yourself:
+  #      kubectl create secret generic controller-agent-openwebui-google-oauth \
+  #        -n <namespace> --from-literal=client-secret=<GOOGLE_CLIENT_SECRET>
+  # 4. Set sso.google.enabled=true, sso.google.clientId=<GOOGLE_CLIENT_ID>
+  #    and sso.google.clientExistingSecret to the Secret name above.
+  sso:
+    enabled: false
+    enableSignup: true
+    google:
+      enabled: false
+      clientId: ""
+      clientExistingSecret: ""
+      clientExistingSecretKey: "client-secret"
+  # GOOGLE_REDIRECT_URI isn't a first-class field in the open-webui chart, so
+  # set it explicitly. ENABLE_FORWARD_USER_INFO_HEADERS makes Open WebUI
+  # forward X-OpenWebUI-Chat-Id (used for the orchestrator's session-scoped
+  # active-skill continuity, ADR 0012).
+  #
+  # NOTE: Helm replaces arrays wholesale -- if you override extraEnvVars in
+  # your own values file, re-specify BOTH entries.
+  extraEnvVars:
+    - name: GOOGLE_REDIRECT_URI
+      value: "http://localhost:8080/oauth/google/login/callback"
+    - name: ENABLE_FORWARD_USER_INFO_HEADERS
+      value: "true"
+
+# ---------------------------------------------------------------------------
+# Optional SearXNG metasearch instance (https://docs.searxng.org/), backing
+# community-components' web-search Tool. Off by default. Hand-authored
+# templates (orchestrator/charts/agent-controller/templates/searxng.yaml), not a Helm
+# dependency -- there is no maintained official SearXNG Helm chart to pin to
+# (searxng/searxng-helm-chart was archived May 2025), the same reasoning
+# agent-orchestrator/templates/redis.yaml already applies to Redis.
+#
+# ClusterIP only, never exposed via Ingress: this is meant to be called only
+# by the web-search Tool from inside the cluster. SearXNG's JSON output
+# format is disabled by default upstream and enabled here specifically for
+# that in-cluster caller -- safe only because the Service is never
+# internet-reachable (SearXNG's own bot-detection limiter is designed for
+# public-facing instances, not this use case).
+#
+# secret_key (searxng's session/CSRF key) must come from a real k8s Secret,
+# never a plaintext value in this file:
+#   kubectl create secret generic searxng-secrets \
+#     -n <namespace> --from-literal=secret-key="$(openssl rand -hex 32)"
+# ---------------------------------------------------------------------------
+searxng:
+  enabled: false
+  image:
+    tag: latest
+  # Secret (must already exist) supplying the real secret_key, substituted
+  # into settings.yml by an initContainer at pod startup (see searxng.yaml
+  # for why SearXNG's own auto-generation doesn't apply here).
+  secretKeyExistingSecret: searxng-secrets
+  secretKeyExistingSecretKey: secret-key
+  # Extra settings.yml overrides merged in verbatim under the top level
+  # (e.g. `engines:` to trim/add search engines). Rarely needed --
+  # use_default_settings: true already gives a full working instance.
+  extraSettings: {}
+  service:
+    port: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Arbitrary extra manifests to install as part of this release
+# (templates/extra-manifests.yaml). Empty by default.
+#
+# Use this for cluster-specific objects that should share the release's
+# lifecycle instead of being applied by hand -- a hand-applied Helm-templated
+# object lacks the meta.helm.sh/release-name + release-namespace ownership
+# annotations and makes the next `helm upgrade` fail its ownership check.
+#
+# Entries are YAML maps, or strings when you need templating over several
+# documents. Both forms are passed through `tpl`, so `.Release.*`, `.Values.*`
+# and `include` work inside them:
+#
+#   extraManifests:
+#     # 1. plain map
+#     - apiVersion: v1
+#       kind: ConfigMap
+#       metadata:
+#         name: extra-config
+#       data:
+#         key: value
+#     # 2. templated string (note the outer quotes + `|` block)
+#     - |
+#       apiVersion: networking.k8s.io/v1
+#       kind: NetworkPolicy
+#       metadata:
+#         name: {{ .Release.Name }}-deny-egress
+#         namespace: {{ .Release.Namespace }}
+#       spec:
+#         podSelector: {}
+#         policyTypes: [Egress]
+#
+# Note Helm replaces arrays wholesale -- an override re-specifies the whole
+# list, it does not append to it.
+# ---------------------------------------------------------------------------
+extraManifests: []
+
+# Connection broker (orchestrator/apps/connection-broker). Off by default: it is only needed
+# once Connection CRs exist, and it is the process that will hold every client's
+# third-party credentials, so it should be turned on deliberately.
+connection-broker:
+  enabled: false
+
+# MCP broker (orchestrator/apps/mcp-broker, ADR 0045). Off by default: it is only needed once
+# MCPServer CRs exist, and it is the one process that speaks the Model Context
+# Protocol and holds servers' discovery credentials, so it should be turned on
+# deliberately. Enabling it is only half the switch — also set
+# temporal-engine.mcp.enabled / the engine's AGENT_MCP_ENABLED so the catalog
+# actually indexes MCP tools, and point the engines' MCP_BROKER_URL at this
+# Service (`<release>-mcp-broker:8080`). It writes derived MCPTool CRs into the
+# MCP namespace (global.knowledgeBaseNamespace, or mcp-broker.mcpNamespace).
+mcp-broker:
+  enabled: false

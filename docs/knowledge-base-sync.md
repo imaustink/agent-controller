@@ -75,7 +75,7 @@ search is bad (Slack), and on latency — not on Q&A as such.
 Two are worth keeping because they cost real debugging time:
 
 1. **Caller-tool results were reported as failures.**
-   `engines/temporal/internal/temporal/workflows/agentloop.go` — `lastSuccess`
+   `orchestrator/engines/temporal/internal/temporal/workflows/agentloop.go` — `lastSuccess`
    is only set by tools the workflow executes itself, so a turn resuming after a
    seeded caller-tool result reached the terminal block with `lastSuccess == nil`
    and formatted a *successful* seeded record as
@@ -84,7 +84,7 @@ Two are worth keeping because they cost real debugging time:
    result.
 
 2. **Open WebUI's own knowledge-base attachment never reaches the agent.**
-   `engines/temporal/internal/gateway/server.go:410-441` (`splitMessages`) keeps
+   `orchestrator/engines/temporal/internal/gateway/server.go:410-441` (`splitMessages`) keeps
    only `user` and `assistant` messages, and Open WebUI injects retrieved RAG
    context as a **system** message. Attaching a KB there and asking a question
    silently retrieves nothing — a large part of why ADR 0039 does retrieval

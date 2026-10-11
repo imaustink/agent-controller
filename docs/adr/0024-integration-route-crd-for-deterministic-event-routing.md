@@ -41,7 +41,7 @@ validate the need." This is that adapter.
 
 ## Decision
 
-**New CRD**, `controllers/core-controller/api/v1alpha1/integrationroute_types.go`,
+**New CRD**, `orchestrator/controllers/core-controller/api/v1alpha1/integrationroute_types.go`,
 following the `Skill`/`Tool` conventions (ADR 0010): `IntegrationRouteSpec`
 has a `match` (`source`/`event`/`action`, e.g. `github`/`issues`/`labeled`)
 and exactly one of `skillRef`/`agentRef`/`toolRef` (CEL-enforced, same pattern
@@ -114,11 +114,11 @@ gateway ignores, so there is no self-trigger loop. Cleanup is best-effort and
 never masks the turn's own reply.
 
 **Sample route**: `github`/`issues`/`labeled` → `opencode-swe-agent`, wired
-as a Helm-templated `IntegrationRoute` (`charts/community-components/templates/
+as a Helm-templated `IntegrationRoute` (`orchestrator/charts/community-components/templates/
 integrationroute-github-issue-labeled-triage.yaml`, gated by
 `integrationRoutes.githubIssueLabeledTriage.enabled`), same pattern as
 `skill-self-improvement.yaml`. Production's trigger label is `"ai-triage"`
-(`charts/agent-controller/values-production.yaml`'s
+(`orchestrator/charts/agent-controller/values-production.yaml`'s
 `integrationGateway.config.githubTriggerLabel`).
 
 ## Consequences
@@ -137,7 +137,7 @@ integrationroute-github-issue-labeled-triage.yaml`, gated by
   a single string — not needed yet with only one label in use).
 - `agent-orchestrator`'s ServiceAccount RBAC gains read-only
   `get;list;watch` on `integrationroutes`
-  (`charts/agent-controller/charts/agent-orchestrator/templates/rbac.yaml`) —
+  (`orchestrator/charts/agent-controller/charts/agent-orchestrator/templates/rbac.yaml`) —
   a small, read-only blast-radius increase, same shape as its existing
   Tool/Skill/Agent grants.
 - The gateway remains free of any Kubernetes API access — routing stays
