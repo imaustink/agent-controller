@@ -79,10 +79,10 @@ agent-orchestrator:
     # <release>-<chart> fullname template resolves to
     # "agent-controller-integration-gateway".
     gatewayUrl: "http://agent-controller-integration-gateway:8090"
-    # "https://gateway.kurpuis.com/connections" once integration-gateway's
-    # connections block below is enabled (docs/adr/0046) -- not before, or
-    # chat prompts would point at a page that 404s.
-    connectionsUrl: ""
+    # integration-gateway's Connections page (docs/adr/0046). Set together
+    # with that chart's connections.enabled below -- not before, or chat
+    # prompts would point at a page that 404s.
+    connectionsUrl: "https://gateway.kurpuis.com/connections"
 
   config:
     # This cluster has no Temporal deployment at all (see temporal-engine.enabled
@@ -438,20 +438,19 @@ integration-gateway:
     enabled: true
 
   # Connections page (docs/adr/0046) at https://gateway.kurpuis.com/connections.
-  # OFF until its Pocket ID client exists -- enabling it first would point the
-  # pod at a Secret key that isn't there. To turn on:
+  # ON. The gateway pod will not start without steps 1 and 2 done first:
   #   1. Create a confidential Pocket ID OIDC client "agent-connections" with
   #      callback URL https://gateway.kurpuis.com/connections/callback:
   #      imaustink/homelab's
   #      kubernetes/manifests/services/pocket-id/provision-agent-connections.sh.
   #   2. Add its secret to integration-gateway-secrets as
   #      GATEWAY_CONNECTIONS_OIDC_CLIENT_SECRET (the script prints the command).
-  #   3. Set enabled: true here, and agent-orchestrator.identityLink.connectionsUrl
-  #      (near the top of this file) to "https://gateway.kurpuis.com/connections".
+  #   3. agent-orchestrator.identityLink.connectionsUrl (near the top of this
+  #      file) set to "https://gateway.kurpuis.com/connections".
   # Pocket ID users must have a verified email (the page refuses unverified
   # ones), and it must be the same email their Open WebUI account carries.
   connections:
-    enabled: false
+    enabled: true
     oidc:
       issuer: "https://pocket-id.kurpuis.com"
       clientId: "agent-connections"
