@@ -85,7 +85,7 @@ func TestCallbackRejectsInvalidEvent(t *testing.T) {
 func TestCallbackTrustsPathOverBodyJobID(t *testing.T) {
 	signaler := &fakeSignaler{}
 	handler := gateway.NewCallbackServer(signaler, testSecret).Handler()
-	body := []byte(`{"job_id":"spoofed","seq":1,"ts":"t","type":"progress"}`)
+	body := []byte(`{"job_id":"spoofed","seq":1,"ts":"t","type":"progress","stage":"fetch"}`)
 	rec := post(t, handler, "/callback/wf/run-real", body, true)
 
 	require.Equal(t, http.StatusAccepted, rec.Code)
@@ -96,7 +96,7 @@ func TestCallbackTrustsPathOverBodyJobID(t *testing.T) {
 func TestCallbackGoneWhenWorkflowMissing(t *testing.T) {
 	signaler := &fakeSignaler{err: serviceerror.NewNotFound("no workflow")}
 	handler := gateway.NewCallbackServer(signaler, testSecret).Handler()
-	body := []byte(`{"job_id":"run-1","seq":3,"ts":"t","type":"progress"}`)
+	body := []byte(`{"job_id":"run-1","seq":3,"ts":"t","type":"progress","stage":"fetch"}`)
 	rec := post(t, handler, "/callback/wf-done/run-1", body, true)
 	require.Equal(t, http.StatusGone, rec.Code)
 }

@@ -65,7 +65,36 @@ func TestParseEvent(t *testing.T) {
 	})
 
 	t.Run("missing job_id rejected", func(t *testing.T) {
-		_, err := messaging.ParseEvent([]byte(`{"seq":1,"ts":"t","type":"accepted"}`))
+		_, err := messaging.ParseEvent([]byte(`{"seq":1,"ts":"t","type":"accepted","url":"u"}`))
 		require.Error(t, err)
+	})
+
+	// Rules the canonical contract (framework/protocol) adds over this
+	// package's former hand-written validation, which had drifted from the
+	// TypeScript side: every real tool already sends these.
+	t.Run("accepted without url rejected", func(t *testing.T) {
+		_, err := messaging.ParseEvent([]byte(`{"job_id":"j1","seq":0,"ts":"t","type":"accepted"}`))
+		require.ErrorContains(t, err, "wire contract")
+	})
+
+	t.Run("progress without stage rejected", func(t *testing.T) {
+		_, err := messaging.ParseEvent([]byte(`{"job_id":"j1","seq":1,"ts":"t","type":"progress","pct":40}`))
+		require.ErrorContains(t, err, "wire contract")
+	})
+
+	t.Run("fractional pct accepted", func(t *testing.T) {
+		e, err := messaging.ParseEvent([]byte(`{"job_id":"j1","seq":1,"ts":"t","type":"progress","stage":"s","pct":12.5}`))
+		require.NoError(t, err)
+		require.InDelta(t, 12.5, *e.Pct, 1e-9)
+	})
+
+	// The contract only judges; the result handed onward is the tool's exact
+	// bytes. Routing it through google.protobuf.Value would sort the keys and
+	// round integers past 2^53 before the model ever saw them.
+	t.Run("result bytes pass through exactly", func(t *testing.T) {
+		result := `{"zeta":1,"alpha":12345678901234567890,"n":1e3}`
+		e, err := messaging.ParseEvent([]byte(`{"job_id":"j1","seq":1,"ts":"t","type":"succeeded","result":` + result + `}`))
+		require.NoError(t, err)
+		require.Equal(t, result, string(e.Result))
 	})
 }

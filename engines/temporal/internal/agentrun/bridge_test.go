@@ -24,6 +24,7 @@ type fakeConn struct {
 type publishedMsg struct {
 	Subject string
 	Down    agentrun.DownMessage
+	Raw     []byte // exactly what went on the wire
 }
 
 func newFakeConn() *fakeConn {
@@ -47,8 +48,19 @@ func (c *fakeConn) Publish(subject string, data []byte) error {
 	if err := json.Unmarshal(data, &down); err != nil {
 		return err
 	}
-	c.published = append(c.published, publishedMsg{Subject: subject, Down: down})
+	c.published = append(c.published, publishedMsg{Subject: subject, Down: down, Raw: append([]byte(nil), data...)})
 	return nil
+}
+
+// deliverRaw plays the agent's part with exact wire bytes, for cases the
+// UpMessage struct can't express (or would encode differently from the SDK).
+func (c *fakeConn) deliverRaw(t *testing.T, subject, raw string) {
+	t.Helper()
+	c.mu.Lock()
+	handler := c.handlers[subject]
+	c.mu.Unlock()
+	require.NotNil(t, handler, "nothing subscribed to %s", subject)
+	handler([]byte(raw))
 }
 
 // deliver plays the agent's part: publish an up-message on its up subject.

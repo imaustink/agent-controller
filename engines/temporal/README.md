@@ -21,7 +21,7 @@ design and milestone plan.
 | `cmd/catalog-sync` | Watches agent-controller's Tool/Skill/Agent CRs (dynamic informers) and mirrors them into Qdrant with derived skill access roles. |
 | `internal/catalog` | CR decoding, skill-access derivation (ADR 0011 port), indexer. |
 | `internal/vectorstore` | Store port + Qdrant adapter; RBAC filters baked into every read. |
-| `internal/messaging` | Go port of the tool event stream + HMAC callback contract — tool containers are unchanged. |
+| `internal/messaging` | The tool event stream, HMAC callback signing and turn lifecycle envelope. Validity is decided by the canonical wire contract (`framework/protocol`, ADR 0047) via `CheckContract`; the structs here carry messages that passed it. |
 | `internal/toolrun` | ToolRun CR launcher (k8s dynamic client) + fake mode for cluster-less dev. |
 | `internal/temporal` | Shared Temporal client/config for gateway + worker. |
 | `internal/temporal/workflows` | Deterministic workflow code only: `ConversationWorkflow` plus three agent execution styles (declarative, checkpoint-resume, and NATS-bridged upstream pod agents). |
