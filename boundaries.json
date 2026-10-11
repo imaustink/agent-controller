@@ -1,0 +1,44 @@
+{
+  "$comment": "Architectural layers (ADR 0047) and which directory belongs to each. Checked by scripts/check-boundaries.mjs in CI. A unit may depend on its own layer and on the layers listed in its layer's `allow`; anything else is a violation. Every npm workspace, Go module and Dockerfile directory must match exactly one unit, so a new component cannot land unclassified.",
+  "layers": {
+    "framework": {
+      "description": "Wire protocols, agent/tool SDKs and shared libraries. Usable with no cluster; depends on nothing else in this repo.",
+      "allow": []
+    },
+    "catalog": {
+      "description": "Reference tools and agents. Built on the framework, deployed by the orchestrator, owned by neither.",
+      "allow": ["framework"]
+    },
+    "orchestrator": {
+      "description": "Engines, controller, brokers, gateways, sidecars and charts that run agents at scale.",
+      "allow": ["framework"]
+    },
+    "test": {
+      "description": "Cross-cutting end-to-end suites; may exercise every layer.",
+      "allow": ["framework", "catalog", "orchestrator"]
+    }
+  },
+  "units": [
+    { "path": "packages/messaging", "layer": "framework" },
+    { "path": "packages/agent-runtime", "layer": "framework" },
+    { "path": "packages/github-app-auth", "layer": "framework" },
+
+    { "path": "tools/*", "layer": "catalog" },
+    { "path": "tools-local/*", "layer": "catalog" },
+    { "path": "apps/stub-agent", "layer": "catalog" },
+    { "path": "apps/claude-code-swe-agent", "layer": "catalog" },
+    { "path": "apps/opencode-swe-agent", "layer": "catalog" },
+
+    { "path": "apps/agent-orchestrator", "layer": "orchestrator" },
+    { "path": "apps/integration-gateway", "layer": "orchestrator" },
+    { "path": "apps/connection-broker", "layer": "orchestrator" },
+    { "path": "apps/mcp-broker", "layer": "orchestrator" },
+    { "path": "apps/fake-mcp-server", "layer": "orchestrator" },
+    { "path": "engines/temporal", "layer": "orchestrator" },
+    { "path": "controllers/core-controller", "layer": "orchestrator" },
+    { "path": "sidecars/localtool-executor", "layer": "orchestrator" },
+    { "path": "charts/*", "layer": "orchestrator" },
+
+    { "path": "e2e", "layer": "test" }
+  ]
+}

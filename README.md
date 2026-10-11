@@ -114,6 +114,15 @@ build/run steps, and troubleshooting — lives in that tool's own `README.md`.
 Code shared by more than one tool belongs in `packages/`, not copied between
 tools.
 
+Every component belongs to one layer — **framework**, **catalog** or
+**orchestrator** ([ADR 0047](docs/adr/0047-decouple-framework-from-orchestrator.md)) —
+assigned in [`boundaries.json`](boundaries.json). The framework depends on
+nothing else in the repo; the catalog and the orchestrator may depend only on the
+framework. `npm run check:boundaries` enforces this in CI across package.json
+dependencies, imports, tsconfig paths, Go imports and Dockerfile `COPY`s, and
+also fails on a new workspace, Go module or Dockerfile that hasn't been assigned
+a layer.
+
 ## Components
 
 ### Controller
