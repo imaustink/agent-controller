@@ -222,20 +222,25 @@ by giving the framework a non-NATS `AgentChannel` and `Sink`.
 ### 6. One brand: roverkit
 
 The project is **roverkit**, a modular platform for building and running
-agents. Each part takes a descriptive sub-name rather than a product name of its
+**durable** agents. Durability is the headline because it is what the platform
+does that an agent library does not: turns that outlive the pods running them,
+pauses for human approval, and resumption after restarts (ADR 0033, ADR 0036).
+The tagline is "Durable AI agents." Each part takes a descriptive sub-name rather than a product name of its
 own (the pattern of Temporal Server / Temporal SDKs):
 
 | Part | Directory | What it is |
 |-|-|-|
 | **roverkit SDK** | `framework/` | protocol, agent runtime, messaging transports: what an agent or tool is built with |
-| **roverkit orchestrator** | `orchestrator/` | runs agents in production on Kubernetes |
+| **roverkit orchestrator** | `orchestrator/` | keeps agents running durably in production on Kubernetes |
 | **roverkit catalog** | `catalog/` | reference agents and tools |
 
 "Platform" names the whole because the whole is more than a framework: a control
 plane, durable execution, identity linking and a catalog. "Kit" carries the
 à-la-carte point, so the platform never reads as all-or-nothing. An agent is a
-rover, the SDK is the kit it is built from, and the orchestrator operates the
-fleet. In prose, "the framework" (this ADR's term) is the roverkit SDK; the
+rover: it works autonomously on long missions, waits out storms and blackouts,
+and takes commands that arrive with a delay, as an agent does when it pauses for
+approval. The SDK is the kit it is built from, and the orchestrator keeps the
+fleet running. In prose, "the framework" (this ADR's term) is the roverkit SDK; the
 `framework/` directory keeps its name. The future repositories follow the
 directory split: `roverkit/sdk`, `roverkit/catalog`, `roverkit/orchestrator`.
 

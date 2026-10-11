@@ -2,16 +2,24 @@
 
 > [github.com/imaustink/agent-controller](https://github.com/imaustink/agent-controller)
 
-**roverkit** is an open-source, modular platform for building and running AI
-agents (rovers). Take the whole thing or only the parts you need
-([ADR 0047](docs/adr/0047-decouple-framework-from-orchestrator.md)):
+**Durable AI agents.** Agents that run for hours, pause for human approval,
+survive restarts and deploys, and pick up where they left off.
+
+**roverkit** is an open-source, modular platform for building and running
+durable AI agents (rovers). Like a planetary rover, an agent works on its own
+for long stretches, waits out outages and slow round-trips to the people
+directing it, and carries on afterwards. Take the whole platform or only the
+parts you need ([ADR 0047](docs/adr/0047-decouple-framework-from-orchestrator.md)):
 
 - **roverkit SDK** ([`framework/`](framework/)): the wire protocol, agent
   runtime and messaging transports you build an agent or tool with. It runs
   anywhere, in-process included.
-- **roverkit orchestrator** ([`orchestrator/`](orchestrator/)): runs agents in
-  production on Kubernetes, with the controller and CRDs, the execution engines,
-  the gateways and brokers, and the Helm charts.
+- **roverkit orchestrator** ([`orchestrator/`](orchestrator/)): keeps agents
+  running in production on Kubernetes. Every turn is a durable
+  [Temporal](https://temporal.io) workflow (the chart's default engine;
+  [ADR 0036](docs/adr/0036-temporal-execution-engine.md)), so a pod restart, a
+  deploy or a day-long wait for approval loses nothing. Also: the controller and
+  CRDs, the gateways and brokers, and the Helm charts.
 - **roverkit catalog** ([`catalog/`](catalog/)): ready-made agents and tools to
   use as they are or copy.
 
