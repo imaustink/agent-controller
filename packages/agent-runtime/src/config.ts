@@ -3,8 +3,12 @@
  * `AgentRun` controller injects (see the core-controller's agentrun job build).
  */
 export interface AgentRuntimeConfig {
-  /** NATS server URL (AGENT_NATS_URL). */
-  natsUrl: string;
+  /**
+   * NATS server URL (AGENT_NATS_URL). Only {@link NatsChannel} uses it:
+   * `loadConfig` still requires it, since a launched agent always talks NATS,
+   * but an agent run on an injected channel (e.g. in-process) needs none.
+   */
+  natsUrl?: string;
   /** This run's id = the AgentRun name (AGENT_RUN_ID); keys the up/down subjects. */
   runId: string;
   /** Subject prefix for agentSubjects (AGENT_NATS_SUBJECT_PREFIX, default "agent"). */

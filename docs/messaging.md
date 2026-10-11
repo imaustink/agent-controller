@@ -88,9 +88,43 @@ the same container code runs everywhere.
 | `events`           | `StdoutSink`   | NDJSON (one event per line)    | local dev with full stream        |
 | `file`             | `FileSink`     | NDJSON appended to a file      | mounted volume, durable, no broker|
 | `callback`         | `CallbackSink` | one HTTP POST per event        | async notification / serverless   |
+| `nats`             | `NatsSink`     | one NATS publish per event     | in-cluster, no shared HMAC secret |
+| (in-process)       | `MemorySink`   | none: events kept in memory    | tests, embedding a tool           |
 
-Planned: `BrokerSink` (NATS/JetStream or Redis Streams) for durable,
-replayable, at-least-once delivery with a cancel backchannel — see Roadmap.
+`NatsSink` loads the NATS client only when it first emits, so importing
+`@controller-agent/messaging` never loads it (ADR 0047). A tool on any other
+transport, or code that only needs the protocol schemas, doesn't carry it.
+
+Planned: a durable broker sink (JetStream or Redis Streams) for replayable,
+at-least-once delivery with a cancel backchannel — see Roadmap.
+
+## Running without infrastructure
+
+Both halves of the framework run with no broker and no cluster:
+
+- **A tool:** give its `JobEmitter` a `MemorySink`. Every event is still
+  JSON round-tripped and validated against the wire schema, so a stream that
+  works in memory works on the wire.
+- **An agent:** `startLocalAgent(handler, { goal, onAsk, tools })` from
+  `@controller-agent/agent-runtime` runs a handler to completion against an
+  in-process peer that plays the orchestrator's part. It acknowledges replies,
+  answers `session.ask()` through `onAsk`, and serves `session.callTool()` from
+  `tools`. For finer control, `createInProcessChannel()` returns the channel to
+  hand `runAgent` and a `peer` to drive it from.
+
+```ts
+import { startLocalAgent } from "@controller-agent/agent-runtime";
+
+const { outcome } = startLocalAgent(myAgent, {
+  goal: "Summarize the open issues",
+  onAsk: (question) => prompt(question),
+  tools: { "web-search": async (input) => search(JSON.parse(input).q) },
+});
+console.log(await outcome); // { status: "replied", message, result }
+```
+
+The same handler runs unchanged in a cluster, where `runAgent()` reads its
+config from the environment and talks NATS.
 
 ## HTTP callback security
 
