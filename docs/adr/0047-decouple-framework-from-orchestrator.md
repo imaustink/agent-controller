@@ -219,6 +219,47 @@ schemas + a stdio/in-process transport; the orchestrator takes schemas + NATS.
 Delivering this also delivers the "run an agent locally without a cluster" goal,
 by giving the framework a non-NATS `AgentChannel` and `Sink`.
 
+### 6. One brand: roverkit
+
+The project is **roverkit**. The framework is roverkit itself; the orchestrator
+is **roverkit orchestrator**: one brand with a descriptive sub-name rather than
+a second product name (the pattern of Temporal Server / Temporal SDKs). An agent
+is a rover, the framework is the kit it is built from, and the orchestrator
+operates the fleet. The future repositories follow the directory split:
+`roverkit/roverkit` (or `roverkit/framework`), `roverkit/catalog`,
+`roverkit/orchestrator`.
+
+Names that live **in code** move now, because each only gets more expensive
+once a third party depends on it:
+
+| Was | Now |
+|-|-|
+| proto package `agentcontroller.protocol.v1` | `roverkit.protocol.v1` |
+| npm scope `@controller-agent/*` | `@roverkit/*` |
+| Go modules `github.com/controller-agent/<module>` | `github.com/roverkit/<repo>/<path>` (the future repo layout) |
+| CRD API group `core.controller-agent.dev` | `core.roverkit.io` |
+| label/annotation/finalizer keys under `controller-agent.dev`, `controller-agent.io` | `roverkit.io` |
+
+The proto rename is invisible on the wire (proto3 JSON never carries the package
+name; `buf breaking` at WIRE_JSON passes). The API group rename is not: every
+cluster recreates its CRs under the new group and relabels its credential
+Secrets, via `scripts/migrate-to-roverkit.sh` (see
+[the migration guide](../roverkit-migration.md)).
+
+Deliberately **unchanged**:
+
+- **Deployment addresses** — namespace, Helm release and chart names
+  (`agent-controller`, `community-components`), image paths. These are set per
+  deployment or by where the repository lives, and change with the repository
+  split, not in code.
+- **The protocol Go module path**
+  (`github.com/imaustink/agent-controller/framework/protocol/go`). It is fetched
+  by its real location, so it moves when the repository does.
+- **Identifiers that are stored data.** The Qdrant point-id seeds (part of every
+  point id on disk; changing them orphans every vector) and the controller's
+  leader-election lease name (a new one would let old and new pods both lead
+  during a rolling upgrade).
+
 ## Consequences
 
 - **The framework can stand alone, in four languages.** A `.proto`-defined
@@ -295,3 +336,4 @@ directory move can merge without touching deployment paths:
 5. `messaging` split into schemas and transports, with an in-process
    `AgentChannel`/`Sink` so an agent runs without NATS.
 6. The `framework/` / `orchestrator/` / `catalog/` directory move.
+7. The roverkit rename (§6), with the cluster migration script.

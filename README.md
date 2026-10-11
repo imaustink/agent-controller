@@ -1,8 +1,14 @@
-# agent-controller
+# roverkit
 
 > [github.com/imaustink/agent-controller](https://github.com/imaustink/agent-controller)
 
-A Kubernetes-native framework for building production AI agents. Tools, Skills,
+**roverkit** is a framework for building AI agents (rovers) and the tools they
+call, and **roverkit orchestrator** is the Kubernetes system that runs them at
+scale. Either half works without the other ([ADR 0047](docs/adr/0047-decouple-framework-from-orchestrator.md)).
+The project was called agent-controller; the repository, chart and image names
+still carry that name until the repository split.
+
+roverkit orchestrator is a Kubernetes-native way to run production AI agents. Tools, Skills,
 and Agents are declared as **custom resources** and launched as one-shot Jobs by
 a dedicated controller — so operators manage the catalog declaratively and the
 orchestrator stays focused on reasoning, not infrastructure.
@@ -178,6 +184,11 @@ Install `agent-controller` first (it owns the CRDs), then
 `community-components` on top of it. See each chart's README for
 prerequisites and values. Tools are never deployed as long-running pods — the
 controller launches them as one-shot Jobs via `ToolRun`/`AgentRun` CRs.
+
+> **Upgrading a cluster installed before the roverkit rename?** The CRD API
+> group moved from `core.controller-agent.dev` to `core.roverkit.io`. Follow
+> [docs/roverkit-migration.md](docs/roverkit-migration.md) **before** upgrading,
+> or the new release starts with an empty catalog and no linked accounts.
 
 From a local checkout:
 
