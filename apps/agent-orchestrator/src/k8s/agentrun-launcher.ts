@@ -65,6 +65,20 @@ export interface AgentLaunchOptions {
    * ToolRunLauncher. Absent -> no annotation is set.
    */
   sessionId?: string;
+  /**
+   * Runs the agent read-only (`AgentRun.spec.readOnly` -> `AGENT_READ_ONLY=true`,
+   * docs/event-triggers.md §6). A TURN property set by an EventTrigger's
+   * `target.readOnly` and sticky for the session, so every AgentRun the turn
+   * launches carries it -- not just the one the trigger named. It can only
+   * restrict: it is written as `true` or omitted, never `false`.
+   */
+  readOnly?: boolean;
+  /**
+   * The triggering event's resolved params (`AgentRun.spec.params` ->
+   * `AGENT_PARAMS`), set only on the run of the agent an EventTrigger targets.
+   * Omitted when empty.
+   */
+  params?: Record<string, string>;
 }
 
 export interface LaunchedAgentRun {
@@ -241,6 +255,8 @@ export class AgentRunLauncher implements AgentRunLauncherPort {
         callback,
         ...(options.timeoutSeconds ? { timeoutSeconds: options.timeoutSeconds } : {}),
         ...(secretEnvSpec ? { secretEnv: secretEnvSpec } : {}),
+        ...(options.readOnly ? { readOnly: true } : {}),
+        ...(options.params && Object.keys(options.params).length > 0 ? { params: { ...options.params } } : {}),
       },
     };
 

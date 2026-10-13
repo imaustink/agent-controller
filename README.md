@@ -70,7 +70,7 @@ graph TD
 ```
 
 > The diagram shows the original five CRDs. The full custom-resource reference —
-> all 13 kinds across tools, agents, knowledge bases, MCP, routing and identity —
+> all 14 kinds across tools, agents, knowledge bases, MCP, events and identity —
 > is in **[docs/crds.md](docs/crds.md)**.
 
 This is an **npm workspace** monorepo: `packages/` holds shared libraries,
@@ -98,14 +98,14 @@ orchestrator service, and `controllers/` holds the Go controller.
 │   └── github/                 # gh CLI command → GitHub, as the calling user's own identity
 ├── apps/
 │   ├── agent-orchestrator/     # RAG skill selection + ToolRun/AgentRun creator
-│   └── integration-gateway/    # GitHub Issues → agent-orchestrator webhook adapter
+│   └── integration-gateway/    # event ingress: EventSource webhooks/cron ticks → agent-orchestrator (ADR 0048)
 ├── controllers/
 │   └── core-controller/        # Go controller — watches CRDs, launches Jobs
 │       ├── api/v1alpha1/        # Tool, Skill, Agent, ToolRun, AgentRun types
 │       └── internal/controller/ # reconciliation logic
 └── charts/                     # Helm charts
     ├── agent-controller/       # system chart: orchestrator + core-controller (+ CRDs) + optional Redis/Qdrant/NATS/Open WebUI/integration-gateway
-    └── community-components/   # catalog chart: Tool/Skill/Agent custom resources
+    └── community-components/   # catalog chart: Tool/Skill/Agent + example EventSource/EventTrigger custom resources
 ```
 
 General, cross-cutting documentation lives at the repo root (`README.md` and

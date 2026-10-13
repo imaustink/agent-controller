@@ -50,9 +50,27 @@ func TestLaunchCreatesToolRunCR(t *testing.T) {
 	timeout, _, _ := unstructured.NestedInt64(obj.Object, "spec", "timeoutSeconds")
 	require.EqualValues(t, 600, timeout)
 
+	_, found, _ := unstructured.NestedBool(obj.Object, "spec", "readOnly")
+	require.False(t, found, "an ordinary run carries no readOnly field")
+
 	t.Run("relaunch with same name is idempotent", func(t *testing.T) {
 		require.NoError(t, launcher.Launch(context.Background(), spec))
 	})
+}
+
+// ToolRun.spec.readOnly (ADR 0048) is the structured write-gate a Job reads
+// as TOOL_READ_ONLY.
+func TestLaunchCarriesReadOnly(t *testing.T) {
+	client := newFakeDynamic()
+	launcher := toolrun.NewK8sLauncher(client, "ns", toolrun.SecretRef{Name: "s", Key: "k"})
+	require.NoError(t, launcher.Launch(context.Background(), toolrun.LaunchSpec{
+		Name: "run-ro", ToolRef: "t", CallbackURL: "http://gw/cb", ReadOnly: true,
+	}))
+	obj, err := client.Resource(toolrun.ToolRunGVR).Namespace("ns").Get(context.Background(), "run-ro", metav1.GetOptions{})
+	require.NoError(t, err)
+	readOnly, found, _ := unstructured.NestedBool(obj.Object, "spec", "readOnly")
+	require.True(t, found)
+	require.True(t, readOnly)
 }
 
 func TestLaunchValidatesSpec(t *testing.T) {

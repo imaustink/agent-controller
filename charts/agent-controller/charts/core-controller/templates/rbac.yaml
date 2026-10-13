@@ -25,11 +25,18 @@ rules:
   - apiGroups: [""]
     resources: ["serviceaccounts"]
     verbs: ["get", "list", "watch"]
+  # The EventSource reconciler checks that a webhook source's
+  # verify.secretRef Secret exists (ADR 0048), through an uncached reader --
+  # `get` only, never list/watch, so no cluster-wide Secret informer.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
   # A Corpus owns a CronJob that triggers its periodic reconcile (ADR 0038 §4,
-  # ADR 0043). Kept in step with config/rbac/role.yaml BY HAND: `make
+  # ADR 0043), and a cron EventSource owns one that ticks integration-gateway
+  # (ADR 0048). Kept in step with config/rbac/role.yaml BY HAND: `make
   # manifests` regenerates that file from the kubebuilder markers and never
   # touches this one, so a kind added there without a matching line here
   # deploys a controller that cannot manage what it creates.
@@ -45,13 +52,13 @@ rules:
     resources: ["pods"]
     verbs: ["list"]
   - apiGroups: ["core.controller-agent.dev"]
-    resources: ["tools", "skills", "agents", "toolruns", "agentruns", "localtools", "integrationroutes", "identityproviders", "connections", "corpora", "knowledgebases"]
+    resources: ["tools", "skills", "agents", "toolruns", "agentruns", "localtools", "eventsources", "eventtriggers", "identityproviders", "connections", "corpora", "knowledgebases"]
     verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
   - apiGroups: ["core.controller-agent.dev"]
-    resources: ["tools/finalizers", "skills/finalizers", "agents/finalizers", "toolruns/finalizers", "agentruns/finalizers", "localtools/finalizers", "integrationroutes/finalizers", "identityproviders/finalizers", "connections/finalizers", "corpora/finalizers", "knowledgebases/finalizers"]
+    resources: ["tools/finalizers", "skills/finalizers", "agents/finalizers", "toolruns/finalizers", "agentruns/finalizers", "localtools/finalizers", "eventsources/finalizers", "eventtriggers/finalizers", "identityproviders/finalizers", "connections/finalizers", "corpora/finalizers", "knowledgebases/finalizers"]
     verbs: ["update"]
   - apiGroups: ["core.controller-agent.dev"]
-    resources: ["tools/status", "skills/status", "agents/status", "toolruns/status", "agentruns/status", "localtools/status", "integrationroutes/status", "identityproviders/status", "connections/status", "corpora/status", "knowledgebases/status"]
+    resources: ["tools/status", "skills/status", "agents/status", "toolruns/status", "agentruns/status", "localtools/status", "eventsources/status", "eventtriggers/status", "identityproviders/status", "connections/status", "corpora/status", "knowledgebases/status"]
     verbs: ["get", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

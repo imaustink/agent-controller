@@ -21,64 +21,329 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 )
 
+const testTickURL = "http://integration-gateway.default.svc:8080"
+
+func cronSource(name, schedule string) *corev1alpha1.EventSource {
+	return &corev1alpha1.EventSource{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: corev1alpha1.EventSourceSpec{
+			Cron: &corev1alpha1.CronSource{Schedule: schedule},
+		},
+	}
+}
+
+func webhookSource(name, secret, key string) *corev1alpha1.EventSource {
+	return &corev1alpha1.EventSource{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: corev1alpha1.EventSourceSpec{
+			Webhook: &corev1alpha1.WebhookSource{
+				Verify: corev1alpha1.WebhookVerify{
+					Scheme:    corev1alpha1.WebhookVerifyBearer,
+					SecretRef: corev1alpha1.SecretKeySelector{Name: secret, Key: key},
+				},
+			},
+		},
+	}
+}
+
 var _ = Describe("EventSource Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+	ctx := context.Background()
 
-		ctx := context.Background()
-
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+	reconciler := func(tickURL string) *EventSourceReconciler {
+		return &EventSourceReconciler{
+			Client:          k8sClient,
+			Scheme:          k8sClient.Scheme(),
+			TickImage:       "curlimages/curl:8.11.1",
+			TickURL:         tickURL,
+			TickTokenSecret: "integration-gateway-tick-token",
 		}
-		eventsource := &corev1alpha1.EventSource{}
+	}
 
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind EventSource")
-			err := k8sClient.Get(ctx, typeNamespacedName, eventsource)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &corev1alpha1.EventSource{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					// TODO(user): Specify other spec details if needed.
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
-			}
+	reconcileWith := func(r *EventSourceReconciler, name string) reconcile.Result {
+		res, err := r.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: name, Namespace: "default"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		return res
+	}
+
+	stored := func(name string) corev1alpha1.EventSource {
+		var out corev1alpha1.EventSource
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, &out)).To(Succeed())
+		return out
+	}
+
+	ready := func(name string) *metav1.Condition {
+		got := stored(name)
+		cond := meta.FindStatusCondition(got.Status.Conditions, eventSourceConditionReady)
+		Expect(cond).NotTo(BeNil(), "Ready condition on EventSource %s", name)
+		return cond
+	}
+
+	cronJob := func(source string) (*batchv1.CronJob, error) {
+		var cj batchv1.CronJob
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: TickCronJobName(source), Namespace: "default"}, &cj)
+		return &cj, err
+	}
+
+	// envtest runs no garbage collector, so owned CronJobs are removed by hand.
+	cleanup := func(source *corev1alpha1.EventSource) {
+		_ = k8sClient.Delete(ctx, source)
+		if cj, err := cronJob(source.Name); err == nil {
+			_ = k8sClient.Delete(ctx, cj)
+		}
+	}
+
+	Context("a cron source", func() {
+		It("materializes a hardened, owned CronJob that ticks the gateway", func() {
+			source := cronSource("nightly", "0 7 * * *")
+			source.Spec.Cron.TimeZone = "America/Chicago"
+			source.Spec.Cron.Suspend = true
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+
+			reconcileWith(reconciler(testTickURL+"/"), "nightly")
+
+			cj, err := cronJob("nightly")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cj.Name).To(Equal("eventsource-nightly"))
+			Expect(cj.Spec.Schedule).To(Equal("0 7 * * *"))
+			Expect(cj.Spec.TimeZone).To(HaveValue(Equal("America/Chicago")))
+			Expect(cj.Spec.Suspend).To(HaveValue(BeTrue()))
+			Expect(cj.Spec.ConcurrencyPolicy).To(Equal(batchv1.ForbidConcurrent))
+			Expect(cj.Spec.SuccessfulJobsHistoryLimit).To(HaveValue(Equal(int32(1))))
+			Expect(cj.Spec.FailedJobsHistoryLimit).To(HaveValue(Equal(int32(3))))
+			Expect(cj.Labels).To(HaveKeyWithValue("core.controller-agent.dev/eventsource", "nightly"))
+
+			owner := metav1.GetControllerOf(cj)
+			Expect(owner).NotTo(BeNil())
+			Expect(owner.Kind).To(Equal("EventSource"))
+			Expect(owner.Name).To(Equal("nightly"))
+
+			pod := cj.Spec.JobTemplate.Spec.Template.Spec
+			Expect(pod.RestartPolicy).To(Equal(corev1.RestartPolicyNever))
+			Expect(pod.AutomountServiceAccountToken).To(HaveValue(BeFalse()))
+			Expect(pod.SecurityContext.RunAsNonRoot).To(HaveValue(BeTrue()))
+			Expect(pod.SecurityContext.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+			Expect(pod.Containers).To(HaveLen(1))
+
+			c := pod.Containers[0]
+			Expect(c.Image).To(Equal("curlimages/curl:8.11.1"))
+			Expect(c.SecurityContext.ReadOnlyRootFilesystem).To(HaveValue(BeTrue()))
+			Expect(c.SecurityContext.AllowPrivilegeEscalation).To(HaveValue(BeFalse()))
+			Expect(c.SecurityContext.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+			// -f: a non-2xx from the gateway fails the Job. The trailing slash
+			// on the configured URL must not double up in the path.
+			Expect(c.Args).To(ContainElement("-fsS"))
+			Expect(c.Args).To(ContainElement("Authorization: Bearer $(EVENT_TICK_TOKEN)"))
+			Expect(c.Args[len(c.Args)-1]).To(Equal(testTickURL + "/events/nightly/tick"))
+
+			Expect(c.Env).To(HaveLen(1))
+			Expect(c.Env[0].Name).To(Equal("EVENT_TICK_TOKEN"))
+			Expect(c.Env[0].ValueFrom.SecretKeyRef.Name).To(Equal("integration-gateway-tick-token"))
+			Expect(c.Env[0].ValueFrom.SecretKeyRef.Key).To(Equal("token"))
+
+			Expect(stored("nightly").Status.CronJobName).To(Equal("eventsource-nightly"))
+			cond := ready("nightly")
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal("Scheduled"))
 		})
 
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &corev1alpha1.EventSource{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
+		It("updates the CronJob in place when the schedule changes", func() {
+			source := cronSource("reschedule", "0 7 * * *")
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+
+			reconcileWith(reconciler(testTickURL), "reschedule")
+			before, err := cronJob("reschedule")
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance EventSource")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			latest := stored("reschedule")
+			latest.Spec.Cron.Schedule = "*/5 * * * *"
+			Expect(k8sClient.Update(ctx, &latest)).To(Succeed())
+			reconcileWith(reconciler(testTickURL), "reschedule")
+
+			after, err := cronJob("reschedule")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(after.Spec.Schedule).To(Equal("*/5 * * * *"))
+			Expect(after.UID).To(Equal(before.UID), "updated, not recreated")
 		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &EventSourceReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
+		It("is TickNotConfigured, and owns no CronJob, without a tick URL", func() {
+			source := cronSource("no-tick-url", "0 7 * * *")
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+
+			// First with a URL, so there is a CronJob to remove.
+			reconcileWith(reconciler(testTickURL), "no-tick-url")
+			_, err := cronJob("no-tick-url")
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+
+			reconcileWith(reconciler(""), "no-tick-url")
+
+			_, err = cronJob("no-tick-url")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "CronJob should be deleted, got %v", err)
+			Expect(stored("no-tick-url").Status.CronJobName).To(BeEmpty())
+			cond := ready("no-tick-url")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("TickNotConfigured"))
+		})
+
+		It("is InvalidSchedule, not a retry loop, when the API server rejects the schedule", func() {
+			source := cronSource("bad-schedule", "not a schedule")
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+
+			reconcileWith(reconciler(testTickURL), "bad-schedule")
+
+			cond := ready("bad-schedule")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("InvalidSchedule"))
+		})
+
+		It("deletes its CronJob when switched to a webhook", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "switched-secret", Namespace: "default"},
+				Data:       map[string][]byte{"token": []byte("s3cret")},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, secret) }()
+
+			source := cronSource("switched", "0 7 * * *")
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+
+			reconcileWith(reconciler(testTickURL), "switched")
+			_, err := cronJob("switched")
+			Expect(err).NotTo(HaveOccurred())
+
+			latest := stored("switched")
+			latest.Spec = webhookSource("switched", "switched-secret", "token").Spec
+			Expect(k8sClient.Update(ctx, &latest)).To(Succeed())
+			reconcileWith(reconciler(testTickURL), "switched")
+
+			_, err = cronJob("switched")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "CronJob should be deleted, got %v", err)
+			Expect(stored("switched").Status.CronJobName).To(BeEmpty())
+			Expect(ready("switched").Status).To(Equal(metav1.ConditionTrue))
+		})
+	})
+
+	Context("a webhook source", func() {
+		It("is Ready when its secret and key exist, and re-checks later", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "hook-secret", Namespace: "default"},
+				Data:       map[string][]byte{"secret": []byte("s3cret")},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, secret) }()
+
+			source := webhookSource("hook-ok", "hook-secret", "secret")
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+
+			res := reconcileWith(reconciler(testTickURL), "hook-ok")
+
+			cond := ready("hook-ok")
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			// Secrets are not watched, so a requeue is the only way a later
+			// deletion is noticed.
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+			_, err := cronJob("hook-ok")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "a webhook source owns no CronJob")
+		})
+
+		It("is SecretNotFound when the secret does not exist", func() {
+			source := webhookSource("hook-no-secret", "no-such-secret", "secret")
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+
+			reconcileWith(reconciler(testTickURL), "hook-no-secret")
+
+			cond := ready("hook-no-secret")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("SecretNotFound"))
+		})
+
+		It("is SecretKeyMissing when the secret lacks the key", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "hook-wrong-key", Namespace: "default"},
+				Data:       map[string][]byte{"other": []byte("s3cret")},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, secret) }()
+
+			source := webhookSource("hook-key-missing", "hook-wrong-key", "secret")
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+
+			reconcileWith(reconciler(testTickURL), "hook-key-missing")
+
+			cond := ready("hook-key-missing")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("SecretKeyMissing"))
+		})
+
+		It("becomes not Ready when its secret is deleted", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "hook-goes-away", Namespace: "default"},
+				Data:       map[string][]byte{"secret": []byte("s3cret")},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+			source := webhookSource("hook-lost-secret", "hook-goes-away", "secret")
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+
+			reconcileWith(reconciler(testTickURL), "hook-lost-secret")
+			Expect(ready("hook-lost-secret").Status).To(Equal(metav1.ConditionTrue))
+
+			Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
+			reconcileWith(reconciler(testTickURL), "hook-lost-secret")
+			Expect(ready("hook-lost-secret").Reason).To(Equal("SecretNotFound"))
+		})
+
+		It("is InvalidCEL when a sender expression does not compile", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "hook-cel-secret", Namespace: "default"},
+				Data:       map[string][]byte{"secret": []byte("s3cret")},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, secret) }()
+
+			source := webhookSource("hook-bad-cel", "hook-cel-secret", "secret")
+			source.Spec.Sender = &corev1alpha1.EventSender{
+				Provider:  corev1alpha1.EventSenderProviderGitHub,
+				LoginFrom: "body.sender.login",
+				IsBotFrom: `body.sender.type ==`,
+			}
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+
+			reconcileWith(reconciler(testTickURL), "hook-bad-cel")
+
+			cond := ready("hook-bad-cel")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("InvalidCEL"))
+			Expect(cond.Message).To(ContainSubstring("sender.isBotFrom"))
+
+			By("fixing the expression")
+			latest := stored("hook-bad-cel")
+			latest.Spec.Sender.IsBotFrom = `body.sender.type == "Bot"`
+			Expect(k8sClient.Update(ctx, &latest)).To(Succeed())
+			reconcileWith(reconciler(testTickURL), "hook-bad-cel")
+			Expect(ready("hook-bad-cel").Status).To(Equal(metav1.ConditionTrue))
 		})
 	})
 })

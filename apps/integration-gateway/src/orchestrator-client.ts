@@ -1,13 +1,10 @@
 /**
- * Thin client for agent-orchestrator's existing consumer-facing async
- * accept/poll interface (ADR 0006): `POST /invoke` -> `202 { id }`,
- * `GET /invoke/:id` -> `{ status, result?, error? }`.
- *
- * The gateway deliberately does NOT launch a ToolRun/AgentRun itself for the
- * GitHub conversational path -- it reuses the orchestrator's existing RAG
- * skill-retrieval turn (`session_id` scoped to the issue), which already
- * implements the "ask a clarifying question, then resume on the next turn"
- * behavior via `checkActiveAgentRun`/`AgentSession.ask()`.
+ * Thin client for agent-orchestrator's consumer-facing async accept/poll
+ * interface (ADR 0006): `POST /invoke` -> `202 { id }`, `GET /invoke/:id` ->
+ * `{ status, result?, error? }`. Events (ADR 0048, docs/event-triggers.md §5)
+ * ride the same endpoint with an `event` envelope instead of a `request`
+ * string; matching and dispatch are entirely the orchestrator's -- the
+ * gateway never launches a ToolRun/AgentRun itself.
  *
  * Polling here is a deliberate stand-in for the "gateway registers its own
  * callback URL with the orchestrator" extension flagged as an open question
@@ -15,15 +12,16 @@
  * follow-up, not built in this phase.
  */
 
+import type { Envelope, RenderedReply } from "@controller-agent/event-triggers";
 import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "./sender-assertion.js";
 
-// Bounds retrying invoke()'s initial POST past a transient connection
-// failure (a rolling orchestrator restart) -- a few seconds total, not a
-// general-purpose backoff policy.
+// Bounds retrying the initial POST past a transient connection failure (a
+// rolling orchestrator restart) -- a few seconds total, not a general-purpose
+// backoff policy.
 const ACCEPT_RETRY_ATTEMPTS = 3;
 const ACCEPT_RETRY_DELAY_MS = 1000;
 // Consecutive poll failures tolerated before the turn is reported unreachable.
-// Small on purpose: the gateway holds a relay for as long as invoke() runs, so
+// Small on purpose: the gateway holds a relay for as long as a poll runs, so
 // waiting out the whole poll budget on a dead orchestrator starves the next
 // turn. A rollout gap is one kube-proxy sync (~1-2s).
 const POLL_NETWORK_RETRY_LIMIT = 3;
@@ -38,11 +36,8 @@ export interface OrchestratorInvokeResult {
   identityLink?: { provider: string; subject: string };
   /**
    * A Remote Control session URL (`https://claude.ai/code/session_...`) the
-   * delegated agent surfaced mid-run, if any -- see
-   * agent-orchestrator's `InvocationRecord.remoteControlUrl`. Only ever
-   * present for an agent that emits a `remote-control-url` progress event
-   * (today: a later phase of `claude-code-swe-agent`); absent for
-   * `opencode-swe-agent` and every run that never emits one.
+   * delegated agent surfaced mid-run, if any -- see agent-orchestrator's
+   * `InvocationRecord.remoteControlUrl`.
    */
   remoteControlUrl?: string;
 }
@@ -50,9 +45,9 @@ export interface OrchestratorInvokeResult {
 export interface OrchestratorClientOptions {
   baseUrl: string;
   /**
-   * Signs the sender assertion accompanying each `/invoke` (docs/adr/0030 §6).
-   * Absent -> no assertion header is sent and the orchestrator falls back to
-   * the unsigned `event.senderLogin`.
+   * Signs the sender assertion accompanying an `/invoke` that carries a
+   * verified sender login (docs/adr/0030 §6). Absent -> no assertion header is
+   * ever sent.
    */
   senderAssertionSecret?: string;
   /**
@@ -61,9 +56,9 @@ export interface OrchestratorClientOptions {
    * refreshes a short-lived OIDC client_credentials token). Resolved fresh
    * before every HTTP call (both the initial accept and each poll), so a
    * dynamic provider's caching/refresh logic governs whether that's a cheap
-   * cache hit or an actual token refresh -- important since a single
-   * `invoke()` can poll for up to `pollTimeoutMs` (default 15 minutes),
-   * comfortably longer than a token's lifetime.
+   * cache hit or an actual token refresh -- important since a single turn can
+   * poll for up to `pollTimeoutMs` (default 15 minutes), comfortably longer
+   * than a token's lifetime.
    */
   token: string | (() => Promise<string>);
   pollIntervalMs: number;
@@ -73,9 +68,42 @@ export interface OrchestratorClientOptions {
   fetchImpl?: typeof fetch;
 }
 
-interface InvokeAcceptedBody {
-  id: string;
+/** Optional callbacks fired while polling a turn. */
+export interface PollHooks {
+  /**
+   * Fired at most once, the first poll that shows the turn genuinely running
+   * (status `pending` and NOT identity-link-pending) -- past the auth
+   * pre-flight, an agent actually launching. Never fired for a turn that ends
+   * up identity-link-pending.
+   */
+  onRunning?: () => void | Promise<void>;
+  /**
+   * Fired at most once, the first poll that surfaces a Remote Control session
+   * URL (agent-orchestrator's `InvocationRecord.remoteControlUrl`, only ever
+   * set for an agent that emits a `remote-control-url` progress event). May
+   * fire before, after, or (if no such event ever arrives) never at all.
+   */
+  onRemoteControlUrl?: (url: string) => void | Promise<void>;
 }
+
+/** The matched trigger an accepted event carries (docs/event-triggers.md §5). */
+export interface AcceptedTrigger {
+  name: string;
+  sessionId: string;
+  /** The trigger's `reply` with every template already rendered, or null. */
+  reply: RenderedReply | null;
+}
+
+/** Outcome of {@link OrchestratorClient.submitEvent}. */
+export type EventSubmitResult =
+  /** 200 `{"status":"ignored"}` -- no trigger matched; no turn ran. */
+  | { kind: "ignored" }
+  /** 422 -- a trigger matched but its params/templates failed for this event. */
+  | { kind: "rejected"; error: string }
+  /** 202 -- a turn is running; poll `id`. */
+  | { kind: "accepted"; id: string; trigger: AcceptedTrigger }
+  /** Unreachable, or any other answer (401, 5xx, a malformed 202...). */
+  | { kind: "failed"; error: string };
 
 interface InvokePollBody {
   status: "pending" | "succeeded" | "failed";
@@ -117,6 +145,19 @@ export interface OpencodeForwardResult {
   body?: unknown;
 }
 
+function parseAcceptedTrigger(raw: unknown): AcceptedTrigger {
+  const t = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+  return {
+    name: typeof t.name === "string" ? t.name : "",
+    sessionId: typeof t.sessionId === "string" ? t.sessionId : "",
+    reply: typeof t.reply === "object" && t.reply !== null ? (t.reply as RenderedReply) : null,
+  };
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export class OrchestratorClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly fetchImpl: typeof fetch;
@@ -153,9 +194,9 @@ export class OrchestratorClient {
    * Same probe as {@link checkLive}, but surfaces whether a not-live reading is
    * a CONFIRMED 200 ("not-live") or merely INDETERMINATE ("unknown": a network
    * error, a 5xx/non-ok, or an unparseable body). See {@link LiveProbe}. The
-   * label reconciler needs this: it may only strip a trigger label on a
-   * positive terminal signal, never because the orchestrator was briefly
-   * unreachable mid-run.
+   * label reconciler needs this: it may only strip a label on a positive
+   * terminal signal, never because the orchestrator was briefly unreachable
+   * mid-run.
    */
   async probeLive(sessionId: string): Promise<LiveProbe> {
     try {
@@ -211,42 +252,16 @@ export class OrchestratorClient {
   }
 
   /**
-   * Starts a new turn (or resumes an existing session's active agent run)
-   * and awaits its terminal result. `identityLinkFlow`, when set, is passed
-   * through as `identity_link_flow` so agent-orchestrator knows which
-   * identity-link flow to offer this caller (e.g. this gateway's own
-   * GitHub-issue-comment relay has no browser, so it always forces
-   * `"device"`) -- omitted entirely (not sent as `null`) when unset, so
-   * agent-orchestrator's own default applies. `event`, when set, is passed
-   * through verbatim as the `event` body field so agent-orchestrator can
-   * match it against an installed `IntegrationRoute` CR and bypass RAG skill
-   * retrieval for triggers whose intent is already unambiguous (e.g. a
-   * GitHub issue assigned to the bot) -- omitted entirely when unset, same
-   * as `identityLinkFlow`.
+   * The one place `POST /invoke` is sent. A REJECTED fetch (connection
+   * refused/reset) is a different failure mode than a non-ok response: it
+   * means the request never reached the orchestrator at all, which is exactly
+   * what a rolling restart produces for the seconds between the old pod
+   * terminating and the new one becoming Ready. That used to throw uncaught
+   * out of the relay, so a turn landing in the window was silently dropped --
+   * no comment, no retry. Retried a few times over a few seconds, well inside
+   * a caller's own poll budget, since that window is normally that short.
    */
-  async invoke(
-    request: string,
-    sessionId: string,
-    identityLinkFlow?: "device" | "authcode",
-    event?: Record<string, string | number | undefined>,
-    /**
-     * Fired at most once, the first poll that shows the turn genuinely
-     * running (status `pending` and NOT identity-link-pending) -- i.e. past
-     * the auth pre-flight, an agent actually launching. A caller uses this to
-     * post a "starting work" acknowledgement only when work has really begun,
-     * withholding it while an identity link is still being set up. Never fired
-     * for a turn that ends up identity-link-pending.
-     */
-    onRunning?: () => void | Promise<void>,
-    /**
-     * Fired at most once, the first poll that surfaces a Remote Control
-     * session URL (agent-orchestrator's `InvocationRecord.remoteControlUrl`,
-     * itself only ever set for an agent that emits a `remote-control-url`
-     * progress event). Independent of `onRunning` -- may fire before, after,
-     * or (if no such event ever arrives) never at all.
-     */
-    onRemoteControlUrl?: (url: string) => void | Promise<void>,
-  ): Promise<OrchestratorInvokeResult> {
+  private async postInvoke(body: Record<string, unknown>, senderLogin?: string): Promise<{ res: Response } | { networkError: unknown }> {
     const postAccept = async (): Promise<Response> =>
       this.fetchImpl(`${this.baseUrl()}/invoke`, {
         method: "POST",
@@ -258,53 +273,90 @@ export class OrchestratorClient {
           // triggered the event. The login selects the caller's principal, and
           // therefore which stored credentials the run receives, so it has to
           // be something the orchestrator can verify rather than a body field
-          // any holder of the token could set.
-          ...(this.options.senderAssertionSecret && typeof event?.senderLogin === "string"
-            ? { [SENDER_ASSERTION_HEADER]: mintSenderAssertion(this.options.senderAssertionSecret, event.senderLogin) }
+          // any holder of the token could set. Only ever minted for a login the
+          // source's sender provider VERIFIED (server.ts) -- never for a login
+          // merely read out of an event body.
+          ...(this.options.senderAssertionSecret && senderLogin
+            ? { [SENDER_ASSERTION_HEADER]: mintSenderAssertion(this.options.senderAssertionSecret, senderLogin) }
             : {}),
         },
-        body: JSON.stringify({
-          request,
-          session_id: sessionId,
-          ...(identityLinkFlow !== undefined ? { identity_link_flow: identityLinkFlow } : {}),
-          ...(event !== undefined ? { event } : {}),
-        }),
+        body: JSON.stringify(body),
       });
 
-    // A REJECTED fetch (connection refused/reset) is a different failure mode
-    // than a non-ok response below: it means the request never reached the
-    // orchestrator at all, which is exactly what a rolling restart produces
-    // for the seconds between the old pod terminating and the new one
-    // becoming Ready. Every other failure path here degrades to
-    // {status:"failed"} rather than throwing (see checkLive); this one used
-    // to throw uncaught, and its only caller (integration-gateway's runTurn)
-    // has no catch around it either -- so a turn landing in that window was
-    // silently dropped entirely: no comment, no retry, nothing. Retried a
-    // few times over a few seconds, well inside a caller's own poll budget,
-    // since that window is normally that short-lived.
-    let acceptRes: Response | undefined;
     let networkError: unknown;
     for (let attempt = 1; attempt <= ACCEPT_RETRY_ATTEMPTS; attempt++) {
       try {
-        acceptRes = await postAccept();
-        networkError = undefined;
-        break;
+        return { res: await postAccept() };
       } catch (err) {
         networkError = err;
         if (attempt < ACCEPT_RETRY_ATTEMPTS) await this.sleep(ACCEPT_RETRY_DELAY_MS);
       }
     }
-    if (networkError !== undefined || !acceptRes) {
-      return {
-        status: "failed",
-        error: `/invoke unreachable: ${networkError instanceof Error ? networkError.message : String(networkError)}`,
-      };
-    }
-    if (!acceptRes.ok) {
-      return { status: "failed", error: `/invoke rejected the request: ${acceptRes.status} ${await acceptRes.text()}` };
-    }
-    const accepted = (await acceptRes.json()) as InvokeAcceptedBody;
+    return { networkError };
+  }
 
+  /**
+   * Relays one normalized event (docs/event-triggers.md §5): `POST /invoke`
+   * with `{ event, identity_link_flow: "device" }`. The orchestrator matches
+   * it against its EventTriggers and answers with one of three outcomes,
+   * returned here WITHOUT polling -- the caller has to run the trigger's ack
+   * and record its owed label removal between the accept and the poll, which
+   * is why the two are separate calls (see {@link poll}).
+   *
+   * `identity_link_flow` is always "device": an event has no browser to
+   * redirect, so an authcode link could never complete.
+   *
+   * `senderLogin` must be a VERIFIED login (the source's sender provider
+   * resolved it) or absent; it is what the signed sender assertion carries.
+   */
+  async submitEvent(event: Envelope, senderLogin?: string): Promise<EventSubmitResult> {
+    const sent = await this.postInvoke({ event, identity_link_flow: "device" }, senderLogin);
+    if (!("res" in sent)) return { kind: "failed", error: `/invoke unreachable: ${errorText(sent.networkError)}` };
+    const res = sent.res;
+    const text = await res.text();
+    let parsed: unknown;
+    try {
+      parsed = text ? JSON.parse(text) : undefined;
+    } catch {
+      parsed = undefined;
+    }
+    const body = (typeof parsed === "object" && parsed !== null ? parsed : {}) as Record<string, unknown>;
+    if (res.status === 200 && body.status === "ignored") return { kind: "ignored" };
+    if (res.status === 422) return { kind: "rejected", error: typeof body.error === "string" ? body.error : text || "unprocessable event" };
+    if (res.status === 202 && typeof body.id === "string" && body.id) {
+      return { kind: "accepted", id: body.id, trigger: parseAcceptedTrigger(body.trigger) };
+    }
+    return { kind: "failed", error: `/invoke answered ${res.status}: ${text}` };
+  }
+
+  /**
+   * Starts an ordinary conversational turn on an existing session (or resumes
+   * that session's active agent run) and awaits its terminal result -- the
+   * session page's follow-up prompts. No event: the session id alone carries
+   * the context. `identityLinkFlow`, when set, is passed through as
+   * `identity_link_flow` (omitted, not `null`, when unset so the
+   * orchestrator's own default applies).
+   */
+  async invoke(
+    request: string,
+    sessionId: string,
+    identityLinkFlow?: "device" | "authcode",
+    hooks: PollHooks = {},
+  ): Promise<OrchestratorInvokeResult> {
+    const sent = await this.postInvoke({
+      request,
+      session_id: sessionId,
+      ...(identityLinkFlow !== undefined ? { identity_link_flow: identityLinkFlow } : {}),
+    });
+    if (!("res" in sent)) return { status: "failed", error: `/invoke unreachable: ${errorText(sent.networkError)}` };
+    const res = sent.res;
+    if (!res.ok) return { status: "failed", error: `/invoke rejected the request: ${res.status} ${await res.text()}` };
+    const accepted = (await res.json()) as { id: string };
+    return this.poll(accepted.id, hooks);
+  }
+
+  /** Polls `GET /invoke/:id` until the turn is terminal, the budget runs out, or the orchestrator stays unreachable. Never throws for a transport failure. */
+  async poll(id: string, hooks: PollHooks = {}): Promise<OrchestratorInvokeResult> {
     const deadline = Date.now() + this.options.pollTimeoutMs;
     let announcedRunning = false;
     let announcedRemoteControlUrl = false;
@@ -312,54 +364,35 @@ export class OrchestratorClient {
     let consecutivePollNetworkErrors = 0;
     while (Date.now() < deadline) {
       await this.sleep(this.options.pollIntervalMs);
-      // The SAME failure the accept retry above exists for, on the other half
-      // of the same conversation -- and until now only the accept was covered,
-      // so a rollout landing between two polls still dropped the turn outright.
-      //
-      // It does not need the orchestrator to be down for seconds. The pod exits
-      // about a second after SIGTERM (`/invoke` answers 202 immediately, so the
-      // drain in the orchestrator's shutdown has no in-flight request to wait
-      // for), while kube-proxy applies endpoint changes at most once a second.
-      // A poll sent into that gap reaches an address with nothing behind it,
-      // and Linux keeps retrying the same dead peer rather than failing fast:
-      // measured as a 10.5s UND_ERR_CONNECT_TIMEOUT. Rolling the orchestrator
-      // under a gateway-shaped poller lost a poll in 5 of 10 rollouts.
-      //
-      // Thrown from here it escaped invoke() and runTurn() and no comment was
-      // ever posted -- the "timed out waiting for a terminal comment" the
-      // resilience specs see. Retried instead, the next poll lands on the new
-      // pod, which does not know this id and answers 404, and the turn ends as
-      // a reported failure rather than as silence.
+      // The SAME failure postInvoke's retry exists for, on the other half of
+      // the same conversation. It does not need the orchestrator to be down for
+      // seconds: the pod exits about a second after SIGTERM, while kube-proxy
+      // applies endpoint changes at most once a second, and a poll sent into
+      // that gap reaches an address with nothing behind it (measured as a 10.5s
+      // UND_ERR_CONNECT_TIMEOUT; rolling the orchestrator under a gateway-shaped
+      // poller lost a poll in 5 of 10 rollouts). Retried instead, the next poll
+      // lands on the new pod, which does not know this id and answers 404, and
+      // the turn ends as a reported failure rather than as silence.
       let pollRes: Response;
       try {
-        pollRes = await this.fetchImpl(
-          `${this.baseUrl()}/invoke/${accepted.id}`,
-          { headers: { authorization: `Bearer ${await this.resolveToken()}` } },
-        );
+        pollRes = await this.fetchImpl(`${this.baseUrl()}/invoke/${encodeURIComponent(id)}`, {
+          headers: { authorization: `Bearer ${await this.resolveToken()}` },
+        });
         pollNetworkError = undefined;
         consecutivePollNetworkErrors = 0;
       } catch (err) {
         // Bounded to a few CONSECUTIVE failures, deliberately not to this
-        // loop's deadline.
-        //
-        // The gateway holds a relay open for the whole time invoke() runs, and
-        // this suite's negative controls depend on an abandoned turn releasing
-        // it promptly -- see the pollTimeoutMs/resumeWaitMs notes in
-        // values-e2e.yaml, both shortened for exactly that reason. Retrying to
-        // the deadline pinned the relay for the full poll window on a turn
-        // whose orchestrator had gone, which starves the NEXT trigger; that
-        // trades a silently dropped turn for a stalled one.
-        //
-        // A rollout gap is ~1-2s (one kube-proxy sync), and the orchestrator's
-        // preStop now covers it besides, so a handful of intervals is all this
-        // ever legitimately needs.
+        // loop's deadline: the gateway holds a relay open the whole time, and
+        // retrying to the deadline on a turn whose orchestrator had gone pinned
+        // it for the full poll window, starving the NEXT trigger (see the
+        // pollTimeoutMs/resumeWaitMs notes in values-e2e.yaml).
         pollNetworkError = err;
         consecutivePollNetworkErrors++;
         if (consecutivePollNetworkErrors > POLL_NETWORK_RETRY_LIMIT) break;
         continue;
       }
       if (!pollRes.ok) {
-        return { status: "failed", error: `/invoke/${accepted.id} poll failed: ${pollRes.status}` };
+        return { status: "failed", error: `/invoke/${id} poll failed: ${pollRes.status}` };
       }
       const polled = (await pollRes.json()) as InvokePollBody;
       // Fire at most once, independent of terminal/pending status below --
@@ -367,7 +400,7 @@ export class OrchestratorClient {
       // turns out to already be terminal.
       if (!announcedRemoteControlUrl && polled.remoteControlUrl) {
         announcedRemoteControlUrl = true;
-        await onRemoteControlUrl?.(polled.remoteControlUrl);
+        await hooks.onRemoteControlUrl?.(polled.remoteControlUrl);
       }
       if (polled.status === "succeeded") {
         return {
@@ -380,15 +413,12 @@ export class OrchestratorClient {
       if (polled.status === "failed") {
         return { status: "failed", error: polled.error ?? "orchestrator turn failed" };
       }
-      // status === "pending". Announce "running" the first time we see the
-      // turn is past its auth pre-flight (not identity-link-pending) -- an
-      // agent is genuinely launching, so it's honest to say work has started.
-      // While identityLinkPending is still set, hold the announcement back.
+      // status === "pending". Announce "running" the first time the turn is
+      // past its auth pre-flight (not identity-link-pending).
       if (!announcedRunning && !polled.identityLinkPending) {
         announcedRunning = true;
-        await onRunning?.();
+        await hooks.onRunning?.();
       }
-      // keep polling.
     }
     // Distinguished from an ordinary budget expiry: "we never reached it" and
     // "it never finished" have different fixes, and the comment the caller
@@ -396,9 +426,7 @@ export class OrchestratorClient {
     if (pollNetworkError !== undefined) {
       return {
         status: "failed",
-        error: `/invoke/${accepted.id} unreachable after ${POLL_NETWORK_RETRY_LIMIT} consecutive poll failures: ${
-          pollNetworkError instanceof Error ? pollNetworkError.message : String(pollNetworkError)
-        }`,
+        error: `/invoke/${id} unreachable after ${POLL_NETWORK_RETRY_LIMIT} consecutive poll failures: ${errorText(pollNetworkError)}`,
       };
     }
     return { status: "timed_out", error: `no terminal result within ${this.options.pollTimeoutMs}ms` };

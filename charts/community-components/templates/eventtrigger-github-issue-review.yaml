@@ -1,0 +1,71 @@
+{{- if .Values.eventTriggers.githubIssueReview.enabled }}
+{{- $t := .Values.eventTriggers.githubIssueReview }}
+{{- /*
+Applying the review label to a GitHub ISSUE dispatches a read-only review of
+the proposal in it (sibling to github-pr-review). Told apart from
+github-issue-triage -- same issues/labeled event -- by the label in match.cel.
+
+target.readOnly is the write gate, and it is deterministic: it is carried onto
+every AgentRun the turn launches (AgentRun.spec.readOnly -> AGENT_READ_ONLY),
+where the SWE agents deny `git push` / `gh pr create|merge|...` and mint a
+contents:read token. Nothing in the prompt has to survive for it to hold, and
+nothing in the event body can lift it.
+*/}}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: EventTrigger
+metadata:
+  name: github-issue-review
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  sourceRef: github
+  match:
+    cel: >-
+      headers["x-github-event"] == "issues" &&
+      body.action == "labeled" &&
+      body.label.name == {{ $t.label | quote }}
+  params:
+    repository: body.repository.full_name
+    number: body.issue.number
+    title: body.issue.title
+    description: body.issue.body
+    label: body.label.name
+  sessionKey: {{`"github:{{repository}}#{{number}}"`}}
+  target:
+    agentRef: {{ $t.agentRef | quote }}
+    readOnly: true
+    promptTemplate: |
+      GitHub issue {{`{{repository}}`}}#{{`{{number}}`}} was labeled "{{`{{label}}`}}": "{{`{{title}}`}}"
+
+      {{`{{description}}`}}
+
+      Review this issue. Read the issue and any pull request or code it
+      references, then give a concrete, actionable review of the proposal:
+      assess whether it is clear and complete, whether the approach is sound,
+      what risks or edge cases it misses, and what a maintainer should decide
+      before work starts. Post your review as a comment on the issue, being
+      specific and citing file:line where the discussion is about existing code.
+      Do not implement the change, open a pull request, or push any commits --
+      only review.
+
+      Keep it concise -- its value is in the signal, not the volume. Lead with
+      the verdict, then the few points that materially change the decision. Skip
+      nitpicks, praise, and restating the issue back to its author. A short,
+      high-signal review beats an exhaustive one.
+
+      You get exactly one turn to do this -- you cannot pause partway through
+      and wait for a CI check, build, or test run to finish, and nothing will
+      re-invoke you automatically when one does. Post a complete review now
+      based on the issue and code alone. If something you would want is still
+      running, mention its current status as one line in the review -- do not
+      let it block or delay posting the rest of your assessment, and do not say
+      you'll "finalize" or "resume" later.
+  reply:
+    github:
+      repository: {{`"{{repository}}"`}}
+      issueNumber: {{`"{{number}}"`}}
+      ack: "🤖 Starting work on this now."
+      sessionPage: true
+      result: true
+      removeLabel: {{`"{{label}}"`}}
+{{- end }}

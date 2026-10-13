@@ -113,8 +113,11 @@ Rules:
 - Target `orchestrator: {}` runs an ordinary conversational turn (RAG/skill
   selection) on the rendered prompt. `skillRef` / `agentRef` force that Skill /
   Agent (still re-resolved under the caller's roles; a miss is a turn failure, not
-  a fallback). `toolRef` runs that Tool once, **with `params` as its arguments**
-  (typed JSON values), skipping the planner; `promptTemplate` is optional for it.
+  a fallback). `toolRef` runs that Tool once with `params` as its input, skipping the
+  planner; `promptTemplate` is optional for it. Tools take one string input in
+  both engines, so the **tool input** is: the string form of `params.input` when
+  `params` has exactly one key named `input`; otherwise the params object as
+  compact JSON with sorted keys (`{}` when there are no params).
 - `readOnly: true` sets `readOnly` on every `AgentRun` and `ToolRun` the turn
   launches (including ones a forced skill delegates to) and suppresses write
   credentials. It is a turn property, not a prompt — it can only restrict.
@@ -145,14 +148,22 @@ and the Temporal gateway (`cel-go`):
 - Variables: `source`, `kind`, `id`, `time`, `repository` (string), `headers`
   (map<string,string>), `body` (dyn), `sender` (map<string,dyn>).
 - JSON numbers are normalized before evaluation: integral → `int`, otherwise
-  `double`, in both runtimes.
+  `double`, in both runtimes. Integrality is decided on the value (JSON `1.0`
+  and `1e3` are ints; integral values outside int64 stay `double`).
+- Heterogeneous list/map literals (`[1, "a"]`) are allowed, as in cel-go.
+- `matches` patterns must mean the same in RE2 and ECMAScript regex (no inline
+  flags like `(?i)`, no lookaround/backreferences).
 - Supported, parity-tested subset: literals; `== != < <= > >=`; `&& || !`;
   `?:`; field and index access; `has()`; `in` (list/map); `size()`; string
   `startsWith` / `endsWith` / `contains` / `matches`; `int()` / `string()`;
   macros `exists` / `all` / `map` / `filter`. Anything else is unsupported even if
   one runtime happens to accept it.
-- `match.cel` must yield `bool`; an evaluation error (e.g. missing field) is a
-  **non-match**, logged with the trigger name. A `params` evaluation error after a
+- `match.cel` must yield `bool` (a statically non-bool match is a compile error
+  → `Ready=False`; a runtime non-bool is a non-match); an evaluation error (e.g.
+  missing field) is a **non-match**, logged with the trigger name. A `params`
+  expression that fails to compile also makes the trigger `Ready=False`. A param
+  value must be JSON-representable (null/bool/int/double/string/list/map, finite
+  doubles) — anything else is a `params` error. A `params` evaluation error after a
   match fails the event (`422`, §5) — never a silent empty value.
 - The shared fixture file `packages/event-triggers/fixtures/cel-parity.json` is the
   executable definition of this section: every case runs in the TS package's
@@ -168,10 +179,15 @@ and the Temporal gateway (`cel-go`):
 3. `params` are evaluated to typed values.
 4. Templates (`promptTemplate`, `sessionKey`, every `reply.github` string) are
    rendered with `{{ name }}` → the param's string form: string as-is, int in
-   decimal, double in shortest round-trip form, bool `true`/`false`, null `""`,
-   list/map as compact JSON. An unknown placeholder is left verbatim.
-5. Session id: rendered `sessionKey`, else the caller's `session_id`, else
-   `event:<source>:<id>`.
+   decimal, double in shortest round-trip form exactly as ECMAScript
+   `Number#toString` (`5`, `0.1`, `1e+21`, `1e-7`), bool `true`/`false`, null `""`,
+   list/map as compact JSON with map keys sorted at every level and no HTML
+   escaping. A placeholder is `\{\{[ \t\n\f\r]*([^{} \t\n\f\r]+)[ \t\n\f\r]*\}\}`;
+   rendering is a single pass (substituted text is never re-expanded) and an
+   unknown placeholder is left verbatim. `reply.github.issueNumber` must render
+   to a positive integer, else the event fails (`422`).
+5. Session id: rendered `sessionKey` (when non-empty), else the caller's
+   `session_id`, else `event:<source>:<id>`.
 
 ## 5. `/invoke` with an event
 
@@ -190,8 +206,8 @@ engine modes) and on the Temporal gateway (for direct callers). Request:
 (`issueNumber` as a number) or `null`. Polling `GET /invoke/:id` is unchanged.
 
 agent-orchestrator → Temporal gateway carries the resolved turn, never the
-envelope: `forcedSkillId | forcedAgentId | forcedToolId`, `toolArgs`,
-`readOnly`, `params` (string map), `triggerName`, `request` (rendered prompt),
+envelope: `forcedSkillId | forcedAgentId | forcedToolId`, `toolInput` (the
+tool input string, §1), `readOnly`, `params` (string map), `triggerName`, `request` (rendered prompt),
 `targetRepository` (`envelope.repository`).
 
 ## 6. Runs

@@ -19,7 +19,10 @@ type: application
 # never syncs → manager crashloop).
 # 0.6.0: adds the mcp-broker subchart and the mcptools RBAC/env on both engines
 # (ADR 0045) — a template+RBAC change, hence a new version (supersedes 0.5.3).
-version: 0.6.5
+# 0.7.0: EventSource/EventTrigger replace IntegrationRoute (ADR 0048) — RBAC on
+# core-controller, both engines and integration-gateway, a new tick-token
+# Secret, and the gateway's label env vars removed.
+version: 0.7.0
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:
@@ -37,7 +40,7 @@ dependencies:
   # own optional Qdrant instance as a transitive dependency (see the
   # subchart's own Chart.yaml / values `qdrant.enabled`).
   - name: agent-orchestrator
-    version: "0.2.2"
+    version: "0.2.3"
     repository: "file://charts/agent-orchestrator"
     condition: agent-orchestrator.enabled
   # The Go/kubebuilder operator (controllers/core-controller). Its CRDs ship
@@ -45,7 +48,7 @@ dependencies:
   # resources in the whole release -- so the catalog subchart's Tool/Skill
   # CRs below always have their CRD present.
   - name: core-controller
-    version: "0.1.0"
+    version: "0.1.1"
     repository: "file://charts/core-controller"
     condition: core-controller.enabled
   # The Temporal-workflow agent engine (engines/temporal), docs/adr/0036. ON,
@@ -54,7 +57,7 @@ dependencies:
   # picks its loop independently. Takes a Temporal address rather than bundling
   # a server, so it adds no stateful component.
   - name: temporal-engine
-    version: "0.2.0"
+    version: "0.2.1"
     repository: "file://charts/temporal-engine"
     condition: temporal-engine.enabled
   # GitHub Issues adapter (apps/integration-gateway) -- phase 1 of
@@ -62,7 +65,7 @@ dependencies:
   # calls the agent-orchestrator subchart's invoke Service, so enable that
   # too if you enable this.
   - name: integration-gateway
-    version: "0.1.0"
+    version: "0.2.0"
     repository: "file://charts/integration-gateway"
     condition: integration-gateway.enabled
   # Optional Open WebUI chat UI (https://github.com/open-webui/open-webui) in

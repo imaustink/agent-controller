@@ -14,6 +14,8 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/controller-agent/temporal-engine/internal/agentrun"
+	"github.com/controller-agent/temporal-engine/internal/approval"
 	"github.com/controller-agent/temporal-engine/internal/authz"
 	"github.com/controller-agent/temporal-engine/internal/callertools"
 	"github.com/controller-agent/temporal-engine/internal/catalog"
@@ -101,9 +103,14 @@ type loopEnv struct {
 	// means "gone, or not visible to this caller".
 	resolvedAgent *catalog.AgentDescriptor
 	// forcedSkillID/forcedAgentID ride every sendTurn, as if an
-	// IntegrationRoute had matched this turn's event descriptor.
+	// EventTrigger had matched this turn's event.
 	forcedSkillID string
 	forcedAgentID string
+	// resolvedTool is what ResolveTool returns for a forced tool id; nil
+	// means "gone, or not visible to this caller".
+	resolvedTool      *catalog.ToolDescriptor
+	resolveToolCalls  int
+	resolveToolInputs []activities.ResolveToolInput
 	// catalogTools is what a full-catalog sweep returns (the no-match
 	// fallback and the out-of-scope guard); toolFits is the relevance gate's
 	// verdict on each, defaulting to "no fit" like the real checker.
@@ -183,6 +190,11 @@ func newLoopEnv(t *testing.T) *loopEnv {
 	reg(activities.ResolveAgentActivityName, func(context.Context, activities.ResolveAgentInput) (*catalog.AgentDescriptor, error) {
 		le.resolveAgentCalls++
 		return le.resolvedAgent, nil
+	})
+	reg(activities.ResolveToolActivityName, func(_ context.Context, in activities.ResolveToolInput) (*catalog.ToolDescriptor, error) {
+		le.resolveToolCalls++
+		le.resolveToolInputs = append(le.resolveToolInputs, in)
+		return le.resolvedTool, nil
 	})
 	// The authorization pre-flight. Only reached by an Agent that declares
 	// identityProviders, so most fixtures never touch it; registered here so
@@ -267,6 +279,21 @@ func (le *loopEnv) sendTurn(t *testing.T, updateID, message string, result *work
 // sendTurnAs is sendTurn for a specific caller, for specs about WHO a turn
 // runs as rather than what it does.
 func (le *loopEnv) sendTurnAs(t *testing.T, updateID, message string, caller activities.Caller, senderLogin string, result *workflows.TurnResult, at time.Duration) {
+	le.sendTurnInput(t, updateID, workflows.TurnInput{
+		Message:              message,
+		Caller:               caller,
+		SenderLogin:          senderLogin,
+		ForcedSkillID:        le.forcedSkillID,
+		ForcedAgentID:        le.forcedAgentID,
+		TargetRepository:     le.targetRepository,
+		CallerTools:          le.callerTools,
+		PriorCallerToolCalls: le.priorCallerCalls,
+	}, result, at)
+}
+
+// sendTurnInput sends a fully specified turn, for specs about turn
+// properties (forced targets, readOnly) that differ from turn to turn.
+func (le *loopEnv) sendTurnInput(t *testing.T, updateID string, in workflows.TurnInput, result *workflows.TurnResult, at time.Duration) {
 	le.env.RegisterDelayedCallback(func() {
 		le.env.UpdateWorkflow(workflows.UserTurnUpdate, updateID, &testsuite.TestUpdateCallback{
 			OnAccept: func() {},
@@ -280,16 +307,22 @@ func (le *loopEnv) sendTurnAs(t *testing.T, updateID, message string, caller act
 					*result = v
 				}
 			},
-		}, workflows.TurnInput{
-			Message:              message,
-			Caller:               caller,
-			SenderLogin:          senderLogin,
-			ForcedSkillID:        le.forcedSkillID,
-			ForcedAgentID:        le.forcedAgentID,
-			TargetRepository:     le.targetRepository,
-			CallerTools:          le.callerTools,
-			PriorCallerToolCalls: le.priorCallerCalls,
-		})
+		}, in)
+	}, at)
+}
+
+// sendTurnExpectingFailure sends a turn that must FAIL (the update returns an
+// error), recording that error.
+func (le *loopEnv) sendTurnExpectingFailure(t *testing.T, updateID string, in workflows.TurnInput, failure *error, at time.Duration) {
+	le.env.RegisterDelayedCallback(func() {
+		le.env.UpdateWorkflow(workflows.UserTurnUpdate, updateID, &testsuite.TestUpdateCallback{
+			OnAccept: func() {},
+			OnReject: func(err error) { t.Errorf("update rejected: %v", err) },
+			OnComplete: func(_ interface{}, err error) {
+				require.Error(t, err, "the turn must fail")
+				*failure = err
+			},
+		}, in)
 	}, at)
 }
 
@@ -1488,9 +1521,9 @@ func TestAnAgentThatDoesNotActOnGitHubNeverExtractsARepository(t *testing.T) {
 	require.Empty(t, le.authorizeInputs[0].TargetRepository)
 }
 
-// An IntegrationRoute names its target outright (upstream ADR 0024), so a
-// routed turn must not pay for retrieval it cannot use.
-func TestIntegrationRouteForcedAgentBypassesRetrieval(t *testing.T) {
+// An EventTrigger names its target outright (ADR 0048), so a triggered turn
+// must not pay for retrieval it cannot use.
+func TestEventTriggerForcedAgentBypassesRetrieval(t *testing.T) {
 	le := newLoopEnv(t)
 	agent := mealPlannerAgent()
 	le.forcedAgentID = agent.ID
@@ -1510,15 +1543,15 @@ func TestIntegrationRouteForcedAgentBypassesRetrieval(t *testing.T) {
 	require.Equal(t, "Triaged.", result.Reply)
 	require.Equal(t, "agent-routed", result.Meta.Path)
 	require.Equal(t, agent.ID, result.Meta.AgentID)
-	require.Zero(t, le.retrieveCalls, "a routed turn must skip skill retrieval")
+	require.Zero(t, le.retrieveCalls, "a triggered turn must skip skill retrieval")
 	// Not retrieveAgentCalls: the child runs its own agent retrieval for
 	// sub-delegation, which has nothing to do with the parent's bypass.
 	// SelectDelegate is the parent-only signal that retrieval-based selection
 	// ran at all.
-	require.Zero(t, le.selectDelegateCalls, "a routed turn must skip delegate selection")
+	require.Zero(t, le.selectDelegateCalls, "a triggered turn must skip delegate selection")
 }
 
-func TestIntegrationRouteForcedSkillBypassesRetrieval(t *testing.T) {
+func TestEventTriggerForcedSkillBypassesRetrieval(t *testing.T) {
 	le := newLoopEnv(t)
 	le.forcedSkillID = "recipes"
 	le.skillTools = recipesSkillTools()
@@ -1538,35 +1571,47 @@ func TestIntegrationRouteForcedSkillBypassesRetrieval(t *testing.T) {
 	require.Zero(t, le.fitCalls, "deterministic dispatch needs no fit check")
 }
 
-// A route is operator config, not an authorization decision: the named target
-// is re-resolved under the caller's current roles, and a target they cannot
-// see is a miss rather than a bypass or an error.
-func TestIntegrationRouteInvisibleTargetFallsThroughToRetrieval(t *testing.T) {
-	le := newLoopEnv(t)
-	le.forcedAgentID = "claude-code-swe-agent"
-	le.resolvedAgent = nil // roles revoked, or the CR is gone
-	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
-	le.selected = "recipes"
-	le.skillTools = recipesSkillTools()
-	le.plans = []activities.PlannedAction{{Action: activities.ActionRespond, Response: "retrieved reply"}}
+// A trigger is operator config, not an authorization decision: the named
+// target is re-resolved under the caller's current roles, and a target they
+// cannot see FAILS the turn (docs/event-triggers.md §1). Falling through to
+// retrieval would hand an event-shaped prompt to skill selection as free text.
+func TestEventTriggerInvisibleTargetFailsTheTurn(t *testing.T) {
+	caller := activities.Caller{Subject: "user:1", Roles: []string{"cook"}}
+	for name, in := range map[string]workflows.TurnInput{
+		"agent": {Message: "Triage acme/widgets#7", Caller: caller, ForcedAgentID: "claude-code-swe-agent"},
+		"skill": {Message: "Triage acme/widgets#7", Caller: caller, ForcedSkillID: "triage"},
+		"tool":  {Caller: caller, ForcedToolID: "http-get", ToolInput: "{}"},
+		// No identity at all is a miss too, not a bare answer.
+		"no identity": {Message: "Triage", ForcedAgentID: "claude-code-swe-agent"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			le := newLoopEnv(t)
+			le.resolvedAgent = nil                                           // roles revoked, or the CR is gone
+			le.resolvedTool = nil                                            // likewise
+			le.skillToolsByID = map[string]*activities.SkillTools{}          // likewise
+			le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill} // retrieval WOULD find one
+			le.selected = "recipes"
+			le.plans = []activities.PlannedAction{{Action: activities.ActionRespond, Response: "retrieved reply"}}
 
-	var result workflows.TurnResult
-	le.sendTurn(t, "turn-1", "Triage acme/widgets#7", &result, time.Millisecond)
+			var failure error
+			le.sendTurnExpectingFailure(t, "turn-1", in, &failure, time.Millisecond)
 
-	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
-	require.True(t, le.env.IsWorkflowCompleted())
-	require.NoError(t, le.env.GetWorkflowError())
+			le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+			require.True(t, le.env.IsWorkflowCompleted())
+			require.NoError(t, le.env.GetWorkflowError())
 
-	require.Equal(t, 1, le.resolveAgentCalls)
-	require.Equal(t, "skill", result.Meta.Path, "a route miss falls through to ordinary retrieval")
-	require.Equal(t, 1, le.retrieveCalls)
+			require.Error(t, failure)
+			require.Zero(t, le.retrieveCalls, "a trigger miss must never fall through to retrieval")
+			require.Zero(t, le.planCalls)
+		})
+	}
 }
 
 // Re-applying a trigger label while an episode is still in flight must feed
 // the running agent, not start a second one — on a real coding agent that
 // would mean a second branch and a second PR (upstream ADR 0033's reasoning,
-// and why the route check sits after the active-episode check).
-func TestIntegrationRouteYieldsToAnActiveEpisode(t *testing.T) {
+// and why the trigger check sits after the active-episode check).
+func TestEventTriggerYieldsToAnActiveEpisode(t *testing.T) {
 	le := newLoopEnv(t)
 	agent := mealPlannerAgent()
 	le.forcedAgentID = agent.ID
@@ -1589,7 +1634,153 @@ func TestIntegrationRouteYieldsToAnActiveEpisode(t *testing.T) {
 	require.Equal(t, "agent-routed", first.Meta.Path)
 	require.Equal(t, "agent-continued", second.Meta.Path, "the re-applied label fed the running episode")
 	require.Equal(t, "Done on main.", second.Reply)
-	require.Equal(t, 1, le.resolveAgentCalls, "the second turn must not re-resolve or re-dispatch the route")
+	require.Equal(t, 1, le.resolveAgentCalls, "the second turn must not re-resolve or re-dispatch the trigger")
+}
+
+func scraperTool() *catalog.ToolDescriptor {
+	return &catalog.ToolDescriptor{ID: "recipe-scraper", Description: "scrape recipe from url", AllowedRoles: []string{"cook"}}
+}
+
+// A toolRef runs its tool ONCE with the trigger's tool input, skipping the
+// planner entirely (docs/event-triggers.md §1).
+func TestEventTriggerForcedToolRunsOnceWithItsInput(t *testing.T) {
+	le := newLoopEnv(t)
+	le.resolvedTool = scraperTool()
+	caller := activities.Caller{Subject: "user:1", Roles: []string{"cook"}}
+
+	var result workflows.TurnResult
+	le.sendTurnInput(t, "turn-1", workflows.TurnInput{
+		Caller: caller, ForcedToolID: "recipe-scraper", ToolInput: `{"url":"https://example.com/pasta"}`,
+		TriggerName: "scrape-on-push",
+	}, &result, time.Millisecond)
+	le.env.RegisterDelayedCallback(func() { le.signalToolSuccess(0, `"# Pasta"`) }, time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "# Pasta", result.Reply)
+	require.Equal(t, "tool-routed", result.Meta.Path)
+	require.Equal(t, []string{"recipe-scraper"}, result.Meta.ToolCalls)
+	require.Len(t, le.launches, 1, "exactly one run")
+	require.Equal(t, "recipe-scraper", le.launches[0].ToolRef)
+	require.Equal(t, []string{`{"url":"https://example.com/pasta"}`}, le.launches[0].Args)
+	require.False(t, le.launches[0].ReadOnly)
+	require.Zero(t, le.planCalls, "a forced tool skips the planner")
+	require.Zero(t, le.retrieveCalls)
+	require.Equal(t, caller, le.resolveToolInputs[0].Caller, "re-resolved under the caller's own roles")
+}
+
+// There is no human on an event turn to approve with: a tool whose policy
+// requires one fails the turn rather than parking it on a prompt nobody sees.
+func TestEventTriggerForcedToolRequiringApprovalFails(t *testing.T) {
+	le := newLoopEnv(t)
+	tool := scraperTool()
+	tool.Approval = approval.PolicyAlways
+	le.resolvedTool = tool
+
+	var failure error
+	le.sendTurnExpectingFailure(t, "turn-1", workflows.TurnInput{
+		Caller: activities.Caller{Subject: "user:1", Roles: []string{"cook"}}, ForcedToolID: tool.ID,
+	}, &failure, time.Millisecond)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.ErrorContains(t, failure, "approval")
+	require.Empty(t, le.launches)
+}
+
+// readOnly is sticky per conversation: once a turn ran read-only, a later
+// follow-up WITHOUT readOnly — a plain chat prompt routed into the same
+// session by the trigger's sessionKey — must still launch read-only. The
+// first turn shows the assertion can fail: before the ratchet, runs are
+// writable.
+func TestReadOnlyIsStickyForTheConversation(t *testing.T) {
+	le := newLoopEnv(t)
+	le.resolvedTool = scraperTool()
+	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
+	le.selected = "recipes"
+	le.skillTools = recipesSkillTools()
+	le.plans = []activities.PlannedAction{
+		{Action: activities.ActionCallTool, ToolID: "recipe-scraper", ToolInput: "https://example.com/a"},
+		{Action: activities.ActionFinish},
+		{Action: activities.ActionCallTool, ToolID: "recipe-scraper", ToolInput: "https://example.com/b"},
+		{Action: activities.ActionFinish},
+	}
+	caller := activities.Caller{Subject: "user:1", Roles: []string{"cook"}}
+
+	var before, triggered, after workflows.TurnResult
+	le.sendTurnInput(t, "turn-0", workflows.TurnInput{Message: "scrape example.com/a", Caller: caller}, &before, time.Millisecond)
+	le.env.RegisterDelayedCallback(func() { le.signalToolSuccess(0, `"a"`) }, time.Second)
+	le.sendTurnInput(t, "turn-1", workflows.TurnInput{
+		Caller: caller, ForcedToolID: "recipe-scraper", ToolInput: "https://example.com/x", ReadOnly: true,
+	}, &triggered, 5*time.Second)
+	le.env.RegisterDelayedCallback(func() { le.signalToolSuccess(1, `"x"`) }, 6*time.Second)
+	le.sendTurnInput(t, "turn-2", workflows.TurnInput{Message: "now scrape example.com/b", Caller: caller, ReadOnly: false}, &after, 10*time.Second)
+	le.env.RegisterDelayedCallback(func() { le.signalToolSuccess(2, `"b"`) }, 11*time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Len(t, le.launches, 3)
+	require.False(t, le.launches[0].ReadOnly, "before any read-only turn, runs are writable")
+	require.True(t, le.launches[1].ReadOnly, "the triggered turn is read-only")
+	require.True(t, le.launches[2].ReadOnly, "a later turn cannot turn read-only back off")
+}
+
+// readOnly and params are turn properties that reach the AgentRun itself,
+// and the authorization pre-flight (which withholds write credentials).
+func TestReadOnlyAndParamsReachTheAgentRun(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := bridgedAgent()
+	agent.IdentityProviders = []string{"claude"}
+	le.resolvedAgent = &agent
+
+	params := map[string]string{"repo": "acme/widgets", "number": "42"}
+	var result workflows.TurnResult
+	le.sendTurnInput(t, "turn-1", workflows.TurnInput{
+		Message: "Review acme/widgets#42", Caller: activities.Caller{Subject: "svc:gw", Roles: []string{"agent"}},
+		ForcedAgentID: agent.ID, ReadOnly: true, Params: params,
+	}, &result, time.Millisecond)
+	le.deliverUp(agentrun.UpMessage{Seq: 1, Type: agentrun.UpReady}, time.Second)
+	le.deliverUp(agentrun.UpMessage{Seq: 2, Type: agentrun.UpReply, Final: true, Message: "Looks good."}, 2*time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Equal(t, "Looks good.", result.Reply)
+	require.Len(t, le.agentRunLaunches, 1)
+	require.True(t, le.agentRunLaunches[0].ReadOnly)
+	require.Equal(t, params, le.agentRunLaunches[0].Params)
+	require.Len(t, le.authorizeInputs, 1)
+	require.True(t, le.authorizeInputs[0].ReadOnly, "the pre-flight must know, to withhold write credentials")
+}
+
+// A read-only turn must not be fed into a WRITABLE episode already running in
+// the conversation: the episode's pod holds write credentials, so the
+// trigger's readOnly would be a dead letter.
+func TestReadOnlyTurnIsNotForwardedIntoAWritableEpisode(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := mealPlannerAgent()
+	le.resolvedAgent = &agent
+	le.skillTools = recipesSkillTools()
+	le.agentPlans = []activities.PlannedAgentAction{
+		{Action: activities.AgentActionAskUser, Question: "Which branch?"},
+	}
+	caller := activities.Caller{Subject: "user:1", Roles: []string{"cook"}}
+
+	var first workflows.TurnResult
+	var failure error
+	le.sendTurnInput(t, "turn-1", workflows.TurnInput{Message: "plan meals", Caller: caller, ForcedAgentID: agent.ID}, &first, time.Millisecond)
+	le.sendTurnExpectingFailure(t, "turn-2", workflows.TurnInput{Message: "review it", Caller: caller, ReadOnly: true}, &failure, 2*time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+
+	require.Equal(t, "Which branch?", first.Reply)
+	require.ErrorContains(t, failure, "read-only")
 }
 
 func TestAgentWorkflowDepthCapDisablesDelegation(t *testing.T) {

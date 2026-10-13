@@ -43,10 +43,13 @@ type Server struct {
 	taskQueue string
 	identity  rbac.Resolver
 
-	// routes is the live IntegrationRoute table (ADR 0024). Nil disables
-	// deterministic dispatch entirely: /invoke still works, and every turn
-	// goes through ordinary retrieval, exactly as before the feature existed.
-	routes *catalog.RouteRegistry
+	// triggers is the live EventTrigger table (ADR 0048), consulted only for
+	// a direct caller's /invoke carrying an `event` envelope. Nil means this
+	// gateway cannot match events: such a request is refused (503) rather
+	// than "ignored", so a deployment that forgot the watch finds out instead
+	// of silently dropping every event. Resolved turns forwarded by
+	// agent-orchestrator never consult it.
+	triggers *catalog.EventTriggerRegistry
 
 	// senderAssertionSecret is shared with integration-gateway. Empty means
 	// /invoke falls back to trusting an unsigned event.senderLogin — see
@@ -76,12 +79,12 @@ type TaskCompleter interface {
 const defaultCallerToolTopK = 5
 
 // Option configures a Server. Both of these are genuinely optional: a
-// deployment that only serves chat needs neither a route table nor a shared
+// deployment that only serves chat needs neither a trigger table nor a shared
 // secret with an adapter it does not run.
 type Option func(*Server)
 
-func WithRoutes(routes *catalog.RouteRegistry) Option {
-	return func(s *Server) { s.routes = routes }
+func WithEventTriggers(triggers *catalog.EventTriggerRegistry) Option {
+	return func(s *Server) { s.triggers = triggers }
 }
 
 func WithSenderAssertionSecret(secret string) Option {

@@ -56,3 +56,46 @@ subjects:
     name: {{ include "integration-gateway.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- if .Values.rbac.create }}
+---
+{{/*
+Generic event ingestion (docs/adr/0048): the gateway watches EventSources in
+its own namespace to know which /webhooks/<name> and /events/<name>/tick routes
+exist and how to verify each, and `get`s the Secret each one's
+webhook.verify.secretRef names. Read-only and namespace-scoped. `secrets: get`
+cannot be narrowed by name -- EventSources are operator-authored and may name
+any Secret -- so it is bounded by namespace, like the credential Role above.
+EventTriggers are deliberately NOT granted: matching happens in the
+orchestrator, never here.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "integration-gateway.fullname" . }}-event-sources
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "integration-gateway.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [{{ .Values.events.crdGroup | quote }}]
+    resources: ["eventsources"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "integration-gateway.fullname" . }}-event-sources
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "integration-gateway.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "integration-gateway.fullname" . }}-event-sources
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "integration-gateway.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

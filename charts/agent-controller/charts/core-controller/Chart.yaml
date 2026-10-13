@@ -6,7 +6,7 @@ description: >-
   replacing static build-time tool manifests and the orchestrator's own
   direct k8s Job creation (see controllers/core-controller).
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:

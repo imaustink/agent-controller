@@ -1,13 +1,13 @@
 apiVersion: v2
 name: integration-gateway
 description: >-
-  Helm chart for the GitHub Issues adapter (see apps/integration-gateway):
-  relays GitHub issue/comment webhooks into agent-orchestrator's existing
-  conversational /invoke API, one session per issue. Phase 1 of
-  docs/integrations-gateway.md -- the FAAS/direct-invoke path from that
-  proposal is not part of this chart.
+  Helm chart for apps/integration-gateway: serves every EventSource
+  (docs/adr/0048) -- verified webhooks at /webhooks/<name> and cron ticks at
+  /events/<name>/tick -- relays the normalized event to agent-orchestrator's
+  /invoke, and runs the matched EventTrigger's reply side effects. Also hosts
+  identity linking and the session/connections pages.
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:

@@ -33,7 +33,7 @@ import {
 import { QdrantSkillStore } from "./skills/qdrant-skill-store.js";
 import { CrdAgentRegistry } from "./agents/crd-agent-registry.js";
 import { CrdIdentityProviderRegistry, InMemoryIdentityProviderCatalog } from "./identity-link/identity-provider-catalog.js";
-import { CrdIntegrationRouteRegistry } from "./routing/crd-integration-route-registry.js";
+import { CrdEventTriggerRegistry } from "./routing/crd-event-trigger-registry.js";
 import { QdrantAgentStore } from "./agents/qdrant-agent-store.js";
 import { NatsAgentChannel } from "./agents/nats-agent-channel.js";
 import { AgentRunLauncher } from "./k8s/agentrun-launcher.js";
@@ -516,23 +516,18 @@ async function main(): Promise<void> {
     };
   }
 
-  // Declarative event->Skill/Agent/Tool routing table (IntegrationRoute CRs):
-  // lets a caller (integration-gateway) send an `event` descriptor alongside
-  // `request` on /invoke and have this bypass RAG retrieval when it matches
-  // an installed route -- deterministic dispatch for triggers whose intent
-  // is already unambiguous (e.g. a GitHub issue assigned to the bot), see
-  // docs/integrations-gateway.md. No routes installed -> every request goes
-  // through RAG retrieval exactly as before this feature existed.
-  const integrationRouteRegistry = CrdIntegrationRouteRegistry.fromKubeConfig(
+  // EventTrigger table (ADR 0048, docs/event-triggers.md): `/invoke` with an
+  // `event` envelope is matched here (CEL over the envelope) for BOTH engine
+  // modes -- in Temporal mode the resolved turn, not the envelope, is
+  // forwarded. No triggers installed -> every event is a clean `200 ignored`.
+  const eventTriggerRegistry = CrdEventTriggerRegistry.fromKubeConfig(
     config.namespace,
     config.crdGroup,
     config.crdVersion,
     kubeConfig,
   );
-  await integrationRouteRegistry.listAll();
-  const integrationRouteWatch = integrationRouteRegistry.watch((err) =>
-    console.error("IntegrationRoute watch error:", err),
-  );
+  await eventTriggerRegistry.listAll();
+  const eventTriggerWatch = eventTriggerRegistry.watch((err) => console.error("EventTrigger watch error:", err));
 
   let identityResolver: IdentityResolver;
   if (config.identityResolverKind === "oidc") {
@@ -975,7 +970,7 @@ async function main(): Promise<void> {
     engine,
     sessionStore,
     taskCompleter,
-    integrationRouteRegistry,
+    eventTriggerRegistry,
     agentDelegation?.agentChannel,
     config.senderAssertionSecret,
     callerToolStore,
@@ -1015,7 +1010,7 @@ async function main(): Promise<void> {
     connectionWatch?.stop();
     knowledgeBaseWatch?.stop();
     agentWatch?.stop();
-    integrationRouteWatch.stop();
+    eventTriggerWatch.stop();
     identityProviderWatch.stop();
     if (skillReindexTimer) clearTimeout(skillReindexTimer);
     clearInterval(callerToolPruneTimer);

@@ -1,13 +1,13 @@
 # Event Integrations & FAAS Gateway (design proposal)
 
-> **Status:** the **conversational GitHub Issues path** described below is
-> implemented — see [apps/integration-gateway](../apps/integration-gateway)
-> and the "Implementation status" section at the end of this document. The
-> declarative **`IntegrationRoute` CRD** (ADR 0024) is also implemented,
-> letting a configured label applied to a GitHub issue dispatch
-> deterministically instead of through RAG retrieval. The FAAS-style direct-invoke path, and
-> every other channel (email, Slack, job webhooks), remain
-> proposed/unimplemented. This document was originally
+> **Status:** largely superseded by
+> [ADR 0048](adr/0048-generic-event-triggers.md): ingestion is generic,
+> declared by **`EventSource`** CRs (verified webhooks of any shape, or cron
+> schedules), and dispatch by **`EventTrigger`** CRs (CEL match → orchestrator
+> turn, forced Skill, Agent, or one-off Tool — the FAAS path of §4), with the
+> contract in [docs/event-triggers.md](event-triggers.md). See
+> "Implementation status" at the end of this document. The email channel and
+> non-GitHub reply adapters remain unimplemented. This document was originally
 > written to the same standard as [orchestrator.md](orchestrator.md) and
 > cross-referenced from [README.md](../README.md). It assumes familiarity
 > with [orchestrator.md](orchestrator.md), [messaging.md](messaging.md), and
@@ -295,10 +295,11 @@ turning a reply path into a new SSRF/exfil surface.
   inbound HTTP request at all) fit the same `InboundEvent` shape with a
   synthetic adapter that constructs one on a timer instead of parsing a
   request — router/launch code is unchanged.
-- Routing configuration (which channel/trigger maps to which skill, tool, or
-  agent by default) is a new `IntegrationRoute` CR (ADR 0024), so operators
+- Routing configuration (which source/event maps to which skill, tool, or
+  agent) is `EventSource` + `EventTrigger` CRs (ADR 0048), so operators
   manage it the same `kubectl apply` way they already manage
-  `Tool`/`Skill`/`Agent` (see README's "why CRDs" table). See
+  `Tool`/`Skill`/`Agent` (see README's "why CRDs" table). A new webhook source
+  or cron schedule is a new `EventSource`, not gateway code. See
   [Implementation status](#implementation-status) for what's built.
 
 ## Open questions
@@ -340,8 +341,9 @@ turning a reply path into a new SSRF/exfil surface.
    adapter): validates the direct-by-id `ToolRun`/`AgentRun` launch
    component and the async accept/poll extension in isolation, with no new
    external-trust surface (caller is already an authenticated API client).
-   **Not implemented** — the GitHub Issues adapter was prioritized instead
-   (see below) since it exercises the conversational path end-to-end.
+   Built later as `EventTrigger.target.toolRef` (ADR 0048) — the GitHub
+   Issues adapter was prioritized first since it exercised the conversational
+   path end-to-end.
 2. **One adapter for the conversational path.** Implemented for **GitHub
    Issues** rather than Slack (see [Implementation
    status](#implementation-status)) — validates the `InboundEvent`/
@@ -349,10 +351,9 @@ turning a reply path into a new SSRF/exfil surface.
    well-documented webhook + signature-verification API.
 3. **Email adapter**: highest-risk channel, built once the injection/
    untrusted-content handling patterns are proven out.
-4. **Job/CI webhook adapter**, once real trigger-routing needs beyond GitHub
-   Issues are concrete rather than speculative. The `IntegrationRoute` CRD
-   itself (ADR 0024) is implemented, validated by a GitHub `issues.labeled`
-   → `opencode-swe-agent` route (see [Implementation
+4. **Job/CI webhook adapter.** Subsumed by generic `EventSource`s (ADR 0048):
+   a CI notifier is a `bearer` or `hmacSha256` webhook source, and the shipped
+   `ci-failure-skill` example trigger shows the shape (see [Implementation
    status](#implementation-status)).
 
 Each phase should land as its own ADR once concrete, per this repo's existing
@@ -360,129 +361,77 @@ convention (see [docs/adr/](adr/)).
 
 ## Implementation status
 
-**Implemented:** [apps/integration-gateway](../apps/integration-gateway) — a
-GitHub Issues adapter, actionable ONLY on an explicit label application:
+**Implemented:** [apps/integration-gateway](../apps/integration-gateway) as a
+**generic event ingress** driven by two CRDs
+([ADR 0048](adr/0048-generic-event-triggers.md); the authoritative contract is
+[docs/event-triggers.md](event-triggers.md); field reference in
+[crds.md](crds.md#eventsource)). Nothing about any one source or flow is
+hardcoded in the gateway any more.
 
-- `POST /webhooks/github` verifies GitHub's `X-Hub-Signature-256` HMAC, then
-  handles `issues.labeled` and `pull_request.labeled` events.
-  `issues.opened`, `issue_comment.created`, and every other event/action are a
-  strict no-op — `parseGithubEvent` maps them straight to `{ kind: "ignored" }`
-  before any identity resolution or orchestrator call happens. Opening an
-  issue, or commenting on one, never causes the agent to run; only applying
-  the trigger label does.
-- **Every label-triggered run removes its own trigger label when it finishes**
-  (success, failure, or blocked — `relayAndReply`'s `finally`). GitHub emits no
-  `labeled` event for a label that is already present, so a label left in place
-  would have to be removed and re-added by hand to run again; taking it off
-  makes "re-apply the label" the whole re-trigger gesture. The removal fires an
-  `unlabeled` event, which `parseGithubEvent` ignores — no self-trigger loop.
-  Label cleanup is best-effort: a failure there is reported via
-  `onBackgroundError` and never masks the turn's own result.
-- Session id is `github:<owner>/<repo>#<issueNumber>` — one session per
-  issue, forwarded as `session_id` to `agent-orchestrator`'s existing
-  `POST /invoke`.
-- **`issues.labeled` → two triggers on one event, split by label (ADR 0024).**
-  The gateway acts on a labeled issue when the label is either the **trigger
-  label** (`GATEWAY_GITHUB_TRIGGER_LABEL`, e.g. `"ai-triage"`) — triage the
-  issue: investigate and open a PR — or the **review label**
-  (`GATEWAY_GITHUB_REVIEW_LABEL`, e.g. `"ai-review"`, the same label PR review
-  uses) — review the proposal/spec in the issue, changing nothing. Either way
-  the gateway calls `/invoke` with an `event` descriptor (`{ source: "github",
-  event: "issues", action: "labeled", owner, repo, issueNumber, title, body,
-  senderLogin, labelName }`); the `labelName` is what lets the two
-  issues/labeled `IntegrationRoute`s (`github-issue-labeled-triage`,
-  `github-issue-labeled-review`) resolve to different prompts, and whichever
-  label triggered the run is removed once it ends so re-applying it
-  re-triggers. A label, not an assignee: GitHub App bot users generally
-  cannot be set as issue assignees (only a small GitHub-owned allowlist, e.g.
-  `dependabot[bot]`, gets that special-cased), so a configurable label is
-  used instead. If the event matches an installed `IntegrationRoute` CR,
-  `agent-orchestrator` dispatches straight to that route's target with its
-  rendered `promptTemplate` (`CrdIntegrationRouteRegistry`,
-  `checkIntegrationRoute` graph node) — deterministic, since applying a
-  specific label is an unambiguous action rather than free text needing
-  intent inference. No matching route falls back to ordinary RAG retrieval
-  over a fallback request string. Sample routes ship gated behind
-  `integrationRoutes.githubIssueLabeledTriage.enabled` (the wildcard triage
-  route) and `integrationRoutes.githubIssueLabeledReview.enabled` (pinned to
-  the review label, so it wins the registry's specificity scoring over the
-  wildcard triage route).
-- **`pull_request.labeled` → two triggers on one event, split by label.** The
-  gateway acts on a labeled PR when the label is either:
-  - the **review label** (`GATEWAY_GITHUB_REVIEW_LABEL`, e.g. `"ai-review"`) —
-    review the diff and post the review, changing nothing; or
-  - the **trigger label** (`GATEWAY_GITHUB_TRIGGER_LABEL`, e.g. `"ai-triage"`,
-    the same label issue triage uses) — pick the PR back up: read the reviews,
-    comments and failing checks on it, address that feedback in code, sync the
-    branch with its base (resolving conflicts), push to the PR's own branch,
-    and summarize. "Triage this" means the same thing on both kinds; what got
-    labeled decides whether that is *open* a PR or *update* one.
-
-  Both send an `event` descriptor of `{ source: "github", event:
-  "pull_request", action: "labeled", owner, repo, prNumber, title, body,
-  senderLogin, labelName }`. Since the two share one source/event/action
-  triple, `IntegrationRoute.spec.match` also carries an optional **`labelName`**
-  — the only thing distinguishing them — and both shipped PR routes
-  (`githubPrLabeledReview`, `githubPrLabeledTriage`) pin it. Match specificity
-  runs action-first: `action`+`labelName` > `action` > `labelName` > neither,
-  and a route that names a `labelName` never matches an event carrying a
-  different one (so the review route can't swallow a triage trigger). A route
-  omitting `labelName` still matches any label, unchanged from before.
-  Either way the label is applied by a human — the gateway drops bot-authored
-  events, so the agent that opened the PR cannot self-trigger on its own work.
-- **Each review comment carries its own fix (no follow-up ticket).** When the
-  PR review (`github-pr-labeled-review`) leaves a comment requesting a change,
-  its `promptTemplate` has the agent deliver the fix inside that same comment
-  rather than opening a separate issue. Every change-requesting comment is an
-  inline review comment anchored to the exact `file:line`, and includes (a) a
-  GitHub `suggestion` block with the corrected replacement for the commented
-  lines whenever the fix is a concrete line edit — so the author gets a
-  one-click **Apply suggestion** button — and/or (b) an optional, copy-pasteable
-  prompt for fixing the issue with an AI coding agent, tucked into a collapsible
-  `<details>` block so it stays out of the way until the author wants it. The
-  suggestion sits at the comment's top level (so GitHub renders the apply
-  button); the agent prompt stays inside the `<details>`. Fixes that are not a
-  mechanical line edit (architectural, multi-file) skip the suggestion and rely
-  on the copyable prompt. A clean approval adds neither, and no issue or ticket
-  is opened either way — the loop from "review found a problem" to "here is the
-  fix" closes in the comment itself.
-- Identity resolution's primary path is now real, no-redeploy-needed
-  verification against GitHub itself, via two resolvers
-  (`CompositeGithubIdentityResolver` tries both):
-  `GithubTeamMembershipResolver` (`GATEWAY_GITHUB_TEAM_ROLES`) for org-owned
-  repos, and `GithubCollaboratorPermissionResolver`
-  (`GATEWAY_GITHUB_COLLABORATOR_ROLES`) for personal-account repos with no
-  Organization to hang teams off of — it checks the sender's actual
-  collaborator permission on the specific repo the webhook fired on instead.
-  The dev/test-grade static allowlist (`GATEWAY_GITHUB_IDENTITIES`) still
-  exists as a last-resort fallback for logins neither grants anything to,
-  e.g. a service account that isn't and shouldn't be a team member or
-  collaborator.
+- **`EventSource` — how events arrive.** The gateway watches the EventSources in
+  its namespace (`CRD_NAMESPACE`/`CRD_GROUP`/`CRD_VERSION`) and serves each
+  webhook source at `POST /webhooks/<name>`, verifying the raw body **before**
+  parsing with the source's scheme (`hmacSha256`, `slackV0` incl. Slack's
+  `url_verification` handshake, or `bearer`) against the Secret its
+  `secretRef` names, read through the k8s API. Unknown source → `404`, failed
+  verification → `401`, otherwise `202`. A `cron` source is ticked by a
+  core-controller-owned CronJob at `POST /events/<name>/tick`, authenticated
+  with the shared `EVENT_TICK_TOKEN` (Secret `integration-gateway-tick-token`,
+  key `token`). Either way the gateway builds one normalized envelope
+  (`source, kind, id, time, headers, body, sender, repository`) and relays it as
+  `POST /invoke { event }`; it no longer filters by event type or label.
+- **Who caused it.** A source's optional `sender` block extracts a login with
+  CEL and verifies it with the GitHub provider (`GithubTeamMembershipResolver`
+  via `GATEWAY_GITHUB_TEAM_ROLES`, `GithubCollaboratorPermissionResolver` via
+  `GATEWAY_GITHUB_COLLABORATOR_ROLES`, the static `GATEWAY_GITHUB_IDENTITIES`
+  fallback). An unverified login is never forwarded; bot senders are dropped by
+  default, so an agent cannot label its own issue/PR to re-trigger itself. A
+  source without `sender` runs as the gateway's service identity.
+- **`EventTrigger` — what an event dispatches.** The orchestrator (both
+  engines) matches every trigger's `match.cel` against the envelope; the winner
+  binds CEL `params`, renders its `promptTemplate`/`sessionKey`, and runs its
+  `target`: an ordinary conversational turn (`orchestrator: {}`), a forced
+  `skillRef`, an `agentRef`, or a one-off `toolRef` — the FAAS/direct-invoke
+  path of §4, now built. **No match is a clean no-op** (`200 ignored`), never a
+  RAG fallback over free text. `target.readOnly: true` is the deterministic
+  write gate, carried onto every `AgentRun`/`ToolRun` (`AGENT_READ_ONLY`), not a
+  prompt sentinel.
+- **Replies are declarative.** The orchestrator returns the trigger's rendered
+  `reply`, and the gateway runs it: `reply.github` posts an `ack` comment
+  (+ a session-page link when `GATEWAY_PUBLIC_URL` is set), the turn's
+  `result`, and removes `removeLabel` when the run ends on every outcome —
+  through the durable pending-action store, so a crash mid-run still clears the
+  label (`label-reconciler.ts`). `reply.http` POSTs the outcome to a literal,
+  never-templated URL, optionally HMAC-signed.
+- **The `ai-triage` / `ai-review` flows are four example CRs**, shipped in
+  `charts/community-components` (`eventTriggers.github{Issue,Pr}{Triage,Review}`,
+  enabled in production against `claude-code-swe-agent`): each matches
+  `headers["x-github-event"]`, `body.action == "labeled"` and its label in
+  CEL; the two review triggers set `readOnly: true`. Triage on an issue opens a
+  PR; triage on a PR addresses its feedback, pushes, and syncs with base; review
+  on either posts a review and changes nothing (PR reviews put a one-click
+  `suggestion` block, or a collapsible AI-agent prompt, in each
+  change-requesting inline comment instead of opening follow-up issues). Session
+  id stays `github:<owner>/<repo>#<number>` (`sessionKey`), one session per
+  issue/PR. Further examples ship disabled: Slack mention → orchestrator turn,
+  CI failure → forced Skill, generic HMAC → `web-fetch` Tool, and a nightly
+  cron → read-only stale-work sweep.
+- **Session page (issue #81).** The ack's link points at a minimal
+  server-rendered page (`GET /sessions/:token`, `SessionPageStore`) showing the
+  session's turn history, where a caller can `POST /sessions/:token/prompts` to
+  continue it. `token` is a 256-bit bearer capability; unset
+  `GATEWAY_PUBLIC_URL` disables the feature entirely. Redis-backed when
+  `SESSION_PAGE_REDIS_URL` (or the identity-link Redis) is set, in-memory
+  otherwise.
 - Result delivery is **polling** `GET /invoke/:id`, not push — the "Polling
-  vs. push" open question above is deliberately left unresolved and worked
-  around with a bounded poll timeout.
-- `@controller-agent/github-app-auth` (extracted from
-  `apps/opencode-swe-agent`) is shared by both apps for GitHub App JWT
-  signing / installation-token minting (ADR 0018), rather than duplicating
-  that security-sensitive code.
-- **Triage agent improvements (issue #81).** The `issues.labeled` path now
-  posts an upfront "starting work" comment (rather than only replying once
-  the whole turn completes) linking to a minimal server-rendered **session
-  page** (`GET /sessions/:token`, `SessionPageStore` in
-  `src/session-page-store.ts`) that shows that session's turn history and
-  lets a caller `POST /sessions/:token/prompts` to send it a follow-up
-  prompt without posting another GitHub comment — this is the only way to
-  continue a triage turn's conversation, since unlabeled `issue_comment`
-  events are a no-op (see above). `token` is a 256-bit
-  bearer-capability credential (nothing else gates access to the page), and
-  the whole feature is opt-in: unset `GATEWAY_PUBLIC_URL` (no configured
-  public base URL) disables it entirely — no link is posted and the page
-  routes are never wired up. State is Redis-backed when `SESSION_PAGE_REDIS_URL`
-  (or the identity-link Redis instance) is set, in-memory otherwise (lost on
-  a pod restart).
+  vs. push" open question above is still worked around with a bounded poll
+  timeout.
+- `@controller-agent/github-app-auth` is shared with the SWE agents for GitHub
+  App JWT signing / installation-token minting (ADR 0018).
 
-**Not implemented:** the FAAS/direct-invoke path (§4), and every other
-channel (Slack, email, job webhooks).
+**Not implemented:** reply adapters other than `github` and `http` (a Slack
+event can trigger a turn, but its answer is not posted back to Slack), the
+email channel, and `sender` providers other than `github`.
 
 ## Related
 

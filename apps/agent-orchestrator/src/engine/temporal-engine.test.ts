@@ -98,9 +98,75 @@ describe("TemporalEngine", () => {
     expect(state.result).toBeUndefined();
   });
 
-  // This process owns the route registry and has already matched it. Re-deriving
-  // the target in the engine would put routing policy in two places.
-  it("names an already-matched route target instead of resending the event", async () => {
+  // docs/event-triggers.md §5: the resolved turn crosses the hop under exactly
+  // these field names (the Temporal gateway's /invoke reads them), never the
+  // envelope.
+  it("forwards a resolved EventTrigger turn with the contract's exact field names", async () => {
+    const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+
+    await engine.invoke(
+      input({
+        request: "Run tool slack-notify",
+        sessionId: "event:ci:1",
+        forcedToolId: "slack-notify",
+        toolInput: '{"channel":"ops"}',
+        readOnly: true,
+        params: { channel: "ops" },
+        triggerName: "ci-notify",
+        targetRepository: "acme/widgets",
+      }),
+    );
+
+    const body = JSON.parse(String(calls[0]!.init!.body));
+    expect(body).toMatchObject({
+      request: "Run tool slack-notify",
+      sessionId: "event:ci:1",
+      forcedToolId: "slack-notify",
+      toolInput: '{"channel":"ops"}',
+      readOnly: true,
+      params: { channel: "ops" },
+      triggerName: "ci-notify",
+      targetRepository: "acme/widgets",
+    });
+    expect(body).not.toHaveProperty("forcedSkillId");
+    expect(body).not.toHaveProperty("forcedAgentId");
+    expect(body).not.toHaveProperty("event");
+  });
+
+  // A sticky read-only session forwards readOnly on a plain follow-up turn too;
+  // an ordinary turn carries none of the trigger fields.
+  it("sends readOnly on any turn that has it, and no trigger fields on an ordinary turn", async () => {
+    const { impl, calls } = scriptedFetch([
+      { id: "x", status: "succeeded", result: "ok" },
+      { id: "y", status: "succeeded", result: "ok" },
+    ]);
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+
+    await engine.invoke(input({ request: "follow-up", readOnly: true }));
+    await engine.invoke(input({ request: "hello" }));
+
+    const bodies = calls.filter((c) => c.url === `${BASE}/invoke`).map((c) => JSON.parse(String(c.init!.body)));
+    expect(bodies[0].readOnly).toBe(true);
+    for (const field of ["readOnly", "params", "triggerName", "forcedToolId", "toolInput"]) {
+      expect(bodies[1]).not.toHaveProperty(field);
+    }
+  });
+
+  // The engine re-resolves a forced target under the caller's roles; a miss is
+  // a failed record, which must surface as a failed turn (contract §1), not a
+  // silent success or a fallback.
+  it("surfaces the engine's forced-target miss as a failed turn", async () => {
+    const { impl } = scriptedFetch([{ id: "x", status: "failed", error: 'event trigger pr-review: agent "gone" is not available' }]);
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+
+    const state = await engine.invoke(input({ forcedAgentId: "gone", triggerName: "pr-review" }));
+
+    expect(state.error).toBe('event trigger pr-review: agent "gone" is not available');
+    expect(state.result).toBeUndefined();
+  });
+
+  it("names an already-selected trigger target instead of resending the event", async () => {
     const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "triaged" }]);
     const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
 

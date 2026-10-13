@@ -76,7 +76,8 @@ no server.
 The part worth actual scrutiny is the RBAC, because the imported chart's grants
 predated the catch-up work: `secrets` (the grant that keeps credentials out of
 Temporal's event history), `agentruns` (only when the NATS bridge is enabled),
-and `integrationroutes` on a new gateway ServiceAccount. Each mirrors a grant
+and read access to the event-routing CRD (today `eventtriggers`, ADR 0048) on
+a new gateway ServiceAccount. Each mirrors a grant
 agent-orchestrator already holds.
 
 Also adds the first CI job that renders `charts/agent-controller` at all.

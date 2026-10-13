@@ -1,0 +1,25 @@
+{{- if .Values.eventSources.slack.enabled }}
+{{- /*
+Example: a Slack Events API endpoint (docs/event-triggers.md §1), served at
+POST /webhooks/slack. slackV0 verifies x-slack-signature over
+"v0:<timestamp>:<raw body>" with the app's Signing Secret (timestamp within
+300s) and answers Slack's url_verification handshake itself, so pointing the
+Slack app's "Request URL" here completes setup with no trigger installed.
+
+No `sender`: only the github provider can verify a login today, so a Slack
+event runs as the gateway's own service identity -- never as the Slack user.
+*/}}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: EventSource
+metadata:
+  name: slack
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  webhook:
+    verify:
+      scheme: slackV0
+      secretRef:
+        name: {{ .Values.eventSources.slack.secretRef.name | quote }}
+        key: {{ .Values.eventSources.slack.secretRef.key | quote }}
+{{- end }}

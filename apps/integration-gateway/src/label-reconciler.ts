@@ -3,16 +3,21 @@ import { Redis } from "ioredis";
 /**
  * The durable half of the deterministic label-removal fix.
  *
- * Trigger-label removal (ai-triage / ai-review) used to be an in-process
- * `finally` hung off a DETACHED background promise that the gateway holds for
- * the whole turn (up to `GATEWAY_POLL_TIMEOUT_MS`). If the gateway pod
- * restarts or is OOM-killed mid-turn, that `finally` never runs and nothing
- * else ever retries -- the label is stranded forever, so a re-apply emits no
- * `labeled` event and the issue/PR can never be re-triaged by hand. That was
- * the "label removal only works ~3/4 of the time" bug.
+ * An EventTrigger may declare `reply.github.removeLabel` (ADR 0048): the label
+ * to take off the issue/PR once the run ends, success or failure -- typically
+ * the label whose application matched the trigger, so re-applying it
+ * re-triggers. Which label that is comes from the trigger (already rendered by
+ * the orchestrator); nothing here knows about any particular label.
  *
- * The fix is an outbox: the moment a label-triggered run starts, the gateway
- * records a {@link PendingLabelRemoval} in a DURABLE store (Redis in
+ * Removal is an in-process `finally` hung off a DETACHED background promise
+ * that the gateway holds for the whole turn (up to `GATEWAY_POLL_TIMEOUT_MS`).
+ * If the gateway pod restarts or is OOM-killed mid-turn, that `finally` never
+ * runs and nothing else ever retries -- the label is stranded forever, so a
+ * re-apply emits no `labeled` event and the issue/PR can never be re-triggered
+ * by hand. That was the "label removal only works ~3/4 of the time" bug.
+ *
+ * The fix is an outbox: once a run is accepted and BEFORE it is polled, the
+ * gateway records a {@link PendingLabelRemoval} in a DURABLE store (Redis in
  * production). The normal in-process `finally` removes the label AND clears the
  * record. A record that is still present therefore means its `finally` never
  * completed -- the pod died, or GitHub kept rejecting the delete past its own
@@ -29,7 +34,7 @@ export interface PendingLabelRemoval {
   repo: string;
   issueNumber: number;
   label: string;
-  /** The `github:<owner>/<repo>#<n>` session id, used to probe the run's liveness/terminal state. */
+  /** The accepted trigger's session id (`trigger.sessionId`), used to probe the run's liveness/terminal state. */
   sessionId: string;
   /** Epoch ms the record was written -- the sweep ignores anything younger than its grace window. */
   recordedAt: number;
@@ -37,8 +42,9 @@ export interface PendingLabelRemoval {
 
 /**
  * Durable record of label removals still owed. Keyed by `(sessionId, label)`:
- * a session's triage and review labels are independent, and a re-trigger on the
- * same issue reuses the same session id, so the pair is the natural identity.
+ * two triggers on one session may each declare their own label, and a
+ * re-trigger on the same issue typically reuses the same session id, so the
+ * pair is the natural identity.
  *
  * Every method is best-effort at the call site (the webhook relay must not fail
  * because this store is briefly unavailable), so implementations soft-fail and
@@ -179,7 +185,7 @@ const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_GRACE_MS = 10 * 60 * 1000;
 
 /**
- * Periodically (and on startup) removes trigger labels whose in-process
+ * Periodically (and on startup) removes trigger-declared labels whose in-process
  * `finally` never ran -- the durable self-heal for a gateway that restarted or
  * OOM'd mid-turn. See the module header for the outbox design.
  */

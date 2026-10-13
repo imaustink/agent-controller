@@ -1,8 +1,8 @@
 package gateway
 
 // Internal test: shapeInvokeTurn is where every security-relevant decision
-// about /invoke lives (which login is trusted, and from where), and it is
-// reachable without standing up Temporal.
+// about /invoke lives (which login is trusted, and from where, and what an
+// event dispatches), and it is reachable without standing up Temporal.
 
 import (
 	"encoding/json"
@@ -24,134 +24,214 @@ const assertionSecret = "shared-with-integration-gateway"
 
 var testCaller = activities.Caller{Subject: "svc:integration-gateway", Roles: []string{"agent"}}
 
-func triageRoutes(t *testing.T) *catalog.RouteRegistry {
+// reviewTriggers is the ai-review example: a label-pinned, read-only agent
+// dispatch with a GitHub reply.
+func reviewTriggers(t *testing.T) *catalog.EventTriggerRegistry {
 	t.Helper()
-	reg := catalog.NewRouteRegistry()
-	reg.Upsert(catalog.IntegrationRouteDescriptor{
-		ID:             "github-issue-labeled-triage",
-		Match:          catalog.IntegrationRouteMatch{Source: "github", Event: "issues", Action: "labeled", LabelName: "ai-triage"},
-		AgentRef:       "claude-code-swe-agent",
-		PromptTemplate: "Triage {{owner}}/{{repo}}#{{issueNumber}}: {{title}}",
-	})
+	reg := catalog.NewEventTriggerRegistry()
+	d := catalog.NewEventTriggerDescriptor("github-pr-review", catalog.EventTriggerSpec{
+		SourceRef: "github",
+		Match:     catalog.EventTriggerMatch{CEL: `headers["x-github-event"] == "pull_request" && body.label.name == "ai-review"`},
+		Params: map[string]string{
+			"repo":   "body.repository.full_name",
+			"number": "body.pull_request.number",
+		},
+		SessionKey: "github:{{repo}}#{{number}}",
+		Target: catalog.EventTriggerTarget{
+			AgentRef: "claude-code-swe-agent", ReadOnly: true,
+			PromptTemplate: "Review {{repo}}#{{number}}",
+		},
+		Reply: &catalog.EventTriggerReply{GitHub: &catalog.EventGitHubReply{
+			Repository: "{{repo}}", IssueNumber: "{{number}}", Ack: "Reviewing #{{number}}", Result: true,
+		}},
+	}, true)
+	require.NoError(t, d.Invalid())
+	reg.Upsert(d)
 	return reg
 }
 
-func issueEvent() map[string]any {
-	return map[string]any{
-		"source": "github", "event": "issues", "action": "labeled", "labelName": "ai-triage",
-		"owner": "acme", "repo": "widgets", "issueNumber": float64(7), "title": "Crash on save",
-		"senderLogin": "imaustink",
+func prEnvelope(label string) *catalog.Envelope {
+	return &catalog.Envelope{
+		Source: "github", Kind: "webhook", ID: "d-1", Time: "2026-10-13T12:00:00Z",
+		Headers: map[string]string{"x-github-event": "pull_request"},
+		Body: map[string]any{
+			"action":       "labeled",
+			"label":        map[string]any{"name": label},
+			"pull_request": map[string]any{"number": float64(42)},
+			"repository":   map[string]any{"full_name": "acme/widgets"},
+		},
+		Sender:     map[string]any{"login": "imaustink", "isBot": false},
+		Repository: "acme/widgets",
 	}
 }
 
-func TestShapeInvokeTurnRendersAMatchedRoute(t *testing.T) {
-	now := time.Now()
-	turn, err := shapeInvokeTurn(
-		invokeRequest{Request: "an issue was labeled", Event: issueEvent()},
-		"", "", triageRoutes(t), testCaller, now,
+func TestShapeInvokeTurnMatchesAnEventEnvelope(t *testing.T) {
+	shaped, err := shapeInvokeTurn(
+		invokeRequest{Event: prEnvelope("ai-review")},
+		"", "", reviewTriggers(t), testCaller, time.Now(),
 	)
 	require.NoError(t, err)
+	require.False(t, shaped.ignored)
+	turn := shaped.turn
 
-	require.Equal(t, "Triage acme/widgets#7: Crash on save", turn.Message,
-		"the route's rendered template replaces the adapter's fallback text")
+	require.Equal(t, "Review acme/widgets#42", turn.Message)
 	require.Equal(t, "claude-code-swe-agent", turn.ForcedAgentID)
 	require.Empty(t, turn.ForcedSkillID)
+	require.Empty(t, turn.ForcedToolID)
+	require.True(t, turn.ReadOnly, "the trigger's readOnly is a turn property")
+	require.Equal(t, map[string]string{"repo": "acme/widgets", "number": "42"}, turn.Params)
+	require.Equal(t, "github-pr-review", turn.TriggerName)
+	require.Equal(t, "acme/widgets", turn.TargetRepository, "the repository comes from the envelope, never the prompt")
 	require.Equal(t, testCaller, turn.Caller)
+
+	require.Equal(t, "github:acme/widgets#42", shaped.sessionID, "the rendered sessionKey names the session")
+	require.NotNil(t, shaped.match)
+	require.Equal(t, int64(42), shaped.match.Reply.GitHub.IssueNumber)
 }
 
-// A route's promptTemplate legitimately supplies the whole request, so an
-// event-driven caller need not send request text of its own.
-func TestShapeInvokeTurnAcceptsAnEmptyRequestWhenARouteSuppliesOne(t *testing.T) {
-	turn, err := shapeInvokeTurn(
-		invokeRequest{Request: "   ", Event: issueEvent()},
-		"", "", triageRoutes(t), testCaller, time.Now(),
+// No matching trigger is a clean no-op (§5), never a retrieval fallback.
+func TestShapeInvokeTurnIgnoresAnUnmatchedEvent(t *testing.T) {
+	shaped, err := shapeInvokeTurn(
+		invokeRequest{Request: "please look at this", Event: prEnvelope("bug")},
+		"", "", reviewTriggers(t), testCaller, time.Now(),
 	)
 	require.NoError(t, err)
-	require.Equal(t, "Triage acme/widgets#7: Crash on save", turn.Message)
+	require.True(t, shaped.ignored, "an unmatched event must not become a turn, even with request text")
 }
 
-func TestShapeInvokeTurnRejectsAnEmptyRequestWithNothingToRender(t *testing.T) {
+func TestShapeInvokeTurnFailsAMatchedTriggerWhoseParamsFail(t *testing.T) {
+	reg := catalog.NewEventTriggerRegistry()
+	reg.Upsert(catalog.NewEventTriggerDescriptor("needs-issue", catalog.EventTriggerSpec{
+		Params: map[string]string{"n": "body.issue.number"}, // a PR event has none
+		Target: catalog.EventTriggerTarget{Orchestrator: &struct{}{}, PromptTemplate: "{{n}}"},
+	}, true))
+
+	_, err := shapeInvokeTurn(invokeRequest{Event: prEnvelope("ai-review")}, "", "", reg, testCaller, time.Now())
+	var matchErr *catalog.MatchError
+	require.ErrorAs(t, err, &matchErr)
+	require.Equal(t, "needs-issue", matchErr.Trigger)
+}
+
+// The retired IntegrationRoute descriptor ({source, event, action, …}) has no
+// kind; it must be rejected loudly, not matched against nothing.
+func TestShapeInvokeTurnRejectsANonEnvelopeEvent(t *testing.T) {
+	_, err := shapeInvokeTurn(
+		invokeRequest{Request: "x", Event: &catalog.Envelope{Source: "github"}},
+		"", "", reviewTriggers(t), testCaller, time.Now(),
+	)
+	require.ErrorIs(t, err, errNotAnEnvelope)
+}
+
+func TestShapeInvokeTurnRefusesAnEnvelopeWithoutATriggerTable(t *testing.T) {
+	_, err := shapeInvokeTurn(invokeRequest{Event: prEnvelope("ai-review")}, "", "", nil, testCaller, time.Now())
+	require.ErrorIs(t, err, errNoTriggers)
+}
+
+// agent-orchestrator forwards the RESOLVED turn; nothing is matched here,
+// even when an envelope rides along that would match a different trigger.
+func TestShapeInvokeTurnTakesAResolvedTurnAsIs(t *testing.T) {
+	shaped, err := shapeInvokeTurn(
+		invokeRequest{
+			SessionID:    "github:acme/widgets#42",
+			ForcedToolID: "http-get",
+			ToolInput:    `{"pipeline":"build"}`,
+			ReadOnly:     true,
+			Params:       map[string]string{"pipeline": "build"},
+			TriggerName:  "ci-failure-tool",
+			Event:        prEnvelope("ai-review"),
+		},
+		"", "", reviewTriggers(t), testCaller, time.Now(),
+	)
+	require.NoError(t, err, "a forced tool needs no request text: its input is toolInput")
+	turn := shaped.turn
+	require.Nil(t, shaped.match)
+	require.Equal(t, "http-get", turn.ForcedToolID)
+	require.Empty(t, turn.ForcedAgentID, "the envelope must not be re-matched")
+	require.Equal(t, `{"pipeline":"build"}`, turn.ToolInput)
+	require.True(t, turn.ReadOnly)
+	require.Equal(t, map[string]string{"pipeline": "build"}, turn.Params)
+	require.Equal(t, "ci-failure-tool", turn.TriggerName)
+	require.Equal(t, "acme/widgets", turn.TargetRepository)
+	require.Equal(t, "github:acme/widgets#42", shaped.sessionID)
+}
+
+func TestShapeInvokeTurnRejectsAmbiguousTargets(t *testing.T) {
+	_, err := shapeInvokeTurn(
+		invokeRequest{Request: "x", ForcedAgentID: "a", ForcedToolID: "t"},
+		"", "", nil, testCaller, time.Now(),
+	)
+	require.ErrorIs(t, err, errAmbiguousTarget)
+}
+
+// readOnly can only restrict: a direct caller may add it to a trigger that
+// lacks it, but a matched trigger's readOnly survives anything the body says.
+func TestShapeInvokeTurnReadOnlyOnlyRestricts(t *testing.T) {
+	reg := catalog.NewEventTriggerRegistry()
+	reg.Upsert(catalog.NewEventTriggerDescriptor("writable", catalog.EventTriggerSpec{
+		Target: catalog.EventTriggerTarget{AgentRef: "swe", PromptTemplate: "x"},
+	}, true))
+
+	shaped, err := shapeInvokeTurn(invokeRequest{Event: prEnvelope("x"), ReadOnly: true}, "", "", reg, testCaller, time.Now())
+	require.NoError(t, err)
+	require.True(t, shaped.turn.ReadOnly)
+
+	shaped, err = shapeInvokeTurn(invokeRequest{Event: prEnvelope("ai-review"), ReadOnly: false}, "", "", reviewTriggers(t), testCaller, time.Now())
+	require.NoError(t, err)
+	require.True(t, shaped.turn.ReadOnly)
+}
+
+func TestShapeInvokeTurnRejectsAnEmptyRequestWithNothingToRun(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		req  invokeRequest
 	}{
-		{"no event at all", invokeRequest{Request: ""}},
-		{"event matches no route", invokeRequest{Request: "", Event: map[string]any{"source": "slack", "event": "message"}}},
+		{"nothing at all", invokeRequest{Request: ""}},
+		{"whitespace", invokeRequest{Request: "   "}},
+		{"a forced agent with no prompt", invokeRequest{ForcedAgentID: "a"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := shapeInvokeTurn(tc.req, "", "", triageRoutes(t), testCaller, time.Now())
+			_, err := shapeInvokeTurn(tc.req, "", "", nil, testCaller, time.Now())
 			require.ErrorIs(t, err, errEmptyRequest)
 		})
 	}
 }
 
-func TestShapeInvokeTurnFallsThroughWhenNoRouteMatches(t *testing.T) {
-	turn, err := shapeInvokeTurn(
-		invokeRequest{
-			Request: "please look at this",
-			Event:   map[string]any{"source": "github", "event": "issues", "action": "closed"},
-		},
-		"", "", triageRoutes(t), testCaller, time.Now(),
-	)
-	require.NoError(t, err)
-	require.Equal(t, "please look at this", turn.Message, "unrouted turns keep their own text")
-	require.Empty(t, turn.ForcedAgentID)
-	require.Empty(t, turn.ForcedSkillID)
-}
-
-// Routing is optional: a deployment with no route table behaves exactly as it
-// did before IntegrationRoute existed.
-func TestShapeInvokeTurnWithoutARouteTable(t *testing.T) {
-	turn, err := shapeInvokeTurn(
-		invokeRequest{Request: "please look at this", Event: issueEvent()},
-		"", "", nil, testCaller, time.Now(),
-	)
-	require.NoError(t, err)
-	require.Equal(t, "please look at this", turn.Message)
-	require.Empty(t, turn.ForcedAgentID)
-}
-
 // TS always defaults link flow to "authcode", overridable per-request so a
-// headless caller (integration-gateway's own GitHub-issue relay) with no
-// browser to redirect can request "device" instead — a request property, not
-// something inferred from Live/streaming.
+// headless caller (integration-gateway's relay) with no browser to redirect
+// can request "device" instead — a request property, not something inferred
+// from Live/streaming. §5's snake_case spelling is accepted too.
 func TestShapeInvokeTurnCarriesTheIdentityLinkFlowOverride(t *testing.T) {
-	turn, err := shapeInvokeTurn(
-		invokeRequest{Request: "triage this", IdentityLinkFlow: "device"},
-		"", "", nil, testCaller, time.Now(),
-	)
-	require.NoError(t, err)
-	require.Equal(t, "device", turn.IdentityLinkFlow)
+	for _, req := range []invokeRequest{
+		{Request: "triage this", IdentityLinkFlow: "device"},
+		{Request: "triage this", IdentityLinkFlowSnake: "device"},
+	} {
+		shaped, err := shapeInvokeTurn(req, "", "", nil, testCaller, time.Now())
+		require.NoError(t, err)
+		require.Equal(t, "device", shaped.turn.IdentityLinkFlow)
+	}
 }
 
 func TestShapeInvokeTurnDefaultsIdentityLinkFlowToEmpty(t *testing.T) {
-	turn, err := shapeInvokeTurn(
-		invokeRequest{Request: "triage this"},
-		"", "", nil, testCaller, time.Now(),
-	)
+	shaped, err := shapeInvokeTurn(invokeRequest{Request: "triage this"}, "", "", nil, testCaller, time.Now())
 	require.NoError(t, err)
-	require.Empty(t, turn.IdentityLinkFlow, "the workflow itself defaults an empty flow to authcode")
+	require.Empty(t, shaped.turn.IdentityLinkFlow, "the workflow itself defaults an empty flow to authcode")
 }
 
-// A webhook turn's repository is the one its sender was verified on: named
-// by the adapter, or else read off the event itself.
-func TestShapeInvokeTurnCarriesTheEventRepository(t *testing.T) {
-	cases := []struct {
-		label string
-		req   invokeRequest
-		want  string
-	}{
-		{"named by the adapter", invokeRequest{Request: "x", TargetRepository: "e2e-org/e2e-repo"}, "e2e-org/e2e-repo"},
-		{"read off the event", invokeRequest{Request: "x", Event: map[string]any{"owner": "e2e-org", "repo": "e2e-repo"}}, "e2e-org/e2e-repo"},
-		{"the adapter wins", invokeRequest{Request: "x", TargetRepository: "a/b", Event: map[string]any{"owner": "c", "repo": "d"}}, "a/b"},
-		{"half an event", invokeRequest{Request: "x", Event: map[string]any{"owner": "e2e-org"}}, ""},
-		{"no event", invokeRequest{Request: "x"}, ""},
-	}
-	for _, tc := range cases {
-		turn, err := shapeInvokeTurn(tc.req, "", "", nil, testCaller, time.Now())
-		require.NoError(t, err, tc.label)
-		require.Equal(t, tc.want, turn.TargetRepository, tc.label)
-	}
+// A caller's session id is used when the matched trigger has no sessionKey;
+// §5 spells it session_id, agent-orchestrator sessionId.
+func TestShapeInvokeTurnCallerSessionID(t *testing.T) {
+	reg := catalog.NewEventTriggerRegistry()
+	reg.Upsert(catalog.NewEventTriggerDescriptor("t", catalog.EventTriggerSpec{
+		Target: catalog.EventTriggerTarget{Orchestrator: &struct{}{}, PromptTemplate: "x"},
+	}, true))
+
+	shaped, err := shapeInvokeTurn(invokeRequest{Event: prEnvelope("x"), SessionIDSnake: "caller-session"}, "", "", reg, testCaller, time.Now())
+	require.NoError(t, err)
+	require.Equal(t, "caller-session", shaped.sessionID)
+
+	shaped, err = shapeInvokeTurn(invokeRequest{Event: prEnvelope("x")}, "", "", reg, testCaller, time.Now())
+	require.NoError(t, err)
+	require.Equal(t, "event:github:d-1", shaped.sessionID)
 }
 
 // The security core of ADR 0030 §6. The sender login selects the principal
@@ -162,82 +242,115 @@ func TestShapeInvokeTurnCarriesTheEventRepository(t *testing.T) {
 func TestShapeInvokeTurnSenderLoginTrust(t *testing.T) {
 	now := time.UnixMilli(1754150400000)
 	valid := rbac.MintSenderAssertion(assertionSecret, "imaustink", rbac.DefaultAssertionTTL, now)
+	attacker := func() *catalog.Envelope {
+		e := prEnvelope("ai-review")
+		e.Sender = map[string]any{"login": "attacker"}
+		return e
+	}
 
 	t.Run("with a secret, a verified assertion is trusted", func(t *testing.T) {
-		turn, err := shapeInvokeTurn(
-			invokeRequest{Request: "r", Event: issueEvent()},
-			valid, assertionSecret, nil, testCaller, now,
-		)
+		shaped, err := shapeInvokeTurn(invokeRequest{Event: prEnvelope("ai-review")}, valid, assertionSecret, reviewTriggers(t), testCaller, now)
 		require.NoError(t, err)
-		require.Equal(t, "imaustink", turn.SenderLogin)
+		require.Equal(t, "imaustink", shaped.turn.SenderLogin)
 	})
 
-	t.Run("with a secret, the unsigned body field is ignored entirely", func(t *testing.T) {
-		event := issueEvent()
-		event["senderLogin"] = "attacker"
-		turn, err := shapeInvokeTurn(
-			invokeRequest{Request: "r", Event: event},
-			"", assertionSecret, nil, testCaller, now,
-		)
+	t.Run("with a secret, the unsigned envelope sender is ignored entirely", func(t *testing.T) {
+		shaped, err := shapeInvokeTurn(invokeRequest{Event: attacker()}, "", assertionSecret, reviewTriggers(t), testCaller, now)
 		require.NoError(t, err)
-		require.Empty(t, turn.SenderLogin,
+		require.Empty(t, shaped.turn.SenderLogin,
 			"no assertion means no principal — never the login the body claimed")
 	})
 
-	t.Run("with a secret, a body field cannot override a verified assertion", func(t *testing.T) {
-		event := issueEvent()
-		event["senderLogin"] = "attacker"
-		turn, err := shapeInvokeTurn(
-			invokeRequest{Request: "r", Event: event},
-			valid, assertionSecret, nil, testCaller, now,
-		)
+	t.Run("with a secret, the envelope cannot override a verified assertion", func(t *testing.T) {
+		shaped, err := shapeInvokeTurn(invokeRequest{Event: attacker()}, valid, assertionSecret, reviewTriggers(t), testCaller, now)
 		require.NoError(t, err)
-		require.Equal(t, "imaustink", turn.SenderLogin)
+		require.Equal(t, "imaustink", shaped.turn.SenderLogin)
 	})
 
 	t.Run("with a secret, an assertion signed by someone else is refused", func(t *testing.T) {
 		forged := rbac.MintSenderAssertion("some-other-secret", "imaustink", rbac.DefaultAssertionTTL, now)
-		turn, err := shapeInvokeTurn(
-			invokeRequest{Request: "r", Event: issueEvent()},
-			forged, assertionSecret, nil, testCaller, now,
-		)
+		shaped, err := shapeInvokeTurn(invokeRequest{Event: prEnvelope("ai-review")}, forged, assertionSecret, reviewTriggers(t), testCaller, now)
 		require.NoError(t, err)
-		require.Empty(t, turn.SenderLogin)
+		require.Empty(t, shaped.turn.SenderLogin)
 	})
 
 	t.Run("with a secret, an expired assertion is refused", func(t *testing.T) {
-		turn, err := shapeInvokeTurn(
-			invokeRequest{Request: "r", Event: issueEvent()},
-			valid, assertionSecret, nil, testCaller,
-			now.Add(rbac.DefaultAssertionTTL+time.Second),
-		)
+		shaped, err := shapeInvokeTurn(invokeRequest{Event: prEnvelope("ai-review")}, valid, assertionSecret, reviewTriggers(t), testCaller,
+			now.Add(rbac.DefaultAssertionTTL+time.Second))
 		require.NoError(t, err)
-		require.Empty(t, turn.SenderLogin)
+		require.Empty(t, shaped.turn.SenderLogin)
 	})
 
 	// The documented weaker mode: upgrading a deployment must not silently
 	// break it. Announced at startup by rbac.WarnIfSenderAssertionUnset.
-	t.Run("without a secret, the body field is trusted", func(t *testing.T) {
-		turn, err := shapeInvokeTurn(
-			invokeRequest{Request: "r", Event: issueEvent()},
-			"", "", nil, testCaller, now,
-		)
+	t.Run("without a secret, the envelope sender is trusted", func(t *testing.T) {
+		shaped, err := shapeInvokeTurn(invokeRequest{Event: prEnvelope("ai-review")}, "", "", reviewTriggers(t), testCaller, now)
 		require.NoError(t, err)
-		require.Equal(t, "imaustink", turn.SenderLogin)
+		require.Equal(t, "imaustink", shaped.turn.SenderLogin)
 	})
 
-	// The principal must resolve for every event-driven turn, including ones
-	// that match no route — otherwise cross-entry-point credential sharing
-	// would quietly depend on routing config.
-	t.Run("resolves even when no route matches", func(t *testing.T) {
-		turn, err := shapeInvokeTurn(
-			invokeRequest{Request: "r", Event: map[string]any{"source": "slack", "event": "message", "senderLogin": "imaustink"}},
-			"", "", triageRoutes(t), testCaller, now,
-		)
+	// The principal must resolve for a resolved turn too, which matches
+	// nothing here — otherwise cross-entry-point credential sharing would
+	// quietly depend on which side did the matching.
+	t.Run("resolves for a resolved turn", func(t *testing.T) {
+		shaped, err := shapeInvokeTurn(invokeRequest{Request: "r", ForcedAgentID: "a"}, valid, assertionSecret, nil, testCaller, now)
 		require.NoError(t, err)
-		require.Equal(t, "imaustink", turn.SenderLogin)
-		require.Empty(t, turn.ForcedAgentID)
+		require.Equal(t, "imaustink", shaped.turn.SenderLogin)
 	})
+}
+
+// §5's non-turn outcomes are answered before any workflow is touched: a nil
+// Temporal client is the assertion, since reaching update-with-start would
+// panic.
+func TestHandleInvokeEventOutcomes(t *testing.T) {
+	post := func(s *Server, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/invoke", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		s.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	envelope := func(label string) string {
+		raw, err := json.Marshal(map[string]any{"event": prEnvelope(label)})
+		require.NoError(t, err)
+		return string(raw)
+	}
+
+	s := NewServer(nil, "tq", nil, WithEventTriggers(reviewTriggers(t)))
+	rec := post(s, envelope("bug"))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"status":"ignored"}`, rec.Body.String())
+
+	failing := catalog.NewEventTriggerRegistry()
+	failing.Upsert(catalog.NewEventTriggerDescriptor("needs-issue", catalog.EventTriggerSpec{
+		Params: map[string]string{"n": "body.issue.number"},
+		Target: catalog.EventTriggerTarget{Orchestrator: &struct{}{}, PromptTemplate: "{{n}}"},
+	}, true))
+	rec = post(NewServer(nil, "tq", nil, WithEventTriggers(failing)), envelope("ai-review"))
+	require.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+	var outcome invokeOutcome
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &outcome))
+	require.Equal(t, "failed", outcome.Status)
+	require.Contains(t, outcome.Error, "needs-issue")
+
+	rec = post(NewServer(nil, "tq", nil), envelope("ai-review"))
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
+// The 202 body's trigger.reply is null — present, not omitted — when the
+// trigger declares no reply, so a consumer can tell "no side effects" from
+// "an older gateway that never sends the field".
+func TestInvokeAcceptedTriggerShape(t *testing.T) {
+	raw, err := json.Marshal(invokeAccepted{
+		ID: "w.u", Status: invokeStatusPending,
+		Trigger: &invokeTrigger{Name: "t", SessionID: "event:ci:1"},
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"id":"w.u","status":"pending","trigger":{"name":"t","sessionId":"event:ci:1","reply":null}}`, string(raw))
+
+	raw, err = json.Marshal(invokeAccepted{ID: "w.u", Status: invokeStatusPending})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"id":"w.u","status":"pending"}`, string(raw))
 }
 
 func TestInvocationIDRoundTrip(t *testing.T) {
@@ -427,36 +540,4 @@ func TestToolCallsPayloadShape(t *testing.T) {
 	// Index is how a streaming client assembles more than one call.
 	require.Equal(t, 0, payload[0].Index)
 	require.Equal(t, 1, payload[1].Index)
-}
-
-// A caller that already matched a route names the target directly, and that
-// wins over re-matching here. This is how the TypeScript orchestrator drives
-// the engine: it owns the route registry, so re-deciding here could only
-// disagree with a decision already made.
-func TestShapeInvokeTurnPrefersAnExplicitlyNamedTarget(t *testing.T) {
-	turn, err := shapeInvokeTurn(
-		invokeRequest{
-			Request:       "Triage acme/widgets#7",
-			ForcedAgentID: "some-other-agent",
-			// An event that WOULD match the triage route if it were consulted.
-			Event: issueEvent(),
-		},
-		"", "", triageRoutes(t), testCaller, time.Now(),
-	)
-	require.NoError(t, err)
-	require.Equal(t, "some-other-agent", turn.ForcedAgentID)
-	require.Equal(t, "Triage acme/widgets#7", turn.Message,
-		"the route's promptTemplate must not overwrite a request the caller already shaped")
-}
-
-// With no explicit target, the event descriptor is still matched here — which
-// is what a caller driving the engine directly relies on.
-func TestShapeInvokeTurnStillMatchesWhenNoTargetIsNamed(t *testing.T) {
-	turn, err := shapeInvokeTurn(
-		invokeRequest{Request: "an issue was labeled", Event: issueEvent()},
-		"", "", triageRoutes(t), testCaller, time.Now(),
-	)
-	require.NoError(t, err)
-	require.Equal(t, "claude-code-swe-agent", turn.ForcedAgentID)
-	require.Equal(t, "Triage acme/widgets#7: Crash on save", turn.Message)
 }

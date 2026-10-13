@@ -21,6 +21,7 @@ type ToolRunWorkflowInput struct {
 	Input          string   `json:"input,omitempty"` // convenience single arg
 	Args           []string `json:"args,omitempty"`  // overrides Input when set
 	TimeoutSeconds int32    `json:"timeoutSeconds,omitempty"`
+	ReadOnly       bool     `json:"readOnly,omitempty"`
 }
 
 type ToolProgress struct {
@@ -45,6 +46,7 @@ func ToolRunWorkflow(ctx workflow.Context, in ToolRunWorkflowInput) (ToolOutcome
 		ToolRef:        in.ToolRef,
 		Args:           args,
 		TimeoutSeconds: in.TimeoutSeconds,
+		ReadOnly:       in.ReadOnly,
 		OnJobID:        func(id string) { progress.JobID = id },
 		OnProgress: func(e messaging.Event) {
 			line := e.Message

@@ -1,0 +1,30 @@
+{{- if .Values.eventTriggers.slackMentionChat.enabled }}
+{{- /*
+Example: an @-mention of the Slack app becomes an ordinary conversational turn
+(target.orchestrator: skill retrieval over the mention text), one session per
+Slack thread. Slack's url_verification handshake never reaches here -- the
+slackV0 source answers it in the gateway.
+
+There is no Slack reply adapter yet (docs/event-triggers.md §7 ships github and
+http), so the answer is visible on the session, not posted back to the channel.
+*/}}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: EventTrigger
+metadata:
+  name: slack-mention-chat
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  sourceRef: slack
+  match:
+    cel: >-
+      body.type == "event_callback" && body.event.type == "app_mention"
+  params:
+    text: body.event.text
+    channel: body.event.channel
+    thread: 'has(body.event.thread_ts) ? body.event.thread_ts : body.event.ts'
+  sessionKey: {{`"slack:{{channel}}:{{thread}}"`}}
+  target:
+    orchestrator: {}
+    promptTemplate: {{`"{{text}}"`}}
+{{- end }}

@@ -1,25 +1,49 @@
 {
-  "$comment": "Executable definition of docs/event-triggers.md §3-§4. Every case runs in BOTH the TS package (@controller-agent/event-triggers) and the Temporal engine (cel-go). expect.value is compared as JSON; expect.type pins int vs double where JSON cannot ('int'|'double'|'string'|'bool'|'list'|'map'|'null'). expect.error=true means evaluation must fail.",
+  "$comment": "Executable definition of docs/event-triggers.md §3-§4. Every case runs in BOTH the TS package (@controller-agent/event-triggers) and the Temporal engine (cel-go). expect.value is compared as JSON; expect.type pins int vs double where JSON cannot ('int'|'double'|'string'|'bool'|'list'|'map'|'null'). expect.error=true means evaluation must fail. In `matching`, expect.toolInput (when present) is the tool's single string input (docs/event-triggers.md §1); fields absent from expect are not asserted.",
   "envelopes": {
     "gh_pr_labeled": {
       "source": "github",
       "kind": "webhook",
       "id": "d-1",
       "time": "2026-10-13T12:00:00Z",
-      "headers": { "x-github-event": "pull_request", "content-type": "application/json" },
+      "headers": {
+        "x-github-event": "pull_request",
+        "content-type": "application/json"
+      },
       "body": {
         "action": "labeled",
-        "label": { "name": "ai-review" },
+        "label": {
+          "name": "ai-review"
+        },
         "pull_request": {
           "number": 42,
           "title": "Fix the thing",
           "draft": false,
-          "labels": [{ "name": "ai-review" }, { "name": "bug" }]
+          "labels": [
+            {
+              "name": "ai-review"
+            },
+            {
+              "name": "bug"
+            }
+          ]
         },
-        "repository": { "full_name": "acme/widgets", "name": "widgets", "owner": { "login": "acme" } },
-        "sender": { "login": "octocat", "type": "User" }
+        "repository": {
+          "full_name": "acme/widgets",
+          "name": "widgets",
+          "owner": {
+            "login": "acme"
+          }
+        },
+        "sender": {
+          "login": "octocat",
+          "type": "User"
+        }
       },
-      "sender": { "login": "octocat", "isBot": false },
+      "sender": {
+        "login": "octocat",
+        "isBot": false
+      },
       "repository": "acme/widgets"
     },
     "gh_issue_labeled": {
@@ -27,15 +51,31 @@
       "kind": "webhook",
       "id": "d-2",
       "time": "2026-10-13T12:01:00Z",
-      "headers": { "x-github-event": "issues" },
+      "headers": {
+        "x-github-event": "issues"
+      },
       "body": {
         "action": "labeled",
-        "label": { "name": "ai-triage" },
-        "issue": { "number": 7, "title": "Widgets explode", "body": "Steps: …" },
-        "repository": { "full_name": "acme/widgets" },
-        "sender": { "login": "octocat", "type": "User" }
+        "label": {
+          "name": "ai-triage"
+        },
+        "issue": {
+          "number": 7,
+          "title": "Widgets explode",
+          "body": "Steps: …"
+        },
+        "repository": {
+          "full_name": "acme/widgets"
+        },
+        "sender": {
+          "login": "octocat",
+          "type": "User"
+        }
       },
-      "sender": { "login": "octocat", "isBot": false },
+      "sender": {
+        "login": "octocat",
+        "isBot": false
+      },
       "repository": "acme/widgets"
     },
     "gh_issue_bot": {
@@ -43,15 +83,29 @@
       "kind": "webhook",
       "id": "d-3",
       "time": "2026-10-13T12:02:00Z",
-      "headers": { "x-github-event": "issues" },
+      "headers": {
+        "x-github-event": "issues"
+      },
       "body": {
         "action": "labeled",
-        "label": { "name": "ai-triage" },
-        "issue": { "number": 8 },
-        "repository": { "full_name": "acme/widgets" },
-        "sender": { "login": "agent[bot]", "type": "Bot" }
+        "label": {
+          "name": "ai-triage"
+        },
+        "issue": {
+          "number": 8
+        },
+        "repository": {
+          "full_name": "acme/widgets"
+        },
+        "sender": {
+          "login": "agent[bot]",
+          "type": "Bot"
+        }
       },
-      "sender": { "login": "agent[bot]", "isBot": true },
+      "sender": {
+        "login": "agent[bot]",
+        "isBot": true
+      },
       "repository": "acme/widgets"
     },
     "slack_mention": {
@@ -63,7 +117,12 @@
       "body": {
         "type": "event_callback",
         "team_id": "T1",
-        "event": { "type": "app_mention", "text": "<@U1> summarize the incident", "user": "U123", "channel": "C9" }
+        "event": {
+          "type": "app_mention",
+          "text": "<@U1> summarize the incident",
+          "user": "U123",
+          "channel": "C9"
+        }
       },
       "sender": {},
       "repository": ""
@@ -71,10 +130,17 @@
     "cron_tick": {
       "source": "nightly-sweep",
       "kind": "cron",
-      "id": "nightly-sweep-1760356800",
+      "id": "nightly-sweep-1791892800",
       "time": "2026-10-13T12:00:00Z",
       "headers": {},
-      "body": { "repo": "acme/widgets", "limit": 25, "labels": ["stale", "needs-triage"] },
+      "body": {
+        "repo": "acme/widgets",
+        "limit": 25,
+        "labels": [
+          "stale",
+          "needs-triage"
+        ]
+      },
       "sender": {},
       "repository": ""
     },
@@ -83,14 +149,20 @@
       "kind": "webhook",
       "id": "run-99",
       "time": "2026-10-13T12:04:00Z",
-      "headers": { "x-ci-event": "pipeline" },
+      "headers": {
+        "x-ci-event": "pipeline"
+      },
       "body": {
         "pipeline": "build",
         "status": "failed",
         "duration": 12.75,
         "attempt": 3,
+        "exit_code": 1.0,
         "notes": null,
-        "commit": { "sha": "abc123", "branch": "main" }
+        "commit": {
+          "sha": "abc123",
+          "branch": "main"
+        }
       },
       "sender": {},
       "repository": ""
@@ -100,78 +172,702 @@
       "kind": "webhook",
       "id": "f-1",
       "time": "2026-10-13T12:05:00Z",
-      "headers": { "content-type": "application/x-www-form-urlencoded" },
-      "body": { "command": "/triage", "text": "acme/widgets 7", "user_name": "jdoe" },
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded"
+      },
+      "body": {
+        "command": "/triage",
+        "text": "acme/widgets 7",
+        "user_name": "jdoe"
+      },
       "sender": {},
       "repository": ""
     }
   },
   "cases": [
-    { "name": "string var equality", "envelope": "gh_pr_labeled", "expr": "source == \"github\"", "expect": { "value": true, "type": "bool" } },
-    { "name": "header index", "envelope": "gh_pr_labeled", "expr": "kind == \"webhook\" && headers[\"x-github-event\"] == \"pull_request\"", "expect": { "value": true, "type": "bool" } },
-    { "name": "nested field equality", "envelope": "gh_pr_labeled", "expr": "body.action == \"labeled\" && body.label.name == \"ai-review\"", "expect": { "value": true, "type": "bool" } },
-    { "name": "json integer is int", "envelope": "gh_pr_labeled", "expr": "body.pull_request.number", "expect": { "value": 42, "type": "int" } },
-    { "name": "int equality with literal", "envelope": "gh_pr_labeled", "expr": "body.pull_request.number == 42", "expect": { "value": true, "type": "bool" } },
-    { "name": "int ordering", "envelope": "gh_pr_labeled", "expr": "body.pull_request.number > 40", "expect": { "value": true, "type": "bool" } },
-    { "name": "int arithmetic", "envelope": "gh_pr_labeled", "expr": "body.pull_request.number + 1", "expect": { "value": 43, "type": "int" } },
-    { "name": "exists macro", "envelope": "gh_pr_labeled", "expr": "body.pull_request.labels.exists(l, l.name == \"bug\")", "expect": { "value": true, "type": "bool" } },
-    { "name": "all macro", "envelope": "gh_pr_labeled", "expr": "body.pull_request.labels.all(l, l.name.startsWith(\"a\"))", "expect": { "value": false, "type": "bool" } },
-    { "name": "map macro", "envelope": "gh_pr_labeled", "expr": "body.pull_request.labels.map(l, l.name)", "expect": { "value": ["ai-review", "bug"], "type": "list" } },
-    { "name": "filter then map", "envelope": "gh_pr_labeled", "expr": "body.pull_request.labels.filter(l, l.name != \"bug\").map(l, l.name)", "expect": { "value": ["ai-review"], "type": "list" } },
-    { "name": "size of list", "envelope": "gh_pr_labeled", "expr": "size(body.pull_request.labels)", "expect": { "value": 2, "type": "int" } },
-    { "name": "in list", "envelope": "gh_pr_labeled", "expr": "\"bug\" in body.pull_request.labels.map(l, l.name)", "expect": { "value": true, "type": "bool" } },
-    { "name": "has present", "envelope": "gh_pr_labeled", "expr": "has(body.pull_request)", "expect": { "value": true, "type": "bool" } },
-    { "name": "has absent", "envelope": "gh_issue_labeled", "expr": "has(body.pull_request)", "expect": { "value": false, "type": "bool" } },
-    { "name": "ternary picks issue", "envelope": "gh_issue_labeled", "expr": "has(body.issue) ? body.issue.number : body.pull_request.number", "expect": { "value": 7, "type": "int" } },
-    { "name": "ternary picks pr", "envelope": "gh_pr_labeled", "expr": "has(body.issue) ? body.issue.number : body.pull_request.number", "expect": { "value": 42, "type": "int" } },
-    { "name": "missing field is an error", "envelope": "gh_pr_labeled", "expr": "body.missing.field == \"x\"", "expect": { "error": true } },
-    { "name": "sender login", "envelope": "gh_pr_labeled", "expr": "sender.login", "expect": { "value": "octocat", "type": "string" } },
-    { "name": "empty sender has no login", "envelope": "slack_mention", "expr": "has(sender.login)", "expect": { "value": false, "type": "bool" } },
-    { "name": "sender isBot", "envelope": "gh_issue_bot", "expr": "sender.isBot", "expect": { "value": true, "type": "bool" } },
-    { "name": "repository var", "envelope": "gh_pr_labeled", "expr": "repository == \"acme/widgets\"", "expect": { "value": true, "type": "bool" } },
-    { "name": "string contains", "envelope": "gh_pr_labeled", "expr": "body.pull_request.title.contains(\"thing\")", "expect": { "value": true, "type": "bool" } },
-    { "name": "string matches", "envelope": "gh_pr_labeled", "expr": "body.pull_request.title.matches(\"^Fix\")", "expect": { "value": true, "type": "bool" } },
-    { "name": "string endsWith", "envelope": "gh_pr_labeled", "expr": "body.pull_request.title.endsWith(\"thing\")", "expect": { "value": true, "type": "bool" } },
-    { "name": "string() of int", "envelope": "gh_pr_labeled", "expr": "string(body.pull_request.number)", "expect": { "value": "42", "type": "string" } },
-    { "name": "int() of string", "envelope": "gh_pr_labeled", "expr": "int(\"17\") + 1", "expect": { "value": 18, "type": "int" } },
-    { "name": "json fraction is double", "envelope": "ci_failed", "expr": "body.duration", "expect": { "value": 12.75, "type": "double" } },
-    { "name": "double compared to double", "envelope": "ci_failed", "expr": "body.duration > 12.0", "expect": { "value": true, "type": "bool" } },
-    { "name": "normalized int equality", "envelope": "ci_failed", "expr": "body.attempt == 3", "expect": { "value": true, "type": "bool" } },
-    { "name": "in literal list", "envelope": "ci_failed", "expr": "body.status in [\"failed\", \"errored\"]", "expect": { "value": true, "type": "bool" } },
-    { "name": "key in map", "envelope": "ci_failed", "expr": "\"commit\" in body", "expect": { "value": true, "type": "bool" } },
-    { "name": "null field equality", "envelope": "ci_failed", "expr": "body.notes == null", "expect": { "value": true, "type": "bool" } },
-    { "name": "compound condition", "envelope": "ci_failed", "expr": "body.commit.branch == \"main\" && body.status == \"failed\"", "expect": { "value": true, "type": "bool" } },
-    { "name": "cron kind and source", "envelope": "cron_tick", "expr": "kind == \"cron\" && source == \"nightly-sweep\"", "expect": { "value": true, "type": "bool" } },
-    { "name": "cron payload int", "envelope": "cron_tick", "expr": "body.limit", "expect": { "value": 25, "type": "int" } },
-    { "name": "cron payload list index", "envelope": "cron_tick", "expr": "body.labels[1]", "expect": { "value": "needs-triage", "type": "string" } },
-    { "name": "cron headers empty", "envelope": "cron_tick", "expr": "size(headers)", "expect": { "value": 0, "type": "int" } },
-    { "name": "slack event type", "envelope": "slack_mention", "expr": "body.event.type == \"app_mention\"", "expect": { "value": true, "type": "bool" } },
-    { "name": "slack text contains", "envelope": "slack_mention", "expr": "body.event.text.contains(\"summarize\")", "expect": { "value": true, "type": "bool" } },
-    { "name": "form field", "envelope": "form_slash", "expr": "body.command == \"/triage\"", "expect": { "value": true, "type": "bool" } },
-    { "name": "form text", "envelope": "form_slash", "expr": "body.text", "expect": { "value": "acme/widgets 7", "type": "string" } },
-    { "name": "id var", "envelope": "gh_pr_labeled", "expr": "id", "expect": { "value": "d-1", "type": "string" } },
-    { "name": "time startsWith", "envelope": "gh_pr_labeled", "expr": "time.startsWith(\"2026-\")", "expect": { "value": true, "type": "bool" } },
-    { "name": "negation", "envelope": "gh_pr_labeled", "expr": "!(body.action == \"unlabeled\")", "expect": { "value": true, "type": "bool" } },
-    { "name": "bool field ternary", "envelope": "gh_pr_labeled", "expr": "body.pull_request.draft ? \"draft\" : \"ready\"", "expect": { "value": "ready", "type": "string" } },
-    { "name": "literal list map", "envelope": "gh_pr_labeled", "expr": "[1, 2, 3].map(x, x * 2)", "expect": { "value": [2, 4, 6], "type": "list" } },
-    { "name": "literal map index", "envelope": "gh_pr_labeled", "expr": "{\"a\": 1}[\"a\"]", "expect": { "value": 1, "type": "int" } },
-    { "name": "returns a map", "envelope": "ci_failed", "expr": "body.commit", "expect": { "value": { "sha": "abc123", "branch": "main" }, "type": "map" } },
-    { "name": "division by zero is an error", "envelope": "gh_pr_labeled", "expr": "1 / 0", "expect": { "error": true } },
-    { "name": "syntax error is an error", "envelope": "gh_pr_labeled", "expr": "body.action ==", "expect": { "error": true } }
+    {
+      "name": "string var equality",
+      "envelope": "gh_pr_labeled",
+      "expr": "source == \"github\"",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "header index",
+      "envelope": "gh_pr_labeled",
+      "expr": "kind == \"webhook\" && headers[\"x-github-event\"] == \"pull_request\"",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "nested field equality",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.action == \"labeled\" && body.label.name == \"ai-review\"",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "json integer is int",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.pull_request.number",
+      "expect": {
+        "value": 42,
+        "type": "int"
+      }
+    },
+    {
+      "name": "int equality with literal",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.pull_request.number == 42",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "int ordering",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.pull_request.number > 40",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "int arithmetic",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.pull_request.number + 1",
+      "expect": {
+        "value": 43,
+        "type": "int"
+      }
+    },
+    {
+      "name": "exists macro",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.pull_request.labels.exists(l, l.name == \"bug\")",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "all macro",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.pull_request.labels.all(l, l.name.startsWith(\"a\"))",
+      "expect": {
+        "value": false,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "map macro",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.pull_request.labels.map(l, l.name)",
+      "expect": {
+        "value": [
+          "ai-review",
+          "bug"
+        ],
+        "type": "list"
+      }
+    },
+    {
+      "name": "filter then map",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.pull_request.labels.filter(l, l.name != \"bug\").map(l, l.name)",
+      "expect": {
+        "value": [
+          "ai-review"
+        ],
+        "type": "list"
+      }
+    },
+    {
+      "name": "size of list",
+      "envelope": "gh_pr_labeled",
+      "expr": "size(body.pull_request.labels)",
+      "expect": {
+        "value": 2,
+        "type": "int"
+      }
+    },
+    {
+      "name": "in list",
+      "envelope": "gh_pr_labeled",
+      "expr": "\"bug\" in body.pull_request.labels.map(l, l.name)",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "has present",
+      "envelope": "gh_pr_labeled",
+      "expr": "has(body.pull_request)",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "has absent",
+      "envelope": "gh_issue_labeled",
+      "expr": "has(body.pull_request)",
+      "expect": {
+        "value": false,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "ternary picks issue",
+      "envelope": "gh_issue_labeled",
+      "expr": "has(body.issue) ? body.issue.number : body.pull_request.number",
+      "expect": {
+        "value": 7,
+        "type": "int"
+      }
+    },
+    {
+      "name": "ternary picks pr",
+      "envelope": "gh_pr_labeled",
+      "expr": "has(body.issue) ? body.issue.number : body.pull_request.number",
+      "expect": {
+        "value": 42,
+        "type": "int"
+      }
+    },
+    {
+      "name": "missing field is an error",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.missing.field == \"x\"",
+      "expect": {
+        "error": true
+      }
+    },
+    {
+      "name": "sender login",
+      "envelope": "gh_pr_labeled",
+      "expr": "sender.login",
+      "expect": {
+        "value": "octocat",
+        "type": "string"
+      }
+    },
+    {
+      "name": "empty sender has no login",
+      "envelope": "slack_mention",
+      "expr": "has(sender.login)",
+      "expect": {
+        "value": false,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "sender isBot",
+      "envelope": "gh_issue_bot",
+      "expr": "sender.isBot",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "repository var",
+      "envelope": "gh_pr_labeled",
+      "expr": "repository == \"acme/widgets\"",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "string contains",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.pull_request.title.contains(\"thing\")",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "string matches",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.pull_request.title.matches(\"^Fix\")",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "string endsWith",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.pull_request.title.endsWith(\"thing\")",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "string() of int",
+      "envelope": "gh_pr_labeled",
+      "expr": "string(body.pull_request.number)",
+      "expect": {
+        "value": "42",
+        "type": "string"
+      }
+    },
+    {
+      "name": "int() of string",
+      "envelope": "gh_pr_labeled",
+      "expr": "int(\"17\") + 1",
+      "expect": {
+        "value": 18,
+        "type": "int"
+      }
+    },
+    {
+      "name": "json fraction is double",
+      "envelope": "ci_failed",
+      "expr": "body.duration",
+      "expect": {
+        "value": 12.75,
+        "type": "double"
+      }
+    },
+    {
+      "name": "double compared to double",
+      "envelope": "ci_failed",
+      "expr": "body.duration > 12.0",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "normalized int equality",
+      "envelope": "ci_failed",
+      "expr": "body.attempt == 3",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "integral json number written with a fraction is int",
+      "envelope": "ci_failed",
+      "expr": "body.exit_code",
+      "expect": {
+        "value": 1,
+        "type": "int"
+      }
+    },
+    {
+      "name": "in literal list",
+      "envelope": "ci_failed",
+      "expr": "body.status in [\"failed\", \"errored\"]",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "key in map",
+      "envelope": "ci_failed",
+      "expr": "\"commit\" in body",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "null field equality",
+      "envelope": "ci_failed",
+      "expr": "body.notes == null",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "compound condition",
+      "envelope": "ci_failed",
+      "expr": "body.commit.branch == \"main\" && body.status == \"failed\"",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "cron kind and source",
+      "envelope": "cron_tick",
+      "expr": "kind == \"cron\" && source == \"nightly-sweep\"",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "cron payload int",
+      "envelope": "cron_tick",
+      "expr": "body.limit",
+      "expect": {
+        "value": 25,
+        "type": "int"
+      }
+    },
+    {
+      "name": "cron payload list index",
+      "envelope": "cron_tick",
+      "expr": "body.labels[1]",
+      "expect": {
+        "value": "needs-triage",
+        "type": "string"
+      }
+    },
+    {
+      "name": "cron headers empty",
+      "envelope": "cron_tick",
+      "expr": "size(headers)",
+      "expect": {
+        "value": 0,
+        "type": "int"
+      }
+    },
+    {
+      "name": "slack event type",
+      "envelope": "slack_mention",
+      "expr": "body.event.type == \"app_mention\"",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "slack text contains",
+      "envelope": "slack_mention",
+      "expr": "body.event.text.contains(\"summarize\")",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "form field",
+      "envelope": "form_slash",
+      "expr": "body.command == \"/triage\"",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "form text",
+      "envelope": "form_slash",
+      "expr": "body.text",
+      "expect": {
+        "value": "acme/widgets 7",
+        "type": "string"
+      }
+    },
+    {
+      "name": "id var",
+      "envelope": "gh_pr_labeled",
+      "expr": "id",
+      "expect": {
+        "value": "d-1",
+        "type": "string"
+      }
+    },
+    {
+      "name": "time startsWith",
+      "envelope": "gh_pr_labeled",
+      "expr": "time.startsWith(\"2026-\")",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "negation",
+      "envelope": "gh_pr_labeled",
+      "expr": "!(body.action == \"unlabeled\")",
+      "expect": {
+        "value": true,
+        "type": "bool"
+      }
+    },
+    {
+      "name": "bool field ternary",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.pull_request.draft ? \"draft\" : \"ready\"",
+      "expect": {
+        "value": "ready",
+        "type": "string"
+      }
+    },
+    {
+      "name": "literal list map",
+      "envelope": "gh_pr_labeled",
+      "expr": "[1, 2, 3].map(x, x * 2)",
+      "expect": {
+        "value": [
+          2,
+          4,
+          6
+        ],
+        "type": "list"
+      }
+    },
+    {
+      "name": "literal map index",
+      "envelope": "gh_pr_labeled",
+      "expr": "{\"a\": 1}[\"a\"]",
+      "expect": {
+        "value": 1,
+        "type": "int"
+      }
+    },
+    {
+      "name": "returns a map",
+      "envelope": "ci_failed",
+      "expr": "body.commit",
+      "expect": {
+        "value": {
+          "sha": "abc123",
+          "branch": "main"
+        },
+        "type": "map"
+      }
+    },
+    {
+      "name": "division by zero is an error",
+      "envelope": "gh_pr_labeled",
+      "expr": "1 / 0",
+      "expect": {
+        "error": true
+      }
+    },
+    {
+      "name": "syntax error is an error",
+      "envelope": "gh_pr_labeled",
+      "expr": "body.action ==",
+      "expect": {
+        "error": true
+      }
+    }
   ],
   "templates": [
-    { "name": "string and int", "template": "Review {{repo}}#{{number}}", "params": { "repo": { "value": "acme/widgets", "type": "string" }, "number": { "value": 42, "type": "int" } }, "expect": "Review acme/widgets#42" },
-    { "name": "whitespace in placeholder", "template": "{{ repo }}", "params": { "repo": { "value": "acme/widgets", "type": "string" } }, "expect": "acme/widgets" },
-    { "name": "unknown placeholder verbatim", "template": "x {{nope}} y", "params": {}, "expect": "x {{nope}} y" },
-    { "name": "double fraction", "template": "{{d}}", "params": { "d": { "value": 12.75, "type": "double" } }, "expect": "12.75" },
-    { "name": "double small", "template": "{{d}}", "params": { "d": { "value": 0.1, "type": "double" } }, "expect": "0.1" },
-    { "name": "integral double", "template": "{{d}}", "params": { "d": { "value": 5, "type": "double" } }, "expect": "5" },
-    { "name": "negative double", "template": "{{d}}", "params": { "d": { "value": -3.5, "type": "double" } }, "expect": "-3.5" },
-    { "name": "bool", "template": "{{b}}", "params": { "b": { "value": true, "type": "bool" } }, "expect": "true" },
-    { "name": "null", "template": "[{{n}}]", "params": { "n": { "value": null, "type": "null" } }, "expect": "[]" },
-    { "name": "list compact json", "template": "{{l}}", "params": { "l": { "value": ["a", "b"], "type": "list" } }, "expect": "[\"a\",\"b\"]" },
-    { "name": "map compact json sorted keys", "template": "{{m}}", "params": { "m": { "value": { "b": 1, "a": { "d": 2, "c": 3 } }, "type": "map" } }, "expect": "{\"a\":{\"c\":3,\"d\":2},\"b\":1}" },
-    { "name": "repeated placeholder", "template": "{{x}}-{{x}}", "params": { "x": { "value": "y", "type": "string" } }, "expect": "y-y" }
+    {
+      "name": "string and int",
+      "template": "Review {{repo}}#{{number}}",
+      "params": {
+        "repo": {
+          "value": "acme/widgets",
+          "type": "string"
+        },
+        "number": {
+          "value": 42,
+          "type": "int"
+        }
+      },
+      "expect": "Review acme/widgets#42"
+    },
+    {
+      "name": "whitespace in placeholder",
+      "template": "{{ repo }}",
+      "params": {
+        "repo": {
+          "value": "acme/widgets",
+          "type": "string"
+        }
+      },
+      "expect": "acme/widgets"
+    },
+    {
+      "name": "unknown placeholder verbatim",
+      "template": "x {{nope}} y",
+      "params": {},
+      "expect": "x {{nope}} y"
+    },
+    {
+      "name": "double fraction",
+      "template": "{{d}}",
+      "params": {
+        "d": {
+          "value": 12.75,
+          "type": "double"
+        }
+      },
+      "expect": "12.75"
+    },
+    {
+      "name": "double small",
+      "template": "{{d}}",
+      "params": {
+        "d": {
+          "value": 0.1,
+          "type": "double"
+        }
+      },
+      "expect": "0.1"
+    },
+    {
+      "name": "integral double",
+      "template": "{{d}}",
+      "params": {
+        "d": {
+          "value": 5,
+          "type": "double"
+        }
+      },
+      "expect": "5"
+    },
+    {
+      "name": "negative double",
+      "template": "{{d}}",
+      "params": {
+        "d": {
+          "value": -3.5,
+          "type": "double"
+        }
+      },
+      "expect": "-3.5"
+    },
+    {
+      "name": "bool",
+      "template": "{{b}}",
+      "params": {
+        "b": {
+          "value": true,
+          "type": "bool"
+        }
+      },
+      "expect": "true"
+    },
+    {
+      "name": "null",
+      "template": "[{{n}}]",
+      "params": {
+        "n": {
+          "value": null,
+          "type": "null"
+        }
+      },
+      "expect": "[]"
+    },
+    {
+      "name": "list compact json",
+      "template": "{{l}}",
+      "params": {
+        "l": {
+          "value": [
+            "a",
+            "b"
+          ],
+          "type": "list"
+        }
+      },
+      "expect": "[\"a\",\"b\"]"
+    },
+    {
+      "name": "map compact json sorted keys",
+      "template": "{{m}}",
+      "params": {
+        "m": {
+          "value": {
+            "b": 1,
+            "a": {
+              "d": 2,
+              "c": 3
+            }
+          },
+          "type": "map"
+        }
+      },
+      "expect": "{\"a\":{\"c\":3,\"d\":2},\"b\":1}"
+    },
+    {
+      "name": "repeated placeholder",
+      "template": "{{x}}-{{x}}",
+      "params": {
+        "x": {
+          "value": "y",
+          "type": "string"
+        }
+      },
+      "expect": "y-y"
+    },
+    {
+      "name": "substituted values are not re-expanded",
+      "template": "{{a}}",
+      "params": {
+        "a": {
+          "value": "{{b}}",
+          "type": "string"
+        },
+        "b": {
+          "value": "x",
+          "type": "string"
+        }
+      },
+      "expect": "{{b}}"
+    },
+    {
+      "name": "double large exponent form",
+      "template": "{{d}}",
+      "params": {
+        "d": {
+          "value": 1e+21,
+          "type": "double"
+        }
+      },
+      "expect": "1e+21"
+    },
+    {
+      "name": "double small exponent form",
+      "template": "{{d}}",
+      "params": {
+        "d": {
+          "value": 1e-07,
+          "type": "double"
+        }
+      },
+      "expect": "1e-7"
+    },
+    {
+      "name": "json does not html-escape",
+      "template": "{{m}}",
+      "params": {
+        "m": {
+          "value": {
+            "t": "<a&b>"
+          },
+          "type": "map"
+        }
+      },
+      "expect": "{\"t\":\"<a&b>\"}"
+    },
+    {
+      "name": "int inside a list renders as an integer",
+      "template": "{{l}}",
+      "params": {
+        "l": {
+          "value": [
+            1,
+            2.5
+          ],
+          "type": "list"
+        }
+      },
+      "expect": "[1,2.5]"
+    }
   ],
   "matching": [
     {
@@ -181,118 +877,389 @@
         {
           "name": "github-pr-review",
           "sourceRef": "github",
-          "match": { "cel": "headers[\"x-github-event\"] == \"pull_request\" && body.action == \"labeled\" && body.label.name == \"ai-review\"" },
-          "params": { "repo": "body.repository.full_name", "number": "body.pull_request.number", "label": "body.label.name" },
+          "match": {
+            "cel": "headers[\"x-github-event\"] == \"pull_request\" && body.action == \"labeled\" && body.label.name == \"ai-review\""
+          },
+          "params": {
+            "repo": "body.repository.full_name",
+            "number": "body.pull_request.number",
+            "label": "body.label.name"
+          },
           "sessionKey": "github:{{repo}}#{{number}}",
-          "target": { "agentRef": "swe-agent", "readOnly": true, "promptTemplate": "Review {{repo}}#{{number}}" },
-          "reply": { "github": { "repository": "{{repo}}", "issueNumber": "{{number}}", "ack": "Reviewing #{{number}}", "sessionPage": true, "result": true, "removeLabel": "{{label}}" } }
+          "target": {
+            "agentRef": "swe-agent",
+            "readOnly": true,
+            "promptTemplate": "Review {{repo}}#{{number}}"
+          },
+          "reply": {
+            "github": {
+              "repository": "{{repo}}",
+              "issueNumber": "{{number}}",
+              "ack": "Reviewing #{{number}}",
+              "sessionPage": true,
+              "result": true,
+              "removeLabel": "{{label}}"
+            }
+          }
         },
         {
           "name": "github-pr-triage",
           "sourceRef": "github",
-          "match": { "cel": "headers[\"x-github-event\"] == \"pull_request\" && body.action == \"labeled\" && body.label.name == \"ai-triage\"" },
-          "target": { "agentRef": "swe-agent", "promptTemplate": "Pick up the PR" }
+          "match": {
+            "cel": "headers[\"x-github-event\"] == \"pull_request\" && body.action == \"labeled\" && body.label.name == \"ai-triage\""
+          },
+          "target": {
+            "agentRef": "swe-agent",
+            "promptTemplate": "Pick up the PR"
+          }
         },
         {
           "name": "github-issue-triage",
           "sourceRef": "github",
-          "match": { "cel": "headers[\"x-github-event\"] == \"issues\" && body.action == \"labeled\"" },
-          "target": { "agentRef": "swe-agent", "promptTemplate": "Triage the issue" }
+          "match": {
+            "cel": "headers[\"x-github-event\"] == \"issues\" && body.action == \"labeled\""
+          },
+          "target": {
+            "agentRef": "swe-agent",
+            "promptTemplate": "Triage the issue"
+          }
         }
       ],
       "expect": {
         "trigger": "github-pr-review",
-        "params": { "repo": { "value": "acme/widgets", "type": "string" }, "number": { "value": 42, "type": "int" }, "label": { "value": "ai-review", "type": "string" } },
-        "stringParams": { "repo": "acme/widgets", "number": "42", "label": "ai-review" },
+        "params": {
+          "repo": {
+            "value": "acme/widgets",
+            "type": "string"
+          },
+          "number": {
+            "value": 42,
+            "type": "int"
+          },
+          "label": {
+            "value": "ai-review",
+            "type": "string"
+          }
+        },
+        "stringParams": {
+          "repo": "acme/widgets",
+          "number": "42",
+          "label": "ai-review"
+        },
         "sessionId": "github:acme/widgets#42",
         "prompt": "Review acme/widgets#42",
-        "reply": { "github": { "repository": "acme/widgets", "issueNumber": 42, "ack": "Reviewing #42", "sessionPage": true, "result": true, "removeLabel": "ai-review" } }
+        "reply": {
+          "github": {
+            "repository": "acme/widgets",
+            "issueNumber": 42,
+            "ack": "Reviewing #42",
+            "sessionPage": true,
+            "result": true,
+            "removeLabel": "ai-review"
+          }
+        }
       }
     },
     {
       "name": "higher priority wins over a name that sorts first",
       "envelope": "gh_issue_labeled",
       "triggers": [
-        { "name": "a-catch-all", "sourceRef": "github", "target": { "orchestrator": {}, "promptTemplate": "generic" } },
-        { "name": "z-specific", "sourceRef": "github", "priority": 10, "match": { "cel": "body.label.name == \"ai-triage\"" }, "target": { "agentRef": "swe-agent", "promptTemplate": "triage" } }
+        {
+          "name": "a-catch-all",
+          "sourceRef": "github",
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "generic"
+          }
+        },
+        {
+          "name": "z-specific",
+          "sourceRef": "github",
+          "priority": 10,
+          "match": {
+            "cel": "body.label.name == \"ai-triage\""
+          },
+          "target": {
+            "agentRef": "swe-agent",
+            "promptTemplate": "triage"
+          }
+        }
       ],
-      "expect": { "trigger": "z-specific", "params": {}, "stringParams": {}, "sessionId": "event:github:d-2", "prompt": "triage", "reply": null }
+      "expect": {
+        "trigger": "z-specific",
+        "params": {},
+        "stringParams": {},
+        "sessionId": "event:github:d-2",
+        "prompt": "triage",
+        "reply": null
+      }
     },
     {
       "name": "equal priority resolves to the smallest name",
       "envelope": "gh_issue_labeled",
       "triggers": [
-        { "name": "beta", "match": { "cel": "true" }, "target": { "orchestrator": {}, "promptTemplate": "beta" } },
-        { "name": "alpha", "match": { "cel": "true" }, "target": { "orchestrator": {}, "promptTemplate": "alpha" } }
+        {
+          "name": "beta",
+          "match": {
+            "cel": "true"
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "beta"
+          }
+        },
+        {
+          "name": "alpha",
+          "match": {
+            "cel": "true"
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "alpha"
+          }
+        }
       ],
-      "expect": { "trigger": "alpha", "params": {}, "stringParams": {}, "sessionId": "event:github:d-2", "prompt": "alpha", "reply": null }
+      "expect": {
+        "trigger": "alpha",
+        "params": {},
+        "stringParams": {},
+        "sessionId": "event:github:d-2",
+        "prompt": "alpha",
+        "reply": null
+      }
     },
     {
       "name": "sourceRef mismatch never matches",
       "envelope": "slack_mention",
       "triggers": [
-        { "name": "github-only", "sourceRef": "github", "target": { "orchestrator": {}, "promptTemplate": "x" } }
+        {
+          "name": "github-only",
+          "sourceRef": "github",
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "x"
+          }
+        }
       ],
-      "expect": { "trigger": null }
+      "expect": {
+        "trigger": null
+      }
     },
     {
       "name": "match evaluation error is a non-match, not a failure",
       "envelope": "gh_issue_labeled",
       "triggers": [
-        { "name": "a-broken-at-runtime", "match": { "cel": "body.pull_request.number == 1" }, "target": { "orchestrator": {}, "promptTemplate": "x" } },
-        { "name": "b-fine", "match": { "cel": "has(body.issue)" }, "target": { "orchestrator": {}, "promptTemplate": "issue {{n}}" }, "params": { "n": "body.issue.number" } }
+        {
+          "name": "a-broken-at-runtime",
+          "match": {
+            "cel": "body.pull_request.number == 1"
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "x"
+          }
+        },
+        {
+          "name": "b-fine",
+          "match": {
+            "cel": "has(body.issue)"
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "issue {{n}}"
+          },
+          "params": {
+            "n": "body.issue.number"
+          }
+        }
       ],
-      "expect": { "trigger": "b-fine", "params": { "n": { "value": 7, "type": "int" } }, "stringParams": { "n": "7" }, "sessionId": "event:github:d-2", "prompt": "issue 7", "reply": null }
+      "expect": {
+        "trigger": "b-fine",
+        "params": {
+          "n": {
+            "value": 7,
+            "type": "int"
+          }
+        },
+        "stringParams": {
+          "n": "7"
+        },
+        "sessionId": "event:github:d-2",
+        "prompt": "issue 7",
+        "reply": null
+      }
     },
     {
       "name": "a trigger whose CEL does not compile never matches",
       "envelope": "gh_issue_labeled",
       "triggers": [
-        { "name": "a-does-not-compile", "match": { "cel": "body.action ==" }, "target": { "orchestrator": {}, "promptTemplate": "x" } },
-        { "name": "b-fallback", "match": { "cel": "true" }, "target": { "orchestrator": {}, "promptTemplate": "ok" } }
+        {
+          "name": "a-does-not-compile",
+          "match": {
+            "cel": "body.action =="
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "x"
+          }
+        },
+        {
+          "name": "b-fallback",
+          "match": {
+            "cel": "true"
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "ok"
+          }
+        }
       ],
-      "expect": { "trigger": "b-fallback", "params": {}, "stringParams": {}, "sessionId": "event:github:d-2", "prompt": "ok", "reply": null }
+      "expect": {
+        "trigger": "b-fallback",
+        "params": {},
+        "stringParams": {},
+        "sessionId": "event:github:d-2",
+        "prompt": "ok",
+        "reply": null
+      }
     },
     {
       "name": "no trigger matches",
       "envelope": "ci_failed",
       "triggers": [
-        { "name": "only-success", "sourceRef": "ci", "match": { "cel": "body.status == \"succeeded\"" }, "target": { "orchestrator": {}, "promptTemplate": "x" } }
+        {
+          "name": "only-success",
+          "sourceRef": "ci",
+          "match": {
+            "cel": "body.status == \"succeeded\""
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "x"
+          }
+        }
       ],
-      "expect": { "trigger": null }
+      "expect": {
+        "trigger": null
+      }
     },
     {
       "name": "absent match takes every event from its source",
       "envelope": "slack_mention",
       "triggers": [
-        { "name": "slack-chat", "sourceRef": "slack", "params": { "text": "body.event.text" }, "target": { "orchestrator": {}, "promptTemplate": "{{text}}" } }
+        {
+          "name": "slack-chat",
+          "sourceRef": "slack",
+          "params": {
+            "text": "body.event.text"
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "{{text}}"
+          }
+        }
       ],
-      "expect": { "trigger": "slack-chat", "params": { "text": { "value": "<@U1> summarize the incident", "type": "string" } }, "stringParams": { "text": "<@U1> summarize the incident" }, "sessionId": "event:slack:Ev01", "prompt": "<@U1> summarize the incident", "reply": null }
+      "expect": {
+        "trigger": "slack-chat",
+        "params": {
+          "text": {
+            "value": "<@U1> summarize the incident",
+            "type": "string"
+          }
+        },
+        "stringParams": {
+          "text": "<@U1> summarize the incident"
+        },
+        "sessionId": "event:slack:Ev01",
+        "prompt": "<@U1> summarize the incident",
+        "reply": null
+      }
     },
     {
       "name": "a params error after a match fails the event",
       "envelope": "gh_issue_labeled",
       "triggers": [
-        { "name": "needs-pr", "match": { "cel": "true" }, "params": { "n": "body.pull_request.number" }, "target": { "orchestrator": {}, "promptTemplate": "{{n}}" } }
+        {
+          "name": "needs-pr",
+          "match": {
+            "cel": "true"
+          },
+          "params": {
+            "n": "body.pull_request.number"
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "{{n}}"
+          }
+        }
       ],
-      "expect": { "error": true }
+      "expect": {
+        "error": true
+      }
     },
     {
       "name": "caller session id is used when the trigger has no sessionKey",
       "envelope": "gh_issue_labeled",
       "callerSessionId": "caller-session",
       "triggers": [
-        { "name": "t", "match": { "cel": "true" }, "target": { "orchestrator": {}, "promptTemplate": "x" } }
+        {
+          "name": "t",
+          "match": {
+            "cel": "true"
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "x"
+          }
+        }
       ],
-      "expect": { "trigger": "t", "params": {}, "stringParams": {}, "sessionId": "caller-session", "prompt": "x", "reply": null }
+      "expect": {
+        "trigger": "t",
+        "params": {},
+        "stringParams": {},
+        "sessionId": "caller-session",
+        "prompt": "x",
+        "reply": null
+      }
     },
     {
       "name": "cron tick with payload params",
       "envelope": "cron_tick",
       "triggers": [
-        { "name": "nightly-stale-sweep", "sourceRef": "nightly-sweep", "params": { "repo": "body.repo", "limit": "body.limit" }, "target": { "agentRef": "swe-agent", "readOnly": true, "promptTemplate": "Sweep {{repo}}, at most {{limit}} issues" } }
+        {
+          "name": "nightly-stale-sweep",
+          "sourceRef": "nightly-sweep",
+          "params": {
+            "repo": "body.repo",
+            "limit": "body.limit"
+          },
+          "target": {
+            "agentRef": "swe-agent",
+            "readOnly": true,
+            "promptTemplate": "Sweep {{repo}}, at most {{limit}} issues"
+          }
+        }
       ],
-      "expect": { "trigger": "nightly-stale-sweep", "params": { "repo": { "value": "acme/widgets", "type": "string" }, "limit": { "value": 25, "type": "int" } }, "stringParams": { "repo": "acme/widgets", "limit": "25" }, "sessionId": "event:nightly-sweep:nightly-sweep-1760356800", "prompt": "Sweep acme/widgets, at most 25 issues", "reply": null }
+      "expect": {
+        "trigger": "nightly-stale-sweep",
+        "params": {
+          "repo": {
+            "value": "acme/widgets",
+            "type": "string"
+          },
+          "limit": {
+            "value": 25,
+            "type": "int"
+          }
+        },
+        "stringParams": {
+          "repo": "acme/widgets",
+          "limit": "25"
+        },
+        "sessionId": "event:nightly-sweep:nightly-sweep-1791892800",
+        "prompt": "Sweep acme/widgets, at most 25 issues",
+        "reply": null
+      }
     },
     {
       "name": "toolRef gets typed params and an http reply",
@@ -301,19 +1268,192 @@
         {
           "name": "ci-failure-tool",
           "sourceRef": "ci",
-          "match": { "cel": "body.status == \"failed\"" },
-          "params": { "pipeline": "body.pipeline", "attempt": "body.attempt", "duration": "body.duration" },
-          "target": { "toolRef": "http-get" },
-          "reply": { "http": { "url": "http://sink.e2e.svc/results" } }
+          "match": {
+            "cel": "body.status == \"failed\""
+          },
+          "params": {
+            "pipeline": "body.pipeline",
+            "attempt": "body.attempt",
+            "duration": "body.duration"
+          },
+          "target": {
+            "toolRef": "http-get"
+          },
+          "reply": {
+            "http": {
+              "url": "http://sink.e2e.svc/results"
+            }
+          }
         }
       ],
       "expect": {
         "trigger": "ci-failure-tool",
-        "params": { "pipeline": { "value": "build", "type": "string" }, "attempt": { "value": 3, "type": "int" }, "duration": { "value": 12.75, "type": "double" } },
-        "stringParams": { "pipeline": "build", "attempt": "3", "duration": "12.75" },
+        "params": {
+          "pipeline": {
+            "value": "build",
+            "type": "string"
+          },
+          "attempt": {
+            "value": 3,
+            "type": "int"
+          },
+          "duration": {
+            "value": 12.75,
+            "type": "double"
+          }
+        },
+        "stringParams": {
+          "pipeline": "build",
+          "attempt": "3",
+          "duration": "12.75"
+        },
+        "toolInput": "{\"attempt\":3,\"duration\":12.75,\"pipeline\":\"build\"}",
         "sessionId": "event:ci:run-99",
         "prompt": "",
-        "reply": { "http": { "url": "http://sink.e2e.svc/results" } }
+        "reply": {
+          "http": {
+            "url": "http://sink.e2e.svc/results"
+          }
+        }
+      }
+    },
+    {
+      "name": "toolRef with a single input param passes it as the raw tool input",
+      "envelope": "ci_failed",
+      "triggers": [
+        {
+          "name": "ci-input-tool",
+          "sourceRef": "ci",
+          "params": {
+            "input": "body.pipeline"
+          },
+          "target": {
+            "toolRef": "http-get"
+          }
+        }
+      ],
+      "expect": {
+        "trigger": "ci-input-tool",
+        "params": {
+          "input": {
+            "value": "build",
+            "type": "string"
+          }
+        },
+        "stringParams": {
+          "input": "build"
+        },
+        "toolInput": "build",
+        "sessionId": "event:ci:run-99",
+        "prompt": "",
+        "reply": null
+      }
+    },
+    {
+      "name": "match yielding a non-bool is a non-match",
+      "envelope": "gh_issue_labeled",
+      "triggers": [
+        {
+          "name": "a-yields-string",
+          "match": {
+            "cel": "body.label.name"
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "x"
+          }
+        },
+        {
+          "name": "b-fine",
+          "match": {
+            "cel": "true"
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "ok"
+          }
+        }
+      ],
+      "expect": {
+        "trigger": "b-fine",
+        "params": {},
+        "stringParams": {},
+        "sessionId": "event:github:d-2",
+        "prompt": "ok",
+        "reply": null
+      }
+    },
+    {
+      "name": "issueNumber with leading zeros renders to its integer value",
+      "envelope": "gh_issue_labeled",
+      "triggers": [
+        {
+          "name": "zeros",
+          "match": {
+            "cel": "true"
+          },
+          "params": {
+            "n": "\"007\""
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "x"
+          },
+          "reply": {
+            "github": {
+              "repository": "acme/widgets",
+              "issueNumber": "{{n}}"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "trigger": "zeros",
+        "params": {
+          "n": {
+            "value": "007",
+            "type": "string"
+          }
+        },
+        "stringParams": {
+          "n": "007"
+        },
+        "sessionId": "event:github:d-2",
+        "prompt": "x",
+        "reply": {
+          "github": {
+            "repository": "acme/widgets",
+            "issueNumber": 7
+          }
+        }
+      }
+    },
+    {
+      "name": "issueNumber zero is a params failure",
+      "envelope": "gh_issue_labeled",
+      "triggers": [
+        {
+          "name": "zero",
+          "match": {
+            "cel": "true"
+          },
+          "params": {
+            "n": "0"
+          },
+          "target": {
+            "orchestrator": {},
+            "promptTemplate": "x"
+          },
+          "reply": {
+            "github": {
+              "repository": "acme/widgets",
+              "issueNumber": "{{n}}"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "error": true
       }
     }
   ]

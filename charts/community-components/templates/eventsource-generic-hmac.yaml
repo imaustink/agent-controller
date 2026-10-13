@@ -1,0 +1,22 @@
+{{- if .Values.eventSources.genericHmac.enabled }}
+{{- /*
+Example: any sender that signs its body with HMAC-SHA256 (docs/event-triggers.md
+§1), served at POST /webhooks/generic-hmac. The sender sends
+`x-signature-256: sha256=<hex hmac(secret, raw body)>`.
+*/}}
+apiVersion: {{ .Values.crdApiVersion }}
+kind: EventSource
+metadata:
+  name: generic-hmac
+  labels:
+    {{- include "tools.labels" . | nindent 4 }}
+spec:
+  webhook:
+    verify:
+      scheme: hmacSha256
+      header: x-signature-256
+      prefix: "sha256="
+      secretRef:
+        name: {{ .Values.eventSources.genericHmac.secretRef.name | quote }}
+        key: {{ .Values.eventSources.genericHmac.secretRef.key | quote }}
+{{- end }}

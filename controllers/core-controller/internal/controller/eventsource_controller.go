@@ -18,19 +18,51 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"time"
 
+	"github.com/google/cel-go/cel"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	"github.com/controller-agent/core-controller/internal/eventcel"
+)
+
+const (
+	eventSourceConditionReady = "Ready"
+
+	// eventSourceSecretRecheckInterval is how often a Ready webhook source
+	// re-confirms its Secret. Secrets are not watched (see SecretReader), so
+	// this bounds how long a deleted Secret goes unreported.
+	eventSourceSecretRecheckInterval = 5 * time.Minute
+
+	// maxCronJobNameLength is the API server's limit: a CronJob's Jobs get an
+	// 11-character suffix and must stay within 63.
+	maxCronJobNameLength = 52
 )
 
 // EventSourceReconciler reconciles a EventSource object
 type EventSourceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// SecretReader reads a webhook source's verification Secret. It should be
+	// uncached (mgr.GetAPIReader()): reading Secrets through the manager's
+	// cache would start a cluster-wide Secret informer — and need list/watch
+	// over every Secret — to confirm one key exists. Nil falls back to Client.
+	SecretReader client.Reader
 
 	// TickImage runs a cron source's CronJob (needs only a shell and curl).
 	TickImage string
@@ -43,28 +75,316 @@ type EventSourceReconciler struct {
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=eventsources,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=eventsources/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=eventsources/finalizers,verbs=update
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the EventSource object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
+// Reconcile reports whether an EventSource can deliver events, and for a cron
+// source materializes the CronJob that ticks it (docs/event-triggers.md §8).
 //
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/reconcile
+// A webhook source is only Ready when the gateway could actually verify a
+// delivery with it: the Secret and key it names exist, and every sender CEL
+// expression compiles. Anything less would be a source that 401s every
+// delivery, or one the gateway refuses at load, while kubectl says Ready.
 func (r *EventSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	var source corev1alpha1.EventSource
+	if err := r.Get(ctx, req.NamespacedName, &source); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
 
-	// TODO(user): your logic here
+	if source.Spec.Cron != nil {
+		return r.reconcileCron(ctx, &source)
+	}
 
-	return ctrl.Result{}, nil
+	// Not (or no longer) a cron source: a CronJob left from a previous spec
+	// would go on ticking a source the gateway now serves as a webhook.
+	if err := r.deleteTickCronJob(ctx, &source); err != nil {
+		return ctrl.Result{}, err
+	}
+	source.Status.CronJobName = ""
+
+	if source.Spec.Webhook == nil {
+		// Admission's oneOf rule makes this unreachable; report it rather than
+		// guess.
+		return r.setReady(ctx, &source, metav1.ConditionFalse, "InvalidSpec",
+			"exactly one of webhook or cron must be set", 0)
+	}
+
+	if msg := checkSenderCEL(source.Spec.Sender); msg != "" {
+		return r.setReady(ctx, &source, metav1.ConditionFalse, "InvalidCEL", msg, 0)
+	}
+
+	ref := source.Spec.Webhook.Verify.SecretRef
+	var secret corev1.Secret
+	err := r.secretReader().Get(ctx, types.NamespacedName{Namespace: source.Namespace, Name: ref.Name}, &secret)
+	if apierrors.IsNotFound(err) {
+		return r.setReady(ctx, &source, metav1.ConditionFalse, "SecretNotFound",
+			fmt.Sprintf("verify.secretRef Secret %q does not exist", ref.Name), toolRecheckInterval)
+	}
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if _, ok := secret.Data[ref.Key]; !ok {
+		return r.setReady(ctx, &source, metav1.ConditionFalse, "SecretKeyMissing",
+			fmt.Sprintf("Secret %q has no key %q", ref.Name, ref.Key), toolRecheckInterval)
+	}
+
+	return r.setReady(ctx, &source, metav1.ConditionTrue, "Verifiable",
+		fmt.Sprintf("served at /webhooks/%s, verified by %s", source.Name, source.Spec.Webhook.Verify.Scheme),
+		eventSourceSecretRecheckInterval)
+}
+
+// reconcileCron materializes a cron source as an owned CronJob.
+//
+// The schedule lives in the API server rather than in integration-gateway:
+// the gateway runs several replicas, so an in-process timer would fire once
+// per replica, and would die with the pod (ADR 0048 §3).
+func (r *EventSourceReconciler) reconcileCron(ctx context.Context, source *corev1alpha1.EventSource) (ctrl.Result, error) {
+	if r.TickURL == "" {
+		// A CronJob with nowhere to POST would fail every tick; better none and
+		// a condition that says why.
+		if err := r.deleteTickCronJob(ctx, source); err != nil {
+			return ctrl.Result{}, err
+		}
+		source.Status.CronJobName = ""
+		return r.setReady(ctx, source, metav1.ConditionFalse, "TickNotConfigured",
+			"core-controller has no EVENT_TICK_URL; cron sources cannot tick", 0)
+	}
+
+	name := TickCronJobName(source.Name)
+	if len(name) > maxCronJobNameLength {
+		source.Status.CronJobName = ""
+		return r.setReady(ctx, source, metav1.ConditionFalse, "NameTooLong",
+			fmt.Sprintf("CronJob name %q exceeds %d characters; shorten the EventSource name", name, maxCronJobNameLength), 0)
+	}
+
+	if err := r.applyTickCronJob(ctx, source, name); err != nil {
+		// An unparseable schedule or zone is the operator's to fix, not a
+		// transient error to retry into.
+		if apierrors.IsInvalid(err) {
+			source.Status.CronJobName = ""
+			return r.setReady(ctx, source, metav1.ConditionFalse, "InvalidSchedule", err.Error(), 0)
+		}
+		return ctrl.Result{}, err
+	}
+
+	source.Status.CronJobName = name
+	return r.setReady(ctx, source, metav1.ConditionTrue, "Scheduled",
+		fmt.Sprintf("CronJob %s ticks on %q", name, source.Spec.Cron.Schedule), 0)
+}
+
+// TickCronJobName is the CronJob a cron EventSource owns.
+func TickCronJobName(source string) string { return "eventsource-" + source }
+
+// applyTickCronJob creates or updates the source's CronJob. Mirrors the
+// Corpus sync-kick CronJob (reconcileSyncCronJob): the Job only KICKS the
+// gateway, which reads the payload from the CR itself, so the CronJob carries
+// nothing a tick could forge.
+func (r *EventSourceReconciler) applyTickCronJob(ctx context.Context, source *corev1alpha1.EventSource, name string) error {
+	log := logf.FromContext(ctx)
+	cron := source.Spec.Cron
+
+	var timeZone *string
+	if cron.TimeZone != "" {
+		timeZone = ptr.To(cron.TimeZone)
+	}
+
+	desired := &batchv1.CronJob{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: source.Namespace,
+			Labels: map[string]string{
+				"core.controller-agent.dev/eventsource": source.Name,
+			},
+		},
+		Spec: batchv1.CronJobSpec{
+			Schedule: cron.Schedule,
+			TimeZone: timeZone,
+			Suspend:  ptr.To(cron.Suspend),
+			// One tick is one event is one turn; a slow gateway must not have
+			// a second tick for the same source stacked behind it.
+			ConcurrencyPolicy: batchv1.ForbidConcurrent,
+			// A missed window is skipped, not replayed: a backlog of ticks
+			// after an outage would be a burst of identical turns.
+			StartingDeadlineSeconds:    ptr.To(int64(300)),
+			SuccessfulJobsHistoryLimit: ptr.To(int32(1)),
+			FailedJobsHistoryLimit:     ptr.To(int32(3)),
+			JobTemplate: batchv1.JobTemplateSpec{
+				Spec: batchv1.JobSpec{
+					// No retries, unlike the Corpus kick (whose pass is
+					// idempotent): a tick the gateway accepted but whose
+					// response was lost would be retried into a second turn.
+					// A failed tick shows as a failed Job; the next comes on
+					// schedule.
+					BackoffLimit: ptr.To(int32(0)),
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"core.controller-agent.dev/eventsource": source.Name,
+							},
+						},
+						Spec: corev1.PodSpec{
+							RestartPolicy: corev1.RestartPolicyNever,
+							// The tick talks to the gateway, never the API server.
+							AutomountServiceAccountToken: ptr.To(false),
+							SecurityContext: &corev1.PodSecurityContext{
+								RunAsNonRoot: ptr.To(true),
+								RunAsUser:    ptr.To(jobRunAsUser),
+								RunAsGroup:   ptr.To(jobRunAsGroup),
+								SeccompProfile: &corev1.SeccompProfile{
+									Type: corev1.SeccompProfileTypeRuntimeDefault,
+								},
+							},
+							Containers: []corev1.Container{{
+								Name:  "tick",
+								Image: r.TickImage,
+								Args:  tickArgs(source.Name, r.TickURL),
+								Env: []corev1.EnvVar{{
+									Name: "EVENT_TICK_TOKEN",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: r.TickTokenSecret},
+											Key:                  "token",
+										},
+									},
+								}},
+								SecurityContext: &corev1.SecurityContext{
+									AllowPrivilegeEscalation: ptr.To(false),
+									ReadOnlyRootFilesystem:   ptr.To(true),
+									RunAsNonRoot:             ptr.To(true),
+									Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+								},
+							}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Owned, so deleting the EventSource takes its CronJob with it; an orphan
+	// would tick a source the gateway no longer knows (a 404 every time).
+	if err := controllerutil.SetControllerReference(source, desired, r.Scheme); err != nil {
+		return err
+	}
+
+	var existing batchv1.CronJob
+	err := r.Get(ctx, types.NamespacedName{Namespace: source.Namespace, Name: name}, &existing)
+	if apierrors.IsNotFound(err) {
+		log.Info("Creating tick CronJob", "eventsource", source.Name, "schedule", cron.Schedule)
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+
+	// Spec only: replacing the whole object would drop the status Kubernetes
+	// keeps about the last schedule.
+	existing.Spec = desired.Spec
+	existing.Labels = desired.Labels
+	return r.Update(ctx, &existing)
+}
+
+// tickArgs POSTs one tick. No shell: Kubernetes expands $(EVENT_TICK_TOKEN)
+// from the container's env, so the token never passes through a command
+// line a shell would parse. -f makes a non-2xx fail the Job.
+func tickArgs(source, tickURL string) []string {
+	return []string{
+		"-fsS", "--max-time", "30", "-X", "POST",
+		"-H", "Authorization: Bearer $(EVENT_TICK_TOKEN)",
+		fmt.Sprintf("%s/events/%s/tick", strings.TrimRight(tickURL, "/"), source),
+	}
+}
+
+// deleteTickCronJob removes the source's CronJob if this source owns one.
+// Only an owned one: a same-named CronJob someone else created is not ours to
+// delete.
+func (r *EventSourceReconciler) deleteTickCronJob(ctx context.Context, source *corev1alpha1.EventSource) error {
+	var existing batchv1.CronJob
+	err := r.Get(ctx, types.NamespacedName{Namespace: source.Namespace, Name: TickCronJobName(source.Name)}, &existing)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !metav1.IsControlledBy(&existing, source) {
+		return nil
+	}
+	logf.FromContext(ctx).Info("Removing tick CronJob", "eventsource", source.Name)
+	return client.IgnoreNotFound(r.Delete(ctx, &existing))
+}
+
+// checkSenderCEL compiles a webhook source's sender expressions, returning a
+// message for the first that does not compile ("" when all do). The gateway
+// would otherwise discover it on the first delivery and drop every event.
+func checkSenderCEL(sender *corev1alpha1.EventSender) string {
+	if sender == nil {
+		return ""
+	}
+	exprs := []struct {
+		field string
+		expr  string
+		want  *cel.Type
+	}{
+		{"sender.loginFrom", sender.LoginFrom, cel.StringType},
+		{"sender.isBotFrom", sender.IsBotFrom, cel.BoolType},
+		{"sender.repositoryFrom", sender.RepositoryFrom, cel.StringType},
+	}
+	for _, e := range exprs {
+		if e.expr == "" {
+			continue
+		}
+		if err := eventcel.Compile(e.expr, e.want); err != nil {
+			return fmt.Sprintf("%s: %v", e.field, err)
+		}
+	}
+	return ""
+}
+
+func (r *EventSourceReconciler) secretReader() client.Reader {
+	if r.SecretReader != nil {
+		return r.SecretReader
+	}
+	return r.Client
+}
+
+// setReady records the Ready condition and status, requeueing after the given
+// interval (0 for none).
+func (r *EventSourceReconciler) setReady(
+	ctx context.Context,
+	source *corev1alpha1.EventSource,
+	status metav1.ConditionStatus,
+	reason, message string,
+	requeueAfter time.Duration,
+) (ctrl.Result, error) {
+	if status == metav1.ConditionFalse {
+		logf.FromContext(ctx).Info("EventSource not ready", "eventsource", source.Name, "reason", reason)
+	}
+	meta.SetStatusCondition(&source.Status.Conditions, metav1.Condition{
+		Type:               eventSourceConditionReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: source.Generation,
+	})
+	if err := r.Status().Update(ctx, source); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *EventSourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha1.EventSource{}).
+		// The CronJob is ours; an edit to it should be corrected, and its
+		// disappearance should bring it back.
+		Owns(&batchv1.CronJob{}).
+		// Secrets are deliberately not watched: that would cache every Secret
+		// in the cluster. A webhook source re-checks on a requeue instead.
 		Named("eventsource").
 		Complete(r)
 }

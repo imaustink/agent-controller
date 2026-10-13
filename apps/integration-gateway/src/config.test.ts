@@ -1,6 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "./config.js";
 
+describe("loadConfig event sources (ADR 0048)", () => {
+  it("defaults the CRD group/version and the tick-token Secret name; namespace has no default", () => {
+    const config = loadConfig({});
+    expect(config.crdNamespace).toBe("");
+    expect(config.crdGroup).toBe("core.controller-agent.dev");
+    expect(config.crdVersion).toBe("v1alpha1");
+    expect(config.eventTickTokenSecret).toBe("integration-gateway-tick-token");
+  });
+
+  it("reads CRD_NAMESPACE / CRD_GROUP / CRD_VERSION / EVENT_TICK_TOKEN_SECRET", () => {
+    const config = loadConfig({
+      CRD_NAMESPACE: "agents",
+      CRD_GROUP: "core.roverkit.io",
+      CRD_VERSION: "v1beta1",
+      EVENT_TICK_TOKEN_SECRET: "my-tick",
+    });
+    expect([config.crdNamespace, config.crdGroup, config.crdVersion, config.eventTickTokenSecret]).toEqual([
+      "agents",
+      "core.roverkit.io",
+      "v1beta1",
+      "my-tick",
+    ]);
+  });
+});
+
 describe("loadConfig GitHub host resolution", () => {
   it("defaults the OAuth host to github.com, so existing deployments are unaffected", () => {
     const config = loadConfig({});

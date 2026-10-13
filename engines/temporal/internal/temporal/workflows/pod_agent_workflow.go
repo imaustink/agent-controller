@@ -77,6 +77,7 @@ func PodAgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 			TimeoutSeconds:       podStepTimeoutSeconds,
 			CredentialSecretName: in.Credentials.SecretName,
 			CredentialEnvVars:    in.Credentials.EnvVars,
+			ReadOnly:             in.ReadOnly,
 			OnProgress: func(e messaging.Event) {
 				line := e.Message
 				if e.Stage != "" {

@@ -35,7 +35,6 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 	"github.com/controller-agent/core-controller/internal/controller"
 	// +kubebuilder:scaffold:imports
@@ -50,7 +49,6 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(toolv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(corev1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -277,6 +275,9 @@ func main() {
 	if err := (&controller.EventSourceReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		// Uncached: a cached read would watch every Secret in the cluster to
+		// confirm one webhook secret exists (and need list/watch to do it).
+		SecretReader: mgr.GetAPIReader(),
 		// A cron source's CronJob only needs curl: it ticks integration-gateway,
 		// which reads the payload from the CR (docs/event-triggers.md §8).
 		// Without a tick URL, cron sources report Ready=False.

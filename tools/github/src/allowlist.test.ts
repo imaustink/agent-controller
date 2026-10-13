@@ -75,3 +75,42 @@ describe("validateCommand", () => {
     expect(() => validateCommand(["issue"])).toThrow(BlockedCommandError);
   });
 });
+
+describe("validateCommand read-only (TOOL_READ_ONLY)", () => {
+  const ro = { readOnly: true };
+
+  it("allows read subcommands", () => {
+    expect(validateCommand(["issue", "view", "86"], ro)).toEqual(["issue", "view", "86"]);
+    expect(() => validateCommand(["pr", "diff", "7"], ro)).not.toThrow();
+    expect(() => validateCommand(["pr", "checks", "7"], ro)).not.toThrow();
+    expect(() => validateCommand(["search", "code", "foo"], ro)).not.toThrow();
+    expect(() => validateCommand(["run", "view", "123"], ro)).not.toThrow();
+  });
+
+  it("refuses every write subcommand that is otherwise allowed", () => {
+    for (const argv of [
+      ["issue", "create", "--title", "x"],
+      ["issue", "comment", "86", "--body", "x"],
+      ["issue", "edit", "86"],
+      ["issue", "close", "86"],
+      ["issue", "reopen", "86"],
+      ["pr", "create"],
+      ["pr", "comment", "7"],
+      ["pr", "edit", "7"],
+      ["pr", "close", "7"],
+      ["pr", "reopen", "7"],
+      ["pr", "merge", "7"],
+      ["pr", "review", "7", "--approve"],
+      ["gist", "create", "f.txt"],
+      ["label", "create", "bug"],
+    ]) {
+      expect(() => validateCommand(argv, ro), argv.join(" ")).toThrow(/read-only/);
+      // ...and each is genuinely allowed when not read-only, so the refusal above is the read-only gate.
+      expect(() => validateCommand(argv), argv.join(" ")).not.toThrow();
+    }
+  });
+
+  it("still applies the base allowlist", () => {
+    expect(() => validateCommand(["api", "repos/o/r"], ro)).toThrow(BlockedCommandError);
+  });
+});

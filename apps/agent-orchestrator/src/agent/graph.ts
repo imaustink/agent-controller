@@ -695,16 +695,66 @@ export const AgentStateAnnotation = Annotation.Root({
   }),
   /**
    * Id of a Skill CR to dispatch to directly, set by the server when
-   * `/invoke`'s optional `event` field matched an `IntegrationRoute` CR —
-   * consumed by `checkIntegrationRoute` to bypass RAG skill retrieval for
-   * this turn. Absent for every ordinary conversational turn.
+   * `/invoke`'s `event` matched an EventTrigger whose target is `skillRef`
+   * (ADR 0048, docs/event-triggers.md §1) -- consumed by `checkEventTrigger`,
+   * which bypasses RAG retrieval for this turn. Absent for every ordinary
+   * conversational turn. At most one of forcedSkillId/forcedAgentId/
+   * forcedToolId is set (a trigger has exactly one target).
    */
   forcedSkillId: Annotation<string | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
-  /** Id of an Agent CR to dispatch to directly — see `forcedSkillId`. */
+  /** Id of an Agent CR to dispatch to directly (`agentRef` target) — see `forcedSkillId`. */
   forcedAgentId: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * Id of a Tool CR to run exactly once (`toolRef` target) with `toolInput`
+   * as its input, skipping the planner entirely -- the one-off "FAAS" path
+   * docs/integrations-gateway.md §4 left open. See `forcedSkillId`.
+   */
+  forcedToolId: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * The forced tool's single string input, already derived from the trigger's
+   * params by the shared contract (docs/event-triggers.md §1). Only meaningful
+   * with `forcedToolId`.
+   */
+  toolInput: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * Read-only turn (docs/event-triggers.md §1). Set from an EventTrigger's
+   * `target.readOnly`, and STICKY for the session (the server folds in the
+   * session record's flag, which may become true but never false again), so a
+   * follow-up turn in a read-only conversation is read-only too.
+   *
+   * Every AgentRun and ToolRun this turn launches carries `spec.readOnly`,
+   * including ones reached indirectly (a forced skill's agentRefs, a
+   * sub-agent's own tool calls), and write-capable credentials are withheld
+   * (`WRITE_CAPABLE_PROVIDERS`). A structured field rather than a prompt
+   * sentinel: it never depends on text surviving an attacker-influenced body.
+   */
+  readOnly: Annotation<boolean>({
+    reducer: (_current, update) => update,
+    default: () => false,
+  }),
+  /**
+   * The triggering event's params in their §4 string form, set on the AgentRun
+   * of the agent an EventTrigger targets (`AgentRun.spec.params`). Empty for
+   * every non-trigger turn.
+   */
+  params: Annotation<Record<string, string> | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /** Name of the EventTrigger that started this turn, for error messages and logs. */
+  triggerName: Annotation<string | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
@@ -1108,6 +1158,8 @@ async function resolveToolIdentitySecretEnv(
   tool: { id: string; identityProviders?: string[] },
   identity: Identity | undefined,
   linkHint: (provider: string) => string,
+  /** Withhold write-capable credentials (`WRITE_CAPABLE_PROVIDERS`) for a read-only turn. */
+  readOnly = false,
 ): Promise<{ secretEnv?: CredentialEnvEntry[] } | { error: string }> {
   if (!identity) {
     return { error: `tool ${tool.id} requires identity providers but no caller identity was resolved` };
@@ -1115,6 +1167,7 @@ async function resolveToolIdentitySecretEnv(
   const credentials = await authorization.resolveLinkedCredentials({
     identity,
     identityProviders: tool.identityProviders,
+    ...(readOnly ? { readOnly: true } : {}),
   });
   switch (credentials.kind) {
     case "gateway-missing":
@@ -1871,27 +1924,58 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       const principal = await resolvePrincipal(identity.subject, state.senderLogin, deps.identityLinkGateway);
       return { identity: { ...identity, principal } };
     })
-    .addNode("checkIntegrationRoute", async (state) => {
-      // Deterministic dispatch for a turn whose intent is already
-      // unambiguous (e.g. a GitHub issue assigned to the bot): the server
-      // set `forcedSkillId`/`forcedAgentId` when `/invoke`'s `event` field
-      // matched an IntegrationRoute CR. Re-fetch under the caller's CURRENT
-      // roles (same RBAC discipline as checkActiveSkill/checkPendingIdentityLink)
-      // and resolve straight to that target, skipping RAG retrieval entirely.
-      // A miss (ref gone, roles revoked, neither id set) is never an error —
-      // it just falls through to ordinary skill-continuity/retrieval.
+    .addNode("checkEventTrigger", async (state) => {
+      // Deterministic dispatch for a turn an EventTrigger already resolved
+      // (ADR 0048): the server set exactly one of forcedSkillId/forcedAgentId/
+      // forcedToolId from the trigger's target. Each is re-fetched under the
+      // caller's CURRENT roles (same RBAC discipline as checkActiveSkill) --
+      // the trigger names a target, it never grants access to one.
+      //
+      // A miss (ref gone, roles revoked, delegation not configured) FAILS the
+      // turn (contract §1). It used to fall through to RAG retrieval, which
+      // turned "the operator's target is unavailable" into "interpret the
+      // rendered prompt as free text and do whatever it seems to ask" -- for a
+      // read-only review trigger, potentially a write-capable agent picked by
+      // embedding similarity.
       if (!state.identity) return {};
+      const trigger = state.triggerName ? `event trigger ${state.triggerName}` : "event trigger";
       if (state.forcedSkillId) {
         const [skill] = await deps.skillStore.getByIds([state.forcedSkillId], {
           callerRoles: state.identity.roles,
         });
-        if (skill) return { selectedSkill: skill };
+        if (!skill) {
+          return { error: `${trigger}: skill "${state.forcedSkillId}" does not exist or is not available to this caller` };
+        }
+        return { selectedSkill: skill };
       }
-      if (state.forcedAgentId && deps.agentStore) {
+      if (state.forcedAgentId) {
+        if (!deps.agentStore) {
+          return { error: `${trigger}: agent "${state.forcedAgentId}" cannot be dispatched -- agent delegation is not configured` };
+        }
         const [found] = await deps.agentStore.getByIds([state.forcedAgentId], {
           callerRoles: state.identity.roles,
         });
-        if (found) return { selectedAgent: found.agent };
+        if (!found) {
+          return { error: `${trigger}: agent "${state.forcedAgentId}" does not exist or is not available to this caller` };
+        }
+        return { selectedAgent: found.agent };
+      }
+      if (state.forcedToolId) {
+        // The RBAC-filtered tool index (the same lookup loadSkillTools uses),
+        // deliberately NOT `deps.toolCatalog`: the catalog is the unfiltered
+        // allowlist for a sub-agent's declared toolRefs, and using it here would
+        // let a trigger run a tool its caller could never select.
+        const [found] = await deps.vectorStore.getByIds([state.forcedToolId], {
+          callerRoles: state.identity.roles,
+        });
+        if (!found) {
+          return { error: `${trigger}: tool "${state.forcedToolId}" does not exist or is not available to this caller` };
+        }
+        // Runs once through the ordinary runTool path (approval gate, identity
+        // gate, readOnly, every dispatch kind) and ends: no skill is selected,
+        // so runTool's edge goes to composeResponse (a no-op without a skill)
+        // rather than back into a planner loop.
+        return { selectedTool: found.tool, toolArgs: state.toolInput ?? "" };
       }
       return {};
     })
@@ -2005,6 +2089,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               sessionId: state.sessionId,
               callerSubject: state.identity.subject,
               suppressApprovalGate: true,
+              ...(state.readOnly ? { readOnly: true } : {}),
             }).catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) }))
           : { ok: false, error: `tool "${pending.tool}" not found in the catalog` };
         await channel.resolveToolCall(pending.runId, pending.callId, outcome);
@@ -2160,6 +2245,8 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             // the caller decides.
             onApprovalNeeded: approval.onApprovalNeeded,
             approvalTimeoutMs: subAgentApprovalTimeoutMs(deps, found.agent),
+            // A read-only turn's sub-agent tool calls run read-only too.
+            ...(state.readOnly ? { readOnly: true } : {}),
           }),
           approvalNeeded: approval.approvalNeeded,
         });
@@ -2367,6 +2454,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         progressListener: state.progressListener,
         reportIdentityLinkPending: state.reportIdentityLinkPending,
         identityLinkFlow: state.identityLinkFlow,
+        ...(state.readOnly ? { readOnly: true } : {}),
       });
 
       if (verdict.kind === "misconfigured") {
@@ -2432,6 +2520,8 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             // Real HITL for a gated sub-agent tool call (ADR 0003 + sub-agent HITL).
             onApprovalNeeded: approval.onApprovalNeeded,
             approvalTimeoutMs: subAgentApprovalTimeoutMs(deps, agent),
+            // A read-only turn's sub-agent tool calls run read-only too.
+            ...(state.readOnly ? { readOnly: true } : {}),
           }),
           approvalNeeded: approval.approvalNeeded,
         });
@@ -2474,6 +2564,11 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
             ...(ownedSecretNames ? { ownedSecretNames } : {}),
             ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+            ...(state.readOnly ? { readOnly: true } : {}),
+            // Params belong to the agent the trigger NAMED, not to whatever
+            // agent a turn ends up delegating to (a stale-anchor fallback, an
+            // identity-link resume of a different agent).
+            ...(state.params && state.forcedAgentId === agent.id ? { params: state.params } : {}),
           });
         } catch (launchErr) {
           // The anchor now points at a run that will never exist. Left behind,
@@ -2717,7 +2812,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
         // `resolveToolIdentitySecretEnv`, which documents the read-only,
         // never-starts-a-fresh-link v1 scope cut. The not-linked hint points at
         // THIS backing agent, which the caller reaches by direct chat.
-        const gate = await resolveToolIdentitySecretEnv(authorization, tool, state.identity, () => "this agent");
+        const gate = await resolveToolIdentitySecretEnv(authorization, tool, state.identity, () => "this agent", state.readOnly);
         if ("error" in gate) {
           return { error: gate.error };
         }
@@ -2743,6 +2838,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             ...(deps.natsUrl ? { natsUrl: deps.natsUrl, natsSubject: `callbacks.${runId}` } : {}),
             ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
             ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+            // A forced skill's agentRefs reach agents through here: still the
+            // same read-only turn.
+            ...(state.readOnly ? { readOnly: true } : {}),
           });
           const reply = await awaitReply;
           // v1 scope cut: agent-backed tools support single-turn/final-reply
@@ -2993,6 +3091,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
             tool,
             state.identity,
             (provider) => `an agent that uses ${provider} identity linking`,
+            state.readOnly,
           );
           if ("error" in gate) {
             return { error: gate.error };
@@ -3019,6 +3118,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               natsSubject: `callbacks.${jobId}`,
               ...(state.sessionId ? { sessionId: state.sessionId } : {}),
               ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
+              ...(state.readOnly ? { readOnly: true } : {}),
             });
           } else {
             // HTTP callback mode (backward-compatible default).
@@ -3029,6 +3129,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               callbackSecret: deps.callbackSecret!,
               ...(state.sessionId ? { sessionId: state.sessionId } : {}),
               ...(identitySecretEnv ? { secretEnv: identitySecretEnv } : {}),
+              ...(state.readOnly ? { readOnly: true } : {}),
             });
           }
 
@@ -3131,28 +3232,29 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       return { result: `${prefix ?? ""}${state.result}${suffix ?? ""}` };
     })
     .addEdge(START, "resolveIdentity")
-    .addConditionalEdges("resolveIdentity", afterOrEnd("checkIntegrationRoute"))
-    // A matched IntegrationRoute resolves straight to its target -> skip
-    // straight to delegation/tool-loading; a miss (no event, no match, ref
-    // gone) falls through to the ordinary identity-link/skill-continuity
-    // chain exactly as before this node existed.
-    .addConditionalEdges("checkIntegrationRoute", (state) =>
+    .addConditionalEdges("resolveIdentity", afterOrEnd("checkEventTrigger"))
+    // A matched EventTrigger resolves straight to its target -> skip straight
+    // to delegation/tool-loading/the one tool run; a forced target that did
+    // not resolve has already set `error` (END). A turn with no forced target
+    // (no event, or an `orchestrator` target) falls through to the ordinary
+    // identity-link/skill-continuity chain.
+    .addConditionalEdges("checkEventTrigger", (state) =>
       state.error
         ? END
         : // A sub-agent paused on a gated tool call resumes FIRST (ADR 0003 +
           // sub-agent HITL), ahead of the re-attach below: the coexisting anchor
-          // also sets `activeAgentRunAwaitingReply`, so without this a route turn
+          // also sets `activeAgentRunAwaitingReply`, so without this a trigger turn
           // would re-attach and wait on a run that is blocked on US rather than
           // reading the approval decision.
           state.subAgentApprovalPending
           ? "checkPendingSubAgentApproval"
           : // A conversation still owed a reply by a run re-attaches FIRST, even on
-            // a route-driven turn. The route's whole purpose is to skip retrieval
+            // a trigger-driven turn. The trigger's whole purpose is to skip retrieval
             // and dispatch deterministically, but dispatching again while an
             // earlier run of this same conversation is holding an answer would do
             // the work twice -- a second branch and a second PR on a real coding
             // agent. This is the path a re-applied trigger label takes
-            // (docs/adr/0033), and `checkActiveAgentRun` falls back to the route's
+            // (docs/adr/0033), and `checkActiveAgentRun` falls back to the trigger's
             // own target below if the anchor turns out to be stale.
             state.activeAgentRunAwaitingReply && state.activeAgentRunId
             ? "checkActiveAgentRun"
@@ -3160,7 +3262,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               ? "delegateToAgent"
               : state.selectedSkill
                 ? "loadSkillTools"
-                : "checkPendingApproval",
+                : state.selectedTool
+                  ? "runTool"
+                  : "checkPendingApproval",
     )
     // An awaited approval decision resumes FIRST (ADR 0003): approve ->
     // re-dispatch the stored call (runTool, gate suppressed); deny -> continue
@@ -3204,7 +3308,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
     // final reply, or resumable pause -- all set `agentRunId`) or errored -> END
     // either way. On a miss, an already-selected target is honored before
     // falling through to retrieval: this node is now also reachable from
-    // `checkIntegrationRoute`, whose route already chose one, and dropping that
+    // `checkEventTrigger`, whose trigger already chose one, and dropping that
     // choice would turn a stale anchor into a silently different turn.
     .addConditionalEdges("checkActiveAgentRun", (state) =>
       state.error || state.agentRunId
@@ -3213,7 +3317,9 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           ? "delegateToAgent"
           : state.selectedSkill
             ? "loadSkillTools"
-            : "checkNeedsCapability",
+            : state.selectedTool
+              ? "runTool"
+              : "checkNeedsCapability",
     )
     // A "no" (docs/adr/0019) skips catalog retrieval entirely and answers
     // directly; a "yes" (or classifier error) proceeds exactly as before.

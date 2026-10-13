@@ -25,30 +25,24 @@ export const DENY_BASH_PATTERNS: string[] = [
 ];
 
 /**
- * The exact sentinel a review IntegrationRoute (the "ai-review" label routes)
- * puts at the top of the rendered prompt. The IntegrationRoute CRD has no
- * env/mode field, so the rendered goal is the ONLY per-route channel into this
- * container -- this is how a review run is recognised STRUCTURALLY (an exact
- * substring the chart controls) rather than by reading the model's prose or the
- * configurable label. MUST stay byte-for-byte identical to the chart templates'
- * first line and to claude-code-swe-agent's REVIEW_MODE_MARKER.
+ * True when this run is code-enforced read-only. Comes ONLY from the
+ * structured `AgentRun.spec.readOnly` field (AGENT_READ_ONLY, surfaced on the
+ * runtime config / session as `readOnly`; ADR 0048) -- never from the goal
+ * text, which carries attacker-influenced event content. Strict `=== true`.
  */
-export const REVIEW_MODE_MARKER = "SWE-ENFORCED-MODE: review-only";
-
-/** True when this run is a code-enforced read-only review (exact-match detected; fail-safe -- the marker only ever ADDS deny rules). */
-export function isReviewMode(goal: string): boolean {
-  return goal.includes(REVIEW_MODE_MARKER);
+export function isReadOnly(run: { readOnly: boolean }): boolean {
+  return run.readOnly === true;
 }
 
 /**
- * Extra bash deny globs layered on for a review run, on top of
- * {@link DENY_BASH_PATTERNS}. A review may still read the repo and post its
+ * Extra bash deny globs layered on for a read-only run, on top of
+ * {@link DENY_BASH_PATTERNS}. A read-only run (typically a review) may still read the repo and post its
  * findings (`gh pr review`, `gh api ... /reviews`, `gh pr comment`) but must not
  * push or open/merge/alter a pull request. opencode resolves bash permission by
  * last-match-wins glob and enforces an explicit `deny` even under `--auto`, so a
  * push/PR-create fails regardless of what the model is told.
  */
-export const REVIEW_DENY_BASH_PATTERNS: string[] = [
+export const READ_ONLY_DENY_BASH_PATTERNS: string[] = [
   "git push*",
   "gh pr create*",
   "gh pr merge*",
@@ -61,8 +55,8 @@ export const REVIEW_DENY_BASH_PATTERNS: string[] = [
 export interface OpencodeConfigOptions {
   /** opencode model id in `provider/model` form, e.g. "anthropic/claude-sonnet-5". */
   model: string;
-  /** When true, layer on {@link REVIEW_DENY_BASH_PATTERNS} so the run cannot push or open/merge a PR. */
-  reviewMode?: boolean;
+  /** When true, layer on {@link READ_ONLY_DENY_BASH_PATTERNS} so the run cannot push or open/merge a PR. */
+  readOnly?: boolean;
 }
 
 /**
@@ -102,7 +96,7 @@ const ALLOW_ALL_OTHER_CATEGORIES: Record<string, string> = {
 export function buildOpencodeConfig(opts: OpencodeConfigOptions): object {
   const bash: Record<string, string> = { "*": "allow" };
   for (const pattern of DENY_BASH_PATTERNS) bash[pattern] = "deny";
-  if (opts.reviewMode) for (const pattern of REVIEW_DENY_BASH_PATTERNS) bash[pattern] = "deny";
+  if (opts.readOnly) for (const pattern of READ_ONLY_DENY_BASH_PATTERNS) bash[pattern] = "deny";
   return {
     $schema: "https://opencode.ai/config.json",
     model: opts.model,

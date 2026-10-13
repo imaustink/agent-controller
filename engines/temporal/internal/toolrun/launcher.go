@@ -46,6 +46,9 @@ type LaunchSpec struct {
 	TimeoutSeconds int32
 	// SecretEnv are per-invocation credential references for this run only.
 	SecretEnv []SecretEnvVar
+	// ReadOnly sets spec.readOnly (ADR 0048). Only ever written when true, so
+	// a run that is not read-only produces a CR byte-identical to before.
+	ReadOnly bool
 }
 
 // Phases mirror ToolRunPhase upstream.

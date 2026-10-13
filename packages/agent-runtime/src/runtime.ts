@@ -16,6 +16,13 @@ export interface AgentSession {
   readonly runId: string;
   /** The initial goal for this run. */
   readonly goal: string;
+  /**
+   * Whether this run must not write (AgentRun.spec.readOnly, ADR 0048). The
+   * runtime only carries it; enforcing it is the agent's job.
+   */
+  readonly readOnly: boolean;
+  /** Structured run parameters (AgentRun.spec.params, ADR 0048); `{}` when unset. */
+  readonly params: Readonly<Record<string, string>>;
   /** Fires when the orchestrator sends `cancel` (user abandoned, timeout, etc.). */
   readonly signal: AbortSignal;
   /** Emit incremental progress narration (surfaced to the user as streaming deltas). */
@@ -304,6 +311,8 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
   const session: AgentSession = {
     runId: config.runId,
     goal: config.goal,
+    readOnly: config.readOnly,
+    params: Object.freeze({ ...config.params }),
     signal: abort.signal,
     progress: (message, o) => publishUp({ type: "progress", message, stage: o?.stage, pct: o?.pct }),
     warn: (message) => publishUp({ type: "warning", message }),

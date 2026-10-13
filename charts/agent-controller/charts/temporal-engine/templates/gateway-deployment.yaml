@@ -105,7 +105,7 @@ spec:
                   name: {{ . }}
                   key: {{ $.Values.gateway.senderAssertion.secretKey }}
             {{- end }}
-            # The gateway watches IntegrationRoute CRs for deterministic
+            # The gateway watches EventTrigger CRs (docs/adr/0048) for event
             # dispatch, so it needs to know where the catalog lives.
             - name: CATALOG_NAMESPACE
               value: {{ .Values.catalog.namespace | default .Release.Namespace | quote }}

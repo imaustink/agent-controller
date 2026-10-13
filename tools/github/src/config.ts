@@ -18,6 +18,11 @@ import { normalizePem } from "@controller-agent/github-app-auth";
  * the callback/NATS result-delivery plumbing works end-to-end.
  */
 export interface AppConfig {
+  /**
+   * `TOOL_READ_ONLY=true` (set from `ToolRun.spec.readOnly`, ADR 0048): only
+   * read-only `gh` subcommands may run. Only the exact string "true" enables it.
+   */
+  readOnly: boolean;
   /** Message-passing transport for events (see docs/messaging.md). */
   transport: "stdout" | "events" | "file" | "callback" | "nats";
   /** Correlation id for this tool call; generated if not provided. */
@@ -101,6 +106,7 @@ function transport(raw: string | undefined): AppConfig["transport"] {
 }
 
 export const config: AppConfig = {
+  readOnly: process.env.TOOL_READ_ONLY === "true",
   transport: transport(process.env.RECIPE_TRANSPORT),
   jobId: process.env.RECIPE_JOB_ID ?? randomUUID(),
   eventsPath: process.env.RECIPE_EVENTS_PATH ?? "/tmp/github-tool-events.ndjson",

@@ -27,6 +27,7 @@ import { deriveKey } from "./connections/signed-token.js";
 import { GatewayServer, type GatewayServerOptions } from "./server.js";
 import { InMemorySessionPageStore, RedisSessionPageStore } from "./session-page-store.js";
 import { InMemoryPendingLabelStore, RedisPendingLabelStore } from "./label-reconciler.js";
+import { CrdEventSourceRegistry, SecretKeyReader, type SecretReadApi } from "./event-sources.js";
 
 const EXIT_STARTUP_FAILURE = 1;
 
@@ -37,10 +38,6 @@ const EXIT_STARTUP_FAILURE = 1;
 // store -- so there is nothing left to wait for at boot.
 
 async function main(): Promise<void> {
-  if (!config.githubWebhookSecret) {
-    console.error("GITHUB_WEBHOOK_SECRET is required");
-    process.exit(EXIT_STARTUP_FAILURE);
-  }
   // OIDC client_credentials fields (automatic token fetch/refresh) are an
   // opt-in alternative to the static GATEWAY_ORCHESTRATOR_TOKEN -- same
   // partial-config-fails-closed discipline as identity-link below (a typo'd
@@ -299,8 +296,38 @@ async function main(): Promise<void> {
     );
   }
 
-  // Durable self-heal for trigger-label removal (the headline "only works ~3/4
-  // of the time" bug): an outbox of owed label removals, Redis-backed so it
+  // EventSources (ADR 0048): the event routes exist only for sources this
+  // gateway can see. Without CRD_NAMESPACE nothing is loaded and every
+  // /webhooks/:source and /events/:source/tick answers 404 -- said loudly,
+  // since that is otherwise a silent "every delivery 404s". A failed initial
+  // list is fatal: starting with an empty table would 404 real deliveries
+  // until the first successful relist, with nothing in the logs explaining it
+  // beyond the list error.
+  let eventSources: CrdEventSourceRegistry | undefined;
+  let eventSecrets: SecretKeyReader | undefined;
+  if (config.crdNamespace) {
+    const kubeConfig = new k8s.KubeConfig();
+    kubeConfig.loadFromDefault();
+    eventSources = CrdEventSourceRegistry.fromKubeConfig(kubeConfig, {
+      namespace: config.crdNamespace,
+      group: config.crdGroup,
+      version: config.crdVersion,
+    });
+    eventSecrets = new SecretKeyReader({
+      api: kubeConfig.makeApiClient(k8s.CoreV1Api) as unknown as SecretReadApi,
+      namespace: config.crdNamespace,
+    });
+    await eventSources.start();
+    console.error(
+      `Serving EventSources (${config.crdGroup}/${config.crdVersion}) from namespace ${config.crdNamespace}; ` +
+        `cron ticks authenticate against Secret ${config.eventTickTokenSecret} (key "token")`,
+    );
+  } else {
+    console.error("WARNING: CRD_NAMESPACE is not set -- no EventSources are loaded, so every event route answers 404.");
+  }
+
+  // Durable self-heal for trigger-declared label removal (the headline "only
+  // works ~3/4 of the time" bug): an outbox of owed label removals, Redis-backed so it
   // survives the gateway pod restart/OOM that loses the in-process `finally`.
   // Reuses the same Redis as the session-page store, and falls back to in-memory
   // (which heals a same-process throw but not a restart) with the same
@@ -312,7 +339,7 @@ async function main(): Promise<void> {
     ? new RedisPendingLabelStore(pendingLabelRedisUrl)
     : new InMemoryPendingLabelStore();
   console.error(
-    `Trigger-label reconciler enabled (${pendingLabelRedisUrl ? `Redis: ${pendingLabelRedisUrl}` : "in-memory (not durable across restarts)"})`,
+    `Label reconciler enabled (${pendingLabelRedisUrl ? `Redis: ${pendingLabelRedisUrl}` : "in-memory (not durable across restarts)"})`,
   );
 
   // Claude-auth (docs/adr/0027) is opt-in and layered on top of
@@ -400,12 +427,11 @@ async function main(): Promise<void> {
   }
 
   const server = new GatewayServer({
-    githubWebhookSecret: config.githubWebhookSecret,
+    ...(eventSources ? { eventSources } : {}),
+    ...(eventSecrets ? { secrets: eventSecrets, eventTickTokenSecret: config.eventTickTokenSecret } : {}),
     identityResolver,
     orchestratorClient,
     githubReplyClient,
-    githubTriggerLabel: config.githubTriggerLabel,
-    githubReviewLabel: config.githubReviewLabel,
     ...(identityLinkLinker ? { identityLinkLinker, identityLinkToken: config.identityLinkToken } : {}),
     ...(identityLinkAuthCodeLinkers ? { identityLinkAuthCodeLinkers } : {}),
     ...(sessionPageStore ? { sessionPageStore, publicBaseUrl: config.publicUrl } : {}),
@@ -431,6 +457,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     console.error(`Received ${signal}; shutting down integration-gateway...`);
     await server.close();
+    eventSources?.stop();
     // The credential stores hold no long-lived connection to close: each call is
     // a request against the API server, and the only durable thing they own is
     // the Secret itself (docs/adr/0034). The Redis handles that used to need
