@@ -512,7 +512,14 @@ async function main(): Promise<void> {
       // hold, so a rollout between the two can no longer destroy the only copy
       // of the answer. Without Redis it is in-process, and that guarantee is
       // limited to this pod -- the same caveat as the invocation store.
-      agentChannel: await NatsAgentChannel.connect(config.natsUrl, "agent", agentReplyStore),
+      // Retried like Redis above: NATS restarts alongside this pod on every
+      // rollout of the umbrella chart, and a single refused connect used to
+      // crash the orchestrator into CrashLoopBackOff for no lasting reason.
+      agentChannel: await retryWithBackoff(
+        "nats agent channel startup check",
+        () => NatsAgentChannel.connect(config.natsUrl!, "agent", agentReplyStore),
+        { attempts: 12, initialDelayMs: 1_000, maxDelayMs: 15_000 },
+      ),
     };
   }
 
@@ -568,7 +575,12 @@ async function main(): Promise<void> {
   let callbackReceiver: CallbackReceiver | undefined;
   if (config.natsUrl) {
     console.error(`Using NATS result channel: ${config.natsUrl}`);
-    jobResultReceiver = await NatsJobReceiver.connect(config.natsUrl);
+    const natsUrl = config.natsUrl;
+    jobResultReceiver = await retryWithBackoff("nats result channel startup check", () => NatsJobReceiver.connect(natsUrl), {
+      attempts: 12,
+      initialDelayMs: 1_000,
+      maxDelayMs: 15_000,
+    });
   } else {
     callbackReceiver = new CallbackReceiver(config.callbackSecret!);
     jobResultReceiver = callbackReceiver;

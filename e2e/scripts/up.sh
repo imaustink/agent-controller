@@ -152,7 +152,13 @@ step "Building images and deploying (skaffold profile: e2e)..."
 #
 # Check with:  skaffold diagnose -p e2e | grep -A3 'Docker artifact: <name>'
 # A dependency count far below the artifact's real source-file count is the tell.
-(cd "$REPO_ROOT" && skaffold run -p e2e)
+#
+# --tolerate-failures-until-deadline: skaffold stamps a fresh run-id label on
+# every pod template, so EVERY run rolls NATS and Qdrant alongside the
+# orchestrator, which can exit once while they come back. Without the flag the
+# status check fails the whole run on that first exit, although the stack
+# converges seconds later.
+(cd "$REPO_ROOT" && skaffold run -p e2e --tolerate-failures-until-deadline)
 
 step "Selecting the agent engine: $ENGINE..."
 # skaffold just (re)applied values-e2e.yaml, which deploys Temporal -- so a
