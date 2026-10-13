@@ -13,7 +13,7 @@
 # and that is precisely the path ADR 0029 changed — so the e2e environment
 # mirrors it rather than the demo shortcut.
 
-# The agent the triage route actually launches here.
+# The agent the github-issue-triage EventTrigger actually launches here.
 #
 # The identity gate is the thing under test, so it must see production-shaped
 # Agents -- but a REAL Claude run cannot terminate in this cluster: there is no
@@ -58,7 +58,7 @@ stubAgent:
 # kept Claude-only in this file for the reason given there. Drifting from
 # production makes the read gate take a different path for the agent under test
 # than for the one production runs, which is the whole point of the stub.
-# Reached by name from chat, and by the issue-review route below from a webhook.
+# Reached by name from chat, and by the github-issue-review EventTrigger below from a webhook.
 stubSweAgent:
   enabled: true
   acknowledgeNotForProduction: true
@@ -82,13 +82,13 @@ stubSweAgent:
       - claude-remote
   replyAckTimeoutMs: 90000
 
-# Removed from the e2e catalog entirely, not merely bypassed by the triage route.
+# Removed from the e2e catalog entirely, not merely bypassed by the triage trigger.
 #
 # The comment at the top of this file explains why it is useless for the
 # identity-keying spec: it declares no identityProviders, so the pre-flight
 # iterates an empty list and launches with nothing to assert a subject against.
-# Re-pointing the route at stub-agent was enough while every spec arrived through
-# an IntegrationRoute -- but a CHAT turn has no route, so its agent is chosen by
+# Re-pointing the trigger at stub-agent was enough while every spec arrived through
+# an event trigger -- but a CHAT turn has no trigger, so its agent is chosen by
 # the planner, and observed runs picked THIS agent over the named stub (its
 # description is the closest match for any "fix the failing repo" request).
 # A turn that lands here produces no credential flow at all, which is not a
@@ -146,21 +146,98 @@ claudeCodeSweAgent:
       - claude
       - claude-remote
 
-integrationRoutes:
-  githubIssueLabeledTriage:
+eventSources:
+  # The suite signs and posts GitHub deliveries itself with the same HMAC
+  # secret the gateway verifies (bootstrap-secrets.sh's
+  # e2e-integration-gateway-secrets, key GITHUB_WEBHOOK_SECRET), so the
+  # signature path is exercised for real.
+  github:
+    enabled: true
+    secretRef:
+      name: e2e-integration-gateway-secrets
+      key: GITHUB_WEBHOOK_SECRET
+  # Every other example source is ON here: the event-trigger specs
+  # (e2e/specs/event-triggers-*.e2e.ts) drive each verification scheme against
+  # the CR the chart actually renders. Their Secrets keep the chart's default
+  # names and are created with FIXED throwaway values by
+  # e2e/scripts/bootstrap-secrets.sh; the specs read them back to sign.
+  slack:
+    enabled: true
+  ci:
+    enabled: true
+  genericHmac:
+    enabled: true
+  # SUSPENDED, so nothing ticks on its own mid-run: event-triggers-cron.e2e.ts
+  # drives ticks explicitly (`kubectl create job --from=cronjob/
+  # eventsource-nightly-sweep`), which runs the exact Job template the schedule
+  # would. A per-test every-minute source covers the scheduler itself.
+  nightlySweep:
+    enabled: true
+    suspend: true
+    # The payload IS the envelope body; the spec asserts these come back as the
+    # AgentRun's params ("3" -- params are string forms, §4).
+    payload:
+      repo: e2e-org/e2e-repo
+      limit: 3
+
+eventTriggers:
+  githubIssueTriage:
     enabled: true
     # stub-agent, not the demo default and not claude-code-swe-agent: it carries
     # the same Claude identityProviders (so the credential gate is exercised
     # exactly as production exercises it) AND terminates hermetically (so the
     # chain past the launch -- reply, relay, issue comment -- is assertable).
     agentRef: stub-agent
+    label: ai-triage
   # The webhook half of the read gate: a labeled issue dispatched to the
   # GitHub-acting stub, whose repository comes from the event (the one
   # integration-gateway verified the sender on) rather than the prompt.
-  githubIssueLabeledReview:
+  # Also the readOnly spec's issue case: same stub image, so its reply carries
+  # the `readOnly=... params=...` line.
+  githubIssueReview:
     enabled: true
     agentRef: stub-swe-agent
-    labelName: ai-review
+    label: ai-review
+  # Both PR triggers on the plain stub: the readOnly spec contrasts them (same
+  # event, same agent, different label -> read-only vs writable).
+  githubPrTriage:
+    enabled: true
+    agentRef: stub-agent
+    label: ai-triage
+  githubPrReview:
+    enabled: true
+    agentRef: stub-agent
+    label: ai-review
+  # The shipped example (no reply adapter for Slack). Its selection + session
+  # key are pinned via /invoke; reply.http is exercised by a per-test,
+  # higher-priority twin (event-triggers-reply-http.e2e.ts).
+  slackMentionChat:
+    enabled: true
+  # A fixture Skill, not the chart's cluster-debug-skill: that one's audience
+  # needs kubectl-readonly + signoz-query, which this profile neither builds
+  # nor backs. e2e/manifests/event-trigger-skill.yaml defines it; the CI spec
+  # applies it (the trigger is TargetNotFound until then -- see that file).
+  ciFailureSkill:
+    enabled: true
+    skillRef: e2e-ci-failure-skill
+    reply:
+      url: "http://fake-sink.controller-agent.svc.cluster.local/reply/ci-failure-skill"
+      secretRef:
+        name: e2e-event-reply
+        key: secret
+  # web-fetch is enabled by values-minikube-demo.yaml; its image is built into
+  # minikube by e2e/scripts/up.sh (the e2e skaffold profile does not build it).
+  genericHmacTool:
+    enabled: true
+    toolRef: web-fetch
+    reply:
+      url: "http://fake-sink.controller-agent.svc.cluster.local/reply/generic-hmac-tool"
+      secretRef:
+        name: e2e-event-reply
+        key: secret
+  nightlyStaleSweep:
+    enabled: true
+    agentRef: stub-agent
 
 # The in-cluster MCP server the mcp-broker discovers and proxies to (ADR 0045).
 # The MCPServer CR that points at it is applied per-test by

@@ -83,7 +83,7 @@ temporal-engine:
     # which engine is driving the episode.
     url: nats://agent-controller-nats.controller-agent.svc.cluster.local:4222
   qdrant:
-    # Empty by default -- and every catalog-dependent activity (IntegrationRoute
+    # Empty by default -- and every catalog-dependent activity (EventTrigger
     # matching, Skill/Agent/Tool retrieval, delegation) needs it: without a
     # Qdrant host, the worker logs "QDRANT_HOST not set; retrieval activities
     # disabled" and every turn falls through the capability-need gate into a
@@ -183,15 +183,11 @@ integration-gateway:
     # ever keyed and the keying spec has nothing to observe.
     githubBaseUrl: "http://fake-github.controller-agent.svc.cluster.local"
 
-    # Must match what the specs send. `fake-github` never originates events;
-    # the suite signs and posts them itself with the same HMAC the gateway
-    # verifies, so the signature path is exercised for real.
-    githubTriggerLabel: "ai-triage"
-
-    # Relays an issue labeled with this to the issue-review route, which
-    # community-components' values-e2e.yaml points at stub-swe-agent: the
-    # webhook half of the repository read gate (repo-read-gate.e2e.ts).
-    githubReviewLabel: "ai-review"
+    # The ai-triage / ai-review labels are EventTrigger config now
+    # (community-components' values-e2e.yaml eventTriggers.*.label), not
+    # gateway config. `fake-github` never originates events; the suite signs
+    # and posts them itself with the `github` EventSource's HMAC secret, so the
+    # signature path is exercised for real.
 
     # Loop prevention: the gateway drops events sent by its own bot login.
     # Specs deliberately use sender logins OTHER than this one, since an

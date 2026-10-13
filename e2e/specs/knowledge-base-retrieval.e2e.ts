@@ -4,6 +4,7 @@ import { kubectl, kubectlApplyStdin, waitFor } from "../support/k8s.js";
 import { withQdrant, listCollections, pointCount } from "../support/qdrant.js";
 import { chatSubject, chatTurn } from "../support/chat.js";
 import { seedAtlassianLink, deleteCredentials } from "../support/credential-store.js";
+import { isTemporal } from "../support/engine.js";
 
 /**
  * A knowledge base, from a synced corpus to what a caller is allowed to read.
@@ -319,7 +320,9 @@ describe("a caller with no linked account", () => {
  * Asserted from the worker's own execution log rather than from config: what
  * matters is that the Go activity RAN, not that a value was set.
  */
-describe("the Go engine is what served them", () => {
+// Engine identity, meaningful only when Temporal is the engine under test;
+// under E2E_ENGINE=langgraph the turns above ran in-process instead.
+describe.skipIf(!isTemporal())("the Go engine is what served them", () => {
   it("ran SearchKnowledgeBase as a Temporal activity for this spec's turns", async () => {
     const log = await kubectl([
       "logs",

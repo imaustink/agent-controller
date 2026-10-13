@@ -16,10 +16,11 @@ export interface RecordedRequest {
 }
 
 /**
- * The gateway's webhook HMAC secret, read from the cluster rather than
- * hardcoded — the test has to sign with whatever the deployment is actually
- * verifying against, or every webhook 401s for a reason that looks like a
- * gateway bug.
+ * The `github` EventSource's HMAC secret (values-e2e.yaml points its
+ * `webhook.verify.secretRef` at this Secret/key), read from the cluster rather
+ * than hardcoded — the test has to sign with whatever the deployment is
+ * actually verifying against, or every webhook 401s for a reason that looks
+ * like a gateway bug. support/events.ts reads the other sources' secrets.
  *
  * This is the one place a secret VALUE is read, and it is unavoidable: signing
  * is the whole point. It is never logged and never asserted on.
