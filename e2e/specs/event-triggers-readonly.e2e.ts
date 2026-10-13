@@ -202,17 +202,32 @@ describe(`EventTrigger target.readOnly reaches the run (engine: ${deployedEngine
       });
       expect(status).toBe(303);
 
-      // A plain conversational turn -- no trigger, so no params to match on;
-      // any run launched since the prompt is this turn's (the suite is serial).
-      const runs = await waitFor(
-        "the follow-up turn to launch an AgentRun",
+      // Wait for the follow-up TURN to finish (the session page stops showing a
+      // "working…" turn), not for a launch: whether this plain chat turn may
+      // launch at all is the engine's repository read gate's call, not the
+      // sticky flag's. The Temporal engine refuses it -- a session-page prompt
+      // names no verified repository for a github-declaring agent (ADR 0042) --
+      // while LangGraph has no such gate and launches.
+      await waitFor(
+        "the follow-up turn to finish on the session page",
         async () => {
-          const r = await agentRunDetailsSince(startedAt);
-          return r.length > 0 ? r : undefined;
+          const page = await withGateway(async (forward) => (await fetchThrough(forward, `/sessions/${token}`)).text());
+          return page.includes("re-check the review") && !page.includes("working…") ? true : undefined;
         },
         { timeoutMs: 420_000 },
       );
+
+      // A plain conversational turn -- no trigger, so no params to match on;
+      // any run launched since the prompt is this turn's (the suite is serial).
+      // The invariant on BOTH engines: nothing it launched may be writable.
+      const runs = await agentRunDetailsSince(startedAt);
       for (const run of runs) expect(run.readOnly, `AgentRun ${run.name} (${run.agentRef}) launched by the follow-up`).toBe(true);
+      // Where the follow-up does launch (LangGraph), require that it did, so the
+      // loop above is never vacuous there. Temporal's sticky flag for a
+      // follow-up is pinned by TestReadOnlyIsStickyForTheConversation.
+      if ((await deployedEngine()) === "langgraph") {
+        expect(runs.length, "the LangGraph follow-up launched no AgentRun").toBeGreaterThan(0);
+      }
     });
   });
 });

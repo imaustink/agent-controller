@@ -1671,6 +1671,26 @@ func TestEventTriggerForcedToolRunsOnceWithItsInput(t *testing.T) {
 	require.Equal(t, caller, le.resolveToolInputs[0].Caller, "re-resolved under the caller's own roles")
 }
 
+// A forced tool is a function call: when it fails the TURN fails, so the
+// outcome an event caller reads (reply.http's status) says failed — not a
+// polite "I couldn't complete that" answer reported as success.
+func TestEventTriggerForcedToolFailureFailsTheTurn(t *testing.T) {
+	le := newLoopEnv(t)
+	le.resolvedTool = scraperTool()
+
+	var failure error
+	le.sendTurnExpectingFailure(t, "turn-1", workflows.TurnInput{
+		Caller: activities.Caller{Subject: "user:1", Roles: []string{"cook"}}, ForcedToolID: "recipe-scraper",
+		ToolInput: "https://10.0.0.1/", TriggerName: "scrape-on-push",
+	}, &failure, time.Millisecond)
+	le.env.RegisterDelayedCallback(func() { le.signalToolFailure(0, "blocked_url", "Blocked non-public address") }, time.Second)
+
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.ErrorContains(t, failure, "recipe-scraper failed (blocked_url: Blocked non-public address)")
+	require.Len(t, le.launches, 1, "the tool ran once before failing")
+}
+
 // There is no human on an event turn to approve with: a tool whose policy
 // requires one fails the turn rather than parking it on a prompt nobody sees.
 func TestEventTriggerForcedToolRequiringApprovalFails(t *testing.T) {

@@ -80,12 +80,29 @@ func runForcedTool(
 		meta.ToolCalls = append(meta.ToolCalls, tool.ID)
 		if !out.NeedsLink && !out.Succeeded {
 			note(tool.ID + " failed")
-			return "I couldn't complete that: " + tool.ID + " failed (" + out.Result + ").", *meta, nil
+			return "", *meta, fmt.Errorf("forced tool %s failed (%s)", tool.ID, out.Result)
 		}
 		return out.Result, *meta, nil
 	}
 
-	// Container, local and agent-backed tools: the same single-call path the
-	// first-class delegate selection uses, identity gate included.
-	return runToolCall(ctx, actx, state, in, tool, in.ToolInput, "Running "+tool.ID+"…", "", meta, note)
+	// Container, local and agent-backed tools: the same identity gate and
+	// single call runToolCall makes — but a tool FAILURE fails the turn here,
+	// where runToolCall turns it into a polite "I couldn't complete that"
+	// answer. A forced tool is a function call, not a conversation: whoever
+	// reads the outcome (reply.http's status, a CI system) must see failed.
+	creds, refusal := toolCredentials(ctx, actx, in, tool)
+	if refusal != "" {
+		return refusal, *meta, nil
+	}
+	meta.ToolCalls = append(meta.ToolCalls, tool.ID)
+	note("Running " + tool.ID + "…")
+	outcome, err := runToolWithContinuation(ctx, actx, state, in, tool, in.ToolInput, "", creds, note)
+	if err != nil {
+		return "", *meta, err
+	}
+	if !outcome.Succeeded {
+		note(tool.ID + " failed: " + outcome.ErrorCode)
+		return "", *meta, fmt.Errorf("forced tool %s failed (%s: %s)", tool.ID, outcome.ErrorCode, outcome.ErrorMessage)
+	}
+	return outcome.Result, *meta, nil
 }

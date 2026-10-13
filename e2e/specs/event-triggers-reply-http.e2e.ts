@@ -180,6 +180,9 @@ describe(`reply.http from slack / ci / generic-hmac (engine: ${deployedEngine()}
     // things at once: the tool really ran (the error is web-fetch's own), its
     // input was the URL (the guard named the host), and an event body cannot
     // steer a tool at the cluster's insides.
+    // Both generic-hmac tests reply on the same path; start from an empty
+    // recording so neither can read the other's (or a retry's) reply.
+    await resetFakeSink();
     const sfx = runSuffix();
     const internalUrl = `https://fake-sink.controller-agent.svc.cluster.local/page.html?e2e=${sfx}`;
     const toolStartedAt = new Date();
@@ -215,6 +218,7 @@ describe(`reply.http from slack / ci / generic-hmac (engine: ${deployedEngine()}
     "generic-hmac -> web-fetch on a public https page -> reply.http result carries the page's content",
     async () => {
       const url = "https://example.com/";
+      await resetFakeSink();
       const { status } = await withGateway(async (f) =>
         postHmacWebhook(f, "generic-hmac", genericUrlPayload(url, { e2e: runSuffix() }), await genericHmacSecret()),
       );
