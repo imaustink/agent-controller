@@ -44,8 +44,9 @@ rules:
   - agents
   - connections
   - corpora
+  - eventsources
+  - eventtriggers
   - identityproviders
-  - integrationroutes
   - knowledgebases
   - localtools
   - skills
@@ -66,8 +67,9 @@ rules:
   - agents/finalizers
   - connections/finalizers
   - corpora/finalizers
+  - eventsources/finalizers
+  - eventtriggers/finalizers
   - identityproviders/finalizers
-  - integrationroutes/finalizers
   - knowledgebases/finalizers
   - localtools/finalizers
   - skills/finalizers
@@ -82,8 +84,9 @@ rules:
   - agents/status
   - connections/status
   - corpora/status
+  - eventsources/status
+  - eventtriggers/status
   - identityproviders/status
-  - integrationroutes/status
   - knowledgebases/status
   - localtools/status
   - skills/status

@@ -1,9 +1,9 @@
 apiVersion: core.controller-agent.dev/v1alpha1
-kind: IntegrationRoute
+kind: EventTrigger
 metadata:
   labels:
     app.kubernetes.io/name: core-controller
     app.kubernetes.io/managed-by: kustomize
-  name: integrationroute-sample
+  name: eventtrigger-sample
 spec:
   # TODO(user): Add fields here

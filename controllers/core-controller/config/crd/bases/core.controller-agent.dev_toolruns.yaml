@@ -96,6 +96,11 @@ spec:
                       Required when natsSubject is empty.
                     type: string
                 type: object
+              readOnly:
+                description: |-
+                  readOnly runs the tool read-only (TOOL_READ_ONLY=true), set from an
+                  EventTrigger's target.readOnly (docs/event-triggers.md §6).
+                type: boolean
               secretEnv:
                 description: |-
                   secretEnv are per-invocation environment variables sourced from Secret

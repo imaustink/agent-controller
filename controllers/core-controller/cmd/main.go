@@ -35,6 +35,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 	"github.com/controller-agent/core-controller/internal/controller"
 	// +kubebuilder:scaffold:imports
@@ -49,6 +50,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(toolv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(corev1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -239,13 +241,6 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "localtool")
 		os.Exit(1)
 	}
-	if err := (&controller.IntegrationRouteReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "integrationroute")
-		os.Exit(1)
-	}
 	if err := (&controller.IdentityProviderReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -277,6 +272,26 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "knowledgebase")
+		os.Exit(1)
+	}
+	if err := (&controller.EventSourceReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		// A cron source's CronJob only needs curl: it ticks integration-gateway,
+		// which reads the payload from the CR (docs/event-triggers.md §8).
+		// Without a tick URL, cron sources report Ready=False.
+		TickImage:       envOr("EVENT_TICK_IMAGE", "curlimages/curl:8.11.1"),
+		TickURL:         os.Getenv("EVENT_TICK_URL"),
+		TickTokenSecret: envOr("EVENT_TICK_TOKEN_SECRET", "integration-gateway-tick-token"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "eventsource")
+		os.Exit(1)
+	}
+	if err := (&controller.EventTriggerReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "eventtrigger")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
