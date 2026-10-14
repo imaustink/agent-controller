@@ -794,6 +794,12 @@ eventTriggers:
   # eventSources.slack.
   slackMentionChat:
     enabled: false
+    reply:
+      # Where the outcome is POSTed (e.g. a bridge that answers in the Slack
+      # thread). A literal URL (never templated). Empty = no reply.
+      url: ""
+      # Optional {name, key}: signs the reply body (x-event-signature).
+      secretRef: {}
   # ci-failure-skill (example): a failed CI run -> forces a Skill (read-only).
   # Requires eventSources.ci and the named Skill enabled.
   ciFailureSkill:

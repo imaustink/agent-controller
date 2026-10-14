@@ -156,8 +156,13 @@ describe.skipIf(!isTemporal())("Temporal engine: a bridged pod agent actually ru
     const comment = await waitFor(
       "the stub agent's reply to be posted back to the issue",
       async () => {
+        // The trigger's ack ("Starting work on this now") is posted first;
+        // the reply is the comment carrying the stub's marker.
         const posted = (await fakeGithubRequests()).filter(
-          (r) => r.method === "POST" && r.path === `/repos/${OWNER}/${REPO}/issues/${issueNumber}/comments`,
+          (r) =>
+            r.method === "POST" &&
+            r.path === `/repos/${OWNER}/${REPO}/issues/${issueNumber}/comments` &&
+            String(r.body ?? "").includes(STUB_REPLY_MARKER),
         );
         return posted.length > 0 ? posted[posted.length - 1] : undefined;
       },
