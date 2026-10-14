@@ -403,9 +403,10 @@ hardcoded in the gateway any more.
   through the durable pending-action store, so a crash mid-run still clears the
   label (`label-reconciler.ts`). `reply.http` POSTs the outcome to a literal,
   never-templated URL, optionally HMAC-signed.
-- **The `ai-triage` / `ai-review` flows are four example CRs**, shipped in
-  `charts/community-components` (`eventTriggers.github{Issue,Pr}{Triage,Review}`,
-  enabled in production against `claude-code-swe-agent`): each matches
+- **The `ai-triage` / `ai-review` flows are four example CRs** in
+  `examples/event-triggers/` (`eventtrigger-github-{issue,pr}-{triage,review}.yaml`;
+  production installs copies against `claude-code-swe-agent` through the
+  agent-controller chart's `extraManifests`): each matches
   `headers["x-github-event"]`, `body.action == "labeled"` and its label in
   CEL; the two review triggers set `readOnly: true`. Triage on an issue opens a
   PR; triage on a PR addresses its feedback, pushes, and syncs with base; review

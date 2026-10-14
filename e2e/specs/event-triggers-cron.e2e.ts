@@ -23,9 +23,9 @@ requireMinikubeContext();
  * `payload` as its body; triggers read it exactly like a webhook body.
  *
  * Ticks are driven explicitly, never waited for on the shipped schedule:
- * values-e2e.yaml SUSPENDS nightly-sweep, and `kubectl create job
- * --from=cronjob/...` runs the very Job template the schedule would -- same
- * image, args, secretKeyRef -- on demand. A per-test source with an
+ * the e2e overlay (e2e/manifests/event-triggers) SUSPENDS nightly-sweep, and `kubectl
+ * create job --from=cronjob/...` runs the very Job template the schedule would
+ * -- same image, args, ServiceAccount -- on demand. A per-test source with an
  * every-minute schedule covers the scheduler path itself (cheaply: it has no
  * trigger, so its ticks start no turn).
  *
@@ -36,7 +36,7 @@ requireMinikubeContext();
 
 const FIXTURE = "cron";
 const SHARED_SUBJECT = "client-integration-gateway";
-/** values-e2e.yaml eventSources.nightlySweep.payload. */
+/** nightly-sweep's payload as e2e/manifests/event-triggers patches it. */
 const SWEEP_PAYLOAD = { repo: "e2e-org/e2e-repo", limit: "3" };
 
 interface CronJobView {
@@ -107,7 +107,7 @@ describe(`cron EventSources (engine: ${deployedEngine()})`, () => {
       expect.objectContaining({ kind: "EventSource", name: "nightly-sweep", controller: true }),
     );
     expect(cj.spec.schedule).toBe(source.spec.cron.schedule);
-    // values-e2e.yaml suspends it so nothing fires on its own during a run.
+    // The e2e overlay suspends it so nothing fires on its own during a run.
     expect(cj.spec.suspend).toBe(true);
     // One tick is one turn: never two stacked.
     expect(cj.spec.concurrencyPolicy).toBe("Forbid");

@@ -1,0 +1,64 @@
+# Applying the triage label to a GitHub issue dispatches straight to a SWE Agent
+# (docs/event-triggers.md): investigate, implement, open a PR. A label, not an
+# assignee -- GitHub App bot users generally cannot be issue assignees. A human
+# applies it: the `github` EventSource drops bot-authored deliveries, so the
+# agent that filed an issue cannot self-trigger.
+#
+# The reply block is what the gateway used to hardcode for the labeled path: a
+# "starting work" comment (+ session-page link when GATEWAY_PUBLIC_URL is set),
+# the turn's result as a comment, and removal of the triggering label when the
+# run ends on any outcome -- so re-applying the label re-triggers.
+#
+# Whichever Agent agentRef names must be enabled in the same values file, or
+# this trigger is Ready=False and dispatches nothing.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: EventTrigger
+metadata:
+  name: github-issue-triage
+spec:
+  sourceRef: github
+  match:
+    cel: >-
+      headers["x-github-event"] == "issues" &&
+      body.action == "labeled" &&
+      body.label.name == "ai-triage"
+  params:
+    repository: body.repository.full_name
+    number: body.issue.number
+    title: body.issue.title
+    description: body.issue.body
+    label: body.label.name
+  sessionKey: "github:{{repository}}#{{number}}"
+  target:
+    agentRef: "opencode-swe-agent"
+    promptTemplate: |
+      GitHub issue {{repository}}#{{number}} was labeled "{{label}}": "{{title}}"
+
+      {{description}}
+
+      Triage and resolve this issue: investigate the {{repository}}
+      repository (the repository this issue was filed in), implement a fix or
+      feature there if the issue calls for one, and open a pull request against
+      {{repository}}. Do not create a new repository and do not
+      substitute any other repository, even if you lack permission to do
+      something the task seems to ask for (e.g. creating a repo) -- if you
+      cannot complete the task in {{repository}} as given, stop
+      and post a comment explaining exactly what's blocking you instead of
+      working around it elsewhere. If the issue is unclear or you need more
+      context before proceeding, post a comment asking a clarifying question
+      instead of guessing.
+
+      When you open a pull request, end its description with a short note
+      inviting a maintainer to apply the "ai-review" label to the PR to request
+      an automated code review, or the "{{label}}" label to have the
+      review feedback on it addressed and the branch brought back in sync with
+      its base. (The automation cannot apply either label to its own PR, so a
+      human applies it.)
+  reply:
+    github:
+      repository: "{{repository}}"
+      issueNumber: "{{number}}"
+      ack: "🤖 Starting work on this now."
+      sessionPage: true
+      result: true
+      removeLabel: "{{label}}"

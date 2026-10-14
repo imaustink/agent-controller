@@ -103,9 +103,11 @@ orchestrator service, and `controllers/` holds the Go controller.
 │   └── core-controller/        # Go controller — watches CRDs, launches Jobs
 │       ├── api/v1alpha1/        # Tool, Skill, Agent, ToolRun, AgentRun types
 │       └── internal/controller/ # reconciliation logic
+├── examples/
+│   └── event-triggers/         # bare EventSource/EventTrigger manifests (webhooks, cron) — not in any chart
 └── charts/                     # Helm charts
     ├── agent-controller/       # system chart: orchestrator + core-controller (+ CRDs) + optional Redis/Qdrant/NATS/Open WebUI/integration-gateway
-    └── community-components/   # catalog chart: Tool/Skill/Agent + example EventSource/EventTrigger custom resources
+    └── community-components/   # catalog chart: Tool/Skill/Agent custom resources
 ```
 
 General, cross-cutting documentation lives at the repo root (`README.md` and

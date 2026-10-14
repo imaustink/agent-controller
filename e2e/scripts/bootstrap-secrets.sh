@@ -133,8 +133,8 @@ upsert e2e-integration-gateway-secrets \
   --from-literal=ATLASSIAN_CLIENT_SECRET="e2e-not-a-real-secret"
 
 # The example EventSources' verification secrets and the reply.http signing
-# secret (charts/community-components/values-e2e.yaml; docs/event-triggers.md).
-# Names are the chart's defaults. FIXED values, unlike GITHUB_WEBHOOK_SECRET
+# secret (e2e/manifests/event-triggers; docs/event-triggers.md).
+# Names are the examples' own. FIXED values, unlike GITHUB_WEBHOOK_SECRET
 # above: the gateway reads these through the API and may cache a verified
 # secret, so a value rotated under a running gateway would 401 every delivery
 # until it re-read -- a failure that looks like a verification bug. The specs

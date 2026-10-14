@@ -1,0 +1,39 @@
+# Example: a failed CI run forces a Skill (target.skillRef -- no retrieval; a
+# skill the caller's roles cannot reach is a turn failure, not a fallback).
+# The expected body is whatever the CI notifier sends; this example assumes
+#   {"status": "failure", "repository": "owner/name", "branch": "...",
+#    "job": "...", "url": "<run url>"}
+# Uncomment `reply` below to have the outcome POSTed somewhere.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: EventTrigger
+metadata:
+  name: ci-failure-skill
+spec:
+  sourceRef: ci
+  match:
+    cel: >-
+      has(body.status) && body.status in ["failure", "failed", "error"]
+  params:
+    repository: body.repository
+    branch: 'has(body.branch) ? body.branch : "unknown"'
+    job: body.job
+    url: body.url
+  target:
+    skillRef: "cluster-debug-skill"
+    readOnly: true
+    promptTemplate: |
+      CI job "{{job}}" failed on {{repository}} (branch {{branch}}).
+      Run: {{url}}
+
+      Find the root cause of this failure from the evidence available to you and
+      report it concisely: what failed, why, and the most likely fix. Do not
+      change anything.
+  # Optional: POST the outcome to a URL you run (a literal, never templated, so
+  # event content cannot redirect it), signed with x-event-signature when
+  # secretRef is set:
+  # reply:
+  #   http:
+  #     url: https://bridge.example.com/results
+  #     secretRef:
+  #       name: event-reply
+  #       key: secret

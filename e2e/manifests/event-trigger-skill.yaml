@@ -1,8 +1,7 @@
 # The Skill the `ci-failure-skill` EventTrigger forces in the e2e environment
-# (charts/community-components/values-e2e.yaml sets
-# eventTriggers.ciFailureSkill.skillRef to this name).
+# (e2e/manifests/event-triggers sets ci-failure-skill's skillRef to this name).
 #
-# Why not the chart's own target (cluster-debug-skill)? Its audience needs the
+# Why not the example's own target (cluster-debug-skill)? Its audience needs the
 # kubectl-readonly and signoz-query Tools, neither of which has an image the e2e
 # profile builds or a backend this cluster runs -- a forced turn on it would
 # measure missing infrastructure, not the trigger. What the CI spec asserts is

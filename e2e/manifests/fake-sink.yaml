@@ -2,7 +2,7 @@
 #
 # Deployed only into the minikube e2e environment. It stands in for whatever a
 # `reply.http` side-effect would POST to in production (a CI bridge, a chat
-# relay): the EventTriggers values-e2e.yaml enables point their literal
+# relay): the example EventTriggers, as e2e/manifests/event-triggers patches them, point their literal
 # `reply.http.url` here, and per-test triggers do the same.
 #
 # Two jobs, same posture as fake-github.yaml:

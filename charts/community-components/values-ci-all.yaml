@@ -139,45 +139,6 @@ skills:
   ssh:
     enabled: true
 
-eventSources:
-  github:
-    enabled: true
-  slack:
-    enabled: true
-  ci:
-    enabled: true
-  genericHmac:
-    enabled: true
-  nightlySweep:
-    enabled: true
-    timeZone: America/Chicago
-
-# Every example, with its optional reply blocks on, so each branch renders.
-eventTriggers:
-  githubIssueTriage:
-    enabled: true
-  githubIssueReview:
-    enabled: true
-  githubPrTriage:
-    enabled: true
-  githubPrReview:
-    enabled: true
-  slackMentionChat:
-    enabled: true
-  ciFailureSkill:
-    enabled: true
-    reply:
-      url: http://ci-bridge.example.svc/results
-      secretRef:
-        name: ci-bridge
-        key: secret
-  genericHmacTool:
-    enabled: true
-    reply:
-      url: http://results.example.svc/web-fetch
-  nightlyStaleSweep:
-    enabled: true
-
 # The e2e MCP server fixture (fake-mcp-server.yaml). Enabled here so the
 # "every template renders" validate job covers it, mirroring stubAgent. The
 # image is irrelevant to a render-only check.

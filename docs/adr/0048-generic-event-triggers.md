@@ -233,5 +233,7 @@ if parity proves unholdable.
 5. SWE agents: structured `readOnly`, delete the sentinel.
 6. Declarative `ack`/`reply`/`onComplete` + session page re-homed.
 7. Teardown: delete `IntegrationRoute` + hardcoded gateway/chart logic; ship the
-   example CRs.
+   example CRs as bare manifests in `examples/event-triggers/`, outside every
+   chart (production installs its GitHub triggers through the agent-controller
+   chart's `extraManifests`).
 8. E2E matrix (both engines) + docs.

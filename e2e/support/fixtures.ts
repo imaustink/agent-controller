@@ -16,7 +16,7 @@ export interface RecordedRequest {
 }
 
 /**
- * The `github` EventSource's HMAC secret (values-e2e.yaml points its
+ * The `github` EventSource's HMAC secret (e2e/manifests/event-triggers points its
  * `webhook.verify.secretRef` at this Secret/key), read from the cluster rather
  * than hardcoded — the test has to sign with whatever the deployment is
  * actually verifying against, or every webhook 401s for a reason that looks

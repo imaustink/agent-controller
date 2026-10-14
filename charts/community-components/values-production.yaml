@@ -88,8 +88,9 @@ recipePublisher:
 # opencode-swe-agent: privileged GitHub coding sub-agent. DISABLED in prod --
 # the Claude Code engine (claudeCodeSweAgent below) is now the SWE agent for
 # every path: the ai-triage/ai-review EventTriggers and the self-improvement
-# skill all point their agentRef at claude-code-swe-agent (see eventTriggers
-# and skills below). Re-enable only if reverting those back to opencode.
+# skill all point their agentRef at claude-code-swe-agent (the triggers are in
+# charts/agent-controller/values-production.yaml's extraManifests; the skill is
+# below). Re-enable only if reverting those back to opencode.
 #
 # History: cut over from PAT-only (Phase A) to per-user GitHub identity
 # linking (docs/adr/0022, Phase B) -- the opencode-swe-secrets GITHUB_TOKEN
@@ -331,53 +332,3 @@ skills:
   # that agent's identity-link gate rather than ever reaching the ssh tool.
   ssh:
     enabled: true
-
-eventSources:
-  # The GitHub App's webhook, POST https://gateway.kurpuis.com/webhooks/github
-  # (the URL the App was already configured with). Verified with the
-  # GITHUB_WEBHOOK_SECRET key of integration-gateway-secrets, the Secret
-  # charts/agent-controller/values-production.yaml's integration-gateway
-  # already uses; the gateway reads it through this EventSource now.
-  github:
-    enabled: true
-    secretRef:
-      name: integration-gateway-secrets
-      key: GITHUB_WEBHOOK_SECRET
-
-# The four ai-triage / ai-review flows (docs/adr/0048). Each is a plain
-# EventTrigger matching its x-github-event + labeled action + label in CEL; the
-# two review triggers carry target.readOnly: true, the deterministic write gate
-# that replaced the old prompt sentinel.
-#
-# agentRef is claude-code-swe-agent (claudeCodeSweAgent.enabled=true above;
-# opencode-swe-agent is disabled). Because that agent's identityLink.providers
-# is ["claude"], whoever applied the label must have a linked Claude token for
-# the run to launch -- the per-user gate the whole path already uses.
-#
-# Every one posts "Starting work on this now." (+ the session page link,
-# sessionPage.publicBaseUrl is set on the gateway), posts the result, and removes
-# its label when the run ends, so re-applying the label re-triggers.
-#
-# The EventSource/EventTrigger CRDs must exist on the cluster; the deploy job's
-# "Apply CRDs" step applies every CRD on every push (`helm upgrade` never does).
-eventTriggers:
-  # ai-triage on an issue: investigate, implement, open a PR.
-  githubIssueTriage:
-    enabled: true
-    agentRef: claude-code-swe-agent
-    label: ai-triage
-  # ai-review on an issue: review the proposal, change nothing.
-  githubIssueReview:
-    enabled: true
-    agentRef: claude-code-swe-agent
-    label: ai-review
-  # ai-triage on a PR: address the feedback, push, sync with base.
-  githubPrTriage:
-    enabled: true
-    agentRef: claude-code-swe-agent
-    label: ai-triage
-  # ai-review on a PR: read-only inline code review.
-  githubPrReview:
-    enabled: true
-    agentRef: claude-code-swe-agent
-    label: ai-review

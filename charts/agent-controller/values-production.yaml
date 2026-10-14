@@ -660,3 +660,320 @@ nats:
 #     --from-literal=secret-key="$(openssl rand -hex 32)"
 searxng:
   enabled: true
+
+# Production's GitHub event wiring (docs/adr/0048): the GitHub App's webhook
+# source and the four ai-triage / ai-review triggers. They are copies of
+# examples/event-triggers/ with agentRef set to claude-code-swe-agent (the SWE
+# agent community-components enables here). Installed through extraManifests so
+# they share this release's lifecycle; every {{placeholder}} is escaped as
+# {{`{{placeholder}}`}} because extraManifests runs each entry through `tpl`.
+#
+# - github: POST https://gateway.kurpuis.com/webhooks/github, the URL the App was
+#   already configured with, verified with integration-gateway-secrets'
+#   GITHUB_WEBHOOK_SECRET.
+# - claude-code-swe-agent declares the "claude" identity provider, so whoever
+#   applied the label must have a linked Claude token for the run to launch.
+# - Each posts "Starting work on this now." (+ the session page link), the
+#   result, and removes its label when the run ends, so re-applying it
+#   re-triggers. The two review triggers are readOnly: no write credentials.
+extraManifests:
+  # eventsource-github
+  - |
+    apiVersion: core.controller-agent.dev/v1alpha1
+    kind: EventSource
+    metadata:
+      name: github
+    spec:
+      webhook:
+        verify:
+          scheme: hmacSha256
+          header: x-hub-signature-256
+          prefix: "sha256="
+          secretRef:
+            name: integration-gateway-secrets
+            key: GITHUB_WEBHOOK_SECRET
+        deliveryIdHeader: x-github-delivery
+      sender:
+        provider: github
+        loginFrom: body.sender.login
+        isBotFrom: body.sender.type == "Bot"
+        repositoryFrom: body.repository.full_name
+  # eventtrigger-github-issue-triage
+  - |
+    apiVersion: core.controller-agent.dev/v1alpha1
+    kind: EventTrigger
+    metadata:
+      name: github-issue-triage
+    spec:
+      sourceRef: github
+      match:
+        cel: >-
+          headers["x-github-event"] == "issues" &&
+          body.action == "labeled" &&
+          body.label.name == "ai-triage"
+      params:
+        repository: body.repository.full_name
+        number: body.issue.number
+        title: body.issue.title
+        description: body.issue.body
+        label: body.label.name
+      sessionKey: "github:{{`{{repository}}`}}#{{`{{number}}`}}"
+      target:
+        agentRef: "claude-code-swe-agent"
+        promptTemplate: |
+          GitHub issue {{`{{repository}}`}}#{{`{{number}}`}} was labeled "{{`{{label}}`}}": "{{`{{title}}`}}"
+
+          {{`{{description}}`}}
+
+          Triage and resolve this issue: investigate the {{`{{repository}}`}}
+          repository (the repository this issue was filed in), implement a fix or
+          feature there if the issue calls for one, and open a pull request against
+          {{`{{repository}}`}}. Do not create a new repository and do not
+          substitute any other repository, even if you lack permission to do
+          something the task seems to ask for (e.g. creating a repo) -- if you
+          cannot complete the task in {{`{{repository}}`}} as given, stop
+          and post a comment explaining exactly what's blocking you instead of
+          working around it elsewhere. If the issue is unclear or you need more
+          context before proceeding, post a comment asking a clarifying question
+          instead of guessing.
+
+          When you open a pull request, end its description with a short note
+          inviting a maintainer to apply the "ai-review" label to the PR to request
+          an automated code review, or the "{{`{{label}}`}}" label to have the
+          review feedback on it addressed and the branch brought back in sync with
+          its base. (The automation cannot apply either label to its own PR, so a
+          human applies it.)
+      reply:
+        github:
+          repository: "{{`{{repository}}`}}"
+          issueNumber: "{{`{{number}}`}}"
+          ack: "🤖 Starting work on this now."
+          sessionPage: true
+          result: true
+          removeLabel: "{{`{{label}}`}}"
+  # eventtrigger-github-issue-review
+  - |
+    apiVersion: core.controller-agent.dev/v1alpha1
+    kind: EventTrigger
+    metadata:
+      name: github-issue-review
+    spec:
+      sourceRef: github
+      match:
+        cel: >-
+          headers["x-github-event"] == "issues" &&
+          body.action == "labeled" &&
+          body.label.name == "ai-review"
+      params:
+        repository: body.repository.full_name
+        number: body.issue.number
+        title: body.issue.title
+        description: body.issue.body
+        label: body.label.name
+      sessionKey: "github:{{`{{repository}}`}}#{{`{{number}}`}}"
+      target:
+        agentRef: "claude-code-swe-agent"
+        readOnly: true
+        promptTemplate: |
+          GitHub issue {{`{{repository}}`}}#{{`{{number}}`}} was labeled "{{`{{label}}`}}": "{{`{{title}}`}}"
+
+          {{`{{description}}`}}
+
+          Review this issue. Read the issue and any pull request or code it
+          references, then give a concrete, actionable review of the proposal:
+          assess whether it is clear and complete, whether the approach is sound,
+          what risks or edge cases it misses, and what a maintainer should decide
+          before work starts. Post your review as a comment on the issue, being
+          specific and citing file:line where the discussion is about existing code.
+          Do not implement the change, open a pull request, or push any commits --
+          only review.
+
+          Keep it concise -- its value is in the signal, not the volume. Lead with
+          the verdict, then the few points that materially change the decision. Skip
+          nitpicks, praise, and restating the issue back to its author. A short,
+          high-signal review beats an exhaustive one.
+
+          You get exactly one turn to do this -- you cannot pause partway through
+          and wait for a CI check, build, or test run to finish, and nothing will
+          re-invoke you automatically when one does. Post a complete review now
+          based on the issue and code alone. If something you would want is still
+          running, mention its current status as one line in the review -- do not
+          let it block or delay posting the rest of your assessment, and do not say
+          you'll "finalize" or "resume" later.
+      reply:
+        github:
+          repository: "{{`{{repository}}`}}"
+          issueNumber: "{{`{{number}}`}}"
+          ack: "🤖 Starting work on this now."
+          sessionPage: true
+          result: true
+          removeLabel: "{{`{{label}}`}}"
+  # eventtrigger-github-pr-triage
+  - |
+    apiVersion: core.controller-agent.dev/v1alpha1
+    kind: EventTrigger
+    metadata:
+      name: github-pr-triage
+    spec:
+      sourceRef: github
+      match:
+        cel: >-
+          headers["x-github-event"] == "pull_request" &&
+          body.action == "labeled" &&
+          body.label.name == "ai-triage"
+      params:
+        repository: body.repository.full_name
+        number: body.pull_request.number
+        title: body.pull_request.title
+        description: body.pull_request.body
+        label: body.label.name
+      sessionKey: "github:{{`{{repository}}`}}#{{`{{number}}`}}"
+      target:
+        agentRef: "claude-code-swe-agent"
+        promptTemplate: |
+          Pull request {{`{{repository}}`}}#{{`{{number}}`}} was labeled "{{`{{label}}`}}": "{{`{{title}}`}}"
+
+          {{`{{description}}`}}
+
+          Pick this pull request back up and get it ready to merge. Work only in
+          {{`{{repository}}`}} and only on this PR's existing branch -- do
+          not open a second pull request, do not create a repository, and do not
+          substitute any other repository or branch.
+
+          1. Check out the PR's branch (`gh pr checkout {{`{{number}}`}}`).
+          2. Read ALL the feedback on it: the PR description, every review
+             (`gh pr view {{`{{number}}`}} --comments`, `gh api` for review
+             comments), and any failing checks (`gh pr checks {{`{{number}}`}}`).
+          3. Address that feedback in code. Fix the failing checks too. Where you
+             disagree with a comment, reply to it explaining why instead of silently
+             ignoring it.
+          4. Sync the branch with its base branch, resolving any conflicts
+             (`gh pr view {{`{{number}}`}} --json baseRefName`, then rebase or
+             merge the base in -- match whatever this repository's history already
+             does). Push the result to the same branch so the PR itself updates.
+          5. Update the PR description if what it says no longer matches what the
+             branch does, and post one comment summarizing what you changed in
+             response to which feedback, plus anything you deliberately did not do.
+
+          Resolve every review comment you addressed. If something is genuinely
+          blocking you -- a comment you cannot act on without a decision, a conflict
+          you cannot resolve safely, missing permission -- stop and post a comment
+          saying exactly what you need, rather than guessing or working around it
+          somewhere else.
+
+          You get exactly one turn to do this -- you cannot pause partway through
+          and wait for a CI check, build, or test run to finish, and nothing will
+          re-invoke you automatically when one does. Push your work and post your
+          summary now. If a check is still running when you finish, say so in one
+          line -- do not let it block or delay pushing and summarizing, and do not
+          say you'll "finalize" or "resume" later. (The triage label is removed once
+          this run ends, so a maintainer can simply re-apply it to have you pick the
+          PR up again.)
+      reply:
+        github:
+          repository: "{{`{{repository}}`}}"
+          issueNumber: "{{`{{number}}`}}"
+          ack: "🤖 Starting work on this now."
+          sessionPage: true
+          result: true
+          removeLabel: "{{`{{label}}`}}"
+  # eventtrigger-github-pr-review
+  - |
+    apiVersion: core.controller-agent.dev/v1alpha1
+    kind: EventTrigger
+    metadata:
+      name: github-pr-review
+    spec:
+      sourceRef: github
+      match:
+        cel: >-
+          headers["x-github-event"] == "pull_request" &&
+          body.action == "labeled" &&
+          body.label.name == "ai-review"
+      params:
+        repository: body.repository.full_name
+        number: body.pull_request.number
+        title: body.pull_request.title
+        description: body.pull_request.body
+        label: body.label.name
+      sessionKey: "github:{{`{{repository}}`}}#{{`{{number}}`}}"
+      target:
+        agentRef: "claude-code-swe-agent"
+        readOnly: true
+        promptTemplate: |
+          Pull request {{`{{repository}}`}}#{{`{{number}}`}} was labeled "{{`{{label}}`}}": "{{`{{title}}`}}"
+
+          {{`{{description}}`}}
+
+          Review this pull request. Check out the branch, examine the diff, and
+          assess correctness, test coverage, security, and any risks. Post your
+          review on the PR as inline comments anchored to the exact file and line at
+          issue -- create them as pull-request review comments (e.g. `gh pr review
+          {{`{{number}}`}}` with inline comments, or `gh api` on the PR's
+          review-comments endpoint) so each renders on its line. Be concrete and
+          cite file:line. Do not merge or push changes -- only review.
+
+          Keep the review concise -- its value is in the signal, not the volume.
+          Comment only on things that materially affect correctness, security,
+          tests, or maintainability, and raise each distinct issue exactly once.
+          Skip nitpicks, style preferences a linter would catch, praise, and
+          restating what the diff already shows. If you post an overall summary,
+          hold it to a few sentences -- the verdict plus the most important issues --
+          and let the inline comments carry the detail. A handful of high-signal
+          comments beats an exhaustive list.
+
+          Every comment that requests a change must carry its own fix, so the author
+          can act on it without leaving the diff -- but exactly ONE fix mechanism per
+          comment, never both. Keep the surrounding prose to a sentence or two:
+
+            1. PREFER a GitHub SUGGESTION block whenever the fix is a concrete,
+               localized edit to the commented line(s). Put a fenced ```suggestion
+               block at the TOP LEVEL of the comment holding the exact, complete
+               replacement for the line range the comment is anchored to -- GitHub
+               then renders an "Apply suggestion" button the author can commit in one
+               click. The block must contain only the corrected replacement for those
+               lines; if the fix touches lines you did not anchor to, widen the
+               comment's line range to cover them. A suggestion block is
+               self-explanatory -- do NOT also add the collapsible prompt below.
+
+            2. ONLY when the fix is not a mechanical line edit (e.g. it is
+               architectural or spans several files), fall back to a copy-pasteable
+               prompt to fix the issue with an AI coding agent, hidden in a
+               collapsible section so it never clutters the comment. Append it at the
+               end of the comment exactly like this (keep the blank line after
+               </summary> or the block will not render):
+
+                 <details>
+                 <summary>🤖 Prompt to fix this with an AI agent</summary>
+
+                 ```text
+                 In {{`{{repository}}`}} on PR #{{`{{number}}`}}, fix
+                 <problem> at <file:line> so that <acceptance criteria>. Do not
+                 change unrelated behavior; add or update a test covering the fix.
+                 ```
+
+                 </details>
+
+               Write the prompt as a direct, self-contained instruction (goal,
+               affected file:line, concrete acceptance criteria) that another agent
+               could act on without re-reading the diff.
+
+          Do NOT open a follow-up issue or ticket -- the fix belongs in the comment
+          itself, as the one-click suggestion or the copyable agent prompt. A clean
+          approval with nothing to change needs neither, and no comments at all.
+
+          You get exactly one turn to do this -- you cannot pause partway through
+          and wait for a CI check, build, or test run to finish, and nothing will
+          re-invoke you automatically when one does. Post a complete review now
+          based on the diff and code alone. If a check is still running, mention
+          its current status as one line in the review (e.g. "CI is still running
+          as of this review") -- do not let it block or delay posting the rest of
+          your assessment, and do not say you'll "finalize" or "resume" later.
+      reply:
+        github:
+          repository: "{{`{{repository}}`}}"
+          issueNumber: "{{`{{number}}`}}"
+          ack: "🤖 Starting work on this now."
+          sessionPage: true
+          result: true
+          removeLabel: "{{`{{label}}`}}"

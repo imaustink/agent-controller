@@ -1,43 +1,37 @@
-{{- if .Values.eventTriggers.githubIssueReview.enabled }}
-{{- $t := .Values.eventTriggers.githubIssueReview }}
-{{- /*
-Applying the review label to a GitHub ISSUE dispatches a read-only review of
-the proposal in it (sibling to github-pr-review). Told apart from
-github-issue-triage -- same issues/labeled event -- by the label in match.cel.
-
-target.readOnly is the write gate, and it is deterministic: it is carried onto
-every AgentRun the turn launches (AgentRun.spec.readOnly -> AGENT_READ_ONLY),
-where the SWE agents deny `git push` / `gh pr create|merge|...` and mint a
-contents:read token. Nothing in the prompt has to survive for it to hold, and
-nothing in the event body can lift it.
-*/}}
-apiVersion: {{ .Values.crdApiVersion }}
+# Applying the review label to a GitHub ISSUE dispatches a read-only review of
+# the proposal in it (sibling to github-pr-review). Told apart from
+# github-issue-triage -- same issues/labeled event -- by the label in match.cel.
+#
+# target.readOnly is the write gate, and it is deterministic: it is carried onto
+# every AgentRun the turn launches (AgentRun.spec.readOnly -> AGENT_READ_ONLY),
+# where the SWE agents deny `git push` / `gh pr create|merge|...` and mint a
+# contents:read token. Nothing in the prompt has to survive for it to hold, and
+# nothing in the event body can lift it.
+apiVersion: core.controller-agent.dev/v1alpha1
 kind: EventTrigger
 metadata:
   name: github-issue-review
-  labels:
-    {{- include "tools.labels" . | nindent 4 }}
 spec:
   sourceRef: github
   match:
     cel: >-
       headers["x-github-event"] == "issues" &&
       body.action == "labeled" &&
-      body.label.name == {{ $t.label | quote }}
+      body.label.name == "ai-review"
   params:
     repository: body.repository.full_name
     number: body.issue.number
     title: body.issue.title
     description: body.issue.body
     label: body.label.name
-  sessionKey: {{`"github:{{repository}}#{{number}}"`}}
+  sessionKey: "github:{{repository}}#{{number}}"
   target:
-    agentRef: {{ $t.agentRef | quote }}
+    agentRef: "opencode-swe-agent"
     readOnly: true
     promptTemplate: |
-      GitHub issue {{`{{repository}}`}}#{{`{{number}}`}} was labeled "{{`{{label}}`}}": "{{`{{title}}`}}"
+      GitHub issue {{repository}}#{{number}} was labeled "{{label}}": "{{title}}"
 
-      {{`{{description}}`}}
+      {{description}}
 
       Review this issue. Read the issue and any pull request or code it
       references, then give a concrete, actionable review of the proposal:
@@ -62,10 +56,9 @@ spec:
       you'll "finalize" or "resume" later.
   reply:
     github:
-      repository: {{`"{{repository}}"`}}
-      issueNumber: {{`"{{number}}"`}}
+      repository: "{{repository}}"
+      issueNumber: "{{number}}"
       ack: "🤖 Starting work on this now."
       sessionPage: true
       result: true
-      removeLabel: {{`"{{label}}"`}}
-{{- end }}
+      removeLabel: "{{label}}"

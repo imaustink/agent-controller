@@ -160,6 +160,14 @@ step "Building images and deploying (skaffold profile: e2e)..."
 # converges seconds later.
 (cd "$REPO_ROOT" && skaffold run -p e2e --tolerate-failures-until-deadline)
 
+step "Applying the example EventSources/EventTriggers..."
+# examples/event-triggers is not in any chart (ADR 0048); the suite runs the
+# shipped examples through an overlay that only swaps in hermetic agents,
+# Secrets and reply sinks. After skaffold, so the CRDs and the Agents/Skills/
+# Tools the triggers name already exist.
+kubectl apply -n "$NS" -k "$REPO_ROOT/e2e/manifests/event-triggers" >/dev/null
+echo "  ✓ e2e/manifests/event-triggers"
+
 step "Selecting the agent engine: $ENGINE..."
 # skaffold just (re)applied values-e2e.yaml, which deploys Temporal -- so a
 # temporal run needs nothing here, and re-running up.sh without E2E_ENGINE
@@ -229,8 +237,8 @@ es_count="$(kubectl -n "$NS" get eventsources --no-headers 2>/dev/null | wc -l |
 et_count="$(kubectl -n "$NS" get eventtriggers --no-headers 2>/dev/null | wc -l | tr -d ' ')"
 if [[ "$es_count" -eq 0 || "$et_count" -eq 0 ]]; then
   echo "" >&2
-  echo "✗ community-components rendered $es_count EventSource(s) and $et_count EventTrigger(s)." >&2
-  echo "  values-e2e.yaml enables the examples; check that release's values." >&2
+  echo "✗ found $es_count EventSource(s) and $et_count EventTrigger(s)." >&2
+  echo "  The 'Applying the example EventSources/EventTriggers' step above should have created them." >&2
   exit 1
 fi
 echo "  ✓ $es_count EventSources, $et_count EventTriggers"

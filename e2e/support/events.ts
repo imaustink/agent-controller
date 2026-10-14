@@ -19,7 +19,7 @@ import { fakeGithubRequests, type RecordedRequest } from "./fixtures.js";
  * behind (AgentRuns with their readOnly/params, ToolRuns, GitHub comments).
  *
  * Kept apart from k8s.ts (generic kubectl plumbing) because everything here
- * encodes the event-trigger CONTRACT -- the Secret names values-e2e.yaml wires,
+ * encodes the event-trigger CONTRACT -- the Secret names the examples wire,
  * the CronJob naming rule, the envelope shape -- and a contract change should
  * have one obvious file to update.
  */
@@ -39,8 +39,8 @@ export function withGateway<T>(body: (forward: PortForward) => Promise<T>): Prom
 // ── secrets ──────────────────────────────────────────────────────────────────
 
 /**
- * The Secrets the example EventSources and reply.http triggers reference in
- * values-e2e.yaml. bootstrap-secrets.sh creates them with FIXED values (see the
+ * The Secrets the example EventSources and reply.http triggers reference (as
+ * e2e/manifests/event-triggers applies them). bootstrap-secrets.sh creates them with FIXED values (see the
  * comment there for why fixed); {@link ensureEventSecrets} re-creates any that
  * are missing so a spec never fails because someone deleted one by hand.
  */
@@ -534,5 +534,5 @@ export async function issueActivity(owner: string, repo: string, number: number)
 /** Marker every stub reply carries (apps/stub-agent/src/reply.ts STUB_REPLY_MARKER). */
 export const STUB_REPLY_MARKER = "stub-agent-reply";
 
-/** The ack text the example GitHub triggers post (charts/community-components eventtrigger-github-*.yaml). */
+/** The ack text the example GitHub triggers post (examples/event-triggers/eventtrigger-github-*.yaml). */
 export const EXAMPLE_ACK_TEXT = "Starting work on this now.";

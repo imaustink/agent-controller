@@ -404,7 +404,7 @@ fallback.
   - `reply.github` — `repository`, `issueNumber`, `ack` (+ `sessionPage`), `result`, `removeLabel` (on every outcome, durably). `reply.http` — a **literal** `url` (never templated) + optional signing `secretRef`. Executed by `integration-gateway`.
 - **Status:** `Ready` condition (CEL compiles, refs resolve).
 - **Acted on by:** `eventtrigger_controller.go` (compile + ref check); agent-orchestrator and the Temporal gateway match and dispatch.
-- **Sample:** `config/samples/core_v1alpha1_eventtrigger.yaml`; the shipped examples are `charts/community-components/templates/eventtrigger-*.yaml`.
+- **Sample:** `config/samples/core_v1alpha1_eventtrigger.yaml`; the shipped examples are bare manifests in `examples/event-triggers/` (not part of any chart).
 
 ```yaml
 apiVersion: core.controller-agent.dev/v1alpha1

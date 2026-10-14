@@ -53,7 +53,7 @@ requireMinikubeContext();
  * `reply.http` is asserted as a contract, at an in-cluster recorder
  * (manifests/fake-sink.yaml): the documented body {trigger, sessionId, status,
  * result|error}, and `x-event-signature: sha256=<hmac>` recomputed over the
- * RECORDED raw bytes with the Secret values-e2e.yaml points `reply.http.secretRef`
+ * RECORDED raw bytes with the Secret the e2e overlay points `reply.http.secretRef`
  * at -- and, as the control that proves that check can fail, rejected under a
  * different secret.
  *

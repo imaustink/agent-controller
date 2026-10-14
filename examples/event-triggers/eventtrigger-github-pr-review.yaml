@@ -1,49 +1,43 @@
-{{- if .Values.eventTriggers.githubPrReview.enabled }}
-{{- $t := .Values.eventTriggers.githubPrReview }}
-{{- /*
-Applying the review label to a PR dispatches a read-only code review. A human
-applies it: the `github` EventSource drops bot-authored deliveries, so the
-agent that opened the PR cannot request a review of its own work. Told apart
-from github-pr-triage -- same pull_request/labeled event -- by the label in
-match.cel.
-
-target.readOnly is the deterministic write gate (AgentRun.spec.readOnly ->
-AGENT_READ_ONLY): the SWE agent denies `git push` / `gh pr create|merge|...`
-and mints a contents:read token. It does not depend on the prompt.
-*/}}
-apiVersion: {{ .Values.crdApiVersion }}
+# Applying the review label to a PR dispatches a read-only code review. A human
+# applies it: the `github` EventSource drops bot-authored deliveries, so the
+# agent that opened the PR cannot request a review of its own work. Told apart
+# from github-pr-triage -- same pull_request/labeled event -- by the label in
+# match.cel.
+#
+# target.readOnly is the deterministic write gate (AgentRun.spec.readOnly ->
+# AGENT_READ_ONLY): the SWE agent denies `git push` / `gh pr create|merge|...`
+# and mints a contents:read token. It does not depend on the prompt.
+apiVersion: core.controller-agent.dev/v1alpha1
 kind: EventTrigger
 metadata:
   name: github-pr-review
-  labels:
-    {{- include "tools.labels" . | nindent 4 }}
 spec:
   sourceRef: github
   match:
     cel: >-
       headers["x-github-event"] == "pull_request" &&
       body.action == "labeled" &&
-      body.label.name == {{ $t.label | quote }}
+      body.label.name == "ai-review"
   params:
     repository: body.repository.full_name
     number: body.pull_request.number
     title: body.pull_request.title
     description: body.pull_request.body
     label: body.label.name
-  sessionKey: {{`"github:{{repository}}#{{number}}"`}}
+  sessionKey: "github:{{repository}}#{{number}}"
   target:
-    agentRef: {{ $t.agentRef | quote }}
+    agentRef: "opencode-swe-agent"
     readOnly: true
     promptTemplate: |
-      Pull request {{`{{repository}}`}}#{{`{{number}}`}} was labeled "{{`{{label}}`}}": "{{`{{title}}`}}"
+      Pull request {{repository}}#{{number}} was labeled "{{label}}": "{{title}}"
 
-      {{`{{description}}`}}
+      {{description}}
 
       Review this pull request. Check out the branch, examine the diff, and
       assess correctness, test coverage, security, and any risks. Post your
       review on the PR as inline comments anchored to the exact file and line at
       issue -- create them as pull-request review comments (e.g. `gh pr review
-      {{`{{number}}`}}` with inline comments, or `gh api` on the PR's
+      {{number}}` with inline comments, or `gh api` on the PR's
       review-comments endpoint) so each renders on its line. Be concrete and
       cite file:line. Do not merge or push changes -- only review.
 
@@ -81,7 +75,7 @@ spec:
              <summary>🤖 Prompt to fix this with an AI agent</summary>
 
              ```text
-             In {{`{{repository}}`}} on PR #{{`{{number}}`}}, fix
+             In {{repository}} on PR #{{number}}, fix
              <problem> at <file:line> so that <acceptance criteria>. Do not
              change unrelated behavior; add or update a test covering the fix.
              ```
@@ -105,10 +99,9 @@ spec:
       your assessment, and do not say you'll "finalize" or "resume" later.
   reply:
     github:
-      repository: {{`"{{repository}}"`}}
-      issueNumber: {{`"{{number}}"`}}
+      repository: "{{repository}}"
+      issueNumber: "{{number}}"
       ack: "🤖 Starting work on this now."
       sessionPage: true
       result: true
-      removeLabel: {{`"{{label}}"`}}
-{{- end }}
+      removeLabel: "{{label}}"

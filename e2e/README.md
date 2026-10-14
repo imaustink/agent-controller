@@ -31,7 +31,7 @@ Third-party services are stubbed; nothing else is.
 | A consumer's own tools | The test IS the consumer | Caller-supplied tools (ADR 0035) are executed by the client, not by this cluster, so a spec sending `tools` and running the returned call itself is not a stub — it is the real other half of the contract. `support/chat.ts`'s `chatToolTurn` sends a full `messages` array precisely so it can resume by resending the result the way a real client does. |
 | GitHub REST API | `fake-github` in-cluster service | Tests must assert *what we posted* (comments, labels) without writing to a real repo, and must serve deterministic `/user` + permission responses. Pointed at via the existing `githubApiUrl` value — no production code changes. |
 | Inbound events (GitHub, Slack, a CI notifier, any HMAC sender) | Signed locally by `support/webhook.ts` | Every verification scheme is real -- `hmacSha256`, `slackV0`, `bearer`, the tick's ServiceAccount token -- with the same construction the third party uses and the Secret the deployed EventSource names; only the sender is us. |
-| Whatever a `reply.http` posts to | `fake-sink` in-cluster recorder (`manifests/fake-sink.yaml`) | Records the raw body + headers so a spec recomputes `x-event-signature` over the exact bytes sent. Pointed at via the triggers' literal `reply.http.url` in values-e2e.yaml -- no product code knows it exists. |
+| Whatever a `reply.http` posts to | `fake-sink` in-cluster recorder (`manifests/fake-sink.yaml`) | Records the raw body + headers so a spec recomputes `x-event-signature` over the exact bytes sent. Pointed at via the triggers' literal `reply.http.url`, patched in by `e2e/manifests/event-triggers` -- no product code knows it exists. |
 | A public web page (web-fetch's target) | Real `https://example.com/`, skippable with `E2E_NO_EGRESS=1` | web-fetch's SSRF guard refuses every cluster-internal address by design, so "the reply carries the fetched page" has no hermetic version. The hermetic half asserts the guard REFUSES fake-sink's page. |
 | Anthropic / Claude Code CLI | `stub-agent` image (`apps/stub-agent`) | A real agent run needs a real paid credential and makes the test slow and nondeterministic — and in a cluster holding no credential it never reaches a terminal phase at all, which is why the happy-path spec was once skipped. The stub speaks the **real** NATS agent protocol and declares the **same** `identityProviders` as the agent it stands in for, so everything between the webhook and the reply — routing, RBAC, the identity gate (including its refusal to launch), AgentRun creation, secret injection, the callback — is exercised for real. |
 | OpenAI (planner/selector) | Real, against the dev key | Routing decisions are part of what we're testing. Tests assert on deterministic `EventTrigger` dispatch (a forced `agentRef`/`skillRef`/`toolRef`) rather than on RAG retrieval, so model nondeterminism doesn't make them flaky. |
@@ -180,9 +180,10 @@ manifests/
 `IntegrationRoute`. The contract is `docs/event-triggers.md`; the specs are
 written against it, not against either implementation.
 
-**What values-e2e.yaml turns on.** Every example source (`github`, `slack`,
-`ci`, `generic-hmac`, and `nightly-sweep` SUSPENDED) and every example trigger,
-retargeted for a hermetic cluster: the GitHub triggers at the stubs (so the
+**Which event CRs exist.** `up.sh` applies every example in
+`examples/event-triggers` (sources `github`, `slack`, `ci`, `generic-hmac`, and
+`nightly-sweep` SUSPENDED, plus every trigger) through the `e2e/manifests/event-triggers`
+kustomize overlay, retargeted for a hermetic cluster: the GitHub triggers at the stubs (so the
 `readOnly=<bool> params=<json>` line `apps/stub-agent` prints is observable),
 `ci-failure-skill` at a fixture Skill, and `reply.http` of the ci and
 generic-hmac triggers at fake-sink with a signing secret. The Slack example has

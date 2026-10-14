@@ -121,7 +121,7 @@ describe(`EventTrigger target.readOnly reaches the run (engine: ${deployedEngine
     await deliver(secret, "issues", issue, "ai-review");
 
     const run = await waitForAgentRunWithParam(startedAt, "number", String(issue));
-    // values-e2e.yaml: githubIssueReview.agentRef (production-shaped stub, declares `github`).
+    // e2e/manifests/event-triggers: github-issue-review's agentRef (production-shaped stub, declares `github`).
     expect(run.agentRef).toBe("stub-swe-agent");
     const reply = await stubReplyOn(issue);
     await assertReadOnlyAllTheWayDown(run, params(issue, "ai-review"), reply.text);

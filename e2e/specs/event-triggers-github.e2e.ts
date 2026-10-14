@@ -21,7 +21,7 @@ requireMinikubeContext();
 
 /**
  * The `github-issue-triage` EventTrigger, end to end (docs/event-triggers.md,
- * charts/community-components/templates/eventtrigger-github-issue-triage.yaml).
+ * examples/event-triggers/eventtrigger-github-issue-triage.yaml).
  *
  * What used to be hardcoded gateway behaviour for the labeled path is now a
  * declarative `reply.github` block on an example CR, so each side-effect is
@@ -32,7 +32,7 @@ requireMinikubeContext();
  *   removeLabel  "{{label}}", on EVERY outcome, success or failure
  *
  * and the target is asserted as a run, not as a log line: `agentRef:
- * stub-agent` (values-e2e.yaml), NOT read-only, with the trigger's params on
+ * stub-agent` (e2e/manifests/event-triggers), NOT read-only, with the trigger's params on
  * `AgentRun.spec.params` and in the container (AGENT_PARAMS), echoed back by
  * the stub's `readOnly=... params=...` line.
  *
@@ -105,7 +105,7 @@ describe(`EventTrigger github-issue-triage (engine: ${deployedEngine()})`, () =>
     await labelIssue(secret, issue);
 
     const run = await waitForAgentRunWithParam(startedAt, "number", String(issue));
-    // values-e2e.yaml: eventTriggers.githubIssueTriage.agentRef. Red if the
+    // e2e/manifests/event-triggers: github-issue-triage's agentRef. Red if the
     // trigger's target stops being forced (a planner pick would differ).
     expect(run.agentRef).toBe("stub-agent");
     // Red if triage ever becomes read-only -- it must be able to push.

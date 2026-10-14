@@ -66,7 +66,7 @@ describe(`EventSource / EventTrigger status (engine: ${deployedEngine()})`, () =
     await deleteEventFixtures(FIXTURE);
   });
 
-  describe("the shipped examples (values-e2e.yaml enables all of them)", () => {
+  describe("the shipped examples (examples/event-triggers, all applied by up.sh)", () => {
     it.each(EXAMPLE_SOURCES)("EventSource %s is Ready (%s)", async (name, reason) => {
       await waitForReady("eventsource", name, "True", reason, 60_000);
     });
