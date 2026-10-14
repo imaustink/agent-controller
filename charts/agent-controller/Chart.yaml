@@ -22,7 +22,7 @@ type: application
 # 0.7.0: EventSource/EventTrigger replace IntegrationRoute (ADR 0048) — RBAC on
 # core-controller, both engines and integration-gateway (incl. a tokenreviews
 # ClusterRole for cron ticks), and the gateway's label env vars removed.
-version: 0.7.0
+version: 0.7.1
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:
