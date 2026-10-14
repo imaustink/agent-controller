@@ -28,6 +28,7 @@ import { GatewayServer, type GatewayServerOptions } from "./server.js";
 import { InMemorySessionPageStore, RedisSessionPageStore } from "./session-page-store.js";
 import { InMemoryPendingLabelStore, RedisPendingLabelStore } from "./label-reconciler.js";
 import { CrdEventSourceRegistry, SecretKeyReader, type SecretReadApi } from "./event-sources.js";
+import { KubeTokenAuthenticator, TICK_TOKEN_AUDIENCE, type TokenReviewApi } from "./tick-auth.js";
 
 const EXIT_STARTUP_FAILURE = 1;
 
@@ -305,6 +306,7 @@ async function main(): Promise<void> {
   // beyond the list error.
   let eventSources: CrdEventSourceRegistry | undefined;
   let eventSecrets: SecretKeyReader | undefined;
+  let tickAuthenticator: KubeTokenAuthenticator | undefined;
   if (config.crdNamespace) {
     const kubeConfig = new k8s.KubeConfig();
     kubeConfig.loadFromDefault();
@@ -317,10 +319,13 @@ async function main(): Promise<void> {
       api: kubeConfig.makeApiClient(k8s.CoreV1Api) as unknown as SecretReadApi,
       namespace: config.crdNamespace,
     });
+    tickAuthenticator = new KubeTokenAuthenticator(
+      kubeConfig.makeApiClient(k8s.AuthenticationV1Api) as unknown as TokenReviewApi,
+    );
     await eventSources.start();
     console.error(
       `Serving EventSources (${config.crdGroup}/${config.crdVersion}) from namespace ${config.crdNamespace}; ` +
-        `cron ticks authenticate against Secret ${config.eventTickTokenSecret} (key "token")`,
+        `cron ticks authenticate as their ServiceAccount (TokenReview, audience ${TICK_TOKEN_AUDIENCE})`,
     );
   } else {
     console.error("WARNING: CRD_NAMESPACE is not set -- no EventSources are loaded, so every event route answers 404.");
@@ -428,7 +433,8 @@ async function main(): Promise<void> {
 
   const server = new GatewayServer({
     ...(eventSources ? { eventSources } : {}),
-    ...(eventSecrets ? { secrets: eventSecrets, eventTickTokenSecret: config.eventTickTokenSecret } : {}),
+    ...(eventSecrets ? { secrets: eventSecrets } : {}),
+    ...(tickAuthenticator ? { tickAuthenticator, tickNamespace: config.crdNamespace } : {}),
     identityResolver,
     orchestratorClient,
     githubReplyClient,

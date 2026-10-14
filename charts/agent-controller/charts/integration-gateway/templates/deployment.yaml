@@ -76,14 +76,6 @@ spec:
               value: {{ .Values.events.crdGroup | quote }}
             - name: CRD_VERSION
               value: {{ .Values.events.crdVersion | quote }}
-            # Secret (key `token`) holding the bearer token cron EventSource
-            # ticks present on POST /events/<name>/tick — shared with
-            # core-controller's CronJobs. Read through the API, not mounted as
-            # env: the token is generated with a helm `lookup`, which a
-            # `helm template`/Argo render regenerates, and a value frozen at pod
-            # start would stop matching the Secret the CronJob reads each tick.
-            - name: EVENT_TICK_TOKEN_SECRET
-              value: {{ .Values.events.tickToken.secretName | quote }}
             {{- if .Values.config.githubTeamRoles }}
             - name: GATEWAY_GITHUB_TEAM_ROLES
               value: {{ .Values.config.githubTeamRoles | quote }}

@@ -153,6 +153,12 @@ behind `ack.github.sessionPage`, gated by `GATEWAY_PUBLIC_URL` as today.
   POSTs the synthesized cron envelope to `/invoke`. This gives exactly-once per
   tick, survives gateway restarts, and needs no leader election — the gateway
   runs `replicaCount` replicas, so an in-process timer would double-fire.
+  The tick authenticates with **workload identity, not a shared secret**: each
+  cron source also gets an owned ServiceAccount, the CronJob presents a
+  projected token for the gateway's audience, and the gateway TokenReviews it,
+  accepting only that source's ServiceAccount. A chart-generated shared token
+  was tried first and dropped: Helm `lookup` returns nothing under
+  `helm template`/Argo CD, so it was regenerated on every render.
 
 ### 4. Both engines move in lockstep
 

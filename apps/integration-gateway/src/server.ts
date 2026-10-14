@@ -33,6 +33,7 @@ import type {
 import { ClaudeCredentialRefresher, ClaudeCredentialSweeper } from "./claude-auth/credential-refresher.js";
 import { renderSessionPage } from "./session-page.js";
 import type { SessionPageStore } from "./session-page-store.js";
+import { tickUsername, type TokenAuthenticator } from "./tick-auth.js";
 import { LabelReconciler, type PendingLabelStore } from "./label-reconciler.js";
 import {
   StaticEventSourceRegistry,
@@ -62,8 +63,8 @@ const SOURCE_NAME = /^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/;
  * unauthenticated sender can't make the gateway buffer more than this.
  */
 const MAX_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
-/** Key of the tick-token Secret (docs/event-triggers.md §8). */
-const TICK_TOKEN_KEY = "token";
+/** A bearer that could be a Kubernetes JWT; anything else is refused without a TokenReview. */
+const BEARER_JWT = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/;
 /** Header carrying `sha256=<hex hmac(body)>` on a signed `reply.http` POST. */
 export const EVENT_SIGNATURE_HEADER = "x-event-signature";
 const HTTP_REPLY_TIMEOUT_MS = 10_000;
@@ -76,14 +77,18 @@ export interface GatewayServerOptions {
    */
   eventSources?: EventSourceLookup;
   /**
-   * Reads the Secrets that `verify.secretRef`, a trigger's
-   * `reply.http.secretRef` and the tick token name (all in the CRD
-   * namespace). Absent -> every lookup is "missing", so verification fails
+   * Reads the Secrets that `verify.secretRef` and a trigger's
+   * `reply.http.secretRef` name (in the CRD namespace). Absent -> every lookup is "missing", so verification fails
    * closed (401) and signed HTTP replies are not sent.
    */
   secrets?: SecretLookup;
-  /** Name of the tick-token Secret (key `token`). Absent -> every tick is 401. */
-  eventTickTokenSecret?: string;
+  /**
+   * Reviews a cron tick's ServiceAccount token (docs/event-triggers.md §8).
+   * Absent (or no `tickNamespace`) -> every tick is 401.
+   */
+  tickAuthenticator?: TokenAuthenticator;
+  /** Namespace the cron sources' ServiceAccounts live in -- the CRD namespace. */
+  tickNamespace?: string;
   /** Maps a source's sender login to an identity; only a login it resolves is ever forwarded. */
   identityResolver: IdentityResolver;
   orchestratorClient: OrchestratorClient;
@@ -589,14 +594,15 @@ export class GatewayServer {
   /**
    * `POST /events/:source/tick` -- a cron source's CronJob (docs/event-triggers.md
    * §8). Authenticated FIRST (so an unauthenticated caller can't probe which
-   * sources exist), then 404 unless the source is cron. The payload comes
-   * from the CR, never from the tick: the token proves "it's time", not "here
-   * is what to do".
+   * sources exist): the bearer must review as THIS source's ServiceAccount, so
+   * one source's identity can never tick another. Then 404 unless the source
+   * is cron. The payload comes from the CR, never from the tick: the token
+   * proves "it's time", not "here is what to do".
    */
   private async handleTick(req: IncomingMessage, res: ServerResponse, rawName: string): Promise<void> {
     req.resume(); // the tick carries no body we use
-    if (!(await this.tickAuthorized(req.headers.authorization))) {
-      this.log("event tick rejected: bad or missing bearer token");
+    if (!(await this.tickAuthorized(req.headers.authorization, rawName))) {
+      this.log("event tick rejected: bearer is not this source's ServiceAccount");
       res.writeHead(401).end();
       return;
     }
@@ -610,15 +616,20 @@ export class GatewayServer {
     this.relayEvent(envelope, undefined).catch(this.report);
   }
 
-  private async tickAuthorized(authorization: string | undefined): Promise<boolean> {
-    const name = this.options.eventTickTokenSecret;
-    if (!name || typeof authorization !== "string") return false;
-    const matches = (token: string | undefined): boolean => Boolean(token) && constantTimeEquals(authorization, `Bearer ${token}`);
-    if (matches(await this.readSecret(name, TICK_TOKEN_KEY))) return true;
-    // The chart regenerates the token on render and the CronJob reads the
-    // Secret fresh at each tick, so a mismatch may just mean our cached copy
-    // is stale: re-read once (rate-limited by the reader) before rejecting.
-    return matches(await this.readSecret(name, TICK_TOKEN_KEY, true));
+  private async tickAuthorized(authorization: string | undefined, rawName: string): Promise<boolean> {
+    const { tickAuthenticator, tickNamespace } = this.options;
+    if (!tickAuthenticator || !tickNamespace || typeof authorization !== "string") return false;
+    let name: string;
+    try {
+      name = decodeURIComponent(rawName);
+    } catch {
+      return false;
+    }
+    // Shape checks first, so junk never costs an API round trip.
+    const bearer = BEARER_JWT.exec(authorization);
+    if (!bearer || !SOURCE_NAME.test(name)) return false;
+    const username = await tickAuthenticator.authenticate(bearer[1] as string);
+    return username === tickUsername(tickNamespace, name);
   }
 
   private async readSecret(name: string, key: string, refresh = false): Promise<string | undefined> {

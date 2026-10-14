@@ -27,8 +27,8 @@ POST /webhooks/:source      404 unknown/non-webhook source
         → poll → reply.github.result comment → reply.http POST
         → remove reply.github.removeLabel (always)
 
-POST /events/:source/tick   Authorization: Bearer <token from the tick Secret>
-  401 bad token · 404 unless cron · 202 → envelope (body = the CR's payload) → /invoke
+POST /events/:source/tick   Authorization: Bearer <projected token of SA eventsource-<source>>
+  401 unless TokenReview says it is THIS source's SA · 404 unless cron · 202 → envelope (body = the CR's payload) → /invoke
 ```
 
 - **Verification** (`src/webhooks/verify.ts`) runs on the raw bytes before
@@ -64,13 +64,9 @@ See `src/config.ts` for the full list. Notable ones:
   event route 404s.
 - `CRD_GROUP` / `CRD_VERSION` — default `core.controller-agent.dev` /
   `v1alpha1`.
-- `EVENT_TICK_TOKEN_SECRET` — name of the Secret (key `token`, in
-  `CRD_NAMESPACE`) holding the cron tick bearer token; default
-  `integration-gateway-tick-token`. Read at request time, not from env, because
-  the chart regenerates it on render and the CronJob reads it per tick.
-  Missing → every tick 401s.
 - RBAC: `get,list,watch` on `eventsources.<group>` and `get` on `secrets` in
-  `CRD_NAMESPACE` (on top of the credential-store Secret grants).
+  `CRD_NAMESPACE` (on top of the credential-store Secret grants), plus a
+  ClusterRole with only `create` on `tokenreviews` for cron ticks.
 - `GATEWAY_ORCHESTRATOR_URL` / `GATEWAY_ORCHESTRATOR_TOKEN` (required) —
   where to reach `agent-orchestrator`'s `/invoke` API and the bearer token
   this gateway authenticates as (must resolve, via the orchestrator's own

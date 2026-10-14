@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { requireMinikubeContext } from "../support/guard.js";
-import { cleanupAgentRunsSince } from "../support/k8s.js";
+import { cleanupAgentRunsSince, kubectl } from "../support/k8s.js";
 import { deployedEngine } from "../support/engine.js";
 import {
   agentRunDetailsSince,
@@ -9,6 +9,7 @@ import {
   genericHmacSecret,
   githubWebhookSecret,
   slackSigningSecret,
+  mintServiceAccountToken,
   tickToken,
   withGateway,
 } from "../support/events.js";
@@ -59,7 +60,7 @@ describe(`webhook + tick verification (engine: ${deployedEngine()})`, () => {
       slackSigningSecret(),
       ciBearerToken(),
       genericHmacSecret(),
-      tickToken(),
+      tickToken("nightly-sweep"),
     ]);
   });
 
@@ -171,21 +172,51 @@ describe(`webhook + tick verification (engine: ${deployedEngine()})`, () => {
     });
   });
 
-  describe("tick (/events/:source/tick)", () => {
-    it("401s a wrong or missing tick token", async () => {
+  describe("tick (/events/:source/tick): the source's own ServiceAccount, via TokenReview", () => {
+    // ServiceAccounts named like a tick identity for sources that are NOT
+    // cron: they authenticate, so the gateway gets past TokenReview and must
+    // still refuse on the source (404), never treat "valid SA" as "may tick".
+    const impostors = ["eventsource-github", "eventsource-e2e-no-such-source"];
+
+    beforeAll(async () => {
+      for (const sa of impostors) {
+        await kubectl(["create", "serviceaccount", sa]).catch(() => undefined);
+      }
+    });
+
+    afterAll(async () => {
+      for (const sa of impostors) {
+        await kubectl(["delete", "serviceaccount", sa, "--ignore-not-found"]).catch(() => undefined);
+      }
+    });
+
+    it("401s a tampered, missing, or wrong-audience token", async () => {
+      const apiAudience = await mintServiceAccountToken("eventsource-nightly-sweep", "https://kubernetes.default.svc.cluster.local");
       await withGateway(async (f) => {
         expect((await postTick(f, "nightly-sweep", `${tick}x`)).status).toBe(401);
         expect((await postTick(f, "nightly-sweep", undefined)).status).toBe(401);
+        // The right identity, minted for the API server: not for us.
+        expect((await postTick(f, "nightly-sweep", apiAudience)).status).toBe(401);
       });
     });
 
-    it("404s a tick on a webhook source and on an unknown source, even with the right token", async () => {
-      // The right token is what makes these 404s meaningful: a token check
-      // that ran AFTER the kind check could not be told apart otherwise. The
-      // positive tick (202 -> a turn) is event-triggers-cron.e2e.ts.
+    it("401s another source's valid identity -- one source can never tick another", async () => {
+      const other = await mintServiceAccountToken("eventsource-github");
       await withGateway(async (f) => {
-        expect((await postTick(f, "github", tick)).status).toBe(404);
-        expect((await postTick(f, "e2e-no-such-source", tick)).status).toBe(404);
+        expect((await postTick(f, "nightly-sweep", other)).status).toBe(401);
+        // ...and nightly-sweep's own token cannot tick anything else either.
+        expect((await postTick(f, "github", tick)).status).toBe(401);
+      });
+    });
+
+    it("404s a tick on a webhook source and on an unknown source, from that name's own valid identity", async () => {
+      // A valid token for the exact name is what makes these 404s meaningful:
+      // an auth check that ran AFTER the kind check could not be told apart
+      // otherwise. The positive tick (202 -> a turn) is event-triggers-cron.e2e.ts.
+      const [github, missing] = await Promise.all(impostors.map((sa) => mintServiceAccountToken(sa)));
+      await withGateway(async (f) => {
+        expect((await postTick(f, "github", github)).status).toBe(404);
+        expect((await postTick(f, "e2e-no-such-source", missing)).status).toBe(404);
       });
     });
   });

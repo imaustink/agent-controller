@@ -51,6 +51,18 @@ const (
 	// maxCronJobNameLength is the API server's limit: a CronJob's Jobs get an
 	// 11-character suffix and must stay within 63.
 	maxCronJobNameLength = 52
+
+	// TickTokenAudience is the audience of a tick's projected ServiceAccount
+	// token; integration-gateway reviews tokens for exactly this audience
+	// (apps/integration-gateway/src/tick-auth.ts).
+	TickTokenAudience = "integration-gateway.events"
+
+	// tickTokenExpirySeconds is the projected token's lifetime: the API
+	// server's minimum, far longer than a tick (curl --max-time 30).
+	tickTokenExpirySeconds = 600
+
+	tickTokenDir  = "/var/run/secrets/eventsource"
+	tickTokenFile = "token"
 )
 
 // EventSourceReconciler reconciles a EventSource object
@@ -68,14 +80,13 @@ type EventSourceReconciler struct {
 	TickImage string
 	// TickURL is integration-gateway's base URL; empty disables cron sources.
 	TickURL string
-	// TickTokenSecret names the Secret (key "token") the tick authenticates with.
-	TickTokenSecret string
 }
 
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=eventsources,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=eventsources/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core.controller-agent.dev,resources=eventsources/finalizers,verbs=update
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 // Reconcile reports whether an EventSource can deliver events, and for a cron
@@ -100,7 +111,7 @@ func (r *EventSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Not (or no longer) a cron source: a CronJob left from a previous spec
 	// would go on ticking a source the gateway now serves as a webhook.
-	if err := r.deleteTickCronJob(ctx, &source); err != nil {
+	if err := r.deleteTickResources(ctx, &source); err != nil {
 		return ctrl.Result{}, err
 	}
 	source.Status.CronJobName = ""
@@ -145,7 +156,7 @@ func (r *EventSourceReconciler) reconcileCron(ctx context.Context, source *corev
 	if r.TickURL == "" {
 		// A CronJob with nowhere to POST would fail every tick; better none and
 		// a condition that says why.
-		if err := r.deleteTickCronJob(ctx, source); err != nil {
+		if err := r.deleteTickResources(ctx, source); err != nil {
 			return ctrl.Result{}, err
 		}
 		source.Status.CronJobName = ""
@@ -160,6 +171,9 @@ func (r *EventSourceReconciler) reconcileCron(ctx context.Context, source *corev
 			fmt.Sprintf("CronJob name %q exceeds %d characters; shorten the EventSource name", name, maxCronJobNameLength), 0)
 	}
 
+	if err := r.applyTickServiceAccount(ctx, source, name); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.applyTickCronJob(ctx, source, name); err != nil {
 		// An unparseable schedule or zone is the operator's to fix, not a
 		// transient error to retry into.
@@ -175,8 +189,49 @@ func (r *EventSourceReconciler) reconcileCron(ctx context.Context, source *corev
 		fmt.Sprintf("CronJob %s ticks on %q", name, source.Spec.Cron.Schedule), 0)
 }
 
-// TickCronJobName is the CronJob a cron EventSource owns.
+// TickCronJobName is the CronJob a cron EventSource owns. Its ServiceAccount
+// shares the name: the gateway accepts a tick for source X only from
+// system:serviceaccount:<ns>:eventsource-X.
 func TickCronJobName(source string) string { return "eventsource-" + source }
+
+// applyTickServiceAccount creates the source's own ServiceAccount: the tick's
+// identity. It is bound to no Role -- the gateway only asks the API server
+// who the token belongs to -- so it grants nothing beyond "I am this
+// source's tick".
+func (r *EventSourceReconciler) applyTickServiceAccount(ctx context.Context, source *corev1alpha1.EventSource, name string) error {
+	desired := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: source.Namespace,
+			Labels: map[string]string{
+				"core.controller-agent.dev/eventsource": source.Name,
+			},
+		},
+		// Only the projected, audience-bound token is ever mounted.
+		AutomountServiceAccountToken: ptr.To(false),
+	}
+	if err := controllerutil.SetControllerReference(source, desired, r.Scheme); err != nil {
+		return err
+	}
+
+	var existing corev1.ServiceAccount
+	err := r.Get(ctx, types.NamespacedName{Namespace: source.Namespace, Name: name}, &existing)
+	if apierrors.IsNotFound(err) {
+		logf.FromContext(ctx).Info("Creating tick ServiceAccount", "eventsource", source.Name)
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+	if !metav1.IsControlledBy(&existing, source) {
+		// Someone else's ServiceAccount with our name would let THEIR pods
+		// tick this source. Refuse rather than adopt it.
+		return fmt.Errorf("ServiceAccount %s/%s exists and is not owned by EventSource %s", source.Namespace, name, source.Name)
+	}
+	existing.Labels = desired.Labels
+	existing.AutomountServiceAccountToken = desired.AutomountServiceAccountToken
+	return r.Update(ctx, &existing)
+}
 
 // applyTickCronJob creates or updates the source's CronJob. Mirrors the
 // Corpus sync-kick CronJob (reconcileSyncCronJob): the Job only KICKS the
@@ -226,9 +281,25 @@ func (r *EventSourceReconciler) applyTickCronJob(ctx context.Context, source *co
 							},
 						},
 						Spec: corev1.PodSpec{
-							RestartPolicy: corev1.RestartPolicyNever,
-							// The tick talks to the gateway, never the API server.
+							RestartPolicy:      corev1.RestartPolicyNever,
+							ServiceAccountName: name,
+							// The tick talks to the gateway, never the API server:
+							// no API-audience token, only the gateway-audience one.
 							AutomountServiceAccountToken: ptr.To(false),
+							Volumes: []corev1.Volume{{
+								Name: "tick-token",
+								VolumeSource: corev1.VolumeSource{
+									Projected: &corev1.ProjectedVolumeSource{
+										Sources: []corev1.VolumeProjection{{
+											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+												Audience:          TickTokenAudience,
+												ExpirationSeconds: ptr.To(int64(tickTokenExpirySeconds)),
+												Path:              tickTokenFile,
+											},
+										}},
+									},
+								},
+							}},
 							SecurityContext: &corev1.PodSecurityContext{
 								RunAsNonRoot: ptr.To(true),
 								RunAsUser:    ptr.To(jobRunAsUser),
@@ -241,14 +312,10 @@ func (r *EventSourceReconciler) applyTickCronJob(ctx context.Context, source *co
 								Name:  "tick",
 								Image: r.TickImage,
 								Args:  tickArgs(source.Name, r.TickURL),
-								Env: []corev1.EnvVar{{
-									Name: "EVENT_TICK_TOKEN",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: r.TickTokenSecret},
-											Key:                  "token",
-										},
-									},
+								VolumeMounts: []corev1.VolumeMount{{
+									Name:      "tick-token",
+									MountPath: tickTokenDir,
+									ReadOnly:  true,
 								}},
 								SecurityContext: &corev1.SecurityContext{
 									AllowPrivilegeEscalation: ptr.To(false),
@@ -287,34 +354,41 @@ func (r *EventSourceReconciler) applyTickCronJob(ctx context.Context, source *co
 	return r.Update(ctx, &existing)
 }
 
-// tickArgs POSTs one tick. No shell: Kubernetes expands $(EVENT_TICK_TOKEN)
-// from the container's env, so the token never passes through a command
-// line a shell would parse. -f makes a non-2xx fail the Job.
+// tickArgs POSTs one tick. No shell: curl (>= 8.3) reads the projected token
+// file into a variable and expands it into the header itself, so the token
+// is never on a command line. -f makes a non-2xx fail the Job.
 func tickArgs(source, tickURL string) []string {
 	return []string{
 		"-fsS", "--max-time", "30", "-X", "POST",
-		"-H", "Authorization: Bearer $(EVENT_TICK_TOKEN)",
+		"--variable", "token@" + tickTokenDir + "/" + tickTokenFile,
+		"--expand-header", "Authorization: Bearer {{token:trim}}",
 		fmt.Sprintf("%s/events/%s/tick", strings.TrimRight(tickURL, "/"), source),
 	}
 }
 
-// deleteTickCronJob removes the source's CronJob if this source owns one.
-// Only an owned one: a same-named CronJob someone else created is not ours to
-// delete.
-func (r *EventSourceReconciler) deleteTickCronJob(ctx context.Context, source *corev1alpha1.EventSource) error {
-	var existing batchv1.CronJob
-	err := r.Get(ctx, types.NamespacedName{Namespace: source.Namespace, Name: TickCronJobName(source.Name)}, &existing)
-	if apierrors.IsNotFound(err) {
-		return nil
+// deleteTickResources removes the source's CronJob and ServiceAccount if this
+// source owns them. Only owned ones: a same-named object someone else created
+// is not ours to delete. The ServiceAccount goes too, so a source that stops
+// being cron leaves no identity behind that could still tick it.
+func (r *EventSourceReconciler) deleteTickResources(ctx context.Context, source *corev1alpha1.EventSource) error {
+	key := types.NamespacedName{Namespace: source.Namespace, Name: TickCronJobName(source.Name)}
+	for _, obj := range []client.Object{&batchv1.CronJob{}, &corev1.ServiceAccount{}} {
+		err := r.Get(ctx, key, obj)
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !metav1.IsControlledBy(obj, source) {
+			continue
+		}
+		logf.FromContext(ctx).Info("Removing tick resource", "eventsource", source.Name, "kind", fmt.Sprintf("%T", obj))
+		if err := client.IgnoreNotFound(r.Delete(ctx, obj)); err != nil {
+			return err
+		}
 	}
-	if err != nil {
-		return err
-	}
-	if !metav1.IsControlledBy(&existing, source) {
-		return nil
-	}
-	logf.FromContext(ctx).Info("Removing tick CronJob", "eventsource", source.Name)
-	return client.IgnoreNotFound(r.Delete(ctx, &existing))
+	return nil
 }
 
 // checkSenderCEL compiles a webhook source's sender expressions, returning a
@@ -383,6 +457,7 @@ func (r *EventSourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// The CronJob is ours; an edit to it should be corrected, and its
 		// disappearance should bring it back.
 		Owns(&batchv1.CronJob{}).
+		Owns(&corev1.ServiceAccount{}).
 		// Secrets are deliberately not watched: that would cache every Secret
 		// in the cluster. A webhook source re-checks on a requeue instead.
 		Named("eventsource").

@@ -20,8 +20,8 @@ type: application
 # 0.6.0: adds the mcp-broker subchart and the mcptools RBAC/env on both engines
 # (ADR 0045) — a template+RBAC change, hence a new version (supersedes 0.5.3).
 # 0.7.0: EventSource/EventTrigger replace IntegrationRoute (ADR 0048) — RBAC on
-# core-controller, both engines and integration-gateway, a new tick-token
-# Secret, and the gateway's label env vars removed.
+# core-controller, both engines and integration-gateway (incl. a tokenreviews
+# ClusterRole for cron ticks), and the gateway's label env vars removed.
 version: 0.7.0
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller

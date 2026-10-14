@@ -376,8 +376,8 @@ hardcoded in the gateway any more.
   `secretRef` names, read through the k8s API. Unknown source → `404`, failed
   verification → `401`, otherwise `202`. A `cron` source is ticked by a
   core-controller-owned CronJob at `POST /events/<name>/tick`, authenticated
-  with the shared `EVENT_TICK_TOKEN` (Secret `integration-gateway-tick-token`,
-  key `token`). Either way the gateway builds one normalized envelope
+  as that source's own ServiceAccount (`eventsource-<name>`, a projected token
+  checked with TokenReview). Either way the gateway builds one normalized envelope
   (`source, kind, id, time, headers, body, sender, repository`) and relays it as
   `POST /invoke { event }`; it no longer filters by event type or label.
 - **Who caused it.** A source's optional `sender` block extracts a login with

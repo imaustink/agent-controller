@@ -62,11 +62,10 @@ var _ = Describe("EventSource Controller", func() {
 
 	reconciler := func(tickURL string) *EventSourceReconciler {
 		return &EventSourceReconciler{
-			Client:          k8sClient,
-			Scheme:          k8sClient.Scheme(),
-			TickImage:       "curlimages/curl:8.11.1",
-			TickURL:         tickURL,
-			TickTokenSecret: "integration-gateway-tick-token",
+			Client:    k8sClient,
+			Scheme:    k8sClient.Scheme(),
+			TickImage: "curlimages/curl:8.11.1",
+			TickURL:   tickURL,
 		}
 	}
 
@@ -98,10 +97,20 @@ var _ = Describe("EventSource Controller", func() {
 	}
 
 	// envtest runs no garbage collector, so owned CronJobs are removed by hand.
+	serviceAccount := func(name string) (*corev1.ServiceAccount, error) {
+		var sa corev1.ServiceAccount
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: TickCronJobName(name), Namespace: "default"}, &sa)
+		return &sa, err
+	}
+
+	// envtest runs no garbage collector, so owned objects are removed by hand.
 	cleanup := func(source *corev1alpha1.EventSource) {
 		_ = k8sClient.Delete(ctx, source)
 		if cj, err := cronJob(source.Name); err == nil {
 			_ = k8sClient.Delete(ctx, cj)
+		}
+		if sa, err := serviceAccount(source.Name); err == nil {
+			_ = k8sClient.Delete(ctx, sa)
 		}
 	}
 
@@ -131,9 +140,22 @@ var _ = Describe("EventSource Controller", func() {
 			Expect(owner.Kind).To(Equal("EventSource"))
 			Expect(owner.Name).To(Equal("nightly"))
 
+			sa, err := serviceAccount("nightly")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(metav1.GetControllerOf(sa)).NotTo(BeNil())
+			Expect(metav1.GetControllerOf(sa).Name).To(Equal("nightly"))
+			Expect(sa.AutomountServiceAccountToken).To(HaveValue(BeFalse()))
+
 			pod := cj.Spec.JobTemplate.Spec.Template.Spec
 			Expect(pod.RestartPolicy).To(Equal(corev1.RestartPolicyNever))
+			// The tick runs as the source's own ServiceAccount, with only a
+			// gateway-audience projected token -- never an API-server one.
+			Expect(pod.ServiceAccountName).To(Equal("eventsource-nightly"))
 			Expect(pod.AutomountServiceAccountToken).To(HaveValue(BeFalse()))
+			Expect(pod.Volumes).To(HaveLen(1))
+			projection := pod.Volumes[0].Projected.Sources[0].ServiceAccountToken
+			Expect(projection.Audience).To(Equal(TickTokenAudience))
+			Expect(projection.ExpirationSeconds).To(HaveValue(Equal(int64(600))))
 			Expect(pod.SecurityContext.RunAsNonRoot).To(HaveValue(BeTrue()))
 			Expect(pod.SecurityContext.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
 			Expect(pod.Containers).To(HaveLen(1))
@@ -146,13 +168,13 @@ var _ = Describe("EventSource Controller", func() {
 			// -f: a non-2xx from the gateway fails the Job. The trailing slash
 			// on the configured URL must not double up in the path.
 			Expect(c.Args).To(ContainElement("-fsS"))
-			Expect(c.Args).To(ContainElement("Authorization: Bearer $(EVENT_TICK_TOKEN)"))
+			Expect(c.Args).To(ContainElement("token@/var/run/secrets/eventsource/token"))
+			Expect(c.Args).To(ContainElement("Authorization: Bearer {{token:trim}}"))
 			Expect(c.Args[len(c.Args)-1]).To(Equal(testTickURL + "/events/nightly/tick"))
-
-			Expect(c.Env).To(HaveLen(1))
-			Expect(c.Env[0].Name).To(Equal("EVENT_TICK_TOKEN"))
-			Expect(c.Env[0].ValueFrom.SecretKeyRef.Name).To(Equal("integration-gateway-tick-token"))
-			Expect(c.Env[0].ValueFrom.SecretKeyRef.Key).To(Equal("token"))
+			Expect(c.Env).To(BeEmpty())
+			Expect(c.VolumeMounts).To(ConsistOf(corev1.VolumeMount{
+				Name: "tick-token", MountPath: "/var/run/secrets/eventsource", ReadOnly: true,
+			}))
 
 			Expect(stored("nightly").Status.CronJobName).To(Equal("eventsource-nightly"))
 			cond := ready("nightly")
@@ -194,10 +216,31 @@ var _ = Describe("EventSource Controller", func() {
 
 			_, err = cronJob("no-tick-url")
 			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "CronJob should be deleted, got %v", err)
+			_, err = serviceAccount("no-tick-url")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "ServiceAccount should be deleted, got %v", err)
 			Expect(stored("no-tick-url").Status.CronJobName).To(BeEmpty())
 			cond := ready("no-tick-url")
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			Expect(cond.Reason).To(Equal("TickNotConfigured"))
+		})
+
+		It("refuses to adopt a same-named ServiceAccount it does not own", func() {
+			squatter := &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "eventsource-squatted", Namespace: "default"},
+			}
+			Expect(k8sClient.Create(ctx, squatter)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, squatter) }()
+
+			source := cronSource("squatted", "0 7 * * *")
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+
+			_, err := reconciler(testTickURL).Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "squatted", Namespace: "default"},
+			})
+			Expect(err).To(MatchError(ContainSubstring("not owned by EventSource squatted")))
+			_, err = cronJob("squatted")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "no CronJob may run as someone else's identity")
 		})
 
 		It("is InvalidSchedule, not a retry loop, when the API server rejects the schedule", func() {
@@ -235,6 +278,9 @@ var _ = Describe("EventSource Controller", func() {
 
 			_, err = cronJob("switched")
 			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "CronJob should be deleted, got %v", err)
+			// No identity left behind that could still tick the source.
+			_, err = serviceAccount("switched")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "ServiceAccount should be deleted, got %v", err)
 			Expect(stored("switched").Status.CronJobName).To(BeEmpty())
 			Expect(ready("switched").Status).To(Equal(metav1.ConditionTrue))
 		})

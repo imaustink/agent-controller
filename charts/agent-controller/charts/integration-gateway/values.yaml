@@ -37,16 +37,8 @@ events:
   # Group/version of the EventSource CRD the gateway watches.
   crdGroup: core.controller-agent.dev
   crdVersion: v1alpha1
-  # The shared bearer token core-controller's cron CronJobs present on
-  # /events/<name>/tick (key `token`). Its name must equal core-controller's
-  # eventTick.tokenSecret (default integration-gateway-tick-token).
-  tickToken:
-    secretName: integration-gateway-tick-token
-    # Create the Secret with a random token, preserved across upgrades via
-    # Helm `lookup`. Set false to bring your own -- required under renderers
-    # that cannot `lookup` (e.g. Argo CD), where the token would otherwise be
-    # regenerated on every sync and the running gateway would reject ticks.
-    create: true
+  # Cron ticks need no configuration here: each tick authenticates as its
+  # source's own ServiceAccount, checked by TokenReview (see rbac.yaml).
 
 port: 8090
 

@@ -16,19 +16,6 @@ export interface AppConfig {
   crdGroup: string;
   /** API version of the EventSource CRD. */
   crdVersion: string;
-  /**
-   * NAME of the Secret (in `crdNamespace`, key `token`) holding the shared
-   * bearer token a cron `EventSource`'s CronJob presents on
-   * `POST /events/:source/tick` (docs/event-triggers.md §8).
-   *
-   * Read through the API at request time (short-TTL cache), NOT injected as an
-   * env value: the chart generates the token with a helm `lookup`, which under
-   * Argo / `helm template` regenerates on every render, and the CronJob pod
-   * reads the Secret fresh at each tick -- a value frozen into this pod's env
-   * at start would drift from it. A missing Secret/key rejects every tick
-   * (fail closed).
-   */
-  eventTickTokenSecret: string;
   /** GitHub App credentials (ADR 0018) used to mint an installation token for posting issue comments. */
   githubAppId: string;
   githubAppPrivateKey: string;
@@ -236,7 +223,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     crdNamespace: env.CRD_NAMESPACE ?? "",
     crdGroup: env.CRD_GROUP || "core.controller-agent.dev",
     crdVersion: env.CRD_VERSION || "v1alpha1",
-    eventTickTokenSecret: env.EVENT_TICK_TOKEN_SECRET || "integration-gateway-tick-token",
     githubAppId: env.GITHUB_APP_ID ?? "",
     githubAppPrivateKey: normalizePem(env.GITHUB_APP_PRIVATE_KEY),
     githubAppInstallationId: env.GITHUB_APP_INSTALLATION_ID ?? "",

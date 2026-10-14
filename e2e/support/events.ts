@@ -50,9 +50,23 @@ export const EVENT_SECRETS = {
   ci: { name: "ci-event-source", key: "token", value: "e2e-ci-bearer-token" },
   genericHmac: { name: "generic-hmac-event-source", key: "secret", value: "e2e-generic-hmac-secret" },
   reply: { name: "e2e-event-reply", key: "secret", value: "e2e-event-reply-signing-secret" },
-  /** Chart-created (integration-gateway `events.tickToken`), random, preserved across upgrades. */
-  tick: { name: "integration-gateway-tick-token", key: "token" },
 } as const;
+
+/** Audience a cron tick's projected token is minted for (core-controller TickTokenAudience). */
+export const TICK_TOKEN_AUDIENCE = "integration-gateway.events";
+
+/**
+ * A short-lived token for a ServiceAccount via the TokenRequest API -- the
+ * same kind of token a tick pod's projected volume holds (minus the pod
+ * binding). `audience` defaults to the gateway's; pass another to prove a
+ * token minted for someone else is refused.
+ */
+export async function mintServiceAccountToken(serviceAccount: string, audience: string = TICK_TOKEN_AUDIENCE): Promise<string> {
+  return (await kubectl(["create", "token", serviceAccount, "--audience", audience, "--duration", "10m"])).trim();
+}
+
+/** A cron source's tick token: its own ServiceAccount, eventsource-<name>. */
+export const tickToken = (source: string) => mintServiceAccountToken(`eventsource-${source}`);
 
 /**
  * One Secret key's decoded value, read from the cluster. Read rather than
@@ -100,7 +114,6 @@ export const slackSigningSecret = () => secretValue(EVENT_SECRETS.slack.name, EV
 export const ciBearerToken = () => secretValue(EVENT_SECRETS.ci.name, EVENT_SECRETS.ci.key);
 export const genericHmacSecret = () => secretValue(EVENT_SECRETS.genericHmac.name, EVENT_SECRETS.genericHmac.key);
 export const replySigningSecret = () => secretValue(EVENT_SECRETS.reply.name, EVENT_SECRETS.reply.key);
-export const tickToken = () => secretValue(EVENT_SECRETS.tick.name, EVENT_SECRETS.tick.key);
 
 // ── per-test CRs ─────────────────────────────────────────────────────────────
 

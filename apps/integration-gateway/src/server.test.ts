@@ -38,7 +38,16 @@ const SECRETS: Record<string, string> = {
   "slack/secret": "slack-secret",
   "ci/token": "ci-token",
   "callback/secret": "callback-secret",
-  "tick/token": "tick-token",
+};
+
+/** Tokens the fake TokenReview recognises, and who each one is. */
+const NIGHTLY_TOKEN = "aaa.nightly.sig";
+const OTHER_TOKEN = "aaa.other.sig";
+const TICK_IDENTITIES: Record<string, string> = {
+  [NIGHTLY_TOKEN]: "system:serviceaccount:agents:eventsource-nightly",
+  [OTHER_TOKEN]: "system:serviceaccount:agents:eventsource-other",
+  "aaa.wrongns.sig": "system:serviceaccount:elsewhere:eventsource-nightly",
+  "aaa.github.sig": "system:serviceaccount:agents:eventsource-github",
 };
 
 const SOURCES: EventSourceResource[] = [
@@ -152,7 +161,8 @@ async function start(overrides: Partial<GatewayServerOptions> = {}, secrets: Rec
   const server = new GatewayServer({
     eventSources: new StaticEventSourceRegistry(SOURCES, () => {}),
     secrets: { get: secretsGet } as SecretLookup,
-    eventTickTokenSecret: "tick",
+    tickAuthenticator: { authenticate: async (token: string) => TICK_IDENTITIES[token] },
+    tickNamespace: "agents",
     identityResolver,
     orchestratorClient: { submitEvent, poll, invoke, checkLive: vi.fn().mockResolvedValue({ live: false }) } as unknown as OrchestratorClient,
     githubReplyClient: { postIssueComment, removeIssueLabel } as unknown as GithubReplyClient,
@@ -621,48 +631,56 @@ describe("POST /events/:source/tick (cron)", () => {
       body,
     });
 
-  it("401s a missing or wrong token, before revealing whether the source exists", async () => {
+  it("401s a missing, malformed or unknown token, before revealing whether the source exists", async () => {
     const h = await start();
     expect((await tick(h, "nightly")).status).toBe(401);
     expect((await tick(h, "nightly", "Bearer wrong")).status).toBe(401);
-    expect((await tick(h, "does-not-exist", "Bearer wrong")).status).toBe(401);
-    expect((await tick(h, "nightly", "tick-token")).status).toBe(401);
+    expect((await tick(h, "nightly", "Bearer aaa.unknown.sig")).status).toBe(401);
+    expect((await tick(h, "does-not-exist", "Bearer aaa.unknown.sig")).status).toBe(401);
+    expect((await tick(h, "nightly", NIGHTLY_TOKEN)).status).toBe(401);
     await settle();
     expect(h.submitEvent).not.toHaveBeenCalled();
   });
 
-  it("401s every tick when the tick-token Secret is missing or not configured (fail closed)", async () => {
-    const h = await start({}, { ...SECRETS, "tick/token": "" });
-    expect((await tick(h, "nightly", "Bearer ")).status).toBe(401);
-    expect((await tick(h, "nightly", "Bearer tick-token")).status).toBe(401);
-    await h.server.close();
-    const h2 = await start({ eventTickTokenSecret: undefined });
-    expect((await tick(h2, "nightly", "Bearer tick-token")).status).toBe(401);
+  it("401s a valid ServiceAccount that is not THIS source's (another source, another namespace)", async () => {
+    const h = await start();
+    expect((await tick(h, "nightly", `Bearer ${OTHER_TOKEN}`)).status).toBe(401);
+    expect((await tick(h, "nightly", "Bearer aaa.wrongns.sig")).status).toBe(401);
+    await settle();
+    expect(h.submitEvent).not.toHaveBeenCalled();
   });
 
-  it("404s a webhook source even with a valid token", async () => {
+  it("401s every tick when no authenticator or namespace is configured (fail closed)", async () => {
+    const h = await start({ tickAuthenticator: undefined });
+    expect((await tick(h, "nightly", `Bearer ${NIGHTLY_TOKEN}`)).status).toBe(401);
+    await h.server.close();
+    const h2 = await start({ tickNamespace: undefined });
+    expect((await tick(h2, "nightly", `Bearer ${NIGHTLY_TOKEN}`)).status).toBe(401);
+  });
+
+  it("never sends a malformed bearer or source name to the TokenReview API", async () => {
+    const authenticate = vi.fn(async () => undefined);
+    const h = await start({ tickAuthenticator: { authenticate } });
+    await tick(h, "nightly", "Bearer not-a-jwt");
+    await tick(h, "nightly", "Basic aaa.nightly.sig");
+    await tick(h, "Bad_Name", `Bearer ${NIGHTLY_TOKEN}`);
+    expect(authenticate).not.toHaveBeenCalled();
+  });
+
+  it("404s an authenticated tick for a webhook or unknown source", async () => {
     const h = await start();
-    expect((await tick(h, "github", "Bearer tick-token")).status).toBe(404);
-    expect((await tick(h, "unknown", "Bearer tick-token")).status).toBe(404);
+    expect((await tick(h, "github", "Bearer aaa.github.sig")).status).toBe(404);
+    expect((await tick(h, "other", `Bearer ${OTHER_TOKEN}`)).status).toBe(404);
   });
 
   it("202s and relays a cron envelope whose body is the CR's payload (never the tick's)", async () => {
     const h = await start();
-    expect((await tick(h, "nightly", "Bearer tick-token")).status).toBe(202);
+    expect((await tick(h, "nightly", `Bearer ${NIGHTLY_TOKEN}`)).status).toBe(202);
     await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalled());
     const envelope = submittedEnvelope(h);
     expect(envelope).toMatchObject({ source: "nightly", kind: "cron", headers: {}, body: { repo: "acme/widgets", n: 3 }, sender: {}, repository: "" });
     expect(envelope.id).toMatch(/^nightly-\d+$/);
     expect(h.submitEvent.mock.calls[0]?.[1]).toBeUndefined();
-  });
-
-  it("accepts a freshly rotated tick token by re-reading the Secret once", async () => {
-    const h = await start();
-    h.secretsGet.mockImplementation(async (name: string, _key: string, opts?: { refresh?: boolean }) =>
-      name === "tick" ? (opts?.refresh ? "new-token" : "old-token") : undefined,
-    );
-    expect((await tick(h, "nightly", "Bearer new-token")).status).toBe(202);
-    expect(h.secretsGet).toHaveBeenCalledWith("tick", "token", { refresh: true });
   });
 });
 

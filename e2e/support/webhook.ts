@@ -6,7 +6,7 @@ import { fetchThrough, type PortForward } from "./k8s.js";
  * (docs/event-triggers.md §7):
  *
  *   POST /webhooks/:source       verified per the EventSource's `verify.scheme`
- *   POST /events/:source/tick    Bearer <tick token>, cron sources only
+ *   POST /events/:source/tick    Bearer <SA token of eventsource-<source>>, cron sources only
  *
  * Every signer works on the EXACT bytes sent, never a re-serialization: the
  * gateway verifies the raw body before parsing, so any difference in key order or

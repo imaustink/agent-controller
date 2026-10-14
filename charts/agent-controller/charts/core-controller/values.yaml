@@ -122,10 +122,7 @@ eventTick:
   # `<release>-integration-gateway` on port 8090. Empty leaves EVENT_TICK_URL
   # unset, and every cron EventSource reports Ready=False (TickNotConfigured).
   url: "http://agent-controller-integration-gateway:8090"
-  # Secret (in each cron source's namespace) whose `token` key the CronJob
-  # presents as its bearer token. Must equal integration-gateway's
-  # events.tickToken.secretName.
-  tokenSecret: integration-gateway-tick-token
-  # Any image with a shell and curl. Empty takes the binary's default
+  # Any image whose entrypoint is curl >= 8.3 (the tick reads its projected
+  # ServiceAccount token with --variable). Empty takes the binary's default
   # (curlimages/curl:8.11.1).
   image: ""

@@ -79,14 +79,12 @@ spec:
             {{- end }}
             {{- if .Values.eventTick.url }}
             # What a cron EventSource's CronJob ticks (docs/event-triggers.md §8):
-            # integration-gateway's POST /events/<name>/tick, authenticated with
-            # the `token` key of the shared tick-token Secret in the source's
-            # namespace. Without EVENT_TICK_URL every cron source is
+            # integration-gateway's POST /events/<name>/tick, authenticated as
+            # the source's own ServiceAccount (a projected, gateway-audience
+            # token). Without EVENT_TICK_URL every cron source is
             # Ready=False (TickNotConfigured).
             - name: EVENT_TICK_URL
               value: {{ .Values.eventTick.url | quote }}
-            - name: EVENT_TICK_TOKEN_SECRET
-              value: {{ .Values.eventTick.tokenSecret | quote }}
             {{- if .Values.eventTick.image }}
             - name: EVENT_TICK_IMAGE
               value: {{ .Values.eventTick.image | quote }}

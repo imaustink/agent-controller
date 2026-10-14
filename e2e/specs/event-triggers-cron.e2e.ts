@@ -4,7 +4,7 @@ import { cleanupAgentRunsSince, kubectl, kubectlJson, waitFor } from "../support
 import { seedAllClaudeCredentials } from "../support/credential-store.js";
 import { deployedEngine } from "../support/engine.js";
 import {
-  EVENT_SECRETS,
+  TICK_TOKEN_AUDIENCE,
   applyEventSource,
   deleteEventFixtures,
   readyCondition,
@@ -18,8 +18,8 @@ requireMinikubeContext();
 
 /**
  * Cron EventSources (docs/event-triggers.md §8): core-controller materializes
- * each as an OWNED CronJob that curls integration-gateway's tick endpoint with
- * the shared tick token; the gateway builds the envelope with the CR's
+ * each as an OWNED CronJob that curls integration-gateway's tick endpoint as
+ * the source's own (owned) ServiceAccount; the gateway builds the envelope with the CR's
  * `payload` as its body; triggers read it exactly like a webhook body.
  *
  * Ticks are driven explicitly, never waited for on the shipped schedule:
@@ -53,11 +53,13 @@ interface CronJobView {
       spec: {
         template: {
           spec: {
+            serviceAccountName?: string;
             automountServiceAccountToken?: boolean;
+            volumes?: { projected?: { sources?: { serviceAccountToken?: { audience?: string; path: string } }[] } }[];
             containers: {
               args?: string[];
               command?: string[];
-              env?: { name: string; valueFrom?: { secretKeyRef?: { name: string; key: string } } }[];
+              env?: { name: string }[];
             }[];
           };
         };
@@ -89,7 +91,7 @@ describe(`cron EventSources (engine: ${deployedEngine()})`, () => {
     await cleanupAgentRunsSince(startedAt);
   });
 
-  it("materializes nightly-sweep as an owned, hardened CronJob that ticks the gateway with the shared token", async () => {
+  it("materializes nightly-sweep as an owned, hardened CronJob that ticks the gateway as its own ServiceAccount", async () => {
     const ready = await waitForReady("eventsource", "nightly-sweep", "True", "Scheduled");
     expect(ready.status).toBe("True");
     const source = await kubectlJson<{ spec: { cron: { schedule: string } }; status?: { cronJobName?: string } }>([
@@ -110,18 +112,31 @@ describe(`cron EventSources (engine: ${deployedEngine()})`, () => {
     // One tick is one turn: never two stacked.
     expect(cj.spec.concurrencyPolicy).toBe("Forbid");
 
+    // Its identity: an owned ServiceAccount of the same name, with no token
+    // of its own auto-mounted and no RoleBinding (it authenticates, nothing more).
+    const sa = await kubectlJson<{
+      metadata: { ownerReferences?: { kind: string; name: string; controller?: boolean }[] };
+      automountServiceAccountToken?: boolean;
+    }>(["get", "serviceaccount", "eventsource-nightly-sweep"]);
+    expect(sa.metadata.ownerReferences).toContainEqual(
+      expect.objectContaining({ kind: "EventSource", name: "nightly-sweep", controller: true }),
+    );
+    expect(sa.automountServiceAccountToken).toBe(false);
+
     const pod = cj.spec.jobTemplate.spec.template.spec;
-    expect(pod.automountServiceAccountToken, "the tick talks to the gateway, never the API server").toBe(false);
+    expect(pod.serviceAccountName).toBe("eventsource-nightly-sweep");
+    expect(pod.automountServiceAccountToken, "no API-server token: only the gateway-audience one").toBe(false);
+    expect(pod.volumes?.[0]?.projected?.sources?.[0]?.serviceAccountToken).toMatchObject({
+      audience: TICK_TOKEN_AUDIENCE,
+      path: "token",
+    });
     const container = pod.containers[0];
     const argv = [...(container?.command ?? []), ...(container?.args ?? [])].join(" ");
     expect(argv).toMatch(/\/events\/nightly-sweep\/tick$/);
     expect(argv).toContain("-X POST");
-    // The token comes from the env, never the command line.
-    expect(argv).toContain("Authorization: Bearer $(EVENT_TICK_TOKEN)");
-    expect(container?.env?.find((e) => e.name === "EVENT_TICK_TOKEN")?.valueFrom?.secretKeyRef).toEqual({
-      name: EVENT_SECRETS.tick.name,
-      key: EVENT_SECRETS.tick.key,
-    });
+    // curl reads the token file itself: it is never on the command line or in env.
+    expect(argv).toContain("Authorization: Bearer {{token:trim}}");
+    expect(container?.env ?? []).toEqual([]);
   });
 
   it("a Job run from that CronJob ticks -> nightly-stale-sweep -> a read-only AgentRun with the payload as params", async () => {
@@ -131,7 +146,8 @@ describe(`cron EventSources (engine: ${deployedEngine()})`, () => {
     await kubectl(["create", "job", `--from=cronjob/eventsource-nightly-sweep`, job]);
 
     // curl -f: the Job succeeds only on a 2xx from the gateway -- i.e. the
-    // token in the Secret is the one the gateway accepts, and the route exists.
+    // pod's projected ServiceAccount token passed TokenReview as THIS source's
+    // identity, and the route exists.
     await waitFor(
       `tick Job ${job} to succeed`,
       async () => {

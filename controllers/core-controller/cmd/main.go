@@ -278,12 +278,12 @@ func main() {
 		// Uncached: a cached read would watch every Secret in the cluster to
 		// confirm one webhook secret exists (and need list/watch to do it).
 		SecretReader: mgr.GetAPIReader(),
-		// A cron source's CronJob only needs curl: it ticks integration-gateway,
-		// which reads the payload from the CR (docs/event-triggers.md §8).
+		// A cron source's CronJob only needs curl (>= 8.3): it ticks
+		// integration-gateway as the source's own ServiceAccount, and the
+		// gateway reads the payload from the CR (docs/event-triggers.md §8).
 		// Without a tick URL, cron sources report Ready=False.
-		TickImage:       envOr("EVENT_TICK_IMAGE", "curlimages/curl:8.11.1"),
-		TickURL:         os.Getenv("EVENT_TICK_URL"),
-		TickTokenSecret: envOr("EVENT_TICK_TOKEN_SECRET", "integration-gateway-tick-token"),
+		TickImage: envOr("EVENT_TICK_IMAGE", "curlimages/curl:8.11.1"),
+		TickURL:   os.Getenv("EVENT_TICK_URL"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "eventsource")
 		os.Exit(1)

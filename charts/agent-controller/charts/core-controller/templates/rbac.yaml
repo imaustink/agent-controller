@@ -22,9 +22,13 @@ metadata:
   labels:
     {{- include "core-controller.labels" . | nindent 4 }}
 rules:
+  # get/list/watch for run pods' identities; create..delete because each cron
+  # EventSource owns its own ServiceAccount, the identity its tick presents to
+  # integration-gateway (ADR 0048, docs/event-triggers.md §8). No RoleBinding
+  # is ever made for one: it authenticates, it is authorized for nothing.
   - apiGroups: [""]
     resources: ["serviceaccounts"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
   # The EventSource reconciler checks that a webhook source's
   # verify.secretRef Secret exists (ADR 0048), through an uncached reader --
   # `get` only, never list/watch, so no cluster-wide Secret informer.

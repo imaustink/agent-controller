@@ -228,8 +228,11 @@ create|merge|close|reopen|ready|edit`, mint a `contents:read` token) from
 - `POST /webhooks/:source` — `404` unknown or non-webhook source; `401` failed
   verification; `202` otherwise (relay continues in the background). Dropped
   events (bot, unresolved sender) are `202` + a log line, so senders don't retry.
-- `POST /events/:source/tick` — `Authorization: Bearer <EVENT_TICK_TOKEN>`
-  (constant time); `404` unless the source is `cron`; `202`.
+- `POST /events/:source/tick` — `Authorization: Bearer <projected SA token>`.
+  The gateway TokenReviews it for audience `integration-gateway.events` and
+  requires the username `system:serviceaccount:<CRD_NAMESPACE>:eventsource-<source>`
+  — anything else (including another source's tick) is `401`, before the source
+  is looked up; then `404` unless the source is `cron`; `202`.
 - Reply adapters run only for the `reply` the orchestrator returned: `github.ack`
   (+ session page link) before polling; `github.result` / `http` after;
   `github.removeLabel` after, on every outcome, through the durable pending-action
@@ -237,12 +240,21 @@ create|merge|close|reopen|ready|edit`, mint a `contents:read` token) from
 
 ## 8. Cron
 
-core-controller turns each `cron` EventSource into an owned `CronJob`
-(`eventsource-<name>`, `concurrencyPolicy: Forbid`, hardened pod) that runs
-`curl -fsS -X POST -H "Authorization: Bearer $TOKEN" $EVENT_TICK_URL/events/<name>/tick`.
-Controller env: `EVENT_TICK_URL` (gateway base URL), `EVENT_TICK_TOKEN_SECRET`
-(name of the shared tick-token Secret in the source's namespace; the token is its
-`token` key, default `integration-gateway-tick-token`), `EVENT_TICK_IMAGE`
-(default `curlimages/curl:8.11.1`). Mirrors the Corpus sync-kick CronJob. Without `EVENT_TICK_URL` a cron source is
-`Ready=False` (`TickNotConfigured`). The gateway reads the payload from the CR,
-not from the tick.
+core-controller turns each `cron` EventSource into an owned `ServiceAccount`
+and `CronJob`, both `eventsource-<name>`. The ServiceAccount is the tick's
+identity: `automountServiceAccountToken: false`, bound to no Role (it
+authenticates; it is authorized for nothing). The CronJob
+(`concurrencyPolicy: Forbid`, hardened pod) runs as it, mounting only a
+projected token for audience `integration-gateway.events` (600s, pod-bound), and
+runs `curl -fsS -X POST --variable token@<file> --expand-header "Authorization:
+Bearer {{token:trim}}" $EVENT_TICK_URL/events/<name>/tick` — no shell, no
+token on a command line. There is no shared secret: nothing to generate, store
+or rotate, and it renders identically under Helm and Argo CD.
+
+The controller never adopts a same-named ServiceAccount it does not own (that
+would let someone else's pods tick the source) and deletes both objects when the
+source stops being cron. Controller env: `EVENT_TICK_URL` (gateway base URL),
+`EVENT_TICK_IMAGE` (curl ≥ 8.3; default `curlimages/curl:8.11.1`). Without
+`EVENT_TICK_URL` a cron source is `Ready=False` (`TickNotConfigured`). The
+gateway needs `create` on `tokenreviews` (a ClusterRole — TokenReview is
+cluster-scoped) and reads the payload from the CR, not from the tick.
