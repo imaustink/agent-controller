@@ -62,6 +62,14 @@ export interface SessionRecord {
    */
   activeAgentRunAwaitingReply?: boolean;
   /**
+   * `activeAgentRunId` was launched read-only (`AgentRun.spec.readOnly`). Kept
+   * beside the anchor and cleared with it, because a read-only turn may only be
+   * forwarded into a read-only run (graph.ts `checkActiveAgentRun`): the pod of a
+   * run launched writable already holds write credentials. Absent means
+   * writable, so an anchor written without it fails closed.
+   */
+  activeAgentRunReadOnly?: boolean;
+  /**
    * The most recent AgentRun id this conversation delegated to, kept even
    * after the run concludes and `activeAgentRunId` is cleared (ADR 0026) --
    * NOT used for routing/continuation (that's `activeAgentRunId`/

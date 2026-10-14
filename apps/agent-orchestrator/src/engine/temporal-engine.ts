@@ -1,5 +1,6 @@
 import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "../rbac/sender-assertion.js";
 import { CALLER_IDENTITY_HEADER, mintCallerIdentityAssertion } from "../rbac/caller-identity-assertion.js";
+import { DISPATCH_ASSERTION_HEADER, mintDispatchAssertion } from "../rbac/dispatch-assertion.js";
 import type { AgentGraphInput, AgentGraphLike } from "../server.js";
 import type { AgentState } from "../agent/graph.js";
 import type { IdentityResolver } from "../rbac/types.js";
@@ -162,6 +163,14 @@ export class TemporalEngine implements AgentGraphLike {
       // without the header would run it as the gateway's shared bearer
       // subject, i.e. with whatever credentials that subject holds.
       return { ...input, error: "unauthorized: could not resolve caller identity" } as AgentState;
+    }
+    if (input.triggerName && !this.options.senderAssertionSecret) {
+      // The engine takes a trigger's dispatch only signed (see `start`), so
+      // without the secret this turn could only run as something else.
+      return {
+        ...input,
+        error: "temporal engine: an event-triggered turn needs AGENT_SENDER_ASSERTION_SECRET to sign its dispatch",
+      } as AgentState;
     }
 
     const id = await this.start(input, caller);
@@ -374,29 +383,41 @@ export class TemporalEngine implements AgentGraphLike {
       );
     }
 
+    // This process owns the EventTrigger registry and has already selected the
+    // trigger (docs/event-triggers.md §5), so the RESOLVED turn is forwarded --
+    // target, tool input, params, read-only, trigger name -- never the raw
+    // envelope: re-matching in the engine would put dispatch policy in two
+    // places. It travels as a signed assertion bound to this session and
+    // prompt, never body fields: the engine refuses dispatch from the body, or
+    // anything holding its /invoke token could launch any target writable.
+    // `invoke` already refused a trigger turn with no secret to sign it.
+    if (input.triggerName && this.options.senderAssertionSecret) {
+      headers[DISPATCH_ASSERTION_HEADER] = mintDispatchAssertion(
+        this.options.senderAssertionSecret,
+        {
+          triggerName: input.triggerName,
+          ...(input.forcedSkillId ? { forcedSkillId: input.forcedSkillId } : {}),
+          ...(input.forcedAgentId ? { forcedAgentId: input.forcedAgentId } : {}),
+          ...(input.forcedToolId ? { forcedToolId: input.forcedToolId, toolInput: input.toolInput ?? "" } : {}),
+          ...(input.readOnly ? { readOnly: true } : {}),
+          ...(input.params && Object.keys(input.params).length > 0 ? { params: input.params } : {}),
+        },
+        input.sessionId ?? "",
+        input.request,
+      );
+    }
+
     const res = await this.fetchImpl(`${this.baseUrl}/invoke`, {
       method: "POST",
       headers,
       body: JSON.stringify({
         request: input.request,
         sessionId: input.sessionId,
-        // This process owns the EventTrigger registry and has already selected
-        // the trigger (docs/event-triggers.md §5), so the RESOLVED turn is
-        // forwarded -- target, tool input, params, read-only -- never the raw
-        // envelope: re-matching in the engine would put dispatch policy in two
-        // places. The engine still re-resolves the target under the caller's
-        // own roles.
-        ...(input.forcedSkillId ? { forcedSkillId: input.forcedSkillId } : {}),
-        ...(input.forcedAgentId ? { forcedAgentId: input.forcedAgentId } : {}),
-        ...(input.forcedToolId ? { forcedToolId: input.forcedToolId, toolInput: input.toolInput ?? "" } : {}),
-        // Every turn, not just the triggering one: `input.readOnly` already
-        // folds in this process's sticky session flag, and the engine keeps its
-        // own per-conversation flag too -- either side remembering is enough to
-        // keep a read-only conversation read-only. Sent only as `true`; it can
-        // only restrict.
+        // Every turn, not just the triggering one: on a follow-up turn
+        // `input.readOnly` carries this process's sticky session flag, and the
+        // engine keeps its own per-conversation flag too. Sent only as `true`;
+        // the engine honours it only to restrict.
         ...(input.readOnly ? { readOnly: true } : {}),
-        ...(input.params && Object.keys(input.params).length > 0 ? { params: input.params } : {}),
-        ...(input.triggerName ? { triggerName: input.triggerName } : {}),
         // Which OAuth flow an identity-link prompt starts. The engine reads
         // `identityLinkFlow` (gateway/invoke.go, workflows/conversation.go)
         // and defaults it to "authcode" -- so dropping it here meant NO caller

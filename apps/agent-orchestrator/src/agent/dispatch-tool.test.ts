@@ -56,6 +56,66 @@ function fakeJobResultReceiver(event: Event): JobResultReceiver {
   };
 }
 
+describe("dispatchResolvedTool on a read-only turn", () => {
+  it("refuses an MCP tool rather than calling it with the caller's delegated token", async () => {
+    const mcpBrokerClient = fakeMCPBrokerClient();
+    const { identityProviders: _ip, ...noProviders } = mcpTool;
+
+    const outcome = await dispatchResolvedTool(
+      noProviders,
+      "{}",
+      {
+        containerToolLauncher: fakeContainerToolLauncher(),
+        jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "x" }),
+        mcpBrokerClient,
+      },
+      { callerSubject: "alice", readOnly: true },
+    );
+
+    expect(outcome).toEqual({
+      ok: false,
+      error: "read_only: mcp:github/create_issue acts with your delegated credentials and cannot run in a read-only request",
+    });
+    expect(mcpBrokerClient.call).not.toHaveBeenCalled();
+  });
+
+  it("refuses a container tool that declares github rather than running it on its template's token", async () => {
+    const containerToolLauncher = fakeContainerToolLauncher();
+
+    const outcome = await dispatchResolvedTool(
+      { ...containerTool, identityProviders: ["github"] },
+      "comment",
+      {
+        containerToolLauncher,
+        jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "x" }),
+        natsUrl: "nats://nats:4222",
+      },
+      { readOnly: true },
+    );
+
+    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("read-only request does not allow") });
+    expect(containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+
+  it("still runs a container tool that declares no write-capable provider", async () => {
+    const containerToolLauncher = fakeContainerToolLauncher();
+
+    const outcome = await dispatchResolvedTool(
+      containerTool,
+      "get pods",
+      {
+        containerToolLauncher,
+        jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "ok" }),
+        natsUrl: "nats://nats:4222",
+      },
+      { readOnly: true },
+    );
+
+    expect(outcome).toEqual({ ok: true, result: "ok" });
+    expect(containerToolLauncher.launch).toHaveBeenCalledWith(containerTool.jobTemplate, expect.objectContaining({ readOnly: true }));
+  });
+});
+
 describe("dispatchResolvedTool", () => {
   it("rejects an agent-backed tool with a clean error (v1 scope cut)", async () => {
     const outcome = await dispatchResolvedTool(agentBackedTool, "do the thing", {

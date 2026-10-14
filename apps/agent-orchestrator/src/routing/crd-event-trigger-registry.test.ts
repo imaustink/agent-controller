@@ -6,8 +6,8 @@ import { CrdEventTriggerRegistry, parseEnvelope } from "./crd-event-trigger-regi
 
 const GROUP = "core.controller-agent.dev";
 
-/** What core-controller writes once CEL compiles and the refs resolve. */
-const READY: EventTriggerResource["status"] = { conditions: [{ type: "Ready", status: "True" }] };
+/** What core-controller writes once CEL compiles and the refs resolve, for generation 1. */
+const READY: EventTriggerResource["status"] = { conditions: [{ type: "Ready", status: "True", observedGeneration: 1 }] };
 
 function envelope(overrides: Partial<Envelope> = {}): Envelope {
   return {
@@ -24,7 +24,7 @@ function envelope(overrides: Partial<Envelope> = {}): Envelope {
 }
 
 const review: EventTriggerResource = {
-  metadata: { name: "github-pr-review" },
+  metadata: { name: "github-pr-review", generation: 1 },
   spec: {
     sourceRef: "github",
     match: { cel: 'headers["x-github-event"] == "pull_request" && body.action == "labeled" && body.label.name == "ai-review"' },
@@ -82,7 +82,7 @@ describe("CrdEventTriggerRegistry", () => {
 
   it("never matches a trigger whose CEL does not compile (fail closed)", async () => {
     const broken: EventTriggerResource = {
-      metadata: { name: "broken" },
+      metadata: { name: "broken", generation: 1 },
       spec: { match: { cel: "body.action ==" }, target: { orchestrator: {}, promptTemplate: "x" } },
       // Even a (stale) Ready=True cannot override a failed local compile.
       status: READY,
@@ -104,6 +104,21 @@ describe("CrdEventTriggerRegistry", () => {
     expect(registry.select(envelope())).toEqual({ status: "ignored" }); // ...but is not offered
   });
 
+  it("never matches an edited trigger whose Ready condition predates the edit", async () => {
+    // The spec edit bumped the generation to 2; the controller has not yet
+    // re-checked it, so Ready=True is the previous spec's verdict.
+    const edited: EventTriggerResource = { ...review, metadata: { name: "github-pr-review", generation: 2 } };
+    const registry = await registryWith([edited]);
+
+    expect(registry.list()[0]!.ready).toBe(true);
+    expect(registry.select(envelope())).toEqual({ status: "ignored" });
+
+    const rechecked = await registryWith([
+      { ...edited, status: { conditions: [{ type: "Ready", status: "True", observedGeneration: 2 }] } },
+    ]);
+    expect(rechecked.select(envelope())).toMatchObject({ status: "matched" });
+  });
+
   it("re-evaluates controller readiness on every MODIFIED event", () => {
     let onEvent!: (phase: string, obj: unknown) => void;
     const watchFn: WatchCrdFn = (_opts, cb) => {
@@ -123,7 +138,7 @@ describe("CrdEventTriggerRegistry", () => {
 
   it("uses the caller's session id when the trigger has no sessionKey", async () => {
     const noKey: EventTriggerResource = {
-      metadata: { name: "any-github" },
+      metadata: { name: "any-github", generation: 1 },
       spec: { sourceRef: "github", target: { orchestrator: {}, promptTemplate: "hi" } },
       status: READY,
     };

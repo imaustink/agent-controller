@@ -682,6 +682,93 @@ describe("InvokeServer /invoke with an event envelope (ADR 0048, docs/event-trig
       await server.close();
     });
 
+    it("lets a writable trigger on the same session key make the session writable again", async () => {
+      // ai-review and ai-triage share github:<repo>#<n>. A ratchet would leave
+      // every triage on an issue read-only (no GITHUB_TOKEN, no push) after a
+      // single review of it.
+      const triageTrigger: EventTriggerResource = {
+        metadata: { name: "github-pr-triage" },
+        spec: {
+          sourceRef: "github",
+          match: { cel: 'body.action == "labeled" && body.label.name == "ai-triage"' },
+          params: { repo: "body.repository.full_name", number: "body.issue.number" },
+          sessionKey: "github:{{repo}}#{{number}}",
+          target: { agentRef: "claude-code-swe-agent", promptTemplate: "Triage {{repo}}#{{number}}" },
+        },
+      };
+      const triageEvent = envelope({
+        body: { action: "labeled", label: { name: "ai-triage" }, repository: { full_name: "acme/widgets" }, issue: { number: 7 } },
+      });
+      const sessions = store();
+      const graph: AgentGraphLike = {
+        invoke: vi.fn().mockResolvedValue({
+          request: "x",
+          authToken: "",
+          skillCandidates: [],
+          result: "done",
+          identity: { subject: "integration-gateway", roles: [] },
+          selectedSkill: { id: "s1" },
+        } as unknown as AgentState),
+        stream: vi.fn().mockResolvedValue(noStream()),
+      };
+      const server = new InvokeServer(graph, sessions, undefined, await triggerRegistry([reviewTrigger, triageTrigger]));
+      const port = await listenOn(server);
+
+      await post(port, { event: reviewEvent() });
+      await new Promise((r) => setTimeout(r, 10));
+      expect((await sessions.get("github:acme/widgets#7"))?.readOnly).toBe(true);
+
+      await post(port, { event: triageEvent });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(vi.mocked(graph.invoke).mock.calls[1]![0]).toMatchObject({ triggerName: "github-pr-triage" });
+      expect(vi.mocked(graph.invoke).mock.calls[1]![0].readOnly).toBeUndefined();
+      expect((await sessions.get("github:acme/widgets#7"))?.readOnly).toBeUndefined();
+
+      // Its follow-ups inherit the writable mode...
+      await post(port, { request: "also fix the typo", session_id: "github:acme/widgets#7" });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(vi.mocked(graph.invoke).mock.calls[2]![0].readOnly).toBeUndefined();
+
+      // ...and a later review makes it read-only again.
+      await post(port, { event: reviewEvent() });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(vi.mocked(graph.invoke).mock.calls[3]![0]).toMatchObject({ readOnly: true });
+      expect((await sessions.get("github:acme/widgets#7"))?.readOnly).toBe(true);
+      await server.close();
+    });
+
+    it("records an agent run's launch mode on the session and keeps it when a later turn continues the run", async () => {
+      const sessions = store();
+      const parked = (runId: string) =>
+        ({
+          request: "x",
+          authToken: "",
+          skillCandidates: [],
+          result: "a question",
+          identity: { subject: "integration-gateway", roles: [] },
+          selectedAgent: { id: "claude-code-swe-agent" },
+          agentRunId: runId,
+          agentAwaitingReply: true,
+        }) as unknown as AgentState;
+      const graph: AgentGraphLike = {
+        invoke: vi.fn().mockResolvedValueOnce(parked("run-1")).mockResolvedValueOnce(parked("run-1")),
+        stream: vi.fn().mockResolvedValue(noStream()),
+      };
+      const server = new InvokeServer(graph, sessions, undefined, await triggerRegistry([reviewTrigger]));
+      const port = await listenOn(server);
+
+      await post(port, { event: reviewEvent() });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(await sessions.get("github:acme/widgets#7")).toMatchObject({ activeAgentRunId: "run-1", activeAgentRunReadOnly: true });
+
+      // The follow-up continues run-1 and hands the graph its launch mode.
+      await post(port, { request: "answer", session_id: "github:acme/widgets#7" });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(vi.mocked(graph.invoke).mock.calls[1]![0]).toMatchObject({ activeAgentRunId: "run-1", activeAgentRunReadOnly: true });
+      expect((await sessions.get("github:acme/widgets#7"))?.activeAgentRunReadOnly).toBe(true);
+      await server.close();
+    });
+
     it("records the flag before the turn runs, so a turn that never finishes still leaves the session read-only", async () => {
       const sessions = store();
       let sawFlagAtInvoke: boolean | undefined;

@@ -6,12 +6,13 @@ import {
   type EventSourceResource,
   type WebhookSource,
 } from "@controller-agent/event-triggers";
+import { CrdTable, crdApisFromKubeConfig, type CrdTableOptions } from "./crd-table.js";
 
 /**
  * The gateway's view of `EventSource` CRs (ADR 0048, docs/event-triggers.md
- * §1): how events ARRIVE and how far they are trusted. The gateway reads only
- * this kind (plus the Secrets it references); `EventTrigger`s are the
- * orchestrator's business.
+ * §1): how events ARRIVE and how far they are trusted. Matching `EventTrigger`s
+ * is the orchestrator's business; the gateway reads them only to skip sender
+ * lookups for deliveries none could match (event-triggers.ts).
  *
  * A source is compiled once, when it is seen, so a request never compiles CEL
  * or re-validates the spec. A source that fails to compile is UNUSABLE -- its
@@ -130,158 +131,47 @@ export class StaticEventSourceRegistry implements EventSourceLookup {
   }
 }
 
-/** The slice of `CustomObjectsApi` the registry uses -- documents the RBAC verbs it needs (list) and keeps test doubles plain objects. */
-export interface CustomObjectsListApi {
-  listNamespacedCustomObject(request: {
-    group: string;
-    version: string;
-    namespace: string;
-    plural: string;
-  }): Promise<{ items?: unknown[]; metadata?: { resourceVersion?: string } }>;
-}
+export type { CrdWatchApi, CustomObjectsListApi } from "./crd-table.js";
 
-/** The slice of `k8s.Watch` the registry uses (verb: watch). */
-export interface CrdWatchApi {
-  watch(
-    path: string,
-    queryParams: Record<string, unknown>,
-    onEvent: (phase: string, apiObj: unknown) => void,
-    onDone: (err?: unknown) => void,
-  ): Promise<{ abort(): void }>;
-}
-
-export interface CrdEventSourceRegistryOptions {
-  namespace: string;
-  group: string;
-  version: string;
-  api: CustomObjectsListApi;
-  watch: CrdWatchApi;
-  /** Delay before re-listing after a watch ends or a list fails. */
-  reconnectDelayMs?: number;
-  log?: (msg: string) => void;
-}
-
-const DEFAULT_RECONNECT_DELAY_MS = 2_000;
+export type CrdEventSourceRegistryOptions = CrdTableOptions;
 
 /**
- * List-then-watch over `eventsources` in one namespace, informer-style: every
- * (re)connect re-lists and REPLACES the table, then watches from the list's
- * resourceVersion. Re-listing on every reconnect (not just at startup) is what
- * makes a delete that happened while the watch was down actually disappear --
- * a bare re-watch only replays ADDED for what exists, never DELETED for what
- * vanished, so a revoked source would otherwise keep serving until restart.
+ * List-then-watch over `eventsources` in one namespace (see {@link CrdTable}).
+ * A source that fails to compile is dropped and its routes answer 404.
  */
 export class CrdEventSourceRegistry implements EventSourceLookup {
-  private sources = new Map<string, CompiledEventSource>();
-  private stopped = false;
-  private abort: { abort(): void } | undefined;
-  private timer: ReturnType<typeof setTimeout> | undefined;
-  private readonly reconnectDelayMs: number;
-  private readonly log: (msg: string) => void;
+  private readonly table: CrdTable<CompiledEventSource>;
 
-  constructor(private readonly options: CrdEventSourceRegistryOptions) {
-    this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
-    this.log = options.log ?? ((m) => console.error(m));
+  constructor(options: CrdEventSourceRegistryOptions) {
+    this.table = new CrdTable(options, {
+      kind: "EventSource",
+      plural: EVENT_SOURCE_PLURAL,
+      unusableNote: " (its routes answer 404)",
+      compile: (obj) => {
+        const compiled = compileEventSource(obj as EventSourceResource);
+        return compiled.ok ? { ok: true, value: compiled.source } : compiled;
+      },
+    });
   }
 
   static fromKubeConfig(
     kubeConfig: k8s.KubeConfig,
     opts: { namespace: string; group: string; version: string },
   ): CrdEventSourceRegistry {
-    return new CrdEventSourceRegistry({
-      ...opts,
-      api: kubeConfig.makeApiClient(k8s.CustomObjectsApi) as unknown as CustomObjectsListApi,
-      watch: new k8s.Watch(kubeConfig) as unknown as CrdWatchApi,
-    });
+    return new CrdEventSourceRegistry({ ...opts, ...crdApisFromKubeConfig(kubeConfig) });
   }
 
   get(name: string): CompiledEventSource | undefined {
-    return this.sources.get(name);
+    return this.table.get(name);
   }
 
   /** Lists once (resolving when the first list lands, or failing if it can't), then keeps the table current in the background. */
-  async start(): Promise<void> {
-    this.stopped = false;
-    const resourceVersion = await this.relist();
-    void this.watchFrom(resourceVersion);
+  start(): Promise<void> {
+    return this.table.start();
   }
 
   stop(): void {
-    this.stopped = true;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = undefined;
-    this.abort?.abort();
-    this.abort = undefined;
-  }
-
-  private upsert(obj: unknown): void {
-    const resource = obj as EventSourceResource;
-    const name = resource?.metadata?.name;
-    if (!name) return;
-    const compiled = compileEventSource(resource);
-    if (compiled.ok) {
-      this.sources.set(name, compiled.source);
-    } else {
-      // Dropped, not kept at its previous version: an operator who broke a
-      // source expects it to stop, not to keep running the last good copy.
-      this.sources.delete(name);
-      this.log(`EventSource ${name} is unusable (its routes answer 404): ${compiled.error}`);
-    }
-  }
-
-  private async relist(): Promise<string | undefined> {
-    const { namespace, group, version } = this.options;
-    const response = await this.options.api.listNamespacedCustomObject({ group, version, namespace, plural: EVENT_SOURCE_PLURAL });
-    const previous = this.sources;
-    this.sources = new Map();
-    for (const item of response.items ?? []) this.upsert(item);
-    for (const name of previous.keys()) {
-      if (!this.sources.has(name)) this.log(`EventSource ${name} removed`);
-    }
-    return response.metadata?.resourceVersion;
-  }
-
-  private scheduleReconnect(): void {
-    if (this.stopped) return;
-    this.timer = setTimeout(() => {
-      this.timer = undefined;
-      this.relist()
-        .then((rv) => this.watchFrom(rv))
-        .catch((err: unknown) => {
-          this.log(`EventSource list failed (keeping the last known table): ${err instanceof Error ? err.message : String(err)}`);
-          this.scheduleReconnect();
-        });
-    }, this.reconnectDelayMs);
-    this.timer.unref?.();
-  }
-
-  private async watchFrom(resourceVersion: string | undefined): Promise<void> {
-    if (this.stopped) return;
-    const { namespace, group, version } = this.options;
-    try {
-      this.abort = await this.options.watch.watch(
-        `/apis/${group}/${version}/namespaces/${namespace}/${EVENT_SOURCE_PLURAL}`,
-        resourceVersion ? { resourceVersion } : {},
-        (phase, obj) => {
-          if (phase === "ADDED" || phase === "MODIFIED") this.upsert(obj);
-          else if (phase === "DELETED") {
-            const name = (obj as EventSourceResource)?.metadata?.name;
-            if (name && this.sources.delete(name)) this.log(`EventSource ${name} removed`);
-          }
-        },
-        (err) => {
-          // Fires once per disconnect, including the apiserver's routine
-          // watch timeout -- always relist + rewatch, not only on error.
-          if (err && (err as { name?: string }).name !== "AbortError") {
-            this.log(`EventSource watch ended: ${err instanceof Error ? err.message : String(err)}`);
-          }
-          this.scheduleReconnect();
-        },
-      );
-    } catch (err) {
-      this.log(`EventSource watch failed to start: ${err instanceof Error ? err.message : String(err)}`);
-      this.scheduleReconnect();
-    }
+    this.table.stop();
   }
 }
 

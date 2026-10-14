@@ -25,6 +25,7 @@ import (
 	"github.com/google/cel-go/cel"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -105,13 +106,29 @@ func (r *EventSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	// Status is written once, here, and only when it changed: every path
+	// below mutates source.Status in place (setReady) rather than writing it,
+	// so the comparison sees CronJobName as well as the Ready condition.
+	before := source.Status.DeepCopy()
+	result, err := r.reconcile(ctx, &source)
+	if err != nil || equality.Semantic.DeepEqual(before, &source.Status) {
+		return result, err
+	}
+	if err := r.Status().Update(ctx, &source); err != nil {
+		return ctrl.Result{}, err
+	}
+	return result, nil
+}
+
+// reconcile does Reconcile's work, leaving the status write to it.
+func (r *EventSourceReconciler) reconcile(ctx context.Context, source *corev1alpha1.EventSource) (ctrl.Result, error) {
 	if source.Spec.Cron != nil {
-		return r.reconcileCron(ctx, &source)
+		return r.reconcileCron(ctx, source)
 	}
 
 	// Not (or no longer) a cron source: a CronJob left from a previous spec
 	// would go on ticking a source the gateway now serves as a webhook.
-	if err := r.deleteTickResources(ctx, &source); err != nil {
+	if err := r.deleteTickResources(ctx, source); err != nil {
 		return ctrl.Result{}, err
 	}
 	source.Status.CronJobName = ""
@@ -119,30 +136,30 @@ func (r *EventSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if source.Spec.Webhook == nil {
 		// Admission's oneOf rule makes this unreachable; report it rather than
 		// guess.
-		return r.setReady(ctx, &source, metav1.ConditionFalse, "InvalidSpec",
+		return r.setReady(ctx, source, metav1.ConditionFalse, "InvalidSpec",
 			"exactly one of webhook or cron must be set", 0)
 	}
 
 	if msg := checkSenderCEL(source.Spec.Sender); msg != "" {
-		return r.setReady(ctx, &source, metav1.ConditionFalse, "InvalidCEL", msg, 0)
+		return r.setReady(ctx, source, metav1.ConditionFalse, "InvalidCEL", msg, 0)
 	}
 
 	ref := source.Spec.Webhook.Verify.SecretRef
 	var secret corev1.Secret
 	err := r.secretReader().Get(ctx, types.NamespacedName{Namespace: source.Namespace, Name: ref.Name}, &secret)
 	if apierrors.IsNotFound(err) {
-		return r.setReady(ctx, &source, metav1.ConditionFalse, "SecretNotFound",
+		return r.setReady(ctx, source, metav1.ConditionFalse, "SecretNotFound",
 			fmt.Sprintf("verify.secretRef Secret %q does not exist", ref.Name), toolRecheckInterval)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if _, ok := secret.Data[ref.Key]; !ok {
-		return r.setReady(ctx, &source, metav1.ConditionFalse, "SecretKeyMissing",
+		return r.setReady(ctx, source, metav1.ConditionFalse, "SecretKeyMissing",
 			fmt.Sprintf("Secret %q has no key %q", ref.Name, ref.Key), toolRecheckInterval)
 	}
 
-	return r.setReady(ctx, &source, metav1.ConditionTrue, "Verifiable",
+	return r.setReady(ctx, source, metav1.ConditionTrue, "Verifiable",
 		fmt.Sprintf("served at /webhooks/%s, verified by %s", source.Name, source.Spec.Webhook.Verify.Scheme),
 		eventSourceSecretRecheckInterval)
 }
@@ -425,8 +442,8 @@ func (r *EventSourceReconciler) secretReader() client.Reader {
 	return r.Client
 }
 
-// setReady records the Ready condition and status, requeueing after the given
-// interval (0 for none).
+// setReady records the Ready condition on source.Status (Reconcile writes it),
+// requeueing after the given interval (0 for none).
 func (r *EventSourceReconciler) setReady(
 	ctx context.Context,
 	source *corev1alpha1.EventSource,
@@ -444,9 +461,6 @@ func (r *EventSourceReconciler) setReady(
 		Message:            message,
 		ObservedGeneration: source.Generation,
 	})
-	if err := r.Status().Update(ctx, source); err != nil {
-		return ctrl.Result{}, err
-	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 

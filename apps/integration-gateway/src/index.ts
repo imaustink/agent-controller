@@ -28,6 +28,7 @@ import { GatewayServer, type GatewayServerOptions } from "./server.js";
 import { InMemorySessionPageStore, RedisSessionPageStore } from "./session-page-store.js";
 import { InMemoryPendingLabelStore, RedisPendingLabelStore } from "./label-reconciler.js";
 import { CrdEventSourceRegistry, SecretKeyReader, type SecretReadApi } from "./event-sources.js";
+import { CrdEventTriggerRegistry } from "./event-triggers.js";
 import { KubeTokenAuthenticator, TICK_TOKEN_AUDIENCE, type TokenReviewApi } from "./tick-auth.js";
 
 const EXIT_STARTUP_FAILURE = 1;
@@ -305,6 +306,7 @@ async function main(): Promise<void> {
   // until the first successful relist, with nothing in the logs explaining it
   // beyond the list error.
   let eventSources: CrdEventSourceRegistry | undefined;
+  let eventTriggers: CrdEventTriggerRegistry | undefined;
   let eventSecrets: SecretKeyReader | undefined;
   let tickAuthenticator: KubeTokenAuthenticator | undefined;
   if (config.crdNamespace) {
@@ -323,6 +325,15 @@ async function main(): Promise<void> {
       kubeConfig.makeApiClient(k8s.AuthenticationV1Api) as unknown as TokenReviewApi,
     );
     await eventSources.start();
+    // Only an optimization (skip GitHub sender lookups for deliveries no
+    // trigger could match), so it starts in the background and a failed list
+    // just means every sender is resolved.
+    eventTriggers = CrdEventTriggerRegistry.fromKubeConfig(kubeConfig, {
+      namespace: config.crdNamespace,
+      group: config.crdGroup,
+      version: config.crdVersion,
+    });
+    eventTriggers.start();
     console.error(
       `Serving EventSources (${config.crdGroup}/${config.crdVersion}) from namespace ${config.crdNamespace}; ` +
         `cron ticks authenticate as their ServiceAccount (TokenReview, audience ${TICK_TOKEN_AUDIENCE})`,
@@ -433,6 +444,7 @@ async function main(): Promise<void> {
 
   const server = new GatewayServer({
     ...(eventSources ? { eventSources } : {}),
+    ...(eventTriggers ? { eventTriggers } : {}),
     ...(eventSecrets ? { secrets: eventSecrets } : {}),
     ...(tickAuthenticator ? { tickAuthenticator, tickNamespace: config.crdNamespace } : {}),
     identityResolver,
@@ -464,6 +476,7 @@ async function main(): Promise<void> {
     console.error(`Received ${signal}; shutting down integration-gateway...`);
     await server.close();
     eventSources?.stop();
+    eventTriggers?.stop();
     // The credential stores hold no long-lived connection to close: each call is
     // a request against the API server, and the only durable thing they own is
     // the Secret itself (docs/adr/0034). The Redis handles that used to need

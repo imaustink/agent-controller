@@ -22,6 +22,7 @@ import (
 	"slices"
 
 	"github.com/google/cel-go/cel"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -92,7 +93,15 @@ func (r *EventTriggerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		log.Info("EventTrigger not ready", "eventtrigger", trigger.Name, "reason", reason)
 	}
 
+	// Skip the write when nothing changed: this reconciles on every change to
+	// any referenced Skill, Agent, Tool or EventSource, and SetStatusCondition
+	// keeps LastTransitionTime when the status is unchanged, so an equal
+	// result is a no-op the API server need not see.
+	before := trigger.Status.DeepCopy()
 	meta.SetStatusCondition(&trigger.Status.Conditions, condition)
+	if equality.Semantic.DeepEqual(before, &trigger.Status) {
+		return ctrl.Result{}, nil
+	}
 	if err := r.Status().Update(ctx, &trigger); err != nil {
 		return ctrl.Result{}, err
 	}

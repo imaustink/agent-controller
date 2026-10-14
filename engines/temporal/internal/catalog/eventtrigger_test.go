@@ -19,12 +19,12 @@ func triggerCR(name string, spec map[string]any, ready string) *unstructured.Uns
 	obj := map[string]any{
 		"apiVersion": "core.controller-agent.dev/v1alpha1",
 		"kind":       "EventTrigger",
-		"metadata":   map[string]any{"name": name, "namespace": "ns"},
+		"metadata":   map[string]any{"name": name, "namespace": "ns", "generation": int64(1)},
 		"spec":       spec,
 	}
 	if ready != "" {
 		obj["status"] = map[string]any{"conditions": []any{
-			map[string]any{"type": "Ready", "status": ready},
+			map[string]any{"type": "Ready", "status": ready, "observedGeneration": int64(1)},
 		}}
 	}
 	return &unstructured.Unstructured{Object: obj}
@@ -76,6 +76,28 @@ func TestEventTriggerRequiresReady(t *testing.T) {
 		require.NoError(t, err)
 		require.Nil(t, m, "Ready=%q must not match", ready)
 	}
+}
+
+// An edit bumps metadata.generation and leaves the previous spec's Ready
+// condition in place until the controller re-checks; that stale True must not
+// dispatch the new, unchecked spec.
+func TestEventTriggerStaleReadyDoesNotMatch(t *testing.T) {
+	spec := map[string]any{"target": map[string]any{"orchestrator": map[string]any{}, "promptTemplate": "x"}}
+	cr := triggerCR("t", spec, "True")
+	cr.SetGeneration(2)
+	d, err := catalog.DecodeEventTrigger(cr)
+	require.NoError(t, err)
+	require.False(t, d.Ready)
+	m, err := catalog.MatchEventTriggers([]*catalog.EventTriggerDescriptor{d}, prEnvelope(), "")
+	require.NoError(t, err)
+	require.Nil(t, m)
+
+	// Once the controller has reconciled generation 2, it matches again.
+	conditions := cr.Object["status"].(map[string]any)["conditions"].([]any)
+	conditions[0].(map[string]any)["observedGeneration"] = int64(2)
+	d, err = catalog.DecodeEventTrigger(cr)
+	require.NoError(t, err)
+	require.True(t, d.Ready)
 }
 
 func TestEventTriggerInvalidTargetsNeverMatch(t *testing.T) {

@@ -121,6 +121,13 @@ Rules:
 - `readOnly: true` sets `readOnly` on every `AgentRun` and `ToolRun` the turn
   launches (including ones a forced skill delegates to) and suppresses write
   credentials. It is a turn property, not a prompt — it can only restrict.
+- Read-only is also the **session's mode**. A trigger turn sets the mode to its
+  trigger's `readOnly`, `false` included. A turn no trigger produced (a
+  session-page follow-up, a chat prompt on the same session id) inherits it
+  and can only restrict it further. So a follow-up in a review's session stays
+  read-only, and a writable trigger sharing that session key (triage on the
+  same issue) makes it writable again. A read-only turn is never forwarded
+  into an agent run that was launched writable; the turn fails instead.
 - A trigger whose CEL fails to compile is `Ready=False` and never matches.
 
 ## 2. The envelope
@@ -132,7 +139,7 @@ Every source produces exactly this JSON object. It is both the `event` field of
 | --- | --- | --- | --- |
 | `source` | string | EventSource name | EventSource name |
 | `kind` | string | `"webhook"` | `"cron"` |
-| `id` | string | `deliveryIdHeader` value, else uuid | `<source>-<unix seconds>` |
+| `id` | string | `deliveryIdHeader` value, else uuid | `<source>-<unix seconds>-<8 random hex>` |
 | `time` | string | RFC 3339 receipt time (UTC) | RFC 3339 tick time (UTC) |
 | `headers` | map<string,string> | request headers, **lower-cased**, with the verify header, `authorization` and `cookie` removed; repeated headers joined with `", "` | `{}` |
 | `body` | any JSON | `application/json` → parsed; `application/x-www-form-urlencoded` → object of string fields; anything else → `{"text": "<raw>"}` | `spec.cron.payload`, else `{}` |
@@ -174,6 +181,10 @@ and the Temporal gateway (`cel-go`):
 
 1. Candidates: `Ready` triggers whose `sourceRef` is empty or equals
    `envelope.source`, and whose `match.cel` is absent or evaluates to `true`.
+   `Ready` means `Ready=True` with `observedGeneration` equal to the trigger's
+   current `metadata.generation`: after an edit, the previous spec's status
+   does not count, and the trigger does not match until core-controller has
+   checked the new spec.
 2. Winner: highest `priority`, then lexicographically smallest name. (Single
    winner; one event is one turn.)
 3. `params` are evaluated to typed values.
@@ -198,17 +209,30 @@ engine modes) and on the Temporal gateway (for direct callers). Request:
 
 | Outcome | Response |
 | --- | --- |
-| No trigger matched | `200 {"status":"ignored"}` — no turn, no RAG fallback |
+| No trigger matched (including no EventTriggers at all) | `200 {"status":"ignored"}` — no turn, no RAG fallback |
 | Matched, params/template error | `422 {"status":"failed","error":"..."}` |
 | Matched | `202 {"id","status":"pending","trigger":{"name","sessionId","reply"}}` |
 
 `trigger.reply` is the trigger's `reply` with every template already rendered
 (`issueNumber` as a number) or `null`. Polling `GET /invoke/:id` is unchanged.
 
+An event is always matched against the registry. Dispatch is never taken from
+the body: `forcedSkillId`, `forcedAgentId`, `forcedToolId`, `toolInput`,
+`params` and `triggerName` in an `/invoke` body are ignored by
+agent-orchestrator and refused with `400` by the Temporal gateway. The Temporal
+gateway honours a body `readOnly: true`, which can only restrict.
+
 agent-orchestrator → Temporal gateway carries the resolved turn, never the
-envelope: `forcedSkillId | forcedAgentId | forcedToolId`, `toolInput` (the
-tool input string, §1), `readOnly`, `params` (string map), `triggerName`, `request` (rendered prompt),
-`targetRepository` (`envelope.repository`).
+envelope. Body: `request` (rendered prompt), `sessionId`, `readOnly` (only
+`true`), `targetRepository` (`envelope.repository`). The dispatch itself
+travels in the signed `x-orchestrator-dispatch-assertion` header, an
+HMAC-SHA256 `<payload>.<signature>` under the sender-assertion secret with
+payload `{typ:"dispatch", triggerName, forcedSkillId | forcedAgentId |
+forcedToolId, toolInput, readOnly, params, sessionId, requestSha256, exp}`.
+It is bound to the turn's session and prompt and expires after 300 s. The
+gateway refuses (`400`) an invalid, expired or mis-bound assertion and one sent
+with an `event`. Without the secret, agent-orchestrator fails a Temporal-mode
+trigger turn instead of sending it unsigned.
 
 ## 6. Runs
 
@@ -228,6 +252,13 @@ create|merge|close|reopen|ready|edit`, mint a `contents:read` token) from
 - `POST /webhooks/:source` — `404` unknown or non-webhook source; `401` failed
   verification; `202` otherwise (relay continues in the background). Dropped
   events (bot, unresolved sender) are `202` + a log line, so senders don't retry.
+  Before resolving a source's `sender` (live GitHub API calls), the gateway
+  checks its read-only view of the EventTriggers: a delivery no trigger for this
+  source could match is dropped there (`202` + log line), so pushes, check runs
+  and other unwatched events cost no API calls. A trigger whose `match.cel` reads
+  `sender` or `repository` can't be decided before resolution and counts as a
+  possible match. This view only ever drops early; matching stays the
+  orchestrator's, and an event that survives is still sender-verified.
 - `POST /events/:source/tick` — `Authorization: Bearer <projected SA token>`.
   The gateway TokenReviews it for audience `integration-gateway.events` and
   requires the username `system:serviceaccount:<CRD_NAMESPACE>:eventsource-<source>`

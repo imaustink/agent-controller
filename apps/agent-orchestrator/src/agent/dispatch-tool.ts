@@ -8,6 +8,26 @@ import type { ToolDescriptor } from "../tool-descriptor.js";
 import type { AgentDescriptor } from "../agents/types.js";
 import type { AgentOrchestratorChannel } from "../agents/nats-agent-channel.js";
 import { approvalPrompt, requiresApproval, resolveApproval } from "./approval.js";
+import { WRITE_CAPABLE_PROVIDERS } from "./authorization-service.js";
+
+/**
+ * Why a read-only turn (docs/event-triggers.md §1) refuses an MCP tool: the
+ * broker calls the server with the caller's delegated token, and nothing can
+ * tell a read from a write. PARITY: readOnlyMCPRefusal in the Temporal engine.
+ */
+export function readOnlyMCPRefusal(toolId: string): string {
+  return `read_only: ${toolId} acts with your delegated credentials and cannot run in a read-only request`;
+}
+
+/**
+ * Why a read-only turn refuses a tool that declares a write-capable provider
+ * (`WRITE_CAPABLE_PROVIDERS`): withholding the per-run token would leave the
+ * Tool template's own static one in force. PARITY: authz.ResolveLinked's
+ * refusal in the Temporal engine.
+ */
+export function readOnlyGitHubRefusal(toolId: string): string {
+  return `${toolId} acts on GitHub as you, which this read-only request does not allow, so I didn't run it.`;
+}
 
 /** Outcome of dispatching one resolved Tool, reported back as a `tool_result` down-message (docs/adr/0028). */
 export type ToolCallOutcome = { ok: true; result?: unknown } | { ok: false; error: string };
@@ -76,6 +96,13 @@ export async function dispatchResolvedTool(
     }
   }
 
+  // A sub-agent's tool call gets no per-run credential here, so a tool that
+  // declares a write-capable provider would run on whatever static token its
+  // template carries. Refused on a read-only turn, like the top-level path.
+  if (opts.readOnly && tool.identityProviders?.some((p) => WRITE_CAPABLE_PROVIDERS.has(p))) {
+    return { ok: false, error: readOnlyGitHubRefusal(tool.id) };
+  }
+
   if (tool.agentRunTemplate) {
     return {
       ok: false,
@@ -97,6 +124,7 @@ export async function dispatchResolvedTool(
       // call with no resolved caller has nobody to run it as (docs/adr/0045 §5).
       return { ok: false, error: `tool ${tool.id} requires a resolved caller identity` };
     }
+    if (opts.readOnly) return { ok: false, error: readOnlyMCPRefusal(tool.id) };
     const called = await deps.mcpBrokerClient.call(tool, input, { subject: opts.callerSubject });
     return { ok: true, result: called.result };
   }

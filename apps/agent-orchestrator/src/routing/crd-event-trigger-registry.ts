@@ -23,13 +23,22 @@ export interface EventTriggerSelector {
 }
 
 /**
- * Whether core-controller has marked the trigger `Ready=True`. No status (not
- * reconciled yet), `False` or `Unknown` all mean "never matches" -- fail
- * closed, so a trigger whose target the controller could not resolve is never
- * dispatched on the strength of our own compile alone.
+ * Whether core-controller has marked the trigger `Ready=True` for its CURRENT
+ * spec. No status (not reconciled yet), `False` or `Unknown` all mean "never
+ * matches" -- fail closed, so a trigger whose target the controller could not
+ * resolve is never dispatched on the strength of our own compile alone.
+ *
+ * The condition must also carry the CR's current `metadata.generation`: an
+ * edit bumps the generation but leaves the previous spec's status in place
+ * until the controller reconciles, and honoring that stale `True` would
+ * dispatch a spec (a new `agentRef`, say) nobody has checked. Parity with the
+ * Temporal engine's `catalog.EventTrigger.Ready`.
  */
 export function isControllerReady(resource: EventTriggerResource): boolean {
-  return (resource.status?.conditions ?? []).some((c) => c.type === "Ready" && c.status === "True");
+  const generation = resource.metadata?.generation;
+  return (resource.status?.conditions ?? []).some(
+    (c) => c.type === "Ready" && c.status === "True" && c.observedGeneration === generation,
+  );
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

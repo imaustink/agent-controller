@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseBody, type Envelope, type EventSourceResource } from "@controller-agent/event-triggers";
 import type { ClaudeTokenStore } from "./claude-auth/store.js";
 import { StaticEventSourceRegistry, type SecretLookup } from "./event-sources.js";
+import { StaticEventTriggerTable } from "./event-triggers.js";
 import type { GithubReplyClient } from "./github-client.js";
 import { GithubIdentityResolver } from "./identity.js";
 import { InMemoryPendingLabelStore } from "./label-reconciler.js";
@@ -452,6 +453,61 @@ describe("sender verification", () => {
     expect(h.submitEvent.mock.calls[0]?.[1]).toBeUndefined();
     expect(submittedEnvelope(h).sender).toEqual({});
     expect(submittedEnvelope(h).repository).toBe("");
+  });
+});
+
+describe("sender lookups are skipped for deliveries no trigger could match", () => {
+  const reviewTrigger = {
+    metadata: { name: "github-pr-review" },
+    spec: {
+      sourceRef: "github",
+      match: { cel: 'headers["x-github-event"] == "pull_request" && body.action == "labeled" && body.label.name == "ai-review"' },
+      target: { agentRef: "swe", promptTemplate: "go" },
+    },
+  };
+
+  it("a push no trigger matches never reaches the identity resolver (no GitHub API call) or the orchestrator", async () => {
+    const h = await start({ eventTriggers: new StaticEventTriggerTable([reviewTrigger]) });
+    const res = await postGithub(h, { ref: "refs/heads/main", repository: { full_name: "acme/widgets" }, sender: { login: "alice", type: "User" } }, {
+      extraHeaders: { "x-github-event": "push" },
+    });
+    expect(res.status).toBe(202);
+    await settle();
+    expect(h.resolve).not.toHaveBeenCalled();
+    expect(h.submitEvent).not.toHaveBeenCalled();
+    expect(h.logs.join("\n")).toMatch(/webhook github event delivery-123: no trigger could match \(ignored before sender lookup\)/);
+  });
+
+  it("a delivery a trigger matches is still sender-verified before it is relayed", async () => {
+    const h = await start({ eventTriggers: new StaticEventTriggerTable([reviewTrigger]) });
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalled());
+    expect(h.resolve).toHaveBeenCalledWith("alice", false, { owner: "acme", repo: "widgets" });
+    expect(h.submitEvent.mock.calls[0]?.[1]).toBe("alice");
+  });
+
+  it("a trigger that reads `sender` can't be decided early, so the sender is resolved", async () => {
+    const senderTrigger = { metadata: { name: "by-alice" }, spec: { sourceRef: "github", match: { cel: 'sender.login == "alice"' }, target: { agentRef: "swe", promptTemplate: "go" } } };
+    const h = await start({ eventTriggers: new StaticEventTriggerTable([senderTrigger]) });
+    await postGithub(h, { ...GITHUB_PAYLOAD, action: "opened" });
+    await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalled());
+    expect(h.resolve).toHaveBeenCalled();
+  });
+
+  it("triggers for OTHER sources don't count", async () => {
+    const slackOnly = { ...reviewTrigger, metadata: { name: "slack-only" }, spec: { ...reviewTrigger.spec, sourceRef: "slack" } };
+    const h = await start({ eventTriggers: new StaticEventTriggerTable([slackOnly]) });
+    await postGithub(h);
+    await settle();
+    expect(h.resolve).not.toHaveBeenCalled();
+    expect(h.submitEvent).not.toHaveBeenCalled();
+  });
+
+  it("an unloaded trigger table resolves every sender, as before", async () => {
+    const h = await start({ eventTriggers: { all: () => undefined } });
+    await postGithub(h, { ...GITHUB_PAYLOAD, action: "opened" });
+    await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalled());
+    expect(h.resolve).toHaveBeenCalled();
   });
 });
 

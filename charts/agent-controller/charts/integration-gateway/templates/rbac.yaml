@@ -65,8 +65,9 @@ exist and how to verify each, and `get`s the Secret each one's
 webhook.verify.secretRef names. Read-only and namespace-scoped. `secrets: get`
 cannot be narrowed by name -- EventSources are operator-authored and may name
 any Secret -- so it is bounded by namespace, like the credential Role above.
-EventTriggers are deliberately NOT granted: matching happens in the
-orchestrator, never here.
+EventTriggers are read too, for one thing only: skipping the sender lookup
+(live GitHub API calls) for a delivery no trigger could match. Matching itself
+happens in the orchestrator; the gateway's view can only drop an event early.
 */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -77,7 +78,7 @@ metadata:
     {{- include "integration-gateway.labels" . | nindent 4 }}
 rules:
   - apiGroups: [{{ .Values.events.crdGroup | quote }}]
-    resources: ["eventsources"]
+    resources: ["eventsources", "eventtriggers"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["secrets"]

@@ -545,10 +545,16 @@ func DecodeEventTrigger(obj *unstructured.Unstructured) (*EventTriggerDescriptor
 	return d, nil
 }
 
-// readyCondition is status.conditions[type=Ready].status == "True". §4 makes
-// Ready a precondition of matching: core-controller is what checks that the
-// target refs resolve, which this process cannot cheaply do. Absent status
-// (not yet reconciled) is not Ready — fail closed.
+// readyCondition is status.conditions[type=Ready].status == "True" for the
+// CR's current metadata.generation. §4 makes Ready a precondition of
+// matching: core-controller is what checks that the target refs resolve,
+// which this process cannot cheaply do. Absent status (not yet reconciled) is
+// not Ready — fail closed.
+//
+// An edit bumps the generation but leaves the previous spec's status in place
+// until the controller reconciles; a Ready=True whose observedGeneration is
+// behind is that previous spec's verdict, so it does not count. Parity with
+// the orchestrator's isControllerReady.
 func readyCondition(obj *unstructured.Unstructured) bool {
 	conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
 	for _, raw := range conditions {
@@ -557,10 +563,28 @@ func readyCondition(obj *unstructured.Unstructured) bool {
 			continue
 		}
 		if c["type"] == "Ready" {
-			return c["status"] == "True"
+			observed, ok := asInt64(c["observedGeneration"])
+			if !ok {
+				observed = 0
+			}
+			return c["status"] == "True" && observed == obj.GetGeneration()
 		}
 	}
 	return false
+}
+
+// asInt64 reads a JSON number from unstructured content, which decodes it as
+// int64 off the wire but may hold float64 or int when built by hand.
+func asInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case float64:
+		return int64(n), true
+	}
+	return 0, false
 }
 
 // --- matching (docs/event-triggers.md §4) ---
