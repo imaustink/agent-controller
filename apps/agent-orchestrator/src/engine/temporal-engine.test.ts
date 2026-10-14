@@ -511,28 +511,41 @@ describe("TemporalEngine", () => {
     // up to 10 minutes, and re-verifying the JWT on every resume made the
     // resume after its expiry reach the engine with NO caller identity -- so
     // the gateway ran the user's request as its shared bearer subject. Real
-    // JWT, real resolver, real expiry (shortened to ~1s).
+    // JWT, real resolver, real expiry -- on a controlled clock: only `Date` is
+    // faked, and the first POST /invoke moves it past the JWT's expiry, so
+    // every resume runs against an expired token. (A real 1s JWT raced the
+    // wall clock: `exp` is whole seconds, so its life was anywhere in 0-1s,
+    // and under suite load the turn's own first verify could miss it.)
     it("keeps the caller's identity on every resume, even after the forwarded JWT expires", async () => {
-      const { impl, calls } = scriptedFetch([
-        { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
-        { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
-        { id: "x", status: "succeeded", result: "Opened PR #42." },
-      ]);
-      const engine = new TemporalEngine({
-        baseUrl: BASE,
-        fetchImpl: impl,
-        senderAssertionSecret: ASSERTION_SECRET,
-        forwardedUserIdentityResolver: new OpenWebUiForwardedUserResolver({ secret: JWT_SECRET, roles: ["writer"] }),
-        // Longer than the JWT's life, so the later resumes happen after it expired.
-        autoResumeIntervalMs: 1_100,
-      });
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const jwt = await forwardedJwt("alice", 300);
+        const { impl, calls } = scriptedFetch([
+          { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
+          { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
+          { id: "x", status: "succeeded", result: "Opened PR #42." },
+        ]);
+        const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+          const res = await impl(url, init);
+          // The JWT expires the moment the turn's first hop is out.
+          if (String(url).endsWith("/invoke")) vi.setSystemTime(Date.now() + 301_000);
+          return res;
+        }) as unknown as typeof fetch;
+        const engine = new TemporalEngine({
+          baseUrl: BASE,
+          fetchImpl,
+          senderAssertionSecret: ASSERTION_SECRET,
+          forwardedUserIdentityResolver: new OpenWebUiForwardedUserResolver({ secret: JWT_SECRET, roles: ["writer"] }),
+          autoResumeIntervalMs: 1,
+        });
 
-      const state = await engine.invoke(
-        input({ progressListener: vi.fn(), sessionId: "chat-1", forwardedUserToken: await forwardedJwt("alice", 1) }),
-      );
+        const state = await engine.invoke(input({ progressListener: vi.fn(), sessionId: "chat-1", forwardedUserToken: jwt }));
 
-      expect(state.result).toBe("Opened PR #42.");
-      expect(assertedSubjects(calls)).toEqual(["openwebui:alice", "openwebui:alice", "openwebui:alice"]);
+        expect(state.result).toBe("Opened PR #42.");
+        expect(assertedSubjects(calls)).toEqual(["openwebui:alice", "openwebui:alice", "openwebui:alice"]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

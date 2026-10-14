@@ -735,7 +735,7 @@ describe("POST /events/:source/tick (cron)", () => {
     await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalled());
     const envelope = submittedEnvelope(h);
     expect(envelope).toMatchObject({ source: "nightly", kind: "cron", headers: {}, body: { repo: "acme/widgets", n: 3 }, sender: {}, repository: "" });
-    expect(envelope.id).toMatch(/^nightly-\d+$/);
+    expect(envelope.id).toMatch(/^nightly-\d+-[0-9a-f]{8}$/);
     expect(h.submitEvent.mock.calls[0]?.[1]).toBeUndefined();
   });
 });
