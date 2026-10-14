@@ -9,7 +9,9 @@
 #      helm history) — before anything is rolled back, so the ticket has the
 #      real failure evidence and not the post-rollback (healthy) picture.
 #   2. Rolls each affected workload back to the previous working revision:
-#        - Helm releases whose `helm upgrade` failed → `helm rollback`.
+#        - Helm releases whose `helm upgrade` failed → `helm rollback` to the
+#          last revision with status `deployed` (none, if the upgrade never
+#          wrote a revision).
 #        - Deployments whose `kubectl rollout` failed → `kubectl rollout undo`.
 #   3. Opens a GitHub issue with all of the above and labels it `ai-triage`
 #      (the label community-components' github-issue-triage EventTrigger
@@ -197,12 +199,30 @@ for rel in "${HELM_ROLLBACK[@]:-}"; do
     ROLLBACK_TROUBLE=1
     continue
   fi
-  log "helm rollback ${rel}"
-  # Revision 0 = the previous release. `--wait` blocks until the restored
-  # revision's resources report ready so we don't file "rolled back" on a
-  # rollback that itself never became healthy.
-  if out="$(helm rollback "${rel}" 0 -n "${NAMESPACE}" --wait --timeout 5m 2>&1)"; then
-    echo "- ✅ Rolled Helm release \`${rel}\` back to its previous revision." >> "${BODY}"
+  # Roll back to the last revision that actually DEPLOYED, not "the previous
+  # one" (revision 0). An upgrade that fails a pre-flight check (RBAC,
+  # ownership) never writes a revision, so "previous" is one release older
+  # than what is running -- and rolling back to it restarts every pod on the
+  # older chart's config. That is what took down the 433d85a deploy: a failed
+  # upgrade, then a rollback from 0.6.4 to 0.6.3.
+  read -r latest last_deployed < <(
+    helm history "${rel}" -n "${NAMESPACE}" --max 50 -o json 2>/dev/null \
+      | jq -r '[ (map(.revision) | max), (map(select(.status == "deployed")) | map(.revision) | max) ] | map(. // "") | @tsv'
+  )
+  if [ -z "${last_deployed:-}" ]; then
+    echo "- ⚠️ Helm release \`${rel}\` has no deployed revision to roll back to — needs manual attention." >> "${BODY}"
+    ROLLBACK_TROUBLE=1
+    continue
+  fi
+  if [ "${last_deployed}" = "${latest}" ]; then
+    echo "- ℹ️ Helm release \`${rel}\` is unchanged: the failed upgrade never wrote a revision, so revision ${last_deployed} is still the one deployed. Nothing to roll back." >> "${BODY}"
+    continue
+  fi
+  log "helm rollback ${rel} ${last_deployed}"
+  # `--wait` blocks until the restored revision's resources report ready so we
+  # don't file "rolled back" on a rollback that itself never became healthy.
+  if out="$(helm rollback "${rel}" "${last_deployed}" -n "${NAMESPACE}" --wait --timeout 5m 2>&1)"; then
+    echo "- ✅ Rolled Helm release \`${rel}\` back to revision ${last_deployed}, its last deployed one." >> "${BODY}"
   else
     echo "- ❌ Failed to roll back Helm release \`${rel}\`:" >> "${BODY}"
     printf '\n  ```\n%s\n  ```\n' "${out}" >> "${BODY}"
@@ -238,12 +258,10 @@ fi
 
 {
   echo
-  echo "> ⚠️ **Note on \`:latest\` images:** deploy images are published under the"
-  echo "> mutable \`:latest\` tag, so \`kubectl rollout undo\` restores the previous"
-  echo "> pod template but nodes may still pull the newly-broken \`:latest\` when"
-  echo "> scaling up. Pinning images by digest/commit SHA would make workload"
-  echo "> rollback fully deterministic — see the failure above to decide if that's"
-  echo "> worth doing."
+  echo "> ℹ️ **Images:** the long-running Deployments are pinned by digest in the"
+  echo "> Helm release (\`scripts/pin-image-digests.sh\`), so a rollback restores"
+  echo "> their code too. Tool/Agent Job images still run \`:latest\` and are not"
+  echo "> rolled back."
   echo
   echo "---"
   echo "_Filed automatically by \`scripts/rollback-deploy.sh\` from workflow run [${GITHUB_RUN_ID:-n/a}](${RUN_URL})._"
