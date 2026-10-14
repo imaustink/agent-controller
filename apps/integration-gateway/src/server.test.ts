@@ -1,12 +1,22 @@
 import { createHmac } from "node:crypto";
 import type { AddressInfo } from "node:net";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { parseBody, type Envelope, type EventSourceResource } from "@controller-agent/event-triggers";
 import type { ClaudeTokenStore } from "./claude-auth/store.js";
+import { StaticEventSourceRegistry, type SecretLookup } from "./event-sources.js";
 import type { GithubReplyClient } from "./github-client.js";
 import { GithubIdentityResolver } from "./identity.js";
-import type { OrchestratorClient } from "./orchestrator-client.js";
-import { GatewayServer, sessionIdFor } from "./server.js";
+import { InMemoryPendingLabelStore } from "./label-reconciler.js";
+import type { AcceptedTrigger, EventSubmitResult, OrchestratorClient, OrchestratorInvokeResult, PollHooks } from "./orchestrator-client.js";
+import { GatewayServer, type GatewayServerOptions } from "./server.js";
 import { InMemorySessionPageStore } from "./session-page-store.js";
+
+// Wrapped so a test can prove verification rejected a request BEFORE anything
+// parsed it -- the property the whole handler order exists for.
+vi.mock("@controller-agent/event-triggers", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@controller-agent/event-triggers")>();
+  return { ...mod, parseBody: vi.fn(mod.parseBody) };
+});
 
 /**
  * Every request in this file goes over a fresh TCP connection — see the long
@@ -23,1112 +33,756 @@ const fetch: typeof globalThis.fetch = (input, init = {}) => {
   return nativeFetch(input, { ...init, headers });
 };
 
-const SECRET = "test-secret";
+const SECRETS: Record<string, string> = {
+  "gh/secret": "gh-secret",
+  "slack/secret": "slack-secret",
+  "ci/token": "ci-token",
+  "callback/secret": "callback-secret",
+};
 
-function sign(body: string): string {
-  return `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}`;
+/** Tokens the fake TokenReview recognises, and who each one is. */
+const NIGHTLY_TOKEN = "aaa.nightly.sig";
+const OTHER_TOKEN = "aaa.other.sig";
+const TICK_IDENTITIES: Record<string, string> = {
+  [NIGHTLY_TOKEN]: "system:serviceaccount:agents:eventsource-nightly",
+  [OTHER_TOKEN]: "system:serviceaccount:agents:eventsource-other",
+  "aaa.wrongns.sig": "system:serviceaccount:elsewhere:eventsource-nightly",
+  "aaa.github.sig": "system:serviceaccount:agents:eventsource-github",
+};
+
+const SOURCES: EventSourceResource[] = [
+  {
+    metadata: { name: "github" },
+    spec: {
+      webhook: {
+        verify: { scheme: "hmacSha256", header: "x-hub-signature-256", prefix: "sha256=", secretRef: { name: "gh", key: "secret" } },
+        deliveryIdHeader: "x-github-delivery",
+      },
+      sender: {
+        provider: "github",
+        loginFrom: "body.sender.login",
+        isBotFrom: 'body.sender.type == "Bot"',
+        repositoryFrom: "body.repository.full_name",
+      },
+    },
+  },
+  {
+    metadata: { name: "plain" },
+    spec: { webhook: { verify: { scheme: "hmacSha256", header: "x-sig", secretRef: { name: "gh", key: "secret" } } } },
+  },
+  {
+    metadata: { name: "nokey" },
+    spec: { webhook: { verify: { scheme: "hmacSha256", header: "x-sig", secretRef: { name: "absent", key: "secret" } } } },
+  },
+  { metadata: { name: "slack" }, spec: { webhook: { verify: { scheme: "slackV0", secretRef: { name: "slack", key: "secret" } } } } },
+  { metadata: { name: "ci" }, spec: { webhook: { verify: { scheme: "bearer", secretRef: { name: "ci", key: "token" } } } } },
+  {
+    metadata: { name: "ci-custom" },
+    spec: { webhook: { verify: { scheme: "bearer", header: "x-ci-token", secretRef: { name: "ci", key: "token" } } } },
+  },
+  { metadata: { name: "nightly" }, spec: { cron: { schedule: "0 7 * * *", payload: { repo: "acme/widgets", n: 3 } } } },
+];
+
+const DEFAULT_TRIGGER: AcceptedTrigger = {
+  name: "github-review",
+  sessionId: "github:acme/widgets#7",
+  reply: {
+    github: {
+      repository: "acme/widgets",
+      issueNumber: 7,
+      ack: "Starting a review…",
+      sessionPage: true,
+      result: true,
+      removeLabel: "ai-review",
+    },
+    http: { url: "http://ci-bridge.tools.svc/results", secretRef: { name: "callback", key: "secret" } },
+  },
+};
+
+interface Harness {
+  server: GatewayServer;
+  port: number;
+  order: string[];
+  logs: string[];
+  submitEvent: ReturnType<typeof vi.fn>;
+  poll: ReturnType<typeof vi.fn>;
+  invoke: ReturnType<typeof vi.fn>;
+  postIssueComment: ReturnType<typeof vi.fn>;
+  removeIssueLabel: ReturnType<typeof vi.fn>;
+  replyFetch: ReturnType<typeof vi.fn>;
+  secretsGet: ReturnType<typeof vi.fn>;
+  resolve: ReturnType<typeof vi.spyOn>;
+  pendingLabelStore: InMemoryPendingLabelStore;
+  record: ReturnType<typeof vi.spyOn>;
+  clear: ReturnType<typeof vi.spyOn>;
+  sessionPageStore: InMemorySessionPageStore;
+  onBackgroundError: ReturnType<typeof vi.fn>;
 }
 
-async function postWebhook(
-  port: number,
-  eventName: string,
-  payload: unknown,
-  opts: { badSignature?: boolean; noSignature?: boolean } = {},
+let current: Harness | undefined;
+
+afterEach(async () => {
+  await current?.server.close();
+  current = undefined;
+  vi.mocked(parseBody).mockClear();
+});
+
+async function start(overrides: Partial<GatewayServerOptions> = {}, secrets: Record<string, string> = SECRETS): Promise<Harness> {
+  const order: string[] = [];
+  const logs: string[] = [];
+  const identityResolver = new GithubIdentityResolver(new Map([["alice", { subject: "alice", roles: ["reporter"] }]]), "agent-controller[bot]");
+  const resolve = vi.spyOn(identityResolver, "resolve");
+  const submitEvent = vi.fn(async (): Promise<EventSubmitResult> => ({ kind: "accepted", id: "inv-1", trigger: DEFAULT_TRIGGER }));
+  const poll = vi.fn(async (_id: string, _hooks?: PollHooks): Promise<OrchestratorInvokeResult> => {
+    order.push("poll");
+    return { status: "succeeded", result: "Looks good." };
+  });
+  const invoke = vi.fn(async (): Promise<OrchestratorInvokeResult> => ({ status: "succeeded", result: "Follow-up done." }));
+  const postIssueComment = vi.fn(async (_o: string, _r: string, _n: number, body: string) => {
+    order.push(`comment:${body.split("\n")[0]}`);
+  });
+  const removeIssueLabel = vi.fn(async () => {
+    order.push("removeLabel");
+  });
+  const replyFetch = vi.fn(async () => {
+    order.push("http");
+    return new Response(null, { status: 204 });
+  });
+  const secretsGet = vi.fn(async (name: string, key: string) => secrets[`${name}/${key}`]);
+  const pendingLabelStore = new InMemoryPendingLabelStore();
+  const record = vi.spyOn(pendingLabelStore, "record").mockImplementation(async function (this: InMemoryPendingLabelStore, entry) {
+    order.push("record");
+    return InMemoryPendingLabelStore.prototype.record.call(pendingLabelStore, entry);
+  });
+  const clear = vi.spyOn(pendingLabelStore, "clear");
+  const sessionPageStore = new InMemorySessionPageStore();
+  const onBackgroundError = vi.fn();
+
+  const server = new GatewayServer({
+    eventSources: new StaticEventSourceRegistry(SOURCES, () => {}),
+    secrets: { get: secretsGet } as SecretLookup,
+    tickAuthenticator: { authenticate: async (token: string) => TICK_IDENTITIES[token] },
+    tickNamespace: "agents",
+    identityResolver,
+    orchestratorClient: { submitEvent, poll, invoke, checkLive: vi.fn().mockResolvedValue({ live: false }) } as unknown as OrchestratorClient,
+    githubReplyClient: { postIssueComment, removeIssueLabel } as unknown as GithubReplyClient,
+    replyFetch: replyFetch as unknown as typeof fetch,
+    log: (line) => logs.push(line),
+    onBackgroundError,
+    pendingLabelStore,
+    // The reconciler's startup sweep must not race these tests' own removals.
+    labelReconcilerGraceMs: 60 * 60 * 1000,
+    sessionPageStore,
+    publicBaseUrl: "https://gateway.example.com",
+    ...overrides,
+  });
+  await server.listen(0);
+  const port = (server as unknown as { server: { address: () => AddressInfo } }).server.address().port;
+  current = {
+    server,
+    port,
+    order,
+    logs,
+    submitEvent,
+    poll,
+    invoke,
+    postIssueComment,
+    removeIssueLabel,
+    replyFetch,
+    secretsGet,
+    resolve,
+    pendingLabelStore,
+    record,
+    clear,
+    sessionPageStore,
+    onBackgroundError,
+  };
+  return current;
+}
+
+const hmacHex = (secret: string, data: string): string => createHmac("sha256", secret).update(data).digest("hex");
+
+const GITHUB_PAYLOAD = {
+  action: "labeled",
+  label: { name: "ai-review" },
+  repository: { full_name: "acme/widgets" },
+  sender: { login: "alice", type: "User" },
+  pull_request: { number: 7 },
+};
+
+function postGithub(
+  h: Harness,
+  payload: unknown = GITHUB_PAYLOAD,
+  opts: { signature?: string | null; extraHeaders?: Record<string, string> } = {},
 ): Promise<Response> {
   const body = JSON.stringify(payload);
-  const headers: Record<string, string> = { "x-github-event": eventName, "content-type": "application/json" };
-  if (!opts.noSignature) headers["x-hub-signature-256"] = opts.badSignature ? sign("tampered") : sign(body);
-  return fetch(`http://localhost:${port}/webhooks/github`, { method: "POST", headers, body });
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "x-github-event": "pull_request",
+    "x-github-delivery": "delivery-123",
+    ...opts.extraHeaders,
+  };
+  if (opts.signature !== null) headers["x-hub-signature-256"] = opts.signature ?? `sha256=${hmacHex("gh-secret", body)}`;
+  return fetch(`http://localhost:${h.port}/webhooks/github`, { method: "POST", headers, body });
 }
 
-describe("GatewayServer", () => {
-  let server: GatewayServer;
-  let port: number;
-  let identityResolver: GithubIdentityResolver;
-  let invoke: ReturnType<typeof vi.fn>;
-  let postIssueComment: ReturnType<typeof vi.fn>;
-  let removeIssueLabel: ReturnType<typeof vi.fn>;
+/** Lets the background relay run; used where the assertion is that something did NOT happen. */
+function settle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 30));
+}
 
-  beforeEach(async () => {
-    identityResolver = new GithubIdentityResolver(new Map([["alice", { subject: "alice", roles: ["reporter"] }]]), "agent-controller[bot]");
-    invoke = vi.fn().mockResolvedValue({ status: "succeeded", result: "What repo/branch should this target?" });
-    postIssueComment = vi.fn().mockResolvedValue(undefined);
-    removeIssueLabel = vi.fn().mockResolvedValue(undefined);
+function submittedEnvelope(h: Harness, call = 0): Envelope {
+  return h.submitEvent.mock.calls[call]?.[0] as Envelope;
+}
 
-    server = new GatewayServer({
-      githubWebhookSecret: SECRET,
-      identityResolver,
-      orchestratorClient: { invoke } as unknown as OrchestratorClient,
-      githubReplyClient: { postIssueComment, removeIssueLabel } as unknown as GithubReplyClient,
-      githubTriggerLabel: "ai-triage",
-      githubReviewLabel: "ai-review",
-    });
-    await server.listen(0);
-    port = (server as unknown as { server: { address: () => AddressInfo } }).server.address().port;
+describe("POST /webhooks/:source routing", () => {
+  it("responds to healthz", async () => {
+    const h = await start();
+    expect((await fetch(`http://localhost:${h.port}/healthz`)).status).toBe(200);
   });
 
-  afterEach(async () => {
-    await server.close();
-  });
-
-  it("responds to healthz without needing a signature", async () => {
-    const res = await fetch(`http://localhost:${port}/healthz`);
-    expect(res.status).toBe(200);
-  });
-
-  it("rejects a request with a missing signature", async () => {
-    const res = await postWebhook(port, "issues", { action: "opened" }, { noSignature: true });
-    expect(res.status).toBe(401);
-  });
-
-  it("rejects a request with a bad signature", async () => {
-    const res = await postWebhook(port, "issues", { action: "opened" }, { badSignature: true });
-    expect(res.status).toBe(401);
-  });
-
-  it("acks unrecognized events without invoking the orchestrator", async () => {
-    const res = await postWebhook(port, "pull_request", { action: "opened" });
-    expect(res.status).toBe(202);
-    await flush();
-    expect(invoke).not.toHaveBeenCalled();
-  });
-
-  it("never resolves identity or invokes the orchestrator for an unlabeled issues.opened event", async () => {
-    const resolve = vi.spyOn(identityResolver, "resolve");
-    const res = await postWebhook(port, "issues", {
-      action: "opened",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-    expect(resolve).not.toHaveBeenCalled();
-    expect(invoke).not.toHaveBeenCalled();
-    expect(postIssueComment).not.toHaveBeenCalled();
-  });
-
-  it("still ignores issues.opened even when the trigger label is already attached at creation time", async () => {
-    const res = await postWebhook(port, "issues", {
-      action: "opened",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: {
-        number: 7,
-        title: "Add dark mode",
-        body: "Please add a dark theme option.",
-        labels: [{ name: "ai-triage" }],
-      },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-    expect(invoke).not.toHaveBeenCalled();
-    expect(postIssueComment).not.toHaveBeenCalled();
-  });
-
-  it("never invokes the orchestrator for an issue_comment.created event, regardless of sender", async () => {
-    const res = await postWebhook(port, "issue_comment", {
-      action: "created",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7 },
-      comment: { body: "start work" },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-    expect(invoke).not.toHaveBeenCalled();
-    expect(postIssueComment).not.toHaveBeenCalled();
-  });
-
-  it("resolves identity with the event's repo context on issues.labeled", async () => {
-    const resolve = vi.spyOn(identityResolver, "resolve");
-    await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "t", body: "b" },
-      label: { name: "ai-triage" },
-    });
-    await flush();
-    expect(resolve).toHaveBeenCalledWith("alice", false, { owner: "acme", repo: "widgets" });
-  });
-
-  it("ignores an issues.labeled event when the label isn't the configured trigger label", async () => {
-    const res = await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "t", body: "b" },
-      label: { name: "bug" },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-    expect(invoke).not.toHaveBeenCalled();
-    expect(postIssueComment).not.toHaveBeenCalled();
-  });
-
-  it("relays an issues.labeled event to the orchestrator with an event descriptor when the trigger label is applied", async () => {
-    const res = await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
-      label: { name: "ai-triage" },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-
-    expect(invoke).toHaveBeenCalledWith(
-      'Issue #7 was labeled "ai-triage": Add dark mode\n\nPlease add a dark theme option.',
-      sessionIdFor("acme", "widgets", 7),
-      "device",
-      {
-        source: "github",
-        event: "issues",
-        action: "labeled",
-        owner: "acme",
-        repo: "widgets",
-        issueNumber: 7,
-        title: "Add dark mode",
-        body: "Please add a dark theme option.",
-        senderLogin: "alice",
-        labelName: "ai-triage",
-      },
-      undefined,
-      undefined,
-    );
-    expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
-  });
-
-  // The review label on an ISSUE (not just a PR) triggers a run, routed apart
-  // from triage downstream via the descriptor's labelName.
-  it("relays an issues.labeled event with an event descriptor when the REVIEW label is applied", async () => {
-    const res = await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 9, title: "Proposal: dark mode", body: "Spec for a dark theme option." },
-      label: { name: "ai-review" },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-
-    expect(invoke).toHaveBeenCalledWith(
-      'Issue #9 was labeled "ai-review": Proposal: dark mode\n\nSpec for a dark theme option.',
-      sessionIdFor("acme", "widgets", 9),
-      "device",
-      {
-        source: "github",
-        event: "issues",
-        action: "labeled",
-        owner: "acme",
-        repo: "widgets",
-        issueNumber: 9,
-        title: "Proposal: dark mode",
-        body: "Spec for a dark theme option.",
-        senderLogin: "alice",
-        labelName: "ai-review",
-      },
-      undefined,
-      undefined,
-    );
-  });
-
-  it("ignores a pull_request.labeled event when the label is neither the review nor the trigger label", async () => {
-    const res = await postWebhook(port, "pull_request", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      pull_request: { number: 12, title: "t", body: "b" },
-      label: { name: "bug" },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-    expect(invoke).not.toHaveBeenCalled();
-    expect(postIssueComment).not.toHaveBeenCalled();
-    // An ignored label must not be stripped off the PR -- only a label this
-    // gateway actually acted on is removed.
-    expect(removeIssueLabel).not.toHaveBeenCalled();
-  });
-
-  // The trigger label on a PR means "address the feedback on it and sync it",
-  // routed apart from the review label downstream via the descriptor's
-  // labelName (IntegrationRoute `match.labelName`).
-  it("relays a pull_request.labeled event with an event descriptor when the TRIGGER label is applied", async () => {
-    const res = await postWebhook(port, "pull_request", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      pull_request: { number: 12, title: "Add dark mode", body: "Implements the dark theme." },
-      label: { name: "ai-triage" },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-
-    expect(invoke).toHaveBeenCalledWith(
-      'Pull request #12 was labeled "ai-triage": Add dark mode\n\nImplements the dark theme.',
-      sessionIdFor("acme", "widgets", 12),
-      "device",
-      {
-        source: "github",
-        event: "pull_request",
-        action: "labeled",
-        owner: "acme",
-        repo: "widgets",
-        prNumber: 12,
-        title: "Add dark mode",
-        body: "Implements the dark theme.",
-        senderLogin: "alice",
-        labelName: "ai-triage",
-      },
-      undefined,
-      undefined,
-    );
-    expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 12, "ai-triage");
-  });
-
-  it("relays a pull_request.labeled event with an event descriptor when the review label is applied", async () => {
-    const res = await postWebhook(port, "pull_request", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      pull_request: { number: 12, title: "Add dark mode", body: "Implements the dark theme." },
-      label: { name: "ai-review" },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-
-    expect(invoke).toHaveBeenCalledWith(
-      'Pull request #12 was labeled "ai-review": Add dark mode\n\nImplements the dark theme.',
-      sessionIdFor("acme", "widgets", 12),
-      "device",
-      {
-        source: "github",
-        event: "pull_request",
-        action: "labeled",
-        owner: "acme",
-        repo: "widgets",
-        prNumber: 12,
-        title: "Add dark mode",
-        body: "Implements the dark theme.",
-        senderLogin: "alice",
-        labelName: "ai-review",
-      },
-      undefined,
-      undefined,
-    );
-    expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 12, "What repo/branch should this target?");
-  });
-
-  it("drops a pull_request.labeled review trigger from an unknown identity (e.g. the bot that opened the PR)", async () => {
-    const res = await postWebhook(port, "pull_request", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "agent-controller[bot]", type: "Bot" },
-      pull_request: { number: 12, title: "t", body: "b" },
-      label: { name: "ai-review" },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-    expect(invoke).not.toHaveBeenCalled();
-  });
-
-  it("drops an issues.labeled event from an unknown GitHub identity even with the trigger label", async () => {
-    const res = await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "mallory", type: "User" },
-      issue: { number: 7, title: "t", body: "b" },
-      label: { name: "ai-triage" },
-    });
-    expect(res.status).toBe(202);
-    await flush();
-    expect(invoke).not.toHaveBeenCalled();
-  });
-
-  it("posts a failure-explaining comment when the orchestrator turn fails", async () => {
-    invoke.mockResolvedValue({ status: "failed", error: "boom" });
-    await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "t", body: "b" },
-      label: { name: "ai-triage" },
-    });
-    await flush();
-    expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, expect.stringContaining("boom"));
-  });
-
-  // The `relayAndReply` catch is the PR's headline guarantee: a turn can never
-  // end in silence. Unlike the test above (where the orchestrator turn *fails*
-  // gracefully and `runTurn` posts the outcome itself), these drive `runTurn`
-  // to actually THROW -- an `invoke` that rejects, e.g. a poll rejected
-  // mid-rollout -- which is the only path that reaches the catch.
-  it("posts a fallback comment when runTurn throws, so a turn never ends in silence", async () => {
-    invoke.mockRejectedValue(new Error("poll failed: UND_ERR_CONNECT_TIMEOUT"));
-    await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "t", body: "b" },
-      label: { name: "ai-triage" },
-    });
-    await flush();
-    expect(postIssueComment).toHaveBeenCalledWith(
-      "acme",
-      "widgets",
-      7,
-      expect.stringContaining("Something went wrong processing this"),
-    );
-    expect(postIssueComment).toHaveBeenCalledWith(
-      "acme",
-      "widgets",
-      7,
-      expect.stringContaining("UND_ERR_CONNECT_TIMEOUT"),
-    );
-    // finally still runs: the trigger label comes off so a re-apply re-triggers.
-    expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-triage");
-  });
-
-  it("reports via onBackgroundError when the fallback comment itself fails, without masking the original error", async () => {
-    const onBackgroundError = vi.fn();
-    const rejectingInvoke = vi.fn().mockRejectedValue(new Error("poll failed: UND_ERR_CONNECT_TIMEOUT"));
-    const rejectingPost = vi.fn().mockRejectedValue(new Error("github unreachable"));
-    const localRemoveLabel = vi.fn().mockResolvedValue(undefined);
-    const localServer = new GatewayServer({
-      githubWebhookSecret: SECRET,
-      identityResolver,
-      orchestratorClient: { invoke: rejectingInvoke } as unknown as OrchestratorClient,
-      githubReplyClient: {
-        postIssueComment: rejectingPost,
-        removeIssueLabel: localRemoveLabel,
-      } as unknown as GithubReplyClient,
-      githubTriggerLabel: "ai-triage",
-      githubReviewLabel: "ai-review",
-      onBackgroundError,
-    });
-    await localServer.listen(0);
-    const localPort = (localServer as unknown as { server: { address: () => AddressInfo } }).server.address().port;
-    try {
-      await postWebhook(localPort, "issues", {
-        action: "labeled",
-        repository: { owner: { login: "acme" }, name: "widgets" },
-        sender: { login: "alice", type: "User" },
-        issue: { number: 7, title: "t", body: "b" },
-        label: { name: "ai-triage" },
-      });
-      await flush();
-      // Both errors are surfaced: the failed post AND the original turn error,
-      // so failing to post the failure never replaces it with a less
-      // informative one.
-      const reported = onBackgroundError.mock.calls.map((c) => (c[0] instanceof Error ? c[0].message : String(c[0])));
-      expect(reported).toContain("github unreachable");
-      expect(reported).toContain("poll failed: UND_ERR_CONNECT_TIMEOUT");
-      // finally still removes the label even after both failures.
-      expect(localRemoveLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-triage");
-    } finally {
-      await localServer.close();
+  it("404s an unknown source and a cron source, without reading a secret", async () => {
+    const h = await start();
+    for (const name of ["nope", "nightly", "NOT_A_K8S_NAME"]) {
+      const res = await fetch(`http://localhost:${h.port}/webhooks/${name}`, { method: "POST", body: "{}" });
+      expect(res.status).toBe(404);
     }
+    expect(h.secretsGet).not.toHaveBeenCalled();
+    expect(h.submitEvent).not.toHaveBeenCalled();
   });
 
-  it("removes the trigger label once an issue triage run completes, so re-applying it re-triggers", async () => {
-    await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "t", body: "b" },
-      label: { name: "ai-triage" },
-    });
-    await flush();
-    expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-triage");
-  });
-
-  it("removes the review label once a PR review run completes", async () => {
-    await postWebhook(port, "pull_request", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      pull_request: { number: 12, title: "t", body: "b" },
-      label: { name: "ai-review" },
-    });
-    await flush();
-    expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 12, "ai-review");
-  });
-
-  it("removes the review label once an issue review run completes, so re-applying it re-triggers", async () => {
-    await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 9, title: "t", body: "b" },
-      label: { name: "ai-review" },
-    });
-    await flush();
-    expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 9, "ai-review");
-  });
-
-  // A failed run is exactly when someone wants to re-trigger, so the label
-  // has to come off on the failure path too, not just the happy one.
-  it("removes the trigger label even when the turn fails", async () => {
-    invoke.mockResolvedValue({ status: "failed", error: "boom" });
-    await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "t", body: "b" },
-      label: { name: "ai-triage" },
-    });
-    await flush();
-    expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-triage");
-  });
-
-  // The turn's own result must still reach the issue even if label cleanup
-  // fails (e.g. the token lost the labels permission) -- cleanup is
-  // best-effort, reported through onBackgroundError, never fatal.
-  it("still reports the turn's result when removing the label fails", async () => {
-    const onBackgroundError = vi.fn();
-    const failing = new GatewayServer({
-      githubWebhookSecret: SECRET,
-      identityResolver,
-      orchestratorClient: { invoke } as unknown as OrchestratorClient,
-      githubReplyClient: {
-        postIssueComment,
-        removeIssueLabel: vi.fn().mockRejectedValue(new Error("no labels permission")),
-      } as unknown as GithubReplyClient,
-      githubTriggerLabel: "ai-triage",
-      onBackgroundError,
-    });
-    await failing.listen(0);
-    const failingPort = (failing as unknown as { server: { address: () => AddressInfo } }).server.address().port;
-    try {
-      await postWebhook(failingPort, "issues", {
-        action: "labeled",
-        repository: { owner: { login: "acme" }, name: "widgets" },
-        sender: { login: "alice", type: "User" },
-        issue: { number: 7, title: "t", body: "b" },
-        label: { name: "ai-triage" },
-      });
-      await flush();
-      expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
-      expect(onBackgroundError).toHaveBeenCalledWith(expect.objectContaining({ message: "no labels permission" }));
-    } finally {
-      await failing.close();
-    }
-  });
-
-  // The pre-try throw hole: `getOrCreate` ran BEFORE the try/finally, so a store
-  // hiccup there skipped label removal entirely and stranded the trigger label
-  // -- a chunk of the "only works ~3/4 of the time" bug. getOrCreate is now
-  // best-effort and inside the finally's guarantee: the label must still come
-  // off, and the turn must still run and report.
-  it("removes the trigger label even when sessionPageStore.getOrCreate throws (pre-try throw must not skip the finally)", async () => {
-    const onBackgroundError = vi.fn();
-    const throwingGetOrCreate = vi.fn().mockRejectedValue(new Error("redis unavailable"));
-    const localRemoveLabel = vi.fn().mockResolvedValue(undefined);
-    const localServer = new GatewayServer({
-      githubWebhookSecret: SECRET,
-      identityResolver,
-      orchestratorClient: { invoke } as unknown as OrchestratorClient,
-      githubReplyClient: {
-        postIssueComment,
-        removeIssueLabel: localRemoveLabel,
-      } as unknown as GithubReplyClient,
-      githubTriggerLabel: "ai-triage",
-      // A session page store that fails on getOrCreate -- the exact pre-try
-      // throw that used to strand the label.
-      sessionPageStore: {
-        getOrCreate: throwingGetOrCreate,
-        addTurn: vi.fn().mockResolvedValue(undefined),
-        completeTurn: vi.fn().mockResolvedValue(undefined),
-        getByToken: vi.fn(),
-        setLive: vi.fn(),
-      } as unknown as InMemorySessionPageStore,
-      publicBaseUrl: "https://gateway.example.com",
-      onBackgroundError,
-    });
-    await localServer.listen(0);
-    const localPort = (localServer as unknown as { server: { address: () => AddressInfo } }).server.address().port;
-    try {
-      await postWebhook(localPort, "issues", {
-        action: "labeled",
-        repository: { owner: { login: "acme" }, name: "widgets" },
-        sender: { login: "alice", type: "User" },
-        issue: { number: 7, title: "t", body: "b" },
-        label: { name: "ai-triage" },
-      });
-      await flush();
-      // The label came off despite getOrCreate throwing...
-      expect(localRemoveLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-triage");
-      // ...the store failure was reported, not swallowed silently...
-      expect(onBackgroundError).toHaveBeenCalledWith(expect.objectContaining({ message: "redis unavailable" }));
-      // ...and the turn still ran and reported its result (degraded, no page).
-      expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "What repo/branch should this target?");
-    } finally {
-      await localServer.close();
-    }
-  });
-
-  // The durable half, wired through the real server: a label-triggered run
-  // records an owed removal up front and clears it once the label is off, so a
-  // crash between the two leaves exactly the record the reconciler heals from.
-  it("records then clears a pending-label-removal around a successful turn", async () => {
-    const record = vi.fn().mockResolvedValue(undefined);
-    const clear = vi.fn().mockResolvedValue(undefined);
-    const localServer = new GatewayServer({
-      githubWebhookSecret: SECRET,
-      identityResolver,
-      orchestratorClient: { invoke } as unknown as OrchestratorClient,
-      githubReplyClient: { postIssueComment, removeIssueLabel } as unknown as GithubReplyClient,
-      githubTriggerLabel: "ai-triage",
-      pendingLabelStore: { record, clear, list: vi.fn().mockResolvedValue([]) },
-    });
-    await localServer.listen(0);
-    const localPort = (localServer as unknown as { server: { address: () => AddressInfo } }).server.address().port;
-    try {
-      await postWebhook(localPort, "issues", {
-        action: "labeled",
-        repository: { owner: { login: "acme" }, name: "widgets" },
-        sender: { login: "alice", type: "User" },
-        issue: { number: 7, title: "t", body: "b" },
-        label: { name: "ai-triage" },
-      });
-      await flush();
-      expect(record).toHaveBeenCalledWith(
-        expect.objectContaining({ owner: "acme", repo: "widgets", issueNumber: 7, label: "ai-triage", sessionId: sessionIdFor("acme", "widgets", 7) }),
-      );
-      expect(removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-triage");
-      expect(clear).toHaveBeenCalledWith(sessionIdFor("acme", "widgets", 7), "ai-triage");
-    } finally {
-      await localServer.close();
-    }
-  });
-
-  // If the label removal itself exhausts its retries and throws, the owed-removal
-  // record must be LEFT so the reconciler finishes the job later.
-  it("keeps the pending-label record when removal fails, so the reconciler can heal it", async () => {
-    const record = vi.fn().mockResolvedValue(undefined);
-    const clear = vi.fn().mockResolvedValue(undefined);
-    const onBackgroundError = vi.fn();
-    const localServer = new GatewayServer({
-      githubWebhookSecret: SECRET,
-      identityResolver,
-      orchestratorClient: { invoke } as unknown as OrchestratorClient,
-      githubReplyClient: {
-        postIssueComment,
-        removeIssueLabel: vi.fn().mockRejectedValue(new Error("502 after retries")),
-      } as unknown as GithubReplyClient,
-      githubTriggerLabel: "ai-triage",
-      pendingLabelStore: { record, clear, list: vi.fn().mockResolvedValue([]) },
-      onBackgroundError,
-    });
-    await localServer.listen(0);
-    const localPort = (localServer as unknown as { server: { address: () => AddressInfo } }).server.address().port;
-    try {
-      await postWebhook(localPort, "issues", {
-        action: "labeled",
-        repository: { owner: { login: "acme" }, name: "widgets" },
-        sender: { login: "alice", type: "User" },
-        issue: { number: 7, title: "t", body: "b" },
-        label: { name: "ai-triage" },
-      });
-      await flush();
-      expect(record).toHaveBeenCalled();
-      // Removal threw, so the record is NOT cleared -- the reconciler owns it now.
-      expect(clear).not.toHaveBeenCalled();
-      expect(onBackgroundError).toHaveBeenCalledWith(expect.objectContaining({ message: "502 after retries" }));
-    } finally {
-      await localServer.close();
-    }
+  it("404s everything when no EventSources are configured", async () => {
+    const h = await start({ eventSources: new StaticEventSourceRegistry([]) });
+    expect((await postGithub(h)).status).toBe(404);
   });
 });
 
-describe("GatewayServer session pages", () => {
-  let server: GatewayServer;
-  let port: number;
-  let identityResolver: GithubIdentityResolver;
-  let invoke: ReturnType<typeof vi.fn>;
-  let checkLive: ReturnType<typeof vi.fn>;
-  let postIssueComment: ReturnType<typeof vi.fn>;
-  let removeIssueLabel: ReturnType<typeof vi.fn>;
-  let sessionPageStore: InMemorySessionPageStore;
-
-  beforeEach(async () => {
-    identityResolver = new GithubIdentityResolver(new Map([["alice", { subject: "alice", roles: ["reporter"] }]]), "agent-controller[bot]");
-    // Simulate the real client's onRunning callback (5th arg): it fires once the
-    // turn is genuinely running, which is what drives the deferred "starting
-    // work" comment. A plain mockResolvedValue would never post it.
-    invoke = vi.fn().mockImplementation(async (..._args: unknown[]) => {
-      const onRunning = _args[4];
-      if (typeof onRunning === "function") await (onRunning as () => Promise<void> | void)();
-      return { status: "succeeded", result: "Working on it." };
-    });
-    // Not-live by default -- these tests exercise the #83 turn-history
-    // fallback path; live-mode behavior has its own describe block below.
-    checkLive = vi.fn().mockResolvedValue({ live: false });
-    postIssueComment = vi.fn().mockResolvedValue(undefined);
-    removeIssueLabel = vi.fn().mockResolvedValue(undefined);
-    sessionPageStore = new InMemorySessionPageStore();
-
-    server = new GatewayServer({
-      githubWebhookSecret: SECRET,
-      identityResolver,
-      orchestratorClient: { invoke, checkLive } as unknown as OrchestratorClient,
-      githubReplyClient: { postIssueComment, removeIssueLabel } as unknown as GithubReplyClient,
-      githubTriggerLabel: "ai-triage",
-      sessionPageStore,
-      publicBaseUrl: "https://gateway.example.com",
-    });
-    await server.listen(0);
-    port = (server as unknown as { server: { address: () => AddressInfo } }).server.address().port;
+describe("webhook verification (hmacSha256)", () => {
+  it("401s a missing signature: nothing parsed, nothing resolved, nothing relayed", async () => {
+    const h = await start();
+    expect((await postGithub(h, GITHUB_PAYLOAD, { signature: null })).status).toBe(401);
+    await settle();
+    expect(parseBody).not.toHaveBeenCalled();
+    expect(h.resolve).not.toHaveBeenCalled();
+    expect(h.submitEvent).not.toHaveBeenCalled();
+    expect(h.logs.join("\n")).toMatch(/webhook github: rejected, verification failed \(missing x-hub-signature-256\)/);
   });
 
-  afterEach(async () => {
-    await server.close();
+  it("401s a bad signature: nothing parsed, nothing relayed", async () => {
+    const h = await start();
+    const res = await postGithub(h, GITHUB_PAYLOAD, { signature: `sha256=${hmacHex("gh-secret", "tampered")}` });
+    expect(res.status).toBe(401);
+    await settle();
+    expect(parseBody).not.toHaveBeenCalled();
+    expect(h.submitEvent).not.toHaveBeenCalled();
   });
 
-  it("posts a deterministic 'starting work' ack as soon as the turn is running, even when no Remote Control URL ever arrives", async () => {
-    // Default `invoke` mock from beforeEach never calls onRemoteControlUrl,
-    // only onRunning -- the ack must not depend on the delegated agent
-    // successfully producing a Remote Control session; it fires purely off
-    // this gateway's own poll of the turn's status.
-    await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
-      label: { name: "ai-triage" },
+  it("401s (fails closed) when the referenced Secret/key is missing", async () => {
+    const h = await start();
+    const body = "{}";
+    const res = await fetch(`http://localhost:${h.port}/webhooks/nokey`, {
+      method: "POST",
+      headers: { "x-sig": hmacHex("", body) },
+      body,
     });
-    await flush();
-
-    expect(postIssueComment).toHaveBeenCalledTimes(2);
-    expect(postIssueComment).toHaveBeenNthCalledWith(1, "acme", "widgets", 7, "🤖 Starting work on this now.");
-    expect(postIssueComment).toHaveBeenNthCalledWith(2, "acme", "widgets", 7, "Working on it.");
-
-    const entry = await sessionPageStore.getOrCreate(sessionIdFor("acme", "widgets", 7), {
-      owner: "acme",
-      repo: "widgets",
-      issueNumber: 7,
-    });
-    expect(entry.turns).toHaveLength(1);
-    expect(entry.turns[0]).toMatchObject({ status: "succeeded", result: "Working on it." });
+    expect(res.status).toBe(401);
+    await settle();
+    expect(h.submitEvent).not.toHaveBeenCalled();
   });
 
-  it("does nothing for an unlabeled issues.opened event, even with a session page store configured", async () => {
-    await postWebhook(port, "issues", {
-      action: "opened",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 9, title: "t", body: "b" },
-    });
-    await flush();
-
-    expect(invoke).not.toHaveBeenCalled();
-    expect(postIssueComment).not.toHaveBeenCalled();
-  });
-
-  it("posts a separate follow-up comment linking the Remote Control URL as soon as it arrives, before the final result", async () => {
-    // This override skips onRunning entirely (unlike the default mock), so
-    // the deterministic ack from the previous test does NOT fire here --
-    // isolates the onRemoteControlUrl follow-up comment on its own.
-    invoke.mockImplementation(async (..._args: unknown[]) => {
-      const onRemoteControlUrl = _args[5] as ((url: string) => Promise<void> | void) | undefined;
-      await onRemoteControlUrl?.("https://claude.ai/code/session_abc123");
-      return { status: "succeeded", result: "Working on it." };
-    });
-
-    await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
-      label: { name: "ai-triage" },
-    });
-    await flush();
-
-    expect(postIssueComment).toHaveBeenCalledTimes(2);
-    expect(postIssueComment).toHaveBeenNthCalledWith(
-      1,
-      "acme",
-      "widgets",
-      7,
-      "🤖 Watch live or take over the session here: https://claude.ai/code/session_abc123",
+  it("accepts a just-rotated secret by re-reading once on mismatch", async () => {
+    const h = await start();
+    h.secretsGet.mockImplementation(async (name: string, key: string, opts?: { refresh?: boolean }) =>
+      name === "gh" && key === "secret" ? (opts?.refresh ? "rotated" : "gh-secret") : undefined,
     );
-    expect(postIssueComment).toHaveBeenNthCalledWith(2, "acme", "widgets", 7, "Working on it.");
+    const body = JSON.stringify(GITHUB_PAYLOAD);
+    const res = await postGithub(h, GITHUB_PAYLOAD, { signature: `sha256=${hmacHex("rotated", body)}` });
+    expect(res.status).toBe(202);
   });
 
-  it("posts the Remote Control URL comment only once even if the progress event fires more than once", async () => {
-    invoke.mockImplementation(async (..._args: unknown[]) => {
-      const onRemoteControlUrl = _args[5] as ((url: string) => Promise<void> | void) | undefined;
-      await onRemoteControlUrl?.("https://claude.ai/code/session_abc123");
-      await onRemoteControlUrl?.("https://claude.ai/code/session_abc123");
-      return { status: "succeeded", result: "Working on it." };
+  it("accepts a valid signature with 202 and builds the envelope without the verify/authorization/cookie headers", async () => {
+    const h = await start();
+    const res = await postGithub(h, GITHUB_PAYLOAD, {
+      extraHeaders: { authorization: "Bearer leak", cookie: "session=leak", "X-Custom": "kept" },
     });
-
-    await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
-      label: { name: "ai-triage" },
-    });
-    await flush();
-
-    expect(postIssueComment).toHaveBeenCalledTimes(2);
+    expect(res.status).toBe(202);
+    await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalled());
+    const envelope = submittedEnvelope(h);
+    expect(envelope).toMatchObject({ source: "github", kind: "webhook", id: "delivery-123", body: GITHUB_PAYLOAD });
+    expect(envelope.time).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    expect(envelope.headers["x-github-event"]).toBe("pull_request");
+    expect(envelope.headers["x-custom"]).toBe("kept");
+    expect(envelope.headers).not.toHaveProperty("x-hub-signature-256");
+    expect(envelope.headers).not.toHaveProperty("authorization");
+    expect(envelope.headers).not.toHaveProperty("cookie");
   });
+});
 
-  it("serves the rendered session page for a valid token", async () => {
-    const entry = await sessionPageStore.getOrCreate("github:acme/widgets#7", { owner: "acme", repo: "widgets", issueNumber: 7 });
-    await sessionPageStore.addTurn(entry.sessionId, "do the thing");
+describe("webhook verification (slackV0)", () => {
+  const slackPost = (h: Harness, payload: unknown, tsOffset = 0, secret = "slack-secret"): Promise<Response> => {
+    const body = JSON.stringify(payload);
+    const ts = String(Math.floor(Date.now() / 1000) + tsOffset);
+    return fetch(`http://localhost:${h.port}/webhooks/slack`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-slack-request-timestamp": ts,
+        "x-slack-signature": `v0=${hmacHex(secret, `v0:${ts}:${body}`)}`,
+      },
+      body,
+    });
+  };
 
-    const res = await fetch(`http://localhost:${port}/sessions/${entry.token}`);
+  it("answers url_verification with its challenge synchronously and relays nothing", async () => {
+    const h = await start();
+    const res = await slackPost(h, { type: "url_verification", challenge: "chal-42" });
     expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("acme/widgets #7");
-    expect(html).toContain("do the thing");
+    expect(await res.json()).toEqual({ challenge: "chal-42" });
+    await settle();
+    expect(h.submitEvent).not.toHaveBeenCalled();
   });
 
-  it("404s on an unknown session page token", async () => {
-    const res = await fetch(`http://localhost:${port}/sessions/does-not-exist`);
-    expect(res.status).toBe(404);
+  it("does not answer a url_verification it cannot verify", async () => {
+    const h = await start();
+    const res = await slackPost(h, { type: "url_verification", challenge: "chal-42" }, 0, "wrong");
+    expect(res.status).toBe(401);
   });
 
-  it("accepts a follow-up prompt submitted through the session page and relays it into the same session", async () => {
-    const entry = await sessionPageStore.getOrCreate("github:acme/widgets#7", { owner: "acme", repo: "widgets", issueNumber: 7 });
+  it("401s a stale timestamp (replay) without parsing", async () => {
+    const h = await start();
+    const res = await slackPost(h, { type: "event_callback" }, -301);
+    expect(res.status).toBe(401);
+    await settle();
+    expect(parseBody).not.toHaveBeenCalled();
+    expect(h.submitEvent).not.toHaveBeenCalled();
+  });
 
-    const res = await fetch(`http://localhost:${port}/sessions/${entry.token}/prompts`, {
+  it("relays a verified event without the signature header", async () => {
+    const h = await start();
+    expect((await slackPost(h, { type: "event_callback", event: { text: "hi" } })).status).toBe(202);
+    await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalled());
+    const envelope = submittedEnvelope(h);
+    expect(envelope.body).toEqual({ type: "event_callback", event: { text: "hi" } });
+    expect(envelope.headers).not.toHaveProperty("x-slack-signature");
+    expect(envelope.headers).toHaveProperty("x-slack-request-timestamp");
+    // A source without `sender` forwards no login.
+    expect(h.submitEvent.mock.calls[0]?.[1]).toBeUndefined();
+  });
+});
+
+describe("webhook verification (bearer)", () => {
+  it("default authorization header: 'Bearer <secret>' accepted, anything else 401", async () => {
+    const h = await start();
+    const post = (auth: string): Promise<Response> =>
+      fetch(`http://localhost:${h.port}/webhooks/ci`, { method: "POST", headers: { authorization: auth, "content-type": "text/plain" }, body: "build ok" });
+    expect((await post("Bearer wrong")).status).toBe(401);
+    expect((await post("ci-token")).status).toBe(401);
+    expect((await post("Bearer ci-token")).status).toBe(202);
+    await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalledTimes(1));
+    const envelope = submittedEnvelope(h);
+    expect(envelope.body).toEqual({ text: "build ok" });
+    expect(envelope.headers).not.toHaveProperty("authorization");
+  });
+
+  it("custom header carries the raw secret and is dropped from the envelope", async () => {
+    const h = await start();
+    const res = await fetch(`http://localhost:${h.port}/webhooks/ci-custom`, {
+      method: "POST",
+      headers: { "x-ci-token": "ci-token", "content-type": "application/x-www-form-urlencoded" },
+      body: "status=green",
+    });
+    expect(res.status).toBe(202);
+    await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalled());
+    const envelope = submittedEnvelope(h);
+    expect(envelope.body).toEqual({ status: "green" });
+    expect(envelope.headers).not.toHaveProperty("x-ci-token");
+  });
+});
+
+describe("sender verification", () => {
+  it("forwards a VERIFIED login with the signed-assertion path, in envelope.sender, with repo context", async () => {
+    const h = await start();
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalled());
+    expect(h.resolve).toHaveBeenCalledWith("alice", false, { owner: "acme", repo: "widgets" });
+    expect(h.submitEvent.mock.calls[0]?.[1]).toBe("alice");
+    const envelope = submittedEnvelope(h);
+    expect(envelope.sender).toEqual({ login: "alice", isBot: false });
+    expect(envelope.repository).toBe("acme/widgets");
+  });
+
+  it("drops a bot-authored event (202 + log line) without resolving or relaying", async () => {
+    const h = await start();
+    const res = await postGithub(h, { ...GITHUB_PAYLOAD, sender: { login: "agent-controller[bot]", type: "Bot" } });
+    expect(res.status).toBe(202);
+    await settle();
+    expect(h.resolve).not.toHaveBeenCalled();
+    expect(h.submitEvent).not.toHaveBeenCalled();
+    expect(h.logs.join("\n")).toMatch(/webhook github event delivery-123: dropped \(sender agent-controller\[bot\] is a bot\)/);
+  });
+
+  it("drops an unresolved sender (202 + log line)", async () => {
+    const h = await start();
+    const res = await postGithub(h, { ...GITHUB_PAYLOAD, sender: { login: "mallory", type: "User" } });
+    expect(res.status).toBe(202);
+    await settle();
+    expect(h.resolve).toHaveBeenCalled();
+    expect(h.submitEvent).not.toHaveBeenCalled();
+    expect(h.logs.join("\n")).toMatch(/dropped \(sender mallory not verified by provider github\)/);
+  });
+
+  it("drops an event whose loginFrom cannot be evaluated (fail closed)", async () => {
+    const h = await start();
+    expect((await postGithub(h, { action: "ping" })).status).toBe(202);
+    await settle();
+    expect(h.submitEvent).not.toHaveBeenCalled();
+    expect(h.logs.join("\n")).toMatch(/dropped \(sender.loginFrom failed/);
+  });
+
+  it("a source without `sender` forwards no login and an empty sender, even if the body names one", async () => {
+    const h = await start();
+    const body = JSON.stringify(GITHUB_PAYLOAD);
+    await fetch(`http://localhost:${h.port}/webhooks/plain`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-sig": hmacHex("gh-secret", body) },
+      body,
+    });
+    await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalled());
+    expect(h.resolve).not.toHaveBeenCalled();
+    expect(h.submitEvent.mock.calls[0]?.[1]).toBeUndefined();
+    expect(submittedEnvelope(h).sender).toEqual({});
+    expect(submittedEnvelope(h).repository).toBe("");
+  });
+});
+
+describe("/invoke outcomes drive exactly the declared side effects", () => {
+  it("ignored: logs and does nothing else", async () => {
+    const h = await start();
+    h.submitEvent.mockResolvedValueOnce({ kind: "ignored" });
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.logs.join("\n")).toMatch(/no trigger matched \(ignored\)/));
+    await settle();
+    expect(h.poll).not.toHaveBeenCalled();
+    expect(h.postIssueComment).not.toHaveBeenCalled();
+    expect(h.record).not.toHaveBeenCalled();
+    expect(h.removeIssueLabel).not.toHaveBeenCalled();
+    expect(h.replyFetch).not.toHaveBeenCalled();
+  });
+
+  it("422: logs and does nothing else", async () => {
+    const h = await start();
+    h.submitEvent.mockResolvedValueOnce({ kind: "rejected", error: "issueNumber did not render to a positive integer" });
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.logs.join("\n")).toMatch(/\(422\): issueNumber did not render/));
+    await settle();
+    expect(h.poll).not.toHaveBeenCalled();
+    expect(h.postIssueComment).not.toHaveBeenCalled();
+    expect(h.record).not.toHaveBeenCalled();
+    expect(h.removeIssueLabel).not.toHaveBeenCalled();
+    expect(h.replyFetch).not.toHaveBeenCalled();
+  });
+
+  it("202: records the owed label, acks (with session page link), polls, posts the result, calls back, removes the label -- in that order", async () => {
+    const h = await start();
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.removeIssueLabel).toHaveBeenCalled());
+    expect(h.order).toEqual(["record", "comment:Starting a review…", "poll", "comment:Looks good.", "http", "removeLabel"]);
+
+    const ack = h.postIssueComment.mock.calls[0];
+    expect(ack?.slice(0, 3)).toEqual(["acme", "widgets", 7]);
+    const token = /https:\/\/gateway\.example\.com\/sessions\/([A-Za-z0-9_-]+)/.exec(ack?.[3] as string)?.[1];
+    expect(token).toBeDefined();
+    const entry = await h.sessionPageStore.getByToken(token!);
+    expect(entry).toMatchObject({ sessionId: "github:acme/widgets#7", owner: "acme", repo: "widgets", issueNumber: 7 });
+    expect(entry?.turns).toHaveLength(1);
+    expect(entry?.turns[0]).toMatchObject({ status: "succeeded", result: "Looks good." });
+
+    expect(h.poll).toHaveBeenCalledWith("inv-1", expect.anything());
+    expect(h.removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-review");
+    expect(h.record).toHaveBeenCalledWith(expect.objectContaining({ owner: "acme", repo: "widgets", issueNumber: 7, label: "ai-review", sessionId: "github:acme/widgets#7" }));
+    expect(h.clear).toHaveBeenCalledWith("github:acme/widgets#7", "ai-review");
+    expect(await h.pendingLabelStore.list()).toEqual([]);
+  });
+
+  it("http reply: exact body, signature verifiable with the trigger's secret, literal url", async () => {
+    const h = await start();
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.replyFetch).toHaveBeenCalled());
+    const [url, init] = h.replyFetch.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(url)).toBe("http://ci-bridge.tools.svc/results");
+    const body = init.body as string;
+    expect(JSON.parse(body)).toEqual({ trigger: "github-review", sessionId: "github:acme/widgets#7", status: "succeeded", result: "Looks good." });
+    const headers = init.headers as Record<string, string>;
+    expect(headers["x-event-signature"]).toBe(`sha256=${hmacHex("callback-secret", body)}`);
+    expect(init.redirect).toBe("manual");
+  });
+
+  it("failure: result comment explains, http reply says failed, and the label still comes off", async () => {
+    const h = await start();
+    h.poll.mockResolvedValueOnce({ status: "failed", error: "agent crashed" });
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.removeIssueLabel).toHaveBeenCalledWith("acme", "widgets", 7, "ai-review"));
+    expect(h.postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "Something went wrong processing this: agent crashed");
+    const body = JSON.parse((h.replyFetch.mock.calls[0] as unknown as [URL, RequestInit])[1].body as string);
+    expect(body).toEqual({ trigger: "github-review", sessionId: "github:acme/widgets#7", status: "failed", error: "agent crashed" });
+  });
+
+  it("does not send an http reply whose signing secret is unavailable", async () => {
+    const { "callback/secret": _omit, ...rest } = SECRETS;
+    const h = await start({}, rest);
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.removeIssueLabel).toHaveBeenCalled());
+    expect(h.replyFetch).not.toHaveBeenCalled();
+    expect(h.logs.join("\n")).toMatch(/reply.http not sent \(signing secret callback\/secret unavailable\)/);
+  });
+
+  it("only declared effects run: no ack, no result, no label when reply.github is absent", async () => {
+    const h = await start();
+    h.submitEvent.mockResolvedValueOnce({ kind: "accepted", id: "inv-2", trigger: { name: "t", sessionId: "event:ci:x", reply: null } });
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.poll).toHaveBeenCalled());
+    await settle();
+    expect(h.postIssueComment).not.toHaveBeenCalled();
+    expect(h.record).not.toHaveBeenCalled();
+    expect(h.removeIssueLabel).not.toHaveBeenCalled();
+    expect(h.replyFetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps the pending record when label removal fails, so the reconciler heals it", async () => {
+    const h = await start();
+    h.removeIssueLabel.mockRejectedValueOnce(new Error("502 after retries"));
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.onBackgroundError).toHaveBeenCalledWith(expect.objectContaining({ message: "502 after retries" })));
+    expect(h.clear).not.toHaveBeenCalled();
+    expect(await h.pendingLabelStore.list()).toHaveLength(1);
+    // The run's own outcome was still reported.
+    expect(h.postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "Looks good.");
+  });
+
+  it("still polls, reports and removes the label when the ack comment fails", async () => {
+    const h = await start();
+    h.postIssueComment.mockRejectedValueOnce(new Error("github down"));
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.removeIssueLabel).toHaveBeenCalled());
+    expect(h.poll).toHaveBeenCalled();
+    expect(h.replyFetch).toHaveBeenCalled();
+  });
+
+  it("posts the Remote Control link at most once to the trigger's issue", async () => {
+    const h = await start();
+    h.poll.mockImplementationOnce(async (_id: string, hooks?: PollHooks) => {
+      await hooks?.onRemoteControlUrl?.("https://claude.ai/code/session_abc");
+      await hooks?.onRemoteControlUrl?.("https://claude.ai/code/session_abc");
+      return { status: "succeeded", result: "Done." };
+    });
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.removeIssueLabel).toHaveBeenCalled());
+    const rc = h.postIssueComment.mock.calls.filter((c) => String(c[3]).includes("Watch live"));
+    expect(rc).toEqual([["acme", "widgets", 7, "🤖 Watch live or take over the session here: https://claude.ai/code/session_abc"]]);
+  });
+});
+
+describe("identity-link auto-resume on the event path", () => {
+  const pending: OrchestratorInvokeResult = {
+    status: "succeeded",
+    identityLinkPending: true,
+    identityLink: { provider: "claude", subject: "client-integration-gateway" },
+    result: "To continue, please [link your Claude account](https://gateway.example.com/claude-auth/abc).",
+  };
+
+  it("posts the link prompt, waits, re-submits the same event and reports the resumed result (ack not repeated)", async () => {
+    const waitForCompletion = vi.fn().mockResolvedValue({ token: "t", createdAt: "x" });
+    const h = await start({
+      claudeAuthStore: { get: vi.fn(), set: vi.fn(), delete: vi.fn(), waitForCompletion } as unknown as ClaudeTokenStore,
+      resumeWaitMs: 20_000,
+    });
+    h.poll.mockResolvedValueOnce(pending);
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.removeIssueLabel).toHaveBeenCalled());
+    expect(waitForCompletion).toHaveBeenCalledWith("client-integration-gateway", 20_000, "setup-token");
+    expect(h.submitEvent).toHaveBeenCalledTimes(2);
+    expect(submittedEnvelope(h, 1)).toEqual(submittedEnvelope(h, 0));
+    expect(h.order.filter((o) => o.startsWith("comment:"))).toEqual([
+      "comment:Starting a review…",
+      "comment:To continue, please [link your Claude account](https://gateway.example.com/claude-auth/abc).",
+      "comment:Looks good.",
+    ]);
+  });
+
+  it("leaves the prompt standing and reports failure over http when the link never completes", async () => {
+    const waitForCompletion = vi.fn().mockResolvedValue(undefined);
+    const h = await start({
+      claudeAuthStore: { get: vi.fn(), set: vi.fn(), delete: vi.fn(), waitForCompletion } as unknown as ClaudeTokenStore,
+    });
+    h.poll.mockResolvedValueOnce(pending);
+    await postGithub(h);
+    await vi.waitFor(() => expect(h.removeIssueLabel).toHaveBeenCalled());
+    expect(h.submitEvent).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((h.replyFetch.mock.calls[0] as unknown as [URL, RequestInit])[1].body as string);
+    expect(body.status).toBe("failed");
+  });
+});
+
+describe("POST /events/:source/tick (cron)", () => {
+  const tick = (h: Harness, name: string, auth?: string, body = '{"repo":"evil/evil"}'): Promise<Response> =>
+    fetch(`http://localhost:${h.port}/events/${name}/tick`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(auth ? { authorization: auth } : {}) },
+      body,
+    });
+
+  it("401s a missing, malformed or unknown token, before revealing whether the source exists", async () => {
+    const h = await start();
+    expect((await tick(h, "nightly")).status).toBe(401);
+    expect((await tick(h, "nightly", "Bearer wrong")).status).toBe(401);
+    expect((await tick(h, "nightly", "Bearer aaa.unknown.sig")).status).toBe(401);
+    expect((await tick(h, "does-not-exist", "Bearer aaa.unknown.sig")).status).toBe(401);
+    expect((await tick(h, "nightly", NIGHTLY_TOKEN)).status).toBe(401);
+    await settle();
+    expect(h.submitEvent).not.toHaveBeenCalled();
+  });
+
+  it("401s a valid ServiceAccount that is not THIS source's (another source, another namespace)", async () => {
+    const h = await start();
+    expect((await tick(h, "nightly", `Bearer ${OTHER_TOKEN}`)).status).toBe(401);
+    expect((await tick(h, "nightly", "Bearer aaa.wrongns.sig")).status).toBe(401);
+    await settle();
+    expect(h.submitEvent).not.toHaveBeenCalled();
+  });
+
+  it("401s every tick when no authenticator or namespace is configured (fail closed)", async () => {
+    const h = await start({ tickAuthenticator: undefined });
+    expect((await tick(h, "nightly", `Bearer ${NIGHTLY_TOKEN}`)).status).toBe(401);
+    await h.server.close();
+    const h2 = await start({ tickNamespace: undefined });
+    expect((await tick(h2, "nightly", `Bearer ${NIGHTLY_TOKEN}`)).status).toBe(401);
+  });
+
+  it("never sends a malformed bearer or source name to the TokenReview API", async () => {
+    const authenticate = vi.fn(async () => undefined);
+    const h = await start({ tickAuthenticator: { authenticate } });
+    await tick(h, "nightly", "Bearer not-a-jwt");
+    await tick(h, "nightly", "Basic aaa.nightly.sig");
+    await tick(h, "Bad_Name", `Bearer ${NIGHTLY_TOKEN}`);
+    expect(authenticate).not.toHaveBeenCalled();
+  });
+
+  it("404s an authenticated tick for a webhook or unknown source", async () => {
+    const h = await start();
+    expect((await tick(h, "github", "Bearer aaa.github.sig")).status).toBe(404);
+    expect((await tick(h, "other", `Bearer ${OTHER_TOKEN}`)).status).toBe(404);
+  });
+
+  it("202s and relays a cron envelope whose body is the CR's payload (never the tick's)", async () => {
+    const h = await start();
+    expect((await tick(h, "nightly", `Bearer ${NIGHTLY_TOKEN}`)).status).toBe(202);
+    await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalled());
+    const envelope = submittedEnvelope(h);
+    expect(envelope).toMatchObject({ source: "nightly", kind: "cron", headers: {}, body: { repo: "acme/widgets", n: 3 }, sender: {}, repository: "" });
+    expect(envelope.id).toMatch(/^nightly-\d+$/);
+    expect(h.submitEvent.mock.calls[0]?.[1]).toBeUndefined();
+  });
+});
+
+describe("session pages", () => {
+  it("relays a follow-up prompt as a conversational turn on the same session and posts to the STORED issue", async () => {
+    const h = await start();
+    // A session id that encodes no GitHub address at all: the issue must come
+    // from the entry, not be parsed out of the id.
+    const entry = await h.sessionPageStore.getOrCreate("event:ci:abc", { owner: "acme", repo: "widgets", issueNumber: 7 });
+    const res = await fetch(`http://localhost:${h.port}/sessions/${entry.token}/prompts`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ prompt: "actually, target the develop branch" }).toString(),
+      body: new URLSearchParams({ prompt: "actually, target develop" }).toString(),
       redirect: "manual",
     });
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe(`/sessions/${entry.token}`);
-    await flush();
-
-    expect(invoke).toHaveBeenCalledWith(
-      "actually, target the develop branch",
-      "github:acme/widgets#7",
-      "device",
-      undefined,
-      undefined,
-      undefined,
-    );
-    expect(postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "Working on it.");
-    const updated = await sessionPageStore.getByToken(entry.token);
-    expect(updated?.turns).toHaveLength(1);
-    expect(updated?.turns[0]).toMatchObject({ status: "succeeded", result: "Working on it." });
-  });
-});
-
-describe("GatewayServer unauthenticated triage: deferred ack + auto-resume", () => {
-  let server: GatewayServer;
-  let port: number;
-  let invoke: ReturnType<typeof vi.fn>;
-  let postIssueComment: ReturnType<typeof vi.fn>;
-  let removeIssueLabel: ReturnType<typeof vi.fn>;
-  let waitForCompletion: ReturnType<typeof vi.fn>;
-  let sessionPageStore: InMemorySessionPageStore;
-
-  beforeEach(async () => {
-    const identityResolver = new GithubIdentityResolver(
-      new Map([["alice", { subject: "alice", roles: ["reporter"] }]]),
-      "agent-controller[bot]",
-    );
-    // First invoke: caller isn't linked -> the turn's "result" is a link
-    // prompt (identityLinkPending), and onRunning is NOT fired. Second invoke
-    // (the auto-resume, after the link lands): fires onRunning and returns the
-    // real result.
-    let call = 0;
-    invoke = vi.fn().mockImplementation(async (..._args: unknown[]) => {
-      const onRunning = _args[4];
-      call += 1;
-      if (call === 1) {
-        return {
-          status: "succeeded",
-          identityLinkPending: true,
-          identityLink: { provider: "claude", subject: "client-integration-gateway" },
-          result: "To continue, please [link your Claude account](https://gateway.example.com/claude-auth/abc).",
-        };
-      }
-      if (typeof onRunning === "function") await (onRunning as () => Promise<void> | void)();
-      return { status: "succeeded", result: "Opened PR #42." };
-    });
-    postIssueComment = vi.fn().mockResolvedValue(undefined);
-    removeIssueLabel = vi.fn().mockResolvedValue(undefined);
-    waitForCompletion = vi.fn().mockResolvedValue({ token: "sk-ant-oat01-linked", createdAt: "2026-01-01T00:00:00Z" });
-    sessionPageStore = new InMemorySessionPageStore();
-
-    server = new GatewayServer({
-      githubWebhookSecret: SECRET,
-      identityResolver,
-      orchestratorClient: { invoke, checkLive: vi.fn().mockResolvedValue({ live: false }) } as unknown as OrchestratorClient,
-      githubReplyClient: { postIssueComment, removeIssueLabel } as unknown as GithubReplyClient,
-      githubTriggerLabel: "ai-triage",
-      sessionPageStore,
-      publicBaseUrl: "https://gateway.example.com",
-      claudeAuthStore: { get: vi.fn(), set: vi.fn(), delete: vi.fn(), waitForCompletion } as unknown as ClaudeTokenStore,
-    });
-    await server.listen(0);
-    port = (server as unknown as { server: { address: () => AddressInfo } }).server.address().port;
+    await vi.waitFor(() => expect(h.postIssueComment).toHaveBeenCalled());
+    expect(h.invoke).toHaveBeenCalledWith("actually, target develop", "event:ci:abc", "device");
+    expect(h.submitEvent).not.toHaveBeenCalled();
+    expect(h.postIssueComment).toHaveBeenCalledWith("acme", "widgets", 7, "Follow-up done.");
+    const updated = await h.sessionPageStore.getByToken(entry.token);
+    expect(updated?.turns[0]).toMatchObject({ status: "succeeded", result: "Follow-up done." });
   });
 
-  afterEach(async () => {
-    await server.close();
-  });
-
-  it("posts the auth prompt FIRST, then waits for the link and auto-resumes the same request straight to the result", async () => {
-    await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
-      label: { name: "ai-triage" },
-    });
-    await flush();
-
-    // The very first comment is the auth prompt. The resumed invoke fires
-    // onRunning (it's genuinely running now, past the link pre-flight), so
-    // the deterministic "starting work" ack posts next, then the real result
-    // once the turn completes.
-    expect(postIssueComment.mock.calls[0]?.[3]).toMatch(/link your Claude account/i);
-    expect(postIssueComment.mock.calls[1]?.[3]).toBe("🤖 Starting work on this now.");
-    expect(postIssueComment.mock.calls[2]?.[3]).toBe("Opened PR #42.");
-    expect(postIssueComment).toHaveBeenCalledTimes(3);
-
-    // Waited on the gateway-owned claude token store for the gateway subject,
-    // and re-invoked the SAME triage request once it landed. The window is the
-    // DEFAULT here (no resumeWaitMs configured above) -- see the override test
-    // below for why that default is worth being able to change.
-    expect(waitForCompletion).toHaveBeenCalledWith("client-integration-gateway", 10 * 60 * 1000, "setup-token");
-    expect(invoke).toHaveBeenCalledTimes(2);
-  });
-
-  it("honours a configured resumeWaitMs instead of the ten-minute default", async () => {
-    // A parked turn holds its relay for this entire window, and the window used
-    // to be a hard-coded constant. That starved the e2e suite: its negative
-    // controls park on purpose, so each one pinned a relay for ten minutes --
-    // outliving the spec that caused it and delaying the next spec's trigger by
-    // the same ten minutes, which presents as an unrelated keying assertion
-    // timing out. Deployments where parking is routine need a shorter hold.
-    await server.close();
-    server = new GatewayServer({
-      githubWebhookSecret: SECRET,
-      identityResolver: new GithubIdentityResolver(
-        new Map([["alice", { subject: "alice", roles: ["reporter"] }]]),
-        "agent-controller[bot]",
-      ),
-      orchestratorClient: { invoke, checkLive: vi.fn().mockResolvedValue({ live: false }) } as unknown as OrchestratorClient,
-      githubReplyClient: { postIssueComment, removeIssueLabel } as unknown as GithubReplyClient,
-      githubTriggerLabel: "ai-triage",
-      sessionPageStore,
-      publicBaseUrl: "https://gateway.example.com",
-      claudeAuthStore: { get: vi.fn(), set: vi.fn(), delete: vi.fn(), waitForCompletion } as unknown as ClaudeTokenStore,
-      resumeWaitMs: 20_000,
-    });
-    await server.listen(0);
-    const shortPort = (server as unknown as { server: { address: () => AddressInfo } }).server.address().port;
-
-    await postWebhook(shortPort, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
-      label: { name: "ai-triage" },
-    });
-    await flush();
-
-    expect(waitForCompletion).toHaveBeenCalledWith("client-integration-gateway", 20_000, "setup-token");
-  });
-
-  it("also auto-resumes for the claude-remote provider (waitForCompletion called with kind 'login', not 'setup-token')", async () => {
-    // Regression test: waitAndResume used to hardcode
-    // `identityLink.provider === "claude"`, so a claude-remote link prompt
-    // posted correctly but NEVER auto-resumed -- the user had to manually
-    // re-trigger after linking, which is the exact bug this fixes.
-    let call = 0;
-    invoke.mockImplementation(async (..._args: unknown[]) => {
-      const onRunning = _args[4];
-      call += 1;
-      if (call === 1) {
-        return {
-          status: "succeeded",
-          identityLinkPending: true,
-          identityLink: { provider: "claude-remote", subject: "client-integration-gateway" },
-          result: "To continue, please [link your Claude account](https://gateway.example.com/claude-auth/xyz?mode=login).",
-        };
-      }
-      if (typeof onRunning === "function") await (onRunning as () => Promise<void> | void)();
-      return { status: "succeeded", result: "Opened PR #42." };
-    });
-
-    await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
-      label: { name: "ai-triage" },
-    });
-    await flush();
-
-    expect(postIssueComment.mock.calls[0]?.[3]).toMatch(/link your Claude account/i);
-    expect(postIssueComment.mock.calls[1]?.[3]).toBe("🤖 Starting work on this now.");
-    expect(postIssueComment.mock.calls[2]?.[3]).toBe("Opened PR #42.");
-    expect(postIssueComment).toHaveBeenCalledTimes(3);
-    expect(waitForCompletion).toHaveBeenCalledWith("client-integration-gateway", 10 * 60 * 1000, "login");
-    expect(invoke).toHaveBeenCalledTimes(2);
-  });
-
-  it("leaves the prompt standing (no resume) when the link is never completed in time", async () => {
-    waitForCompletion.mockResolvedValueOnce(undefined);
-
-    await postWebhook(port, "issues", {
-      action: "labeled",
-      repository: { owner: { login: "acme" }, name: "widgets" },
-      sender: { login: "alice", type: "User" },
-      issue: { number: 7, title: "Add dark mode", body: "Please add a dark theme option." },
-      label: { name: "ai-triage" },
-    });
-    await flush();
-
-    expect(postIssueComment).toHaveBeenCalledTimes(1);
-    expect(postIssueComment.mock.calls[0]?.[3]).toMatch(/link your Claude account/i);
-    expect(invoke).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("GatewayServer live session tunnel (ADR 0026)", () => {
-  let server: GatewayServer;
-  let port: number;
-  let checkLive: ReturnType<typeof vi.fn>;
-  let openEventStream: ReturnType<typeof vi.fn>;
-  let forwardOpencode: ReturnType<typeof vi.fn>;
-  let sessionPageStore: InMemorySessionPageStore;
-
-  beforeEach(async () => {
-    checkLive = vi.fn();
-    openEventStream = vi.fn();
-    forwardOpencode = vi.fn();
-    sessionPageStore = new InMemorySessionPageStore();
-
-    server = new GatewayServer({
-      githubWebhookSecret: SECRET,
-      identityResolver: new GithubIdentityResolver(new Map(), "agent-controller[bot]"),
-      orchestratorClient: { checkLive, openEventStream, forwardOpencode } as unknown as OrchestratorClient,
-      githubReplyClient: { postIssueComment: vi.fn() } as unknown as GithubReplyClient,
-      githubTriggerLabel: "ai-triage",
-      sessionPageStore,
-      publicBaseUrl: "https://gateway.example.com",
-    });
-    await server.listen(0);
-    port = (server as unknown as { server: { address: () => AddressInfo } }).server.address().port;
-  });
-
-  afterEach(async () => {
-    await server.close();
-  });
-
-  it("renders the live badge and caches the discovered agentRunId when checkLive reports live", async () => {
-    const entry = await sessionPageStore.getOrCreate("github:acme/widgets#7", { owner: "acme", repo: "widgets", issueNumber: 7 });
-    checkLive.mockResolvedValue({ live: true, agentRunId: "run-42" });
-
-    const res = await fetch(`http://localhost:${port}/sessions/${entry.token}`);
+  it("serves the rendered page for a valid token and 404s an unknown one", async () => {
+    const h = await start();
+    const entry = await h.sessionPageStore.getOrCreate("s1", { owner: "acme", repo: "widgets", issueNumber: 7 });
+    await h.sessionPageStore.addTurn(entry.sessionId, "do the thing");
+    const res = await fetch(`http://localhost:${h.port}/sessions/${entry.token}`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain("LIVE");
-    expect(html).toContain(`/sessions/${entry.token}/live-events`);
-    expect(html).toContain(`action="/sessions/${entry.token}/live-prompt"`);
+    expect(html).toContain("acme/widgets #7");
+    expect(html).toContain("do the thing");
+    expect((await fetch(`http://localhost:${h.port}/sessions/does-not-exist`)).status).toBe(404);
+  });
+});
 
-    const updated = await sessionPageStore.getByToken(entry.token);
-    expect(updated?.live).toEqual({ agentRunId: "run-42" });
+describe("live session tunnel (ADR 0026)", () => {
+  async function startLive(): Promise<{ h: Harness; checkLive: ReturnType<typeof vi.fn>; openEventStream: ReturnType<typeof vi.fn>; forwardOpencode: ReturnType<typeof vi.fn> }> {
+    const checkLive = vi.fn();
+    const openEventStream = vi.fn();
+    const forwardOpencode = vi.fn();
+    const h = await start({
+      orchestratorClient: { checkLive, openEventStream, forwardOpencode } as unknown as OrchestratorClient,
+    });
+    return { h, checkLive, openEventStream, forwardOpencode };
+  }
+
+  it("renders the live badge and caches the discovered agentRunId when checkLive reports live", async () => {
+    const { h, checkLive } = await startLive();
+    const entry = await h.sessionPageStore.getOrCreate("s1", { owner: "acme", repo: "widgets", issueNumber: 7 });
+    checkLive.mockResolvedValue({ live: true, agentRunId: "run-42" });
+    const html = await (await fetch(`http://localhost:${h.port}/sessions/${entry.token}`)).text();
+    expect(html).toContain("LIVE");
+    expect(html).toContain(`action="/sessions/${entry.token}/live-prompt"`);
+    expect((await h.sessionPageStore.getByToken(entry.token))?.live).toEqual({ agentRunId: "run-42" });
   });
 
   it("clears cached live info once checkLive stops reporting live", async () => {
-    const entry = await sessionPageStore.getOrCreate("github:acme/widgets#7", { owner: "acme", repo: "widgets", issueNumber: 7 });
-    await sessionPageStore.setLive(entry.sessionId, { agentRunId: "run-42" });
+    const { h, checkLive } = await startLive();
+    const entry = await h.sessionPageStore.getOrCreate("s1", { owner: "acme", repo: "widgets", issueNumber: 7 });
+    await h.sessionPageStore.setLive(entry.sessionId, { agentRunId: "run-42" });
     checkLive.mockResolvedValue({ live: false });
-
-    const res = await fetch(`http://localhost:${port}/sessions/${entry.token}`);
-    const html = await res.text();
-    expect(html).not.toContain("LIVE");
-
-    const updated = await sessionPageStore.getByToken(entry.token);
-    expect(updated?.live).toBeUndefined();
+    expect(await (await fetch(`http://localhost:${h.port}/sessions/${entry.token}`)).text()).not.toContain("LIVE");
+    expect((await h.sessionPageStore.getByToken(entry.token))?.live).toBeUndefined();
   });
 
-  it("proxies the live event stream to the browser", async () => {
-    const entry = await sessionPageStore.getOrCreate("github:acme/widgets#7", { owner: "acme", repo: "widgets", issueNumber: 7 });
-    await sessionPageStore.setLive(entry.sessionId, { agentRunId: "run-42" });
+  it("proxies the live event stream, and 404s it when not live", async () => {
+    const { h, openEventStream } = await startLive();
+    const entry = await h.sessionPageStore.getOrCreate("s1", { owner: "acme", repo: "widgets", issueNumber: 7 });
+    expect((await fetch(`http://localhost:${h.port}/sessions/${entry.token}/live-events`)).status).toBe(404);
+    await h.sessionPageStore.setLive(entry.sessionId, { agentRunId: "run-42" });
     openEventStream.mockResolvedValue(
-      new Response(new TextEncoder().encode('data: {"type":"message.part.updated"}\n\n'), {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      }),
+      new Response(new TextEncoder().encode('data: {"type":"x"}\n\n'), { status: 200, headers: { "content-type": "text/event-stream" } }),
     );
-
-    const res = await fetch(`http://localhost:${port}/sessions/${entry.token}/live-events`);
+    const res = await fetch(`http://localhost:${h.port}/sessions/${entry.token}/live-events`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/event-stream");
-    expect(await res.text()).toBe('data: {"type":"message.part.updated"}\n\n');
-    expect(openEventStream).toHaveBeenCalledWith("run-42", "github:acme/widgets#7");
+    expect(await res.text()).toBe('data: {"type":"x"}\n\n');
+    expect(openEventStream).toHaveBeenCalledWith("run-42", "s1");
   });
 
-  it("404s the live-events route when the session isn't cached as live", async () => {
-    const entry = await sessionPageStore.getOrCreate("github:acme/widgets#7", { owner: "acme", repo: "widgets", issueNumber: 7 });
-    const res = await fetch(`http://localhost:${port}/sessions/${entry.token}/live-events`);
-    expect(res.status).toBe(404);
-  });
-
-  it("discovers and caches the opencode session id on first live prompt, reusing it thereafter", async () => {
-    const entry = await sessionPageStore.getOrCreate("github:acme/widgets#7", { owner: "acme", repo: "widgets", issueNumber: 7 });
-    await sessionPageStore.setLive(entry.sessionId, { agentRunId: "run-42" });
-    forwardOpencode.mockImplementation((_runId: string, _sessionId: string, req: { method: string; path: string }) => {
-      if (req.path === "/session") return Promise.resolve({ status: 200, body: [{ id: "ses_abc123" }] });
-      return Promise.resolve({ status: 204 });
-    });
-
-    const res = await fetch(`http://localhost:${port}/sessions/${entry.token}/live-prompt`, {
+  it("discovers and caches the opencode session id on first live prompt", async () => {
+    const { h, forwardOpencode } = await startLive();
+    const entry = await h.sessionPageStore.getOrCreate("s1", { owner: "acme", repo: "widgets", issueNumber: 7 });
+    await h.sessionPageStore.setLive(entry.sessionId, { agentRunId: "run-42" });
+    forwardOpencode.mockImplementation((_r: string, _s: string, req: { path: string }) =>
+      Promise.resolve(req.path === "/session" ? { status: 200, body: [{ id: "ses_abc123" }] } : { status: 204 }),
+    );
+    const res = await fetch(`http://localhost:${h.port}/sessions/${entry.token}/live-prompt`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ prompt: "also fix the tests" }).toString(),
       redirect: "manual",
     });
     expect(res.status).toBe(303);
-    await flush();
-
-    expect(forwardOpencode).toHaveBeenNthCalledWith(1, "run-42", "github:acme/widgets#7", { method: "GET", path: "/session" });
-    expect(forwardOpencode).toHaveBeenNthCalledWith(2, "run-42", "github:acme/widgets#7", {
+    await vi.waitFor(() => expect(forwardOpencode).toHaveBeenCalledTimes(2));
+    expect(forwardOpencode).toHaveBeenNthCalledWith(2, "run-42", "s1", {
       method: "POST",
       path: "/session/ses_abc123/prompt_async",
       body: { parts: [{ type: "text", text: "also fix the tests" }] },
     });
-    expect((await sessionPageStore.getByToken(entry.token))?.live).toEqual({ agentRunId: "run-42", opencodeSessionId: "ses_abc123" });
-
-    forwardOpencode.mockClear();
-    await fetch(`http://localhost:${port}/sessions/${entry.token}/live-prompt`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ prompt: "one more thing" }).toString(),
-    });
-    await flush();
-    expect(forwardOpencode).toHaveBeenCalledTimes(1);
-    expect(forwardOpencode).toHaveBeenCalledWith("run-42", "github:acme/widgets#7", {
-      method: "POST",
-      path: "/session/ses_abc123/prompt_async",
-      body: { parts: [{ type: "text", text: "one more thing" }] },
-    });
-  });
-
-  it("404s the live-prompt route when the session isn't cached as live", async () => {
-    const entry = await sessionPageStore.getOrCreate("github:acme/widgets#7", { owner: "acme", repo: "widgets", issueNumber: 7 });
-    const res = await fetch(`http://localhost:${port}/sessions/${entry.token}/live-prompt`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ prompt: "hi" }).toString(),
-    });
-    expect(res.status).toBe(404);
+    expect((await h.sessionPageStore.getByToken(entry.token))?.live).toEqual({ agentRunId: "run-42", opencodeSessionId: "ses_abc123" });
   });
 });
-
-function flush(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 10));
-}

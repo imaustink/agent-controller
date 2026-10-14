@@ -380,11 +380,23 @@ export class TemporalEngine implements AgentGraphLike {
       body: JSON.stringify({
         request: input.request,
         sessionId: input.sessionId,
-        // This process owns the IntegrationRoute registry and has already
-        // matched it, so the target is named rather than re-derived. The engine
-        // still re-resolves it under the caller's own roles.
+        // This process owns the EventTrigger registry and has already selected
+        // the trigger (docs/event-triggers.md §5), so the RESOLVED turn is
+        // forwarded -- target, tool input, params, read-only -- never the raw
+        // envelope: re-matching in the engine would put dispatch policy in two
+        // places. The engine still re-resolves the target under the caller's
+        // own roles.
         ...(input.forcedSkillId ? { forcedSkillId: input.forcedSkillId } : {}),
         ...(input.forcedAgentId ? { forcedAgentId: input.forcedAgentId } : {}),
+        ...(input.forcedToolId ? { forcedToolId: input.forcedToolId, toolInput: input.toolInput ?? "" } : {}),
+        // Every turn, not just the triggering one: `input.readOnly` already
+        // folds in this process's sticky session flag, and the engine keeps its
+        // own per-conversation flag too -- either side remembering is enough to
+        // keep a read-only conversation read-only. Sent only as `true`; it can
+        // only restrict.
+        ...(input.readOnly ? { readOnly: true } : {}),
+        ...(input.params && Object.keys(input.params).length > 0 ? { params: input.params } : {}),
+        ...(input.triggerName ? { triggerName: input.triggerName } : {}),
         // Which OAuth flow an identity-link prompt starts. The engine reads
         // `identityLinkFlow` (gateway/invoke.go, workflows/conversation.go)
         // and defaults it to "authcode" -- so dropping it here meant NO caller

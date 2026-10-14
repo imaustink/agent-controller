@@ -5,6 +5,8 @@ import { InvokeServer, type AgentGraphLike, type InvocationRecord } from "./serv
 import type { AgentState } from "./agent/graph.js";
 import type { AgentOrchestratorChannel } from "./agents/nats-agent-channel.js";
 import { InMemorySessionStore } from "./session/in-memory-session-store.js";
+import type { Envelope, EventTriggerResource } from "@controller-agent/event-triggers";
+import { CrdEventTriggerRegistry } from "./routing/crd-event-trigger-registry.js";
 
 /**
  * Every request in this file goes over a fresh TCP connection.
@@ -34,6 +36,41 @@ const fetch: typeof globalThis.fetch = (input, init = {}) => {
   const headers = new Headers(init.headers);
   headers.set("connection", "close");
   return nativeFetch(input, { ...init, headers });
+};
+
+/** A well-formed §2 envelope (docs/event-triggers.md), overridable per test. */
+function envelope(overrides: Partial<Envelope> = {}): Envelope {
+  return {
+    source: "github",
+    kind: "webhook",
+    id: "delivery-1",
+    time: "2026-10-13T00:00:00Z",
+    headers: { "x-github-event": "issues" },
+    body: { action: "labeled", label: { name: "ai-triage" }, repository: { full_name: "acme/widgets" }, issue: { number: 7, title: "Add dark mode" } },
+    sender: { login: "imaustink", isBot: false },
+    repository: "acme/widgets",
+    ...overrides,
+  };
+}
+
+/**
+ * A real trigger table over the given CRs (compiled by the shared package, as in
+ * production), each stamped controller-`Ready=True` -- the registry offers no
+ * other trigger to selection.
+ */
+async function triggerRegistry(triggers: EventTriggerResource[]): Promise<CrdEventTriggerRegistry> {
+  const ready = triggers.map((t) => ({ ...t, status: { conditions: [{ type: "Ready", status: "True" as const }] } }));
+  const registry = new CrdEventTriggerRegistry("default", "core.controller-agent.dev", "v1alpha1", {
+    listNamespacedCustomObject: vi.fn().mockResolvedValue({ items: ready }),
+  });
+  await registry.listAll();
+  return registry;
+}
+
+/** Matches every event from any source: an ordinary conversational turn on "triage". */
+const catchAllTrigger: EventTriggerResource = {
+  metadata: { name: "catch-all" },
+  spec: { target: { orchestrator: {}, promptTemplate: "triage" } },
 };
 
 function listenOn(server: InvokeServer): Promise<number> {
@@ -245,7 +282,7 @@ describe("InvokeServer", () => {
     const postRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
-      body: JSON.stringify({ request: "triage this", event: { source: "github" } }),
+      body: JSON.stringify({ request: "triage this" }),
     });
     const { id } = (await postRes.json()) as { id: string };
 
@@ -386,109 +423,284 @@ describe("InvokeServer", () => {
   });
 });
 
-describe("InvokeServer /invoke event field -> IntegrationRoute dispatch (ADR 0024)", () => {
-  async function routeRegistry(routes: unknown[]) {
-    const { CrdIntegrationRouteRegistry } = await import("./routing/crd-integration-route-registry.js");
-    const registry = new CrdIntegrationRouteRegistry("default", "core.controller-agent.dev", "v1alpha1", {
-      listNamespacedCustomObject: vi.fn().mockResolvedValue({ items: routes }),
-    });
-    await registry.listAll();
-    return registry;
-  }
-
-  const labeledRouteCr = {
-    metadata: { name: "github-issue-labeled-triage" },
+describe("InvokeServer /invoke with an event envelope (ADR 0048, docs/event-triggers.md §5)", () => {
+  const reviewTrigger: EventTriggerResource = {
+    metadata: { name: "github-pr-review" },
     spec: {
-      match: { source: "github", event: "issues", action: "labeled" },
-      agentRef: "opencode-swe-agent",
-      promptTemplate: "Triage {{owner}}/{{repo}}#{{issueNumber}}: {{title}}",
+      sourceRef: "github",
+      match: { cel: 'body.action == "labeled" && body.label.name == "ai-review"' },
+      params: { repo: "body.repository.full_name", number: "body.issue.number" },
+      sessionKey: "github:{{repo}}#{{number}}",
+      target: { agentRef: "claude-code-swe-agent", readOnly: true, promptTemplate: "Review {{repo}}#{{number}}" },
+      reply: { github: { repository: "{{repo}}", issueNumber: "{{number}}", ack: "Reviewing…", result: true } },
     },
   };
+  const reviewEvent = (): Envelope =>
+    envelope({
+      body: { action: "labeled", label: { name: "ai-review" }, repository: { full_name: "acme/widgets" }, issue: { number: 7 } },
+    });
 
-  it("renders the matched route's promptTemplate and forces the target, bypassing the fallback request text", async () => {
-    const graph: AgentGraphLike = {
+  function graphSpy(): AgentGraphLike {
+    return {
       invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "", skillCandidates: [], result: "done" } as AgentState),
       stream: vi.fn().mockResolvedValue(noStream()),
     };
-    const server = new InvokeServer(graph, undefined, undefined, await routeRegistry([labeledRouteCr]));
-    const port = await listenOn(server);
+  }
 
-    await fetch(`http://127.0.0.1:${port}/invoke`, {
+  async function post(port: number, body: unknown): Promise<Response> {
+    return fetch(`http://127.0.0.1:${port}/invoke`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        request: "fallback text (should be overridden)",
-        session_id: "github:acme/widgets#7",
-        event: {
-          source: "github",
-          event: "issues",
-          action: "labeled",
-          owner: "acme",
-          repo: "widgets",
-          issueNumber: 7,
-          title: "Add dark mode",
-        },
-      }),
+      headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
+      body: JSON.stringify(body),
     });
-    await new Promise((r) => setTimeout(r, 10));
+  }
 
-    expect(graph.invoke).toHaveBeenCalledWith(
-      expect.objectContaining({
-        request: "Triage acme/widgets#7: Add dark mode",
-        forcedAgentId: "opencode-swe-agent",
-      }),
+  it("answers 200 ignored and starts NO turn when no trigger matches", async () => {
+    const graph = graphSpy();
+    const invocations = new InMemoryInvocationStore();
+    const setSpy = vi.spyOn(invocations, "set");
+    const server = new InvokeServer(
+      graph, undefined, undefined, await triggerRegistry([reviewTrigger]),
+      undefined, undefined, undefined, 5, "authcode", invocations,
     );
+    const port = await listenOn(server);
 
+    // An event that matches nothing -- even with a perfectly good `request`,
+    // which must NOT be run as a RAG fallback.
+    const res = await post(port, { request: "please do something", event: envelope() });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ignored" });
+    expect(graph.invoke).not.toHaveBeenCalled();
+    expect(setSpy).not.toHaveBeenCalled();
     await server.close();
   });
 
-  it("falls back to the plain request and no forced ids when the event doesn't match any route", async () => {
-    const graph: AgentGraphLike = {
-      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "", skillCandidates: [], result: "done" } as AgentState),
-      stream: vi.fn().mockResolvedValue(noStream()),
-    };
-    const server = new InvokeServer(graph, undefined, undefined, await routeRegistry([labeledRouteCr]));
+  it("ignores every event when no trigger table is configured", async () => {
+    const graph = graphSpy();
+    const server = new InvokeServer(graph);
     const port = await listenOn(server);
 
-    await fetch(`http://127.0.0.1:${port}/invoke`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        request: "please review this",
-        event: { source: "github", event: "issues", action: "opened" },
-      }),
-    });
+    const res = await post(port, { event: reviewEvent() });
     await new Promise((r) => setTimeout(r, 10));
 
-    expect(graph.invoke).toHaveBeenCalledWith(expect.objectContaining({ request: "please review this" }));
-    const invokedInput = (graph.invoke as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
-    expect(invokedInput.forcedAgentId).toBeUndefined();
-    expect(invokedInput.forcedSkillId).toBeUndefined();
-
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ignored" });
+    expect(graph.invoke).not.toHaveBeenCalled();
     await server.close();
   });
 
-  it("ignores the event field entirely when no IntegrationRoute registry is configured", async () => {
-    const graph: AgentGraphLike = {
-      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "", skillCandidates: [], result: "done" } as AgentState),
-      stream: vi.fn().mockResolvedValue(noStream()),
+  it("answers 422 failed, starting no turn, when the matched trigger's params cannot be resolved", async () => {
+    const broken: EventTriggerResource = {
+      metadata: { name: "needs-a-pr" },
+      spec: {
+        params: { number: "body.pull_request.number" },
+        target: { orchestrator: {}, promptTemplate: "PR {{number}}" },
+      },
     };
-    const server = new InvokeServer(graph); // no registry passed
+    const graph = graphSpy();
+    const server = new InvokeServer(graph, undefined, undefined, await triggerRegistry([broken]));
     const port = await listenOn(server);
 
-    await fetch(`http://127.0.0.1:${port}/invoke`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        request: "please review this",
-        event: { source: "github", event: "issues", action: "labeled" },
-      }),
-    });
+    const res = await post(port, { event: envelope() });
     await new Promise((r) => setTimeout(r, 10));
 
-    expect(graph.invoke).toHaveBeenCalledWith(expect.objectContaining({ request: "please review this" }));
-
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { status: string; error: string };
+    expect(body.status).toBe("failed");
+    expect(body.error).toContain("needs-a-pr");
+    expect(graph.invoke).not.toHaveBeenCalled();
     await server.close();
+  });
+
+  it("answers 400 for a malformed envelope and starts no turn", async () => {
+    const graph = graphSpy();
+    const server = new InvokeServer(graph, undefined, undefined, await triggerRegistry([catchAllTrigger]));
+    const port = await listenOn(server);
+
+    const { kind: _kind, ...noKind } = envelope();
+    const res = await post(port, { request: "triage", event: noKind });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(res.status).toBe(400);
+    // Rejected by envelope validation itself, naming the problem.
+    expect(((await res.json()) as { error: string }).error).toContain("event.kind");
+    expect(graph.invoke).not.toHaveBeenCalled();
+    await server.close();
+  });
+
+  it("starts the resolved turn and answers 202 with the trigger, its session id and rendered reply", async () => {
+    const graph = graphSpy();
+    const server = new InvokeServer(graph, undefined, undefined, await triggerRegistry([reviewTrigger]));
+    const port = await listenOn(server);
+
+    const res = await post(port, { request: "ignored when an event matches", event: reviewEvent() });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      id: expect.any(String),
+      status: "pending",
+      trigger: {
+        name: "github-pr-review",
+        sessionId: "github:acme/widgets#7",
+        reply: { github: { repository: "acme/widgets", issueNumber: 7, ack: "Reviewing…", result: true } },
+      },
+    });
+    expect(graph.invoke).toHaveBeenCalledTimes(1);
+    const input = vi.mocked(graph.invoke).mock.calls[0]![0];
+    expect(input).toMatchObject({
+      request: "Review acme/widgets#7",
+      sessionId: "github:acme/widgets#7",
+      forcedAgentId: "claude-code-swe-agent",
+      readOnly: true,
+      params: { repo: "acme/widgets", number: "7" },
+      triggerName: "github-pr-review",
+      targetRepository: "acme/widgets",
+    });
+    expect(input.forcedSkillId).toBeUndefined();
+    expect(input.forcedToolId).toBeUndefined();
+    await server.close();
+  });
+
+  it("forces a skill for a skillRef target", async () => {
+    const skillTrigger: EventTriggerResource = {
+      metadata: { name: "ci-failed" },
+      spec: { target: { skillRef: "ci-triage-skill", promptTemplate: "CI failed" } },
+    };
+    const graph = graphSpy();
+    const server = new InvokeServer(graph, undefined, undefined, await triggerRegistry([skillTrigger]));
+    const port = await listenOn(server);
+
+    await post(port, { event: envelope() });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const input = vi.mocked(graph.invoke).mock.calls[0]![0];
+    expect(input).toMatchObject({ request: "CI failed", forcedSkillId: "ci-triage-skill", triggerName: "ci-failed" });
+    expect(input.forcedAgentId).toBeUndefined();
+    // Not read-only: the trigger didn't ask for it, and nothing defaults it on.
+    expect(input.readOnly).toBeUndefined();
+    await server.close();
+  });
+
+  it("forces a one-off tool run with the contract's tool input and a descriptive request for a toolRef target", async () => {
+    const toolTrigger: EventTriggerResource = {
+      metadata: { name: "notify" },
+      spec: { params: { input: "body.issue.title" }, target: { toolRef: "slack-notify" } },
+    };
+    const graph = graphSpy();
+    const server = new InvokeServer(graph, undefined, undefined, await triggerRegistry([toolTrigger]));
+    const port = await listenOn(server);
+
+    await post(port, { event: envelope() });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(vi.mocked(graph.invoke).mock.calls[0]![0]).toMatchObject({
+      request: "Run tool slack-notify",
+      forcedToolId: "slack-notify",
+      toolInput: "Add dark mode",
+    });
+    await server.close();
+  });
+
+  it("runs an orchestrator target as an ordinary conversational turn on the rendered prompt", async () => {
+    const graph = graphSpy();
+    const server = new InvokeServer(graph, undefined, undefined, await triggerRegistry([catchAllTrigger]));
+    const port = await listenOn(server);
+
+    await post(port, { event: envelope({ repository: "" }), session_id: "caller-session" });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const input = vi.mocked(graph.invoke).mock.calls[0]![0];
+    expect(input).toMatchObject({ request: "triage", sessionId: "caller-session", triggerName: "catch-all" });
+    expect(input.forcedSkillId).toBeUndefined();
+    expect(input.forcedAgentId).toBeUndefined();
+    expect(input.forcedToolId).toBeUndefined();
+    // An empty envelope.repository names no repository.
+    expect(input).not.toHaveProperty("targetRepository");
+    await server.close();
+  });
+
+  it("leaves a request without an event exactly as it was: conversational, nothing forced", async () => {
+    const graph = graphSpy();
+    const server = new InvokeServer(graph, undefined, undefined, await triggerRegistry([catchAllTrigger]));
+    const port = await listenOn(server);
+
+    const res = await post(port, { request: "what's for dinner?" });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(res.status).toBe(202);
+    expect(await res.json()).not.toHaveProperty("trigger");
+    const input = vi.mocked(graph.invoke).mock.calls[0]![0];
+    expect(input.request).toBe("what's for dinner?");
+    expect(input.triggerName).toBeUndefined();
+    expect(input.readOnly).toBeUndefined();
+    await server.close();
+  });
+
+  describe("sticky readOnly per session", () => {
+    function store() {
+      return new InMemorySessionStore({ ttlMs: 60_000, maxEntries: 10 });
+    }
+
+    it("makes every later turn in a read-only session read-only, and never leaks into another session", async () => {
+      const sessions = store();
+      // The graph returns a resolved identity + skill so persistSession REWRITES
+      // the record after each turn -- the rewrite must carry the flag forward.
+      const graph: AgentGraphLike = {
+        invoke: vi.fn().mockResolvedValue({
+          request: "x",
+          authToken: "",
+          skillCandidates: [],
+          result: "done",
+          identity: { subject: "integration-gateway", roles: [] },
+          selectedSkill: { id: "s1" },
+        } as unknown as AgentState),
+        stream: vi.fn().mockResolvedValue(noStream()),
+      };
+      const server = new InvokeServer(graph, sessions, undefined, await triggerRegistry([reviewTrigger]));
+      const port = await listenOn(server);
+
+      await post(port, { event: reviewEvent() });
+      await new Promise((r) => setTimeout(r, 10));
+      expect((await sessions.get("github:acme/widgets#7"))?.readOnly).toBe(true);
+
+      // A session-page follow-up: no event, just a prompt on the same session.
+      await post(port, { request: "now push a fix", session_id: "github:acme/widgets#7" });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(vi.mocked(graph.invoke).mock.calls[1]![0]).toMatchObject({ readOnly: true });
+      // ...and the record is still read-only after that turn's own rewrite.
+      expect((await sessions.get("github:acme/widgets#7"))?.readOnly).toBe(true);
+
+      // A different conversation is untouched.
+      await post(port, { request: "now push a fix", session_id: "github:acme/widgets#8" });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(vi.mocked(graph.invoke).mock.calls[2]![0].readOnly).toBeUndefined();
+      expect((await sessions.get("github:acme/widgets#8"))?.readOnly).toBeUndefined();
+      await server.close();
+    });
+
+    it("records the flag before the turn runs, so a turn that never finishes still leaves the session read-only", async () => {
+      const sessions = store();
+      let sawFlagAtInvoke: boolean | undefined;
+      const graph: AgentGraphLike = {
+        invoke: vi.fn().mockImplementation(async () => {
+          sawFlagAtInvoke = (await sessions.get("github:acme/widgets#7"))?.readOnly;
+          return new Promise<AgentState>(() => {}); // the pod "dies" mid-turn
+        }),
+        stream: vi.fn().mockResolvedValue(noStream()),
+      };
+      const server = new InvokeServer(graph, sessions, undefined, await triggerRegistry([reviewTrigger]));
+      const port = await listenOn(server);
+
+      await post(port, { event: reviewEvent() });
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(sawFlagAtInvoke).toBe(true);
+      await server.close();
+    });
   });
 });
 
@@ -1590,25 +1802,25 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
   // The repository a webhook fired on is the one integration-gateway checked
   // the sender's permission on, so it has to reach the engine's read gate as
   // data rather than only as words in the rendered prompt.
-  it("carries a webhook event's owner/repo into the graph input as the target repository", async () => {
+  it("carries a webhook event's repository into the graph input as the target repository", async () => {
     const graph: AgentGraphLike = {
       invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "tok-1", skillCandidates: [], result: "done" } as AgentState),
       stream: vi.fn().mockResolvedValue(noStream()),
     };
-    const server = new InvokeServer(graph);
+    const server = new InvokeServer(graph, undefined, undefined, await triggerRegistry([catchAllTrigger]));
     const port = await listenOn(server);
     const send = (event: unknown) =>
       fetch(`http://127.0.0.1:${port}/invoke`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
-        body: JSON.stringify({ request: "triage", event }),
+        body: JSON.stringify({ event }),
       });
 
-    await send({ source: "github", event: "issues", owner: "e2e-org", repo: "e2e-repo", issueNumber: 4 });
+    await send(envelope({ repository: "e2e-org/e2e-repo" }));
     await new Promise((r) => setTimeout(r, 10));
     expect(graph.invoke).toHaveBeenLastCalledWith(expect.objectContaining({ targetRepository: "e2e-org/e2e-repo" }));
 
-    await send({ source: "github", event: "issues", owner: "e2e-org" });
+    await send(envelope({ repository: "" }));
     await new Promise((r) => setTimeout(r, 10));
     expect(vi.mocked(graph.invoke).mock.lastCall![0]).not.toHaveProperty("targetRepository");
 
@@ -1819,27 +2031,21 @@ describe("InvokeServer live-session tunnel (ADR 0026)", () => {
 });
 
 describe("InvokeServer canonical credential subject plumbing", () => {
-  it("threads event.senderLogin from POST /invoke into the graph input", async () => {
+  it("threads the envelope's sender.login from POST /invoke into the graph input", async () => {
     const graph: AgentGraphLike = {
       invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "tok-1", skillCandidates: [], result: "done" } as AgentState),
       stream: vi.fn().mockResolvedValue(noStream()),
     };
-    const server = new InvokeServer(graph);
+    const server = new InvokeServer(graph, undefined, undefined, await triggerRegistry([catchAllTrigger]));
     const port = await listenOn(server);
 
     await fetch(`http://127.0.0.1:${port}/invoke`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
-      body: JSON.stringify({
-        request: "triage this issue",
-        event: { source: "github", event: "issues", action: "labeled", senderLogin: "imaustink" },
-      }),
+      body: JSON.stringify({ event: envelope({ sender: { login: "imaustink", isBot: false } }) }),
     });
     await new Promise((r) => setTimeout(r, 10));
 
-    // No IntegrationRoute registry is configured on this server, and the
-    // login must STILL come through -- cross-flow credential sharing can't
-    // be made to depend on routing config.
     expect(graph.invoke).toHaveBeenCalledWith(expect.objectContaining({ senderLogin: "imaustink" }));
 
     await server.close();
@@ -1927,10 +2133,10 @@ describe("InvokeServer canonical credential subject plumbing", () => {
 describe("InvokeServer signed sender assertion (docs/adr/0030 §6)", () => {
   const SECRET = "assertion-secret";
 
-  function serverWithAssertions(graph: AgentGraphLike) {
+  async function serverWithAssertions(graph: AgentGraphLike, secret: string | undefined = SECRET) {
     // Positional order: graph, sessionStore, taskCompleter,
-    // integrationRouteRegistry, agentChannel, senderAssertionSecret.
-    return new InvokeServer(graph, undefined, undefined, undefined, undefined, SECRET);
+    // eventTriggerRegistry, agentChannel, senderAssertionSecret.
+    return new InvokeServer(graph, undefined, undefined, await triggerRegistry([catchAllTrigger]), undefined, secret);
   }
 
   function graphSpy(): AgentGraphLike {
@@ -1942,7 +2148,7 @@ describe("InvokeServer signed sender assertion (docs/adr/0030 §6)", () => {
 
   it("accepts a login only from a verified assertion, ignoring the unsigned body field", async () => {
     const graph = graphSpy();
-    const server = serverWithAssertions(graph);
+    const server = await serverWithAssertions(graph);
     const port = await listenOn(server);
 
     await fetch(`http://127.0.0.1:${port}/invoke`, {
@@ -1954,7 +2160,7 @@ describe("InvokeServer signed sender assertion (docs/adr/0030 §6)", () => {
       },
       // A DIFFERENT login in the body: with a secret configured this must be
       // ignored outright, not merged or preferred.
-      body: JSON.stringify({ request: "triage", event: { source: "github", senderLogin: "victim" } }),
+      body: JSON.stringify({ event: envelope({ sender: { login: "victim" } }) }),
     });
     await new Promise((r) => setTimeout(r, 10));
 
@@ -1964,13 +2170,13 @@ describe("InvokeServer signed sender assertion (docs/adr/0030 §6)", () => {
 
   it("drops an unsigned senderLogin entirely when a secret is configured", async () => {
     const graph = graphSpy();
-    const server = serverWithAssertions(graph);
+    const server = await serverWithAssertions(graph);
     const port = await listenOn(server);
 
     await fetch(`http://127.0.0.1:${port}/invoke`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
-      body: JSON.stringify({ request: "triage", event: { source: "github", senderLogin: "victim" } }),
+      body: JSON.stringify({ event: envelope({ sender: { login: "victim" } }) }),
     });
     await new Promise((r) => setTimeout(r, 10));
 
@@ -1983,13 +2189,13 @@ describe("InvokeServer signed sender assertion (docs/adr/0030 §6)", () => {
 
   it("still trusts the body field when no secret is configured (upgrade compatibility)", async () => {
     const graph = graphSpy();
-    const server = new InvokeServer(graph);
+    const server = await serverWithAssertions(graph, ""); // "" = no secret configured
     const port = await listenOn(server);
 
     await fetch(`http://127.0.0.1:${port}/invoke`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer tok-1" },
-      body: JSON.stringify({ request: "triage", event: { source: "github", senderLogin: "imaustink" } }),
+      body: JSON.stringify({ event: envelope({ sender: { login: "imaustink" } }) }),
     });
     await new Promise((r) => setTimeout(r, 10));
 

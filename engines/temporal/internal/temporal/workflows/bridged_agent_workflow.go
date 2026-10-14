@@ -110,6 +110,8 @@ func BridgedAgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 		TimeoutSeconds:       bridgedRunTimeoutSeconds,
 		CredentialSecretName: in.Credentials.SecretName,
 		CredentialEnvVars:    in.Credentials.EnvVars,
+		ReadOnly:             in.ReadOnly,
+		Params:               in.Params,
 	}).Get(ctx, nil); err != nil {
 		return fail("launch_error", err.Error())
 	}
@@ -320,7 +322,7 @@ func handleBridgedToolCall(
 	// And the identity gate: a Tool declaring identityProviders must not run
 	// credential-less merely because a pod agent asked for it rather than the
 	// planner.
-	creds, refusal := toolCredentials(ctx, actx, TurnInput{Caller: in.Caller}, *tool)
+	creds, refusal := toolCredentials(ctx, actx, TurnInput{Caller: in.Caller, ReadOnly: in.ReadOnly}, *tool)
 	if refusal != "" {
 		answer(false, "", refusal)
 		return
@@ -332,6 +334,7 @@ func handleBridgedToolCall(
 		Args:                 []string{msg.Input},
 		CredentialSecretName: creds.SecretName,
 		CredentialEnvVars:    creds.EnvVars,
+		ReadOnly:             in.ReadOnly,
 	})
 	switch {
 	case err != nil:

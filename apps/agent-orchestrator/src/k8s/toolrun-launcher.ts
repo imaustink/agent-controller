@@ -129,6 +129,7 @@ export class ToolRunLauncher implements ContainerToolLauncher {
         args: options.args ?? template.args,
         callback,
         ...(secretEnvSpec ? { secretEnv: secretEnvSpec } : {}),
+        ...(options.readOnly ? { readOnly: true } : {}),
       },
     };
 

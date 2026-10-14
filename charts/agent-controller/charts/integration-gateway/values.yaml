@@ -12,28 +12,33 @@ nameOverride: ""
 fullnameOverride: ""
 
 serviceAccount:
-  # With identityLink disabled this app never talks to the k8s API (it only calls
-  # agent-orchestrator's HTTP API and the GitHub REST API), so the
-  # ServiceAccount exists only because every Pod needs one and the token is not
-  # mounted.
-  #
-  # With identityLink ENABLED it stores linked credentials as Secrets
-  # (docs/adr/0034), so it needs both the token and the Role in rbac.yaml. The
-  # template mounts the token automatically in that case -- this flag only forces
-  # it on when it would otherwise be off.
+  # The gateway always talks to the k8s API: it reads its EventSources and the
+  # Secrets they reference (docs/adr/0048), and with identityLink enabled it
+  # also stores linked credentials as Secrets (docs/adr/0034). The token is
+  # therefore always mounted; `automount` is kept only for compatibility.
   create: true
   annotations: {}
   name: ""
   automount: false
 
 rbac:
-  # Creates the namespace-scoped Role/RoleBinding granting access to the
-  # credential Secrets (docs/adr/0034). Only rendered when identityLink is also
-  # enabled, since that is what stores them. Disable only if you manage the
-  # binding out-of-band -- without it, every link attempt fails with a 403 that
-  # the store reports as "not linked", which looks to a user like an endless
-  # re-authorization prompt.
+  # Creates the namespace-scoped Roles/RoleBindings: read access to
+  # EventSources + the Secrets they reference (always), and CRUD on the
+  # credential Secrets (docs/adr/0034, only when identityLink is enabled).
+  # Disable only if you manage the bindings out-of-band -- without them the
+  # gateway serves no webhook source, and every link attempt fails with a 403
+  # that the store reports as "not linked".
   create: true
+
+# Generic event ingestion (docs/adr/0048, docs/event-triggers.md). The gateway
+# serves POST /webhooks/<EventSource name> for every webhook EventSource in
+# this release's namespace and POST /events/<name>/tick for cron ones.
+events:
+  # Group/version of the EventSource CRD the gateway watches.
+  crdGroup: core.controller-agent.dev
+  crdVersion: v1alpha1
+  # Cron ticks need no configuration here: each tick authenticates as its
+  # source's own ServiceAccount, checked by TokenReview (see rbac.yaml).
 
 port: 8090
 
@@ -61,31 +66,6 @@ config:
   # The App/bot's own GitHub login -- its own comments are ignored (loop
   # prevention). Required once the App/webhook is wired up.
   githubBotLogin: ""
-  # The label that triggers automated triage (ADR 0024) when applied to a
-  # GitHub issue OR a pull request. On an issue: investigate and open a PR.
-  # On a PR: address the feedback/comments on it, push the updates, and sync
-  # it with its base branch. One label for both -- the two dispatch to
-  # different IntegrationRoutes (community-components'
-  # integrationRoutes.githubIssueLabeledTriage and githubPrLabeledTriage),
-  # matched on event plus match.labelName, which must equal this value.
-  # Not an assignee -- GitHub App bot users generally cannot be set as issue
-  # assignees. Whichever run it starts removes this label when it finishes,
-  # so re-applying it is all it takes to re-trigger. Empty string disables
-  # the trigger.
-  githubTriggerLabel: ""
-  # The label that triggers an automated PR review when applied to a pull
-  # request (a pull_request.labeled event) -- sibling to githubTriggerLabel:
-  # a distinct label so a read-only review stays separate from triage
-  # changing the PR. The review runs as
-  # whoever applied the label (same identity gate as triage), and the gateway
-  # drops bot-authored events, so a human must apply it -- the agent that
-  # opened the PR (a bot) can't self-trigger a review. Must equal the
-  # community-components chart's integrationRoutes.githubPrLabeledReview
-  # route's match.labelName (event: pull_request, action: labeled), which is
-  # what tells it apart from the PR-triage route on the same event. Removed
-  # from the PR once the review finishes, so re-applying it re-reviews.
-  # Empty string disables it.
-  githubReviewLabel: ""
   # PROD-GRADE, preferred for org-owned repos: grants roles based on live
   # GitHub org/team membership (see GithubTeamMembershipResolver in
   # src/identity.ts) -- JSON: {"<org>/<team-slug>": ["role", ...]}.
@@ -314,8 +294,10 @@ connections:
   # How long a page sign-in lasts. Empty uses 8 hours.
   sessionTtlSeconds: ""
 
-# Secrets: GITHUB_WEBHOOK_SECRET (required), GATEWAY_ORCHESTRATOR_TOKEN
-# (required), and either GITHUB_TOKEN or the three GITHUB_APP_* fields
+# Secrets: GITHUB_WEBHOOK_SECRET (not read by the gateway as env any more:
+# the community-components `github` EventSource's webhook.verify.secretRef
+# names this Secret/key, and the gateway reads it through the k8s API --
+# docs/adr/0048), GATEWAY_ORCHESTRATOR_TOKEN (required), and either GITHUB_TOKEN or the three GITHUB_APP_* fields
 # (required for posting issue comments). When identityLink.enabled=true,
 # also: IDENTITY_LINK_ENCRYPTION_KEY (required, a 32-byte AES-256-GCM key,
 # base64-encoded, used to encrypt stored per-user GitHub tokens at rest),
@@ -338,6 +320,8 @@ connections:
 secrets:
   create: false
   existingSecret: ""
+  # Only used to name the key when secrets.create=true; point the `github`
+  # EventSource's secretRef at the same Secret/key.
   githubWebhookSecretKey: GITHUB_WEBHOOK_SECRET
   orchestratorTokenKey: GATEWAY_ORCHESTRATOR_TOKEN
   orchestratorOidcClientSecretKey: GATEWAY_ORCHESTRATOR_OIDC_CLIENT_SECRET

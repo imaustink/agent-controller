@@ -48,6 +48,21 @@ describe("ToolRunLauncher", () => {
     expect(JSON.stringify(body)).not.toContain("raw-secret-that-must-not-appear-in-the-cr");
   });
 
+  // docs/event-triggers.md §6: ToolRun.spec.readOnly -> TOOL_READ_ONLY=true.
+  it("carries readOnly onto ToolRun.spec, and omits it otherwise", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const launcher = new ToolRunLauncher("core.controller-agent.dev", "v1alpha1", { name: "s", key: "k" }, api);
+    const base = { args: ["u"], callbackUrl: "http://x", callbackSecret: "s" };
+
+    await launcher.launch(template, { ...base, readOnly: true });
+    await launcher.launch(template, base);
+
+    const specs = createNamespacedCustomObject.mock.calls.map(([r]) => (r as { body: { spec: Record<string, unknown> } }).body.spec);
+    expect(specs[0]!.readOnly).toBe(true);
+    expect(specs[1]).not.toHaveProperty("readOnly");
+  });
+
   it("sets the session-id annotation on the ToolRun CR when options.sessionId is given", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };

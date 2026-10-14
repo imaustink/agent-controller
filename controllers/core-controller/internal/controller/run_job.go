@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -251,6 +252,33 @@ func toCoreEnv(staticEnv []toolv1alpha1.EnvVar, secretEnv []toolv1alpha1.SecretE
 		})
 	}
 	return env
+}
+
+// agentEventEnv is the env an AgentRun's event-trigger fields become
+// (docs/event-triggers.md §6). Structured fields, never markers in the goal:
+// a read-only gate that rides on a prompt string surviving intact is one an
+// event body can talk its way past. Absent/false fields add nothing, so an
+// agent reads "unset" as "not read-only" and "no params".
+func agentEventEnv(spec toolv1alpha1.AgentRunSpec) []toolv1alpha1.EnvVar {
+	var env []toolv1alpha1.EnvVar
+	if spec.ReadOnly {
+		env = append(env, toolv1alpha1.EnvVar{Name: "AGENT_READ_ONLY", Value: "true"})
+	}
+	if len(spec.Params) > 0 {
+		// A map[string]string always marshals; keys come out sorted, so the
+		// Job spec is stable for the same params.
+		raw, _ := json.Marshal(spec.Params)
+		env = append(env, toolv1alpha1.EnvVar{Name: "AGENT_PARAMS", Value: string(raw)})
+	}
+	return env
+}
+
+// toolEventEnv is agentEventEnv for a ToolRun, which carries only readOnly.
+func toolEventEnv(spec toolv1alpha1.ToolRunSpec) []toolv1alpha1.EnvVar {
+	if !spec.ReadOnly {
+		return nil
+	}
+	return []toolv1alpha1.EnvVar{{Name: "TOOL_READ_ONLY", Value: "true"}}
 }
 
 // sessionIDAnnotations extracts just the SessionIDAnnotation from a ToolRun/

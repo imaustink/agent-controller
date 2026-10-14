@@ -1,11 +1,21 @@
 import { normalizePem } from "@controller-agent/github-app-auth";
 
-/** Central configuration for the GitHub Issues integration gateway. */
+/** Central configuration for the integration gateway (generic EventSource ingestion, ADR 0048). */
 export interface AppConfig {
-  /** Consumer-facing HTTP port for POST /webhooks/github. */
+  /** Consumer-facing HTTP port (POST /webhooks/:source, POST /events/:source/tick, ...). */
   httpPort: number;
-  /** Shared secret configured on the GitHub webhook/App, used to verify X-Hub-Signature-256. */
-  githubWebhookSecret: string;
+  /**
+   * Namespace the `EventSource` CRs (and the Secrets their `verify.secretRef` /
+   * a trigger's `reply.http.secretRef` name) live in -- the release namespace
+   * (ADR 0048, docs/event-triggers.md §1). Required for the event routes: with
+   * it unset no source is ever loaded, so every `/webhooks/:source` and
+   * `/events/:source/tick` 404s.
+   */
+  crdNamespace: string;
+  /** API group of the EventSource CRD. */
+  crdGroup: string;
+  /** API version of the EventSource CRD. */
+  crdVersion: string;
   /** GitHub App credentials (ADR 0018) used to mint an installation token for posting issue comments. */
   githubAppId: string;
   githubAppPrivateKey: string;
@@ -26,35 +36,13 @@ export interface AppConfig {
   /**
    * Shared secret used to sign the sender assertion sent to agent-orchestrator
    * (docs/adr/0030 §6). Must match the orchestrator's own
-   * AGENT_SENDER_ASSERTION_SECRET. Empty disables signing, in which case the
-   * orchestrator falls back to trusting the unsigned `event.senderLogin`.
+   * AGENT_SENDER_ASSERTION_SECRET. Empty disables signing, in which case only
+   * the unsigned `event.sender.login` travels and the orchestrator decides
+   * whether to trust it.
    */
   senderAssertionSecret: string;
   /** The App/bot's own GitHub login -- events authored by it are ignored (loop prevention). */
   githubBotLogin: string;
-  /**
-   * The label that triggers automated triage (ADR 0024), on either a GitHub
-   * issue (`issues.labeled` -- investigate and open a PR) or a pull request
-   * (`pull_request.labeled` -- address the feedback on it, push updates, sync
-   * with its base branch). One label for both: "triage this" is the same
-   * request either way, and which work it means is fully determined by what
-   * was labeled. Not an assignee: GitHub App bot users generally cannot be
-   * set as issue assignees (only a small GitHub-owned allowlist, e.g.
-   * `dependabot[bot]`, gets that special-cased), so `issues.labeled` is used
-   * instead of `issues.assigned`.
-   */
-  githubTriggerLabel: string;
-  /**
-   * The label that triggers an automated PR review when applied to a pull
-   * request (a `pull_request.labeled` event). Sibling to
-   * `githubTriggerLabel`: a distinct label, so requesting a read-only review
-   * of a PR stays separate from asking triage to change it. Same identity
-   * gate applies -- the review runs
-   * as whoever applied the label, so the gateway's bot loop-guard means the
-   * label must be applied by a human, not the agent that opened the PR. Empty
-   * string disables the trigger (no label name can ever match).
-   */
-  githubReviewLabel: string;
   /** Base URL of agent-orchestrator's consumer-facing invoke API (ADR 0006). */
   orchestratorUrl: string;
   /**
@@ -154,8 +142,8 @@ export interface AppConfig {
   /**
    * Public base URL this gateway is reachable at (e.g.
    * `https://gateway.example.com`), used to build the session-page link
-   * (issue #81) posted alongside the "starting work" comment on an
-   * `issues.labeled` triage trigger. Empty disables the whole session-page
+   * (issue #81) appended to a trigger's `reply.github.ack` comment when it
+   * declares `sessionPage: true`. Empty disables the whole session-page
    * feature: no page link is ever posted, and `GET /sessions/*` 404s.
    */
   publicUrl: string;
@@ -202,7 +190,7 @@ export interface AppConfig {
   connectionsAllowUnverifiedEmail: boolean;
   connectionsSessionTtlSeconds: number;
   /**
-   * How often the trigger-label reconciler sweeps for owed removals whose
+   * How often the label reconciler sweeps for owed removals whose
    * in-process `finally` never ran (pod restart/OOM mid-turn). Undefined ->
    * {@link LabelReconciler}'s own default. See label-reconciler.ts.
    */
@@ -232,7 +220,9 @@ function numOrUndefined(raw: string | undefined): number | undefined {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     httpPort: num(env.GATEWAY_HTTP_PORT, 8090),
-    githubWebhookSecret: env.GITHUB_WEBHOOK_SECRET ?? "",
+    crdNamespace: env.CRD_NAMESPACE ?? "",
+    crdGroup: env.CRD_GROUP || "core.controller-agent.dev",
+    crdVersion: env.CRD_VERSION || "v1alpha1",
     githubAppId: env.GITHUB_APP_ID ?? "",
     githubAppPrivateKey: normalizePem(env.GITHUB_APP_PRIVATE_KEY),
     githubAppInstallationId: env.GITHUB_APP_INSTALLATION_ID ?? "",
@@ -241,8 +231,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     githubBaseUrl: env.GITHUB_BASE_URL ?? "https://github.com",
     senderAssertionSecret: env.GATEWAY_SENDER_ASSERTION_SECRET ?? "",
     githubBotLogin: env.GATEWAY_GITHUB_BOT_LOGIN ?? "",
-    githubTriggerLabel: env.GATEWAY_GITHUB_TRIGGER_LABEL ?? "",
-    githubReviewLabel: env.GATEWAY_GITHUB_REVIEW_LABEL ?? "",
     orchestratorUrl: env.GATEWAY_ORCHESTRATOR_URL ?? "http://agent-orchestrator:8081",
     orchestratorToken: env.GATEWAY_ORCHESTRATOR_TOKEN ?? "",
     orchestratorOidcTokenEndpoint: env.GATEWAY_ORCHESTRATOR_OIDC_TOKEN_ENDPOINT,

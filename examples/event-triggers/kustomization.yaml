@@ -1,0 +1,22 @@
+# Every example at once:  kubectl apply -n <release namespace> -k examples/event-triggers
+# Or pick files:          kubectl apply -n <release namespace> -f examples/event-triggers/eventsource-github.yaml
+#
+# No namespace here on purpose: EventSources/EventTriggers (and the Secrets they
+# name) must live in the release namespace, the one integration-gateway and the
+# orchestrator watch -- pass it with -n.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - eventsource-github.yaml
+  - eventsource-slack.yaml
+  - eventsource-ci.yaml
+  - eventsource-generic-hmac.yaml
+  - eventsource-nightly-sweep.yaml
+  - eventtrigger-github-issue-triage.yaml
+  - eventtrigger-github-issue-review.yaml
+  - eventtrigger-github-pr-triage.yaml
+  - eventtrigger-github-pr-review.yaml
+  - eventtrigger-slack-mention-chat.yaml
+  - eventtrigger-ci-failure-skill.yaml
+  - eventtrigger-generic-hmac-tool.yaml
+  - eventtrigger-nightly-stale-sweep.yaml

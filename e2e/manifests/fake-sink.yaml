@@ -1,0 +1,117 @@
+# In-cluster HTTP recorder for the event-trigger specs (docs/event-triggers.md).
+#
+# Deployed only into the minikube e2e environment. It stands in for whatever a
+# `reply.http` side-effect would POST to in production (a CI bridge, a chat
+# relay): the example EventTriggers, as e2e/manifests/event-triggers patches them, point their literal
+# `reply.http.url` here, and per-test triggers do the same.
+#
+# Two jobs, same posture as fake-github.yaml:
+#   1. RECORDS every request -- method, path, lower-cased headers and the RAW
+#      body string -- and serves them back on `GET /_e2e/requests`, so a spec
+#      can recompute `x-event-signature` over the exact bytes the gateway sent.
+#      A re-serialized body would make every signature check fail for a test
+#      reason, which is why `body` is the verbatim string, never parsed.
+#   2. Serves a tiny static page at `GET /page.html` carrying a fixed marker.
+#      The web-fetch Tool's SSRF guard refuses cluster-internal addresses (it
+#      blocks every RFC1918 range), so this page is the "would have been
+#      fetched" target of the generic-hmac -> web-fetch spec: if web-fetch EVER
+#      requests it, the guard regressed. See event-triggers-reply-http.e2e.ts.
+#
+# Written as a ConfigMap-mounted script on the stock node image, like
+# fake-github: no dependencies, no image build. ensureFakeSink() substitutes a
+# checksum of this file into the pod template so an edited script rolls the pod
+# (see e2e/README.md, "Editing fake-github.yaml" -- the same trap applies).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fake-sink
+  labels: { app: fake-sink, e2e: "true" }
+data:
+  server.js: |
+    const http = require("node:http");
+
+    // Unbounded, as in fake-github: the process lives for one e2e run and a
+    // ring buffer would silently drop the very request an assertion wants.
+    const requests = [];
+
+    const PAGE_MARKER = "E2E-FAKE-SINK-PAGE-7f3c";
+    const PAGE = `<!doctype html><html><head><title>e2e fake-sink page</title></head>` +
+      `<body><main><h1>e2e fake-sink page</h1><p>${PAGE_MARKER}: if you can read this, ` +
+      `web-fetch reached a cluster-internal address.</p></main></body></html>`;
+
+    function json(res, status, body) {
+      res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    }
+
+    http.createServer((req, res) => {
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        const url = new URL(req.url, "http://fake-sink");
+        const body = Buffer.concat(chunks).toString("utf8");
+
+        // Health + introspection, answered BEFORE recording so the harness's
+        // own probes never look like traffic the system sent.
+        if (url.pathname === "/") return json(res, 200, { ok: true });
+        if (url.pathname === "/_e2e/requests") return json(res, 200, requests);
+        if (url.pathname === "/_e2e/reset") { requests.length = 0; return json(res, 200, { ok: true }); }
+
+        const headers = {};
+        for (const [k, v] of Object.entries(req.headers)) headers[k.toLowerCase()] = Array.isArray(v) ? v.join(", ") : String(v);
+        requests.push({
+          method: req.method,
+          path: url.pathname,
+          query: url.search,
+          headers,
+          body: body || null,
+          at: new Date().toISOString(),
+        });
+
+        if (url.pathname === "/page.html" && req.method === "GET") {
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(PAGE);
+          return;
+        }
+        // Every other request -- a reply.http POST above all -- is accepted.
+        json(res, 200, { ok: true });
+      });
+    }).listen(8080, () => console.log("fake-sink listening on 8080"));
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-sink
+  labels: { app: fake-sink, e2e: "true" }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: fake-sink }
+  template:
+    metadata:
+      labels: { app: fake-sink, e2e: "true" }
+      annotations:
+        # Substituted at apply time by ensureFakeSink() with a hash of THIS
+        # FILE; see the header and fake-github.yaml for why.
+        e2e.controller-agent.dev/config-checksum: "REPLACED_AT_APPLY"
+    spec:
+      containers:
+        - name: fake-sink
+          image: node:22-alpine
+          command: ["node", "/srv/server.js"]
+          ports: [{ containerPort: 8080 }]
+          volumeMounts: [{ name: script, mountPath: /srv }]
+          readinessProbe:
+            httpGet: { path: /_e2e/requests, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
+      volumes:
+        - name: script
+          configMap: { name: fake-sink }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-sink
+  labels: { app: fake-sink, e2e: "true" }
+spec:
+  selector: { app: fake-sink }
+  ports: [{ port: 80, targetPort: 8080 }]

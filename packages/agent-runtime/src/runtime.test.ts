@@ -8,6 +8,8 @@ const config: AgentRuntimeConfig = {
   runId: "run-1",
   subjectPrefix: "agent",
   goal: "do the thing",
+  readOnly: false,
+  params: {},
 };
 
 /**
@@ -59,6 +61,20 @@ describe("runAgent", () => {
     const reply = ch.up[1] as Extract<AgentUpMessage, { type: "reply" }>;
     expect(reply).toMatchObject({ message: "done: do the thing", final: true });
     expect(ch.closed).toBe(true);
+  });
+
+  it("exposes readOnly and params from config on the session", async () => {
+    const seen: { readOnly: boolean; params: Readonly<Record<string, string>> }[] = [];
+    const handler = async (s: { readOnly: boolean; params: Readonly<Record<string, string>> }) => {
+      seen.push({ readOnly: s.readOnly, params: s.params });
+      return "ok";
+    };
+    await runAgent(handler, { channel: new FakeChannel(), config: { ...config, readOnly: true, params: { repo: "acme/widgets" } } });
+    await runAgent(handler, { channel: new FakeChannel(), config });
+    expect(seen).toEqual([
+      { readOnly: true, params: { repo: "acme/widgets" } },
+      { readOnly: false, params: {} },
+    ]);
   });
 
   it("emits progress and warning up-messages", async () => {

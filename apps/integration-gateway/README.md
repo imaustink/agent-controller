@@ -1,37 +1,72 @@
 # integration-gateway
 
-GitHub Issues adapter for the event-integrations proposal
-([docs/integrations-gateway.md](../../docs/integrations-gateway.md)). This is
-a phase-1 implementation of just the **conversational path** for one channel
-(GitHub): the FAAS/direct-invoke path described in the proposal is
-intentionally out of scope here.
+Generic event ingestion for agent-controller
+([ADR 0048](../../docs/adr/0048-generic-event-triggers.md), contract in
+[docs/event-triggers.md](../../docs/event-triggers.md)). Every event source is
+an `EventSource` custom resource; the gateway serves it, verifies it,
+normalizes it into the shared envelope and relays it to `agent-orchestrator`'s
+`POST /invoke`. Whether an event does anything — and what — is decided by the
+orchestrator's `EventTrigger`s, never by code here. The gateway also hosts
+the identity-link credential broker, Claude auth, the Connections page and
+session pages (below).
 
-## Flow
+## Event flow
 
-1. An issue is opened, or a comment is added, in a repo whose webhook (or
-   GitHub App subscription) points at this service's `POST /webhooks/github`.
-2. The gateway verifies the request's `X-Hub-Signature-256` HMAC, resolves
-   the sender's GitHub login to an identity (static allowlist —
-   `GATEWAY_GITHUB_IDENTITIES`, see `src/identity.ts`), and forwards the
-   issue/comment text to `agent-orchestrator`'s existing `POST /invoke`,
-   scoped to a session id of `github:<owner>/<repo>#<issueNumber>`.
-3. Whatever the orchestrator's turn returns (a clarifying question, or a
-   completion message) is posted back as an issue comment.
-4. A follow-up comment on the same issue reuses the same session id, so
-   `agent-orchestrator`'s existing `checkActiveAgentRun`/`AgentSession.ask()`
-   mechanism resumes the same delegated Agent run instead of starting a new
-   one — no new "ask vs. do" logic was built for this; it already existed
-   for the SWE agent (`apps/opencode-swe-agent`).
-5. When the reporter says "start work" (or anything else), that's just more
-   turn text — opencode-swe-agent decides internally when to stop asking
-   and start coding, and opens the PR itself.
+```
+POST /webhooks/:source      404 unknown/non-webhook source
+  verify raw bytes ───────► 401 on failure (nothing parsed, nothing relayed)
+  parse body (Slack url_verification → 200 {challenge}, nothing relayed)
+  202  ── then, in the background ──
+  sender (optional): CEL loginFrom/isBotFrom/repositoryFrom → drop bots →
+                     GitHub team/collaborator/static resolver → drop unresolved
+  envelope { source, kind, id, time, headers, body, sender, repository }
+  POST /invoke { event, identity_link_flow: "device" } (+ signed sender assertion)
+     200 ignored → log      422 → log
+     202 { id, trigger: { name, sessionId, reply } } →
+        record owed label removal → reply.github.ack (+ session page link)
+        → poll → reply.github.result comment → reply.http POST
+        → remove reply.github.removeLabel (always)
+
+POST /events/:source/tick   Authorization: Bearer <projected token of SA eventsource-<source>>
+  401 unless TokenReview says it is THIS source's SA · 404 unless cron · 202 → envelope (body = the CR's payload) → /invoke
+```
+
+- **Verification** (`src/webhooks/verify.ts`) runs on the raw bytes before
+  anything parses them: `hmacSha256` (configurable header + prefix, hex),
+  `slackV0` (`v0:<ts>:<body>`, 300 s window), `bearer` (default
+  `authorization: Bearer <secret>`; a custom header carries the raw secret).
+  There is no `none`. A missing Secret/key fails closed (401). The verify
+  header, `authorization` and `cookie` never reach the envelope.
+- **Sender** — only a login the provider VERIFIED is ever forwarded (in
+  `envelope.sender` and the signed `x-gateway-user-assertion`); a source
+  without `sender` forwards no login and the run acts as the gateway's own
+  service identity. Dropped events still answer 202 (plus a log line) so
+  senders don't retry.
+- **Sources** are list+watched live (`src/event-sources.ts`); a source whose
+  spec or sender CEL doesn't compile is unusable (404, logged). Secrets are
+  read through the API with a short TTL cache, re-read once on a mismatch so
+  a rotated Secret is honoured without a restart.
+- **`reply.http`** POSTs
+  `{"trigger","sessionId","status":"succeeded"|"failed","result"|"error"}` to
+  the trigger CR's literal URL (never from event content); with `secretRef`,
+  `x-event-signature: sha256=<hex hmac(secret, exact body)>`. Redirects are
+  not followed; an unreadable signing secret means the reply is not sent.
+- **Labels** — `reply.github.removeLabel` is recorded in a durable outbox
+  before polling and removed on every outcome; `src/label-reconciler.ts`
+  heals removals lost to a pod restart.
 
 ## Configuration
 
 See `src/config.ts` for the full list. Notable ones:
 
-- `GITHUB_WEBHOOK_SECRET` (required) — shared secret configured on the
-  GitHub webhook/App.
+- `CRD_NAMESPACE` (required for the event routes) — namespace of the
+  `EventSource` CRs and the Secrets they reference. Unset: no sources, every
+  event route 404s.
+- `CRD_GROUP` / `CRD_VERSION` — default `core.controller-agent.dev` /
+  `v1alpha1`.
+- RBAC: `get,list,watch` on `eventsources.<group>` and `get` on `secrets` in
+  `CRD_NAMESPACE` (on top of the credential-store Secret grants), plus a
+  ClusterRole with only `create` on `tokenreviews` for cron ticks.
 - `GATEWAY_ORCHESTRATOR_URL` / `GATEWAY_ORCHESTRATOR_TOKEN` (required) —
   where to reach `agent-orchestrator`'s `/invoke` API and the bearer token
   this gateway authenticates as (must resolve, via the orchestrator's own
@@ -85,18 +120,15 @@ See `src/config.ts` for the full list. Notable ones:
 
 ## Session pages (issue #81)
 
-When the configured trigger label is applied (the `issues.labeled` →
-`opencode-swe-agent` triage path), the gateway now posts a **"starting
-work"** comment right away — before that turn even runs — rather than only
-replying once the whole (potentially many-minutes-long) turn completes.
-That comment links to a minimal server-rendered **session page**
-(`GET /sessions/:token`, `src/session-page.ts` / `src/session-page-store.ts`)
-showing the session's turn history and a form to send it a follow-up prompt
-(`POST /sessions/:token/prompts`) without needing to post another GitHub
-comment. Ordinary conversational (non-labeled) opened/comment replies are
-unaffected — this only applies to the deterministic triage trigger, since
-that's the long-running path where "did it actually start?" is worth
-answering proactively.
+A trigger whose `reply.github` sets `sessionPage: true` gets a link appended
+to its `ack` comment (posted before the run is polled) to a minimal
+server-rendered **session page** (`GET /sessions/:token`,
+`src/session-page.ts` / `src/session-page-store.ts`), keyed by the trigger's
+`sessionId`, showing the session's turn history and a form to send it a
+follow-up prompt (`POST /sessions/:token/prompts`). A follow-up is an
+ordinary conversational turn on the same session id (no event), and its
+result is posted to the issue stored on the page entry (from the trigger's
+`reply.github`) — never parsed out of the session id.
 
 - Off by default: unset `GATEWAY_PUBLIC_URL` disables the whole feature (no
   comment link is ever posted, and the page routes 404/are unreachable in
@@ -132,7 +164,7 @@ based polling.
 
 ## Identity-link credential broker
 
-Independent of the GitHub-webhook relay above, this gateway also exposes an
+Independent of the event relay above, this gateway also exposes an
 internal API that lets `agent-orchestrator` link a chat user's own GitHub
 account (via OAuth Device Flow -- no redirect/callback URL, the user just
 visits a URL and types a code) and later fetch a currently-valid token for

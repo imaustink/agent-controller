@@ -41,6 +41,25 @@ describe("AgentRunLauncher", () => {
     });
   });
 
+  // docs/event-triggers.md §6: the controller turns these into AGENT_READ_ONLY /
+  // AGENT_PARAMS. Written only when meaningful -- readOnly is never `false`.
+  it("carries readOnly and params onto AgentRun.spec, and omits them when unset/empty", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const launcher = new AgentRunLauncher("core.controller-agent.dev", "v1alpha1", {
+      listNamespacedCustomObject: vi.fn(),
+      createNamespacedCustomObject,
+    });
+    const base = { goal: "review", callbackUrl: "http://x", callbackSecretRef: { name: "s", key: "k" } };
+
+    await launcher.launch(template, "run-ro", { ...base, readOnly: true, params: { repo: "acme/widgets", number: "7" } });
+    await launcher.launch(template, "run-rw", { ...base, readOnly: false, params: {} });
+
+    const specs = createNamespacedCustomObject.mock.calls.map(([r]) => (r as { body: { spec: Record<string, unknown> } }).body.spec);
+    expect(specs[0]).toMatchObject({ readOnly: true, params: { repo: "acme/widgets", number: "7" } });
+    expect(specs[1]).not.toHaveProperty("readOnly");
+    expect(specs[1]).not.toHaveProperty("params");
+  });
+
   it("uses a natsSubject callback (no secretRef) when natsUrl is set, so the CR passes controller validation even with an empty callbackSecretRef", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };

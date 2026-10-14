@@ -1113,3 +1113,60 @@ describe("AuthorizationService with a Connections page -- one link per turn", ()
     expect(verdict.secretEnv?.map((e) => e.name)).toEqual(["CLAUDE_CODE_OAUTH_TOKEN", ACTOR_LOGIN_ENV]);
   });
 });
+
+describe("AuthorizationService read-only turns (docs/event-triggers.md §1)", () => {
+  // The per-user GitHub token can push wherever its human can, so a read-only
+  // turn must never be handed it -- withheld at the decision point, not trusted
+  // to go unused in the pod.
+  it("withholds the write-capable GitHub credential from a read-only launch, keeping everything else", async () => {
+    const svc = new AuthorizationService({
+      identityLinkGateway: gateway({ github: { token: { token: "gho_x", githubLogin: "alice" } } }),
+      claudeAuthGateway: gateway({ claude: { token: { token: "sk-ant-oat01-x" } } }),
+    });
+    const req = {
+      agent: { id: "swe", identityProviders: ["github", "claude"] },
+      identity: identity(),
+      request: "review",
+      senderLogin: "alice",
+    };
+
+    const writable = await svc.authorize(req);
+    const readOnly = await svc.authorize({ ...req, readOnly: true });
+
+    if (writable.kind !== "authorized" || readOnly.kind !== "authorized") throw new Error("expected authorized");
+    expect(writable.secretEnv?.map((e) => e.name)).toContain("GITHUB_TOKEN");
+    expect(readOnly.secretEnv?.map((e) => e.name)).not.toContain("GITHUB_TOKEN");
+    expect(readOnly.secretEnv?.map((e) => e.name)).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    // The actor login still reaches the run (commit attribution, no /user call).
+    expect(readOnly.secretEnv?.find((e) => e.name === ACTOR_LOGIN_ENV)?.value).toBe("alice");
+  });
+
+  it("never prompts a read-only turn to link a credential it would not receive", async () => {
+    const github = gateway({});
+    const svc = new AuthorizationService({ identityLinkGateway: github });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["github"] },
+      identity: identity(),
+      request: "review",
+      readOnly: true,
+    });
+
+    expect(verdict.kind).toBe("authorized");
+    expect(github.start).not.toHaveBeenCalled();
+  });
+
+  it("withholds it from a read-only tool's linked credentials too", async () => {
+    const svc = new AuthorizationService({
+      identityLinkGateway: gateway({ github: { token: { token: "gho_x" } } }),
+    });
+
+    expect(await svc.resolveLinkedCredentials({ identity: identity(), identityProviders: ["github"] })).toEqual({
+      kind: "resolved",
+      secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_x" }],
+    });
+    expect(
+      await svc.resolveLinkedCredentials({ identity: identity(), identityProviders: ["github"], readOnly: true }),
+    ).toEqual({ kind: "resolved" });
+  });
+});

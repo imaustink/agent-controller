@@ -12,8 +12,9 @@
 #        - Helm releases whose `helm upgrade` failed → `helm rollback`.
 #        - Deployments whose `kubectl rollout` failed → `kubectl rollout undo`.
 #   3. Opens a GitHub issue with all of the above and labels it `ai-triage`
-#      (the label the integration-gateway watches to auto-start triage — see
-#      docs/adr/0024-integration-route-crd-for-deterministic-event-routing.md).
+#      (the label community-components' github-issue-triage EventTrigger
+#      matches to auto-start triage — see docs/adr/0048-generic-event-triggers.md
+#      and docs/event-triggers.md).
 #
 # It talks to the GitHub REST API with `curl` rather than `gh`, so it does not
 # depend on the GitHub CLI being installed on the self-hosted deploy runner.

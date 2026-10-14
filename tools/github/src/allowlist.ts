@@ -69,6 +69,26 @@ const ALLOWED_COMMANDS: Record<string, Set<string>> = {
   run: new Set(["view", "list", "watch", "download"]),
 } as const;
 
+/**
+ * The subset of {@link ALLOWED_COMMANDS} that only reads from GitHub, used
+ * when the ToolRun is read-only (`ToolRun.spec.readOnly` -> `TOOL_READ_ONLY`,
+ * ADR 0048). Also an explicit ALLOWLIST, so it fails closed: a subcommand
+ * added to ALLOWED_COMMANDS later is treated as a write until it is listed
+ * here. `repo clone` / `run download` write only to this container's
+ * scratch filesystem, never to GitHub.
+ */
+const READ_ONLY_COMMANDS: Record<string, Set<string>> = {
+  issue: new Set(["view", "list"]),
+  pr: new Set(["view", "list", "diff", "checks", "status"]),
+  repo: new Set(["view", "list", "clone"]),
+  release: new Set(["view", "list"]),
+  gist: new Set(["view", "list"]),
+  label: new Set(["list"]),
+  search: new Set(["issues", "prs", "repos", "code", "commits"]),
+  workflow: new Set(["view", "list"]),
+  run: new Set(["view", "list", "watch", "download"]),
+} as const;
+
 /** Splits a command line into tokens, honoring single/double-quoted spans (no shell involved). */
 export function tokenize(commandLine: string): string[] {
   const tokens: string[] = [];
@@ -84,9 +104,10 @@ export function tokenize(commandLine: string): string[] {
  * Validates a tokenized `gh` command line and returns the exact argv to
  * spawn (unmodified beyond the allowlist check itself -- see the file
  * header for why flags/values aren't additionally restricted here). Throws
- * {@link BlockedCommandError} on anything outside the allowlist.
+ * {@link BlockedCommandError} on anything outside the allowlist, and, when
+ * `opts.readOnly` is set, on anything outside {@link READ_ONLY_COMMANDS}.
  */
-export function validateCommand(tokens: string[]): string[] {
+export function validateCommand(tokens: string[], opts: { readOnly?: boolean } = {}): string[] {
   const [command, subcommand] = tokens;
   if (!command) {
     throw new BlockedCommandError("No gh command given.");
@@ -101,6 +122,12 @@ export function validateCommand(tokens: string[]): string[] {
     const attempted = `gh ${command} ${subcommand ?? ""}`.trim();
     throw new BlockedCommandError(
       `"${attempted}" is not allowed. Allowed "gh ${command}" subcommands: ${[...allowedSubcommands].join(", ")}.`,
+    );
+  }
+  if (opts.readOnly && !READ_ONLY_COMMANDS[command]?.has(subcommand)) {
+    throw new BlockedCommandError(
+      `"gh ${command} ${subcommand}" is not allowed: this tool run is read-only. ` +
+        `Read-only "gh ${command}" subcommands: ${[...(READ_ONLY_COMMANDS[command] ?? [])].join(", ") || "(none)"}.`,
     );
   }
   return tokens;

@@ -11,12 +11,13 @@ Two kinds of actor reconcile them:
 
 - **The `core-controller` operator** (`controllers/core-controller`) watches most
   kinds. Only `ToolRun` and `AgentRun` create Kubernetes Jobs; `Corpus` creates a
-  sync CronJob; every other controller only validates the spec and sets a `Ready`
+  sync CronJob and a cron `EventSource` a tick CronJob; every other controller only validates the spec and sets a `Ready`
   condition.
 - **Out-of-cluster brokers.** The `connection-broker` reads `Connection`/`Corpus`
   for ingestion and retrieval; the `mcp-broker` owns `MCPServer`/`MCPTool`
   entirely (there is **no** in-cluster controller for those two — see
-  [ADR 0045](adr/0045-mcp-server-proxied-tools.md)). The `agent-orchestrator` and
+  [ADR 0045](adr/0045-mcp-server-proxied-tools.md)); `integration-gateway` reads
+  `EventSource`s to serve webhooks. The `agent-orchestrator` and
   the Temporal `catalog-sync` process read the catalog kinds into a vector store
   for RAG retrieval.
 
@@ -40,7 +41,8 @@ usually operator-authored but is also **derived** from each `KnowledgeBase`.
 | [KnowledgeBase](#knowledgebase) | A queryable composition of Corpora | operator | knowledgebase_controller + orchestrator | [0039](adr/0039-knowledgebase-crd-composed-corpora.md) |
 | [MCPServer](#mcpserver) | An authenticated route to one MCP server | operator | **mcp-broker** (no in-cluster controller) | [0045](adr/0045-mcp-server-proxied-tools.md) |
 | [MCPTool](#mcptool) | A proxied MCP tool, materialized into the catalog | **system (mcp-broker)** | **mcp-broker** (no in-cluster controller) | [0045](adr/0045-mcp-server-proxied-tools.md) |
-| [IntegrationRoute](#integrationroute) | Deterministic inbound-event → target dispatch | operator | integrationroute_controller + orchestrator | [0024](adr/0024-integration-route-crd-for-deterministic-event-routing.md) |
+| [EventSource](#eventsource) | How events arrive (verified webhook or cron) and how far they are trusted | operator | eventsource_controller + integration-gateway | [0048](adr/0048-generic-event-triggers.md) |
+| [EventTrigger](#eventtrigger) | CEL match on an event → orchestrator / Skill / Agent / Tool, with params + replies | operator | eventtrigger_controller + orchestrator (both engines) | [0048](adr/0048-generic-event-triggers.md) |
 | [IdentityProvider](#identityprovider) | How a per-user credential is resolved and injected | operator | identityprovider_controller + orchestrator | [0032](adr/0032-tool-level-identity-delegation-and-github-cli-tool.md) |
 
 ## How they relate
@@ -57,7 +59,10 @@ graph TD
     subgraph mcp["MCP"]
         MCPServer; MCPTool
     end
-    IntegrationRoute; IdentityProvider
+    subgraph events["Events"]
+        EventSource; EventTrigger
+    end
+    IdentityProvider
 
     Skill -->|toolRefs| Tool
     Skill -->|agentRefs| Agent
@@ -74,7 +79,10 @@ graph TD
     MCPServer -->|discovers & owns| MCPTool
     MCPTool -.->|joins the catalog, referenced by| Skill
 
-    IntegrationRoute -->|skillRef / agentRef / toolRef| Skill
+    EventTrigger -->|sourceRef| EventSource
+    EventTrigger -->|skillRef| Skill
+    EventTrigger -->|agentRef| Agent
+    EventTrigger -->|toolRef| Tool
 
     Tool -->|identityProviders| IdentityProvider
     Agent -->|identityProviders| IdentityProvider
@@ -106,7 +114,7 @@ former JS `manifest.json` ([ADR 0009](adr/0009-static-build-time-tool-manifests.
   - `identityProviders` ([]string) — `IdentityProvider` CRs the caller must have linked.
   - **CEL:** exactly one of `agentRef` **or** (`image` **and** `serviceAccountName`).
 - **Status:** `Ready` condition.
-- **Referenced by:** `Skill.toolRefs`, `Agent.toolRefs`, `IntegrationRoute.toolRef`, `ToolRun.toolRef`.
+- **Referenced by:** `Skill.toolRefs`, `Agent.toolRefs`, `EventTrigger.target.toolRef`, `ToolRun.toolRef`.
 - **Acted on by:** `tool_controller.go` (validates the launch target); orchestrator (retrieval + dispatch).
 - **Sample:** `config/samples/tool_v1alpha1_tool.yaml`.
 
@@ -170,7 +178,7 @@ mirrors `Tool` so agents join the same RBAC-scoped retrieval
   - `model` (advisory), `maxIterations`, `env` / `secretEnv` / `resources`, `initContainers`.
   - `identityProviders` ([]string).
 - **Status:** `Ready` condition.
-- **Referenced by:** `Tool.agentRef`, `Skill.agentRefs`, `IntegrationRoute.agentRef`, `AgentRun.agentRef`.
+- **Referenced by:** `Tool.agentRef`, `Skill.agentRefs`, `EventTrigger.target.agentRef`, `AgentRun.agentRef`.
 - **Acted on by:** `agent_controller.go`; launched via `AgentRun` by the orchestrator.
 - **Sample:** `config/samples/tool_v1alpha1_agent.yaml`.
 
@@ -204,7 +212,7 @@ referenced tools' and agents' roles ([ADR 0011](adr/0011-skill-access-derived-fr
   - `toolRefs` / `agentRefs` ([]string) — the tools it may invoke and agents it may delegate to; the planner's choice is re-validated against these.
   - `allowCallerTools` (*bool) — governs caller-supplied tools ([ADR 0035](adr/0035-caller-supplied-tools-via-openai-facade.md)); **unset means allowed** (the OpenAI wire-contract default).
 - **Status:** `Ready` condition.
-- **Referenced by:** `Agent.skillRefs`, `IntegrationRoute.skillRef`.
+- **Referenced by:** `Agent.skillRefs`, `EventTrigger.target.skillRef`.
 - **Acted on by:** `skill_controller.go` (validates refs); the planner consumes the markdown.
 - **Sample:** `config/samples/tool_v1alpha1_skill.yaml`.
 
@@ -324,26 +332,108 @@ kind is `mcpExec`, carrying what the broker needs to proxy one `tools/call`.
 
 ---
 
-## Routing & identity
+## Events & identity
 
-### IntegrationRoute
+Event-driven dispatch is two kinds split by trust, like `MCPServer`/`MCPTool`
+and `Connection`/`Corpus`: the privileged, credential-bearing **source** and
+the many cheap **triggers** that read from it
+([ADR 0048](adr/0048-generic-event-triggers.md)). The implementation contract —
+envelope, CEL subset, matching, `/invoke` shape, gateway endpoints, cron — is
+[docs/event-triggers.md](event-triggers.md). Both kinds live in the release
+namespace.
 
-A declarative mapping from an inbound `integration-gateway` event to a target
-Skill/Agent/Tool plus a prompt, so a trigger (e.g. a GitHub issue labeled for the
-bot) dispatches **deterministically** instead of via RAG retrieval
-([ADR 0024](adr/0024-integration-route-crd-for-deterministic-event-routing.md),
-[docs/integrations-gateway.md](integrations-gateway.md)).
+### EventSource
+
+How events arrive and how far they are trusted. The object name is the route:
+a webhook source is served by `integration-gateway` at `POST /webhooks/<name>`;
+a cron source becomes a core-controller-owned `CronJob` that ticks
+`POST /events/<name>/tick`. Every source produces the same normalized envelope
+(`source`, `kind`, `id`, `time`, `headers`, `body`, `sender`, `repository`).
+
+- **Authored by:** operator (privileged: it names the verification Secret).
+- **Key spec fields** (exactly one of `webhook` / `cron`):
+  - `webhook.verify` — `scheme` (`hmacSha256` | `slackV0` | `bearer`; there is no "none": unauthenticated is not a source), `header` (required for `hmacSha256`; `bearer` defaults to `authorization`), `prefix` (stripped before the hex compare), `secretRef` (`{name, key}`, same namespace).
+  - `webhook.deliveryIdHeader` — becomes `envelope.id` (else a uuid).
+  - `cron` — `schedule` (5-field), `timeZone`, `suspend`, `payload` (any JSON object, delivered as `envelope.body`).
+  - `sender` (webhook only) — `provider: github`, CEL `loginFrom` / `isBotFrom` / `repositoryFrom`, `dropBots` (default `true`). A login is only forwarded as the turn's principal after the provider verifies it; a source without `sender` runs as the gateway's service identity.
+- **Status:** `Ready` condition; cron sources also `status.cronJobName` (`eventsource-<name>`). A cron source is `Ready=False` (`TickNotConfigured`) when core-controller has no `EVENT_TICK_URL`.
+- **Acted on by:** `eventsource_controller.go` (validates, owns the cron `CronJob`); `integration-gateway` serves and verifies webhooks from it.
+- **Sample:** `config/samples/core_v1alpha1_eventsource.yaml`.
+
+```yaml
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: EventSource
+metadata: { name: github }              # POST /webhooks/github
+spec:
+  webhook:
+    verify:
+      scheme: hmacSha256
+      header: x-hub-signature-256
+      prefix: "sha256="
+      secretRef: { name: integration-gateway-secrets, key: GITHUB_WEBHOOK_SECRET }
+    deliveryIdHeader: x-github-delivery
+  sender:
+    provider: github
+    loginFrom: body.sender.login
+    isBotFrom: body.sender.type == "Bot"
+    repositoryFrom: body.repository.full_name
+---
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: EventSource
+metadata: { name: nightly-sweep }
+spec:
+  cron:
+    schedule: "0 7 * * *"
+    payload: { repo: imaustink/agent-controller, limit: 25 }
+```
+
+### EventTrigger
+
+What a matching event dispatches. The orchestrator (both engines) evaluates every
+`Ready` trigger's CEL against the envelope; the highest `priority` (then name)
+wins, and **no match is a clean no-op** (`200 {"status":"ignored"}`), never a RAG
+fallback.
 
 - **Authored by:** operator.
 - **Key spec fields:**
-  - `match` (**required**) — exact match (no globs): `source` + `event` (required), `action` (any if omitted), `labelName` (a route naming it wins over one that omits it).
-  - `skillRef` / `agentRef` / `toolRef` — the dispatch target.
-  - `promptTemplate` (string, **required**) — rendered with `{{field}}` substitution from the matched event.
-  - **CEL:** exactly one of `skillRef` / `agentRef` / `toolRef`.
-- **Status:** `Ready` condition.
-- **Acted on by:** `integrationroute_controller.go` (validates the ref); the orchestrator dispatches on it.
-- **Sample:** `config/samples/tool_v1alpha1_integrationroute.yaml`.
+  - `sourceRef` — restricts to one EventSource; `priority` — tie-break.
+  - `match.cel` — a `bool` CEL expression over the envelope (absent = every event from `sourceRef`). A compile failure is `Ready=False`; an evaluation error is a non-match.
+  - `params` — name → CEL, evaluated to typed values; rendered into every `{{name}}` template.
+  - `sessionKey` — template for the turn's session id (else `event:<source>:<id>`).
+  - `target` — **CEL:** exactly one of `orchestrator: {}` (ordinary conversational turn), `skillRef`, `agentRef`, `toolRef` (runs the Tool once with `params` as its input, skipping the planner); `promptTemplate` (required unless `toolRef`); `readOnly` — the deterministic write gate, carried onto every `AgentRun`/`ToolRun` the turn launches.
+  - `reply.github` — `repository`, `issueNumber`, `ack` (+ `sessionPage`), `result`, `removeLabel` (on every outcome, durably). `reply.http` — a **literal** `url` (never templated) + optional signing `secretRef`. Executed by `integration-gateway`.
+- **Status:** `Ready` condition (CEL compiles, refs resolve).
+- **Acted on by:** `eventtrigger_controller.go` (compile + ref check); agent-orchestrator and the Temporal gateway match and dispatch.
+- **Sample:** `config/samples/core_v1alpha1_eventtrigger.yaml`; the shipped examples are bare manifests in `examples/event-triggers/` (not part of any chart).
 
+```yaml
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: EventTrigger
+metadata: { name: github-pr-review }
+spec:
+  sourceRef: github
+  match:
+    cel: >-
+      headers["x-github-event"] == "pull_request" &&
+      body.action == "labeled" && body.label.name == "ai-review"
+  params:
+    repository: body.repository.full_name
+    number: body.pull_request.number
+    label: body.label.name
+  sessionKey: "github:{{repository}}#{{number}}"
+  target:
+    agentRef: claude-code-swe-agent
+    readOnly: true
+    promptTemplate: Review pull request {{repository}}#{{number}} ...
+  reply:
+    github:
+      repository: "{{repository}}"
+      issueNumber: "{{number}}"
+      ack: "🤖 Starting work on this now."
+      sessionPage: true
+      result: true
+      removeLabel: "{{label}}"
+```
 ### IdentityProvider
 
 Declares, once per provider (e.g. `github`), how the orchestrator resolves and

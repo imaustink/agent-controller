@@ -33,6 +33,8 @@ type AuthorizeInput struct {
 	// TargetRepository is the "owner/name" the run will work in; see
 	// authz.Request.TargetRepository.
 	TargetRepository string `json:"targetRepository,omitempty"`
+	// ReadOnly withholds write-capable credentials; see authz.Request.ReadOnly.
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // AuthorizeActivities is the workflow-facing side of the pre-flight.
@@ -63,6 +65,7 @@ func (in AuthorizeInput) request() authz.Request {
 		RunTimeoutSeconds: in.RunTimeoutSeconds,
 		Pending:           in.Pending,
 		TargetRepository:  in.TargetRepository,
+		ReadOnly:          in.ReadOnly,
 	}
 }
 
@@ -82,6 +85,9 @@ func (a *AuthorizeActivities) ResolveLinked(ctx context.Context, in AuthorizeInp
 type ToolCredentialsInput struct {
 	Tool   catalog.ToolDescriptor `json:"tool"`
 	Caller Caller                 `json:"caller"`
+	// ReadOnly refuses a tool that would act on GitHub as the caller; see
+	// authz.Service.ResolveLinked.
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // ResolveToolCredentials gates a container Tool launch on the caller having
@@ -101,5 +107,6 @@ func (a *AuthorizeActivities) ResolveToolCredentials(ctx context.Context, in Too
 			Principal: in.Caller.Principal,
 			PerUser:   in.Caller.PerUser,
 		},
+		ReadOnly: in.ReadOnly,
 	})
 }

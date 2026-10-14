@@ -12,6 +12,18 @@ export interface AgentRuntimeConfig {
   /** The initial goal for this run (AGENT_GOAL, or argv[2] as a fallback). */
   goal: string;
   /**
+   * Whether this run is read-only (AGENT_READ_ONLY, set from
+   * `AgentRun.spec.readOnly`; ADR 0048). Only the exact string `"true"` turns
+   * it on. The agent is responsible for enforcing it (e.g. the SWE agents deny
+   * push/PR commands and mint a `contents:read` token).
+   */
+  readOnly: boolean;
+  /**
+   * Structured run parameters (AGENT_PARAMS, a JSON object of strings set from
+   * `AgentRun.spec.params`; ADR 0048). `{}` when unset.
+   */
+  params: Record<string, string>;
+  /**
    * How long to keep re-offering a concluding message that has not been acked
    * (AGENT_REPLY_ACK_TIMEOUT_MS), and how often (AGENT_REPLY_ACK_RETRY_MS) —
    * see `runtime.ts`'s `publishHeld`.
@@ -53,6 +65,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, argv: string[] 
     runId: runId!,
     subjectPrefix: env.AGENT_NATS_SUBJECT_PREFIX ?? "agent",
     goal: goal!,
+    readOnly: env.AGENT_READ_ONLY === "true",
+    params: parseParams(env.AGENT_PARAMS),
     ...numeric("replyAckTimeoutMs", env.AGENT_REPLY_ACK_TIMEOUT_MS),
     ...numeric("replyAckRetryMs", env.AGENT_REPLY_ACK_RETRY_MS),
   };
@@ -72,4 +86,31 @@ function numeric(key: string, raw: string | undefined): Record<string, number> {
     throw new AgentConfigError(`invalid ${key} (${raw}): expected a non-negative number of milliseconds`);
   }
   return { [key]: value };
+}
+
+/**
+ * Parses AGENT_PARAMS. Absent/empty means no params. Anything that is not a
+ * JSON object of string values fails the pod rather than running with params
+ * silently dropped: an agent that cannot see the parameters it was launched
+ * with would do the wrong task, not no task.
+ */
+function parseParams(raw: string | undefined): Record<string, string> {
+  if (raw === undefined || raw === "") return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new AgentConfigError(`invalid AGENT_PARAMS: not valid JSON (${err instanceof Error ? err.message : String(err)})`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new AgentConfigError("invalid AGENT_PARAMS: expected a JSON object of string values");
+  }
+  const params: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (typeof value !== "string") {
+      throw new AgentConfigError(`invalid AGENT_PARAMS: value for "${key}" must be a string, got ${value === null ? "null" : typeof value}`);
+    }
+    params[key] = value;
+  }
+  return params;
 }

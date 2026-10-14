@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -175,8 +176,10 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 		serviceAccountName: agent.Spec.ServiceAccountName,
 		// The agent-runtime SDK reads the goal from AGENT_GOAL env (not argv),
 		// to avoid shell escaping issues with arbitrary natural-language goals.
-		args:           nil,
-		staticEnv:      append(agent.Spec.Env, r.agentRuntimeEnv(run.Name, run.Spec.Goal)...),
+		args: nil,
+		// The run's own read-only gate and params go last, so they win over
+		// anything the Agent template sets under the same names.
+		staticEnv:      slices.Concat(agent.Spec.Env, r.agentRuntimeEnv(run.Name, run.Spec.Goal), agentEventEnv(run.Spec)),
 		secretEnv:      mergeSecretEnv(agent.Spec.SecretEnv, run.Spec.SecretEnv),
 		resources:      agent.Spec.Resources,
 		initContainers: agent.Spec.InitContainers,

@@ -8,6 +8,7 @@ import { withPortForward } from "../support/k8s.js";
 import { issueLabeledPayload, postGithubWebhook } from "../support/webhook.js";
 import { fakeGithubRequests, resetFakeGithub, webhookSecret } from "../support/fixtures.js";
 import { seedAllClaudeCredentials } from "../support/credential-store.js";
+import { isTemporal } from "../support/engine.js";
 
 /**
  * `support/k8s.ts`'s own `withPortForward` gates readiness on a plain HTTP
@@ -106,7 +107,9 @@ const STUB_REPLY_MARKER = "stub-agent-reply";
  */
 const CANONICAL = `github:${SENDER}`;
 
-describe("Temporal engine: a bridged pod agent actually runs as BridgedAgentWorkflow", () => {
+// Temporal-only by construction: it asks the Temporal server which workflow
+// ran. Under E2E_ENGINE=langgraph there is no workflow to find.
+describe.skipIf(!isTemporal())("Temporal engine: a bridged pod agent actually runs as BridgedAgentWorkflow", () => {
   let secret: string;
   let suiteStartedAt: Date;
 
@@ -125,7 +128,7 @@ describe("Temporal engine: a bridged pod agent actually runs as BridgedAgentWork
     await cleanupAgentRunsSince(suiteStartedAt);
   });
 
-  it("launches a real BridgedAgentWorkflow execution for the bridged agent an IntegrationRoute names", async () => {
+  it("launches a real BridgedAgentWorkflow execution for the bridged agent an EventTrigger names", async () => {
     const startedAt = new Date();
     const issueNumber = Date.now() % 100000;
 
@@ -153,8 +156,13 @@ describe("Temporal engine: a bridged pod agent actually runs as BridgedAgentWork
     const comment = await waitFor(
       "the stub agent's reply to be posted back to the issue",
       async () => {
+        // The trigger's ack ("Starting work on this now") is posted first;
+        // the reply is the comment carrying the stub's marker.
         const posted = (await fakeGithubRequests()).filter(
-          (r) => r.method === "POST" && r.path === `/repos/${OWNER}/${REPO}/issues/${issueNumber}/comments`,
+          (r) =>
+            r.method === "POST" &&
+            r.path === `/repos/${OWNER}/${REPO}/issues/${issueNumber}/comments` &&
+            String(r.body ?? "").includes(STUB_REPLY_MARKER),
         );
         return posted.length > 0 ? posted[posted.length - 1] : undefined;
       },
@@ -164,8 +172,8 @@ describe("Temporal engine: a bridged pod agent actually runs as BridgedAgentWork
 
     // Mechanism proof: Temporal itself, not a log line, says a
     // BridgedAgentWorkflow execution actually ran and completed for the
-    // route's target Agent (`stub-agent`, per the `github-issue-labeled-
-    // triage` IntegrationRoute this webhook matches) -- the only way that's
+    // trigger's target Agent (`stub-agent`, per the `github-issue-triage`
+    // EventTrigger this webhook matches) -- the only way that's
     // true is if `agentWorkflowNameFor` resolved the bridged branch,
     // LaunchAgentRun actually created the Job (which needed the
     // core-controller Job-name fix), and the pod ran to completion.

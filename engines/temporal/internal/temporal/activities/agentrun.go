@@ -32,6 +32,11 @@ type LaunchAgentRunInput struct {
 	// name and key names only — see internal/authz on event history.
 	CredentialSecretName string   `json:"credentialSecretName,omitempty"`
 	CredentialEnvVars    []string `json:"credentialEnvVars,omitempty"`
+
+	// ReadOnly / Params become AgentRun.spec.readOnly / spec.params (ADR
+	// 0048): turn properties set by the matched EventTrigger.
+	ReadOnly bool              `json:"readOnly,omitempty"`
+	Params   map[string]string `json:"params,omitempty"`
 }
 
 // AgentDownInput sends one message down to a running agent.
@@ -92,6 +97,8 @@ func (a *AgentRunActivities) LaunchAgentRun(ctx context.Context, in LaunchAgentR
 			strings.TrimRight(a.CallbackBaseURL, "/"), in.WorkflowID, in.RunID),
 		TimeoutSeconds: in.TimeoutSeconds,
 		SecretEnv:      secretEnv,
+		ReadOnly:       in.ReadOnly,
+		Params:         in.Params,
 	})
 	if err != nil {
 		a.Bridge.Detach(in.RunID)

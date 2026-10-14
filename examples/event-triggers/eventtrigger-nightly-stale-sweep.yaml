@@ -1,0 +1,24 @@
+# Example: a scheduled, read-only sweep. The nightly-sweep cron source's payload
+# is the envelope body, so params come from it exactly as from a webhook. Each
+# tick is its own session (event:nightly-sweep:<id>) since no sessionKey is set.
+# readOnly: the agent may read and report; it cannot push or open/merge PRs.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: EventTrigger
+metadata:
+  name: nightly-stale-sweep
+spec:
+  sourceRef: nightly-sweep
+  params:
+    repo: body.repo
+    limit: body.limit
+  target:
+    agentRef: "opencode-swe-agent"
+    readOnly: true
+    promptTemplate: |
+      Sweep {{repo}} for stale work: find up to {{limit}} open issues
+      and pull requests with no activity in the last 30 days. For each, say in
+      one line what it is, why it appears stalled, and the single next action a
+      maintainer should take (close, ping someone, rebase, or pick it up).
+
+      Report the list as your result. Do not comment on, label, close, or push
+      to anything -- this is a read-only report.

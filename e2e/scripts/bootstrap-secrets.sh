@@ -132,6 +132,20 @@ upsert e2e-integration-gateway-secrets \
   --from-literal=GITHUB_TOKEN="e2e-not-a-real-token" \
   --from-literal=ATLASSIAN_CLIENT_SECRET="e2e-not-a-real-secret"
 
+# The example EventSources' verification secrets and the reply.http signing
+# secret (e2e/manifests/event-triggers; docs/event-triggers.md).
+# Names are the examples' own. FIXED values, unlike GITHUB_WEBHOOK_SECRET
+# above: the gateway reads these through the API and may cache a verified
+# secret, so a value rotated under a running gateway would 401 every delivery
+# until it re-read -- a failure that looks like a verification bug. The specs
+# read them back from the cluster (e2e/support/events.ts) rather than assuming.
+upsert slack-event-source --from-literal=signingSecret="e2e-slack-signing-secret"
+upsert ci-event-source --from-literal=token="e2e-ci-bearer-token"
+upsert generic-hmac-event-source --from-literal=secret="e2e-generic-hmac-secret"
+upsert e2e-event-reply --from-literal=secret="e2e-event-reply-signing-secret"
+# Cron ticks need no Secret: each authenticates as its source's own
+# ServiceAccount (TokenReview), which core-controller creates.
+
 # The HS256 secret a chat turn's forwarded-user JWT is signed with. Fixed, and
 # read back out of the cluster by e2e/support/chat.ts rather than duplicated
 # there: the suite has to sign with whatever the orchestrator verifies against,

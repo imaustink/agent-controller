@@ -14,7 +14,8 @@ import { resolveCallerTools, toCallerToolDescriptor } from "./caller-tools/resol
 import type { ToolDescriptor } from "./tool-descriptor.js";
 import type { SessionStore } from "./session/types.js";
 import { InMemoryInvocationStore, type InvocationStore } from "./invocation/types.js";
-import { renderPromptTemplate, type CrdIntegrationRouteRegistry } from "./routing/crd-integration-route-registry.js";
+import { parseEnvelope, type EventTriggerSelector } from "./routing/crd-event-trigger-registry.js";
+import type { Envelope, RenderedReply } from "@controller-agent/event-triggers";
 import {
   buildAgentRequest,
   chatCompletionChunk,
@@ -206,19 +207,32 @@ export interface AgentGraphInput {
   reportIdentityLinkPending?: (info: { provider: string; subject: string }) => void;
   /**
    * Id of a Skill CR to dispatch to directly, bypassing RAG skill retrieval —
-   * set when `/invoke`'s optional `event` field matched an `IntegrationRoute`
-   * CR (deterministic event routing, e.g. a GitHub issue being assigned to
-   * the bot). Mutually exclusive with `forcedAgentId` in practice (a route
-   * has exactly one target), though the graph tolerates either being unset.
+   * set when `/invoke`'s `event` matched an EventTrigger whose target is
+   * `skillRef` (ADR 0048). At most one of forcedSkillId/forcedAgentId/
+   * forcedToolId is set; see `AgentState.forcedSkillId`.
    */
   forcedSkillId?: string;
-  /** Id of an Agent CR to dispatch to directly — see `forcedSkillId`. */
+  /** Id of an Agent CR to dispatch to directly (`agentRef` target) — see `forcedSkillId`. */
   forcedAgentId?: string;
+  /** Id of a Tool CR to run exactly once with `toolInput` (`toolRef` target) — see `forcedSkillId`. */
+  forcedToolId?: string;
+  /** The forced tool's single string input (docs/event-triggers.md §1). */
+  toolInput?: string;
   /**
-   * GitHub login of the human who triggered this turn, taken from
-   * `/invoke`'s `event.senderLogin` (integration-gateway populates it from
-   * the signature-verified webhook payload, and drops the event outright if
-   * that sender resolves to no identity).
+   * Read-only turn (docs/event-triggers.md §1): the trigger's `target.readOnly`
+   * OR the session's sticky flag. See `AgentState.readOnly`.
+   */
+  readOnly?: boolean;
+  /** The trigger's params in §4 string form -> `AgentRun.spec.params` of the targeted agent. */
+  params?: Record<string, string>;
+  /** Name of the EventTrigger that started this turn. */
+  triggerName?: string;
+  /**
+   * GitHub login of the human who triggered this turn: the verified sender
+   * assertion, or (no assertion secret configured) the envelope's
+   * `sender.login` (integration-gateway populates it from the
+   * signature-verified webhook payload, and drops the event outright if that
+   * sender resolves to no identity).
    *
    * The webhook path authenticates with the gateway's own service token, so
    * `identity.subject` is the same shared value for every trigger; this is
@@ -227,10 +241,11 @@ export interface AgentGraphInput {
    */
   senderLogin?: string;
   /**
-   * The `owner/repo` a relayed webhook event fired on, read off `/invoke`'s
-   * `event` descriptor. It is the repository integration-gateway verified the
-   * sender's permission on, so the Temporal engine's read gate takes a
-   * GitHub-acting agent's repository from here rather than from the prompt.
+   * The `owner/repo` a relayed webhook event fired on: the envelope's
+   * `repository` (the EventSource's `sender.repositoryFrom`). It is the
+   * repository integration-gateway verified the sender's permission on, so the
+   * Temporal engine's read gate takes a GitHub-acting agent's repository from
+   * here rather than from the prompt.
    */
   targetRepository?: string;
 }
@@ -284,6 +299,21 @@ interface CallerToolTurn {
   actionHistory: ToolCallRecord[];
 }
 
+/**
+ * The turn an EventTrigger resolved (docs/event-triggers.md §5), bundled so it
+ * rides into `buildGraphInput` as one argument. Everything here was derived by
+ * the shared `selectTrigger` -- the graph never sees the raw envelope.
+ */
+interface TriggerTurn {
+  triggerName: string;
+  forcedSkillId?: string;
+  forcedAgentId?: string;
+  forcedToolId?: string;
+  toolInput?: string;
+  readOnly: boolean;
+  params: Record<string, string>;
+}
+
 export class InvokeServer {
   private server: Server | undefined;
   /**
@@ -321,13 +351,12 @@ export class InvokeServer {
      */
     private readonly taskCompleter?: TaskCompleter,
     /**
-     * Optional declarative event→Skill/Agent/Tool routing table (a new
-     * IntegrationRoute CR per docs/integrations-gateway.md's deferred "Open
-     * Questions" proposal). Absent -> `/invoke`'s `event` field, if sent, is
-     * simply ignored and every request goes through RAG retrieval exactly as
-     * before this feature existed.
+     * EventTrigger table (ADR 0048, docs/event-triggers.md). `/invoke` with an
+     * `event` envelope is matched against it: no match is a clean no-op
+     * (`200 ignored`), never a fall-through to RAG over the rendered event.
+     * Absent -> no trigger can match, so every event is ignored.
      */
-    private readonly integrationRouteRegistry?: CrdIntegrationRouteRegistry,
+    private readonly eventTriggerRegistry?: EventTriggerSelector,
     /**
      * Optional live-session tunnel (ADR 0026): lets `GET /sessions/:id/live`,
      * `GET /agent-runs/:id/events`, and `POST /agent-runs/:id/opencode`
@@ -341,7 +370,7 @@ export class InvokeServer {
      * (docs/adr/0030 §6).
      *
      * When set, a webhook turn's sender login is accepted ONLY from a verified
-     * assertion and the unsigned `event.senderLogin` body field is ignored.
+     * assertion and the unsigned `event.sender.login` envelope field is ignored.
      * When unset, the body field is trusted -- the pre-assertion behaviour,
      * kept so an existing deployment is not broken by upgrading, and warned
      * about at startup (see index.ts).
@@ -397,8 +426,6 @@ export class InvokeServer {
     progressListener?: (stage: string, message: string | undefined) => void,
     identityLinkFlow?: "device" | "authcode",
     forwardedUserToken?: string,
-    forcedSkillId?: string,
-    forcedAgentId?: string,
     // Deliberately a separate trailing param, not folded into
     // `progressListener` -- see `AgentGraphInput.remoteControlUrlListener`'s
     // doc for why conflating the two caused a real incident (a fire-and-
@@ -414,6 +441,8 @@ export class InvokeServer {
      * to execute a tool call, so it stays absent.
      */
     callerTools?: CallerToolTurn,
+    /** The EventTrigger-resolved turn, when `/invoke` carried a matching event. */
+    trigger?: TriggerTurn,
   ): Promise<AgentGraphInput> {
     const input: AgentGraphInput = { request, authToken };
     if (senderLogin) input.senderLogin = senderLogin;
@@ -435,8 +464,17 @@ export class InvokeServer {
       identityLinkFlow ?? (this.defaultIdentityLinkFlow === "authcode" ? undefined : this.defaultIdentityLinkFlow);
     if (resolvedFlow) input.identityLinkFlow = resolvedFlow;
     if (forwardedUserToken) input.forwardedUserToken = forwardedUserToken;
-    if (forcedSkillId) input.forcedSkillId = forcedSkillId;
-    if (forcedAgentId) input.forcedAgentId = forcedAgentId;
+    if (trigger) {
+      input.triggerName = trigger.triggerName;
+      if (trigger.forcedSkillId) input.forcedSkillId = trigger.forcedSkillId;
+      if (trigger.forcedAgentId) input.forcedAgentId = trigger.forcedAgentId;
+      if (trigger.forcedToolId) {
+        input.forcedToolId = trigger.forcedToolId;
+        input.toolInput = trigger.toolInput ?? "";
+      }
+      if (trigger.readOnly) input.readOnly = true;
+      if (Object.keys(trigger.params).length > 0) input.params = trigger.params;
+    }
     // Carried through to every launched ToolRun/AgentRun CR as an annotation
     // (docs/adr/0012) purely for kubectl-level debugging -- independent of
     // whether a session store is configured, unlike the fields below.
@@ -444,6 +482,15 @@ export class InvokeServer {
     if (!sessionId || !this.sessionStore) return input;
     const record = await this.sessionStore.get(sessionId);
     if (!record) return input;
+    // Sticky read-only (docs/event-triggers.md §1): once the conversation ran a
+    // read-only turn, this one is read-only too. OR-ed, so a session can only
+    // make a turn MORE restricted. Deliberately NOT gated on the record's
+    // subject the way the routing hints below are (the graph checks those):
+    // honoring a restriction from a record some other caller wrote leaks
+    // nothing, while ignoring it would let a follow-up from a different
+    // identity -- a session-page user rather than the webhook relay -- run
+    // with write access in a conversation that was opened read-only.
+    if (record.readOnly) input.readOnly = true;
     input.activeSkillId = record.activeSkillId;
     input.activeAgentId = record.activeAgentId;
     input.activeAgentRunId = record.activeAgentRunId;
@@ -489,6 +536,7 @@ export class InvokeServer {
       approvalWaiting?: boolean;
       subAgentApprovalPending?: SubAgentApprovalPending;
       subAgentApprovalWaiting?: boolean;
+      readOnly?: boolean;
     },
   ): Promise<void> {
     if (!sessionId || !this.sessionStore || !identity) return;
@@ -516,6 +564,10 @@ export class InvokeServer {
       // Kept even once activeAgentRunId is cleared below (ADR 0026) -- a
       // live-session viewer's only way to know which run id to probe.
       ...(outcome.agentRunId ? { lastAgentRunId: outcome.agentRunId } : { lastAgentRunId: existing?.lastAgentRunId }),
+      // Sticky read-only: every write below REPLACES the record, so the flag is
+      // carried forward here or it would be silently dropped by the first turn
+      // that persists anything. Monotonic -- never written as false.
+      ...(existing?.readOnly || outcome.readOnly ? { readOnly: true } : {}),
     };
 
     if (outcome.approvalWaiting && outcome.approvalPending) {
@@ -590,9 +642,27 @@ export class InvokeServer {
     // Neither branch fired (e.g. tool ran under a fresh/unrelated skill
     // that didn't set selectedSkill for some reason) -- still persist any
     // continuation tokens merged in above rather than silently dropping them.
-    if (outcome.extractedContinuation || outcome.extractedAgentContinuation) {
+    if (outcome.extractedContinuation || outcome.extractedAgentContinuation || (outcome.readOnly && !existing?.readOnly)) {
       await this.sessionStore.set(sessionId, base);
     }
+  }
+
+  /**
+   * Records a read-only turn on its session BEFORE the turn runs (see
+   * `SessionRecord.readOnly`): a pod killed after launching a read-only run
+   * but before `persistSession` must not leave the conversation's next turn
+   * write-capable. Patches whatever is stored (the record may already hold an
+   * anchor this turn depends on). A record created here has no subject yet,
+   * which the graph's subject checks treat as "no session" for routing --
+   * exactly right, since there is nothing to route on -- and `persistSession`
+   * stamps the real subject once the turn resolves one.
+   */
+  private async markSessionReadOnly(sessionId: string): Promise<void> {
+    if (!this.sessionStore) return;
+    const existing = await this.sessionStore.get(sessionId);
+    if (existing?.readOnly) return;
+    const { updatedAt: _updatedAt, ...rest } = existing ?? { subject: "", updatedAt: 0 };
+    await this.sessionStore.set(sessionId, { ...rest, readOnly: true });
   }
 
   listen(port: number): Promise<void> {
@@ -824,10 +894,8 @@ export class InvokeServer {
     let request: string;
     let sessionId: string | undefined;
     let identityLinkFlow: "device" | "authcode" | undefined;
-    let forcedSkillId: string | undefined;
-    let forcedAgentId: string | undefined;
     let senderLogin: string | undefined;
-    let targetRepository: string | undefined;
+    let envelope: Envelope | undefined;
     // Consumer-supplied tools (docs/adr/0035), accepted here too so a
     // programmatic `/invoke` caller has parity with the chat facade. The raw
     // fields are captured inside the parse block and resolved after it, since
@@ -837,94 +905,96 @@ export class InvokeServer {
     let rawToolChoice: unknown;
     try {
       const parsed: unknown = rawBody ? JSON.parse(rawBody) : {};
-      if (
-        typeof parsed !== "object" ||
-        parsed === null ||
-        typeof (parsed as { request?: unknown }).request !== "string" ||
-        (parsed as { request: string }).request.trim() === ""
-      ) {
-        throw new Error("invalid body");
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("invalid body");
+      const body = parsed as Record<string, unknown>;
+
+      // An event envelope (ADR 0048, docs/event-triggers.md §2/§5). Present ->
+      // this is an event turn: `request` is optional (the matched trigger's
+      // rendered prompt replaces it) and a malformed envelope is a 400, never
+      // quietly run as a conversational turn over whatever `request` says.
+      if (body.event !== undefined) {
+        const parsedEnvelope = parseEnvelope(body.event);
+        if ("error" in parsedEnvelope) {
+          res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: parsedEnvelope.error }));
+          return;
+        }
+        envelope = parsedEnvelope;
       }
-      request = (parsed as { request: string }).request;
-      const rawSessionId = (parsed as { session_id?: unknown }).session_id;
+      if (!envelope && (typeof body.request !== "string" || body.request.trim() === "")) throw new Error("invalid body");
+      request = typeof body.request === "string" ? body.request : "";
+      const rawSessionId = body.session_id;
       sessionId = typeof rawSessionId === "string" && rawSessionId.trim() !== "" ? rawSessionId : undefined;
       // Power-user/headless-caller convenience field, not required -- an
       // absent or invalid value is silently ignored (the graph's own
       // "authcode" default applies) rather than 400ing the whole request.
-      const rawFlow = (parsed as { identity_link_flow?: unknown }).identity_link_flow;
+      const rawFlow = body.identity_link_flow;
       identityLinkFlow = rawFlow === "device" || rawFlow === "authcode" ? rawFlow : undefined;
-      rawTools = (parsed as { tools?: unknown }).tools;
-      rawToolChoice = (parsed as { tool_choice?: unknown }).tool_choice;
+      rawTools = body.tools;
+      rawToolChoice = body.tool_choice;
 
-      // Optional event descriptor (e.g. { source: "github", event: "issues",
-      // action: "assigned", owner, repo, issueNumber, ... }) -- an adapter
-      // (integration-gateway) sends this alongside `request` when the
-      // inbound trigger already names an unambiguous target via an
-      // IntegrationRoute CR, so this call can bypass RAG skill retrieval
-      // entirely. No match (or no `event` at all) leaves `request` as the
-      // request text and behaves exactly as before this field existed.
-      const rawEvent = (parsed as { event?: unknown }).event;
-      // Read OUTSIDE the IntegrationRoute block below on purpose: the
-      // principal must resolve for every webhook-driven turn, including ones
-      // that match no route (or run with no route registry configured) and
-      // fall back to ordinary RAG retrieval. Gating it on a route match would
-      // have made cross-entry-point credential sharing quietly depend on
-      // routing config.
-      //
-      // WHERE the login is trusted from depends on configuration
+      // WHERE the sender login is trusted from depends on configuration
       // (docs/adr/0030 §6). It selects the caller's principal, and therefore
       // which stored credentials the run receives, so with an assertion secret
-      // configured ONLY a signed assertion is accepted and the body field is
-      // ignored entirely -- otherwise anything holding the gateway's /invoke
-      // token could name an arbitrary login and be handed that person's
-      // credentials.
+      // configured ONLY a signed assertion is accepted and the envelope's
+      // `sender.login` is ignored entirely -- otherwise anything holding the
+      // gateway's /invoke token could name an arbitrary login and be handed
+      // that person's credentials.
       if (this.senderAssertionSecret) {
         senderLogin = verifySenderAssertion(
           this.senderAssertionSecret,
           headerValue(req.headers[SENDER_ASSERTION_HEADER]),
         );
-      } else if (rawEvent && typeof rawEvent === "object") {
-        const login = (rawEvent as Record<string, unknown>).senderLogin;
+      } else if (envelope) {
+        const login = envelope.sender.login;
         if (typeof login === "string" && login.trim() !== "") senderLogin = login;
-      }
-      if (rawEvent && typeof rawEvent === "object") {
-        const { owner, repo } = rawEvent as Record<string, unknown>;
-        if (typeof owner === "string" && owner && typeof repo === "string" && repo) {
-          targetRepository = `${owner}/${repo}`;
-        }
-      }
-      if (this.integrationRouteRegistry && rawEvent && typeof rawEvent === "object") {
-        const eventFields = rawEvent as Record<string, unknown>;
-        const source = eventFields.source;
-        const eventName = eventFields.event;
-        const action = eventFields.action;
-        // `labelName` participates in matching too: GitHub's
-        // `pull_request`/`labeled` triple carries more than one intent (a
-        // review request vs. a triage request), told apart only by which
-        // label was applied.
-        const labelName = eventFields.labelName;
-        if (typeof source === "string" && typeof eventName === "string") {
-          const route = this.integrationRouteRegistry.match(
-            source,
-            eventName,
-            typeof action === "string" ? action : undefined,
-            typeof labelName === "string" ? labelName : undefined,
-          );
-          if (route) {
-            request = renderPromptTemplate(
-              route.promptTemplate,
-              eventFields as Record<string, string | number | undefined>,
-            );
-            forcedSkillId = route.skillRef;
-            forcedAgentId = route.agentRef;
-          }
-        }
       }
     } catch {
       res.writeHead(400, { "content-type": "application/json" }).end(
-        JSON.stringify({ error: "body must be JSON: { \"request\": \"<non-empty string>\" }" }),
+        JSON.stringify({ error: 'body must be JSON: { "request": "<non-empty string>" } or { "event": <envelope> }' }),
       );
       return;
+    }
+
+    // ── EventTrigger selection (docs/event-triggers.md §4/§5) ──────────────
+    // Resolved here, once, by the shared contract package, so both engine
+    // modes run exactly the turn this process selected: the Temporal engine is
+    // handed the resolved target, never the envelope.
+    let trigger: TriggerTurn | undefined;
+    let triggerResponse: { name: string; sessionId: string; reply: RenderedReply | null } | undefined;
+    let targetRepository: string | undefined;
+    if (envelope) {
+      const selection = this.eventTriggerRegistry?.select(envelope, sessionId ? { callerSessionId: sessionId } : {}) ?? {
+        status: "ignored" as const,
+      };
+      if (selection.status === "ignored") {
+        // A clean no-op: no turn, no invocation record, and deliberately no
+        // RAG fallback -- a Stripe or CI webhook that matches nothing must not
+        // be interpreted as free text (ADR 0048).
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ status: "ignored" }));
+        return;
+      }
+      if (selection.status === "failed") {
+        res
+          .writeHead(422, { "content-type": "application/json" })
+          .end(JSON.stringify({ status: "failed", error: `event trigger ${selection.trigger}: ${selection.error}` }));
+        return;
+      }
+      const { target } = selection;
+      // A toolRef trigger needs no promptTemplate, but the turn still needs a
+      // request (it is what the session, run annotations and logs show), so it
+      // gets a short descriptive one -- never text lifted from the event body.
+      request = selection.prompt !== "" ? selection.prompt : `Run tool ${target.ref ?? ""}`.trim();
+      sessionId = selection.sessionId;
+      targetRepository = envelope.repository !== "" ? envelope.repository : undefined;
+      trigger = {
+        triggerName: selection.trigger,
+        ...(target.kind === "skill" ? { forcedSkillId: target.ref } : {}),
+        ...(target.kind === "agent" ? { forcedAgentId: target.ref } : {}),
+        ...(target.kind === "tool" ? { forcedToolId: target.ref, toolInput: selection.toolInput } : {}),
+        readOnly: target.readOnly,
+        params: selection.stringParams,
+      };
+      triggerResponse = { name: selection.trigger, sessionId: selection.sessionId, reply: selection.reply };
     }
 
     // `/invoke` has no prior-tool-call history to read: it takes a single
@@ -969,8 +1039,6 @@ export class InvokeServer {
       undefined,
       identityLinkFlow,
       undefined,
-      forcedSkillId,
-      forcedAgentId,
       // Tracks the latest "remote-control-url" progress message onto this
       // invocation's record (see `InvocationRecord.remoteControlUrl`) --
       // passed via the dedicated `remoteControlUrlListener` param, NOT
@@ -985,8 +1053,16 @@ export class InvokeServer {
       },
       senderLogin,
       callerTools,
-    ).then((graphInput) => {
+      trigger,
+    ).then(async (graphInput) => {
       if (targetRepository) graphInput.targetRepository = targetRepository;
+      // Persist a read-only turn's flag BEFORE anything launches (see
+      // `markSessionReadOnly`). Awaited, and a failure fails the turn: the
+      // flag's job is to make later turns read-only, and a turn that can't
+      // record that must not go on to launch runs the next turn won't know
+      // were read-only. (The Redis adapter swallows its own errors by
+      // contract, so this only bites a store that actually throws.)
+      if (graphInput.readOnly && sessionId) await this.markSessionReadOnly(sessionId);
       // Mark the in-flight job identity-link-pending the moment the graph
       // decides a link is needed (before the link URL exists), so a polling
       // caller can withhold a premature "starting work" ack. Only mutate while
@@ -1012,6 +1088,7 @@ export class InvokeServer {
             identityLinkPending: state.identityLinkPending,
             subAgentApprovalPending: state.subAgentApprovalPending,
             subAgentApprovalWaiting: state.subAgentApprovalWaiting,
+            readOnly: state.readOnly === true || graphInput.readOnly === true,
           });
           // Carry forward any remoteControlUrl already recorded by the
           // progress listener above -- this terminal write replaces the whole
@@ -1065,8 +1142,12 @@ export class InvokeServer {
       });
     });
 
+    // An event turn also tells the caller WHICH trigger it started and with
+    // what already-rendered reply side-effects (docs/event-triggers.md §5) --
+    // integration-gateway's reply adapters act on exactly this, never on
+    // anything they re-derive from the event.
     res.writeHead(202, { "content-type": "application/json", location: `/invoke/${id}` }).end(
-      JSON.stringify({ id, status: "pending" }),
+      JSON.stringify({ id, status: "pending", ...(triggerResponse ? { trigger: triggerResponse } : {}) }),
     );
   }
 
@@ -1277,8 +1358,6 @@ export class InvokeServer {
       forwardedUserToken,
       undefined,
       undefined,
-      undefined,
-      undefined,
       callerTools,
     );
     const state = await this.graph.invoke(graphInput);
@@ -1451,7 +1530,7 @@ export class InvokeServer {
         const label = renderTurnEvent(turnEvent("tool-progress", { stage, message }));
         openStatusLabel = label;
         writeSseStatus(res, label, false);
-      }, identityLinkFlow, forwardedUserToken, undefined, undefined, undefined, undefined, callerTools);
+      }, identityLinkFlow, forwardedUserToken, undefined, undefined, callerTools);
       const source = await this.graph.stream(graphInput, { streamMode: "updates" });
       // Accumulated across updates so the session can be persisted once the
       // turn reaches a successful terminal node (docs/adr/0012).

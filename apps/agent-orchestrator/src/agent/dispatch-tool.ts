@@ -50,6 +50,13 @@ export async function dispatchResolvedTool(
      * the exact same policy `approvalGranted` plays for the top-level `runTool`.
      */
     suppressApprovalGate?: boolean;
+    /**
+     * The launching turn is read-only (docs/event-triggers.md §1): the ToolRun
+     * carries `spec.readOnly`. A sub-agent's own tool calls inherit it from the
+     * turn that launched the sub-agent -- a read-only review agent must not
+     * reach a write through a tool it calls.
+     */
+    readOnly?: boolean;
   } = {},
 ): Promise<ToolCallOutcome> {
   // Declarative tool-approval gate (ADR 0003), mirrored from `runTool` so a
@@ -115,6 +122,7 @@ export async function dispatchResolvedTool(
         natsUrl: deps.natsUrl,
         natsSubject: `callbacks.${jobId}`,
         ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+        ...(opts.readOnly ? { readOnly: true } : {}),
       });
     } else {
       if (!deps.callbackBaseUrl || !deps.callbackSecret) {
@@ -126,6 +134,7 @@ export async function dispatchResolvedTool(
         callbackUrl,
         callbackSecret: deps.callbackSecret,
         ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+        ...(opts.readOnly ? { readOnly: true } : {}),
       });
     }
     event = await awaitResult;
@@ -176,6 +185,8 @@ export function makeSubAgentToolCallHandler(
     onApprovalNeeded?: (call: { callId: string; tool: string; input: string; expiresAt: number }) => void;
     /** ms budget the orchestrator will hold a pending approval before timing it out. */
     approvalTimeoutMs?: number;
+    /** The launching turn is read-only; every tool this sub-agent calls runs read-only too. */
+    readOnly?: boolean;
   } = {},
 ): (call: { callId: string; tool: string; input: string }) => void {
   return (call) => {
@@ -217,6 +228,7 @@ export function makeSubAgentToolCallHandler(
           // The governing agent's fallback policy (ADR 0003) — a tool's own
           // `approval` still wins inside `dispatchResolvedTool`.
           agentApprovalDefault: agent.approvalDefault,
+          ...(opts.readOnly ? { readOnly: true } : {}),
         });
         await channel.resolveToolCall(runId, call.callId, outcome);
       } catch (err) {

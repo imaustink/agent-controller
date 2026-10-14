@@ -1,0 +1,18 @@
+# A timer source (docs/event-triggers.md §8). core-controller materializes it
+# as an owned ServiceAccount + CronJob (both eventsource-nightly-sweep); each
+# tick POSTs integration-gateway's /events/nightly-sweep/tick as that
+# ServiceAccount. The gateway builds the envelope with `payload` as its body,
+# so triggers read it exactly as they would a webhook body. No Secret needed.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: EventSource
+metadata:
+  name: nightly-sweep
+spec:
+  cron:
+    schedule: "0 7 * * *"
+    # IANA zone; omit for the cluster's (usually UTC).
+    # timeZone: America/Chicago
+    # suspend: true
+    payload:
+      repo: imaustink/agent-controller
+      limit: 25

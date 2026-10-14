@@ -56,3 +56,86 @@ subjects:
     name: {{ include "integration-gateway.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- if .Values.rbac.create }}
+---
+{{/*
+Generic event ingestion (docs/adr/0048): the gateway watches EventSources in
+its own namespace to know which /webhooks/<name> and /events/<name>/tick routes
+exist and how to verify each, and `get`s the Secret each one's
+webhook.verify.secretRef names. Read-only and namespace-scoped. `secrets: get`
+cannot be narrowed by name -- EventSources are operator-authored and may name
+any Secret -- so it is bounded by namespace, like the credential Role above.
+EventTriggers are deliberately NOT granted: matching happens in the
+orchestrator, never here.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "integration-gateway.fullname" . }}-event-sources
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "integration-gateway.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [{{ .Values.events.crdGroup | quote }}]
+    resources: ["eventsources"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "integration-gateway.fullname" . }}-event-sources
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "integration-gateway.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "integration-gateway.fullname" . }}-event-sources
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "integration-gateway.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+{{/*
+Cron ticks (docs/event-triggers.md §8): each cron EventSource's CronJob runs
+as its own ServiceAccount (eventsource-<name>) and presents a projected token
+minted for this gateway's audience. The gateway asks the API server whose
+token it is (TokenReview) and accepts a tick for source X only from X's
+ServiceAccount -- no shared secret to generate, store or rotate.
+
+The one ClusterRole this chart gives the gateway, because TokenReview is
+cluster-scoped and cannot be granted by a Role. It is exactly `create` on
+tokenreviews: it answers whether a token the gateway was HANDED is valid and
+whose it is, and grants access to no object. Not system:auth-delegator, which
+adds subjectaccessreviews the gateway has no use for. Namespace-prefixed, as a
+cluster-scoped name must not collide between releases.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-{{ include "integration-gateway.fullname" . }}-tokenreview
+  labels:
+    {{- include "integration-gateway.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-{{ include "integration-gateway.fullname" . }}-tokenreview
+  labels:
+    {{- include "integration-gateway.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Namespace }}-{{ include "integration-gateway.fullname" . }}-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "integration-gateway.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

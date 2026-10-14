@@ -1215,7 +1215,7 @@ describe("buildAgentGraph agent delegation continuation tokens (ADR 0017)", () =
   });
 });
 
-describe("buildAgentGraph checkIntegrationRoute (IntegrationRoute-forced dispatch)", () => {
+describe("buildAgentGraph checkEventTrigger (EventTrigger-forced dispatch, ADR 0048)", () => {
   it("resolves a forcedSkillId directly, bypassing RAG skill retrieval", async () => {
     const deps = baseDeps();
     const graph = buildAgentGraph(deps);
@@ -1228,7 +1228,7 @@ describe("buildAgentGraph checkIntegrationRoute (IntegrationRoute-forced dispatc
 
     expect(final.error).toBeUndefined();
     expect(final.selectedSkill?.id).toBe("recipe-publisher-skill");
-    // RAG retrieval (skillStore.query) never runs -- checkIntegrationRoute
+    // RAG retrieval (skillStore.query) never runs -- checkEventTrigger
     // resolved selectedSkill directly via skillStore.getByIds, routing
     // straight to loadSkillTools.
     expect(deps.skillStore.query).not.toHaveBeenCalled();
@@ -1373,7 +1373,10 @@ describe("buildAgentGraph checkIntegrationRoute (IntegrationRoute-forced dispatc
     expect(final.result).not.toMatch(/Authenticating|running Bash|running Read/);
   });
 
-  it("falls through to ordinary retrieval when forcedSkillId doesn't resolve to any Skill", async () => {
+  // Contract §1: a forced target that does not resolve under the caller's
+  // roles FAILS the turn. Falling through to retrieval would interpret the
+  // rendered event prompt as free text and run whatever it resembled.
+  it("fails the turn, without retrieval, when forcedSkillId doesn't resolve to any Skill", async () => {
     const skillStore: SkillStore = {
       upsert: vi.fn(),
       delete: vi.fn(),
@@ -1381,18 +1384,219 @@ describe("buildAgentGraph checkIntegrationRoute (IntegrationRoute-forced dispatc
       getByIds: vi.fn().mockResolvedValue([]),
     };
     const deps = baseDeps({ skillStore });
-    const graph = buildAgentGraph(deps);
 
-    const final = await graph.invoke({
+    const final = await buildAgentGraph(deps).invoke({
       request: "extract the recipe at https://example.com/recipe",
       authToken: "tok",
       forcedSkillId: "nonexistent-skill",
+      triggerName: "ci-failed",
     });
 
-    expect(final.error).toBeUndefined();
-    // Falls through to ordinary RAG retrieval, which still finds `skill`.
-    expect(deps.skillSelector.select).toHaveBeenCalled();
-    expect(final.selectedSkill?.id).toBe("recipe-publisher-skill");
+    expect(final.error).toBe('event trigger ci-failed: skill "nonexistent-skill" does not exist or is not available to this caller');
+    expect(deps.skillSelector.select).not.toHaveBeenCalled();
+    expect(skillStore.query).not.toHaveBeenCalled();
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
+
+  it("fails the turn, launching nothing, when forcedAgentId doesn't resolve to any Agent", async () => {
+    const agentRunLauncher: AgentRunLauncherPort = { launch: vi.fn() };
+    const deps = baseDeps({
+      agentStore: { upsert: vi.fn(), query: vi.fn().mockResolvedValue([]), getByIds: vi.fn().mockResolvedValue([]) },
+      agentChannel: { awaitReply: vi.fn(), sendPrompt: vi.fn(), close: vi.fn() },
+      agentRunLauncher,
+      callbackSecretRef: { name: "secret", key: "token" },
+    });
+
+    const final = await buildAgentGraph(deps).invoke({
+      request: "review",
+      authToken: "tok",
+      forcedAgentId: "revoked-agent",
+      triggerName: "pr-review",
+    });
+
+    expect(final.error).toBe('event trigger pr-review: agent "revoked-agent" does not exist or is not available to this caller');
+    expect(agentRunLauncher.launch).not.toHaveBeenCalled();
+    expect(deps.skillStore.query).not.toHaveBeenCalled();
+  });
+
+  it("fails the turn when forcedAgentId is set but agent delegation is not configured", async () => {
+    const final = await buildAgentGraph(baseDeps()).invoke({ request: "r", authToken: "tok", forcedAgentId: "a" });
+    expect(final.error).toContain('agent "a" cannot be dispatched');
+  });
+
+  describe("forced tool (toolRef target)", () => {
+    it("resolves the tool under the caller's roles and runs it exactly once with the trigger's tool input, no planner", async () => {
+      const deps = baseDeps({
+        vectorStore: {
+          upsert: vi.fn(),
+          delete: vi.fn(),
+          query: vi.fn().mockResolvedValue([]),
+          getByIds: vi.fn().mockResolvedValue([{ tool: scraperTool, score: 1 }]),
+        },
+      });
+
+      const final = await buildAgentGraph(deps).invoke({
+        request: "Run tool recipe-scraper",
+        authToken: "tok",
+        forcedToolId: "recipe-scraper",
+        toolInput: '{"url":"https://example.com/r"}',
+      });
+
+      expect(final.error).toBeUndefined();
+      expect(deps.vectorStore.getByIds).toHaveBeenCalledWith(["recipe-scraper"], { callerRoles: ["reader"] });
+      expect(deps.containerToolLauncher.launch).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(deps.containerToolLauncher.launch).mock.calls[0]![1]).toMatchObject({
+        args: ['{"url":"https://example.com/r"}'],
+      });
+      expect(deps.actionPlanner.plan).not.toHaveBeenCalled();
+      expect(deps.skillStore.query).not.toHaveBeenCalled();
+      expect(final.result).toEqual({ title: "Pancakes" });
+    });
+
+    it("still goes through the approval gate", async () => {
+      const gated: ToolDescriptor = { ...scraperTool, approval: "always" };
+      const deps = baseDeps({
+        vectorStore: { upsert: vi.fn(), delete: vi.fn(), query: vi.fn(), getByIds: vi.fn().mockResolvedValue([{ tool: gated, score: 1 }]) },
+      });
+
+      const final = await buildAgentGraph(deps).invoke({ request: "r", authToken: "tok", forcedToolId: "recipe-scraper", toolInput: "x" });
+
+      expect(final.approvalWaiting).toBe(true);
+      expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+    });
+
+    it("fails the turn when the tool is not available to the caller", async () => {
+      const deps = baseDeps({
+        vectorStore: { upsert: vi.fn(), delete: vi.fn(), query: vi.fn(), getByIds: vi.fn().mockResolvedValue([]) },
+      });
+
+      const final = await buildAgentGraph(deps).invoke({ request: "r", authToken: "tok", forcedToolId: "secret-tool", toolInput: "" });
+
+      expect(final.error).toBe('event trigger: tool "secret-tool" does not exist or is not available to this caller');
+      expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("readOnly / params reach every launched run", () => {
+    const sweAgent: AgentDescriptor = {
+      id: "claude-code-swe-agent",
+      name: "claude-code-swe-agent",
+      description: "Does software engineering tasks",
+      allowedRoles: ["reader"],
+      agentRunTemplate: { namespace: "default", agentRef: "claude-code-swe-agent" },
+      toolRefs: ["recipe-scraper"],
+    };
+
+    function agentDeps(channel?: Partial<AgentOrchestratorChannel>) {
+      const agentRunLauncher: AgentRunLauncherPort = { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) };
+      const deps = baseDeps({
+        agentStore: { upsert: vi.fn(), query: vi.fn().mockResolvedValue([]), getByIds: vi.fn().mockResolvedValue([{ agent: sweAgent }]) },
+        agentChannel: {
+          awaitReply: vi.fn().mockResolvedValue({ message: "reviewed", final: true, narration: [] } satisfies AgentTurnResult),
+          sendPrompt: vi.fn(),
+          close: vi.fn(),
+          ...channel,
+        },
+        agentRunLauncher,
+        callbackSecretRef: { name: "secret", key: "token" },
+        toolCatalog: { getById: (id) => (id === "recipe-scraper" ? scraperTool : undefined) },
+      });
+      return { deps, agentRunLauncher };
+    }
+
+    it("puts readOnly and the trigger's params on the targeted agent's AgentRun", async () => {
+      const { deps, agentRunLauncher } = agentDeps();
+
+      await buildAgentGraph(deps).invoke({
+        request: "Review acme/widgets#7",
+        authToken: "tok",
+        forcedAgentId: "claude-code-swe-agent",
+        readOnly: true,
+        params: { repo: "acme/widgets", number: "7" },
+      });
+
+      expect(vi.mocked(agentRunLauncher.launch).mock.calls[0]![2]).toMatchObject({
+        readOnly: true,
+        params: { repo: "acme/widgets", number: "7" },
+      });
+    });
+
+    it("launches an ordinary (non-read-only, param-less) AgentRun otherwise", async () => {
+      const { deps, agentRunLauncher } = agentDeps();
+
+      await buildAgentGraph(deps).invoke({ request: "r", authToken: "tok", forcedAgentId: "claude-code-swe-agent" });
+
+      const opts = vi.mocked(agentRunLauncher.launch).mock.calls[0]![2];
+      expect(opts.readOnly).toBeUndefined();
+      expect(opts.params).toBeUndefined();
+    });
+
+    it("gives params only to the agent the trigger named, not one an orchestrator-target turn delegates to", async () => {
+      const { deps, agentRunLauncher } = agentDeps();
+      deps.delegateSelector = { select: vi.fn().mockResolvedValue({ type: "agent", agent: sweAgent }) };
+      vi.mocked(deps.agentStore!.query).mockResolvedValue([{ agent: sweAgent, score: 0.9 }]);
+
+      await buildAgentGraph(deps).invoke({
+        request: "triage",
+        authToken: "tok",
+        triggerName: "catch-all",
+        params: { repo: "acme/widgets" },
+      });
+
+      expect(agentRunLauncher.launch).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(agentRunLauncher.launch).mock.calls[0]![2].params).toBeUndefined();
+    });
+
+    it("makes a forced skill's container ToolRun read-only", async () => {
+      const deps = baseDeps();
+      // The planner calls one tool, then finishes.
+      vi.mocked(deps.actionPlanner.plan)
+        .mockResolvedValueOnce({ action: "call_tool", toolId: "recipe-scraper", toolArgs: "u" })
+        .mockResolvedValueOnce({ action: "finish" });
+
+      await buildAgentGraph(deps).invoke({ request: "r", authToken: "tok", forcedSkillId: "recipe-publisher-skill", readOnly: true });
+
+      expect(vi.mocked(deps.containerToolLauncher.launch).mock.calls[0]![1]).toMatchObject({ readOnly: true });
+    });
+
+    it("makes an agent a forced skill reaches through its agentRefs read-only", async () => {
+      const agentSkill: SkillDescriptor = { ...skill, id: "review-skill", toolIds: [], agentIds: ["claude-code-swe-agent"] };
+      const { deps, agentRunLauncher } = agentDeps();
+      deps.skillStore.getByIds = vi.fn().mockResolvedValue([agentSkill]);
+      vi.mocked(deps.actionPlanner.plan)
+        .mockResolvedValueOnce({ action: "call_tool", toolId: "claude-code-swe-agent", toolArgs: "review it" })
+        .mockResolvedValueOnce({ action: "finish" });
+
+      await buildAgentGraph(deps).invoke({
+        request: "r",
+        authToken: "tok",
+        forcedSkillId: "review-skill",
+        readOnly: true,
+        params: { repo: "acme/widgets" },
+      });
+
+      expect(vi.mocked(agentRunLauncher.launch).mock.calls[0]![2]).toMatchObject({ readOnly: true });
+      // Params are for the agent the trigger NAMED, not one reached indirectly.
+      expect(vi.mocked(agentRunLauncher.launch).mock.calls[0]![2].params).toBeUndefined();
+    });
+
+    it("makes a read-only sub-agent's own tool calls launch read-only ToolRuns", async () => {
+      let toolCallSettled!: Promise<void>;
+      const resolveToolCall = vi.fn();
+      const { deps } = agentDeps({
+        resolveToolCall,
+        awaitReply: vi.fn(async (_runId: string, opts?: { onToolCall?: (c: { callId: string; tool: string; input: string }) => void }) => {
+          opts?.onToolCall?.({ callId: "c1", tool: "recipe-scraper", input: "u" });
+          toolCallSettled = vi.waitFor(() => expect(resolveToolCall).toHaveBeenCalled());
+          await toolCallSettled;
+          return { message: "done", final: true, narration: [] } satisfies AgentTurnResult;
+        }) as unknown as AgentOrchestratorChannel["awaitReply"],
+      });
+
+      await buildAgentGraph(deps).invoke({ request: "r", authToken: "tok", forcedAgentId: "claude-code-swe-agent", readOnly: true });
+
+      expect(vi.mocked(deps.containerToolLauncher.launch).mock.calls[0]![1]).toMatchObject({ readOnly: true });
+    });
   });
 
   it("does nothing when neither forcedSkillId nor forcedAgentId is set (ordinary turn, unaffected)", async () => {
@@ -4002,7 +4206,7 @@ describe("buildAgentGraph agent-turn resumability", () => {
 });
 
 /**
- * The label-triggered path's half of resumability. A matched IntegrationRoute
+ * The label-triggered path's half of resumability. A matched EventTrigger
  * dispatches deterministically, skipping retrieval — which also skipped the
  * re-attach check, so a re-applied trigger label launched a SECOND run while the
  * first was still holding the answer (docs/adr/0033).
@@ -4075,7 +4279,7 @@ describe("buildAgentGraph route-driven turns re-attach before dispatching again"
         query: vi.fn().mockResolvedValue([]),
         getByIds: vi
           .fn()
-          .mockResolvedValueOnce([{ agent: routedAgent }]) // checkIntegrationRoute's own lookup
+          .mockResolvedValueOnce([{ agent: routedAgent }]) // checkEventTrigger's own lookup
           .mockResolvedValueOnce([]), // checkActiveAgentRun's re-verify: gone
       } as AgentStore,
     });

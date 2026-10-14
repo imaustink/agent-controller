@@ -82,32 +82,32 @@ metadata:
   labels:
     {{- include "temporal-engine.labels" . | nindent 4 }}
 ---
-# The gateway watches IntegrationRoute CRs for deterministic event dispatch
-# (docs/adr/0024). Read-only, and the same shape agent-orchestrator already has
-# for the same resource.
+# The gateway watches EventTrigger CRs to match /invoke calls that carry an
+# event (docs/adr/0048). Read-only, and the same shape agent-orchestrator
+# already has for the same resource.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ .Release.Name }}-temporal-engine-route-reader
+  name: {{ .Release.Name }}-temporal-engine-trigger-reader
   namespace: {{ $catalogNs }}
   labels:
     {{- include "temporal-engine.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["core.controller-agent.dev"]
-    resources: ["integrationroutes"]
+    resources: ["eventtriggers"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ .Release.Name }}-temporal-engine-route-reader
+  name: {{ .Release.Name }}-temporal-engine-trigger-reader
   namespace: {{ $catalogNs }}
   labels:
     {{- include "temporal-engine.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ .Release.Name }}-temporal-engine-route-reader
+  name: {{ .Release.Name }}-temporal-engine-trigger-reader
 subjects:
   - kind: ServiceAccount
     name: {{ .Release.Name }}-temporal-engine-gateway

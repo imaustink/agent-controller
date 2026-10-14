@@ -29,3 +29,30 @@ describe("loadConfig reply-ack overrides", () => {
     expect(() => loadConfig({ ...base, AGENT_REPLY_ACK_RETRY_MS: "-1" } as NodeJS.ProcessEnv, [])).toThrow(AgentConfigError);
   });
 });
+
+describe("loadConfig readOnly / params (ADR 0048)", () => {
+  const base = { AGENT_NATS_URL: "nats://x", AGENT_RUN_ID: "run-1", AGENT_GOAL: "do it" };
+  const load = (extra: Record<string, string>) => loadConfig({ ...base, ...extra } as NodeJS.ProcessEnv, []);
+
+  it("defaults to not read-only with no params", () => {
+    const cfg = load({});
+    expect(cfg.readOnly).toBe(false);
+    expect(cfg.params).toEqual({});
+  });
+
+  it("is read-only only for the exact string 'true'", () => {
+    expect(load({ AGENT_READ_ONLY: "true" }).readOnly).toBe(true);
+    for (const v of ["", "false", "TRUE", "1", "yes"]) expect(load({ AGENT_READ_ONLY: v }).readOnly).toBe(false);
+  });
+
+  it("parses AGENT_PARAMS as a JSON object of strings", () => {
+    expect(load({ AGENT_PARAMS: '{"repo":"acme/widgets","pr":"7"}' }).params).toEqual({ repo: "acme/widgets", pr: "7" });
+    expect(load({ AGENT_PARAMS: "" }).params).toEqual({});
+  });
+
+  it("fails closed on malformed or non-object AGENT_PARAMS", () => {
+    for (const v of ["{not json", "[]", '"str"', "null", "42", '{"pr":7}', '{"a":null}', '{"a":{"b":"c"}}']) {
+      expect(() => load({ AGENT_PARAMS: v }), v).toThrow(AgentConfigError);
+    }
+  });
+});

@@ -113,6 +113,33 @@ const START_ATTEMPTS = 2;
  */
 const START_RETRY_DELAY_MS = 1_000;
 
+/**
+ * Providers whose injected credential can WRITE to the system the run acts on,
+ * and which a read-only turn (docs/event-triggers.md §1, ADR 0048) therefore
+ * never receives.
+ *
+ * `github` is the per-user GitHub token (`GITHUB_TOKEN`). ADR 0041 uses it as
+ * the run's READ credential, but it is the human's own OAuth token and cannot
+ * be down-scoped: whatever the human can push, a run holding it can push, and
+ * the agent runs arbitrary bash, so no in-pod `gh`/`git` routing confines it.
+ * `readOnly`'s whole promise is that it is deterministic and can only restrict,
+ * so the credential is withheld here, at the one place credentials are decided,
+ * rather than trusting the run to leave it alone (fail closed). A read-only SWE
+ * run then falls back to the App installation token, which it mints with the
+ * `contents:read` ceiling from `session.readOnly`, scoped to the target
+ * repository when one is known. The cost is ADR 0041's read scoping for these
+ * turns (reads as the App, not the human); the alternative is a write gate with
+ * a hole in it.
+ *
+ * NOT listed, deliberately: the `claude`/`claude-remote` model credentials --
+ * they reach Anthropic, not the target system -- and the `claude-remote`
+ * write-back grant. The grant writes the run's OWN refreshed model credential
+ * back to the store; withholding it would not make the run any more read-only,
+ * it would just let the CLI rotate the refresh token in-pod and lose it, so
+ * every later run fails "Login expired" (the one-strike write-back).
+ */
+export const WRITE_CAPABLE_PROVIDERS: ReadonlySet<string> = new Set(["github"]);
+
 /** A `secretEnv` entry destined for the launched run. Values are credentials; never log one. */
 export interface CredentialEnvEntry {
   name: string;
@@ -151,6 +178,11 @@ export interface AuthorizationRequest {
   reportIdentityLinkPending?: (info: { provider: string; subject: string }) => void;
   /** `"device"` for a headless caller with no browser to redirect; defaults to `"authcode"`. */
   identityLinkFlow?: "device" | "authcode";
+  /**
+   * The turn is read-only (docs/event-triggers.md §1): withhold every
+   * write-capable credential -- see {@link WRITE_CAPABLE_PROVIDERS}.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -384,9 +416,15 @@ export class AuthorizationService {
     let principalLogin: string | undefined;
     /** Set when the "do they already have a link?" lookup errored -- distinct from "they have none". */
     let principalLookupFailed = false;
-    const providerPlan: { name: string; principalOnly?: boolean }[] = (agent.identityProviders ?? []).map((name) => ({
-      name,
-    }));
+    // A read-only turn never receives a write-capable credential, so it never
+    // asks for one either: dropping the provider from the plan (rather than
+    // resolving and then discarding it) also means no link prompt for a
+    // credential the run would not get. The actor login still resolves below
+    // through the standalone lookup, the same path an Agent that never
+    // declared `github` takes.
+    const providerPlan: { name: string; principalOnly?: boolean }[] = (agent.identityProviders ?? [])
+      .filter((name) => !(req.readOnly && WRITE_CAPABLE_PROVIDERS.has(name)))
+      .map((name) => ({ name }));
     // Before offering a link, ask whether this caller already HAS one whose login
     // we can use. `resolveIdentity` asks the same question a node earlier, but it
     // is answered again here for one reason: the pre-flight must never prompt for
@@ -940,6 +978,8 @@ export class AuthorizationService {
   async resolveLinkedCredentials(input: {
     identity: Identity;
     identityProviders?: string[];
+    /** Withhold write-capable credentials ({@link WRITE_CAPABLE_PROVIDERS}); see `AuthorizationRequest.readOnly`. */
+    readOnly?: boolean;
   }): Promise<
     | { kind: "resolved"; secretEnv?: CredentialEnvEntry[] }
     | { kind: "gateway-missing"; provider: string }
@@ -949,6 +989,9 @@ export class AuthorizationService {
     const catalog = this.catalog();
     let secretEnv: CredentialEnvEntry[] | undefined;
     for (const provider of input.identityProviders ?? []) {
+      // Skipped, not "not-linked": the tool still runs, without the write
+      // credential, and fails on its own terms if it needed one (fail closed).
+      if (input.readOnly && WRITE_CAPABLE_PROVIDERS.has(provider)) continue;
       const gateway = this.gatewayFor(provider);
       if (!gateway) return { kind: "gateway-missing", provider };
       // Same keying as authorize()'s gate -- deriving a different subject here

@@ -1,0 +1,44 @@
+# The Skill the `ci-failure-skill` EventTrigger forces in the e2e environment
+# (e2e/manifests/event-triggers sets ci-failure-skill's skillRef to this name).
+#
+# Why not the example's own target (cluster-debug-skill)? Its audience needs the
+# kubectl-readonly and signoz-query Tools, neither of which has an image the e2e
+# profile builds or a backend this cluster runs -- a forced turn on it would
+# measure missing infrastructure, not the trigger. What the CI spec asserts is
+# the TRIGGER contract: the event matched, `target.skillRef` FORCED this skill
+# (no retrieval), and the outcome came back through `reply.http`, signed.
+#
+# "Forced" is made observable the same way caller-tool-skills.yaml makes a
+# planner decision observable: a skill's markdown is trusted system-prompt
+# content, and this one instructs the turn to answer with a fixed marker. No
+# other skill in the catalog says that marker, so seeing it in the reply means
+# THIS skill drove the turn. The description is deliberately useless for
+# retrieval so it never wins an unrelated spec's turn; the CI spec deletes it in
+# afterAll regardless, which flips the trigger to Ready=False TargetNotFound
+# until the next run re-applies it -- the trigger controller watches Skills, so
+# re-applying re-resolves it without touching the trigger.
+#
+# No toolRefs/agentRefs: an UNRESTRICTED skill (ADR 0011) -- reachable by the
+# gateway's own service identity, which is what a CI event (a source with no
+# `sender`) runs as, and needing no authorization pre-flight.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Skill
+metadata:
+  name: e2e-ci-failure-skill
+  labels:
+    e2e.controller-agent.dev/fixture: event-triggers
+spec:
+  description: >-
+    Acknowledges an e2e-ci-fixture pipeline failure notice by echoing a fixed
+    receipt. Applies only to requests about the e2e-ci-fixture pipeline.
+  markdown: |
+    # e2e CI failure receipt
+
+    You are acknowledging a CI failure notice from an end-to-end test.
+
+    Do not investigate anything and do not call any tool. Respond with exactly
+    one line, in this exact form, substituting the CI job name from the request:
+
+        E2E-CI-SKILL-RECEIPT job=<job name>
+
+    Output nothing else.

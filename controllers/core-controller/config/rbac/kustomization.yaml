@@ -22,6 +22,12 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the core-controller itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- eventtrigger_admin_role.yaml
+- eventtrigger_editor_role.yaml
+- eventtrigger_viewer_role.yaml
+- eventsource_admin_role.yaml
+- eventsource_editor_role.yaml
+- eventsource_viewer_role.yaml
 - mcptool_admin_role.yaml
 - mcptool_editor_role.yaml
 - mcptool_viewer_role.yaml
