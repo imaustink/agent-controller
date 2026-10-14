@@ -99,44 +99,11 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "integration-gateway.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
----
 {{/*
-Cron ticks (docs/event-triggers.md §8): each cron EventSource's CronJob runs
-as its own ServiceAccount (eventsource-<name>) and presents a projected token
-minted for this gateway's audience. The gateway asks the API server whose
-token it is (TokenReview) and accepts a tick for source X only from X's
-ServiceAccount -- no shared secret to generate, store or rotate.
-
-The one ClusterRole this chart gives the gateway, because TokenReview is
-cluster-scoped and cannot be granted by a Role. It is exactly `create` on
-tokenreviews: it answers whether a token the gateway was HANDED is valid and
-whose it is, and grants access to no object. Not system:auth-delegator, which
-adds subjectaccessreviews the gateway has no use for. Namespace-prefixed, as a
-cluster-scoped name must not collide between releases.
+Cron ticks (docs/event-triggers.md §8) need no grant here: the gateway
+verifies a tick's projected ServiceAccount token itself, against the cluster
+issuer's keys, which every ServiceAccount may read by default
+(system:service-account-issuer-discovery). This chart deliberately ships no
+ClusterRole -- the deploy that installs it is only allowed namespaced RBAC.
 */}}
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: {{ .Release.Namespace }}-{{ include "integration-gateway.fullname" . }}-tokenreview
-  labels:
-    {{- include "integration-gateway.labels" . | nindent 4 }}
-rules:
-  - apiGroups: ["authentication.k8s.io"]
-    resources: ["tokenreviews"]
-    verbs: ["create"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: {{ .Release.Namespace }}-{{ include "integration-gateway.fullname" . }}-tokenreview
-  labels:
-    {{- include "integration-gateway.labels" . | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: {{ .Release.Namespace }}-{{ include "integration-gateway.fullname" . }}-tokenreview
-subjects:
-  - kind: ServiceAccount
-    name: {{ include "integration-gateway.serviceAccountName" . }}
-    namespace: {{ .Release.Namespace }}
 {{- end }}

@@ -29,7 +29,7 @@ import { InMemorySessionPageStore, RedisSessionPageStore } from "./session-page-
 import { InMemoryPendingLabelStore, RedisPendingLabelStore } from "./label-reconciler.js";
 import { CrdEventSourceRegistry, SecretKeyReader, type SecretReadApi } from "./event-sources.js";
 import { CrdEventTriggerRegistry } from "./event-triggers.js";
-import { KubeTokenAuthenticator, TICK_TOKEN_AUDIENCE, type TokenReviewApi } from "./tick-auth.js";
+import { JwksTokenAuthenticator, kubeIssuerKeySource, TICK_TOKEN_AUDIENCE } from "./tick-auth.js";
 
 const EXIT_STARTUP_FAILURE = 1;
 
@@ -308,7 +308,7 @@ async function main(): Promise<void> {
   let eventSources: CrdEventSourceRegistry | undefined;
   let eventTriggers: CrdEventTriggerRegistry | undefined;
   let eventSecrets: SecretKeyReader | undefined;
-  let tickAuthenticator: KubeTokenAuthenticator | undefined;
+  let tickAuthenticator: JwksTokenAuthenticator | undefined;
   if (config.crdNamespace) {
     const kubeConfig = new k8s.KubeConfig();
     kubeConfig.loadFromDefault();
@@ -321,9 +321,7 @@ async function main(): Promise<void> {
       api: kubeConfig.makeApiClient(k8s.CoreV1Api) as unknown as SecretReadApi,
       namespace: config.crdNamespace,
     });
-    tickAuthenticator = new KubeTokenAuthenticator(
-      kubeConfig.makeApiClient(k8s.AuthenticationV1Api) as unknown as TokenReviewApi,
-    );
+    tickAuthenticator = new JwksTokenAuthenticator(kubeIssuerKeySource(kubeConfig));
     await eventSources.start();
     // Only an optimization (skip GitHub sender lookups for deliveries no
     // trigger could match), so it starts in the background and a failed list
@@ -336,7 +334,7 @@ async function main(): Promise<void> {
     eventTriggers.start();
     console.error(
       `Serving EventSources (${config.crdGroup}/${config.crdVersion}) from namespace ${config.crdNamespace}; ` +
-        `cron ticks authenticate as their ServiceAccount (TokenReview, audience ${TICK_TOKEN_AUDIENCE})`,
+        `cron ticks authenticate as their ServiceAccount (issuer keys, audience ${TICK_TOKEN_AUDIENCE})`,
     );
   } else {
     console.error("WARNING: CRD_NAMESPACE is not set -- no EventSources are loaded, so every event route answers 404.");

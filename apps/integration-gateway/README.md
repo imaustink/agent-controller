@@ -28,7 +28,7 @@ POST /webhooks/:source      404 unknown/non-webhook source
         → remove reply.github.removeLabel (always)
 
 POST /events/:source/tick   Authorization: Bearer <projected token of SA eventsource-<source>>
-  401 unless TokenReview says it is THIS source's SA · 404 unless cron · 202 → envelope (body = the CR's payload) → /invoke
+  401 unless the token verifies (issuer keys) as THIS source's SA · 404 unless cron · 202 → envelope (body = the CR's payload) → /invoke
 ```
 
 - **Verification** (`src/webhooks/verify.ts`) runs on the raw bytes before
@@ -65,8 +65,9 @@ See `src/config.ts` for the full list. Notable ones:
 - `CRD_GROUP` / `CRD_VERSION` — default `core.controller-agent.dev` /
   `v1alpha1`.
 - RBAC: `get,list,watch` on `eventsources.<group>` and `get` on `secrets` in
-  `CRD_NAMESPACE` (on top of the credential-store Secret grants), plus a
-  ClusterRole with only `create` on `tokenreviews` for cron ticks.
+  `CRD_NAMESPACE` (on top of the credential-store Secret grants). No
+  ClusterRole: cron tick tokens are verified against the cluster's
+  ServiceAccount issuer keys, which every ServiceAccount may read by default.
 - `GATEWAY_ORCHESTRATOR_URL` / `GATEWAY_ORCHESTRATOR_TOKEN` (required) —
   where to reach `agent-orchestrator`'s `/invoke` API and the bearer token
   this gateway authenticates as (must resolve, via the orchestrator's own

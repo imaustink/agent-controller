@@ -172,9 +172,9 @@ describe(`webhook + tick verification (engine: ${deployedEngine()})`, () => {
     });
   });
 
-  describe("tick (/events/:source/tick): the source's own ServiceAccount, via TokenReview", () => {
+  describe("tick (/events/:source/tick): the source's own ServiceAccount, via the issuer keys", () => {
     // ServiceAccounts named like a tick identity for sources that are NOT
-    // cron: they authenticate, so the gateway gets past TokenReview and must
+    // cron: they authenticate, so the gateway gets past token verification and must
     // still refuse on the source (404), never treat "valid SA" as "may tick".
     const impostors = ["eventsource-github", "eventsource-e2e-no-such-source"];
 

@@ -38,7 +38,8 @@ events:
   crdGroup: core.controller-agent.dev
   crdVersion: v1alpha1
   # Cron ticks need no configuration here: each tick authenticates as its
-  # source's own ServiceAccount, checked by TokenReview (see rbac.yaml).
+  # source's own ServiceAccount, verified against the cluster's issuer keys
+  # (see rbac.yaml: no ClusterRole needed).
 
 port: 8090
 

@@ -64,7 +64,7 @@ const SOURCE_NAME = /^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/;
  * unauthenticated sender can't make the gateway buffer more than this.
  */
 const MAX_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
-/** A bearer that could be a Kubernetes JWT; anything else is refused without a TokenReview. */
+/** A bearer that could be a Kubernetes JWT; anything else is refused without being verified. */
 const BEARER_JWT = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/;
 /** Header carrying `sha256=<hex hmac(body)>` on a signed `reply.http` POST. */
 export const EVENT_SIGNATURE_HEADER = "x-event-signature";

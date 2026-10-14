@@ -41,7 +41,7 @@ const SECRETS: Record<string, string> = {
   "callback/secret": "callback-secret",
 };
 
-/** Tokens the fake TokenReview recognises, and who each one is. */
+/** Tokens the fake authenticator recognises, and who each one is. */
 const NIGHTLY_TOKEN = "aaa.nightly.sig";
 const OTHER_TOKEN = "aaa.other.sig";
 const TICK_IDENTITIES: Record<string, string> = {
@@ -714,7 +714,7 @@ describe("POST /events/:source/tick (cron)", () => {
     expect((await tick(h2, "nightly", `Bearer ${NIGHTLY_TOKEN}`)).status).toBe(401);
   });
 
-  it("never sends a malformed bearer or source name to the TokenReview API", async () => {
+  it("never sends a malformed bearer or source name to the token authenticator", async () => {
     const authenticate = vi.fn(async () => undefined);
     const h = await start({ tickAuthenticator: { authenticate } });
     await tick(h, "nightly", "Bearer not-a-jwt");

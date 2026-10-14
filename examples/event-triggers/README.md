@@ -24,7 +24,7 @@ installs production's GitHub triggers. `extraManifests` runs each entry through
 | `eventsource-slack.yaml` | `POST /webhooks/slack` | `slackV0` signing secret; answers `url_verification` | `slack-event-source`, key `signingSecret` |
 | `eventsource-ci.yaml` | `POST /webhooks/ci` | `bearer` (`Authorization: Bearer <token>`) | `ci-event-source`, key `token` |
 | `eventsource-generic-hmac.yaml` | `POST /webhooks/generic-hmac` | `hmacSha256` (`x-signature-256: sha256=<hex>`) | `generic-hmac-event-source`, key `secret` |
-| `eventsource-nightly-sweep.yaml` | cron `0 7 * * *` | the tick's own ServiceAccount (TokenReview) | none |
+| `eventsource-nightly-sweep.yaml` | cron `0 7 * * *` | the tick's own ServiceAccount (issuer keys) | none |
 
 ## Triggers
 

@@ -260,7 +260,9 @@ create|merge|close|reopen|ready|edit`, mint a `contents:read` token) from
   possible match. This view only ever drops early; matching stays the
   orchestrator's, and an event that survives is still sender-verified.
 - `POST /events/:source/tick` — `Authorization: Bearer <projected SA token>`.
-  The gateway TokenReviews it for audience `integration-gateway.events` and
+  The gateway verifies it against the cluster's ServiceAccount issuer keys
+  (`/.well-known/openid-configuration`, `/openid/v1/jwks`) for audience
+  `integration-gateway.events`, a lifetime of at most an hour, and
   requires the username `system:serviceaccount:<CRD_NAMESPACE>:eventsource-<source>`
   — anything else (including another source's tick) is `401`, before the source
   is looked up; then `404` unless the source is `cron`; `202`.
@@ -287,5 +289,8 @@ would let someone else's pods tick the source) and deletes both objects when the
 source stops being cron. Controller env: `EVENT_TICK_URL` (gateway base URL),
 `EVENT_TICK_IMAGE` (curl ≥ 8.3; default `curlimages/curl:8.11.1`). Without
 `EVENT_TICK_URL` a cron source is `Ready=False` (`TickNotConfigured`). The
-gateway needs `create` on `tokenreviews` (a ClusterRole — TokenReview is
-cluster-scoped) and reads the payload from the CR, not from the tick.
+gateway needs no extra RBAC for this (every ServiceAccount may read the
+issuer keys, via `system:service-account-issuer-discovery`) and reads the
+payload from the CR, not from the tick. Verifying locally, unlike
+TokenReview, does not notice a ServiceAccount deleted after the token was
+minted; the tick token's 10-minute life bounds that.

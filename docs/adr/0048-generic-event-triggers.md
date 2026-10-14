@@ -155,8 +155,11 @@ behind `ack.github.sessionPage`, gated by `GATEWAY_PUBLIC_URL` as today.
   runs `replicaCount` replicas, so an in-process timer would double-fire.
   The tick authenticates with **workload identity, not a shared secret**: each
   cron source also gets an owned ServiceAccount, the CronJob presents a
-  projected token for the gateway's audience, and the gateway TokenReviews it,
-  accepting only that source's ServiceAccount. A chart-generated shared token
+  projected token for the gateway's audience, and the gateway verifies it
+  against the cluster's ServiceAccount issuer keys, accepting only that
+  source's ServiceAccount. (TokenReview was the first cut; it needs a
+  ClusterRole, which the CI deployer cannot write, and the first production
+  deploy failed on it.) A chart-generated shared token
   was tried first and dropped: Helm `lookup` returns nothing under
   `helm template`/Argo CD, so it was regenerated on every render.
 
