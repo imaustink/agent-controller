@@ -35,6 +35,7 @@ import { renderSessionPage } from "./session-page.js";
 import type { SessionPageStore } from "./session-page-store.js";
 import { tickUsername, type TokenAuthenticator } from "./tick-auth.js";
 import { LabelReconciler, type PendingLabelStore } from "./label-reconciler.js";
+import { couldMatchBeforeSender, type EventTriggerLookup } from "./event-triggers.js";
 import {
   StaticEventSourceRegistry,
   type CompiledEventSource,
@@ -63,7 +64,7 @@ const SOURCE_NAME = /^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/;
  * unauthenticated sender can't make the gateway buffer more than this.
  */
 const MAX_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
-/** A bearer that could be a Kubernetes JWT; anything else is refused without a TokenReview. */
+/** A bearer that could be a Kubernetes JWT; anything else is refused without being verified. */
 const BEARER_JWT = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/;
 /** Header carrying `sha256=<hex hmac(body)>` on a signed `reply.http` POST. */
 export const EVENT_SIGNATURE_HEADER = "x-event-signature";
@@ -76,6 +77,13 @@ export interface GatewayServerOptions {
    * no sources, every event route 404s.
    */
   eventSources?: EventSourceLookup;
+  /**
+   * A read-only view of the `EventTrigger`s, consulted ONLY to skip sender
+   * resolution (live GitHub API calls) for a delivery no trigger could match
+   * -- see event-triggers.ts. Matching stays the orchestrator's. Absent, or
+   * not loaded yet -> every sender is resolved, as if there were no view.
+   */
+  eventTriggers?: EventTriggerLookup;
   /**
    * Reads the Secrets that `verify.secretRef` and a trigger's
    * `reply.http.secretRef` name (in the CRD namespace). Absent -> every lookup is "missing", so verification fails
@@ -526,6 +534,15 @@ export class GatewayServer {
     let repository: string | undefined;
     if (source.sender) {
       const preliminary = buildWebhookEnvelope({ source: source.name, ...input, now: input.receivedAt });
+      // Resolving a sender costs GitHub API calls; most deliveries (push,
+      // check_run, ...) can't fire any trigger, so they stop here, before
+      // spending any. Only ever drops -- an event that survives is still
+      // verified below and matched by the orchestrator.
+      const triggers = this.options.eventTriggers?.all();
+      if (triggers && !couldMatchBeforeSender(triggers, preliminary)) {
+        this.log(`webhook ${source.name} event ${input.id}: no trigger could match (ignored before sender lookup)`);
+        return;
+      }
       const resolved = await this.resolveSender(source.sender, preliminary);
       if (!resolved.ok) {
         // 202 already sent: a dropped event is not the sender's error, and a

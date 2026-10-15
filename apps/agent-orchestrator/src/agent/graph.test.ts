@@ -617,6 +617,103 @@ describe("buildAgentGraph", () => {
     expect(final.error).toMatch(/mcp-broker is not configured/);
     expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
   });
+
+  describe("a read-only turn never calls an MCP tool", () => {
+    const mcpTool: ToolDescriptor = {
+      id: "mcp:github/create_issue",
+      name: "mcp:github/create_issue",
+      description: "Opens a GitHub issue",
+      allowedRoles: ["reader"],
+      mcpExec: { serverRef: "github", remoteToolName: "create_issue" },
+    };
+    const mcpSkill: SkillDescriptor = { ...skill, id: "github-skill", toolIds: ["mcp:github/create_issue"] };
+
+    function mcpDeps(plan: AgentGraphDeps["actionPlanner"]["plan"]) {
+      const mcpBrokerClient = { call: vi.fn().mockResolvedValue({ result: "Issue #7 created" }) };
+      const deps = baseDeps({
+        skillStore: {
+          upsert: vi.fn(),
+          delete: vi.fn(),
+          query: vi.fn().mockResolvedValue([{ skill: mcpSkill, score: 0.9 }]),
+          getByIds: vi.fn().mockResolvedValue([mcpSkill]),
+        },
+        skillSelector: { select: vi.fn().mockResolvedValue(mcpSkill) },
+        vectorStore: {
+          upsert: vi.fn(),
+          delete: vi.fn(),
+          query: vi.fn(),
+          getByIds: vi.fn().mockResolvedValue([{ tool: mcpTool, score: 1 }]),
+        },
+        actionPlanner: { plan },
+        mcpBrokerClient: mcpBrokerClient as unknown as AgentGraphDeps["mcpBrokerClient"],
+      });
+      return { deps, mcpBrokerClient };
+    }
+
+    it("hands a planner-chosen call back to the planner as refused", async () => {
+      const plan = vi
+        .fn()
+        .mockResolvedValueOnce({ action: "call_tool", toolId: mcpTool.id, toolArgs: "{}" } satisfies PlannedAction)
+        .mockResolvedValueOnce({ action: "respond", response: "I can't open issues here." } satisfies PlannedAction);
+      const { deps, mcpBrokerClient } = mcpDeps(plan);
+
+      const final = await buildAgentGraph(deps).invoke({ request: "open an issue", authToken: "tok", readOnly: true });
+
+      // Delegated-token writes go through as the caller: never called.
+      expect(mcpBrokerClient.call).not.toHaveBeenCalled();
+      expect(final.error).toBeUndefined();
+      expect(final.result).toBe("I can't open issues here.");
+      expect(final.actionHistory).toEqual([
+        { toolId: mcpTool.id, toolArgs: "{}", result: expect.stringMatching(/^read_only: mcp:github\/create_issue acts with your delegated credentials/) },
+      ]);
+    });
+
+    it("fails a forced (trigger-targeted) MCP tool outright", async () => {
+      const { deps, mcpBrokerClient } = mcpDeps(vi.fn());
+
+      const final = await buildAgentGraph(deps).invoke({
+        request: "r",
+        authToken: "tok",
+        forcedToolId: mcpTool.id,
+        toolInput: "{}",
+        readOnly: true,
+      });
+
+      expect(mcpBrokerClient.call).not.toHaveBeenCalled();
+      expect(final.error).toMatch(/^read_only: mcp:github\/create_issue/);
+    });
+  });
+
+  it("refuses a read-only container tool that declares github, instead of running it on the template's token", async () => {
+    const githubTool: ToolDescriptor = { ...scraperTool, id: "github", name: "github", identityProviders: ["github"] };
+    const githubSkill: SkillDescriptor = { ...skill, id: "github-skill", toolIds: ["github"] };
+    const deps = baseDeps({
+      skillStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn().mockResolvedValue([{ skill: githubSkill, score: 0.9 }]),
+        getByIds: vi.fn().mockResolvedValue([githubSkill]),
+      },
+      skillSelector: { select: vi.fn().mockResolvedValue(githubSkill) },
+      vectorStore: {
+        upsert: vi.fn(),
+        delete: vi.fn(),
+        query: vi.fn(),
+        getByIds: vi.fn().mockResolvedValue([{ tool: githubTool, score: 1 }]),
+      },
+      actionPlanner: {
+        plan: vi.fn().mockResolvedValue({ action: "call_tool", toolId: "github", toolArgs: "{}" } satisfies PlannedAction),
+      },
+      identityLinkGateway: {
+        getToken: vi.fn().mockResolvedValue({ token: "gho_user" }),
+      } as unknown as AgentGraphDeps["identityLinkGateway"],
+    });
+
+    const final = await buildAgentGraph(deps).invoke({ request: "comment on #7", authToken: "tok", readOnly: true });
+
+    expect(final.error).toBe("github acts on GitHub as you, which this read-only request does not allow, so I didn't run it.");
+    expect(deps.containerToolLauncher.launch).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildAgentGraph multi-step tool use (docs/adr/0008 update: fixes the single-tool-call limit)", () => {
@@ -4155,6 +4252,71 @@ describe("buildAgentGraph agent-turn resumability", () => {
     });
 
     expect(deps.agentChannel!.sendPrompt).toHaveBeenCalledWith("run-1", "use the main branch");
+  });
+
+  it("refuses to forward a read-only turn into a run that was launched writable", async () => {
+    const deps = resumeDeps();
+    const graph = buildAgentGraph(deps);
+
+    const final = await graph.invoke({
+      request: "now just review it",
+      authToken: "tok",
+      sessionId: "session-1",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      sessionSubject: "alice",
+      readOnly: true,
+    });
+
+    // The writable run's pod already holds write credentials: a read-only turn
+    // steering it would be a write.
+    expect(final.error).toMatch(/writable claude-code-swe episode is already active.*read-only turn cannot be forwarded/);
+    expect(deps.agentChannel!.sendPrompt).not.toHaveBeenCalled();
+    expect(deps.agentRunLauncher!.launch).not.toHaveBeenCalled();
+  });
+
+  it("forwards a read-only turn into a read-only run, and any turn may still re-attach", async () => {
+    const deps = resumeDeps();
+    const graph = buildAgentGraph(deps);
+
+    const forwarded = await graph.invoke({
+      request: "look at the tests too",
+      authToken: "tok",
+      sessionId: "session-1",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunReadOnly: true,
+      sessionSubject: "alice",
+      readOnly: true,
+    });
+    expect(forwarded.error).toBeUndefined();
+    expect(deps.agentChannel!.sendPrompt).toHaveBeenCalledWith("run-1", "look at the tests too");
+
+    // A re-attach publishes nothing, so a read-only turn steers nothing.
+    const reattached = await graph.invoke({
+      request: "any update?",
+      authToken: "tok",
+      sessionId: "session-1",
+      activeAgentId: "claude-code-swe",
+      activeAgentRunId: "run-1",
+      activeAgentRunAwaitingReply: true,
+      sessionSubject: "alice",
+      readOnly: true,
+    });
+    expect(reattached.error).toBeUndefined();
+    expect(reattached.result).toBe("done");
+  });
+
+  it("anchors a read-only run as read-only", async () => {
+    const deps = resumeDeps();
+    const graph = buildAgentGraph(deps);
+
+    await graph.invoke({ request: "review it", authToken: "tok", sessionId: "session-1", readOnly: true });
+
+    expect(deps.markAgentRunAwaitingReply).toHaveBeenCalledWith(
+      "session-1",
+      expect.objectContaining({ agentRunId: expect.any(String), readOnly: true }),
+    );
   });
 
   it("bounds a re-attached wait far more tightly than a live one", async () => {

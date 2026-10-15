@@ -985,13 +985,26 @@ export class AuthorizationService {
     | { kind: "gateway-missing"; provider: string }
     | { kind: "not-linked"; provider: string }
     | { kind: "unsupported-provider"; provider: string }
+    | { kind: "read-only-refused"; provider: string }
   > {
+    // A read-only turn REFUSES a tool that declares a write-capable provider,
+    // rather than running it with that credential withheld as an agent run
+    // does (`authorize`). A tool's per-run secretEnv entry OVERRIDES its
+    // template's same-named static entry, so withholding the per-run
+    // GITHUB_TOKEN would expose whatever static token the Tool template
+    // carries -- an operator credential, typically broader than the caller's.
+    // An agent pod has no such fallback; a tool Job may. Fail closed. PARITY:
+    // authz.Service.ResolveLinked in the Temporal engine.
+    if (input.readOnly) {
+      const writeCapable = (input.identityProviders ?? []).find((p) => WRITE_CAPABLE_PROVIDERS.has(p));
+      if (writeCapable) {
+        this.logVerdict("refused", "(tool)", { readOnly: true, provider: writeCapable });
+        return { kind: "read-only-refused", provider: writeCapable };
+      }
+    }
     const catalog = this.catalog();
     let secretEnv: CredentialEnvEntry[] | undefined;
     for (const provider of input.identityProviders ?? []) {
-      // Skipped, not "not-linked": the tool still runs, without the write
-      // credential, and fails on its own terms if it needed one (fail closed).
-      if (input.readOnly && WRITE_CAPABLE_PROVIDERS.has(provider)) continue;
       const gateway = this.gatewayFor(provider);
       if (!gateway) return { kind: "gateway-missing", provider };
       // Same keying as authorize()'s gate -- deriving a different subject here

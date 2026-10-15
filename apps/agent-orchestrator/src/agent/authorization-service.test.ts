@@ -1156,7 +1156,7 @@ describe("AuthorizationService read-only turns (docs/event-triggers.md §1)", ()
     expect(github.start).not.toHaveBeenCalled();
   });
 
-  it("withholds it from a read-only tool's linked credentials too", async () => {
+  it("refuses a read-only tool that declares it, rather than running it on the template's own token", async () => {
     const svc = new AuthorizationService({
       identityLinkGateway: gateway({ github: { token: { token: "gho_x" } } }),
     });
@@ -1165,8 +1165,18 @@ describe("AuthorizationService read-only turns (docs/event-triggers.md §1)", ()
       kind: "resolved",
       secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_x" }],
     });
+    // Withholding only the per-run GITHUB_TOKEN would leave the Tool
+    // template's static GITHUB_TOKEN in force, so the tool must not run.
     expect(
-      await svc.resolveLinkedCredentials({ identity: identity(), identityProviders: ["github"], readOnly: true }),
-    ).toEqual({ kind: "resolved" });
+      await svc.resolveLinkedCredentials({ identity: identity(), identityProviders: ["claude", "github"], readOnly: true }),
+    ).toEqual({ kind: "read-only-refused", provider: "github" });
+  });
+
+  it("still resolves a read-only tool that declares no write-capable provider", async () => {
+    const svc = new AuthorizationService({
+      identityLinkGateway: gateway({ github: { token: { token: "gho_x" } } }),
+    });
+
+    expect(await svc.resolveLinkedCredentials({ identity: identity(), readOnly: true })).toEqual({ kind: "resolved" });
   });
 });

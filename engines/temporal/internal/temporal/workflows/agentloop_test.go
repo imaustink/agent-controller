@@ -1710,12 +1710,14 @@ func TestEventTriggerForcedToolRequiringApprovalFails(t *testing.T) {
 	require.Empty(t, le.launches)
 }
 
-// readOnly is sticky per conversation: once a turn ran read-only, a later
-// follow-up WITHOUT readOnly — a plain chat prompt routed into the same
+// readOnly is sticky per conversation: once a trigger turn ran read-only, a
+// later follow-up WITHOUT readOnly — a plain chat prompt routed into the same
 // session by the trigger's sessionKey — must still launch read-only. The
 // first turn shows the assertion can fail: before the ratchet, runs are
-// writable.
-func TestReadOnlyIsStickyForTheConversation(t *testing.T) {
+// writable. A later WRITABLE trigger turn on the same session (a triage after
+// a review on one issue) sets the mode back: without that, one review would
+// leave the issue's triage read-only for good.
+func TestReadOnlyIsStickyUntilATriggerSetsItAgain(t *testing.T) {
 	le := newLoopEnv(t)
 	le.resolvedTool = scraperTool()
 	le.skills = []catalog.SkillDescriptor{recipesSkillTools().Skill}
@@ -1726,27 +1728,37 @@ func TestReadOnlyIsStickyForTheConversation(t *testing.T) {
 		{Action: activities.ActionFinish},
 		{Action: activities.ActionCallTool, ToolID: "recipe-scraper", ToolInput: "https://example.com/b"},
 		{Action: activities.ActionFinish},
+		{Action: activities.ActionCallTool, ToolID: "recipe-scraper", ToolInput: "https://example.com/c"},
+		{Action: activities.ActionFinish},
 	}
 	caller := activities.Caller{Subject: "user:1", Roles: []string{"cook"}}
 
-	var before, triggered, after workflows.TurnResult
+	var before, review, followUp, triage, afterTriage workflows.TurnResult
 	le.sendTurnInput(t, "turn-0", workflows.TurnInput{Message: "scrape example.com/a", Caller: caller}, &before, time.Millisecond)
 	le.env.RegisterDelayedCallback(func() { le.signalToolSuccess(0, `"a"`) }, time.Second)
 	le.sendTurnInput(t, "turn-1", workflows.TurnInput{
-		Caller: caller, ForcedToolID: "recipe-scraper", ToolInput: "https://example.com/x", ReadOnly: true,
-	}, &triggered, 5*time.Second)
+		Caller: caller, TriggerName: "review", ForcedToolID: "recipe-scraper", ToolInput: "https://example.com/x", ReadOnly: true,
+	}, &review, 5*time.Second)
 	le.env.RegisterDelayedCallback(func() { le.signalToolSuccess(1, `"x"`) }, 6*time.Second)
-	le.sendTurnInput(t, "turn-2", workflows.TurnInput{Message: "now scrape example.com/b", Caller: caller, ReadOnly: false}, &after, 10*time.Second)
+	le.sendTurnInput(t, "turn-2", workflows.TurnInput{Message: "now scrape example.com/b", Caller: caller, ReadOnly: false}, &followUp, 10*time.Second)
 	le.env.RegisterDelayedCallback(func() { le.signalToolSuccess(2, `"b"`) }, 11*time.Second)
+	le.sendTurnInput(t, "turn-3", workflows.TurnInput{
+		Caller: caller, TriggerName: "triage", ForcedToolID: "recipe-scraper", ToolInput: "https://example.com/y",
+	}, &triage, 15*time.Second)
+	le.env.RegisterDelayedCallback(func() { le.signalToolSuccess(3, `"y"`) }, 16*time.Second)
+	le.sendTurnInput(t, "turn-4", workflows.TurnInput{Message: "now scrape example.com/c", Caller: caller}, &afterTriage, 20*time.Second)
+	le.env.RegisterDelayedCallback(func() { le.signalToolSuccess(4, `"c"`) }, 21*time.Second)
 
 	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
 	require.True(t, le.env.IsWorkflowCompleted())
 	require.NoError(t, le.env.GetWorkflowError())
 
-	require.Len(t, le.launches, 3)
+	require.Len(t, le.launches, 5)
 	require.False(t, le.launches[0].ReadOnly, "before any read-only turn, runs are writable")
-	require.True(t, le.launches[1].ReadOnly, "the triggered turn is read-only")
-	require.True(t, le.launches[2].ReadOnly, "a later turn cannot turn read-only back off")
+	require.True(t, le.launches[1].ReadOnly, "the read-only trigger's turn is read-only")
+	require.True(t, le.launches[2].ReadOnly, "a follow-up cannot turn read-only back off")
+	require.False(t, le.launches[3].ReadOnly, "a writable trigger sets the conversation writable again")
+	require.False(t, le.launches[4].ReadOnly, "and its follow-ups inherit that")
 }
 
 // readOnly and params are turn properties that reach the AgentRun itself,

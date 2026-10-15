@@ -565,6 +565,12 @@ jobs:
           helm dependency update charts/agent-controller/charts/agent-orchestrator
           helm dependency update charts/agent-controller
 
+      # Pins the Deployments' `:latest` to the digest it names right now, in
+      # the release itself, so `helm rollback` restores the image as well as
+      # the chart (see the script's header for the incident behind this).
+      - name: Pin image digests
+        run: ./scripts/pin-image-digests.sh "$RUNNER_TEMP/image-pins.yaml"
+
       # --create-namespace on both: `-n controller-agent` does not create the
       # namespace, so on a cluster that has never had this stack the very first
       # deploy fails on a missing namespace rather than bootstrapping it. A
@@ -574,6 +580,7 @@ jobs:
         run: |
           helm upgrade --install agent-controller charts/agent-controller \
             -f charts/agent-controller/values-production.yaml \
+            -f "$RUNNER_TEMP/image-pins.yaml" \
             -n controller-agent --create-namespace --timeout 5m
 
       - name: Helm upgrade community-components
@@ -603,7 +610,9 @@ jobs:
       # Tool/Agent Jobs (recipe-scraper, web-search, web-fetch,
       # recipe-publisher, opencode-swe-agent) are launched fresh per-invocation
       # by core-controller and always pull `:latest` -- no restart needed.
-      # Only the long-running Deployments need one to pick up a new image.
+      # The long-running Deployments are pinned by digest ("Pin image
+      # digests"), so a new image already rolled them; the restart still
+      # picks up Secrets/ConfigMaps that changed without a template change.
       - name: Rollout restart
         id: rollout
         run: |

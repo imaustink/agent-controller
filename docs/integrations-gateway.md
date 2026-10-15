@@ -377,7 +377,7 @@ hardcoded in the gateway any more.
   verification → `401`, otherwise `202`. A `cron` source is ticked by a
   core-controller-owned CronJob at `POST /events/<name>/tick`, authenticated
   as that source's own ServiceAccount (`eventsource-<name>`, a projected token
-  checked with TokenReview). Either way the gateway builds one normalized envelope
+  verified against the cluster's issuer keys). Either way the gateway builds one normalized envelope
   (`source, kind, id, time, headers, body, sender, repository`) and relays it as
   `POST /invoke { event }`; it no longer filters by event type or label.
 - **Who caused it.** A source's optional `sender` block extracts a login with

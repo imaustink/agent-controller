@@ -39,18 +39,24 @@ import (
 // updates with it, so a caller that never polls eventually loses the answer —
 // vastly longer than a pod's lifetime, but not forever.
 
-// invokeRequest is the /invoke contract (ADR 0006), in two shapes:
+// invokeRequest is the /invoke contract (ADR 0006), in three shapes:
 //
-//   - A RESOLVED turn, from agent-orchestrator: it owns EventTrigger matching
-//     for its own engine mode, matched the event already, and forwards the
-//     result — forcedSkillId | forcedAgentId | forcedToolId, toolInput,
-//     readOnly, params, triggerName, the rendered prompt as `request`, and
-//     targetRepository. Nothing is matched here: re-deciding a dispatch the
-//     caller already made could only disagree with it.
+//   - A plain chat-style turn: `request`, no dispatch.
+//   - A RESOLVED trigger turn, from agent-orchestrator: it owns EventTrigger
+//     matching for its own engine mode, matched the event already, and
+//     forwards the result -- forced target, toolInput, readOnly, params and
+//     triggerName -- in a signed rbac.DispatchAssertionHeader bound to the
+//     turn's session and prompt. Nothing is re-matched here: re-deciding a
+//     dispatch the caller already made could only disagree with it.
 //   - A raw `event` envelope from a direct caller (docs/event-triggers.md §5),
-//     matched here against the EventTrigger registry.
+//     ALWAYS matched here against the EventTrigger registry.
 //
-// A plain chat-style call is the first shape with no forced target.
+// Dispatch is never taken from the body. A forced target skips the trigger's
+// match rules and a trigger-produced turn sets the conversation's read-only
+// mode, so a body field would let anything holding the /invoke token launch a
+// writable agent of its choosing. The legacy body fields are still decoded,
+// solely so a body that sets them is refused (400) rather than silently run
+// as something else.
 type invokeRequest struct {
 	Request   string `json:"request"`
 	SessionID string `json:"sessionId"`
@@ -61,18 +67,18 @@ type invokeRequest struct {
 	// Event is the normalized envelope (§2). Only a direct caller sends it.
 	Event *catalog.Envelope `json:"event"`
 
-	// The resolved turn. Every one of these is a dispatch instruction, never
-	// an authorization: the workflow re-resolves the named target under the
-	// caller's own roles and fails the turn on a miss.
-	ForcedSkillID string `json:"forcedSkillId,omitempty"`
-	ForcedAgentID string `json:"forcedAgentId,omitempty"`
-	ForcedToolID  string `json:"forcedToolId,omitempty"`
-	// ToolInput is a forced tool's one string input (§1).
-	ToolInput string `json:"toolInput,omitempty"`
-	// ReadOnly can only restrict, so it is honoured from any caller.
-	ReadOnly    bool              `json:"readOnly,omitempty"`
-	Params      map[string]string `json:"params,omitempty"`
-	TriggerName string            `json:"triggerName,omitempty"`
+	// Refused when set (see the type comment): dispatch only ever comes from
+	// a trigger matched here or a verified rbac.DispatchAssertionHeader.
+	ForcedSkillID string            `json:"forcedSkillId,omitempty"`
+	ForcedAgentID string            `json:"forcedAgentId,omitempty"`
+	ForcedToolID  string            `json:"forcedToolId,omitempty"`
+	ToolInput     string            `json:"toolInput,omitempty"`
+	Params        map[string]string `json:"params,omitempty"`
+	TriggerName   string            `json:"triggerName,omitempty"`
+
+	// ReadOnly can only restrict, so it is honoured from any caller. It is
+	// never a trigger turn's own mode: that comes from the trigger.
+	ReadOnly bool `json:"readOnly,omitempty"`
 
 	// CallerTools / CallerToolRequired carry a chat turn's caller-supplied
 	// tools (ADR 0035) across this hop, already parsed, validated and ranked
@@ -188,9 +194,15 @@ var (
 	// ({source, event, action, …}) loudly instead of matching nothing.
 	errNotAnEnvelope = errors.New(`event must be an event envelope with a "kind" (docs/event-triggers.md §2)`)
 	// errAmbiguousTarget: a resolved turn names exactly one target.
-	errAmbiguousTarget = errors.New("at most one of forcedSkillId, forcedAgentId, forcedToolId may be set")
-	// errNoTriggers: this gateway has no EventTrigger table to match against.
-	errNoTriggers = errors.New("event triggers are not configured on this gateway")
+	errAmbiguousTarget = errors.New("a dispatch names at most one of a skill, an agent and a tool")
+	// errBodyDispatch: dispatch fields in the body are never honoured.
+	errBodyDispatch = errors.New("forcedSkillId, forcedAgentId, forcedToolId, toolInput, params and triggerName are not accepted in the body; " +
+		"send an event to be matched against the EventTrigger registry")
+	// errBadDispatch: a dispatch assertion was sent and did not verify.
+	errBadDispatch = errors.New("dispatch assertion is invalid, expired, or bound to another session or request")
+	// errEventWithDispatch: an event is always matched here, never paired with
+	// a pre-resolved dispatch.
+	errEventWithDispatch = errors.New("an event cannot be sent together with a dispatch assertion")
 )
 
 // resolveInvokeCaller prefers a trusted, signed caller identity
@@ -237,13 +249,20 @@ type shapedInvoke struct {
 // *catalog.MatchError return is a matched trigger that failed (422).
 func shapeInvokeTurn(
 	req invokeRequest,
-	assertionHeader, assertionSecret string,
+	assertionHeader, dispatchHeader, assertionSecret string,
 	triggers *catalog.EventTriggerRegistry,
 	caller activities.Caller,
 	now time.Time,
 ) (shapedInvoke, error) {
 	if req.Event != nil && strings.TrimSpace(req.Event.Kind) == "" {
 		return shapedInvoke{}, errNotAnEnvelope
+	}
+	if req.ForcedSkillID != "" || req.ForcedAgentID != "" || req.ForcedToolID != "" ||
+		req.ToolInput != "" || len(req.Params) > 0 || req.TriggerName != "" {
+		return shapedInvoke{}, errBodyDispatch
+	}
+	if req.Event != nil && dispatchHeader != "" {
+		return shapedInvoke{}, errEventWithDispatch
 	}
 
 	// Read the sender login OUTSIDE trigger matching, deliberately: the
@@ -288,30 +307,37 @@ func shapeInvokeTurn(
 		TargetRepository: strings.TrimSpace(req.TargetRepository),
 	}
 
-	forced := 0
-	for _, id := range []string{req.ForcedSkillID, req.ForcedAgentID, req.ForcedToolID} {
-		if id != "" {
-			forced++
-		}
-	}
-	if forced > 1 {
-		return shapedInvoke{}, errAmbiguousTarget
-	}
-
-	// A resolved turn: the caller already did the matching (or there is none
-	// to do), and re-deciding it here could only disagree. An accompanying
-	// envelope contributes nothing but the sender above and its repository.
-	if forced == 1 || req.Event == nil {
+	// A resolved trigger turn from agent-orchestrator, or a plain turn. The
+	// envelope is absent here (refused above alongside a dispatch).
+	if req.Event == nil {
 		turn.Message = strings.TrimSpace(req.Request)
-		turn.ForcedSkillID = req.ForcedSkillID
-		turn.ForcedAgentID = req.ForcedAgentID
-		turn.ForcedToolID = req.ForcedToolID
-		turn.ToolInput = req.ToolInput
 		turn.ReadOnly = req.ReadOnly
-		turn.Params = req.Params
-		turn.TriggerName = req.TriggerName
-		if turn.TargetRepository == "" && req.Event != nil {
-			turn.TargetRepository = strings.TrimSpace(req.Event.Repository)
+		if dispatchHeader != "" {
+			// Bound to the raw request and session exactly as sent, before
+			// any trimming or defaulting.
+			d := rbac.VerifyDispatchAssertion(assertionSecret, dispatchHeader, sessionID, req.Request, now)
+			if d == nil {
+				return shapedInvoke{}, errBadDispatch
+			}
+			forced := 0
+			for _, id := range []string{d.ForcedSkillID, d.ForcedAgentID, d.ForcedToolID} {
+				if id != "" {
+					forced++
+				}
+			}
+			if forced > 1 {
+				return shapedInvoke{}, errAmbiguousTarget
+			}
+			turn.ForcedSkillID = d.ForcedSkillID
+			turn.ForcedAgentID = d.ForcedAgentID
+			turn.ForcedToolID = d.ForcedToolID
+			if d.ForcedToolID != "" {
+				turn.ToolInput = d.ToolInput
+			}
+			// The trigger's mode, plus any restriction the caller adds.
+			turn.ReadOnly = d.ReadOnly || req.ReadOnly
+			turn.Params = d.Params
+			turn.TriggerName = d.TriggerName
 		}
 		// A forced tool's input is ToolInput, so its prompt may legitimately
 		// be empty (a toolRef trigger needs no promptTemplate). Anything else
@@ -322,9 +348,12 @@ func shapeInvokeTurn(
 		return shapedInvoke{turn: turn, sessionID: sessionID}, nil
 	}
 
-	// A raw envelope from a direct caller: match it here (§4).
+	// A raw envelope from a direct caller: match it here (§4). With no
+	// trigger table nothing can match, which is the same clean no-op as a
+	// miss (§5), not an outage a caller should retry.
 	if triggers == nil {
-		return shapedInvoke{}, errNoTriggers
+		log.Printf("/invoke event %s/%s: no EventTriggers configured; ignored", req.Event.Source, req.Event.ID)
+		return shapedInvoke{ignored: true}, nil
 	}
 	m, err := triggers.Match(*req.Event, sessionID)
 	if err != nil {
@@ -367,6 +396,7 @@ func (s *Server) handleInvoke(c *gin.Context) {
 	shaped, err := shapeInvokeTurn(
 		req,
 		c.GetHeader(rbac.SenderAssertionHeader),
+		c.GetHeader(rbac.DispatchAssertionHeader),
 		s.senderAssertionSecret,
 		s.triggers,
 		s.resolveInvokeCaller(c),
@@ -379,9 +409,6 @@ func (s *Server) handleInvoke(c *gin.Context) {
 		// never becomes a turn with a silently empty value in it.
 		log.Printf("/invoke: %v", matchErr)
 		c.JSON(http.StatusUnprocessableEntity, invokeOutcome{Status: invokeStatusFailed, Error: matchErr.Error()})
-		return
-	case errors.Is(err, errNoTriggers):
-		writeError(c, http.StatusServiceUnavailable, err.Error())
 		return
 	case err != nil:
 		writeError(c, http.StatusBadRequest, err.Error())

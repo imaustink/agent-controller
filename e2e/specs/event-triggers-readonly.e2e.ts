@@ -38,10 +38,12 @@ requireMinikubeContext();
  * and on an issue (event-triggers-github.e2e.ts). Without them a readOnly that
  * defaulted to true everywhere would pass every assertion below.
  *
- * STICKY: readOnly is a session property. Once a review ran on
- * `github:<repo>#<n>`, every later turn on that session is read-only too --
- * including a triage label applied afterwards and a follow-up typed into the
- * session page. Both are asserted.
+ * STICKY: readOnly is the session's mode, set by its latest trigger turn. Once
+ * a review ran on `github:<repo>#<n>`, a follow-up typed into the session page
+ * is read-only too. A triage label applied afterwards is a trigger turn with
+ * its own (writable) mode, so it runs writable: the two triggers share the
+ * session key, and a one-way ratchet would leave the issue's triage read-only
+ * for good. Both are asserted.
  *
  * The enforcement itself (denying `git push`, minting a contents:read token)
  * is proven hermetically in the SWE agents' own suites; what only a cluster can
@@ -166,19 +168,6 @@ describe(`EventTrigger target.readOnly reaches the run (engine: ${deployedEngine
       );
     });
 
-    it("a TRIAGE label applied after a review on the same issue still runs read-only", async () => {
-      // github-issue-triage has no readOnly of its own -- on a fresh issue it
-      // is writable (event-triggers-github.e2e.ts). Only the session can make
-      // this run read-only, so a `true` here is the sticky flag and nothing else.
-      const startedAt = new Date();
-      await deliver(secret, "issues", issue, "ai-triage");
-      const run = await waitForAgentRunWithParam(startedAt, "label", "ai-triage");
-      expect(run.params.number).toBe(String(issue));
-      expect(run.agentRef).toBe("stub-agent");
-      const reply = await stubReplyOn(issue, reviewReplyIndex);
-      await assertReadOnlyAllTheWayDown(run, params(issue, "ai-triage"), reply.text);
-    });
-
     it("a follow-up prompt from the session page launches a read-only run too", async () => {
       // The ack carries the session-page link (reply.github.sessionPage).
       const ack = (await issueActivity(OWNER, REPO, issue)).comments.find((c) => c.text.includes(EXAMPLE_ACK_TEXT));
@@ -224,10 +213,33 @@ describe(`EventTrigger target.readOnly reaches the run (engine: ${deployedEngine
       for (const run of runs) expect(run.readOnly, `AgentRun ${run.name} (${run.agentRef}) launched by the follow-up`).toBe(true);
       // Where the follow-up does launch (LangGraph), require that it did, so the
       // loop above is never vacuous there. Temporal's sticky flag for a
-      // follow-up is pinned by TestReadOnlyIsStickyForTheConversation.
+      // follow-up is pinned by TestReadOnlyIsStickyUntilATriggerSetsItAgain.
       if ((await deployedEngine()) === "langgraph") {
         expect(runs.length, "the LangGraph follow-up launched no AgentRun").toBeGreaterThan(0);
       }
+    });
+
+    it("a TRIAGE label applied after the review runs writable: a trigger turn sets the session's mode", async () => {
+      // Runs after the follow-up above, so the session has been read-only for
+      // two turns. github-issue-triage has no readOnly, so its run must be
+      // writable at every hop -- the control that this session can leave
+      // read-only at all.
+      const afterIndex = (await issueActivity(OWNER, REPO, issue)).comments.reduce(
+        (last, c, i) => (c.text.includes(STUB_REPLY_MARKER) ? i : last),
+        reviewReplyIndex,
+      );
+      const startedAt = new Date();
+      await deliver(secret, "issues", issue, "ai-triage");
+      const run = await waitForAgentRunWithParam(startedAt, "label", "ai-triage");
+      expect(run.params.number).toBe(String(issue));
+      expect(run.agentRef).toBe("stub-agent");
+      expect(run.readOnly, `AgentRun ${run.name} spec.readOnly`).toBe(false);
+      const flags = await waitFor("the run's Job", async () => runJobFlags(run.jobName ?? run.name).catch(() => undefined), {
+        timeoutMs: 120_000,
+      });
+      expect(flags.AGENT_READ_ONLY ?? "false").not.toBe("true");
+      const reply = await stubReplyOn(issue, afterIndex);
+      expect(parseRunFlagsLine(reply.text)).toEqual({ readOnly: false, params: params(issue, "ai-triage") });
     });
   });
 });

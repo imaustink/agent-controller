@@ -126,7 +126,7 @@ describe("build*Envelope", () => {
     expect(buildCronEnvelope({ source: "nightly-sweep", payload: { repo: "acme/widgets" }, now: NOW })).toEqual({
       source: "nightly-sweep",
       kind: "cron",
-      id: "nightly-sweep-1791892800",
+      id: expect.stringMatching(/^nightly-sweep-1791892800-[0-9a-f]{8}$/),
       time: "2026-10-13T12:00:00Z",
       headers: {},
       body: { repo: "acme/widgets" },
@@ -134,6 +134,11 @@ describe("build*Envelope", () => {
       repository: "",
     });
     expect(buildCronEnvelope({ source: "s", now: NOW }).body).toEqual({});
+  });
+  it("gives two ticks in the same second different ids", () => {
+    const a = buildCronEnvelope({ source: "s", now: NOW });
+    const b = buildCronEnvelope({ source: "s", now: NOW });
+    expect(a.id).not.toBe(b.id);
   });
 });
 

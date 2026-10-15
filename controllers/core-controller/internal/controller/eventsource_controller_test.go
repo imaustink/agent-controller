@@ -182,6 +182,23 @@ var _ = Describe("EventSource Controller", func() {
 			Expect(cond.Reason).To(Equal("Scheduled"))
 		})
 
+		It("does not write status when a reconcile changes nothing", func() {
+			source := cronSource("no-op-status", "0 7 * * *")
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+
+			writes := 0
+			r := reconciler(testTickURL)
+			r.Client = statusWriteCounter{Client: k8sClient, writes: &writes}
+
+			reconcileWith(r, "no-op-status")
+			Expect(writes).To(Equal(1))
+			Expect(stored("no-op-status").Status.CronJobName).To(Equal("eventsource-no-op-status"))
+
+			reconcileWith(r, "no-op-status")
+			Expect(writes).To(Equal(1))
+		})
+
 		It("updates the CronJob in place when the schedule changes", func() {
 			source := cronSource("reschedule", "0 7 * * *")
 			Expect(k8sClient.Create(ctx, source)).To(Succeed())

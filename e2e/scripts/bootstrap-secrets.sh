@@ -144,7 +144,7 @@ upsert ci-event-source --from-literal=token="e2e-ci-bearer-token"
 upsert generic-hmac-event-source --from-literal=secret="e2e-generic-hmac-secret"
 upsert e2e-event-reply --from-literal=secret="e2e-event-reply-signing-secret"
 # Cron ticks need no Secret: each authenticates as its source's own
-# ServiceAccount (TokenReview), which core-controller creates.
+# ServiceAccount (issuer-key verified), which core-controller creates.
 
 # The HS256 secret a chat turn's forwarded-user JWT is signed with. Fixed, and
 # read back out of the cluster by e2e/support/chat.ts rather than duplicated

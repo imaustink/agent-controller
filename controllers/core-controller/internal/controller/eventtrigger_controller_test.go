@@ -24,10 +24,38 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
 )
+
+// statusWriteCounter counts status writes. The API server does not bump
+// resourceVersion for a byte-identical update, so only counting the calls
+// shows whether a reconcile skipped one.
+type statusWriteCounter struct {
+	client.Client
+	writes *int
+}
+
+func (c statusWriteCounter) Status() client.SubResourceWriter {
+	return countingStatusWriter{SubResourceWriter: c.Client.Status(), writes: c.writes}
+}
+
+type countingStatusWriter struct {
+	client.SubResourceWriter
+	writes *int
+}
+
+func (w countingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	*w.writes++
+	return w.SubResourceWriter.Update(ctx, obj, opts...)
+}
+
+func (w countingStatusWriter) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+	*w.writes++
+	return w.SubResourceWriter.Patch(ctx, obj, patch, opts...)
+}
 
 var _ = Describe("EventTrigger Controller", func() {
 	ctx := context.Background()
@@ -131,6 +159,52 @@ var _ = Describe("EventTrigger Controller", func() {
 		cond := readyAfterReconcile(validTrigger("ready-agent"))
 		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 		Expect(cond.Reason).To(Equal("Resolved"))
+	})
+
+	It("does not write status when a reconcile changes nothing", func() {
+		trigger := validTrigger("no-op-status")
+		readyAfterReconcile(trigger)
+
+		key := types.NamespacedName{Name: trigger.Name, Namespace: "default"}
+		writes := 0
+		r := &EventTriggerReconciler{Client: statusWriteCounter{Client: k8sClient, writes: &writes}, Scheme: k8sClient.Scheme()}
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(writes).To(BeZero())
+
+		// A change that DOES move the verdict is still written.
+		var got corev1alpha1.EventTrigger
+		Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+		got.Spec.Target = corev1alpha1.EventTriggerTarget{AgentRef: "no-such-agent", PromptTemplate: "x"}
+		Expect(k8sClient.Update(ctx, &got)).To(Succeed())
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(writes).To(Equal(1))
+	})
+
+	It("stamps the Ready condition with the generation it checked", func() {
+		trigger := validTrigger("observed-generation")
+		cond := readyAfterReconcile(trigger)
+		key := types.NamespacedName{Name: trigger.Name, Namespace: "default"}
+
+		var got corev1alpha1.EventTrigger
+		Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+		Expect(cond.ObservedGeneration).To(Equal(got.Generation))
+
+		// A spec edit bumps the generation; until the next reconcile the
+		// condition is stale, which is what the engines check for.
+		got.Spec.Target.PromptTemplate = "Edited {{repo}}"
+		Expect(k8sClient.Update(ctx, &got)).To(Succeed())
+		Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+		stale := meta.FindStatusCondition(got.Status.Conditions, eventTriggerConditionReady)
+		Expect(stale.ObservedGeneration).To(BeNumerically("<", got.Generation))
+
+		r := &EventTriggerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+		fresh := meta.FindStatusCondition(got.Status.Conditions, eventTriggerConditionReady)
+		Expect(fresh.ObservedGeneration).To(Equal(got.Generation))
 	})
 
 	It("resolves skill, tool and orchestrator targets too", func() {

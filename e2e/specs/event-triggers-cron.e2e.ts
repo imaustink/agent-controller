@@ -146,7 +146,7 @@ describe(`cron EventSources (engine: ${deployedEngine()})`, () => {
     await kubectl(["create", "job", `--from=cronjob/eventsource-nightly-sweep`, job]);
 
     // curl -f: the Job succeeds only on a 2xx from the gateway -- i.e. the
-    // pod's projected ServiceAccount token passed TokenReview as THIS source's
+    // pod's projected ServiceAccount token verified as THIS source's
     // identity, and the route exists.
     await waitFor(
       `tick Job ${job} to succeed`,

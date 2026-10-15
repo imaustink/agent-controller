@@ -100,7 +100,10 @@ export function buildCronEnvelope(input: CronEnvelopeInput): Envelope {
   return {
     source: input.source,
     kind: "cron",
-    id: `${input.source}-${Math.floor(input.now.getTime() / 1000)}`,
+    // The timestamp keeps ids readable and sortable; the random suffix keeps
+    // two ticks in the same second (a manual tick racing the schedule) from
+    // sharing an id, and with it a default session.
+    id: `${input.source}-${Math.floor(input.now.getTime() / 1000)}-${randomUUID().slice(0, 8)}`,
     time: formatEventTime(input.now),
     headers: {},
     body: input.payload ?? {},

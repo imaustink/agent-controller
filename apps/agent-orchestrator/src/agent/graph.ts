@@ -43,7 +43,13 @@ import { knowledgeBaseSkillId } from "../knowledge-base/types.js";
 import type { SkillFitChecker } from "./skill-fit-checker.js";
 import type { SkillSelector } from "./skill-selector.js";
 import type { ToolFitChecker } from "./tool-fit-checker.js";
-import { dispatchResolvedTool, makeSubAgentToolCallHandler, type ToolCatalog } from "./dispatch-tool.js";
+import {
+  dispatchResolvedTool,
+  makeSubAgentToolCallHandler,
+  readOnlyGitHubRefusal,
+  readOnlyMCPRefusal,
+  type ToolCatalog,
+} from "./dispatch-tool.js";
 import {
   APPROVAL_DENIED_CODE,
   APPROVAL_DENIED_MESSAGE,
@@ -198,6 +204,16 @@ export const AgentStateAnnotation = Annotation.Root({
    * re-attaches and waits.
    */
   activeAgentRunAwaitingReply: Annotation<boolean | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
+  /**
+   * `activeAgentRunId` was launched read-only (see
+   * `SessionRecord.activeAgentRunReadOnly`). A read-only turn may only be
+   * forwarded into a read-only run: `checkActiveAgentRun` refuses to publish a
+   * read-only turn's prompt into a run that was launched writable.
+   */
+  activeAgentRunReadOnly: Annotation<boolean | undefined>({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
@@ -880,7 +896,7 @@ export interface AgentGraphDeps {
    */
   markAgentRunAwaitingReply?: (
     sessionId: string,
-    run: { subject: string; agentId: string; agentRunId: string },
+    run: { subject: string; agentId: string; agentRunId: string; readOnly?: boolean },
   ) => Promise<void>;
   /** Drops the resume anchor once there is nothing left to wait for (same module). */
   clearAgentRunAwaitingReply?: (sessionId: string) => Promise<void>;
@@ -1158,7 +1174,7 @@ async function resolveToolIdentitySecretEnv(
   tool: { id: string; identityProviders?: string[] },
   identity: Identity | undefined,
   linkHint: (provider: string) => string,
-  /** Withhold write-capable credentials (`WRITE_CAPABLE_PROVIDERS`) for a read-only turn. */
+  /** Refuse a tool declaring a write-capable provider (`WRITE_CAPABLE_PROVIDERS`) on a read-only turn. */
   readOnly = false,
 ): Promise<{ secretEnv?: CredentialEnvEntry[] } | { error: string }> {
   if (!identity) {
@@ -1180,6 +1196,8 @@ async function resolveToolIdentitySecretEnv(
       };
     case "unsupported-provider":
       return { error: `tool ${tool.id} declares unsupported identity provider "${credentials.provider}"` };
+    case "read-only-refused":
+      return { error: readOnlyGitHubRefusal(tool.id) };
     case "resolved":
       return { secretEnv: credentials.secretEnv };
   }
@@ -2192,6 +2210,21 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       });
       if (!found) return {};
 
+      // A read-only turn may not steer a run that was launched writable: the
+      // run's pod already holds whatever write credentials that implies, so
+      // publishing this turn's text into it would let a trigger marked readOnly
+      // drive writes. Not fixable by starting a second run either -- that would
+      // orphan the first mid-HITL. Fail the turn instead. Only a PROMPT is
+      // steering: a re-attach (`activeAgentRunAwaitingReply`) publishes nothing
+      // and just collects the reply the run already owes, so it proceeds. A
+      // writable turn into a read-only run cannot escalate and is allowed.
+      // PARITY: runAgentTurn step 0 in the Temporal engine.
+      if (state.readOnly && !state.activeAgentRunReadOnly && !state.activeAgentRunAwaitingReply) {
+        return {
+          error: `a writable ${state.activeAgentId} episode is already active in this conversation; a read-only turn cannot be forwarded into it`,
+        };
+      }
+
       // A reply this run already produced, durably recorded before its ack
       // (agents/reply-store.ts). Checked BEFORE subscribing, because the ack
       // that released the agent's hold is exactly what makes waiting futile:
@@ -2547,6 +2580,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
               subject: identity.subject,
               agentId: agent.id,
               agentRunId: runId,
+              ...(state.readOnly ? { readOnly: true } : {}),
             })
             .catch((err: unknown) => {
               console.error(
@@ -3050,6 +3084,22 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
           // Fail closed: a per-user MCP call runs AS someone, and there is
           // nobody to run it as (docs/adr/0045 §5).
           return { error: `tool ${tool.id} requires a resolved caller identity` };
+        }
+        if (state.readOnly) {
+          // The broker calls the server with the caller's DELEGATED token, and
+          // an MCP tool may do anything that token allows; nothing here can tell
+          // a read from a write. A read-only turn therefore refuses MCP tools
+          // outright (fail closed). A forced tool (no skill, no planner) fails
+          // the turn; a planner-chosen call is surfaced to the planner as a
+          // failed call so it can answer without it. PARITY: agentloop.go's
+          // MCP branch and runForcedTool in the Temporal engine.
+          const refusal = readOnlyMCPRefusal(tool.id);
+          if (!state.selectedSkill) return { error: refusal };
+          return {
+            result: refusal,
+            pendingVerbatimResult: undefined,
+            actionHistory: [...state.actionHistory, { toolId: tool.id, toolArgs: input, result: refusal }],
+          };
         }
         const called = await deps.mcpBrokerClient.call(tool, input, { subject: state.identity.subject });
         return {

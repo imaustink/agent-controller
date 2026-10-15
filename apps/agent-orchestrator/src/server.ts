@@ -155,6 +155,8 @@ export interface AgentGraphInput {
   activeAgentRunId?: string;
   /** True when `activeAgentRunId` still owes this conversation a reply (see `SessionRecord.activeAgentRunAwaitingReply`). */
   activeAgentRunAwaitingReply?: boolean;
+  /** True when `activeAgentRunId` was launched read-only (see `SessionRecord.activeAgentRunReadOnly`). */
+  activeAgentRunReadOnly?: boolean;
   /** Identity subject the session record was created under (docs/adr/0012). */
   sessionSubject?: string;
   /** Per-tool continuation tokens from the caller's session, keyed by tool id (docs/adr/0017). */
@@ -220,7 +222,7 @@ export interface AgentGraphInput {
   toolInput?: string;
   /**
    * Read-only turn (docs/event-triggers.md §1): the trigger's `target.readOnly`
-   * OR the session's sticky flag. See `AgentState.readOnly`.
+   * on a trigger turn, else the session's sticky flag. See `AgentState.readOnly`.
    */
   readOnly?: boolean;
   /** The trigger's params in §4 string form -> `AgentRun.spec.params` of the targeted agent. */
@@ -482,19 +484,24 @@ export class InvokeServer {
     if (!sessionId || !this.sessionStore) return input;
     const record = await this.sessionStore.get(sessionId);
     if (!record) return input;
-    // Sticky read-only (docs/event-triggers.md §1): once the conversation ran a
-    // read-only turn, this one is read-only too. OR-ed, so a session can only
-    // make a turn MORE restricted. Deliberately NOT gated on the record's
-    // subject the way the routing hints below are (the graph checks those):
-    // honoring a restriction from a record some other caller wrote leaks
-    // nothing, while ignoring it would let a follow-up from a different
-    // identity -- a session-page user rather than the webhook relay -- run
-    // with write access in a conversation that was opened read-only.
-    if (record.readOnly) input.readOnly = true;
+    // Sticky read-only (docs/event-triggers.md §1): a turn no trigger produced
+    // inherits the mode the session's last trigger turn set, so a follow-up
+    // can only make a turn MORE restricted. A trigger turn instead brings its
+    // own mode, writable included (see `setSessionReadOnly`): triggers with
+    // different modes share session keys, and inheriting here would leave a
+    // writable triage read-only for good after one review on the same issue.
+    // Deliberately NOT gated on the record's subject the way the routing hints
+    // below are (the graph checks those): honoring a restriction from a record
+    // some other caller wrote leaks nothing, while ignoring it would let a
+    // follow-up from a different identity -- a session-page user rather than
+    // the webhook relay -- run with write access in a conversation that was
+    // opened read-only.
+    if (record.readOnly && !trigger) input.readOnly = true;
     input.activeSkillId = record.activeSkillId;
     input.activeAgentId = record.activeAgentId;
     input.activeAgentRunId = record.activeAgentRunId;
     input.activeAgentRunAwaitingReply = record.activeAgentRunAwaitingReply;
+    input.activeAgentRunReadOnly = record.activeAgentRunReadOnly;
     input.sessionSubject = record.subject;
     input.toolContinuations = record.toolContinuations;
     input.agentContinuations = record.agentContinuations;
@@ -566,9 +573,20 @@ export class InvokeServer {
       ...(outcome.agentRunId ? { lastAgentRunId: outcome.agentRunId } : { lastAgentRunId: existing?.lastAgentRunId }),
       // Sticky read-only: every write below REPLACES the record, so the flag is
       // carried forward here or it would be silently dropped by the first turn
-      // that persists anything. Monotonic -- never written as false.
+      // that persists anything. Only `setSessionReadOnly` (a writable trigger
+      // turn, before it runs) ever clears it.
       ...(existing?.readOnly || outcome.readOnly ? { readOnly: true } : {}),
     };
+
+    // The anchored run's mode (`SessionRecord.activeAgentRunReadOnly`): a run
+    // this session already anchored was CONTINUED, so it keeps the mode it was
+    // launched with -- a writable turn must not relabel a read-only run as
+    // writable. A different run id was launched this turn, in this turn's mode.
+    // Written as `true` or left absent, never `false`.
+    const runReadOnly = (runId: string) =>
+      (runId === existing?.activeAgentRunId ? existing?.activeAgentRunReadOnly === true : outcome.readOnly === true)
+        ? { activeAgentRunReadOnly: true as const }
+        : {};
 
     if (outcome.approvalWaiting && outcome.approvalPending) {
       // A turn paused awaiting a tool-approval decision (ADR 0003) never also
@@ -593,6 +611,7 @@ export class InvokeServer {
         activeAgentId: pending.agentId,
         activeAgentRunId: pending.runId,
         activeAgentRunAwaitingReply: true,
+        ...runReadOnly(pending.runId),
         subAgentApprovalPending: pending,
       });
       return;
@@ -623,6 +642,7 @@ export class InvokeServer {
           activeAgentId: outcome.selectedAgent.id,
           activeAgentRunId: outcome.agentRunId,
           activeAgentRunAwaitingReply: true,
+          ...runReadOnly(outcome.agentRunId),
         });
       } else if (outcome.agentAwaitingReply && outcome.selectedAgent) {
         // Parked on a question: the next turn's text IS the answer, so no
@@ -631,6 +651,7 @@ export class InvokeServer {
           ...base,
           activeAgentId: outcome.selectedAgent.id,
           activeAgentRunId: outcome.agentRunId,
+          ...runReadOnly(outcome.agentRunId),
         });
       } else {
         // Agent finished or failed -- clear active-run state, but keep any
@@ -648,21 +669,24 @@ export class InvokeServer {
   }
 
   /**
-   * Records a read-only turn on its session BEFORE the turn runs (see
-   * `SessionRecord.readOnly`): a pod killed after launching a read-only run
-   * but before `persistSession` must not leave the conversation's next turn
-   * write-capable. Patches whatever is stored (the record may already hold an
-   * anchor this turn depends on). A record created here has no subject yet,
-   * which the graph's subject checks treat as "no session" for routing --
-   * exactly right, since there is nothing to route on -- and `persistSession`
-   * stamps the real subject once the turn resolves one.
+   * Records the turn's read-only mode on its session BEFORE the turn runs
+   * (see `SessionRecord.readOnly`): a pod killed after launching a read-only
+   * run but before `persistSession` must not leave the conversation's next
+   * turn write-capable. Called for every read-only turn, and for a writable
+   * trigger turn, which sets the session writable again (`persistSession`
+   * carries the stored flag forward, so it must be cleared here). Patches
+   * whatever is stored (the record may already hold an anchor this turn
+   * depends on). A record created here has no subject yet, which the graph's
+   * subject checks treat as "no session" for routing -- exactly right, since
+   * there is nothing to route on -- and `persistSession` stamps the real
+   * subject once the turn resolves one.
    */
-  private async markSessionReadOnly(sessionId: string): Promise<void> {
+  private async setSessionReadOnly(sessionId: string, readOnly: boolean): Promise<void> {
     if (!this.sessionStore) return;
     const existing = await this.sessionStore.get(sessionId);
-    if (existing?.readOnly) return;
-    const { updatedAt: _updatedAt, ...rest } = existing ?? { subject: "", updatedAt: 0 };
-    await this.sessionStore.set(sessionId, { ...rest, readOnly: true });
+    if ((existing?.readOnly === true) === readOnly) return;
+    const { updatedAt: _updatedAt, readOnly: _readOnly, ...rest } = existing ?? { subject: "", updatedAt: 0 };
+    await this.sessionStore.set(sessionId, readOnly ? { ...rest, readOnly: true } : rest);
   }
 
   listen(port: number): Promise<void> {
@@ -1056,13 +1080,14 @@ export class InvokeServer {
       trigger,
     ).then(async (graphInput) => {
       if (targetRepository) graphInput.targetRepository = targetRepository;
-      // Persist a read-only turn's flag BEFORE anything launches (see
-      // `markSessionReadOnly`). Awaited, and a failure fails the turn: the
-      // flag's job is to make later turns read-only, and a turn that can't
-      // record that must not go on to launch runs the next turn won't know
-      // were read-only. (The Redis adapter swallows its own errors by
-      // contract, so this only bites a store that actually throws.)
-      if (graphInput.readOnly && sessionId) await this.markSessionReadOnly(sessionId);
+      // Persist the turn's read-only mode BEFORE anything launches (see
+      // `setSessionReadOnly`): a read-only turn's, and a trigger turn's
+      // either way. Awaited, and a failure fails the turn: the flag's job is
+      // to make later turns read-only, and a turn that can't record that must
+      // not go on to launch runs the next turn won't know were read-only.
+      // (The Redis adapter swallows its own errors by contract, so this only
+      // bites a store that actually throws.)
+      if (sessionId && (graphInput.readOnly || trigger)) await this.setSessionReadOnly(sessionId, graphInput.readOnly === true);
       // Mark the in-flight job identity-link-pending the moment the graph
       // decides a link is needed (before the link URL exists), so a polling
       // caller can withhold a premature "starting work" ack. Only mutate while
@@ -1380,6 +1405,7 @@ export class InvokeServer {
       approvalWaiting: state.approvalWaiting,
       subAgentApprovalPending: state.subAgentApprovalPending,
       subAgentApprovalWaiting: state.subAgentApprovalWaiting,
+      readOnly: state.readOnly === true || graphInput.readOnly === true,
     });
     const id = chatCompletionId();
     // The turn is asking the CALLER to run a tool (docs/adr/0035): hand back
@@ -1569,6 +1595,7 @@ export class InvokeServer {
           approvalWaiting,
           subAgentApprovalPending,
           subAgentApprovalWaiting,
+          readOnly: graphInput.readOnly === true,
         });
       for await (const item of withHeartbeat(source, HEARTBEAT_MS)) {
         if (item.type === "heartbeat") {

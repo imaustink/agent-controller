@@ -7,6 +7,8 @@ import { SignJWT } from "jose";
 import { CALLER_IDENTITY_HEADER } from "../rbac/caller-identity-assertion.js";
 import { OpenWebUiForwardedUserResolver } from "../rbac/openwebui-forwarded-user-resolver.js";
 import type { IdentityResolver } from "../rbac/types.js";
+import { DISPATCH_ASSERTION_HEADER, requestDigest } from "../rbac/dispatch-assertion.js";
+import { createHmac } from "node:crypto";
 
 const BASE = "http://temporal-engine-gateway:8080";
 
@@ -98,12 +100,13 @@ describe("TemporalEngine", () => {
     expect(state.result).toBeUndefined();
   });
 
-  // docs/event-triggers.md §5: the resolved turn crosses the hop under exactly
-  // these field names (the Temporal gateway's /invoke reads them), never the
-  // envelope.
-  it("forwards a resolved EventTrigger turn with the contract's exact field names", async () => {
+  // docs/event-triggers.md §5: the resolved turn crosses the hop as a signed
+  // dispatch assertion bound to the session and prompt -- never body fields
+  // (the engine refuses those: anything holding its /invoke token could
+  // otherwise launch any target writable), and never the envelope.
+  it("forwards a resolved EventTrigger turn as a signed dispatch, not body fields", async () => {
     const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
-    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl, senderAssertionSecret: ASSERTION_SECRET });
 
     await engine.invoke(
       input({
@@ -118,38 +121,63 @@ describe("TemporalEngine", () => {
       }),
     );
 
-    const body = JSON.parse(String(calls[0]!.init!.body));
+    const init = calls[0]!.init!;
+    const body = JSON.parse(String(init.body));
     expect(body).toMatchObject({
       request: "Run tool slack-notify",
       sessionId: "event:ci:1",
+      readOnly: true,
+      targetRepository: "acme/widgets",
+    });
+    for (const field of ["forcedSkillId", "forcedAgentId", "forcedToolId", "toolInput", "params", "triggerName", "event"]) {
+      expect(body).not.toHaveProperty(field);
+    }
+
+    const header = (init.headers as Record<string, string>)[DISPATCH_ASSERTION_HEADER]!;
+    const [payloadB64, signature] = header.split(".");
+    expect(signature).toBe(createHmac("sha256", ASSERTION_SECRET).update(payloadB64!).digest("base64url"));
+    expect(JSON.parse(Buffer.from(payloadB64!, "base64url").toString("utf8"))).toMatchObject({
+      typ: "dispatch",
+      triggerName: "ci-notify",
       forcedToolId: "slack-notify",
       toolInput: '{"channel":"ops"}',
       readOnly: true,
       params: { channel: "ops" },
-      triggerName: "ci-notify",
-      targetRepository: "acme/widgets",
+      sessionId: "event:ci:1",
+      requestSha256: requestDigest("Run tool slack-notify"),
     });
-    expect(body).not.toHaveProperty("forcedSkillId");
-    expect(body).not.toHaveProperty("forcedAgentId");
-    expect(body).not.toHaveProperty("event");
+  });
+
+  // A trigger turn the engine can only accept signed: without the secret it
+  // must fail here, not run as an undispatched chat turn.
+  it("refuses an event-triggered turn when there is no secret to sign its dispatch", async () => {
+    const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+
+    const state = await engine.invoke(input({ forcedAgentId: "claude-code-swe-agent", triggerName: "github-issue-triage" }));
+
+    expect(state.error).toMatch(/AGENT_SENDER_ASSERTION_SECRET/);
+    expect(calls).toHaveLength(0);
   });
 
   // A sticky read-only session forwards readOnly on a plain follow-up turn too;
-  // an ordinary turn carries none of the trigger fields.
-  it("sends readOnly on any turn that has it, and no trigger fields on an ordinary turn", async () => {
+  // an ordinary turn carries no dispatch at all.
+  it("sends readOnly on any turn that has it, and no dispatch on an ordinary turn", async () => {
     const { impl, calls } = scriptedFetch([
       { id: "x", status: "succeeded", result: "ok" },
       { id: "y", status: "succeeded", result: "ok" },
     ]);
-    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl, senderAssertionSecret: ASSERTION_SECRET });
 
     await engine.invoke(input({ request: "follow-up", readOnly: true }));
     await engine.invoke(input({ request: "hello" }));
 
-    const bodies = calls.filter((c) => c.url === `${BASE}/invoke`).map((c) => JSON.parse(String(c.init!.body)));
+    const posts = calls.filter((c) => c.url === `${BASE}/invoke`);
+    const bodies = posts.map((c) => JSON.parse(String(c.init!.body)));
     expect(bodies[0].readOnly).toBe(true);
-    for (const field of ["readOnly", "params", "triggerName", "forcedToolId", "toolInput"]) {
-      expect(bodies[1]).not.toHaveProperty(field);
+    expect(bodies[1]).not.toHaveProperty("readOnly");
+    for (const post of posts) {
+      expect((post.init!.headers as Record<string, string>)[DISPATCH_ASSERTION_HEADER]).toBeUndefined();
     }
   });
 
@@ -158,24 +186,12 @@ describe("TemporalEngine", () => {
   // silent success or a fallback.
   it("surfaces the engine's forced-target miss as a failed turn", async () => {
     const { impl } = scriptedFetch([{ id: "x", status: "failed", error: 'event trigger pr-review: agent "gone" is not available' }]);
-    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl, senderAssertionSecret: ASSERTION_SECRET });
 
     const state = await engine.invoke(input({ forcedAgentId: "gone", triggerName: "pr-review" }));
 
     expect(state.error).toBe('event trigger pr-review: agent "gone" is not available');
     expect(state.result).toBeUndefined();
-  });
-
-  it("names an already-selected trigger target instead of resending the event", async () => {
-    const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "triaged" }]);
-    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
-
-    await engine.invoke(input({ forcedAgentId: "claude-code-swe-agent", sessionId: "github:acme/widgets#7" }));
-
-    const body = JSON.parse(String(calls[0]!.init!.body));
-    expect(body.forcedAgentId).toBe("claude-code-swe-agent");
-    expect(body.sessionId).toBe("github:acme/widgets#7");
-    expect(body.event).toBeUndefined();
   });
 
   // Without this the engine's own `identityLinkFlow` field is unreachable: it
@@ -495,28 +511,41 @@ describe("TemporalEngine", () => {
     // up to 10 minutes, and re-verifying the JWT on every resume made the
     // resume after its expiry reach the engine with NO caller identity -- so
     // the gateway ran the user's request as its shared bearer subject. Real
-    // JWT, real resolver, real expiry (shortened to ~1s).
+    // JWT, real resolver, real expiry -- on a controlled clock: only `Date` is
+    // faked, and the first POST /invoke moves it past the JWT's expiry, so
+    // every resume runs against an expired token. (A real 1s JWT raced the
+    // wall clock: `exp` is whole seconds, so its life was anywhere in 0-1s,
+    // and under suite load the turn's own first verify could miss it.)
     it("keeps the caller's identity on every resume, even after the forwarded JWT expires", async () => {
-      const { impl, calls } = scriptedFetch([
-        { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
-        { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
-        { id: "x", status: "succeeded", result: "Opened PR #42." },
-      ]);
-      const engine = new TemporalEngine({
-        baseUrl: BASE,
-        fetchImpl: impl,
-        senderAssertionSecret: ASSERTION_SECRET,
-        forwardedUserIdentityResolver: new OpenWebUiForwardedUserResolver({ secret: JWT_SECRET, roles: ["writer"] }),
-        // Longer than the JWT's life, so the later resumes happen after it expired.
-        autoResumeIntervalMs: 1_100,
-      });
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const jwt = await forwardedJwt("alice", 300);
+        const { impl, calls } = scriptedFetch([
+          { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
+          { id: "x", status: "succeeded", result: "To continue, please link your GitHub account...", path: "link-required" },
+          { id: "x", status: "succeeded", result: "Opened PR #42." },
+        ]);
+        const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+          const res = await impl(url, init);
+          // The JWT expires the moment the turn's first hop is out.
+          if (String(url).endsWith("/invoke")) vi.setSystemTime(Date.now() + 301_000);
+          return res;
+        }) as unknown as typeof fetch;
+        const engine = new TemporalEngine({
+          baseUrl: BASE,
+          fetchImpl,
+          senderAssertionSecret: ASSERTION_SECRET,
+          forwardedUserIdentityResolver: new OpenWebUiForwardedUserResolver({ secret: JWT_SECRET, roles: ["writer"] }),
+          autoResumeIntervalMs: 1,
+        });
 
-      const state = await engine.invoke(
-        input({ progressListener: vi.fn(), sessionId: "chat-1", forwardedUserToken: await forwardedJwt("alice", 1) }),
-      );
+        const state = await engine.invoke(input({ progressListener: vi.fn(), sessionId: "chat-1", forwardedUserToken: jwt }));
 
-      expect(state.result).toBe("Opened PR #42.");
-      expect(assertedSubjects(calls)).toEqual(["openwebui:alice", "openwebui:alice", "openwebui:alice"]);
+        expect(state.result).toBe("Opened PR #42.");
+        expect(assertedSubjects(calls)).toEqual(["openwebui:alice", "openwebui:alice", "openwebui:alice"]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
