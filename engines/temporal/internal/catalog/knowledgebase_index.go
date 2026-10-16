@@ -235,6 +235,13 @@ func knowledgeBaseTools(kb KnowledgeBaseDescriptor, connections map[string]Corpu
 	return tools
 }
 
+// KnowledgeBaseTools is the tool records a knowledge base generates — exactly
+// what the planner is offered once its skill is selected. Exported for tooling
+// that needs that view without an indexer (cmd/planner-eval).
+func KnowledgeBaseTools(kb KnowledgeBaseDescriptor, connections map[string]CorpusDescriptor) []ToolDescriptor {
+	return knowledgeBaseTools(kb, connections)
+}
+
 // readableMembers are the members that can actually serve a per-user read.
 //
 // A member with no identity provider is excluded: the read face has no
