@@ -27,6 +27,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  boundaries:
+    name: Import boundaries (framework / catalog / orchestrator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      # ADR 0047 splits the repo into a framework that depends on nothing, a
+      # catalog and an orchestrator that may each depend only on the
+      # framework. Being in one repo makes it trivially easy to reach across
+      # that line, and nothing else would notice until someone tried to adopt
+      # one half without the other. No `npm ci`: the checker is
+      # dependency-free and reads source, package.json, go.mod and
+      # Dockerfiles directly.
+      #
+      # Its own suite runs first, because the suite is what proves each rule
+      # can actually fail. A boundary check that passes because it stopped
+      # looking would otherwise look exactly like a clean repo.
+      - name: Checker self-test
+        run: npm run test:scripts
+
+      - name: Check boundaries
+        run: npm run check:boundaries
+
   node:
     name: Node (build, typecheck, test)
     runs-on: ubuntu-latest
