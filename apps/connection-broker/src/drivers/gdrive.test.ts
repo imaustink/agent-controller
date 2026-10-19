@@ -102,7 +102,7 @@ describe("scope validation", () => {
   const d = driver(vi.fn());
 
   it("requires a folder", () => {
-    expect(() => d.validateScope({})).toThrow(/scoped to a folder/);
+    expect(() => d.validateScope({})).toThrow(/exactly one of scope.folderID or scope.all/);
   });
 
   it("rejects an id that would break out of the query term", () => {
@@ -816,5 +816,15 @@ describe("shortcuts", () => {
 
     expect(page.resources.map((r) => r.id)).toEqual(["sc1"]);
     expect(page.resources[0].version).toBe("1");
+  });
+});
+
+describe("wildcard scope", () => {
+  it("refuses an uncapped wildcard — Drive has no cheap 'every folder' query", async () => {
+    // With no allowedScopes.folderIDs the driver cannot bound the wildcard, so
+    // it refuses rather than trying to index the whole account.
+    await expect(
+      driver(vi.fn()).list({ all: true }, { service: "t" }, undefined),
+    ).rejects.toBeInstanceOf(PermanentError);
   });
 });

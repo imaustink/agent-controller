@@ -29,6 +29,7 @@ requireMinikubeContext();
 
 const SLACK_CORPUS = "eng-chat";
 const DRIVE_CORPUS = "delivery-drive";
+const JAZZHR_CORPUS = "all-candidates";
 
 const manifests = `
 apiVersion: core.controller-agent.dev/v1alpha1
@@ -103,6 +104,40 @@ spec:
     reconcileInterval: 1h
   api:
     enabled: true
+---
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Connection
+metadata:
+  name: e2e-fake-jazzhr
+  labels: { e2e: "true" }
+spec:
+  provider: jazzhr
+  displayName: "Fake JazzHR"
+  # No identityProviders: JazzHR has no per-user candidate ACL to probe.
+  secretEnv:
+    - name: SERVICE_TOKEN
+      secretRef:
+        name: e2e-connection-jazzhr
+        key: apiKey
+---
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Corpus
+metadata:
+  name: ${JAZZHR_CORPUS}
+  labels: { e2e: "true" }
+spec:
+  connectionRef: e2e-fake-jazzhr
+  displayName: "All candidates"
+  description: "Every applicant across all open jobs."
+  allowedRoles: [recruiter]
+  # The wildcard, uncapped: the driver enumerates /jobs (JSENIOR + JSTAFF) and
+  # concatenates each job's candidates. This is the one cluster-path test of the
+  # scope.all feature — a single corpus covering a whole account.
+  scope:
+    all: true
+  sync:
+    mode: poll
+    reconcileInterval: 1h
 `;
 
 /** Runs a corpus's sync from its own CronJob — the pod spec production deploys. */
@@ -130,7 +165,7 @@ const collectionOf = async (corpus: string) =>
 beforeAll(async () => {
   await kubectlApplyStdin(manifests);
 
-  for (const corpus of [SLACK_CORPUS, DRIVE_CORPUS]) {
+  for (const corpus of [SLACK_CORPUS, DRIVE_CORPUS, JAZZHR_CORPUS]) {
     await waitFor(
       `${corpus} resolved its Connection`,
       async () => {
@@ -149,8 +184,10 @@ afterAll(async () => {
   for (const [kind, name] of [
     ["corpus", SLACK_CORPUS],
     ["corpus", DRIVE_CORPUS],
+    ["corpus", JAZZHR_CORPUS],
     ["connection", "e2e-fake-slack"],
     ["connection", "e2e-fake-gdrive"],
+    ["connection", "e2e-fake-jazzhr"],
   ] as [string, string][]) {
     await kubectl(["delete", kind, name, "--ignore-not-found", "--wait=false"]).catch(() => "");
   }
@@ -240,6 +277,48 @@ describe("a Drive corpus", () => {
 
     expect(titles).toContain("Nested brief");
     expect(titles).toContain("Shortcut to notes");
+  });
+});
+
+describe("a wildcard JazzHR corpus", () => {
+  it("resolves its provider from the Connection", async () => {
+    const provider = (
+      await kubectl(["get", "corpus", JAZZHR_CORPUS, "-o", "jsonpath={.status.provider}"])
+    ).trim();
+    expect(provider).toBe("jazzhr");
+  });
+
+  it("syncs candidates into its own collection", async () => {
+    const collection = await collectionOf(JAZZHR_CORPUS);
+    expect(collection).not.toBe("");
+    const points = await withQdrant((base) => pointCount(base, collection));
+    expect(points ?? 0).toBeGreaterThan(0);
+  });
+
+  it("the wildcard reached candidates from BOTH jobs, not just one", async () => {
+    // scope.all enumerates /jobs (JSENIOR + JSTAFF). A1/A2 sit on JSENIOR and A3
+    // on JSTAFF, so a corpus holding all three is the proof the wildcard spanned
+    // every job rather than one — the whole point of the feature.
+    const collection = await collectionOf(JAZZHR_CORPUS);
+    const titles = await withQdrant(async (base) => {
+      const res = await fetch(`${base}/collections/${collection}/points/scroll`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ limit: 200, with_payload: true }),
+      });
+      const body = (await res.json()) as {
+        result: { points: { payload: Record<string, unknown> }[] };
+      };
+      return body.result.points.map((p) => {
+        const raw = p.payload.descriptor;
+        const d = typeof raw === "string" ? JSON.parse(raw) : (raw as Record<string, string>);
+        return d?.title ?? "";
+      });
+    });
+
+    const joined = titles.join(" | ");
+    expect(joined).toContain("Ada Lovelace"); // JSENIOR
+    expect(joined).toContain("Linus T"); // JSTAFF — a different job
   });
 });
 

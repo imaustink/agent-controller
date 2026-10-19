@@ -28,7 +28,7 @@ describe("scope validation", () => {
   const d = driver(vi.fn());
 
   it("requires a channel", () => {
-    expect(() => d.validateScope({})).toThrow(/scoped to a channel/);
+    expect(() => d.validateScope({})).toThrow(/exactly one of scope.channel or scope.all/);
   });
 
   it("rejects a scope naming another provider's unit", () => {
@@ -86,6 +86,20 @@ describe("list", () => {
   it("ends the walk when Slack reports no more", async () => {
     const http = vi.fn().mockResolvedValue(respond({ ok: true, messages: [message("1.1")], has_more: false }));
     const { cursor } = await driver(http).list(SCOPE, { service: "x" }, undefined);
+    expect(cursor).toBeUndefined();
+  });
+
+  it("wildcard: enumerates the bot's channels and lists each", async () => {
+    const http = vi.fn(async (url: string) => {
+      if (url.includes("users.conversations")) {
+        return respond({ ok: true, channels: [{ id: "C1" }, { id: "C2" }] });
+      }
+      // conversations.history for whichever channel
+      const channel = new URL(url).searchParams.get("channel");
+      return respond({ ok: true, messages: [message(`${channel}.1`)] });
+    }) as unknown as FetchLike;
+    const { resources, cursor } = await driver(http).list({ all: true }, { service: "x" }, undefined);
+    expect(resources.map((r) => r.id).sort()).toEqual(["C1.1", "C2.1"]);
     expect(cursor).toBeUndefined();
   });
 });

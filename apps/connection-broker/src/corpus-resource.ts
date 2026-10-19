@@ -1,5 +1,6 @@
 import { ConfluenceDriver } from "./drivers/confluence.js";
 import { GDriveDriver } from "./drivers/gdrive.js";
+import { JazzHRDriver } from "./drivers/jazzhr.js";
 import { SlackDriver } from "./drivers/slack.js";
 import type { Driver, Scope } from "./drivers/types.js";
 import type { CorpusBinding } from "./registry.js";
@@ -20,7 +21,7 @@ export interface CorpusCustomResource {
     connectionRef: string;
     displayName?: string;
     allowedRoles?: string[];
-    scope: { space?: string; channel?: string; folderID?: string };
+    scope: { space?: string; channel?: string; folderID?: string; jobID?: string; all?: boolean };
     sync?: { mode?: string; reconcileInterval?: string };
   };
   status?: { collection?: string; provider?: string };
@@ -36,7 +37,7 @@ export interface ConnectionCustomResource {
     provider: string;
     displayName?: string;
     site?: { baseURL: string; cloudId?: string };
-    allowedScopes?: { spaces?: string[]; channels?: string[]; folderIDs?: string[] };
+    allowedScopes?: { spaces?: string[]; channels?: string[]; folderIDs?: string[]; jobIDs?: string[] };
     autoJoin?: boolean;
     secretEnv?: { name: string; secretRef: { name: string; key: string } }[];
   };
@@ -85,10 +86,17 @@ export async function toBinding(
   }
 
   const serviceToken = await resolveServiceToken(name, connection, readSecret);
+  const wildcard = corpus.spec.scope?.all === true;
   const scope: Scope = {
     space: corpus.spec.scope?.space,
     channel: corpus.spec.scope?.channel,
     folderID: corpus.spec.scope?.folderID,
+    jobID: corpus.spec.scope?.jobID,
+    all: wildcard || undefined,
+    // A wildcard carries its bound to the driver: the Connection's allowlist for
+    // this provider, or undefined when it set none (enumerate everything the
+    // credential reaches). Only meaningful with `all`.
+    ...(wildcard ? { allowedUnits: allowedUnitsFor(connection) } : {}),
   };
 
   assertWithinConnectionScopes(name, scope, connection);
@@ -116,6 +124,12 @@ function assertWithinConnectionScopes(
   scope: Scope,
   connection: ConnectionCustomResource,
 ): void {
+  // A wildcard is permitted by construction: it reaches exactly the Connection's
+  // allowlist (carried as `allowedUnits`), or everything the credential reaches
+  // when no cap is set. There is no single unit to check against the cap —
+  // the cap IS the enumeration bound, applied by the driver.
+  if (scope.all) return;
+
   const caps = connection.spec.allowedScopes;
   if (!caps) return; // No cap set is not an empty cap — it permits anything.
 
@@ -124,7 +138,9 @@ function assertWithinConnectionScopes(
       ? [scope.space, caps.spaces]
       : scope.channel !== undefined
         ? [scope.channel, caps.channels]
-        : [scope.folderID, caps.folderIDs];
+        : scope.folderID !== undefined
+          ? [scope.folderID, caps.folderIDs]
+          : [scope.jobID, caps.jobIDs];
 
   if (!allowed || allowed.length === 0) return;
   if (unit !== undefined && allowed.includes(unit)) return;
@@ -133,6 +149,28 @@ function assertWithinConnectionScopes(
     `corpus ${name} is scoped to ${String(unit)}, which connection ` +
       `${connection.metadata.name} does not permit`,
   );
+}
+
+/**
+ * The Connection's wildcard bound for its provider — the allowlist a wildcard
+ * corpus enumerates. Undefined when the Connection set no cap, which a driver
+ * reads as "everything the service credential can reach".
+ */
+function allowedUnitsFor(connection: ConnectionCustomResource): string[] | undefined {
+  const caps = connection.spec.allowedScopes;
+  if (!caps) return undefined;
+  switch (connection.spec.provider) {
+    case "confluence":
+      return caps.spaces;
+    case "slack":
+      return caps.channels;
+    case "gdrive":
+      return caps.folderIDs;
+    case "jazzhr":
+      return caps.jobIDs;
+    default:
+      return undefined;
+  }
 }
 
 function driverFor(name: string, connection: ConnectionCustomResource, serviceToken: string): Driver {
@@ -190,6 +228,14 @@ function driverFor(name: string, connection: ConnectionCustomResource, serviceTo
       return new GDriveDriver(
         process.env.GDRIVE_API_ORIGIN ? { apiOrigin: process.env.GDRIVE_API_ORIGIN } : {},
       );
+
+    case "jazzhr":
+      // JazzHR has one site (api.resumatorapi.com) and no per-tenant address,
+      // so no site coordinates. Same API-origin seam as the others, for the e2e
+      // fake. The service token is the JazzHR API key.
+      return new JazzHRDriver({
+        ...(process.env.JAZZHR_API_ORIGIN ? { apiOrigin: process.env.JAZZHR_API_ORIGIN } : {}),
+      });
 
     default:
       // A provider the CRD's enum does not cover, or one added to the enum

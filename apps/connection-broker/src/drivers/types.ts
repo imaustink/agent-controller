@@ -8,11 +8,40 @@
  * implementation of it, not a new service.
  */
 
-/** The bounded set of resources a Connection reaches. Exactly one field is set. */
+/**
+ * The bounded set of resources a Connection reaches. Exactly one of
+ * `space`/`channel`/`folderID`/`jobID`/`all` is set.
+ *
+ * `all` is the wildcard: "every unit this Connection permits" rather than one
+ * named space/channel/folder/job. It exists because a connection commonly wants
+ * ONE corpus covering its whole account — every JazzHR job, every Drive folder
+ * the credential sees — without an operator enumerating and maintaining a
+ * corpus per unit by hand. It is bounded by the Connection's `allowedScopes`:
+ * when that cap is set, a wildcard reaches exactly the capped units (passed to
+ * the driver as `allowedUnits`); when it is absent, the driver enumerates
+ * everything the service credential can reach.
+ */
 export interface Scope {
   space?: string;
   channel?: string;
   folderID?: string;
+  /** A JazzHR job id — the candidates attached to one opening. */
+  jobID?: string;
+  /**
+   * Wildcard: every unit this Connection permits (see the type doc). A driver
+   * MUST implement it by enumerating units and listing each, and such a corpus
+   * reconciles in full each pass — the per-unit cursors do not compose into one
+   * opaque incremental cursor, and the reconcile pass is the source of truth
+   * (ADR 0038 §4) regardless.
+   */
+  all?: boolean;
+  /**
+   * The cap a wildcard is bounded to: the Connection's `allowedScopes` for this
+   * provider, or empty/undefined when it set none. Only meaningful with `all`.
+   * Carried on the scope so the enumeration bound reaches the driver, which is
+   * the security boundary (the same reason `validateScope` is re-checked there).
+   */
+  allowedUnits?: string[];
 }
 
 /**

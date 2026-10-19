@@ -119,6 +119,18 @@ spec:
               scope:
                 description: scope bounds the resources this Corpus reaches. See CorpusScope.
                 properties:
+                  all:
+                    description: |-
+                      all is the wildcard: every unit this Corpus's Connection permits — every
+                      space, channel, folder or job — rather than one named unit. It exists so a
+                      single Corpus can cover a whole account without an operator enumerating and
+                      maintaining one Corpus per unit by hand. It is bounded by the Connection's
+                      allowedScopes when that cap is set, and otherwise reaches everything the
+                      ingestion credential can see (which gdrive, lacking a cheap "every folder"
+                      enumeration, refuses — a wildcard gdrive Corpus must set allowedScopes).
+
+                      Set exactly one of a specific unit OR all (see the CEL rule on CorpusSpec).
+                    type: boolean
                   channel:
                     description: |-
                       channel is a Slack channel id (e.g. "C6RQKL5BK"). An id, not a name:
@@ -129,6 +141,11 @@ spec:
                   folderID:
                     description: folderID is a Google Drive folder id. Contents are
                       synced recursively.
+                    minLength: 1
+                    type: string
+                  jobID:
+                    description: jobID is a JazzHR job id — the candidates attached
+                      to one opening.
                     minLength: 1
                     type: string
                   space:
@@ -178,9 +195,10 @@ spec:
             - scope
             type: object
             x-kubernetes-validations:
-            - message: 'a Corpus must be scoped to exactly one unit: a space, a channel,
-                or a folderID'
-              rule: '[has(self.scope.space), has(self.scope.channel), has(self.scope.folderID)].filter(x,
+            - message: 'a Corpus must be scoped to exactly one of: a space, a channel,
+                a folderID, a jobID, or all (the wildcard)'
+              rule: '[has(self.scope.space), has(self.scope.channel), has(self.scope.folderID),
+                has(self.scope.jobID), (has(self.scope.all) && self.scope.all)].filter(x,
                 x).size() == 1'
             - message: 'sync.reconcileInterval is required unless sync.mode is none:
                 webhooks are lossy and the reconcile pass is the source of truth'

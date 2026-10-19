@@ -1,0 +1,43 @@
+# One JazzHR job's candidates as a Corpus (ADR 0043), drawn through the JazzHR
+# Connection that holds the API key.
+#
+# For a corpus covering EVERY job the Connection permits, replace the scope with
+# the wildcard:
+#
+#   scope:
+#     all: true
+#
+# A wildcard enumerates the Connection's allowedScopes.jobIDs when it sets them,
+# otherwise every job the key can see, and re-lists in full each reconcile
+# (JazzHR offers no "changed since" cursor; the reconcile pass is the source of
+# truth regardless, and unchanged candidates re-embed nothing).
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Corpus
+metadata:
+  labels:
+    app.kubernetes.io/name: core-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: senior-platform-engineer-candidates
+spec:
+  connectionRef: bitovi-jazzhr
+
+  displayName: "Senior Platform Engineer — candidates"
+  description: >-
+    Applicants to the Senior Platform Engineer opening: their profiles,
+    questionnaire answers and resumes, for searching who has which experience.
+
+  allowedRoles:
+    - recruiter
+
+  # The security boundary: the candidates attached to ONE job. An id, not a
+  # title — titles are mutable. For the whole account, use `all: true` instead
+  # (see the header).
+  scope:
+    jobID: abc123DEF456
+
+  sync:
+    # JazzHR has no webhook in this integration, so the corpus reconciles on a
+    # schedule. Each pass re-lists the job's applicants and re-indexes any whose
+    # content changed (new resume, edited answers).
+    mode: poll
+    reconcileInterval: 6h

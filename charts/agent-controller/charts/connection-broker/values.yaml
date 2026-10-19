@@ -87,6 +87,7 @@ apiOrigins:
   atlassian: ""
   slack: ""
   gdrive: ""
+  jazzhr: ""
 
 embeddings:
   # Must match whatever the engines embed with: a knowledge base merges scores

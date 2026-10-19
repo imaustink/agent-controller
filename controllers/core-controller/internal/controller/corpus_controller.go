@@ -196,6 +196,20 @@ func (r *CorpusReconciler) degrade(
 func checkScope(corpus *corev1alpha1.Corpus, connection *corev1alpha1.Connection) (reason, message string) {
 	scope := corpus.Spec.Scope
 
+	// A wildcard Corpus reaches every unit the Connection permits, so there is no
+	// single unit to match against the cap — only the provider must be one a
+	// driver implements. The allowlist (when set) bounds the wildcard at
+	// enumeration time in the broker, not here.
+	if scope.All {
+		switch connection.Spec.Provider {
+		case "confluence", "slack", "gdrive", "jazzhr":
+			return "", ""
+		default:
+			return "UnknownProvider", fmt.Sprintf("connection %s has provider %q, which no driver implements",
+				connection.Name, connection.Spec.Provider)
+		}
+	}
+
 	unit, allowed := "", []string(nil)
 	switch connection.Spec.Provider {
 	case "confluence":
@@ -204,7 +218,7 @@ func checkScope(corpus *corev1alpha1.Corpus, connection *corev1alpha1.Connection
 			allowed = connection.Spec.AllowedScopes.Spaces
 		}
 		if unit == "" {
-			return reasonScopeMismatch, "a confluence Corpus must set scope.space"
+			return reasonScopeMismatch, "a confluence Corpus must set scope.space or scope.all"
 		}
 	case "slack":
 		unit = scope.Channel
@@ -212,7 +226,7 @@ func checkScope(corpus *corev1alpha1.Corpus, connection *corev1alpha1.Connection
 			allowed = connection.Spec.AllowedScopes.Channels
 		}
 		if unit == "" {
-			return reasonScopeMismatch, "a slack Corpus must set scope.channel"
+			return reasonScopeMismatch, "a slack Corpus must set scope.channel or scope.all"
 		}
 	case "gdrive":
 		unit = scope.FolderID
@@ -220,7 +234,15 @@ func checkScope(corpus *corev1alpha1.Corpus, connection *corev1alpha1.Connection
 			allowed = connection.Spec.AllowedScopes.FolderIDs
 		}
 		if unit == "" {
-			return reasonScopeMismatch, "a gdrive Corpus must set scope.folderID"
+			return reasonScopeMismatch, "a gdrive Corpus must set scope.folderID or scope.all"
+		}
+	case "jazzhr":
+		unit = scope.JobID
+		if connection.Spec.AllowedScopes != nil {
+			allowed = connection.Spec.AllowedScopes.JobIDs
+		}
+		if unit == "" {
+			return reasonScopeMismatch, "a jazzhr Corpus must set scope.jobID or scope.all"
 		}
 	default:
 		return "UnknownProvider", fmt.Sprintf("connection %s has provider %q, which no driver implements",

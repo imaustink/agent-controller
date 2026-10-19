@@ -67,6 +67,14 @@ spec:
                     items:
                       type: string
                     type: array
+                  jobIDs:
+                    description: |-
+                      jobIDs are JazzHR job ids. A wildcard JazzHR Corpus (scope.all) with this
+                      set reaches exactly these jobs' candidates; without it, every job the key
+                      can see.
+                    items:
+                      type: string
+                    type: array
                   spaces:
                     description: spaces are Confluence space keys.
                     items:
@@ -115,6 +123,7 @@ spec:
                 - confluence
                 - slack
                 - gdrive
+                - jazzhr
                 type: string
               secretEnv:
                 description: |-
