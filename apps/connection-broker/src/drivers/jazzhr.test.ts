@@ -120,6 +120,15 @@ describe("list — wildcard", () => {
     expect(resources.map((r) => r.id).sort()).toEqual(["A1", "A2"]);
   });
 
+  it("an explicitly EMPTY cap indexes nothing — never escalates to the whole account", async () => {
+    const http = router([
+      [(u) => u.includes("/jobs"), () => { throw new Error("empty cap must not enumerate /jobs"); }],
+      [() => true, () => respond([])],
+    ]);
+    const { resources } = await driver(http).list({ all: true, allowedUnits: [] }, CREDS, undefined);
+    expect(resources).toEqual([]);
+  });
+
   it("uncapped: enumerates /jobs then lists each", async () => {
     const http = router([
       [(u) => u.includes("/jobs"), () => respond([{ id: "J1" }, { id: "J2" }])],
@@ -192,6 +201,39 @@ describe("fetch — rendering", () => {
   });
 });
 
+describe("resume size guard", () => {
+  it("rejects a declared-oversize download BEFORE reading the body", async () => {
+    const http = router([
+      [(u) => u.includes("/applicants/A9"), () => respond({ first_name: "Big" })],
+      [(u) => u.includes("/files/applicant_id/A9"), () => respond([{ id: "F1", file_name: "cv.pdf", file_url: "https://files.test/big" }])],
+      [
+        (u) => u === "https://files.test/big",
+        () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({}),
+          headers: { "content-length": String(50 * 1024 * 1024) },
+          // Proves the guard fires on Content-Length: reading the body throws.
+          arrayBuffer: async () => {
+            throw new Error("body must not be read when an oversize is declared");
+          },
+        }) as unknown as Awaited<ReturnType<FetchLike>>,
+      ],
+    ]);
+    await expect(driver(http).fetch({ jobID: "J1" }, CREDS, "A9")).rejects.toBeInstanceOf(PermanentError);
+  });
+
+  it("rejects an oversize inline resume before decoding it", async () => {
+    // ~26MB once decoded (len * 3/4), over the 25MB cap.
+    const huge = "A".repeat(35 * 1024 * 1024);
+    const http = router([
+      [(u) => u.includes("/applicants/A10"), () => respond({ first_name: "Big" })],
+      [(u) => u.includes("/files/applicant_id/A10"), () => respond([{ id: "F1", file_name: "cv.txt", file_data: huge }])],
+    ]);
+    await expect(driver(http).fetch({ jobID: "J1" }, CREDS, "A10")).rejects.toBeInstanceOf(PermanentError);
+  });
+});
+
 describe("rate limiting and error classification", () => {
   it("retries a 429 honouring Retry-After, then succeeds", async () => {
     let calls = 0;
@@ -224,7 +266,11 @@ describe("pure helpers", () => {
   it("asArray tolerates arrays, bare objects, and array-wrapping objects", () => {
     expect(asArray([1, 2])).toEqual([1, 2]);
     expect(asArray({ id: "x" })).toEqual([{ id: "x" }]);
+    // A one-key wrapper is unwrapped...
     expect(asArray({ results: [1, 2] })).toEqual([1, 2]);
+    // ...but a genuine single record carrying an array-valued field is ONE row,
+    // not its inner array (the multi-key case).
+    expect(asArray({ applicant_id: "A1", tags: ["x", "y"] })).toEqual([{ applicant_id: "A1", tags: ["x", "y"] }]);
     expect(asArray("nope")).toEqual([]);
   });
 

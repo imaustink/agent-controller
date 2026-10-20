@@ -259,7 +259,10 @@ export class JazzHRDriver implements Driver {
    * them, otherwise every job `/jobs` returns.
    */
   private async resolveJobIDs(scope: Scope, apiKey: string): Promise<string[]> {
-    if (scope.allowedUnits && scope.allowedUnits.length > 0) {
+    // A PRESENT cap is exhaustive, even when empty: an explicit `jobIDs: []`
+    // means "no jobs", never "every job". Only an ABSENT cap (undefined)
+    // enumerates the whole account. See listWildcard for the same rule.
+    if (scope.allowedUnits !== undefined) {
       return scope.allowedUnits;
     }
     const jobs = await this.paginate("/jobs", apiKey);
@@ -297,16 +300,25 @@ export class JazzHRDriver implements Driver {
     const file = await this.pickResumeFile(applicantID, apiKey);
     if (!file) return "";
 
-    const bytes = await this.resumeBytes(file, apiKey);
+    const bytes = await this.resumeBytes(file, applicantID, apiKey);
     if (!bytes) return "";
-    if (bytes.byteLength > MAX_RESUME_BYTES) {
+    return decodeResumeAsync(bytes, reportedMime(file));
+  }
+
+  /**
+   * Refuses an oversized resume. Enforced on the DECLARED size before the bytes
+   * are materialized (a download's Content-Length, an inline blob's encoded
+   * length), so a multi-hundred-MB file never lands in the 512Mi container —
+   * the post-read call is only a backstop for a server that declared nothing.
+   */
+  private assertResumeSize(applicantID: string, bytes: number): void {
+    if (bytes > MAX_RESUME_BYTES) {
       // A refusal rather than a silent skip: an operator should see it.
       throw new PermanentError(
-        `jazzhr applicant ${applicantID}: resume is ${Math.round(bytes.byteLength / 1024 / 1024)}MB, ` +
+        `jazzhr applicant ${applicantID}: resume is ${Math.round(bytes / 1024 / 1024)}MB, ` +
           `over the ${Math.round(MAX_RESUME_BYTES / 1024 / 1024)}MB limit`,
       );
     }
-    return decodeResumeAsync(bytes, reportedMime(file));
   }
 
   /**
@@ -328,16 +340,26 @@ export class JazzHRDriver implements Driver {
   }
 
   /** The bytes of a resume file: inline base64 when present, else a download. */
-  private async resumeBytes(file: JazzFile, apiKey: string): Promise<Uint8Array | undefined> {
+  private async resumeBytes(
+    file: JazzFile,
+    applicantID: string,
+    apiKey: string,
+  ): Promise<Uint8Array | undefined> {
     const inline = file.file_data || file.content;
-    if (inline) return base64ToBytes(inline);
+    if (inline) {
+      // Bound the decode by the ENCODED length first: base64 decodes to ~3/4 of
+      // its length, so an oversized inline resume is refused without ever being
+      // decoded into memory.
+      this.assertResumeSize(applicantID, Math.floor((inline.length * 3) / 4));
+      return base64ToBytes(inline);
+    }
 
     const href = file.file_url || file.url;
     if (!href) return undefined;
     // The authenticated download URL returns the RAW file, not a base64
     // envelope (reference: candidate-export-transformer.js). It already carries
     // the key, so it is fetched as-is rather than through the API-origin call.
-    return this.fetchBytes(href);
+    return this.fetchBytes(href, applicantID);
   }
 
   private requireService(credentials: Credentials): string {
@@ -412,7 +434,7 @@ export class JazzHRDriver implements Driver {
   }
 
   /** Raw bytes from a fully-formed URL (a file download), with the same UA. */
-  private async fetchBytes(url: string): Promise<Uint8Array | undefined> {
+  private async fetchBytes(url: string, applicantID: string): Promise<Uint8Array | undefined> {
     let response;
     try {
       response = await this.http(url, { headers: { "User-Agent": this.userAgent } });
@@ -426,8 +448,16 @@ export class JazzHRDriver implements Driver {
       if (response.status === 404) return undefined; // a missing file is not a resume
       throw new TransientError(`jazzhr file download returned ${response.status}`);
     }
+    // Reject BEFORE reading the body when the server declares an oversized file,
+    // so a multi-hundred-MB download never materializes in the container.
+    const declared = Number(readHeader(response, "content-length"));
+    if (Number.isFinite(declared) && declared > 0) this.assertResumeSize(applicantID, declared);
+
     if (!response.arrayBuffer) return undefined;
-    return new Uint8Array(await response.arrayBuffer());
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    // Backstop for a server that declared no length.
+    this.assertResumeSize(applicantID, bytes.byteLength);
+    return bytes;
   }
 }
 
@@ -435,12 +465,15 @@ export class JazzHRDriver implements Driver {
 function asArray(data: unknown): unknown[] {
   if (Array.isArray(data)) return data;
   if (data && typeof data === "object") {
-    // A one-item listing comes back as the item itself. If it looks like a
-    // record (has its own keys) treat it as a single row; if it is a wrapper
-    // whose first array-valued field is the page, unwrap that.
-    const values = Object.values(data as Record<string, unknown>);
-    const arrayField = values.find((value) => Array.isArray(value));
-    if (arrayField) return arrayField as unknown[];
+    // A one-item listing comes back as the item itself. Only an UNAMBIGUOUS page
+    // wrapper is unwrapped — exactly one key, and it holds the array. A genuine
+    // single-item record (which may itself carry an array-valued field, e.g. a
+    // job with a nested list) is one row, not its inner array.
+    const entries = Object.entries(data as Record<string, unknown>);
+    const only = entries.length === 1 ? entries[0] : undefined;
+    if (only && Array.isArray(only[1])) {
+      return only[1] as unknown[];
+    }
     return [data];
   }
   return [];

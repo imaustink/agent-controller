@@ -19,6 +19,11 @@ import type { Credentials, Cursor, ListPage, ResourceRef, Scope } from "./types.
  * `enumerate` is called ONLY in the uncapped case, so a provider that cannot
  * cheaply enumerate its units (Drive has no natural "every folder" query) can
  * refuse there while still supporting a capped wildcard.
+ *
+ * A PRESENT cap is exhaustive, even when empty: an explicit `allowedUnits: []`
+ * means "no units", never "every unit". Only an ABSENT cap (undefined)
+ * enumerates — treating an empty allowlist as unlimited would invert the
+ * operator's intent in the one direction that leaks (a whole account indexed).
  */
 export async function listWildcard(
   scope: Scope,
@@ -27,10 +32,7 @@ export async function listWildcard(
   unitScope: (unit: string) => Scope,
   listUnit: (scope: Scope, credentials: Credentials, since: Cursor) => Promise<ListPage>,
 ): Promise<ListPage> {
-  const units =
-    scope.allowedUnits && scope.allowedUnits.length > 0
-      ? scope.allowedUnits
-      : await enumerate(credentials);
+  const units = scope.allowedUnits !== undefined ? scope.allowedUnits : await enumerate(credentials);
 
   const seen = new Set<string>();
   const resources: ResourceRef[] = [];

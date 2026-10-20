@@ -38,6 +38,21 @@ describe("listWildcard", () => {
     expect(listUnit).toHaveBeenCalledTimes(2);
   });
 
+  it("treats a present-but-empty cap as ZERO units, not 'everything'", async () => {
+    const enumerate = vi.fn();
+    const listUnit = vi.fn();
+    const page = await listWildcard(
+      { all: true, allowedUnits: [] },
+      {},
+      enumerate as never,
+      (channel) => ({ channel }),
+      listUnit as never,
+    );
+    expect(enumerate).not.toHaveBeenCalled();
+    expect(listUnit).not.toHaveBeenCalled();
+    expect(page.resources).toEqual([]);
+  });
+
   it("de-dupes a resource that sits in several units", async () => {
     const listUnit = vi.fn(async () => ({ resources: [ref("shared")], cursor: undefined }));
     const page = await listWildcard({ all: true, allowedUnits: ["A", "B"] }, {}, vi.fn() as never, (channel) => ({ channel }), listUnit);

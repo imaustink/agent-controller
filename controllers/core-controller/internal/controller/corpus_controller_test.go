@@ -229,6 +229,45 @@ var _ = Describe("Corpus Controller", func() {
 			Expect(stored("outside").Status.Conditions).To(ContainElement(
 				HaveField("Reason", Equal("OutsideAllowedScopes"))))
 		})
+
+		It("degrades an UNCAPPED wildcard gdrive corpus — Drive cannot be enumerated", func() {
+			// gdrive is the one provider whose wildcard requires a cap; the broker
+			// refuses an uncapped one, so admission must too rather than deferring
+			// to a failed sync.
+			conn := &corev1alpha1.Connection{
+				ObjectMeta: metav1.ObjectMeta{Name: "gdrive-wild-uncapped", Namespace: "default"},
+				Spec:       corev1alpha1.ConnectionSpec{Provider: "gdrive", DisplayName: "Fake Drive"},
+			}
+			Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, conn) }()
+
+			corpus := jazzhrCorpusFor("gdrive-wild-uncapped", "drive-all", corev1alpha1.CorpusScope{All: true})
+			Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, corpus) }()
+
+			reconcileCorpus("drive-all")
+			Expect(stored("drive-all").Status.Conditions).To(ContainElement(
+				HaveField("Reason", Equal("ScopeMismatch"))))
+		})
+
+		It("admits a wildcard gdrive corpus when the Connection caps its folders", func() {
+			conn := &corev1alpha1.Connection{
+				ObjectMeta: metav1.ObjectMeta{Name: "gdrive-wild-capped", Namespace: "default"},
+				Spec: corev1alpha1.ConnectionSpec{
+					Provider:      "gdrive",
+					AllowedScopes: &corev1alpha1.ConnectionAllowedScopes{FolderIDs: []string{"FROOT"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, conn) }()
+
+			corpus := jazzhrCorpusFor("gdrive-wild-capped", "drive-capped", corev1alpha1.CorpusScope{All: true})
+			Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, corpus) }()
+
+			reconcileCorpus("drive-capped")
+			Expect(stored("drive-capped").Status.Provider).To(Equal("gdrive"))
+		})
 	})
 
 	// The credential holder decides what the credential may pull (ADR 0043 §3).

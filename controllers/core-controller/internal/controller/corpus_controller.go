@@ -202,7 +202,15 @@ func checkScope(corpus *corev1alpha1.Corpus, connection *corev1alpha1.Connection
 	// enumeration time in the broker, not here.
 	if scope.All {
 		switch connection.Spec.Provider {
-		case "confluence", "slack", "gdrive", "jazzhr":
+		case "gdrive":
+			// gdrive has no cheap "every folder" enumeration, so a wildcard gdrive
+			// Corpus must be capped by allowedScopes.folderIDs (the broker refuses an
+			// uncapped one). Enforce it here rather than deferring to a failed sync.
+			if connection.Spec.AllowedScopes == nil || len(connection.Spec.AllowedScopes.FolderIDs) == 0 {
+				return reasonScopeMismatch, "a wildcard gdrive Corpus requires the Connection to cap it with allowedScopes.folderIDs"
+			}
+			return "", ""
+		case "confluence", "slack", "jazzhr":
 			return "", ""
 		default:
 			return "UnknownProvider", fmt.Sprintf("connection %s has provider %q, which no driver implements",
