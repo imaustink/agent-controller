@@ -48,6 +48,29 @@ func corpusFor(connectionRef, name string) *corev1alpha1.Corpus {
 	}
 }
 
+func jazzhrConnection(name string) *corev1alpha1.Connection {
+	return &corev1alpha1.Connection{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: corev1alpha1.ConnectionSpec{
+			Provider:    "jazzhr",
+			DisplayName: "Bitovi JazzHR",
+		},
+	}
+}
+
+func jazzhrCorpusFor(connectionRef, name string, scope corev1alpha1.CorpusScope) *corev1alpha1.Corpus {
+	return &corev1alpha1.Corpus{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: corev1alpha1.CorpusSpec{
+			ConnectionRef: connectionRef,
+			Description:   "Candidates for a JazzHR job.",
+			DisplayName:   "Senior Platform Engineer",
+			AllowedRoles:  []string{"recruiter"},
+			Scope:         scope,
+		},
+	}
+}
+
 var _ = Describe("Corpus Controller", func() {
 	ctx := context.Background()
 
@@ -73,7 +96,7 @@ var _ = Describe("Corpus Controller", func() {
 			corpus := corpusFor("anything", "scope-two-things")
 			corpus.Spec.Scope.Channel = "C6RQKL5BK"
 			Expect(k8sClient.Create(ctx, corpus)).To(
-				MatchError(ContainSubstring("exactly one unit")),
+				MatchError(ContainSubstring("exactly one")),
 				"a widened scope is the failure this validation exists to catch")
 		})
 
@@ -158,6 +181,92 @@ var _ = Describe("Corpus Controller", func() {
 
 			Expect(stored("mismatched").Status.Conditions).To(ContainElement(
 				HaveField("Reason", Equal("ScopeMismatch"))))
+		})
+
+		It("accepts a jazzhr corpus scoped to a job", func() {
+			conn := jazzhrConnection("jazz-src")
+			Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, conn) }()
+
+			corpus := jazzhrCorpusFor("jazz-src", "senior-eng", corev1alpha1.CorpusScope{JobID: "abc123"})
+			Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, corpus) }()
+
+			reconcileCorpus("senior-eng")
+			Expect(stored("senior-eng").Status.Provider).To(Equal("jazzhr"))
+		})
+
+	})
+
+	// A wildcard Corpus reaches every unit the Connection permits, so it is not
+	// matched against a single allowed unit — only the provider must be known.
+	Context("the wildcard scope (scope.all)", func() {
+		It("permits a wildcard jazzhr corpus even when the Connection caps jobs", func() {
+			conn := jazzhrConnection("jazz-wild")
+			conn.Spec.AllowedScopes = &corev1alpha1.ConnectionAllowedScopes{JobIDs: []string{"abc123"}}
+			Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, conn) }()
+
+			corpus := jazzhrCorpusFor("jazz-wild", "all-jobs", corev1alpha1.CorpusScope{All: true})
+			Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, corpus) }()
+
+			reconcileCorpus("all-jobs")
+			Expect(stored("all-jobs").Status.Provider).To(Equal("jazzhr"))
+		})
+
+		It("still rejects a NAMED job outside the cap", func() {
+			conn := jazzhrConnection("jazz-capped")
+			conn.Spec.AllowedScopes = &corev1alpha1.ConnectionAllowedScopes{JobIDs: []string{"permitted"}}
+			Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, conn) }()
+
+			corpus := jazzhrCorpusFor("jazz-capped", "outside", corev1alpha1.CorpusScope{JobID: "forbidden"})
+			Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, corpus) }()
+
+			reconcileCorpus("outside")
+			Expect(stored("outside").Status.Conditions).To(ContainElement(
+				HaveField("Reason", Equal("OutsideAllowedScopes"))))
+		})
+
+		It("degrades an UNCAPPED wildcard gdrive corpus — Drive cannot be enumerated", func() {
+			// gdrive is the one provider whose wildcard requires a cap; the broker
+			// refuses an uncapped one, so admission must too rather than deferring
+			// to a failed sync.
+			conn := &corev1alpha1.Connection{
+				ObjectMeta: metav1.ObjectMeta{Name: "gdrive-wild-uncapped", Namespace: "default"},
+				Spec:       corev1alpha1.ConnectionSpec{Provider: "gdrive", DisplayName: "Fake Drive"},
+			}
+			Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, conn) }()
+
+			corpus := jazzhrCorpusFor("gdrive-wild-uncapped", "drive-all", corev1alpha1.CorpusScope{All: true})
+			Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, corpus) }()
+
+			reconcileCorpus("drive-all")
+			Expect(stored("drive-all").Status.Conditions).To(ContainElement(
+				HaveField("Reason", Equal("ScopeMismatch"))))
+		})
+
+		It("admits a wildcard gdrive corpus when the Connection caps its folders", func() {
+			conn := &corev1alpha1.Connection{
+				ObjectMeta: metav1.ObjectMeta{Name: "gdrive-wild-capped", Namespace: "default"},
+				Spec: corev1alpha1.ConnectionSpec{
+					Provider:      "gdrive",
+					AllowedScopes: &corev1alpha1.ConnectionAllowedScopes{FolderIDs: []string{"FROOT"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, conn) }()
+
+			corpus := jazzhrCorpusFor("gdrive-wild-capped", "drive-capped", corev1alpha1.CorpusScope{All: true})
+			Expect(k8sClient.Create(ctx, corpus)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, corpus) }()
+
+			reconcileCorpus("drive-capped")
+			Expect(stored("drive-capped").Status.Provider).To(Equal("gdrive"))
 		})
 	})
 

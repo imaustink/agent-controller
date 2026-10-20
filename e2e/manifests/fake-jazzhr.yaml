@@ -1,0 +1,159 @@
+# In-cluster stand-in for JazzHR's (Resumator) REST API.
+#
+# Same reasoning and shape as fake-slack/fake-gdrive: a corpus has to be synced
+# FROM somewhere, and a real JazzHR account is the one dependency this suite
+# cannot make deterministic. Reached through the broker's `JAZZHR_API_ORIGIN`
+# seam (values-e2e.yaml).
+#
+# It reproduces the three JazzHR quirks the driver is built around, so the
+# cluster path exercises them rather than only the unit tests:
+#
+#   AUTH IS A QUERY PARAM. `?apikey=<k>&api_key=<k>`; a request without the key
+#   is 401'd, exactly as the real API refuses one.
+#   PATH-SEGMENT PAGINATION. `/applicants2jobs/job_id/<id>` and `.../page/N`;
+#   a page shorter than 100 ends it. Here every listing is one short page.
+#   WILDCARD ENUMERATION. `/jobs` lists the openings a wildcard corpus expands
+#   to, so the e2e corpus (scope.all, uncapped) reaches both jobs' candidates.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fake-jazzhr
+  labels: { app: fake-jazzhr, e2e: "true" }
+data:
+  server.js: |
+    const http = require("node:http");
+
+    const API_KEY = "e2e-jazzhr-key";
+
+    // Two openings; a wildcard corpus expands to both via /jobs.
+    const JOBS = [
+      { id: "JSENIOR", title: "Senior Platform Engineer", status: "Open" },
+      { id: "JSTAFF", title: "Staff Engineer", status: "Open" },
+    ];
+
+    // job id -> applicant ids attached to it.
+    const APPLICANTS_BY_JOB = {
+      JSENIOR: ["A1", "A2"],
+      JSTAFF: ["A3"],
+    };
+
+    const APPLICANTS = {
+      A1: {
+        id: "A1",
+        prospect_int_id: "P1",
+        first_name: "Ada",
+        last_name: "Lovelace",
+        email: "ada@example.com",
+        apply_date: "2026-01-02",
+        resume_body:
+          "Senior platform engineer. Ten years building Kubernetes operators in Go, " +
+          "vector search ingestion pipelines, and multi-tenant SaaS on EKS.",
+        questionnaire: [{ question: "Years of Kubernetes experience?", answer: "8" }],
+      },
+      A2: {
+        id: "A2",
+        prospect_int_id: "P2",
+        first_name: "Grace",
+        last_name: "Hopper",
+        email: "grace@example.com",
+        apply_date: "2026-01-05",
+        resume_body:
+          "Platform engineer and compiler author. Deep experience in distributed " +
+          "systems, Temporal workflows, and developer tooling.",
+        questionnaire: [{ question: "Years of Kubernetes experience?", answer: "5" }],
+      },
+      A3: {
+        id: "A3",
+        prospect_int_id: "P3",
+        first_name: "Linus",
+        last_name: "T",
+        email: "linus@example.com",
+        apply_date: "2026-01-09",
+        resume_body:
+          "Staff engineer. Kernel and systems background, Go and C, performance work.",
+        questionnaire: [],
+      },
+    };
+
+    function send(res, body, status = 200) {
+      res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    }
+
+    http.createServer((req, res) => {
+      const url = new URL(req.url, "http://fake-jazzhr");
+      const path = url.pathname;
+
+      if (path === "/healthz") return send(res, { ok: true });
+
+      // JazzHR auth is a query param, sent as both spellings. Refuse a request
+      // missing the key, as the real API does with 401 "Invalid API Key".
+      const key = url.searchParams.get("apikey") ?? url.searchParams.get("api_key");
+      if (key !== API_KEY) return send(res, { error: "Invalid API Key" }, 401);
+
+      // Path-segment pagination: page 1 has no suffix, page N is /page/N. Every
+      // listing here fits one short page, so page 2+ is always empty.
+      const page2 = /\/page\/([2-9]|\d{2,})$/.test(path);
+      const base = path.replace(/\/page\/\d+$/, "");
+
+      // /jobs — the wildcard enumeration.
+      if (base === "/jobs") return send(res, page2 ? [] : JOBS);
+
+      // /applicants2jobs/job_id/<id> — the per-job candidate mapping.
+      const mapping = base.match(/^\/applicants2jobs\/job_id\/([^/]+)$/);
+      if (mapping) {
+        if (page2) return send(res, []);
+        const ids = APPLICANTS_BY_JOB[mapping[1]] ?? [];
+        return send(res, ids.map((applicant_id) => ({ applicant_id })));
+      }
+
+      // /applicants/<id> — one full profile.
+      const applicant = base.match(/^\/applicants\/([^/]+)$/);
+      if (applicant) {
+        const body = APPLICANTS[applicant[1]];
+        return body ? send(res, body) : send(res, { error: "not found" }, 404);
+      }
+
+      // /files/applicant_id/<id> — no attached files; resumes are inline here.
+      if (/^\/files\/applicant_id\/[^/]+$/.test(base)) return send(res, []);
+
+      send(res, { error: `unstubbed ${base}` }, 404);
+    }).listen(Number(process.env.PORT ?? 8080), () => console.log("fake-jazzhr listening"));
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-jazzhr
+  labels: { app: fake-jazzhr, e2e: "true" }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: fake-jazzhr }
+  template:
+    metadata:
+      labels: { app: fake-jazzhr, e2e: "true" }
+    spec:
+      containers:
+        - name: server
+          image: node:22-alpine
+          command: ["node", "/srv/server.js"]
+          ports: [{ containerPort: 8080, name: http }]
+          volumeMounts: [{ name: script, mountPath: /srv }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+      volumes:
+        - name: script
+          configMap: { name: fake-jazzhr }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-jazzhr
+  labels: { app: fake-jazzhr, e2e: "true" }
+spec:
+  selector: { app: fake-jazzhr }
+  ports: [{ port: 80, targetPort: http, name: http }]

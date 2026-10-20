@@ -48,6 +48,23 @@ type CorpusScope struct {
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	FolderID string `json:"folderID,omitempty"`
+
+	// jobID is a JazzHR job id — the candidates attached to one opening.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	JobID string `json:"jobID,omitempty"`
+
+	// all is the wildcard: every unit this Corpus's Connection permits — every
+	// space, channel, folder or job — rather than one named unit. It exists so a
+	// single Corpus can cover a whole account without an operator enumerating and
+	// maintaining one Corpus per unit by hand. It is bounded by the Connection's
+	// allowedScopes when that cap is set, and otherwise reaches everything the
+	// ingestion credential can see (which gdrive, lacking a cheap "every folder"
+	// enumeration, refuses — a wildcard gdrive Corpus must set allowedScopes).
+	//
+	// Set exactly one of a specific unit OR all (see the CEL rule on CorpusSpec).
+	// +optional
+	All bool `json:"all,omitempty"`
 }
 
 // CorpusSyncMode selects how a Corpus learns that its resources changed.
@@ -147,7 +164,7 @@ type CorpusAPI struct {
 // Weaker than ADR 0038's admission check, and deliberately so: the alternative
 // is copying `provider` onto every Corpus purely to satisfy a validator, which
 // reintroduces the duplication ADR 0043 exists to remove.
-// +kubebuilder:validation:XValidation:rule="[has(self.scope.space), has(self.scope.channel), has(self.scope.folderID)].filter(x, x).size() == 1",message="a Corpus must be scoped to exactly one unit: a space, a channel, or a folderID"
+// +kubebuilder:validation:XValidation:rule="[has(self.scope.space), has(self.scope.channel), has(self.scope.folderID), has(self.scope.jobID), (has(self.scope.all) && self.scope.all)].filter(x, x).size() == 1",message="a Corpus must be scoped to exactly one of: a space, a channel, a folderID, a jobID, or all (the wildcard)"
 // +kubebuilder:validation:XValidation:rule="!has(self.sync) || self.sync.mode == 'none' || has(self.sync.reconcileInterval)",message="sync.reconcileInterval is required unless sync.mode is none: webhooks are lossy and the reconcile pass is the source of truth"
 type CorpusSpec struct {
 	// connectionRef names the Connection (same namespace) this Corpus draws

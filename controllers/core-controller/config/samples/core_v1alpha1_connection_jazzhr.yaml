@@ -1,0 +1,41 @@
+# Bitovi's JazzHR (Resumator) account as ONE Connection (ADR 0043).
+#
+# Every indexed job — or the whole account via a wildcard Corpus — draws through
+# this object, sharing one API key. The same shape as the Drive account and the
+# Slack workspace next door.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: Connection
+metadata:
+  labels:
+    app.kubernetes.io/name: core-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: bitovi-jazzhr
+spec:
+  provider: jazzhr
+
+  # JazzHR has one global API host (api.resumatorapi.com) addressed by API key,
+  # so there are no site coordinates to carry, and no autoJoin analogue — a key
+  # either reaches the account's candidates or it does not.
+
+  # The INGESTION credential: the JazzHR REST API key. The driver sends it on
+  # every call (as both `apikey` and `api_key`, which is what JazzHR actually
+  # wants) over a WAF-satisfying User-Agent.
+  secretEnv:
+    - name: SERVICE_TOKEN
+      secretRef:
+        name: bitovi-jazzhr
+        key: apiKey
+
+  # Optional cap. With it set, a WILDCARD Corpus (scope.all) reaches exactly
+  # these jobs; without it, a wildcard reaches every job the key can see. A
+  # NAMED-job Corpus outside this list is rejected. Omit the whole block to set
+  # no cap.
+  allowedScopes:
+    jobIDs:
+      - abc123DEF456
+      - ghi789JKL012
+
+  # No identityProviders: JazzHR has no per-user authorization over candidates,
+  # so retrieval cannot probe "can THIS user read this candidate" — there is no
+  # such distinction to make. Access is gated entirely by the Corpus's
+  # allowedRoles (the ingestion key reaches the whole account or nothing).

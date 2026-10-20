@@ -18,6 +18,7 @@ import type { FetchLike } from "./confluence.js";
 import { resolveQuery } from "./query.js";
 import { GoogleServiceCredential, type TokenFetch } from "./google-auth.js";
 import { extractDocxText, extractXlsxText } from "./ooxml.js";
+import { listWildcard } from "./wildcard.js";
 
 export interface GDriveDriverOptions {
   fetch?: FetchLike;
@@ -140,13 +141,17 @@ export class GDriveDriver implements Driver {
   }
 
   validateScope(scope: Scope): void {
-    if (!scope.folderID) throw new Error("a gdrive connection must be scoped to a folder");
-    if (scope.space || scope.channel) {
-      throw new Error("a gdrive connection must set scope.folderID and nothing else");
+    if (scope.space || scope.channel || scope.jobID) {
+      throw new Error("a gdrive connection must set scope.folderID (or scope.all) and nothing else");
+    }
+    const named = scope.folderID !== undefined;
+    // Exactly one of a named folder or the wildcard.
+    if (named === Boolean(scope.all)) {
+      throw new Error("a gdrive corpus must set exactly one of scope.folderID or scope.all");
     }
     // The folder id is interpolated into a query string, where an apostrophe
     // would terminate the quoted term and let the rest be read as query syntax.
-    if (!/^[A-Za-z0-9_-]+$/.test(scope.folderID)) {
+    if (scope.folderID !== undefined && !/^[A-Za-z0-9_-]+$/.test(scope.folderID)) {
       throw new Error(`illegal gdrive folder id: ${scope.folderID}`);
     }
   }
@@ -172,6 +177,35 @@ export class GDriveDriver implements Driver {
    * against a live folder, where two of two nested documents were missing.
    */
   async list(scope: Scope, credentials: Credentials, since: Cursor): Promise<ListPage> {
+    this.validateScope(scope);
+    if (scope.all) {
+      return listWildcard(
+        scope,
+        credentials,
+        (creds) => this.enumerateFolders(creds),
+        (folderID) => ({ folderID }),
+        (unit, creds, cur) => this.listFolder(unit, creds, cur),
+      );
+    }
+    return this.listFolder(scope, credentials, since);
+  }
+
+  /**
+   * A wildcard gdrive corpus must name its folders. Drive has no cheap,
+   * complete "every folder this credential can reach" query, and "the whole
+   * Drive account" is both unbounded and rarely what an operator means — so
+   * wildcard is supported only when the Connection caps it with
+   * allowedScopes.folderIDs (carried here as scope.allowedUnits, which
+   * listWildcard uses before it ever calls this).
+   */
+  private enumerateFolders(_credentials: Credentials): Promise<string[]> {
+    throw new PermanentError(
+      "a wildcard gdrive corpus requires the Connection to cap it with allowedScopes.folderIDs",
+    );
+  }
+
+  /** Lists ONE folder's indexable files, RECURSIVELY (see the method doc below). */
+  private async listFolder(scope: Scope, credentials: Credentials, since: Cursor): Promise<ListPage> {
     this.validateScope(scope);
     // Ingestion: an SA key is minted + refreshed here; a raw token is used as-is.
     const token = await this.serviceCreds.bearer(credentials.service);

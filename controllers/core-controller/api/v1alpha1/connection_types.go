@@ -77,6 +77,12 @@ type ConnectionAllowedScopes struct {
 	// folderIDs are Google Drive folder ids.
 	// +optional
 	FolderIDs []string `json:"folderIDs,omitempty"`
+
+	// jobIDs are JazzHR job ids. A wildcard JazzHR Corpus (scope.all) with this
+	// set reaches exactly these jobs' candidates; without it, every job the key
+	// can see.
+	// +optional
+	JobIDs []string `json:"jobIDs,omitempty"`
 }
 
 // ConnectionSpec is an authenticated route to one external system (ADR 0043).
@@ -91,7 +97,7 @@ type ConnectionSpec struct {
 	// call this system. Adding a provider is an implementation of the driver
 	// interface, not a new CRD.
 	// +required
-	// +kubebuilder:validation:Enum=confluence;slack;gdrive
+	// +kubebuilder:validation:Enum=confluence;slack;gdrive;jazzhr
 	Provider string `json:"provider"`
 
 	// displayName names the system for operators (e.g. "Bitovi Slack").

@@ -19,6 +19,7 @@ import {
   type WebhookRequest,
 } from "./types.js";
 import { resolveQuery } from "./query.js";
+import { listWildcard } from "./wildcard.js";
 import { hmacHex, signaturesMatch } from "./webhook-signature.js";
 
 /** Minimal HTTP surface, injectable so the driver is testable without a tenant. */
@@ -260,12 +261,16 @@ export class ConfluenceDriver implements Driver {
   }
 
   validateScope(scope: Scope): void {
-    if (!scope.space) throw new Error("a confluence connection must be scoped to a space");
-    if (scope.channel || scope.folderID) {
-      throw new Error("a confluence connection must set scope.space and nothing else");
+    if (scope.channel || scope.folderID || scope.jobID) {
+      throw new Error("a confluence connection must set scope.space (or scope.all) and nothing else");
+    }
+    const named = scope.space !== undefined;
+    // Exactly one of a named space or the wildcard.
+    if (named === Boolean(scope.all)) {
+      throw new Error("a confluence corpus must set exactly one of scope.space or scope.all");
     }
     // A space key reaches a URL path, so it is constrained rather than trusted.
-    if (!/^[A-Za-z0-9._~-]+$/.test(scope.space)) {
+    if (scope.space !== undefined && !/^[A-Za-z0-9._~-]+$/.test(scope.space)) {
       throw new Error(`illegal confluence space key: ${scope.space}`);
     }
   }
@@ -275,6 +280,44 @@ export class ConfluenceDriver implements Driver {
   }
 
   async list(scope: Scope, credentials: Credentials, since: Cursor): Promise<ListPage> {
+    this.validateScope(scope);
+    if (scope.all) {
+      return listWildcard(
+        scope,
+        credentials,
+        (creds) => this.enumerateSpaces(creds),
+        (space) => ({ space }),
+        (unit, creds, cur) => this.listSpace(unit, creds, cur),
+      );
+    }
+    return this.listSpace(scope, credentials, since);
+  }
+
+  /**
+   * Every space the ingestion credential can see — the units a wildcard corpus
+   * covers when the Connection sets no cap.
+   */
+  private async enumerateSpaces(credentials: Credentials): Promise<string[]> {
+    const token = requireToken(credentials.service);
+    const apiBase = await this.apiBaseFor(token);
+    const keys: string[] = [];
+    let url = `${apiBase}/api/v2/spaces?limit=${this.pageSize}`;
+    for (;;) {
+      const body = (await this.request(url, token)) as {
+        results?: { key?: string }[];
+        _links?: { next?: string };
+      };
+      for (const space of body.results ?? []) {
+        if (space.key) keys.push(space.key);
+      }
+      const next = nextCursor(body._links?.next);
+      if (!next) break;
+      url = `${apiBase}/api/v2/spaces?limit=${this.pageSize}&cursor=${encodeURIComponent(next)}`;
+    }
+    return keys;
+  }
+
+  private async listSpace(scope: Scope, credentials: Credentials, since: Cursor): Promise<ListPage> {
     this.validateScope(scope);
     const token = requireToken(credentials.service);
     const apiBase = await this.apiBaseFor(token);

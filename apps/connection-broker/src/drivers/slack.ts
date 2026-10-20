@@ -16,6 +16,7 @@ import {
 } from "./types.js";
 import type { FetchLike } from "./confluence.js";
 import { resolveQuery } from "./query.js";
+import { listWildcard } from "./wildcard.js";
 import type { WebhookEvent, WebhookRequest } from "./types.js";
 import { hmacHex, signaturesMatch, withinReplayWindow } from "./webhook-signature.js";
 
@@ -115,13 +116,17 @@ export class SlackDriver implements Driver {
   }
 
   validateScope(scope: Scope): void {
-    if (!scope.channel) throw new Error("a slack connection must be scoped to a channel");
-    if (scope.space || scope.folderID) {
-      throw new Error("a slack connection must set scope.channel and nothing else");
+    if (scope.space || scope.folderID || scope.jobID) {
+      throw new Error("a slack connection must set scope.channel (or scope.all) and nothing else");
+    }
+    const named = scope.channel !== undefined;
+    // Exactly one of a named channel or the wildcard.
+    if (named === Boolean(scope.all)) {
+      throw new Error("a slack corpus must set exactly one of scope.channel or scope.all");
     }
     // A channel id reaches a query parameter, so it is constrained rather than
     // trusted. Slack ids are uppercase alphanumerics.
-    if (!/^[A-Z0-9]+$/.test(scope.channel)) {
+    if (scope.channel !== undefined && !/^[A-Z0-9]+$/.test(scope.channel)) {
       throw new Error(`illegal slack channel id: ${scope.channel}`);
     }
   }
@@ -138,6 +143,45 @@ export class SlackDriver implements Driver {
   }
 
   async list(scope: Scope, credentials: Credentials, since: Cursor): Promise<ListPage> {
+    this.validateScope(scope);
+    if (scope.all) {
+      return listWildcard(
+        scope,
+        credentials,
+        (creds) => this.enumerateChannels(creds),
+        (channel) => ({ channel }),
+        (unit, creds, cur) => this.listChannel(unit, creds, cur),
+      );
+    }
+    return this.listChannel(scope, credentials, since);
+  }
+
+  /**
+   * Every channel the ingestion credential is a MEMBER of — the units a wildcard
+   * corpus covers when the Connection sets no cap. `users.conversations` lists
+   * exactly the channels this token can read history from, so a wildcard never
+   * tries to list a channel the bot was never in.
+   */
+  private async enumerateChannels(credentials: Credentials): Promise<string[]> {
+    const token = requireToken(credentials.service);
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const body = (await this.call("users.conversations", token, {
+        types: "public_channel,private_channel",
+        exclude_archived: "true",
+        limit: String(this.pageSize),
+        ...(cursor ? { cursor } : {}),
+      })) as { channels?: { id?: string }[]; response_metadata?: { next_cursor?: string } };
+      for (const channel of body.channels ?? []) {
+        if (channel.id) ids.push(channel.id);
+      }
+      cursor = body.response_metadata?.next_cursor || undefined;
+    } while (cursor);
+    return ids;
+  }
+
+  private async listChannel(scope: Scope, credentials: Credentials, since: Cursor): Promise<ListPage> {
     this.validateScope(scope);
     const token = requireToken(credentials.service);
 

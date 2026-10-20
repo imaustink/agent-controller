@@ -305,7 +305,7 @@ describe("scope validation", () => {
   const driver = driverWith(vi.fn());
 
   it("requires a space", () => {
-    expect(() => driver.validateScope({})).toThrow(/scoped to a space/);
+    expect(() => driver.validateScope({})).toThrow(/exactly one of scope.space or scope.all/);
   });
 
   it("rejects a scope that also names another provider's unit", () => {

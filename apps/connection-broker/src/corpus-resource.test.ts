@@ -9,6 +9,7 @@ import {
   type CorpusCustomResource,
 } from "./corpus-resource.js";
 import { ConfluenceDriver } from "./drivers/confluence.js";
+import { JazzHRDriver } from "./drivers/jazzhr.js";
 
 function connection(overrides: Partial<ConnectionCustomResource["spec"]> = {}): ConnectionCustomResource {
   return {
@@ -195,5 +196,57 @@ describe("reconcileIntervalMs", () => {
     // A CEL rule requires one, so its absence is a CR that should not exist.
     // Defaulting would reconcile on a cadence nobody chose.
     expect(reconcileIntervalMs(corpus({ sync: { mode: "poll" } }))).toBeUndefined();
+  });
+});
+
+describe("jazzhr provider", () => {
+  const jazzConnection = (overrides: Partial<ConnectionCustomResource["spec"]> = {}): ConnectionCustomResource => ({
+    metadata: { name: "bitovi-jazz", namespace: "clients" },
+    spec: {
+      provider: "jazzhr",
+      secretEnv: [{ name: SERVICE_TOKEN_ENV, secretRef: { name: "jazz", key: "apiKey" } }],
+      ...overrides,
+    },
+  });
+  const jazzCorpus = (scope: CorpusCustomResource["spec"]["scope"]): CorpusCustomResource => ({
+    metadata: { name: "senior-eng", namespace: "clients" },
+    spec: { connectionRef: "bitovi-jazz", allowedRoles: ["recruiter"], scope },
+    status: { collection: "corpus_clients_senior-eng" },
+  });
+
+  it("dispatches to the JazzHR driver for a named job", async () => {
+    const binding = await toBinding(jazzCorpus({ jobID: "job-1" }), jazzConnection(), secrets());
+    expect(binding.driver).toBeInstanceOf(JazzHRDriver);
+    expect(binding.scope).toMatchObject({ jobID: "job-1" });
+    expect(binding.scope.all).toBeUndefined();
+  });
+
+  it("carries the Connection's jobIDs cap into a wildcard scope as allowedUnits", async () => {
+    const binding = await toBinding(
+      jazzCorpus({ all: true }),
+      jazzConnection({ allowedScopes: { jobIDs: ["job-1", "job-2"] } }),
+      secrets(),
+    );
+    expect(binding.scope.all).toBe(true);
+    expect(binding.scope.allowedUnits).toEqual(["job-1", "job-2"]);
+  });
+
+  it("leaves allowedUnits unset for an uncapped wildcard", async () => {
+    const binding = await toBinding(jazzCorpus({ all: true }), jazzConnection(), secrets());
+    expect(binding.scope.all).toBe(true);
+    expect(binding.scope.allowedUnits).toBeUndefined();
+  });
+
+  it("permits a wildcard even when the Connection caps scopes", async () => {
+    // A wildcard is bounded by the cap at enumeration time, not rejected here.
+    await expect(
+      toBinding(jazzCorpus({ all: true }), jazzConnection({ allowedScopes: { jobIDs: ["job-1"] } }), secrets()),
+    ).resolves.toBeDefined();
+  });
+
+  it("still enforces the cap for a NAMED job outside it", async () => {
+    await expect(
+      toBinding(jazzCorpus({ jobID: "job-9" }), jazzConnection({ allowedScopes: { jobIDs: ["job-1"] } }), secrets()),
+    ).rejects.toBeInstanceOf(CorpusConfigError);
   });
 });
