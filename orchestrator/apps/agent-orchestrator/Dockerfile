@@ -15,14 +15,17 @@ WORKDIR /repo
 # package resolves without hitting the registry.
 COPY package.json package-lock.json* ./
 COPY framework/messaging/package.json framework/messaging/package.json
+COPY orchestrator/packages/event-triggers/package.json orchestrator/packages/event-triggers/package.json
 COPY orchestrator/apps/agent-orchestrator/package.json orchestrator/apps/agent-orchestrator/package.json
 RUN npm ci
 
 COPY framework/messaging framework/messaging
+COPY orchestrator/packages/event-triggers orchestrator/packages/event-triggers
 COPY orchestrator/apps/agent-orchestrator/tsconfig.json orchestrator/apps/agent-orchestrator/tsconfig.json
 COPY orchestrator/apps/agent-orchestrator/src orchestrator/apps/agent-orchestrator/src
 
 RUN npm run build --workspace=@controller-agent/messaging \
+  && npm run build --workspace=@controller-agent/event-triggers \
   && npm run build --workspace=agent-orchestrator \
   && npm prune --omit=dev \
   # Materialize the workspace package into a real directory (not the npm-created
@@ -30,7 +33,11 @@ RUN npm run build --workspace=@controller-agent/messaging \
   && rm -rf node_modules/@controller-agent/messaging \
   && mkdir -p node_modules/@controller-agent/messaging \
   && cp -r framework/messaging/dist node_modules/@controller-agent/messaging/dist \
-  && cp framework/messaging/package.json node_modules/@controller-agent/messaging/package.json
+  && cp framework/messaging/package.json node_modules/@controller-agent/messaging/package.json \
+  && rm -rf node_modules/@controller-agent/event-triggers \
+  && mkdir -p node_modules/@controller-agent/event-triggers \
+  && cp -r orchestrator/packages/event-triggers/dist node_modules/@controller-agent/event-triggers/dist \
+  && cp orchestrator/packages/event-triggers/package.json node_modules/@controller-agent/event-triggers/package.json
 
 ############################
 # Runtime stage

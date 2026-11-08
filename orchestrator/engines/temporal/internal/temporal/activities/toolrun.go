@@ -32,6 +32,11 @@ type LaunchToolRunInput struct {
 	// key in CredentialEnvVars is both the env var name and the Secret key.
 	CredentialSecretName string   `json:"credentialSecretName,omitempty"`
 	CredentialEnvVars    []string `json:"credentialEnvVars,omitempty"`
+
+	// ReadOnly becomes ToolRun.spec.readOnly (TOOL_READ_ONLY=true in the Job):
+	// the turn that launched this run was marked read-only by its
+	// EventTrigger (ADR 0048). A structured field, never a prompt sentinel.
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 type ToolRunActivities struct {
@@ -65,6 +70,7 @@ func (a *ToolRunActivities) LaunchToolRun(ctx context.Context, in LaunchToolRunI
 		CallbackURL:    callbackURL,
 		TimeoutSeconds: in.TimeoutSeconds,
 		SecretEnv:      secretEnv,
+		ReadOnly:       in.ReadOnly,
 	})
 }
 

@@ -45,5 +45,5 @@ await runAgent(async (session) => {
     if (pacing.silentForMs > 0) await sleep(pacing.silentForMs);
   }
 
-  return buildReply(session.goal, observed);
+  return buildReply(session.goal, observed, { readOnly: session.readOnly, params: session.params });
 });

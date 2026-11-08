@@ -40,7 +40,7 @@ const STUB_REPLY_MARKER = "stub-agent-reply";
  * agent protocol and returns a canned reply -- so everything between the webhook
  * and the issue comment is now exercised for real:
  *
- *   webhook HMAC -> IntegrationRoute dispatch -> authorization pre-flight ->
+ *   webhook HMAC -> EventTrigger dispatch -> authorization pre-flight ->
  *   AgentRun CR -> hardened Job -> NATS ready/progress/reply -> gateway relay ->
  *   comment posted to the issue
  *
@@ -95,8 +95,8 @@ describe("happy path: GitHub issue label -> triage -> agent run -> comment poste
     // The gateway acknowledges the webhook immediately and relays in the
     // background, so a 2xx here means "accepted", not "done". Everything real
     // is asserted below by polling.
-    expect(status).toBeGreaterThanOrEqual(200);
-    expect(status).toBeLessThan(300);
+    // docs/event-triggers.md §7: an accepted delivery is exactly 202.
+    expect(status).toBe(202);
 
     const run = await waitFor(
       "an AgentRun to be created for the labeled issue",
@@ -149,7 +149,7 @@ describe("happy path: GitHub issue label -> triage -> agent run -> comment poste
     // this passes on an error comment the gateway posts when a run FAILS, which
     // is the opposite of what the spec is for.
     expect(comment?.body).toContain(STUB_REPLY_MARKER);
-    // The goal survived webhook -> route -> orchestrator -> AgentRun -> Job ->
+    // The goal survived webhook -> trigger -> orchestrator -> AgentRun -> Job ->
     // NATS intact. The stub echoes it back; the triage prompt names the issue.
     expect(comment?.body).toContain(String(issueNumber));
     // ADR 0030 §5: the sealed actor context reached the container, not merely

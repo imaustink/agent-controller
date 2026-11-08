@@ -22,6 +22,7 @@ const ENV_KEYS = [
   "GITHUB_APP_PRIVATE_KEY",
   "GITHUB_APP_INSTALLATION_ID",
   "GITHUB_API_URL",
+  "TOOL_READ_ONLY",
 ];
 
 let saved: Record<string, string | undefined>;
@@ -114,5 +115,17 @@ describe("config", () => {
   it("parses a comma list into trimmed, lower-cased, non-empty hosts", async () => {
     process.env.RECIPE_CALLBACK_ALLOWED_HOSTS = " Orchestrator.Svc , , nats.svc ";
     expect((await loadConfig()).callbackAllowedHosts).toEqual(["orchestrator.svc", "nats.svc"]);
+  });
+});
+
+describe("config readOnly (TOOL_READ_ONLY, ADR 0048)", () => {
+  it("is off unless TOOL_READ_ONLY is exactly 'true'", async () => {
+    expect((await loadConfig()).readOnly).toBe(false);
+    for (const v of ["false", "1", "TRUE", ""]) {
+      process.env.TOOL_READ_ONLY = v;
+      expect((await loadConfig()).readOnly).toBe(false);
+    }
+    process.env.TOOL_READ_ONLY = "true";
+    expect((await loadConfig()).readOnly).toBe(true);
   });
 });

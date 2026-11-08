@@ -148,10 +148,10 @@ describe("a verified target repository", () => {
   });
 });
 
-// FIX 1 (credential-layer read-only review): a review run mints a token whose
+// FIX 1 (credential-layer read-only): a read-only run (session.readOnly) mints a token whose
 // `contents` permission is read-only, so a push fails at GitHub itself even if
 // the CLI deny list were bypassed. A change run must NOT get that ceiling.
-describe("a review run's GitHub token", () => {
+describe("a read-only run's GitHub token", () => {
   const REVIEW_PERMS = { contents: "read", pull_requests: "write", issues: "write" };
 
   it("is minted read-only and repo-scoped for a webhook review", async () => {

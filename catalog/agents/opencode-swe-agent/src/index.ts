@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig, NatsChannel, type AgentChannel } from "@controller-agent/agent-runtime";
 import type { AgentDownMessage, AgentUpMessage } from "@controller-agent/messaging";
-import { buildOpencodeConfig, buildPrompt, isReviewMode } from "./opencode.js";
+import { buildOpencodeConfig, buildPrompt, isReadOnly } from "./opencode.js";
 import {
   createSession,
   forwardRequest,
@@ -160,7 +160,7 @@ async function runTurn(ctx: TurnContext, instruction: string, marker: SweMarker 
   };
 
   // Only mention push/PR status when this turn actually produced new commits
-  // -- a review-only turn (e.g. the "ai-review" label route, which is
+  // -- a read-only turn (e.g. an "ai-review" label trigger, which is
   // explicitly told not to push) legitimately checks out a branch without
   // committing anything, and slapping a "no open pull request was found"
   // warning on that is a false positive, not a signal anything went wrong.
@@ -284,13 +284,14 @@ async function main(): Promise<void> {
       throw new Error("Goal must not be empty after removing any continuation marker");
     }
 
-    // Structurally detect a review run from the exact sentinel the review
-    // IntegrationRoute put in the goal (see opencode.ts's REVIEW_MODE_MARKER).
-    // Drives the opencode bash deny list (buildOpencodeConfig) and a read-only
-    // GitHub token (resolveDelegatedToken), so a review cannot push or open a PR.
-    const reviewMode = isReviewMode(runtimeConfig.goal);
-    if (reviewMode) {
-      await publishUp({ type: "progress", message: "Review mode: enforcing read-only (no push / PR create / merge)", stage: "authenticate" });
+    // Read-only comes from the structured AgentRun.spec.readOnly field
+    // (AGENT_READ_ONLY -> runtimeConfig.readOnly, ADR 0048), NEVER from the
+    // goal text. Drives the opencode bash deny list (buildOpencodeConfig) and
+    // a read-only GitHub token (the token resolvers), so the run cannot push
+    // or open a PR.
+    const readOnly = isReadOnly(runtimeConfig);
+    if (readOnly) {
+      await publishUp({ type: "progress", message: "Read-only run: enforcing (no push / PR create / merge)", stage: "authenticate" });
     }
 
     const turnStartedAt = Date.now();
@@ -301,7 +302,7 @@ async function main(): Promise<void> {
     let attribution: { githubLogin: string; githubId?: number } | null = null;
     if (delegating) {
       try {
-        const resolved = await resolveDelegatedToken(toolConfig, marker?.repo ?? null, reviewMode, turnStartedAt);
+        const resolved = await resolveDelegatedToken(toolConfig, marker?.repo ?? null, readOnly, turnStartedAt);
         token = resolved.token;
         attribution = resolved.attribution;
       } catch (err) {
@@ -317,13 +318,12 @@ async function main(): Promise<void> {
         throw err;
       }
     } else {
-      // Non-delegating (webhook) turn. Pass reviewMode so a review run on this
-      // path -- the DEFAULT review path, since the `ai-review` routes dispatch
-      // to `agentRef: opencode-swe-agent` -- mints a read-only (contents:read)
+      // Non-delegating (webhook) turn. Pass readOnly so a read-only run on this
+      // path -- the usual review path -- mints a read-only (contents:read)
       // App token scoped to the target repo. Without it a review could mutate
       // the repo through `gh api --method PUT/PATCH/POST`, which the opencode
-      // deny list does not catch. Non-review runs keep their prior credential.
-      token = await resolveUndelegatedToken(toolConfig, reviewMode);
+      // deny list does not catch. Other runs keep their prior credential.
+      token = await resolveUndelegatedToken(toolConfig, readOnly);
     }
 
     const xdgConfigHome = `${toolConfig.homeDir}/.config`;
@@ -344,7 +344,7 @@ async function main(): Promise<void> {
     await mkdir(opencodeConfigDir, { recursive: true });
     await writeFile(
       join(opencodeConfigDir, "opencode.json"),
-      JSON.stringify(buildOpencodeConfig({ model: toolConfig.model, reviewMode }), null, 2),
+      JSON.stringify(buildOpencodeConfig({ model: toolConfig.model, readOnly }), null, 2),
     );
 
     const identity =

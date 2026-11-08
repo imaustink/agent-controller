@@ -36,6 +36,9 @@ type RunToolParams struct {
 	// the Secret and must never enter workflow state.
 	CredentialSecretName string
 	CredentialEnvVars    []string
+	// ReadOnly becomes ToolRun.spec.readOnly — the launching turn's property
+	// (ADR 0048), passed explicitly at every call site so none can forget it.
+	ReadOnly bool
 	// OnJobID fires once the job id exists (before the launch activity), so
 	// callers can expose it via queries while the tool is still running.
 	// OnProgress observes progress/warning events. Both run in workflow
@@ -93,6 +96,7 @@ func runTool(ctx workflow.Context, p RunToolParams) (ToolOutcome, error) {
 		TimeoutSeconds:       timeoutSeconds,
 		CredentialSecretName: p.CredentialSecretName,
 		CredentialEnvVars:    p.CredentialEnvVars,
+		ReadOnly:             p.ReadOnly,
 	}).Get(ctx, nil)
 	if err != nil {
 		return ToolOutcome{}, fmt.Errorf("launch tool %s: %w", p.ToolRef, err)
