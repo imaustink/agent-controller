@@ -21,6 +21,10 @@ type PendingApproval struct {
 	ToolID          string `json:"toolId"`
 	ToolInput       string `json:"toolInput,omitempty"`
 	ToolInstanceKey string `json:"toolInstanceKey,omitempty"`
+	// ReadOnly records that the paused turn was read-only (ADR 0048), so the
+	// approving turn — usually an ordinary chat "approve" — resumes it
+	// read-only rather than with write credentials it never had.
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // resumePendingApproval runs at the top of a turn that paused for approval. It
@@ -72,6 +76,7 @@ func resumePendingApproval(
 	if pa.OriginalRequest != "" {
 		in.Message = pa.OriginalRequest // continue the real task, not "approve"
 	}
+	in.ReadOnly = in.ReadOnly || pa.ReadOnly // sticky: see PendingApproval.ReadOnly
 	meta.Path = "skill-continued"
 	meta.SkillID = sk.Skill.ID
 	state.PendingApproval = nil // consumed

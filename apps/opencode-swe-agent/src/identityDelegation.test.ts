@@ -123,15 +123,14 @@ describe("resolveDelegatedToken", () => {
   });
 });
 
-// The non-delegating (webhook) credential path -- the DEFAULT review path,
-// since the `ai-review` IntegrationRoutes dispatch to
-// `agentRef: opencode-swe-agent`. A review run here must get a credential-layer
+// The non-delegating (webhook) credential path -- the usual review path. A
+// read-only run (session.readOnly, ADR 0048) here must get a credential-layer
 // read-only ceiling (contents:read), independent of the opencode deny list, so
 // `gh api --method PUT/PATCH/POST` cannot mutate the repo.
 describe("resolveUndelegatedToken", () => {
   const REVIEW_PERMS = { contents: "read", pull_requests: "write", issues: "write" };
 
-  it("mints a read-only, repo-scoped token for a webhook review (reviewMode=true)", async () => {
+  it("mints a read-only, repo-scoped token for a webhook review (readOnly=true)", async () => {
     await withTokenEndpoint(async (mints) => {
       const token = await resolveUndelegatedToken(
         baseConfig({ githubToken: "", targetRepository: "acme/widgets" }),
@@ -143,7 +142,7 @@ describe("resolveUndelegatedToken", () => {
     });
   });
 
-  it("does NOT narrow permissions on a non-review run (contents stays writable)", async () => {
+  it("does NOT narrow permissions on a non-read-only run (contents stays writable)", async () => {
     await withTokenEndpoint(async (mints) => {
       const token = await resolveUndelegatedToken(
         baseConfig({ githubToken: "", targetRepository: "acme/widgets" }),

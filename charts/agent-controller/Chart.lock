@@ -1,16 +1,16 @@
 dependencies:
 - name: agent-orchestrator
   repository: file://charts/agent-orchestrator
-  version: 0.2.2
+  version: 0.2.3
 - name: core-controller
   repository: file://charts/core-controller
-  version: 0.1.0
+  version: 0.1.1
 - name: temporal-engine
   repository: file://charts/temporal-engine
-  version: 0.2.0
+  version: 0.2.1
 - name: integration-gateway
   repository: file://charts/integration-gateway
-  version: 0.1.0
+  version: 0.2.0
 - name: open-webui
   repository: https://helm.openwebui.com/
   version: 15.2.0
@@ -23,5 +23,5 @@ dependencies:
 - name: mcp-broker
   repository: file://charts/mcp-broker
   version: 0.1.0
-digest: sha256:13db4b9ba056d05d764dbc7616b280c16d48f4b870566d42d805683a299ae9bf
-generated: "2026-10-02T15:56:12.530801-07:00"
+digest: sha256:3287f636707a296d539584311ebf1db81def745234e8351b68d8683b6c14af86
+generated: "2026-10-13T12:00:00.000000-07:00"

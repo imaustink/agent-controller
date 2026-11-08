@@ -23,7 +23,7 @@ import type { SessionStore } from "./types.js";
 export async function markAgentRunAwaitingReply(
   store: SessionStore,
   sessionId: string,
-  run: { subject: string; agentId: string; agentRunId: string },
+  run: { subject: string; agentId: string; agentRunId: string; readOnly?: boolean },
 ): Promise<void> {
   const existing = await store.get(sessionId);
   await store.set(sessionId, {
@@ -35,6 +35,9 @@ export async function markAgentRunAwaitingReply(
     activeAgentId: run.agentId,
     activeAgentRunId: run.agentRunId,
     activeAgentRunAwaitingReply: true,
+    // The NEW run's mode, never the previous anchor's (see
+    // `SessionRecord.activeAgentRunReadOnly`).
+    activeAgentRunReadOnly: run.readOnly ? true : undefined,
     lastAgentRunId: run.agentRunId,
     // Mutually exclusive with an active skill by the same rule the
     // post-turn path follows (see `SessionRecord`): a turn continues a skill
@@ -60,6 +63,7 @@ export async function clearAgentRunAwaitingReply(store: SessionStore, sessionId:
     activeAgentId: undefined,
     activeAgentRunId: undefined,
     activeAgentRunAwaitingReply: undefined,
+    activeAgentRunReadOnly: undefined,
   });
 }
 

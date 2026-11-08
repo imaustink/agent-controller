@@ -87,9 +87,10 @@ recipePublisher:
 
 # opencode-swe-agent: privileged GitHub coding sub-agent. DISABLED in prod --
 # the Claude Code engine (claudeCodeSweAgent below) is now the SWE agent for
-# every path: the auto-triage IntegrationRoute and the self-improvement skill
-# both point their agentRef at claude-code-swe-agent (see integrationRoutes
-# and skills below). Re-enable only if reverting those back to opencode.
+# every path: the ai-triage/ai-review EventTriggers and the self-improvement
+# skill all point their agentRef at claude-code-swe-agent (the triggers are in
+# charts/agent-controller/values-production.yaml's extraManifests; the skill is
+# below). Re-enable only if reverting those back to opencode.
 #
 # History: cut over from PAT-only (Phase A) to per-user GitHub identity
 # linking (docs/adr/0022, Phase B) -- the opencode-swe-secrets GITHUB_TOKEN
@@ -331,93 +332,3 @@ skills:
   # that agent's identity-link gate rather than ever reaching the ssh tool.
   ssh:
     enabled: true
-
-integrationRoutes:
-  # github-issue-labeled-triage (ADR 0024): applying integration-gateway's
-  # configured trigger label (charts/agent-controller/values-production.yaml's
-  # integrationGateway.config.githubTriggerLabel, "ai-triage") to a GitHub
-  # issue dispatches deterministically to the agentRef below, bypassing RAG
-  # skill retrieval. A label, not an assignee -- GitHub App bot users
-  # generally cannot be set as issue assignees, so `issues.assigned` (this
-  # route's original trigger) never fired in practice.
-  #
-  # agentRef is claude-code-swe-agent: triage now runs on the Claude Code
-  # engine (claudeCodeSweAgent.enabled=true above), replacing the disabled
-  # opencode-swe-agent. Because that agent's identityLink.providers is
-  # ["claude"], the issue's sender must have a linked Claude token for a
-  # triage run to launch -- the same per-user gate the whole ai-triage path
-  # already uses (agent-controller values' claudeAuth.enabled).
-  #
-  # Requires claudeCodeSweAgent.enabled=true (set above) and the
-  # IntegrationRoute CRD to exist on the cluster. `helm upgrade` does NOT
-  # install/update CRDs for an existing release
-  # (charts/agent-controller/charts/core-controller/crds/README.md), which is
-  # why this once needed a manual `kubectl apply`; the deploy job now applies
-  # every CRD on every push (.github/workflows/release.yml, "Apply CRDs").
-  githubIssueLabeledTriage:
-    enabled: true
-    agentRef: claude-code-swe-agent
-  # github-issue-labeled-review: applying integration-gateway's configured
-  # review label (charts/agent-controller/values-production.yaml's
-  # integrationGateway.config.githubReviewLabel, "ai-review") to an ISSUE
-  # instead of a PR dispatches here: review the proposal/spec in the issue,
-  # changing nothing. Sibling to githubPrLabeledReview below. Distinguished
-  # from githubIssueLabeledTriage above -- same issues/labeled event -- purely
-  # by match.labelName (the label-pinned route wins the registry's specificity
-  # scoring over the wildcard triage route). The gateway removes the label when
-  # the run ends, so re-applying it re-triggers.
-  #
-  # agentRef is claude-code-swe-agent (same engine as triage/review above).
-  # Because that agent's identityLink.providers is ["claude"], the person who
-  # applied the label must have a linked Claude token for the review to launch.
-  #
-  # Requires the IntegrationRoute CRD on the cluster to carry match.labelName
-  # (the deploy job's "Apply CRDs" step guarantees the field exists -- `helm
-  # upgrade` never updates an existing release's CRDs).
-  githubIssueLabeledReview:
-    enabled: true
-    agentRef: claude-code-swe-agent
-    labelName: ai-review
-  # github-pr-labeled-review: applying integration-gateway's configured review
-  # label (charts/agent-controller/values-production.yaml's
-  # integrationGateway.config.githubReviewLabel, "ai-review") to a PR
-  # dispatches deterministically to the agentRef below, bypassing RAG skill
-  # retrieval. A human applies the label -- the gateway drops bot-authored
-  # events, so the agent that opened the PR can't review its own work; a
-  # maintainer requests the review by labeling the PR.
-  #
-  # agentRef is claude-code-swe-agent (same engine as triage above). Because
-  # that agent's identityLink.providers is ["claude"], the person who applied
-  # the label must have a linked Claude token for the review to launch -- the
-  # same per-user gate the ai-triage path already uses.
-  #
-  # Requires claudeCodeSweAgent.enabled=true (set above) and the
-  # IntegrationRoute CRD to exist on the cluster -- applied by the deploy job's
-  # "Apply CRDs" step, since `helm upgrade` does NOT install/update CRDs for an
-  # existing release.
-  githubPrLabeledReview:
-    enabled: true
-    agentRef: claude-code-swe-agent
-    labelName: ai-review
-  # github-pr-labeled-triage: applying the SAME trigger label as issue triage
-  # (charts/agent-controller/values-production.yaml's
-  # integrationGateway.config.githubTriggerLabel, "ai-triage") to a PR instead
-  # of an issue dispatches here: address the review feedback/comments on that
-  # PR, push the updates to its branch, and sync it with its base branch.
-  # Distinguished from githubPrLabeledReview above -- same
-  # pull_request/labeled event -- purely by match.labelName.
-  #
-  # agentRef is claude-code-swe-agent (same engine as issue triage and
-  # review). Because that agent's identityLink.providers is ["claude"], the
-  # person who applied the label must have a linked Claude token for the run
-  # to launch -- the same per-user gate the whole ai-triage path already uses.
-  #
-  # Requires the IntegrationRoute CRD on the cluster to carry match.labelName
-  # (added alongside this route). This is exactly the case `helm upgrade` cannot
-  # handle -- it never updates an existing release's CRDs, so the route would
-  # apply cleanly while the API server pruned match.labelName out of it. The
-  # deploy job's "Apply CRDs" step is what makes the field actually exist.
-  githubPrLabeledTriage:
-    enabled: true
-    agentRef: claude-code-swe-agent
-    labelName: ai-triage

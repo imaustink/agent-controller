@@ -1,0 +1,18 @@
+# Any sender that signs its body with HMAC-SHA256 (docs/event-triggers.md §1),
+# served at POST /webhooks/generic-hmac. The sender sends
+# `x-signature-256: sha256=<hex hmac(secret, raw body)>`.
+#
+#   kubectl create secret generic generic-hmac-event-source --from-literal=secret=<random>
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: EventSource
+metadata:
+  name: generic-hmac
+spec:
+  webhook:
+    verify:
+      scheme: hmacSha256
+      header: x-signature-256
+      prefix: "sha256="
+      secretRef:
+        name: generic-hmac-event-source
+        key: secret

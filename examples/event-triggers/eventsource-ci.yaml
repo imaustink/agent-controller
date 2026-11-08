@@ -1,0 +1,16 @@
+# A CI system's outbound webhook (docs/event-triggers.md §1), served at
+# POST /webhooks/ci. `bearer` with no header compares `Authorization: Bearer
+# <secret>` in constant time -- the shape most CI notifiers can send.
+#
+#   kubectl create secret generic ci-event-source --from-literal=token=<random>
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: EventSource
+metadata:
+  name: ci
+spec:
+  webhook:
+    verify:
+      scheme: bearer
+      secretRef:
+        name: ci-event-source
+        key: token

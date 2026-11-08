@@ -88,6 +88,16 @@ graph under the caller's *current* roles. Keep that split:
 > reading the registry belongs to the `/invoke` handler, so it ships with A3 —
 > until then nothing populates `ForcedSkillID`/`ForcedAgentID` in production.
 
+> **Superseded (agent-controller ADR 0048).** `IntegrationRoute` is gone.
+> `EventTrigger` replaces it: a CEL predicate over a normalized event envelope
+> (`cel-go`, `internal/catalog/eventtrigger.go`), winner by priority then name,
+> typed CEL `params`, and a target that is exactly one of
+> orchestrator/skill/agent/tool. A forced target that misses now FAILS the
+> turn instead of falling through, a `toolRef` runs once with its params as
+> input, and `readOnly` is a sticky, structured turn property carried onto
+> every AgentRun/ToolRun. The gateway matches only envelopes from direct
+> callers; agent-orchestrator matches for itself and forwards resolved turns.
+
 ### A3. `/invoke` + event descriptor + sender assertion · contracts
 
 - `internal/rbac/sender_assertion.go`: Go port of `mintSenderAssertion` /
@@ -273,7 +283,8 @@ no new stateful component appears. Add it to `values-ci-all.yaml` so
 No new CRDs — `ToolRunSpec.secretEnv` and `Tool.identityProviders` already
 exist. Confirm the worker's ServiceAccount matches the orchestrator's existing
 grants: `toolruns` create/get, `agentruns` create/get, `tools`/`skills`/`agents`/
-`integrationroutes` get/list/watch, `secrets` create/patch.
+`eventtriggers` get/list/watch (formerly `integrationroutes`; ADR 0048),
+`secrets` create/patch.
 
 ### B5. Parity gate
 The existing `e2e/specs` suite is the acceptance test — run it whole under

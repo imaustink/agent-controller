@@ -56,3 +56,54 @@ subjects:
     name: {{ include "integration-gateway.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- if .Values.rbac.create }}
+---
+{{/*
+Generic event ingestion (docs/adr/0048): the gateway watches EventSources in
+its own namespace to know which /webhooks/<name> and /events/<name>/tick routes
+exist and how to verify each, and `get`s the Secret each one's
+webhook.verify.secretRef names. Read-only and namespace-scoped. `secrets: get`
+cannot be narrowed by name -- EventSources are operator-authored and may name
+any Secret -- so it is bounded by namespace, like the credential Role above.
+EventTriggers are read too, for one thing only: skipping the sender lookup
+(live GitHub API calls) for a delivery no trigger could match. Matching itself
+happens in the orchestrator; the gateway's view can only drop an event early.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "integration-gateway.fullname" . }}-event-sources
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "integration-gateway.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [{{ .Values.events.crdGroup | quote }}]
+    resources: ["eventsources", "eventtriggers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "integration-gateway.fullname" . }}-event-sources
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "integration-gateway.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "integration-gateway.fullname" . }}-event-sources
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "integration-gateway.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{/*
+Cron ticks (docs/event-triggers.md §8) need no grant here: the gateway
+verifies a tick's projected ServiceAccount token itself, against the cluster
+issuer's keys, which every ServiceAccount may read by default
+(system:service-account-issuer-discovery). This chart deliberately ships no
+ClusterRole -- the deploy that installs it is only allowed namespaced RBAC.
+*/}}
+{{- end }}
