@@ -108,6 +108,10 @@ const AUTH_ERROR_SUBSTRINGS = [
   "invalid x-api-key",
   "authentication_error",
   "oauth token has expired",
+  // Newer CLI wording (seen 2026-11 on a triage run): "Please run /login ·
+  // API Error: 401 OAuth access token has expired. Re-authenticate to continue."
+  "oauth access token has expired",
+  "api error: 401",
   "oauth token is invalid",
   "oauth token revoked",
   "failed to authenticate",
@@ -147,9 +151,14 @@ const AUTH_NOTICE_MAX_LENGTH = 200;
 const AUTH_NOTICE_PATTERNS: RegExp[] = [
   /^invalid (api key|x-api-key)\b/i,
   /^authentication_error\b/i,
-  /^oauth token (has expired|is invalid|revoked)\b/i,
+  /^oauth (access )?token (has expired|is invalid|revoked)\b/i,
   /^(login expired|failed to authenticate)\b/i,
   /^credit balance is too low\b/i,
+  /^api error: 401\b/i,
+  // The "/login" hint can lead OR trail the notice: older builds wrote
+  // "Login expired · Please run /login", newer ones write
+  // "Please run /login · API Error: 401 OAuth access token has expired. ...".
+  /^please run (`claude setup-token`|\/login)\b/i,
   /please run (`claude setup-token`|\/login)\.?\s*$/i,
 ];
 
