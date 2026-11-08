@@ -23,6 +23,7 @@
     { "path": "packages/messaging", "layer": "framework" },
     { "path": "packages/agent-runtime", "layer": "framework" },
     { "path": "packages/github-app-auth", "layer": "framework" },
+    { "path": "packages/event-triggers", "layer": "orchestrator" },
 
     { "path": "tools/*", "layer": "catalog" },
     { "path": "tools-local/*", "layer": "catalog" },
