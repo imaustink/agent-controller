@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { AgentFailure, ToolCallError, createInProcessChannel, runAgent, startLocalAgent } from "./index.js";
 
 describe("startLocalAgent", () => {
+  it("hands readOnly and params to the session, defaulting to a writable run with none", async () => {
+    const seen: Array<{ readOnly: boolean; params: Readonly<Record<string, string>> }> = [];
+    const handler = async (session: { readOnly: boolean; params: Readonly<Record<string, string>> }) => {
+      seen.push({ readOnly: session.readOnly, params: session.params });
+      return { message: "ok" };
+    };
+    await startLocalAgent(handler, { goal: "review", readOnly: true, params: { number: "7" } }).outcome;
+    await startLocalAgent(handler, { goal: "triage" }).outcome;
+    expect(seen).toEqual([
+      { readOnly: true, params: { number: "7" } },
+      { readOnly: false, params: {} },
+    ]);
+  });
+
   it("runs a whole agent turn in-process: progress, a question, a tool call, a structured reply", async () => {
     const asked: string[] = [];
     const { peer, outcome } = startLocalAgent(

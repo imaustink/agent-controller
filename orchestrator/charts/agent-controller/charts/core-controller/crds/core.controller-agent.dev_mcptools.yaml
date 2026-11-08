@@ -1,0 +1,208 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: mcptools.core.controller-agent.dev
+spec:
+  group: core.controller-agent.dev
+  names:
+    kind: MCPTool
+    listKind: MCPToolList
+    plural: mcptools
+    singular: mcptool
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.serverRef
+      name: Server
+      type: string
+    - jsonPath: .spec.remoteToolName
+      name: RemoteTool
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          MCPTool is a catalog tool proxied to a Model Context Protocol server
+          (ADR 0045). It is written and owned by the mcp-broker, not by operators.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              MCPToolSpec is the materialized form of one exposed Model Context Protocol
+              tool (ADR 0045). It is the catalog record a remote MCP tool becomes: an
+              ordinary tool whose dispatch kind is `mcpExec`, carrying enough to let the
+              mcp-broker proxy one tools/call.
+
+              DERIVED, DO NOT EDIT: the mcp-broker writes MCPTool objects from an
+              MCPServer's exposure map (ADR 0045 §1) and owns them via an ownerReference,
+              so deleting the server cascades its tools. Hand-editing one is pointless — the
+              broker reconciles it back. Operators change what is exposed on the MCPServer,
+              not here.
+            properties:
+              allowedRoles:
+                description: |-
+                  allowedRoles gates RAG retrieval (RBAC filter, ADR 0004, fail-closed) —
+                  the caller must hold at least one. Copied from the owning server's
+                  exposure entry; assigned by the operator, never by the server.
+                items:
+                  type: string
+                minItems: 1
+                type: array
+              approval:
+                description: |-
+                  approval sets whether a human must approve each call to this MCPTool before
+                  it executes (ADR 0003). "never" (and the empty default) runs silently;
+                  "always" pauses the turn for approval; "auto" consults an optional
+                  evaluator. Copied from the exposure entry on the owning MCPServer.
+                enum:
+                - never
+                - always
+                - auto
+                type: string
+              description:
+                description: |-
+                  description is fed to the orchestrator's embedder for RAG tool retrieval —
+                  the server's own description of the tool. An MCPTool competes in retrieval
+                  and delegate selection exactly like any other tool.
+                minLength: 1
+                type: string
+              hidden:
+                description: |-
+                  hidden makes the tool referenceable-by-id but never returned by semantic
+                  retrieval (ADR 0008). Copied from the exposure entry.
+                type: boolean
+              identityProviders:
+                description: |-
+                  identityProviders names the IdentityProvider CRs whose per-user delegated
+                  credential the broker presents on tools/call. Copied from the owning
+                  server so the dispatch path need not join back across resources; an
+                  expired or unresolvable token fails the call closed (ADR 0045 §5).
+                items:
+                  type: string
+                type: array
+              inputSchema:
+                description: |-
+                  inputSchema is the remote tool's JSON Schema, carried verbatim from
+                  discovery. The broker uses it to validate arguments before proxying and
+                  the engine uses it to render the tool's input contract to the planner.
+                type: string
+              remoteToolName:
+                description: |-
+                  remoteToolName is the tool's name on the server, the argument to
+                  tools/call. It need not equal the catalog id (see the owning server's
+                  exposure toolID).
+                minLength: 1
+                type: string
+              serverRef:
+                description: |-
+                  serverRef is the name of the MCPServer this tool is proxied through, in
+                  the same namespace. The broker opens no session of its own per tool; it
+                  routes a call to this server under the caller's identity.
+                minLength: 1
+                type: string
+              tier:
+                description: |-
+                  tier is an operator-defined cost/trust classification. Copied from the
+                  exposure entry.
+                type: string
+            required:
+            - allowedRoles
+            - description
+            - remoteToolName
+            - serverRef
+            type: object
+          status:
+            description: MCPToolStatus defines the observed state of MCPTool.
+            properties:
+              conditions:
+                description: |-
+                  conditions follow the usual Ready convention. Ready means the owning
+                  server still advertises this remote tool; the broker drops a tool the
+                  server stops offering rather than leaving it to fail only when invoked
+                  (ADR 0045 §6 — the live server is truth for existence).
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+            type: object
+        required:
+        - metadata
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

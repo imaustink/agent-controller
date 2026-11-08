@@ -148,6 +148,10 @@ export interface LocalAgentOptions extends Omit<InProcessChannelOptions, "autoAc
    * question cancels the run rather than leaving it waiting forever.
    */
   onAsk?: (question: string) => string | Promise<string>;
+  /** Run read-only, as `AgentRun.spec.readOnly` would (ADR 0048; default false). */
+  readOnly?: boolean;
+  /** Structured run parameters, as `AgentRun.spec.params` would pass them (default `{}`). */
+  params?: Record<string, string>;
 }
 
 export type LocalAgentOutcome =
@@ -187,7 +191,7 @@ export function startLocalAgent(
 
   const outcome = runAgent(handler, {
     channel,
-    config: { runId, goal: opts.goal, subjectPrefix: "agent" },
+    config: { runId, goal: opts.goal, subjectPrefix: "agent", readOnly: opts.readOnly ?? false, params: opts.params ?? {} },
   }).then((): LocalAgentOutcome => {
     for (let i = peer.up.length - 1; i >= 0; i--) {
       const msg = peer.up[i]!;
