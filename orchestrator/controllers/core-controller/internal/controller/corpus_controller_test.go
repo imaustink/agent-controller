@@ -302,7 +302,7 @@ var _ = Describe("Corpus sync CronJob", func() {
 				Name:      SyncCronJobName("cron-adopt"),
 				Namespace: "default",
 				OwnerReferences: []metav1.OwnerReference{{
-					APIVersion: "core.aktis.ai/v1alpha1",
+					APIVersion: "core.controller-agent.dev/v1alpha1",
 					Kind:       "Corpus",
 					Name:       "cron-adopt",
 					UID:        types.UID("00000000-0000-0000-0000-00000000dead"),

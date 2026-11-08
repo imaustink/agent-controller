@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# migrate-to-roverkit.sh — move a live cluster from the core.controller-agent.dev
-# API group to core.roverkit.io (docs/roverkit-migration.md, ADR 0047).
+# migrate-to-aktis.sh — move a live cluster from the core.controller-agent.dev
+# API group to core.aktis.ai (docs/aktis-migration.md, ADR 0047).
 #
-# Usage:  ./scripts/migrate-to-roverkit.sh copy    [--dry-run]   # BEFORE the upgrade
-#         ./scripts/migrate-to-roverkit.sh cleanup [--dry-run]   # AFTER it is healthy
+# Usage:  ./scripts/migrate-to-aktis.sh copy    [--dry-run]   # BEFORE the upgrade
+#         ./scripts/migrate-to-aktis.sh cleanup [--dry-run]   # AFTER it is healthy
 #
 # ## Why two phases
 #
@@ -25,6 +25,8 @@
 # old chart's content -- including text that still names the old group.
 # Runtime records are not copied either: AgentRun, ToolRun (a run belongs to
 # whichever release launched it) and MCPTool (mcp-broker rebuilds them).
+# IntegrationRoute was retired by ADR 0048 and has no new-group CRD; cleanup
+# deletes the old one if it is still there.
 #
 # Idempotent: copy never overwrites an object that already exists in the new
 # group, so re-running it is safe after the new release has started writing.
@@ -32,11 +34,12 @@
 set -euo pipefail
 
 OLD_GROUP="core.controller-agent.dev"
-NEW_GROUP="core.roverkit.io"
+NEW_GROUP="core.aktis.ai"
 VERSION="v1alpha1"
-AUTHORED=(agents tools skills localtools identityproviders integrationroutes connections corpora knowledgebases mcpservers)
+AUTHORED=(agents tools skills localtools identityproviders eventsources eventtriggers connections corpora knowledgebases mcpservers)
 RUNTIME=(agentruns toolruns mcptools)
-FIELD_MANAGER="roverkit-migrate"
+RETIRED=(integrationroutes)
+FIELD_MANAGER="aktis-migrate"
 CRD_DIR="$(cd "$(dirname "$0")/.." && pwd)/orchestrator/controllers/core-controller/config/crd/bases"
 
 PHASE="${1:-}"
@@ -50,13 +53,13 @@ for bin in kubectl jq; do
   command -v "$bin" >/dev/null || { echo "✗ $bin is required" >&2; exit 1; }
 done
 
-# Rewrites a label/annotation/finalizer key into the roverkit domain. Keys
+# Rewrites a label/annotation/finalizer key into the aktis domain. Keys
 # outside the old domains (app.kubernetes.io/*, meta.helm.sh/*) pass through,
 # so Helm and Argo ownership survives the copy and they adopt the new objects.
 # shellcheck disable=SC2016 # jq's $p, not a shell expansion
 JQ_RK='def rk: if test("/") then
     (split("/") as $p
-      | ($p[0] | sub("controller-agent\\.dev$"; "roverkit.io") | sub("^controller-agent\\.io$"; "roverkit.io"))
+      | ($p[0] | sub("controller-agent\\.dev$"; "aktis.ai") | sub("^controller-agent\\.io$"; "aktis.ai"))
         + "/" + ($p[1:] | join("/")))
   else . end;
   def rkmap: if . == null then null else with_entries(.key |= rk) end;
@@ -142,7 +145,7 @@ copy_crs() {
 # keys is invisible to the new release: every linked account would vanish.
 relabel_stores() {
   local mode="$1"
-  echo "── $([[ $mode == add ]] && echo Adding roverkit.io keys to || echo Removing old keys from) Secrets/ConfigMaps"
+  echo "── $([[ $mode == add ]] && echo Adding aktis.ai keys to || echo Removing old keys from) Secrets/ConfigMaps"
   local n=0
   for kind in secrets configmaps; do
     while IFS= read -r obj; do
@@ -192,7 +195,7 @@ verify_every_cr_copied() {
 
 delete_old() {
   echo "── Removing $OLD_GROUP CRs and CRDs"
-  for plural in "${AUTHORED[@]}" "${RUNTIME[@]}"; do
+  for plural in "${AUTHORED[@]}" "${RUNTIME[@]}" "${RETIRED[@]}"; do
     has_crd "$plural.$OLD_GROUP" || continue
     while IFS=$'\t' read -r ns name; do
       [[ -z "$name" ]] && continue

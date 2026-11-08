@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1alpha1 "github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1"
@@ -258,6 +259,65 @@ var _ = Describe("EventSource Controller", func() {
 			Expect(err).To(MatchError(ContainSubstring("not owned by EventSource squatted")))
 			_, err = cronJob("squatted")
 			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "no CronJob may run as someone else's identity")
+		})
+
+		// The aktis rename (ADR 0047) recreates every EventSource under the new
+		// API group, so the tick children are still controlled by the old one.
+		legacyOwner := func(name string) []metav1.OwnerReference {
+			return []metav1.OwnerReference{{
+				APIVersion: "core.controller-agent.dev/v1alpha1", Kind: "EventSource", Name: name,
+				UID: types.UID("legacy-" + name), Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
+			}}
+		}
+
+		It("re-adopts the ServiceAccount and CronJob its pre-rename self left behind", func() {
+			sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name: "eventsource-migrated", Namespace: "default", OwnerReferences: legacyOwner("migrated"),
+			}}
+			Expect(k8sClient.Create(ctx, sa)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, sa) }()
+			cj := &batchv1.CronJob{
+				ObjectMeta: metav1.ObjectMeta{Name: "eventsource-migrated", Namespace: "default", OwnerReferences: legacyOwner("migrated")},
+				Spec: batchv1.CronJobSpec{Schedule: "0 1 * * *", JobTemplate: batchv1.JobTemplateSpec{Spec: batchv1.JobSpec{
+					Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+						RestartPolicy: corev1.RestartPolicyNever,
+						Containers:    []corev1.Container{{Name: "tick", Image: "old"}},
+					}},
+				}}},
+			}
+			Expect(k8sClient.Create(ctx, cj)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cj) }()
+
+			source := cronSource("migrated", "0 7 * * *")
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+			reconcileWith(reconciler(testTickURL), "migrated")
+
+			var gotSA corev1.ServiceAccount
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "eventsource-migrated", Namespace: "default"}, &gotSA)).To(Succeed())
+			Expect(metav1.IsControlledBy(&gotSA, source)).To(BeTrue(), "ServiceAccount must move to the new-group EventSource")
+			Expect(gotSA.OwnerReferences).To(HaveLen(1))
+			gotCJ, err := cronJob("migrated")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(metav1.IsControlledBy(gotCJ, source)).To(BeTrue(), "CronJob must move to the new-group EventSource")
+			Expect(gotCJ.OwnerReferences).To(HaveLen(1))
+			Expect(gotCJ.Spec.Schedule).To(Equal("0 7 * * *"))
+		})
+
+		It("still refuses a ServiceAccount a differently named pre-rename EventSource controls", func() {
+			sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name: "eventsource-not-mine", Namespace: "default", OwnerReferences: legacyOwner("someone-else"),
+			}}
+			Expect(k8sClient.Create(ctx, sa)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, sa) }()
+
+			source := cronSource("not-mine", "0 7 * * *")
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer cleanup(source)
+			_, err := reconciler(testTickURL).Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "not-mine", Namespace: "default"},
+			})
+			Expect(err).To(MatchError(ContainSubstring("not owned by EventSource not-mine")))
 		})
 
 		It("is InvalidSchedule, not a retry loop, when the API server rejects the schedule", func() {

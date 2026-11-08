@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -240,10 +241,14 @@ func (r *EventSourceReconciler) applyTickServiceAccount(ctx context.Context, sou
 	if err != nil {
 		return err
 	}
-	if !metav1.IsControlledBy(&existing, source) {
+	legacy := controlledByLegacySelf(&existing, source)
+	if !metav1.IsControlledBy(&existing, source) && !legacy {
 		// Someone else's ServiceAccount with our name would let THEIR pods
 		// tick this source. Refuse rather than adopt it.
 		return fmt.Errorf("ServiceAccount %s/%s exists and is not owned by EventSource %s", source.Namespace, name, source.Name)
+	}
+	if legacy {
+		existing.OwnerReferences = desired.OwnerReferences
 	}
 	existing.Labels = desired.Labels
 	existing.AutomountServiceAccountToken = desired.AutomountServiceAccountToken
@@ -368,6 +373,9 @@ func (r *EventSourceReconciler) applyTickCronJob(ctx context.Context, source *co
 	// keeps about the last schedule.
 	existing.Spec = desired.Spec
 	existing.Labels = desired.Labels
+	if controlledByLegacySelf(&existing, source) {
+		existing.OwnerReferences = desired.OwnerReferences
+	}
 	return r.Update(ctx, &existing)
 }
 
@@ -397,7 +405,7 @@ func (r *EventSourceReconciler) deleteTickResources(ctx context.Context, source 
 		if err != nil {
 			return err
 		}
-		if !metav1.IsControlledBy(obj, source) {
+		if !metav1.IsControlledBy(obj, source) && !controlledByLegacySelf(obj, source) {
 			continue
 		}
 		logf.FromContext(ctx).Info("Removing tick resource", "eventsource", source.Name, "kind", fmt.Sprintf("%T", obj))
@@ -406,6 +414,25 @@ func (r *EventSourceReconciler) deleteTickResources(ctx context.Context, source 
 		}
 	}
 	return nil
+}
+
+// legacyAPIGroup is the API group before the aktis rename (ADR 0047).
+const legacyAPIGroup = "core.controller-agent.dev"
+
+// controlledByLegacySelf reports whether obj is controlled by the same-named
+// EventSource under the pre-rename API group. The migration recreates every
+// EventSource under the new group, so its tick CronJob and ServiceAccount are
+// still controlled by the old one: they are this source's own children, to
+// re-adopt rather than refuse. Kept as their owner, they would be
+// garbage-collected when the migration deletes the old EventSource, stopping
+// the schedule.
+func controlledByLegacySelf(obj metav1.Object, source *corev1alpha1.EventSource) bool {
+	ref := metav1.GetControllerOf(obj)
+	if ref == nil || ref.Kind != "EventSource" || ref.Name != source.Name {
+		return false
+	}
+	gv, err := schema.ParseGroupVersion(ref.APIVersion)
+	return err == nil && gv.Group == legacyAPIGroup
 }
 
 // checkSenderCEL compiles a webhook source's sender expressions, returning a

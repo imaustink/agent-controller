@@ -219,30 +219,32 @@ schemas + a stdio/in-process transport; the orchestrator takes schemas + NATS.
 Delivering this also delivers the "run an agent locally without a cluster" goal,
 by giving the framework a non-NATS `AgentChannel` and `Sink`.
 
-### 6. One brand: roverkit
+### 6. One brand: Aktis
 
-The project is **roverkit**, a modular platform for building and running
-**durable** agents. Durability is the headline because it is what the platform
-does that an agent library does not: turns that outlive the pods running them,
-pauses for human approval, and resumption after restarts (ADR 0033, ADR 0036).
-The tagline is "Durable AI agents." Each part takes a descriptive sub-name rather than a product name of its
-own (the pattern of Temporal Server / Temporal SDKs):
+The project is **Aktis**, a modular platform for building and running AI agents
+in the enterprise. The pitch is "agents that work as your people, managed like
+your infrastructure": an agent acts with the linked identity and access of the
+person who asked (ADR 0022, ADR 0030), behind authorization checks and approval
+policies, and is declared, deployed and isolated like any other cluster
+workload. Durable execution (ADR 0033, ADR 0036) is a feature under that pitch,
+not the pitch itself. The name is the Greek *aktís*, a ray of light; it is short
+and spelled as it sounds. Each part takes a descriptive sub-name rather than a
+product name of its own (the pattern of Temporal Server / Temporal SDKs):
 
 | Part | Directory | What it is |
 |-|-|-|
-| **roverkit SDK** | `framework/` | protocol, agent runtime, messaging transports: what an agent or tool is built with |
-| **roverkit orchestrator** | `orchestrator/` | keeps agents running durably in production on Kubernetes |
-| **roverkit catalog** | `catalog/` | reference agents and tools |
+| **Aktis SDK** | `framework/` | protocol, agent runtime, messaging transports: what an agent or tool is built with |
+| **Aktis orchestrator** | `orchestrator/` | runs agents in production on Kubernetes |
+| **Aktis catalog** | `catalog/` | reference agents and tools |
 
 "Platform" names the whole because the whole is more than a framework: a control
-plane, durable execution, identity linking and a catalog. "Kit" carries the
-à-la-carte point, so the platform never reads as all-or-nothing. An agent is a
-rover: it works autonomously on long missions, waits out storms and blackouts,
-and takes commands that arrive with a delay, as an agent does when it pauses for
-approval. The SDK is the kit it is built from, and the orchestrator keeps the
-fleet running. In prose, "the framework" (this ADR's term) is the roverkit SDK; the
-`framework/` directory keeps its name. The future repositories follow the
-directory split: `roverkit/sdk`, `roverkit/catalog`, `roverkit/orchestrator`.
+plane, identity linking, durable execution and a catalog. In prose, "the
+framework" (this ADR's term) is the Aktis SDK; the `framework/` directory keeps
+its name. The future repositories follow the directory split, under the
+`aktisai` GitHub organization: `aktisai/sdk`, `aktisai/catalog`,
+`aktisai/orchestrator`. Code identifiers use the handle `aktis` where it is free
+(the npm scope, the proto package) and the `aktis.ai` domain where Kubernetes
+expects one the project controls (the API group, label keys).
 
 Names that live **in code** move now, because each only gets more expensive
 once a third party depends on it:
@@ -250,9 +252,9 @@ once a third party depends on it:
 | Was | Now |
 |-|-|
 | proto package `agentcontroller.protocol.v1` | `aktis.protocol.v1` |
-| npm scope `@aktis/*` | `@aktis/*` |
+| npm scope `@controller-agent/*` | `@aktis/*` |
 | Go modules `github.com/controller-agent/<module>` | `github.com/aktisai/<repo>/<path>` (the future repo layout) |
-| CRD API group `core.aktis.ai` | `core.aktis.ai` |
+| CRD API group `core.controller-agent.dev` | `core.aktis.ai` |
 | label/annotation/finalizer keys under `controller-agent.dev`, `controller-agent.io` | `aktis.ai` |
 
 The proto rename is invisible on the wire (proto3 JSON never carries the package
@@ -351,4 +353,4 @@ directory move can merge without touching deployment paths:
 5. `messaging` split into schemas and transports, with an in-process
    `AgentChannel`/`Sink` so an agent runs without NATS.
 6. The `framework/` / `orchestrator/` / `catalog/` directory move.
-7. The roverkit rename (§6), with the cluster migration script.
+7. The Aktis rename (§6), with the cluster migration script.

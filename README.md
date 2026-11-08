@@ -1,32 +1,42 @@
-# roverkit
+# Aktis
 
 > [github.com/imaustink/agent-controller](https://github.com/imaustink/agent-controller)
 
-**Durable AI agents.** Agents that run for hours, pause for human approval,
-survive restarts and deploys, and pick up where they left off.
+**Agents that work as your people, managed like your infrastructure.**
 
-**roverkit** is an open-source, modular platform for building and running
-durable AI agents (rovers). Like a planetary rover, an agent works on its own
-for long stretches, waits out outages and slow round-trips to the people
-directing it, and carries on afterwards. Take the whole platform or only the
-parts you need ([ADR 0047](docs/adr/0047-decouple-framework-from-orchestrator.md)):
+**Aktis** is an open-source, modular platform for building and running AI
+agents in the enterprise:
 
-- **roverkit SDK** ([`framework/`](framework/)): the wire protocol, agent
-  runtime and messaging transports you build an agent or tool with. It runs
-  anywhere, in-process included.
-- **roverkit orchestrator** ([`orchestrator/`](orchestrator/)): keeps agents
-  running in production on Kubernetes. Every turn is a durable
-  [Temporal](https://temporal.io) workflow (the chart's default engine;
-  [ADR 0036](docs/adr/0036-temporal-execution-engine.md)), so a pod restart, a
-  deploy or a day-long wait for approval loses nothing. Also: the controller and
-  CRDs, the gateways and brokers, and the Helm charts.
-- **roverkit catalog** ([`catalog/`](catalog/)): ready-made agents and tools to
-  use as they are or copy.
+- **They act as the person who asked.** Each user links their own GitHub,
+  Atlassian, Google Drive or Slack account, and an agent works with that
+  user's access rather than a shared service token, so an answer only cites
+  what that person can read. Tool calls pass authorization checks and
+  approval policies first.
+- **You run them like the rest of your cluster.** Agents, tools and skills are
+  Kubernetes custom resources you deploy through GitOps, and every tool call
+  runs in its own short-lived pod with only the secrets it needs.
+- **Long work survives.** On the default [Temporal](https://temporal.io) engine
+  ([ADR 0036](docs/adr/0036-temporal-execution-engine.md)) every turn is a
+  durable workflow, so a pod restart, a deploy or a day-long wait for approval
+  loses nothing.
 
-The project was called agent-controller; the repository, chart and image names
-still carry that name until the repository split.
+Take the whole platform or only the parts you need
+([ADR 0047](docs/adr/0047-decouple-framework-from-orchestrator.md)):
 
-roverkit orchestrator is a Kubernetes-native way to run production AI agents. Tools, Skills,
+- **Aktis SDK** ([`framework/`](framework/)): the wire protocol, agent runtime
+  and messaging transports you build an agent or tool with. It runs anywhere,
+  in-process included.
+- **Aktis orchestrator** ([`orchestrator/`](orchestrator/)): runs agents in
+  production on Kubernetes: the controller and CRDs, the execution engines, the
+  gateways and brokers, and the Helm charts.
+- **Aktis catalog** ([`catalog/`](catalog/)): ready-made agents and tools to use
+  as they are or copy.
+
+The name is the Greek *aktís*, a ray of light. The project was called
+agent-controller; the repository, chart and image names still carry that name
+until the repository split.
+
+The Aktis orchestrator is a Kubernetes-native way to run production AI agents. Tools, Skills,
 and Agents are declared as **custom resources** and launched as one-shot Jobs by
 a dedicated controller — so operators manage the catalog declaratively and the
 orchestrator stays focused on reasoning, not infrastructure.
@@ -205,8 +215,8 @@ Install `agent-controller` first (it owns the CRDs), then
 prerequisites and values. Tools are never deployed as long-running pods — the
 controller launches them as one-shot Jobs via `ToolRun`/`AgentRun` CRs.
 
-> **Upgrading a cluster installed before the roverkit rename?** The CRD API
-> group moved from `core.aktis.ai` to `core.aktis.ai`. Follow
+> **Upgrading a cluster installed before the Aktis rename?** The CRD API
+> group moved from `core.controller-agent.dev` to `core.aktis.ai`. Follow
 > [docs/aktis-migration.md](docs/aktis-migration.md) **before** upgrading,
 > or the new release starts with an empty catalog and no linked accounts.
 
