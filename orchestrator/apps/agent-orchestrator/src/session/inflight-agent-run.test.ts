@@ -28,6 +28,20 @@ describe("markAgentRunAwaitingReply", () => {
     });
   });
 
+  it("records the new run's read-only mode, replacing the previous anchor's", async () => {
+    const s = store();
+
+    await markAgentRunAwaitingReply(s, "session-1", { subject: "alice", agentId: "swe", agentRunId: "run-1", readOnly: true });
+    expect((await s.get("session-1"))?.activeAgentRunReadOnly).toBe(true);
+
+    await markAgentRunAwaitingReply(s, "session-1", { subject: "alice", agentId: "swe", agentRunId: "run-2" });
+    expect((await s.get("session-1"))?.activeAgentRunReadOnly).toBeUndefined();
+
+    await markAgentRunAwaitingReply(s, "session-1", { subject: "alice", agentId: "swe", agentRunId: "run-3", readOnly: true });
+    await clearAgentRunAwaitingReply(s, "session-1");
+    expect((await s.get("session-1"))?.activeAgentRunReadOnly).toBeUndefined();
+  });
+
   /**
    * `SessionStore.set` replaces the whole record, so the read-modify-write is
    * load-bearing: buying resumability by dropping a conversation's continuation

@@ -20,8 +20,10 @@ metadata:
   labels:
     {{- include "agent-orchestrator.labels" . | nindent 4 }}
 rules:
-  - apiGroups: ["core.roverkit.io"]
-    resources: ["tools", "skills", "agents", "integrationroutes", "identityproviders"]
+  - apiGroups: ["core.controller-agent.dev"]
+    # eventtriggers: matched against every /invoke carrying an event
+    # (docs/adr/0048) -- watched, so a missing grant crashloops on a 403.
+    resources: ["tools", "skills", "agents", "eventtriggers", "identityproviders"]
     verbs: ["get", "list", "watch"]
   {{- if and .Values.knowledgeBases.enabled (eq $kbNs $toolNs) }}
   # Knowledge bases (docs/adr/0039, 0043). The orchestrator derives a skill and

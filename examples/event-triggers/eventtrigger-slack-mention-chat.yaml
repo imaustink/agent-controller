@@ -1,0 +1,34 @@
+# Example: an @-mention of the Slack app becomes an ordinary conversational turn
+# (target.orchestrator: skill retrieval over the mention text), one session per
+# Slack thread. Slack's url_verification handshake never reaches here -- the
+# slackV0 source answers it in the gateway.
+#
+# There is no Slack reply adapter yet (docs/event-triggers.md §7 ships github and
+# http), so the answer is not posted back to the channel; uncomment `reply`
+# below to have the outcome POSTed to a bridge that does.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: EventTrigger
+metadata:
+  name: slack-mention-chat
+spec:
+  sourceRef: slack
+  match:
+    cel: >-
+      body.type == "event_callback" && body.event.type == "app_mention"
+  params:
+    text: body.event.text
+    channel: body.event.channel
+    thread: 'has(body.event.thread_ts) ? body.event.thread_ts : body.event.ts'
+  sessionKey: "slack:{{channel}}:{{thread}}"
+  target:
+    orchestrator: {}
+    promptTemplate: "{{text}}"
+  # Optional: POST the outcome to a URL you run (a literal, never templated, so
+  # event content cannot redirect it), signed with x-event-signature when
+  # secretRef is set:
+  # reply:
+  #   http:
+  #     url: https://bridge.example.com/results
+  #     secretRef:
+  #       name: event-reply
+  #       key: secret

@@ -13,7 +13,7 @@
 # and that is precisely the path ADR 0029 changed — so the e2e environment
 # mirrors it rather than the demo shortcut.
 
-# The agent the triage route actually launches here.
+# The agent the github-issue-triage EventTrigger actually launches here.
 #
 # The identity gate is the thing under test, so it must see production-shaped
 # Agents -- but a REAL Claude run cannot terminate in this cluster: there is no
@@ -58,7 +58,7 @@ stubAgent:
 # kept Claude-only in this file for the reason given there. Drifting from
 # production makes the read gate take a different path for the agent under test
 # than for the one production runs, which is the whole point of the stub.
-# Reached by name from chat, and by the issue-review route below from a webhook.
+# Reached by name from chat, and by the github-issue-review EventTrigger below from a webhook.
 stubSweAgent:
   enabled: true
   acknowledgeNotForProduction: true
@@ -82,13 +82,13 @@ stubSweAgent:
       - claude-remote
   replyAckTimeoutMs: 90000
 
-# Removed from the e2e catalog entirely, not merely bypassed by the triage route.
+# Removed from the e2e catalog entirely, not merely bypassed by the triage trigger.
 #
 # The comment at the top of this file explains why it is useless for the
 # identity-keying spec: it declares no identityProviders, so the pre-flight
 # iterates an empty list and launches with nothing to assert a subject against.
-# Re-pointing the route at stub-agent was enough while every spec arrived through
-# an IntegrationRoute -- but a CHAT turn has no route, so its agent is chosen by
+# Re-pointing the trigger at stub-agent was enough while every spec arrived through
+# an event trigger -- but a CHAT turn has no trigger, so its agent is chosen by
 # the planner, and observed runs picked THIS agent over the named stub (its
 # description is the closest match for any "fix the failing repo" request).
 # A turn that lands here produces no credential flow at all, which is not a
@@ -145,22 +145,6 @@ claudeCodeSweAgent:
     providers:
       - claude
       - claude-remote
-
-integrationRoutes:
-  githubIssueLabeledTriage:
-    enabled: true
-    # stub-agent, not the demo default and not claude-code-swe-agent: it carries
-    # the same Claude identityProviders (so the credential gate is exercised
-    # exactly as production exercises it) AND terminates hermetically (so the
-    # chain past the launch -- reply, relay, issue comment -- is assertable).
-    agentRef: stub-agent
-  # The webhook half of the read gate: a labeled issue dispatched to the
-  # GitHub-acting stub, whose repository comes from the event (the one
-  # integration-gateway verified the sender on) rather than the prompt.
-  githubIssueLabeledReview:
-    enabled: true
-    agentRef: stub-swe-agent
-    labelName: ai-review
 
 # The in-cluster MCP server the mcp-broker discovers and proxies to (ADR 0045).
 # The MCPServer CR that points at it is applied per-test by

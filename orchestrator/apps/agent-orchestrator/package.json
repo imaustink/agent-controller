@@ -18,7 +18,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@roverkit/messaging": "0.1.0",
+    "@controller-agent/event-triggers": "0.1.0",
+    "@controller-agent/messaging": "0.1.0",
     "@kubernetes/client-node": "^1.0.0",
     "@langchain/core": "^0.3.40",
     "@langchain/langgraph": "^0.2.44",

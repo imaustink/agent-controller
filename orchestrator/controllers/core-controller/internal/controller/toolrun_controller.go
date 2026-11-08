@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	batchv1 "k8s.io/api/batch/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -231,7 +232,7 @@ func buildJob(run *toolv1alpha1.ToolRun, tool *toolv1alpha1.Tool) (*batchv1.Job,
 		image:              tool.Spec.Image,
 		serviceAccountName: tool.Spec.ServiceAccountName,
 		args:               args,
-		staticEnv:          tool.Spec.Env,
+		staticEnv:          slices.Concat(tool.Spec.Env, toolEventEnv(run.Spec)),
 		// mergeSecretEnv lets a caller inject a per-invocation credential
 		// (e.g. a per-user GitHub identity-link token, ADR 0032) that
 		// overrides or adds to the Tool's baked-in static secretEnv for this

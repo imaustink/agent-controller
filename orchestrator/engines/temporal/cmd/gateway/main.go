@@ -80,15 +80,16 @@ func main() {
 
 	opts := []gateway.Option{}
 
-	// Deterministic event dispatch (ADR 0024). Optional: without cluster
-	// access every /invoke turn simply goes through ordinary retrieval, which
-	// is exactly the behaviour before IntegrationRoute existed. A chat-only
-	// deployment, or local dev with no cluster, needs none of this.
-	if os.Getenv("INTEGRATION_ROUTES") != "false" {
-		if routes, err := startRouteWatch(ctx); err != nil {
-			log.Printf("integration routes disabled (%v); every /invoke turn will use retrieval", err)
+	// EventTrigger matching for direct callers that POST an `event` envelope
+	// to /invoke (ADR 0048). Optional: agent-orchestrator matches events
+	// itself and forwards resolved turns, which need no table here, and a
+	// chat-only deployment or local dev with no cluster needs none of this.
+	// Without it an envelope is refused (503), never silently ignored.
+	if os.Getenv("EVENT_TRIGGERS") != "false" {
+		if triggers, err := startEventTriggerWatch(ctx); err != nil {
+			log.Printf("event triggers disabled (%v); /invoke will refuse event envelopes", err)
 		} else {
-			opts = append(opts, gateway.WithRoutes(routes))
+			opts = append(opts, gateway.WithEventTriggers(triggers))
 		}
 	}
 
@@ -119,10 +120,10 @@ func main() {
 	}
 }
 
-// startRouteWatch brings up the IntegrationRoute table and returns once its
-// initial list has been indexed, so the first /invoke after startup routes
-// against a populated table rather than racing it.
-func startRouteWatch(ctx context.Context) (*catalog.RouteRegistry, error) {
+// startEventTriggerWatch brings up the EventTrigger table and returns once
+// its initial list has been indexed, so the first /invoke after startup
+// matches against a populated table rather than racing it.
+func startEventTriggerWatch(ctx context.Context) (*catalog.EventTriggerRegistry, error) {
 	kubeConfig, err := kubeconfig.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load kube config: %w", err)
@@ -137,30 +138,30 @@ func startRouteWatch(ctx context.Context) (*catalog.RouteRegistry, error) {
 		namespace = "controller-agent"
 	}
 
-	routes := catalog.NewRouteRegistry()
+	triggers := catalog.NewEventTriggerRegistry()
 	ready := make(chan error, 1)
 	go func() {
-		ready <- catalog.RunRouteWatch(ctx, dynamicClient, namespace, routes)
+		ready <- catalog.RunEventTriggerWatch(ctx, dynamicClient, namespace, triggers)
 	}()
 
-	// RunRouteWatch blocks for the life of the process, so "ready" is the
-	// absence of an early error rather than a return. A watch that cannot
-	// even establish fails fast here instead of quietly never routing.
+	// RunEventTriggerWatch blocks for the life of the process, so "ready" is
+	// the absence of an early error rather than a return. A watch that cannot
+	// even establish fails fast here instead of quietly never matching.
 	select {
 	case err := <-ready:
 		if err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf("route watch exited immediately")
-	case <-time.After(routeWatchStartupGrace):
-		return routes, nil
+		return nil, fmt.Errorf("event trigger watch exited immediately")
+	case <-time.After(triggerWatchStartupGrace):
+		return triggers, nil
 	}
 }
 
-// routeWatchStartupGrace is how long to let the informer's initial list land
-// before serving. Long enough to cover the cache-sync poll period, short
+// triggerWatchStartupGrace is how long to let the informer's initial list
+// land before serving. Long enough to cover the cache-sync poll period, short
 // enough that a cluster-less dev run is not held up.
-const routeWatchStartupGrace = 2 * time.Second
+const triggerWatchStartupGrace = 2 * time.Second
 
 const (
 	// callerToolRetention is how long an unused definition survives. Qdrant has

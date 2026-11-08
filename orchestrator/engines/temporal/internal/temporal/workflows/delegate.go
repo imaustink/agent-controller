@@ -74,6 +74,7 @@ func delegateToAgent(ctx workflow.Context, actx workflow.Context, state *Convers
 			// link landed. Without this the resume re-delegates "ok, linked
 			// it" and the user's actual request is lost.
 			anchor.Request = in.Message
+			anchor.ReadOnly = in.ReadOnly
 			anchor.RequestedBy = &authz.LinkOwner{
 				Subject:     in.Caller.Subject,
 				PerUser:     in.Caller.PerUser,
@@ -115,6 +116,8 @@ func delegateToAgent(ctx workflow.Context, actx workflow.Context, state *Convers
 		// A reference, not credentials: the child attaches it to the Jobs it
 		// launches, and the kubelet is the only thing that reads a value.
 		Credentials: credentials{SecretName: verdict.SecretName, EnvVars: verdict.EnvVarNames},
+		ReadOnly:    in.ReadOnly,
+		Params:      in.Params,
 	})
 	// Wait for the start (not completion): the update handler returns while
 	// the child keeps running under this conversation. ParentClosePolicy
@@ -125,6 +128,7 @@ func delegateToAgent(ctx workflow.Context, actx workflow.Context, state *Convers
 	}
 	state.ActiveAgentID = agent.ID
 	state.ActiveAgentWorkflowID = childID
+	state.ActiveAgentReadOnly = in.ReadOnly
 
 	gen := state.beginAgentListen(ctx)
 	reply, preempted := handleAgentUp(ctx, state, agent.ID, childID, gen, note)

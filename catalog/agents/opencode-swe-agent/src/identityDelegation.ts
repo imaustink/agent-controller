@@ -14,12 +14,13 @@ import type { AgentToolConfig } from "./config.js";
 export { AuthorizationError };
 
 /**
- * The permission ceiling for a review run's GitHub token. `contents: "read"`
+ * The permission ceiling for a read-only run's GitHub token (session.readOnly,
+ * ADR 0048). `contents: "read"`
  * makes `git push` fail at the credential layer (a guarantee independent of the
  * opencode deny list); `pull_requests`/`issues: "write"` keep the review able to
  * post its findings.
  */
-export const REVIEW_TOKEN_PERMISSIONS: Record<string, string> = {
+export const READ_ONLY_TOKEN_PERMISSIONS: Record<string, string> = {
   contents: "read",
   pull_requests: "write",
   issues: "write",
@@ -48,24 +49,24 @@ export function isDelegating(config: AgentToolConfig): boolean {
  * The credential for a run that does NOT delegate -- a webhook turn, whose
  * shared subject never carries a per-user token. It is the App's either way;
  * with a verified target repository it is scoped to exactly that repository
- * (the one the webhook's sender was checked on), and when `reviewMode` is set
- * it is minted read-only ({@link REVIEW_TOKEN_PERMISSIONS}, `contents: read`)
+ * (the one the webhook's sender was checked on), and when `readOnly` is set
+ * it is minted read-only ({@link READ_ONLY_TOKEN_PERMISSIONS}, `contents: read`)
  * so a push/merge fails at the credential layer -- a guarantee independent of
- * the opencode deny list, and the backstop the default `ai-review` route
- * (`agentRef: opencode-swe-agent`) runs on.
+ * the opencode deny list, and the backstop every read-only review run on this
+ * agent relies on.
  *
- * Non-review runs and runs without App creds are unchanged: the App path keeps
+ * Non-read-only runs and runs without App creds are unchanged: the App path keeps
  * the installation's default permission set, and a static-PAT run falls back to
  * {@link resolveGithubToken} exactly as before (a PAT's scope is fixed and
- * can't be narrowed per run, so a review there relies on the deny list alone).
+ * can't be narrowed per run, so a read-only run there relies on the deny list alone).
  */
 export async function resolveUndelegatedToken(
   config: AgentToolConfig,
-  reviewMode = false,
+  readOnly = false,
   now: number = Date.now(),
 ): Promise<string> {
   const appCreds = appCredsFrom(config);
-  if (appCreds && config.targetRepository) return mintTargetRepositoryToken(config, appCreds, now, reviewMode);
+  if (appCreds && config.targetRepository) return mintTargetRepositoryToken(config, appCreds, now, readOnly);
   return resolveGithubToken(config, now);
 }
 
@@ -73,13 +74,13 @@ async function mintTargetRepositoryToken(
   config: AgentToolConfig,
   appCreds: GithubAppCredentials,
   now: number,
-  reviewMode = false,
+  readOnly = false,
 ): Promise<string> {
   const [owner, name] = config.targetRepository.split("/");
   if (!owner || !name) throw new Error(`Expected AGENT_TARGET_REPOSITORY as "owner/repo", got: ${config.targetRepository}`);
   const { token } = await mintInstallationToken(appCreds, config.githubApiUrl, now, {
     repositories: [name],
-    ...(reviewMode ? { permissions: REVIEW_TOKEN_PERMISSIONS } : {}),
+    ...(readOnly ? { permissions: READ_ONLY_TOKEN_PERMISSIONS } : {}),
   });
   return token;
 }
@@ -116,7 +117,7 @@ export interface DelegatedAttribution {
 export async function resolveDelegatedToken(
   config: AgentToolConfig,
   repo: string | null,
-  reviewMode = false,
+  readOnly = false,
   now: number = Date.now(),
 ): Promise<{ token: string; attribution: DelegatedAttribution }> {
   const appCreds = appCredsFrom(config);
@@ -128,7 +129,7 @@ export async function resolveDelegatedToken(
       repo,
       githubApiUrl: config.githubApiUrl,
       appCreds,
-      ...(reviewMode ? { permissions: REVIEW_TOKEN_PERMISSIONS } : {}),
+      ...(readOnly ? { permissions: READ_ONLY_TOKEN_PERMISSIONS } : {}),
       now,
     });
     return { token, attribution: { githubLogin, githubId } };
@@ -139,7 +140,7 @@ export async function resolveDelegatedToken(
     appCreds,
     config.githubApiUrl,
     now,
-    reviewMode ? { permissions: REVIEW_TOKEN_PERMISSIONS } : {},
+    readOnly ? { permissions: READ_ONLY_TOKEN_PERMISSIONS } : {},
   );
   return { token, attribution: { githubLogin: login, githubId: id } };
 }

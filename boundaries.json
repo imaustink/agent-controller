@@ -29,6 +29,7 @@
     { "path": "catalog/tools-local/*", "layer": "catalog" },
 
     { "path": "orchestrator/apps/*", "layer": "orchestrator" },
+    { "path": "orchestrator/packages/*", "layer": "orchestrator" },
     { "path": "orchestrator/engines/temporal", "layer": "orchestrator" },
     { "path": "orchestrator/controllers/core-controller", "layer": "orchestrator" },
     { "path": "orchestrator/sidecars/localtool-executor", "layer": "orchestrator" },

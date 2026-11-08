@@ -62,6 +62,9 @@ func (l *K8sLauncher) Launch(ctx context.Context, spec LaunchSpec) error {
 	if spec.TimeoutSeconds > 0 {
 		crSpec["timeoutSeconds"] = int64(spec.TimeoutSeconds)
 	}
+	if spec.ReadOnly {
+		crSpec["readOnly"] = true
+	}
 	if len(spec.SecretEnv) > 0 {
 		entries := make([]any, len(spec.SecretEnv))
 		for i, e := range spec.SecretEnv {

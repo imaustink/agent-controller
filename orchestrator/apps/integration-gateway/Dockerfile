@@ -28,22 +28,29 @@ RUN apt-get update \
 
 COPY package.json package-lock.json* ./
 COPY framework/github-app-auth/package.json framework/github-app-auth/package.json
+COPY orchestrator/packages/event-triggers/package.json orchestrator/packages/event-triggers/package.json
 COPY orchestrator/apps/integration-gateway/package.json orchestrator/apps/integration-gateway/package.json
 RUN npm ci
 
 COPY framework/github-app-auth framework/github-app-auth
+COPY orchestrator/packages/event-triggers orchestrator/packages/event-triggers
 COPY orchestrator/apps/integration-gateway/tsconfig.json orchestrator/apps/integration-gateway/tsconfig.json
 COPY orchestrator/apps/integration-gateway/src         orchestrator/apps/integration-gateway/src
 
-RUN npm run build --workspace=@roverkit/github-app-auth \
+RUN npm run build --workspace=@controller-agent/github-app-auth \
+  && npm run build --workspace=@controller-agent/event-triggers \
   && npm run build --workspace=integration-gateway \
   && npm prune --omit=dev \
   # Materialize the workspace package as a real directory (not a symlink) so
   # it survives the copy into the runtime stage.
-  && rm -rf node_modules/@roverkit/github-app-auth \
-  && mkdir -p node_modules/@roverkit/github-app-auth \
-  && cp -r framework/github-app-auth/dist        node_modules/@roverkit/github-app-auth/dist \
-  && cp framework/github-app-auth/package.json   node_modules/@roverkit/github-app-auth/package.json
+  && rm -rf node_modules/@controller-agent/github-app-auth \
+  && mkdir -p node_modules/@controller-agent/github-app-auth \
+  && cp -r framework/github-app-auth/dist        node_modules/@controller-agent/github-app-auth/dist \
+  && cp framework/github-app-auth/package.json   node_modules/@controller-agent/github-app-auth/package.json \
+  && rm -rf node_modules/@controller-agent/event-triggers \
+  && mkdir -p node_modules/@controller-agent/event-triggers \
+  && cp -r orchestrator/packages/event-triggers/dist         node_modules/@controller-agent/event-triggers/dist \
+  && cp orchestrator/packages/event-triggers/package.json    node_modules/@controller-agent/event-triggers/package.json
 
 ############################
 # Runtime stage

@@ -94,7 +94,7 @@ graph TD
 ```
 
 > The diagram shows the original five CRDs. The full custom-resource reference —
-> all 13 kinds across tools, agents, knowledge bases, MCP, routing and identity —
+> all 14 kinds across tools, agents, knowledge bases, MCP, events and identity —
 > is in **[docs/crds.md](docs/crds.md)**.
 
 This is an **npm workspace** monorepo (plus standalone Go modules) in three
@@ -124,8 +124,10 @@ Kubernetes. Either half can be adopted without the other.
 │   ├── apps/                   # agent-orchestrator (LangGraph engine), integration-gateway, connection-broker, mcp-broker
 │   ├── engines/temporal/       # the Temporal execution engine (Go)
 │   ├── controllers/core-controller/  # Go controller — CRDs + reconcilers, launches Jobs
+│   ├── packages/event-triggers/      # EventSource/EventTrigger contract: envelope, CEL, matching (ADR 0048)
 │   ├── sidecars/localtool-executor/  # in-pod LocalTool executor
 │   └── charts/                 # Helm: agent-controller (system) + community-components (catalog CRs)
+├── examples/event-triggers/     # bare EventSource/EventTrigger manifests (webhooks, cron), not in any chart
 ├── e2e/                        # end-to-end suites across every layer
 └── scripts/                    # dev and CI helpers
 ```

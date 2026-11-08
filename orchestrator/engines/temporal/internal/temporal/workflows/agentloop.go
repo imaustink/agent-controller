@@ -52,10 +52,11 @@ type TurnMeta struct {
 	//   fallback-bare    — no skill, agent, or tool matched
 	//   skill            — selected by retrieval
 	//   skill-continued  — the conversation's active skill still fits
-	//   skill-routed     — named by an IntegrationRoute (ADR 0024)
+	//   skill-routed     — named by an EventTrigger (ADR 0048)
 	//   agent            — selected by retrieval
 	//   agent-continued  — an episode already in flight took the turn
-	//   agent-routed     — named by an IntegrationRoute (ADR 0024)
+	//   agent-routed     — named by an EventTrigger (ADR 0048)
+	//   tool-routed      — an EventTrigger's toolRef, run once (ADR 0048)
 	Path      string   `json:"path"`
 	SkillID   string   `json:"skillId,omitempty"` // active skill after this turn
 	AgentID   string   `json:"agentId,omitempty"` // agent handling this turn
@@ -70,7 +71,7 @@ type TurnMeta struct {
 	RemoteControlUrl string `json:"remoteControlUrl,omitempty"`
 }
 
-// runAgentTurn is the ported agent loop: active agent → integration route →
+// runAgentTurn is the ported agent loop: active agent → event trigger target →
 // active-skill fit check → capability gate → retrieve → select → resolve
 // tools → plan⇄runTool → compose. It returns the reply plus which skill (if
 // any) stays active. Mirrors agent-controller's graph nodes.
@@ -87,6 +88,16 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	// 0. Mid-episode agent takes the turn outright (upstream's
 	// checkActiveAgentRun): forward the message as the HITL answer.
 	if state.ActiveAgentWorkflowID != "" {
+		if in.ReadOnly && !state.ActiveAgentReadOnly {
+			// The episode was launched writable, and its pod already holds
+			// whatever credentials that implies; forwarding a read-only turn
+			// into it would let a trigger marked readOnly steer writes. Not
+			// fixable by starting a second episode either — that would
+			// orphan the first mid-HITL. Fail the turn instead.
+			return "", meta, nil, fmt.Errorf(
+				"a writable %s episode is already active in this conversation; a read-only turn cannot be forwarded into it",
+				state.ActiveAgentID)
+		}
 		note("Continuing with agent " + state.ActiveAgentID)
 		err := workflow.SignalExternalWorkflow(ctx, state.ActiveAgentWorkflowID, "", AgentPromptSignal, AgentPrompt{Message: in.Message}).Get(ctx, nil)
 		if err == nil {
@@ -119,46 +130,72 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 	var approvedCall *PendingApproval
 	deniedCalls := map[string]bool{}
 
-	// 0.5. Deterministic dispatch (ADR 0024). The gateway matched this turn's
-	// event descriptor to an IntegrationRoute and named a target; re-resolve
-	// it under the caller's CURRENT roles and go straight there, skipping
-	// retrieval. Deliberately AFTER the active-agent check above: a re-applied
-	// trigger label on an issue an agent is already working would otherwise
-	// start the work a second time — a second branch and a second PR on a real
-	// coding agent. A miss falls through, never an error.
-	if in.Caller.Subject != "" {
-		if in.ForcedAgentID != "" {
+	// 0.5. Deterministic dispatch (ADR 0048). A matched EventTrigger named
+	// the target; re-resolve it under the caller's CURRENT roles and go
+	// straight there, skipping retrieval. Deliberately AFTER the active-agent
+	// check above: a re-applied trigger label on an issue an agent is already
+	// working would otherwise start the work a second time — a second branch
+	// and a second PR on a real coding agent.
+	//
+	// A miss — no identity, a lookup failure, a target gone or invisible to
+	// these roles — FAILS the turn (docs/event-triggers.md §1). It never falls
+	// through to retrieval: the rendered prompt is an event, and handing it to
+	// skill selection as free text is exactly the RAG fallback ADR 0048 rules
+	// out.
+	if forced, kind := forcedTarget(in); forced != "" {
+		if in.Caller.Subject == "" {
+			return "", meta, nil, fmt.Errorf("forced %s %s: the turn has no caller identity to resolve it under", kind, forced)
+		}
+		if in.TriggerName != "" {
+			logger.Info("event-triggered turn", "trigger", in.TriggerName, "kind", kind, "target", forced, "readOnly", in.ReadOnly)
+		}
+		switch kind {
+		case "agent":
 			var agent *catalog.AgentDescriptor
 			if err := workflow.ExecuteActivity(actx, activities.ResolveAgentActivityName, activities.ResolveAgentInput{
 				Caller:  in.Caller,
 				AgentID: in.ForcedAgentID,
 			}).Get(ctx, &agent); err != nil {
-				logger.Warn("forced agent lookup failed; falling through to retrieval", "agentId", in.ForcedAgentID, "error", err)
-			} else if agent != nil {
-				note("Routing to agent " + agent.ID)
-				reply, m, err := delegateToAgent(ctx, actx, state, in, *agent, &meta, note, nil)
-				if m.Path == "agent" {
-					m.Path = "agent-routed"
-				}
-				return reply, m, nil, err
-			} else {
-				logger.Info("forced agent not visible to caller; falling through", "agentId", in.ForcedAgentID)
+				return "", meta, nil, fmt.Errorf("resolve forced agent %s: %w", in.ForcedAgentID, err)
 			}
-		}
-		if in.ForcedSkillID != "" {
+			if agent == nil {
+				return "", meta, nil, fmt.Errorf("forced agent %s does not exist or is not visible to this caller", in.ForcedAgentID)
+			}
+			note("Routing to agent " + agent.ID)
+			reply, m, err := delegateToAgent(ctx, actx, state, in, *agent, &meta, note, nil)
+			if m.Path == "agent" {
+				m.Path = "agent-routed"
+			}
+			return reply, m, nil, err
+
+		case "tool":
+			var tool *catalog.ToolDescriptor
+			if err := workflow.ExecuteActivity(actx, activities.ResolveToolActivityName, activities.ResolveToolInput{
+				Caller: in.Caller,
+				ToolID: in.ForcedToolID,
+			}).Get(ctx, &tool); err != nil {
+				return "", meta, nil, fmt.Errorf("resolve forced tool %s: %w", in.ForcedToolID, err)
+			}
+			if tool == nil {
+				return "", meta, nil, fmt.Errorf("forced tool %s does not exist or is not visible to this caller", in.ForcedToolID)
+			}
+			reply, m, err := runForcedTool(ctx, actx, state, in, *tool, &meta, note)
+			return reply, m, nil, err
+
+		case "skill":
 			var resolved *activities.SkillTools
 			if err := workflow.ExecuteActivity(actx, activities.ResolveSkillToolsActivityName, activities.ResolveSkillToolsInput{
 				Caller:  in.Caller,
 				SkillID: in.ForcedSkillID,
 			}).Get(ctx, &resolved); err != nil {
-				logger.Warn("forced skill lookup failed; falling through to retrieval", "skillId", in.ForcedSkillID, "error", err)
-			} else if resolved != nil {
-				skillTools = resolved
-				meta.Path = "skill-routed"
-				note("Routing to skill " + resolved.Skill.ID)
-			} else {
-				logger.Info("forced skill not visible to caller; falling through", "skillId", in.ForcedSkillID)
+				return "", meta, nil, fmt.Errorf("resolve forced skill %s: %w", in.ForcedSkillID, err)
 			}
+			if resolved == nil {
+				return "", meta, nil, fmt.Errorf("forced skill %s does not exist or is not visible to this caller", in.ForcedSkillID)
+			}
+			skillTools = resolved
+			meta.Path = "skill-routed"
+			note("Routing to skill " + resolved.Skill.ID)
 		}
 	}
 
@@ -480,6 +517,7 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 					ToolID:          plan.ToolID,
 					ToolInput:       plan.ToolInput,
 					ToolInstanceKey: plan.ToolInstanceKey,
+					ReadOnly:        in.ReadOnly,
 				}
 				emit(messaging.ApprovalRequired(0, "", plan.ToolID, approval.Prompt(plan.ToolID)))
 				return approval.Prompt(plan.ToolID), meta, nil, nil
@@ -709,6 +747,19 @@ func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *Conversati
 		// never handed back to the workflow, where the gate below resolves a Tool
 		// CR's providers into secretEnv for a Job.
 		if tool.MCPExec != nil {
+			if in.ReadOnly {
+				// The broker calls the server with the caller's DELEGATED
+				// token, and an MCP tool may do anything that token allows;
+				// nothing here can tell a read from a write. A read-only turn
+				// therefore refuses MCP tools outright (fail closed), surfaced
+				// to the planner as a failed call so it can answer without one.
+				history = append(history, activities.ActionRecord{
+					ToolID: plan.ToolID, Input: plan.ToolInput,
+					Error: readOnlyMCPRefusal(plan.ToolID),
+				})
+				note(plan.ToolID + " is not available to a read-only request")
+				continue
+			}
 			note("Calling " + plan.ToolID + "…")
 			var out activities.RunMCPToolOutput
 			if err := workflow.ExecuteActivity(actx, activities.RunMCPToolActivityName,
@@ -897,6 +948,7 @@ func runToolWithContinuation(
 			Args:                 []string{toolInput},
 			CredentialSecretName: creds.SecretName,
 			CredentialEnvVars:    creds.EnvVars,
+			ReadOnly:             in.ReadOnly,
 			OnProgress: func(e messaging.Event) {
 				line := e.Message
 				if e.Stage != "" {
@@ -1011,6 +1063,8 @@ func runAgentBackedTool(
 		ParentWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 		Depth:            1,
 		Credentials:      credentials{SecretName: creds.SecretName, EnvVars: creds.EnvVars},
+		ReadOnly:         in.ReadOnly,
+		Params:           in.Params,
 	})
 	if err := child.GetChildWorkflowExecution().Get(ctx, nil); err != nil {
 		return ToolOutcome{}, fmt.Errorf("start agent-backed tool %s: %w", tool.ID, err)

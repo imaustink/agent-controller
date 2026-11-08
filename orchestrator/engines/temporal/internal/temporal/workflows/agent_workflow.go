@@ -92,6 +92,13 @@ type AgentWorkflowInput struct {
 	// identityProviders act purely as a launch gate, and the tools it calls
 	// carry their own (ADR 0032).
 	Credentials credentials `json:"credentials,omitempty"`
+
+	// ReadOnly and Params are the launching turn's (ADR 0048), inherited by
+	// everything this episode launches — its AgentRun, its step/tool Jobs,
+	// and any sub-agent it delegates to. A child can never be less
+	// restricted than the turn that started it.
+	ReadOnly bool              `json:"readOnly,omitempty"`
+	Params   map[string]string `json:"params,omitempty"`
 }
 
 // AgentWorkflow runs one agent episode. It reports everything to the parent
@@ -261,7 +268,7 @@ func AgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 			// dispatch path skips this check; a Tool meant to act as a specific
 			// human would then run with whatever static token its template
 			// carries, which is the gap that ADR closed on the parent's path.
-			creds, refusal := toolCredentials(ctx, actx, TurnInput{Caller: in.Caller}, *tool)
+			creds, refusal := toolCredentials(ctx, actx, TurnInput{Caller: in.Caller, ReadOnly: in.ReadOnly}, *tool)
 			if refusal != "" {
 				history = append(history, activities.ActionRecord{
 					ToolID: plan.ToolID, Input: plan.ToolInput, Error: refusal,
@@ -279,6 +286,7 @@ func AgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 				Args:                 []string{toolInput},
 				CredentialSecretName: creds.SecretName,
 				CredentialEnvVars:    creds.EnvVars,
+				ReadOnly:             in.ReadOnly,
 				OnProgress: func(e messaging.Event) {
 					line := e.Message
 					if e.Stage != "" {
@@ -312,7 +320,7 @@ func AgentWorkflow(ctx workflow.Context, in AgentWorkflowInput) error {
 				continue
 			}
 			up(AgentUp{Progress: true, Message: "Delegating to " + sub.ID + "…"})
-			result, err := superviseChildAgent(ctx, *sub, plan.Goal, in.Caller, in.Depth+1,
+			result, err := superviseChildAgent(ctx, *sub, plan.Goal, in.Caller, in.Depth+1, in.ReadOnly, in.Params,
 				func(line string) { up(AgentUp{Progress: true, Message: line}) },
 				func(question string) string {
 					// Bubble the sub-agent's question all the way to the
@@ -348,6 +356,8 @@ func superviseChildAgent(
 	goal string,
 	caller activities.Caller,
 	depth int,
+	readOnly bool,
+	params map[string]string,
 	onProgress func(string),
 	onQuestion func(string) string,
 ) (string, error) {
@@ -364,6 +374,8 @@ func superviseChildAgent(
 		Caller:           caller,
 		ParentWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 		Depth:            depth,
+		ReadOnly:         readOnly,
+		Params:           params,
 	})
 	if err := child.GetChildWorkflowExecution().Get(ctx, nil); err != nil {
 		return "", fmt.Errorf("start child agent %s: %w", agent.ID, err)

@@ -39,8 +39,9 @@ func toolCredentials(
 
 	var verdict authz.Verdict
 	if err := workflow.ExecuteActivity(actx, activities.ResolveToolCredentialsActivityName, activities.ToolCredentialsInput{
-		Tool:   tool,
-		Caller: in.Caller,
+		Tool:     tool,
+		Caller:   in.Caller,
+		ReadOnly: in.ReadOnly,
 	}).Get(ctx, &verdict); err != nil {
 		// Fail CLOSED. A tool that declares an identity must not run without
 		// one because a lookup was unavailable — it would either fall back to
@@ -54,7 +55,7 @@ func toolCredentials(
 	switch verdict.Kind {
 	case authz.KindAuthorized:
 		return credentials{SecretName: verdict.SecretName, EnvVars: verdict.EnvVarNames}, ""
-	case authz.KindLinkRequired:
+	case authz.KindLinkRequired, authz.KindRefused:
 		return credentials{}, verdict.Message
 	default:
 		return credentials{}, "I can't run " + tool.ID + " right now: " + verdict.Error
@@ -121,6 +122,9 @@ func resumePendingLink(
 	if anchor.Request != "" {
 		resume.Message = anchor.Request
 	}
+	// Read-only is sticky across the resume: replaying a read-only request on
+	// an ordinary turn must not launch it with write credentials.
+	resume.ReadOnly = resume.ReadOnly || anchor.ReadOnly
 	note("Checking whether your " + anchor.Provider + " link completed…")
 
 	reply, m, err = delegateToAgent(ctx, actx, state, resume, *agent, meta, note, anchor)
@@ -173,6 +177,9 @@ func authorizeAgent(
 		// second one for the same (provider, subject).
 		Pending:          pending,
 		TargetRepository: in.TargetRepository,
+		// Withholds the run's write-capable credential (ADR 0048); see
+		// authz.suppressWriteCredentials.
+		ReadOnly: in.ReadOnly,
 	}).Get(ctx, &verdict)
 	return verdict, err
 }

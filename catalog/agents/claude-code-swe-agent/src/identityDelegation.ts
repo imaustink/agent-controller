@@ -14,14 +14,15 @@ import type { AgentToolConfig } from "./config.js";
 export { AuthorizationError };
 
 /**
- * The permission ceiling for a review run's GitHub token. `contents: "read"`
+ * The permission ceiling for a read-only run's GitHub token (session.readOnly,
+ * ADR 0048). `contents: "read"`
  * is the load-bearing part: it makes `git push` fail at the credential layer,
  * a defence that holds even if the CLI deny list were somehow bypassed.
  * `pull_requests`/`issues: "write"` keep the review able to post its findings
- * (inline PR review comments, an issue-review comment). A review run mints its
- * token with these; a change run mints with the installation default.
+ * (inline PR review comments, an issue-review comment). A read-only run mints
+ * its token with these; a change run mints with the installation default.
  */
-export const REVIEW_TOKEN_PERMISSIONS: Record<string, string> = {
+export const READ_ONLY_TOKEN_PERMISSIONS: Record<string, string> = {
   contents: "read",
   pull_requests: "write",
   issues: "write",
@@ -54,13 +55,13 @@ export function isDelegating(config: AgentToolConfig): boolean {
  */
 export async function resolveUndelegatedToken(
   config: AgentToolConfig,
-  reviewMode = false,
+  readOnly = false,
   now: number = Date.now(),
 ): Promise<string> {
   const appCreds = appCredsFrom(config);
-  if (appCreds && config.targetRepository) return mintTargetRepositoryToken(config, appCreds, now, reviewMode);
+  if (appCreds && config.targetRepository) return mintTargetRepositoryToken(config, appCreds, now, readOnly);
   // Static-PAT fallback: a PAT's scope is fixed and can't be narrowed per run,
-  // so a review on this path relies on the CLI/opencode deny list alone. The
+  // so a read-only run on this path relies on the CLI/opencode deny list alone. The
   // App path above is the one that also gets the credential-layer read-only
   // guarantee.
   return resolveGithubToken(config, now);
@@ -70,13 +71,13 @@ async function mintTargetRepositoryToken(
   config: AgentToolConfig,
   appCreds: GithubAppCredentials,
   now: number,
-  reviewMode = false,
+  readOnly = false,
 ): Promise<string> {
   const [owner, name] = config.targetRepository.split("/");
   if (!owner || !name) throw new Error(`Expected AGENT_TARGET_REPOSITORY as "owner/repo", got: ${config.targetRepository}`);
   const { token } = await mintInstallationToken(appCreds, config.githubApiUrl, now, {
     repositories: [name],
-    ...(reviewMode ? { permissions: REVIEW_TOKEN_PERMISSIONS } : {}),
+    ...(readOnly ? { permissions: READ_ONLY_TOKEN_PERMISSIONS } : {}),
   });
   return token;
 }
@@ -137,7 +138,7 @@ export interface DelegatedAttribution {
 export async function resolveDelegatedToken(
   config: AgentToolConfig,
   repo: string | null,
-  reviewMode = false,
+  readOnly = false,
   now: number = Date.now(),
 ): Promise<DelegatedTokens> {
   const appCreds = appCredsFrom(config);
@@ -150,7 +151,7 @@ export async function resolveDelegatedToken(
   // repository is what keeps "the App writes" from meaning "the App writes
   // anywhere it is installed".
   if (!repo && config.targetRepository) {
-    const writeToken = await mintTargetRepositoryToken(config, appCreds, now, reviewMode);
+    const writeToken = await mintTargetRepositoryToken(config, appCreds, now, readOnly);
     const githubLogin = config.actorLogin || (await fetchGithubUser(config.githubToken, config.githubApiUrl)).login;
     return { readToken: config.githubToken, writeToken, attribution: { githubLogin } };
   }
@@ -162,7 +163,7 @@ export async function resolveDelegatedToken(
       githubApiUrl: config.githubApiUrl,
       appCreds,
       knownLogin: config.actorLogin || undefined,
-      ...(reviewMode ? { permissions: REVIEW_TOKEN_PERMISSIONS } : {}),
+      ...(readOnly ? { permissions: READ_ONLY_TOKEN_PERMISSIONS } : {}),
       now,
     });
     return { readToken: config.githubToken, writeToken: token, attribution: { githubLogin, githubId } };
@@ -175,14 +176,14 @@ export async function resolveDelegatedToken(
   // provider. `githubId` is intentionally absent on this path -- the numeric
   // id is only used to build the richer `id+login@` co-author trailer, and
   // fetching it would reintroduce the round trip this avoids.
-  const reviewPerms = reviewMode ? { permissions: REVIEW_TOKEN_PERMISSIONS } : {};
+  const readOnlyPerms = readOnly ? { permissions: READ_ONLY_TOKEN_PERMISSIONS } : {};
   if (config.actorLogin) {
-    const { token } = await mintInstallationToken(appCreds, config.githubApiUrl, now, reviewPerms);
+    const { token } = await mintInstallationToken(appCreds, config.githubApiUrl, now, readOnlyPerms);
     return { readToken: config.githubToken, writeToken: token, attribution: { githubLogin: config.actorLogin } };
   }
 
   const { login, id } = await fetchGithubUser(config.githubToken, config.githubApiUrl);
-  const { token } = await mintInstallationToken(appCreds, config.githubApiUrl, now, reviewPerms);
+  const { token } = await mintInstallationToken(appCreds, config.githubApiUrl, now, readOnlyPerms);
   return { readToken: config.githubToken, writeToken: token, attribution: { githubLogin: login, githubId: id } };
 }
 
