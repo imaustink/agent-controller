@@ -19,7 +19,7 @@ sub-agent.
 ADR 0022's mechanism, on inspection, was wired exclusively through
 `Agent`/`AgentRun`:
 
-- `ToolRunSpec` (`controllers/core-controller/api/v1alpha1/toolrun_types.go`)
+- `ToolRunSpec` (`orchestrator/controllers/core-controller/api/v1alpha1/toolrun_types.go`)
   had no `secretEnv` field at all — only `toolRef`/`args`/`callback`/
   `timeoutSeconds` — unlike `AgentRunSpec`, which gained `SecretEnv
   []SecretEnvVar` under ADR 0022. There was nothing for the Go reconciler's
@@ -79,7 +79,7 @@ reimplementation, but the same mechanism extended one CRD kind further.
    via a direct conversation with an identity-linking-capable Agent (e.g.
    `opencode-swe-agent`) before a Skill can route them to an identity-gated
    Tool.
-6. **New `github` Tool (`tools/github/`)**: a `recipe-publisher`/
+6. **New `github` Tool (`catalog/tools/github/`)**: a `recipe-publisher`/
    `kubectl-readonly`-shaped container — `gh` CLI preinstalled (pinned
    release binary + sha256 checksum verification, same pattern as
    `kubectl-readonly`'s pinned `kubectl`), a single command line in
@@ -93,13 +93,13 @@ reimplementation, but the same mechanism extended one CRD kind further.
    ServiceAccount) this tool's real authorization boundary is the delegated
    human's own GitHub permissions on whatever they target, the same posture
    `opencode-swe-agent` already has (ADR 0022, `docs/security.md`).
-7. **Helm wiring** (`charts/community-components`): new
+7. **Helm wiring** (`orchestrator/charts/community-components`): new
    `templates/tool-github.yaml` (a `Tool` CR, `identityProviders: [github]`
    when `githubTool.identityLink.enabled`, a static `GITHUB_TOKEN` secretEnv
    otherwise — same `if not identityLink.enabled` branching as
    `agent-opencode-swe.yaml`) and `templates/serviceaccount-github.yaml`
    (plain ServiceAccount, mirrors `serviceaccount-web-fetch.yaml`). No
-   changes needed to `charts/agent-controller` (the orchestrator/gateway
+   changes needed to `orchestrator/charts/agent-controller` (the orchestrator/gateway
    identity-link plumbing — `IDENTITY_LINK_GATEWAY_URL/TOKEN`,
    `GATEWAY_IDENTITY_LINK_TOKEN`, the orchestrator's `secrets: create/patch`
    RBAC — is already provider/CR-kind-agnostic and shared by any Agent or,

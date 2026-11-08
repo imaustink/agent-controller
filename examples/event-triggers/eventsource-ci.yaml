@@ -3,7 +3,7 @@
 # <secret>` in constant time -- the shape most CI notifiers can send.
 #
 #   kubectl create secret generic ci-event-source --from-literal=token=<random>
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventSource
 metadata:
   name: ci

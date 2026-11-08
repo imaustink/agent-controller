@@ -5,10 +5,10 @@ container is one ephemeral tool call: some input goes in, a stream of
 structured events comes out.
 
 The protocol is implemented **once**, as the shared
-[@controller-agent/messaging](../packages/messaging/) workspace package (`Sink`,
+[@aktis/messaging](../framework/messaging/) workspace package (`Sink`,
 `JobEmitter`, `StdoutSink`/`FileSink`/`CallbackSink`, `EventSchema`). Any tool
 depends on it rather than reimplementing the protocol; `recipe-scraper`
-([tools/recipe-scraper/src/messaging/index.ts](../tools/recipe-scraper/src/messaging/index.ts))
+([catalog/tools/recipe-scraper/src/messaging/index.ts](../catalog/tools/recipe-scraper/src/messaging/index.ts))
 is the reference example of the thin, tool-specific wiring layer on top (its
 own result type, `Stage`/`ErrorCode` vocabulary, and stronger secret-redacting
 `sanitize` function).
@@ -31,7 +31,7 @@ transport-agnostic **event stream**.
 ## Event protocol
 
 Every message is a small, self-describing JSON object validated by
-`EventSchema` ([packages/messaging/src/event.ts](../packages/messaging/src/event.ts)). A single job emits an ordered
+`EventSchema` ([framework/messaging/src/event.ts](../framework/messaging/src/event.ts)). A single job emits an ordered
 stream:
 
 ```
@@ -59,7 +59,7 @@ Event-specific payloads:
 At the library level, `stage`, `code`, and `result` are intentionally generic
 (plain strings / `unknown`) — each tool defines its own vocabulary and result
 shape and narrows them with TypeScript generics on `JobEmitter<TResult, TStage,
-TCode>`. `recipe-scraper`'s vocabulary, for example ([schema.ts](../tools/recipe-scraper/src/schema.ts)):
+TCode>`. `recipe-scraper`'s vocabulary, for example ([schema.ts](../catalog/tools/recipe-scraper/src/schema.ts)):
 
 - `stage ∈ classify|extract|transcribe|format`
 - `code ∈ usage|blocked_url|extraction|formatting|general` (mirrors its process
@@ -88,9 +88,43 @@ the same container code runs everywhere.
 | `events`           | `StdoutSink`   | NDJSON (one event per line)    | local dev with full stream        |
 | `file`             | `FileSink`     | NDJSON appended to a file      | mounted volume, durable, no broker|
 | `callback`         | `CallbackSink` | one HTTP POST per event        | async notification / serverless   |
+| `nats`             | `NatsSink`     | one NATS publish per event     | in-cluster, no shared HMAC secret |
+| (in-process)       | `MemorySink`   | none: events kept in memory    | tests, embedding a tool           |
 
-Planned: `BrokerSink` (NATS/JetStream or Redis Streams) for durable,
-replayable, at-least-once delivery with a cancel backchannel — see Roadmap.
+`NatsSink` loads the NATS client only when it first emits, so importing
+`@aktis/messaging` never loads it (ADR 0047). A tool on any other
+transport, or code that only needs the protocol schemas, doesn't carry it.
+
+Planned: a durable broker sink (JetStream or Redis Streams) for replayable,
+at-least-once delivery with a cancel backchannel — see Roadmap.
+
+## Running without infrastructure
+
+Both halves of the framework run with no broker and no cluster:
+
+- **A tool:** give its `JobEmitter` a `MemorySink`. Every event is still
+  JSON round-tripped and validated against the wire schema, so a stream that
+  works in memory works on the wire.
+- **An agent:** `startLocalAgent(handler, { goal, onAsk, tools })` from
+  `@aktis/agent-runtime` runs a handler to completion against an
+  in-process peer that plays the orchestrator's part. It acknowledges replies,
+  answers `session.ask()` through `onAsk`, and serves `session.callTool()` from
+  `tools`. For finer control, `createInProcessChannel()` returns the channel to
+  hand `runAgent` and a `peer` to drive it from.
+
+```ts
+import { startLocalAgent } from "@aktis/agent-runtime";
+
+const { outcome } = startLocalAgent(myAgent, {
+  goal: "Summarize the open issues",
+  onAsk: (question) => prompt(question),
+  tools: { "web-search": async (input) => search(JSON.parse(input).q) },
+});
+console.log(await outcome); // { status: "replied", message, result }
+```
+
+The same handler runs unchanged in a cluster, where `runAgent()` reads its
+config from the environment and talks NATS.
 
 ## HTTP callback security
 
@@ -109,7 +143,7 @@ constrained:
   retries are safe to dedupe.
 - Delivery retries with exponential backoff up to `RECIPE_CALLBACK_MAX_RETRIES`.
 
-Free-text `message` fields are redacted/clipped ([src/security/redact.ts](../tools/recipe-scraper/src/security/redact.ts))
+Free-text `message` fields are redacted/clipped ([src/security/redact.ts](../catalog/tools/recipe-scraper/src/security/redact.ts))
 since they may echo untrusted extracted content.
 
 ## Configuration

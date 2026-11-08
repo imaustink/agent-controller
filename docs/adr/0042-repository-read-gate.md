@@ -90,7 +90,7 @@ launches nothing.
   `AGENT_ENGINE=langgraph` that declares `github` gets ADR 0041's
   delegation, so reads still run as the caller, but there is no pre-launch
   check and no scoped write token. See
-  `engines/temporal/docs/langgraph-parity-audit.md`.
+  `orchestrator/engines/temporal/docs/langgraph-parity-audit.md`.
 - **Deployments opt in with values, not code:**
   - add `github` to `claudeCodeSweAgent.identityLink.providers`;
   - set `temporal-engine.github.apiUrl` if the tokens are not from

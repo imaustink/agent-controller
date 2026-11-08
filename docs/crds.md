@@ -1,15 +1,15 @@
 # Custom resource reference
 
 Every workload and every piece of catalog in this system is a Kubernetes custom
-resource in the group **`core.controller-agent.dev/v1alpha1`**. They are all
+resource in the group **`core.aktis.ai/v1alpha1`**. They are all
 **namespaced**. The CRD definitions ship in the `core-controller` chart's
 install-only `crds/` directory (generated from
-`controllers/core-controller/api/v1alpha1/*_types.go`), so installing that chart
+`orchestrator/controllers/core-controller/api/v1alpha1/*_types.go`), so installing that chart
 registers every kind below.
 
 Two kinds of actor reconcile them:
 
-- **The `core-controller` operator** (`controllers/core-controller`) watches most
+- **The `core-controller` operator** (`orchestrator/controllers/core-controller`) watches most
   kinds. Only `ToolRun` and `AgentRun` create Kubernetes Jobs; `Corpus` creates a
   sync CronJob and a cron `EventSource` a tick CronJob; every other controller only validates the spec and sets a `Ready`
   condition.
@@ -361,7 +361,7 @@ a cron source becomes a core-controller-owned `CronJob` that ticks
 - **Sample:** `config/samples/core_v1alpha1_eventsource.yaml`.
 
 ```yaml
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventSource
 metadata: { name: github }              # POST /webhooks/github
 spec:
@@ -378,7 +378,7 @@ spec:
     isBotFrom: body.sender.type == "Bot"
     repositoryFrom: body.repository.full_name
 ---
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventSource
 metadata: { name: nightly-sweep }
 spec:
@@ -407,7 +407,7 @@ fallback.
 - **Sample:** `config/samples/core_v1alpha1_eventtrigger.yaml`; the shipped examples are bare manifests in `examples/event-triggers/` (not part of any chart).
 
 ```yaml
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventTrigger
 metadata: { name: github-pr-review }
 spec:
@@ -456,9 +456,9 @@ orchestrator so this is cluster config, watched like the catalog kinds
 
 ## Adding or changing a CRD
 
-1. Edit the Go type in `controllers/core-controller/api/v1alpha1/<kind>_types.go`
+1. Edit the Go type in `orchestrator/controllers/core-controller/api/v1alpha1/<kind>_types.go`
    (the doc comments on each field are the source of truth for this reference).
-2. Run `make manifests generate` in `controllers/core-controller` — this
+2. Run `make manifests generate` in `orchestrator/controllers/core-controller` — this
    regenerates the CRD YAML, the deepcopy methods, and **syncs the CRD into the
    chart's `crds/`** automatically.
 3. The chart's hand-maintained RBAC (`charts/.../rbac.yaml` for each process that

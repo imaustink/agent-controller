@@ -102,7 +102,7 @@ done
 
 # ── 5. Nested Helm dependency (Helm doesn't recurse into file:// subcharts) ──
 step "Fetching agent-orchestrator's own subchart dependency (qdrant)..."
-helm dependency update "$REPO_ROOT/charts/agent-controller/charts/agent-orchestrator"
+helm dependency update "$REPO_ROOT/orchestrator/charts/agent-controller/charts/agent-orchestrator"
 
 # ── 6. CRDs ──────────────────────────────────────────────────────────────────
 step "Applying CRDs..."
@@ -111,15 +111,15 @@ step "Applying CRDs..."
 # the (separately-released) community-components chart's Tool/Skill/Agent CRs
 # depend on.
 # Source of truth is the controller's generated bases. This previously globbed
-# charts/agent-controller/charts/core-controller/crds/, which no longer exists
+# orchestrator/charts/agent-controller/charts/core-controller/crds/, which no longer exists
 # -- and because an unmatched glob expands to nothing, the loop silently
 # applied ZERO CRDs instead of failing. A cluster missing a newly-added CRD
 # then crashlooped agent-orchestrator with a bare `404 page not found`.
 shopt -s nullglob
-crds=("$REPO_ROOT"/controllers/core-controller/config/crd/bases/*.yaml)
+crds=("$REPO_ROOT"/orchestrator/controllers/core-controller/config/crd/bases/*.yaml)
 shopt -u nullglob
 if [[ ${#crds[@]} -eq 0 ]]; then
-  die "No CRDs found under controllers/core-controller/config/crd/bases -- refusing to deploy without them."
+  die "No CRDs found under orchestrator/controllers/core-controller/config/crd/bases -- refusing to deploy without them."
 fi
 for crd in "${crds[@]}"; do
   kubectl apply -f "$crd" --server-side --force-conflicts >/dev/null

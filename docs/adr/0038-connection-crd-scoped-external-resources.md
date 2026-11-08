@@ -51,7 +51,7 @@ Two further gaps made the current model a poor fit:
 - **Retrieval has no corpus.** The orchestrator does role-filtered vector
   retrieval over *catalog* collections only. The first draft therefore reached
   for Open WebUI's RAG, whose retrieved context arrives as a **system** message
-  that `splitMessages` (`engines/temporal/internal/gateway/server.go:410-441`)
+  that `splitMessages` (`orchestrator/engines/temporal/internal/gateway/server.go:410-441`)
   discards outright — attaching a knowledge base there and asking a question
   silently retrieves nothing.
 
@@ -66,7 +66,7 @@ Not "Confluence" — *this space*. Several Connections of the same provider are
 ordinary and expected.
 
 ```yaml
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: Connection
 metadata:
   name: globex-slack-eng

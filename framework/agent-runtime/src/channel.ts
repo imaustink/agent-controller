@@ -1,0 +1,82 @@
+import type { NatsConnection, Subscription } from "nats";
+import {
+  AgentDownMessageSchema,
+  NATS_RECONNECT_OPTIONS,
+  agentSubjects,
+  type AgentDownMessage,
+  type AgentUpMessage,
+} from "@aktis/messaging";
+import { AgentConfigError, type AgentRuntimeConfig } from "./config.js";
+
+/**
+ * Transport-agnostic two-way channel for one agent run. The runtime depends on
+ * this interface (not NATS directly): {@link NatsChannel} is the production
+ * implementation, and `createInProcessChannel` runs an agent with no broker at
+ * all.
+ */
+export interface AgentChannel {
+  /** Publish an up-message (agent -> orchestrator). */
+  publishUp(msg: AgentUpMessage): Promise<void>;
+  /** Register the handler invoked for each validated down-message (orchestrator -> agent). */
+  onDown(handler: (msg: AgentDownMessage) => void): void;
+  /** Flush outstanding publishes, then close the connection. */
+  close(): Promise<void>;
+}
+
+/**
+ * NATS-backed {@link AgentChannel}: publishes on the up subject, subscribes to
+ * the down subject. The `nats` module is loaded by {@link connect}, not when
+ * this package is imported, so an agent on another transport never loads it.
+ */
+export class NatsChannel implements AgentChannel {
+  private readonly encoder = new TextEncoder();
+  private readonly decoder = new TextDecoder();
+  private downHandler: ((msg: AgentDownMessage) => void) | undefined;
+
+  private constructor(
+    private readonly nc: NatsConnection,
+    private readonly upSubject: string,
+    sub: Subscription,
+  ) {
+    void this.consume(sub);
+  }
+
+  static async connect(config: AgentRuntimeConfig): Promise<NatsChannel> {
+    if (!config.natsUrl) {
+      throw new AgentConfigError("NatsChannel needs config.natsUrl (AGENT_NATS_URL)");
+    }
+    const { up, down } = agentSubjects(config.runId, config.subjectPrefix);
+    const { connect } = await import("nats");
+    const nc = await connect({ servers: config.natsUrl, ...NATS_RECONNECT_OPTIONS });
+    const sub = nc.subscribe(down);
+    return new NatsChannel(nc, up, sub);
+  }
+
+  publishUp(msg: AgentUpMessage): Promise<void> {
+    this.nc.publish(this.upSubject, this.encoder.encode(JSON.stringify(msg)));
+    return Promise.resolve();
+  }
+
+  onDown(handler: (msg: AgentDownMessage) => void): void {
+    this.downHandler = handler;
+  }
+
+  async close(): Promise<void> {
+    await this.nc.drain();
+  }
+
+  private async consume(sub: Subscription): Promise<void> {
+    for await (const m of sub) {
+      let decoded: unknown;
+      try {
+        decoded = JSON.parse(this.decoder.decode(m.data));
+      } catch {
+        continue; // ignore non-JSON garbage on the subject
+      }
+      const parsed = AgentDownMessageSchema.safeParse(decoded);
+      // Drop messages that don't match the protocol rather than crashing the
+      // agent loop on a malformed control message.
+      if (parsed.success) this.downHandler?.(parsed.data);
+    }
+  }
+}

@@ -17,7 +17,7 @@ document; where code and this document disagree, one of them is a bug.
  orchestrator (LangGraph or Temporal): match EventTriggers (CEL) ─► params ─► target
 ```
 
-## 1. CRDs (`core.controller-agent.dev/v1alpha1`, namespaced)
+## 1. CRDs (`core.aktis.ai/v1alpha1`, namespaced)
 
 Both kinds live in the release namespace (the one agent-orchestrator,
 integration-gateway and the Temporal gateway watch).
@@ -27,7 +27,7 @@ integration-gateway and the Temporal gateway watch).
 How events arrive and how far they are trusted. Exactly one of `webhook` / `cron`.
 
 ```yaml
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventSource
 metadata: { name: github }          # the name IS the route: POST /webhooks/github
 spec:
@@ -75,7 +75,7 @@ Rules:
 What a matching event dispatches.
 
 ```yaml
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventTrigger
 metadata: { name: github-pr-review }
 spec:
@@ -149,7 +149,7 @@ Every source produces exactly this JSON object. It is both the `event` field of
 ## 3. CEL
 
 One environment, used identically by core-controller (compile-only), the TS
-orchestrator + gateway (`@controller-agent/event-triggers`, `@marcbachmann/cel-js`)
+orchestrator + gateway (`@aktis/event-triggers`, `@marcbachmann/cel-js`)
 and the Temporal gateway (`cel-go`):
 
 - Variables: `source`, `kind`, `id`, `time`, `repository` (string), `headers`
@@ -172,7 +172,7 @@ and the Temporal gateway (`cel-go`):
   value must be JSON-representable (null/bool/int/double/string/list/map, finite
   doubles) — anything else is a `params` error. A `params` evaluation error after a
   match fails the event (`422`, §5) — never a silent empty value.
-- The shared fixture file `packages/event-triggers/fixtures/cel-parity.json` is the
+- The shared fixture file `orchestrator/packages/event-triggers/fixtures/cel-parity.json` is the
   executable definition of this section: every case runs in the TS package's
   tests and in the Temporal engine's Go tests, and both must produce the listed
   verdict / value.
@@ -242,7 +242,7 @@ trigger turn instead of sending it unsigned.
 | `AgentRun.spec.params` (map<string,string>) | `AGENT_PARAMS=<json object>` |
 | `ToolRun.spec.readOnly` | `TOOL_READ_ONLY=true` |
 
-`@controller-agent/agent-runtime` exposes them as `session.readOnly` /
+`@aktis/agent-runtime` exposes them as `session.readOnly` /
 `session.params`. The SWE agents enforce read-only (deny `git push`, `gh pr
 create|merge|close|reopen|ready|edit`, mint a `contents:read` token) from
 `session.readOnly` alone.

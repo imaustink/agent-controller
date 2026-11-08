@@ -7,7 +7,7 @@ import { fetchThrough, openPortForward, withPortForward, type PortForward } from
  * This exists because caller-supplied tools (docs/adr/0035) make a claim that
  * is invisible to every unit test: a consumer's ephemeral function definitions
  * are indexed into their OWN collection and the tool/skill/agent catalogs are
- * never touched. `apps/agent-orchestrator`'s tests mock the Qdrant client
+ * never touched. `orchestrator/apps/agent-orchestrator`'s tests mock the Qdrant client
  * outright, so they can only prove which method the code MEANT to call — not
  * which collection ended up with points in it, and not that Qdrant accepted the
  * filter DSL at all. Both are exactly the kind of cross-component wiring this

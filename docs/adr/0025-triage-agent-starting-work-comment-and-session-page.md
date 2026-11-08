@@ -14,12 +14,12 @@ Issue #81 ("Issues Triage Agent Improvements") asked for two things on the
 2. Once a session is running, drop a link to an interactive page where the
    session's output can be watched and additional prompts sent.
 
-Before this, `GatewayServer.relayAndReply` (`apps/integration-gateway/src/
+Before this, `GatewayServer.relayAndReply` (`orchestrator/apps/integration-gateway/src/
 server.ts`) only ever posted one comment, after `OrchestratorClient.invoke`'s
 full accept-then-poll cycle completed (up to `GATEWAY_POLL_TIMEOUT_MS`, 15
 minutes by default) — nothing was posted at trigger time, and there was no
 interactive surface: the only existing chat-capable UI is the optional Open
-WebUI deployment (`charts/agent-controller`'s `openwebui` dependency) in
+WebUI deployment (`orchestrator/charts/agent-controller`'s `openwebui` dependency) in
 front of `agent-orchestrator`'s OpenAI-compatible facade (ADR 0007/0012), but
 its `X-OpenWebUI-Chat-Id` is a chat id *it* generates, not one this gateway
 can mint or deep-link into for a specific GitHub-issue session.

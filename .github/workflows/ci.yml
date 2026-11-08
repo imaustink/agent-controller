@@ -27,6 +27,104 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  boundaries:
+    name: Import boundaries (framework / catalog / orchestrator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      # ADR 0047 splits the repo into a framework that depends on nothing, a
+      # catalog and an orchestrator that may each depend only on the
+      # framework. Being in one repo makes it trivially easy to reach across
+      # that line, and nothing else would notice until someone tried to adopt
+      # one half without the other. No `npm ci`: the checker is
+      # dependency-free and reads source, package.json, go.mod and
+      # Dockerfiles directly.
+      #
+      # Its own suite runs first, because the suite is what proves each rule
+      # can actually fail. A boundary check that passes because it stopped
+      # looking would otherwise look exactly like a clean repo.
+      - name: Checker self-test
+        run: npm run test:scripts
+
+      - name: Check boundaries
+        run: npm run check:boundaries
+
+  protocol:
+    name: Protocol (buf lint, breaking, codegen drift, Go conformance)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: framework/protocol
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      # Go is needed twice over: protoc-gen-go runs via `go run` during
+      # generation, and the generated Go module has its own conformance test.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: framework/protocol/go/go.mod
+          cache-dependency-path: framework/protocol/go/go.sum
+
+      - run: npm ci
+        working-directory: .
+
+      - name: buf lint
+        run: npx buf lint
+
+      # The .proto files are a published contract (ADR 0047): other languages
+      # and other people's orchestrators build against them, so a change that
+      # breaks the JSON wire must fail here rather than in someone else's
+      # deployment. Compared with WIRE_JSON rules (buf.yaml) against the PR's
+      # base branch; skipped only while the base branch has no contract yet.
+      - name: buf breaking (vs base branch)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF:$BASE_REF"
+          if git cat-file -e "$BASE_REF:framework/protocol/buf.yaml" 2>/dev/null; then
+            npx buf breaking --against "../../.git#branch=$BASE_REF,subdir=framework/protocol"
+          else
+            echo "::notice::$BASE_REF has no framework/protocol yet; nothing to compare against."
+          fi
+
+      # Generated code is committed (ADR 0047), so a .proto edit without a
+      # regeneration -- or a hand edit to generated output -- would ship a
+      # contract the bindings don't implement. Regenerate and require no diff,
+      # untracked files included.
+      - name: Generated code is up to date
+        run: |
+          npm run generate
+          if [ -n "$(git status --porcelain -- .)" ]; then
+            echo "::error::Generated code is stale. Run 'npm run generate -w @aktis/protocol' and commit the result."
+            git status --porcelain -- .
+            git diff -- . | head -100
+            exit 1
+          fi
+
+      # The TypeScript and zod legs of the conformance suite run in the `node`
+      # job with every other workspace's tests; this is the Go leg.
+      - name: Go (gofmt, vet, conformance)
+        working-directory: framework/protocol/go
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-clean; run 'gofmt -w .':"
+            echo "$unformatted"
+            exit 1
+          fi
+          go vet ./...
+          go test ./...
+
   node:
     name: Node (build, typecheck, test)
     runs-on: ubuntu-latest
@@ -67,8 +165,8 @@ jobs:
         # go.sum). The controller is a heavier kubebuilder project handled in
         # its own job below.
         module:
-          - sidecars/localtool-executor
-          - tools-local/http-get-go
+          - orchestrator/sidecars/localtool-executor
+          - catalog/tools-local/http-get-go
     defaults:
       run:
         working-directory: ${{ matrix.module }}
@@ -107,7 +205,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: engines/temporal
+        working-directory: orchestrator/engines/temporal
     steps:
       - uses: actions/checkout@v5
 
@@ -116,8 +214,8 @@ jobs:
       # setup-go's cache, while this module has a go.sum worth caching.
       - uses: actions/setup-go@v6
         with:
-          go-version-file: engines/temporal/go.mod
-          cache-dependency-path: engines/temporal/go.sum
+          go-version-file: orchestrator/engines/temporal/go.mod
+          cache-dependency-path: orchestrator/engines/temporal/go.sum
 
       - name: gofmt
         run: |
@@ -142,7 +240,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: charts/agent-controller/charts/temporal-engine
+        working-directory: orchestrator/charts/agent-controller/charts/temporal-engine
     steps:
       - uses: actions/checkout@v5
 
@@ -246,14 +344,14 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: controllers/core-controller
+        working-directory: orchestrator/controllers/core-controller
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: controllers/core-controller/go.mod
-          cache-dependency-path: controllers/core-controller/go.sum
+          go-version-file: orchestrator/controllers/core-controller/go.mod
+          cache-dependency-path: orchestrator/controllers/core-controller/go.sum
 
       # Reuse the project's own Makefile targets so CI runs exactly what a
       # developer runs locally, rather than a second, drifting definition of

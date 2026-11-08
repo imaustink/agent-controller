@@ -7,7 +7,7 @@
 # where the SWE agents deny `git push` / `gh pr create|merge|...` and mint a
 # contents:read token. Nothing in the prompt has to survive for it to hold, and
 # nothing in the event body can lift it.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventTrigger
 metadata:
   name: github-issue-review

@@ -22,7 +22,7 @@ const OWNER = "e2e-org";
 const REPO = "e2e-repo";
 
 /**
- * Must match `STUB_REPLY_MARKER` in apps/stub-agent/src/reply.ts.
+ * Must match `STUB_REPLY_MARKER` in catalog/agents/stub-agent/src/reply.ts.
  *
  * Matched on instead of prose: the assertion has to distinguish "the stub
  * replied and the gateway relayed it" from "some comment appeared", and keying
@@ -36,7 +36,7 @@ const STUB_REPLY_MARKER = "stub-agent-reply";
  * This spec was skipped for one reason: a real `claude-code-swe-agent` run needs
  * a paid Anthropic credential, so in a hermetic cluster the AgentRun never
  * reached a terminal phase and nothing past the launch could be asserted.
- * `stub-agent` (apps/stub-agent) removes that blocker -- it speaks the real NATS
+ * `stub-agent` (catalog/agents/stub-agent) removes that blocker -- it speaks the real NATS
  * agent protocol and returns a canned reply -- so everything between the webhook
  * and the issue comment is now exercised for real:
  *

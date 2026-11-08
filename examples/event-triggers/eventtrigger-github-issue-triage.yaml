@@ -11,7 +11,7 @@
 #
 # Whichever Agent agentRef names must be enabled in the same values file, or
 # this trigger is Ready=False and dispatches nothing.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventTrigger
 metadata:
   name: github-issue-triage

@@ -91,8 +91,8 @@ gated by it.
 ### 2. `mcpExec` is the fifth dispatch kind, in both engines
 
 Add `mcpExec = { serverRef, remoteToolName, inputSchema }` to the descriptor
-union — the Go `ToolDescriptor` (`engines/temporal/internal/catalog`) and the
-TypeScript one (`apps/agent-orchestrator/src/tool-descriptor.ts`) — and a branch
+union — the Go `ToolDescriptor` (`orchestrator/engines/temporal/internal/catalog`) and the
+TypeScript one (`orchestrator/apps/agent-orchestrator/src/tool-descriptor.ts`) — and a branch
 in each dispatcher (`agentloop.go`'s `runToolWithContinuation`, `dispatch-tool.ts`'s
 `dispatchResolvedTool`) that relays the call to the broker over the same envelope
 `localExec` uses. Both engines land this together rather than one leading: the

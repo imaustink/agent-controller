@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { OpenWebUiForwardedUserResolver } from "../../apps/agent-orchestrator/src/rbac/openwebui-forwarded-user-resolver.js";
-import { chatCompletionChunk, toolCallDeltaChunk } from "../../apps/agent-orchestrator/src/openai/chat-completions.js";
+import { OpenWebUiForwardedUserResolver } from "../../orchestrator/apps/agent-orchestrator/src/rbac/openwebui-forwarded-user-resolver.js";
+import { chatCompletionChunk, toolCallDeltaChunk } from "../../orchestrator/apps/agent-orchestrator/src/openai/chat-completions.js";
 import {
   assembleSseContent,
   assembleSseToolCalls,

@@ -1,0 +1,361 @@
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"strconv"
+	"time"
+
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
+
+	"k8s.io/client-go/dynamic"
+
+	"github.com/aktisai/orchestrator/engines/temporal/internal/agentrun"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/authz"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/identitylink"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/kubeconfig"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/llm"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/localtool"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/activities"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/workflows"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/toolrun"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/vectorstore"
+)
+
+func main() {
+	cfg := temporal.ConfigFromEnv()
+
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		log.Fatal("OPENAI_API_KEY is required")
+	}
+	llmClient := llm.New(
+		getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+		apiKey,
+		getenv("OPENAI_MODEL", "gpt-4o-2024-08-06"),
+	)
+
+	c, err := temporal.NewClient(cfg)
+	if err != nil {
+		log.Fatalf("dial temporal at %s: %v", cfg.Address, err)
+	}
+	defer c.Close()
+
+	// Same env var name and meaning as agent-orchestrator's own
+	// AGENT_IDLE_TIMEOUT_SECONDS (config.ts): bounds silence from a bridged
+	// pod agent, not turn duration. Set once here, before the worker starts
+	// polling for tasks — see workflows.BridgedIdleTimeout's own doc comment
+	// for why that ordering is what keeps this deterministic.
+	if raw := os.Getenv("AGENT_IDLE_TIMEOUT_SECONDS"); raw != "" {
+		seconds, err := strconv.Atoi(raw)
+		if err != nil || seconds <= 0 {
+			log.Fatalf("AGENT_IDLE_TIMEOUT_SECONDS must be a positive integer, got %q", raw)
+		}
+		workflows.BridgedIdleTimeout = time.Duration(seconds) * time.Second
+	}
+
+	w := worker.New(c, cfg.TaskQueue, worker.Options{})
+	w.RegisterWorkflowWithOptions(workflows.ConversationWorkflow, workflow.RegisterOptions{
+		Name: workflows.ConversationWorkflowName,
+	})
+	w.RegisterWorkflowWithOptions(workflows.ToolRunWorkflow, workflow.RegisterOptions{
+		Name: workflows.ToolRunWorkflowName,
+	})
+	w.RegisterWorkflowWithOptions(workflows.AgentWorkflow, workflow.RegisterOptions{
+		Name: workflows.AgentWorkflowName,
+	})
+	w.RegisterWorkflowWithOptions(workflows.PodAgentWorkflow, workflow.RegisterOptions{
+		Name: workflows.PodAgentWorkflowName,
+	})
+	w.RegisterWorkflowWithOptions(workflows.BridgedAgentWorkflow, workflow.RegisterOptions{
+		Name: workflows.BridgedAgentWorkflowName,
+	})
+	w.RegisterActivityWithOptions((&activities.LLMActivities{Client: llmClient}).CompleteTurn, activity.RegisterOptions{
+		Name: activities.CompleteTurnActivityName,
+	})
+
+	agentLoop := &activities.AgentLoopActivities{
+		LLM: llmClient,
+		// Resolves a repository a chat request names without its owner, for a
+		// deployment that belongs to one organization. Unset, such a request
+		// is asked which repository it meant.
+		DefaultGitHubOwner: os.Getenv("AGENT_DEFAULT_GITHUB_OWNER"),
+	}
+	w.RegisterActivityWithOptions(agentLoop.CheckNeedsCapability, activity.RegisterOptions{Name: activities.CheckNeedsCapabilityActivityName})
+	w.RegisterActivityWithOptions(agentLoop.CheckSkillFit, activity.RegisterOptions{Name: activities.CheckSkillFitActivityName})
+	w.RegisterActivityWithOptions(agentLoop.CheckToolFit, activity.RegisterOptions{Name: activities.CheckToolFitActivityName})
+	w.RegisterActivityWithOptions(agentLoop.SelectSkill, activity.RegisterOptions{Name: activities.SelectSkillActivityName})
+	w.RegisterActivityWithOptions(agentLoop.PlanAction, activity.RegisterOptions{Name: activities.PlanActionActivityName})
+	w.RegisterActivityWithOptions(agentLoop.ComposeResponse, activity.RegisterOptions{Name: activities.ComposeResponseActivityName})
+	w.RegisterActivityWithOptions(agentLoop.SelectDelegate, activity.RegisterOptions{Name: activities.SelectDelegateActivityName})
+	w.RegisterActivityWithOptions(agentLoop.ExtractTargetRepository, activity.RegisterOptions{Name: activities.ExtractTargetRepositoryActivityName})
+	w.RegisterActivityWithOptions(agentLoop.PlanAgentAction, activity.RegisterOptions{Name: activities.PlanAgentActionActivityName})
+
+	// Authorization pre-flight. The real credential store lives in
+	// agent-controller's integration-gateway; without a URL for it we fall
+	// back to the in-memory fake, which is dev-only and says so.
+	var links identitylink.Port
+	if baseURL := os.Getenv("IDENTITY_LINK_GATEWAY_URL"); baseURL != "" {
+		links = identitylink.New(identitylink.Options{
+			BaseURL: baseURL,
+			Token:   os.Getenv("IDENTITY_LINK_GATEWAY_TOKEN"),
+		})
+		log.Printf("identity-link gateway: %s", baseURL)
+	} else {
+		fake, err := identitylink.NewFake(os.Getenv("IDENTITY_LINKS"), os.Getenv("IDENTITY_LINK_URLS"))
+		if err != nil {
+			log.Fatalf("build fake identity link store: %v", err)
+		}
+		links = fake
+		log.Printf("IDENTITY_LINK_GATEWAY_URL not set; using the in-memory identity-link fake (dev only)")
+	}
+
+	// The Secret writer is what keeps a credential out of Temporal's event
+	// history: the pre-flight writes values here and returns only a name.
+	var secretWriter authz.SecretWriter
+	if kubeCfg, err := kubeconfig.Load(); err == nil {
+		if dynamicClient, err := dynamic.NewForConfig(kubeCfg); err == nil {
+			secretWriter = authz.NewK8sSecretWriter(dynamicClient, getenv("CATALOG_NAMESPACE", "controller-agent"))
+		} else {
+			log.Printf("no dynamic client for credential secrets: %v", err)
+		}
+	} else {
+		log.Printf("no kube config for credential secrets: %v", err)
+	}
+
+	authorize := &activities.AuthorizeActivities{Service: authz.New(authz.Deps{
+		Links:  links,
+		Secret: secretWriter,
+		// One bounded hop. The workflow's own durable wait is what spans a
+		// human's attention; this only lets the gateway short-circuit it when
+		// the link lands immediately.
+		WaitForLink: 30 * time.Second,
+		// The read gate for agents that declare github: checked against the
+		// caller's own token, so it must reach the same GitHub the tokens were
+		// issued by (fake-github in e2e).
+		Repos: authz.GitHubRepoReader{APIURL: getenv("GITHUB_API_URL", "https://api.github.com")},
+		// integration-gateway's Connections page (agent-controller ADR 0046):
+		// chat link prompts become one page link. Same variable, and value, as
+		// agent-orchestrator's.
+		ConnectionsURL: os.Getenv("AGENT_CONNECTIONS_URL"),
+	})}
+	w.RegisterActivityWithOptions(authorize.Authorize, activity.RegisterOptions{Name: activities.AuthorizeActivityName})
+	w.RegisterActivityWithOptions(authorize.ResolveLinked, activity.RegisterOptions{Name: activities.ResolveLinkedActivityName})
+	w.RegisterActivityWithOptions(authorize.ResolveToolCredentials, activity.RegisterOptions{Name: activities.ResolveToolCredentialsActivityName})
+
+	// Retrieval activities need Qdrant; without it the worker still serves
+	// plain conversations (hello-world mode).
+	if qdrantHost := os.Getenv("QDRANT_HOST"); qdrantHost != "" {
+		qdrantPort, err := strconv.Atoi(getenv("QDRANT_PORT", "6334"))
+		if err != nil {
+			log.Fatalf("invalid QDRANT_PORT: %v", err)
+		}
+		embedder := llm.NewEmbedder(
+			getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+			apiKey,
+			getenv("OPENAI_EMBED_MODEL", llm.DefaultEmbedModel),
+		)
+		qdrantClient, collections, err := vectorstore.OpenCollections(context.Background(), qdrantHost, qdrantPort, embedder, llm.DefaultEmbedDims, os.Getenv("QDRANT_COLLECTION_PREFIX"))
+		if err != nil {
+			log.Fatalf("open qdrant collections: %v", err)
+		}
+		defer qdrantClient.Close()
+
+		retrieval := &activities.RetrievalActivities{Collections: collections}
+		w.RegisterActivityWithOptions(retrieval.RetrieveSkills, activity.RegisterOptions{Name: activities.RetrieveSkillsActivityName})
+		w.RegisterActivityWithOptions(retrieval.RetrieveAgents, activity.RegisterOptions{Name: activities.RetrieveAgentsActivityName})
+		w.RegisterActivityWithOptions(retrieval.RetrieveTools, activity.RegisterOptions{Name: activities.RetrieveToolsActivityName})
+		w.RegisterActivityWithOptions(retrieval.ResolveSkillTools, activity.RegisterOptions{Name: activities.ResolveSkillToolsActivityName})
+		w.RegisterActivityWithOptions(retrieval.ResolveAgent, activity.RegisterOptions{Name: activities.ResolveAgentActivityName})
+		w.RegisterActivityWithOptions(retrieval.ResolveTool, activity.RegisterOptions{Name: activities.ResolveToolActivityName})
+		w.RegisterActivityWithOptions(retrieval.ResolveAgentTools, activity.RegisterOptions{Name: activities.ResolveAgentToolsActivityName})
+		// Knowledge bases (ADR 0039, 0040, 0043). Registered here because they
+		// need the same Qdrant client: a corpus is a per-Corpus collection
+		// alongside the catalog ones.
+		//
+		// These were previously dispatched by the workflow and registered by
+		// nobody, which is a failure mode worth naming: the planner could pick
+		// a knowledge-base tool and the turn died on "activity not registered",
+		// AFTER the model had committed to an approach. A tool in the catalog
+		// with no runnable activity behind it is worse than a missing one.
+		if brokerURL := os.Getenv("CONNECTION_BROKER_URL"); brokerURL != "" {
+			kb := &activities.KnowledgeBaseActivities{
+				Corpora:        vectorstore.NewCorpora(qdrantClient, embedder, llm.DefaultEmbedDims),
+				Credentials:    &activities.LinkedCredentials{Links: links},
+				BrokerURL:      brokerURL,
+				BrokerToken:    os.Getenv("CONNECTION_BROKER_TOKEN"),
+				IdentityLinks:  links,
+				ConnectionsURL: os.Getenv("AGENT_CONNECTIONS_URL"),
+			}
+			w.RegisterActivityWithOptions(kb.SearchKnowledgeBase,
+				activity.RegisterOptions{Name: activities.SearchKnowledgeBaseActivityName})
+			w.RegisterActivityWithOptions(kb.ReadCorpus,
+				activity.RegisterOptions{Name: activities.ReadCorpusActivityName})
+			w.RegisterActivityWithOptions(kb.LookupCorpus,
+				activity.RegisterOptions{Name: activities.LookupCorpusActivityName})
+			w.RegisterActivityWithOptions(kb.QueryCorpus,
+				activity.RegisterOptions{Name: activities.QueryCorpusActivityName})
+			log.Printf("knowledge-base activities enabled: broker=%s", brokerURL)
+		} else {
+			// Not an error: a deployment may index nothing. But it is worth
+			// saying, because the symptom otherwise is a knowledge base that
+			// indexes fine and cannot be asked anything.
+			log.Printf("CONNECTION_BROKER_URL not set; knowledge-base activities disabled")
+		}
+
+		// MCP tools (ADR 0045) are dispatched by proxying to the mcp-broker.
+		// Registered beside knowledge bases and gated the same way: a deployment
+		// without the broker set must not have indexed MCP tools the planner could
+		// select and then fail to dispatch. The broker holds the MCP session; this
+		// activity resolves the caller's delegated token and relays one call.
+		if mcpBrokerURL := os.Getenv("MCP_BROKER_URL"); mcpBrokerURL != "" {
+			mcp := &activities.MCPActivities{
+				Credentials: &activities.LinkedCredentials{Links: links},
+				BrokerURL:   mcpBrokerURL,
+				BrokerToken: os.Getenv("MCP_BROKER_TOKEN"),
+			}
+			w.RegisterActivityWithOptions(mcp.RunMCPTool,
+				activity.RegisterOptions{Name: activities.RunMCPToolActivityName})
+			log.Printf("mcp activities enabled: broker=%s", mcpBrokerURL)
+		} else {
+			log.Printf("MCP_BROKER_URL not set; mcp activities disabled")
+		}
+
+		log.Printf("retrieval activities enabled: qdrant=%s:%d", qdrantHost, qdrantPort)
+	} else {
+		log.Printf("QDRANT_HOST not set; retrieval activities disabled")
+	}
+
+	// Bridged pod agents (D2): an unmodified upstream AgentRun driven over the
+	// existing NATS protocol, with this workflow holding the durable half.
+	// Optional — without NATS, only the declarative loop and checkpoint-resume
+	// step tools are available.
+	if natsURL := os.Getenv("AGENT_NATS_URL"); natsURL != "" {
+		conn, closeConn, err := agentrun.Dial(natsURL)
+		if err != nil {
+			log.Fatalf("connect to nats: %v", err)
+		}
+		defer closeConn()
+
+		kubeCfg, err := kubeconfig.Load()
+		if err != nil {
+			log.Fatalf("load kube config for AgentRun launches: %v", err)
+		}
+		dynamicClient, err := dynamic.NewForConfig(kubeCfg)
+		if err != nil {
+			log.Fatalf("build dynamic client for AgentRun launches: %v", err)
+		}
+		callbackBaseURL := os.Getenv("CALLBACK_BASE_URL")
+		if callbackBaseURL == "" {
+			log.Fatal("CALLBACK_BASE_URL is required when AGENT_NATS_URL is set (the AgentRun CRD requires a callback)")
+		}
+
+		agentRuns := &activities.AgentRunActivities{
+			Launcher: agentrun.NewK8sLauncher(
+				dynamicClient,
+				getenv("TOOLRUN_NAMESPACE", "controller-agent"),
+				toolrun.SecretRef{
+					Name: getenv("CALLBACK_SECRET_NAME", "durable-agents-callback"),
+					Key:  getenv("CALLBACK_SECRET_KEY", "AGENT_CALLBACK_SECRET"),
+				},
+			),
+			Bridge:          agentrun.NewBridge(conn, c, os.Getenv("AGENT_NATS_SUBJECT_PREFIX")),
+			CallbackBaseURL: callbackBaseURL,
+		}
+		w.RegisterActivityWithOptions(agentRuns.LaunchAgentRun, activity.RegisterOptions{Name: activities.LaunchAgentRunActivityName})
+		w.RegisterActivityWithOptions(agentRuns.GetAgentRunPhase, activity.RegisterOptions{Name: activities.GetAgentRunPhaseActivityName})
+		w.RegisterActivityWithOptions(agentRuns.SendAgentDown, activity.RegisterOptions{Name: activities.SendAgentDownActivityName})
+		w.RegisterActivityWithOptions(agentRuns.DetachAgentRun, activity.RegisterOptions{Name: activities.DetachAgentRunActivityName})
+		log.Printf("bridged pod agents enabled: nats=%s", natsURL)
+	} else {
+		log.Printf("AGENT_NATS_URL not set; bridged pod agents disabled")
+	}
+
+	// Tool execution: TOOLRUN_MODE=k8s creates real ToolRun CRs;
+	// TOOLRUN_MODE=fake logs launches for cluster-less dev (play the tool by
+	// posting signed callbacks yourself); unset disables tool activities.
+	switch mode := os.Getenv("TOOLRUN_MODE"); mode {
+	case "":
+		log.Printf("TOOLRUN_MODE not set; tool execution disabled")
+	case "k8s", "fake":
+		callbackBaseURL := os.Getenv("CALLBACK_BASE_URL")
+		if callbackBaseURL == "" {
+			log.Fatal("CALLBACK_BASE_URL is required when TOOLRUN_MODE is set")
+		}
+		var launcher toolrun.Launcher
+		if mode == "k8s" {
+			kubeCfg, err := kubeconfig.Load()
+			if err != nil {
+				log.Fatalf("load kube config: %v", err)
+			}
+			dynamicClient, err := dynamic.NewForConfig(kubeCfg)
+			if err != nil {
+				log.Fatalf("build dynamic client: %v", err)
+			}
+			launcher = toolrun.NewK8sLauncher(
+				dynamicClient,
+				getenv("TOOLRUN_NAMESPACE", "controller-agent"),
+				toolrun.SecretRef{
+					Name: getenv("CALLBACK_SECRET_NAME", "durable-agents-callback"),
+					Key:  getenv("CALLBACK_SECRET_KEY", "AGENT_CALLBACK_SECRET"),
+				},
+			)
+		} else {
+			launcher = toolrun.NewFakeLauncher()
+		}
+		toolRunActivities := &activities.ToolRunActivities{Launcher: launcher, CallbackBaseURL: callbackBaseURL}
+		w.RegisterActivityWithOptions(toolRunActivities.LaunchToolRun, activity.RegisterOptions{Name: activities.LaunchToolRunActivityName})
+		w.RegisterActivityWithOptions(toolRunActivities.GetToolRunPhase, activity.RegisterOptions{Name: activities.GetToolRunPhaseActivityName})
+		log.Printf("tool execution enabled: mode=%s callbacks=%s", mode, callbackBaseURL)
+	default:
+		log.Fatalf("unknown TOOLRUN_MODE %q (want k8s, fake, or unset)", mode)
+	}
+
+	// LocalTool execution (ADR 0014): opt-in, defaulting to disabled — only
+	// set LOCALTOOL_SOCKET_DIR when this pod actually has the per-language
+	// executor sidecars mounted on a shared emptyDir.
+	if socketDir := os.Getenv("LOCALTOOL_SOCKET_DIR"); socketDir != "" {
+		kubeCfg, err := kubeconfig.Load()
+		if err != nil {
+			log.Fatalf("load kube config: %v", err)
+		}
+		dynamicClient, err := dynamic.NewForConfig(kubeCfg)
+		if err != nil {
+			log.Fatalf("build dynamic client: %v", err)
+		}
+		defaultTimeoutSeconds := int32(30)
+		if raw := os.Getenv("LOCALTOOL_DEFAULT_TIMEOUT_SECONDS"); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil {
+				defaultTimeoutSeconds = int32(n)
+			}
+		}
+		executor := localtool.NewExecutor(localtool.Options{
+			SocketDir:             socketDir,
+			DefaultTimeoutSeconds: defaultTimeoutSeconds,
+			SecretReader: &localtool.K8sSecretReader{
+				Client:    dynamicClient,
+				Namespace: getenv("CATALOG_NAMESPACE", "controller-agent"),
+			},
+		})
+		localToolActivities := &activities.LocalToolActivities{Executor: executor}
+		w.RegisterActivityWithOptions(localToolActivities.RunLocalTool, activity.RegisterOptions{Name: activities.RunLocalToolActivityName})
+		log.Printf("local tool execution enabled: socketDir=%s", socketDir)
+	}
+
+	log.Printf("worker starting: temporal=%s namespace=%s taskQueue=%s model=%s",
+		cfg.Address, cfg.Namespace, cfg.TaskQueue, llmClient.Model())
+	if err := w.Run(worker.InterruptCh()); err != nil {
+		log.Fatalf("worker exited: %v", err)
+	}
+}
+
+func getenv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}

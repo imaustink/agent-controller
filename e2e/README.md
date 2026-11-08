@@ -33,7 +33,7 @@ Third-party services are stubbed; nothing else is.
 | Inbound events (GitHub, Slack, a CI notifier, any HMAC sender) | Signed locally by `support/webhook.ts` | Every verification scheme is real -- `hmacSha256`, `slackV0`, `bearer`, the tick's ServiceAccount token -- with the same construction the third party uses and the Secret the deployed EventSource names; only the sender is us. |
 | Whatever a `reply.http` posts to | `fake-sink` in-cluster recorder (`manifests/fake-sink.yaml`) | Records the raw body + headers so a spec recomputes `x-event-signature` over the exact bytes sent. Pointed at via the triggers' literal `reply.http.url`, patched in by `e2e/manifests/event-triggers` -- no product code knows it exists. |
 | A public web page (web-fetch's target) | Real `https://example.com/`, skippable with `E2E_NO_EGRESS=1` | web-fetch's SSRF guard refuses every cluster-internal address by design, so "the reply carries the fetched page" has no hermetic version. The hermetic half asserts the guard REFUSES fake-sink's page. |
-| Anthropic / Claude Code CLI | `stub-agent` image (`apps/stub-agent`) | A real agent run needs a real paid credential and makes the test slow and nondeterministic — and in a cluster holding no credential it never reaches a terminal phase at all, which is why the happy-path spec was once skipped. The stub speaks the **real** NATS agent protocol and declares the **same** `identityProviders` as the agent it stands in for, so everything between the webhook and the reply — routing, RBAC, the identity gate (including its refusal to launch), AgentRun creation, secret injection, the callback — is exercised for real. |
+| Anthropic / Claude Code CLI | `stub-agent` image (`orchestrator/apps/stub-agent`) | A real agent run needs a real paid credential and makes the test slow and nondeterministic — and in a cluster holding no credential it never reaches a terminal phase at all, which is why the happy-path spec was once skipped. The stub speaks the **real** NATS agent protocol and declares the **same** `identityProviders` as the agent it stands in for, so everything between the webhook and the reply — routing, RBAC, the identity gate (including its refusal to launch), AgentRun creation, secret injection, the callback — is exercised for real. |
 | OpenAI (planner/selector) | Real, against the dev key | Routing decisions are part of what we're testing. Tests assert on deterministic `EventTrigger` dispatch (a forced `agentRef`/`skillRef`/`toolRef`) rather than on RAG retrieval, so model nondeterminism doesn't make them flaky. |
 
 The line is: **stub what we don't own and can't make deterministic; run
@@ -184,7 +184,7 @@ written against it, not against either implementation.
 `examples/event-triggers` (sources `github`, `slack`, `ci`, `generic-hmac`, and
 `nightly-sweep` SUSPENDED, plus every trigger) through the `e2e/manifests/event-triggers`
 kustomize overlay, retargeted for a hermetic cluster: the GitHub triggers at the stubs (so the
-`readOnly=<bool> params=<json>` line `apps/stub-agent` prints is observable),
+`readOnly=<bool> params=<json>` line `catalog/agents/stub-agent` prints is observable),
 `ci-failure-skill` at a fixture Skill, and `reply.http` of the ci and
 generic-hmac triggers at fake-sink with a signing secret. The Slack example has
 no `reply` (no Slack reply adapter exists), so its reply.http path is covered
@@ -231,7 +231,7 @@ vitest suites -- the cluster can only show the flag arrives.
 
 ### `caller-tools.e2e.ts` is the only thing that validates the Qdrant filter DSL
 
-`apps/agent-orchestrator`'s unit tests mock the Qdrant client outright, which
+`orchestrator/apps/agent-orchestrator`'s unit tests mock the Qdrant client outright, which
 means they prove *which method the code meant to call* and nothing about whether
 the query is valid. Caller-supplied tools (ADR 0035) added three hand-written
 filter shapes — `has_id` for the id-restricted search, a payload-only
@@ -341,7 +341,7 @@ real SIGTERM.
 Two consequences worth knowing before editing it:
 
 - **It needs a slow turn.** The stub replies in milliseconds, which leaves no
-  window to disrupt anything, so `apps/stub-agent` takes pacing env vars
+  window to disrupt anything, so `catalog/agents/stub-agent` takes pacing env vars
   (`pacing.ts`) and the spec PATCHES them onto the `stub-agent` Agent CR per
   test. `afterAll` resets them — leaving pacing on the CR makes every later
   spec slow, and a leftover silent phase makes them fail outright.
@@ -352,9 +352,9 @@ Two consequences worth knowing before editing it:
   asserts exactly that by pacing a narrating turn to five times the window and
   expecting it to succeed.
 
-`stub-agent` is NOT here: it is a real image (`apps/stub-agent`) built by the
+`stub-agent` is NOT here: it is a real image (`catalog/agents/stub-agent`) built by the
 skaffold `e2e` profile, and its Agent CR is a chart template
-(`charts/community-components/templates/agent-stub.yaml`) enabled by
+(`orchestrator/charts/community-components/templates/agent-stub.yaml`) enabled by
 `values-e2e.yaml`. Keeping it in the chart rather than in a hand-applied
 manifest is the point — the CR the suite exercises is produced by the same
 templating production uses, so a change that breaks Agent rendering breaks the
@@ -364,7 +364,7 @@ e2e run too.
 
 Its script is a mounted ConfigMap, and a running `node` process does not re-read
 a mounted file. `ensureFakeGithub()` therefore substitutes a hash of the whole
-manifest into the pod template's `e2e.controller-agent.dev/config-checksum`
+manifest into the pod template's `e2e.aktis.ai/config-checksum`
 annotation, so an edited script changes the pod spec and the Deployment rolls by
 itself. Do not replace that with `kubectl rollout restart` after the apply: the
 restart can beat the ConfigMap write it was meant to pick up, which is how a

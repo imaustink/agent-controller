@@ -8,28 +8,28 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 // The REAL broker, driven by the REAL engine client — the two halves of MCP
 // support that live in different packages and must agree with nothing between
 // them but a URL, a header and two JSON shapes.
-import { createMcpBrokerServer, DELEGATED_TOKEN_HEADER } from "../../apps/mcp-broker/src/server.js";
-import { StaticMCPServerRegistry } from "../../apps/mcp-broker/src/mcpserver-registry.js";
-import { Discovery } from "../../apps/mcp-broker/src/discovery.js";
-import { MCPToolWriter, type CustomObjectsWriterApi } from "../../apps/mcp-broker/src/mcptool-writer.js";
-import { MCPServerStatusWriter, type StatusPatcherApi } from "../../apps/mcp-broker/src/mcpserver-status.js";
+import { createMcpBrokerServer, DELEGATED_TOKEN_HEADER } from "../../orchestrator/apps/mcp-broker/src/server.js";
+import { StaticMCPServerRegistry } from "../../orchestrator/apps/mcp-broker/src/mcpserver-registry.js";
+import { Discovery } from "../../orchestrator/apps/mcp-broker/src/discovery.js";
+import { MCPToolWriter, type CustomObjectsWriterApi } from "../../orchestrator/apps/mcp-broker/src/mcptool-writer.js";
+import { MCPServerStatusWriter, type StatusPatcherApi } from "../../orchestrator/apps/mcp-broker/src/mcpserver-status.js";
 import {
   McpTransportError,
   type DiscoveredTool,
   type McpClient,
   type ToolCallResult,
-} from "../../apps/mcp-broker/src/mcp-client.js";
+} from "../../orchestrator/apps/mcp-broker/src/mcp-client.js";
 import {
   GROUP,
   SERVER_LABEL,
   VERSION,
   type MCPServerCustomResource,
   type MCPToolCustomResource,
-} from "../../apps/mcp-broker/src/mcp-server-resource.js";
+} from "../../orchestrator/apps/mcp-broker/src/mcp-server-resource.js";
 
-import { MCPBrokerClient } from "../../apps/agent-orchestrator/src/mcp/mcp-broker-client.js";
-import { toMCPToolDescriptor } from "../../apps/agent-orchestrator/src/registry/crd-mcp-tool-registry.js";
-import type { ToolDescriptor } from "../../apps/agent-orchestrator/src/tool-descriptor.js";
+import { MCPBrokerClient } from "../../orchestrator/apps/agent-orchestrator/src/mcp/mcp-broker-client.js";
+import { toMCPToolDescriptor } from "../../orchestrator/apps/agent-orchestrator/src/registry/crd-mcp-tool-registry.js";
+import type { ToolDescriptor } from "../../orchestrator/apps/agent-orchestrator/src/tool-descriptor.js";
 
 /**
  * MCP tool support across its three components and two languages, driven against
@@ -460,7 +460,7 @@ describe("discovery's write and the engine's read agree", () => {
 describe("the Go engine addresses the same broker route and reply", () => {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
   const mcptoolGo = readFileSync(
-    join(repoRoot, "engines/temporal/internal/temporal/activities/mcptool.go"),
+    join(repoRoot, "orchestrator/engines/temporal/internal/temporal/activities/mcptool.go"),
     "utf8",
   );
 

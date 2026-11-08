@@ -102,7 +102,7 @@ describe(`cron EventSources (engine: ${deployedEngine()})`, () => {
     expect(source.status?.cronJobName).toBe("eventsource-nightly-sweep");
 
     const cj = await cronJob("eventsource-nightly-sweep");
-    expect(cj.metadata.labels?.["core.controller-agent.dev/eventsource"]).toBe("nightly-sweep");
+    expect(cj.metadata.labels?.["core.aktis.ai/eventsource"]).toBe("nightly-sweep");
     expect(cj.metadata.ownerReferences).toContainEqual(
       expect.objectContaining({ kind: "EventSource", name: "nightly-sweep", controller: true }),
     );

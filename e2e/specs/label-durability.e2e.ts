@@ -37,7 +37,7 @@ function nextIssueNumber(): number {
  *   1. the label comes off even on the UNHAPPY path (the run fails), and
  *   2. the label STILL comes off when the gateway is rolled mid-turn, healed by
  *      the replacement pod's startup + periodic reconciler
- *      (apps/integration-gateway/src/label-reconciler.ts).
+ *      (orchestrator/apps/integration-gateway/src/label-reconciler.ts).
  *
  * Mirrors resilience.e2e.ts's posture: pace the stub so the turn is still
  * running when the disruption lands, and assert on what fake-github actually

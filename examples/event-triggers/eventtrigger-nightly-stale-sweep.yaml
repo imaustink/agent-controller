@@ -2,7 +2,7 @@
 # is the envelope body, so params come from it exactly as from a webhook. Each
 # tick is its own session (event:nightly-sweep:<id>) since no sessionKey is set.
 # readOnly: the agent may read and report; it cannot push or open/merge PRs.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventTrigger
 metadata:
   name: nightly-stale-sweep

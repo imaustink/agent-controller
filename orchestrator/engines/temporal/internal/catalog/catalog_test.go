@@ -1,0 +1,247 @@
+package catalog_test
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
+)
+
+func toolCR(name string, spec map[string]any) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "core.aktis.ai/v1alpha1",
+		"kind":       "Tool",
+		"metadata":   map[string]any{"name": name},
+		"spec":       spec,
+	}}
+}
+
+func TestDecodeTool(t *testing.T) {
+	tool, err := catalog.DecodeTool(toolCR("recipe-scraper", map[string]any{
+		"description":  "Scrapes recipes from URLs",
+		"input":        "a recipe URL",
+		"output":       "recipe markdown",
+		"allowedRoles": []any{"cook", "admin"},
+		"tier":         "standard",
+		"image":        "ghcr.io/x/recipe-scraper:latest", // launch field, ignored
+	}))
+	require.NoError(t, err)
+	require.Equal(t, "recipe-scraper", tool.ID)
+	require.Equal(t, []string{"cook", "admin"}, tool.AllowedRoles)
+	require.Empty(t, tool.AgentRef)
+	require.Empty(t, tool.IdentityProviders)
+	require.Contains(t, tool.EmbeddingText(), "Input: a recipe URL")
+}
+
+// A container Tool can require a linked identity of its own (upstream ADR
+// 0032 §2) — previously this only ever came from a wrapped Agent CR.
+func TestDecodeToolIdentityProviders(t *testing.T) {
+	tool, err := catalog.DecodeTool(toolCR("github", map[string]any{
+		"description":       "Runs a gh CLI command as the calling user",
+		"allowedRoles":      []any{"developer"},
+		"identityProviders": []any{"github"},
+	}))
+	require.NoError(t, err)
+	require.Equal(t, []string{"github"}, tool.IdentityProviders)
+}
+
+// A LocalTool CR (ADR 0014) decodes into the SAME ToolDescriptor shape as a
+// container Tool, marked by a populated LocalExec spec — so a skill's
+// toolRefs can reference either kind transparently, and the planner/dispatch
+// need only branch on LocalExec being set.
+func TestDecodeLocalTool(t *testing.T) {
+	tool, err := catalog.DecodeLocalTool(&unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "core.aktis.ai/v1alpha1",
+		"kind":       "LocalTool",
+		"metadata":   map[string]any{"name": "http-get-node"},
+		"spec": map[string]any{
+			"description":  "fetch a URL",
+			"input":        "a URL",
+			"output":       "the response body",
+			"allowedRoles": []any{"reader"},
+			"tier":         "standard",
+			"runtime":      "node",
+			"package":      "p",
+			"version":      "1.0.0",
+			"network":      false,
+			"env":          []any{map[string]any{"name": "FOO", "value": "bar"}},
+			"secretEnv": []any{map[string]any{
+				"name":      "TOKEN",
+				"secretRef": map[string]any{"name": "s", "key": "k"},
+			}},
+			"timeoutSeconds": int64(30),
+		},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, "http-get-node", tool.ID)
+	require.Equal(t, "fetch a URL", tool.Description)
+	require.Equal(t, []string{"reader"}, tool.AllowedRoles)
+	require.NotNil(t, tool.LocalExec)
+	require.Equal(t, "node", tool.LocalExec.Runtime)
+	require.Equal(t, "p", tool.LocalExec.Package)
+	require.Equal(t, "1.0.0", tool.LocalExec.Version)
+	require.Equal(t, map[string]string{"FOO": "bar"}, tool.LocalExec.Env)
+	require.Equal(t, []catalog.SecretEnvRef{{Name: "TOKEN", SecretName: "s", SecretKey: "k"}}, tool.LocalExec.SecretEnv)
+	require.EqualValues(t, 30, tool.LocalExec.TimeoutSeconds)
+	require.Empty(t, tool.AgentRef, "a LocalTool is never agent-backed")
+}
+
+// DecodeMCPTool reads an MCPTool CR (ADR 0045) into a ToolDescriptor whose
+// MCPExec marker selects the broker-proxy dispatch path — the same shape every
+// other tool kind produces, so a skill's toolRefs reference it transparently.
+func TestDecodeMCPTool(t *testing.T) {
+	tool, err := catalog.DecodeMCPTool(&unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "core.aktis.ai/v1alpha1",
+		"kind":       "MCPTool",
+		"metadata":   map[string]any{"name": "mcp-github-search-issues"},
+		"spec": map[string]any{
+			"serverRef":         "github-mcp",
+			"remoteToolName":    "search_issues",
+			"description":       "Search GitHub issues",
+			"inputSchema":       `{"type":"object"}`,
+			"allowedRoles":      []any{"engineering", "support"},
+			"hidden":            true,
+			"tier":              "standard",
+			"identityProviders": []any{"github"},
+		},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, "mcp-github-search-issues", tool.ID)
+	require.Equal(t, "Search GitHub issues", tool.Description)
+	require.Equal(t, []string{"engineering", "support"}, tool.AllowedRoles)
+	require.True(t, tool.Hidden)
+	require.Equal(t, []string{"github"}, tool.IdentityProviders)
+	require.NotNil(t, tool.MCPExec)
+	require.Equal(t, "github-mcp", tool.MCPExec.ServerRef)
+	require.Equal(t, "search_issues", tool.MCPExec.RemoteToolName)
+	require.Equal(t, `{"type":"object"}`, tool.MCPExec.InputSchema)
+	require.Empty(t, tool.AgentRef, "an MCPTool is never agent-backed")
+	require.Nil(t, tool.LocalExec, "an MCPTool is not a LocalTool")
+
+	// The vectorized text must fold the schema in exactly as the TS engine does
+	// (toMCPToolDescriptor sets description = "desc\n\nInput: <schema>"), or the
+	// same MCPTool ranks differently per engine — the parity ADR 0045 §2
+	// promises. EmbeddingText is description + "\n\nInput: " + Input.
+	require.Equal(t, "Search GitHub issues\n\nInput: {\"type\":\"object\"}", tool.EmbeddingText())
+}
+
+// Agent.spec.toolRefs scopes what the sub-agent's OWN loop may call (upstream
+// ADR 0028), which is a different question from skillRefs' prompt material.
+func TestDecodeAgentToolRefs(t *testing.T) {
+	agent, err := catalog.DecodeAgent(&unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "core.aktis.ai/v1alpha1",
+		"kind":       "Agent",
+		"metadata":   map[string]any{"name": "cluster-debug"},
+		"spec": map[string]any{
+			"description":  "Debugs cluster problems",
+			"allowedRoles": []any{"sre"},
+			"skillRefs":    []any{"skill-cluster-debug"},
+			"toolRefs":     []any{"kubectl-readonly", "signoz-query"},
+		},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, []string{"kubectl-readonly", "signoz-query"}, agent.ToolRefs)
+	require.Equal(t, []string{"skill-cluster-debug"}, agent.SkillRefs)
+}
+
+func TestDecodeSkill(t *testing.T) {
+	skill, err := catalog.DecodeSkill(&unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "core.aktis.ai/v1alpha1",
+		"kind":       "Skill",
+		"metadata":   map[string]any{"name": "recipe-refining"},
+		"spec": map[string]any{
+			"description": "Refine and publish recipes",
+			"markdown":    "# Recipe workflow\n...",
+			"toolRefs":    []any{"recipe-scraper", "recipe-publisher"},
+		},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, []string{"recipe-scraper", "recipe-publisher"}, skill.ToolIDs)
+	require.False(t, skill.Unrestricted)
+	require.Nil(t, skill.EffectiveRoles)
+}
+
+// AllowCallerTools is a *bool because nil means ALLOWED (upstream ADR 0035
+// §4). Decoding an unset field to a non-nil false would silently refuse
+// caller tools on every Skill CR that predates the feature — which is why
+// this is pinned rather than left to the zero value.
+func TestDecodeSkillAllowCallerTools(t *testing.T) {
+	skillCR := func(spec map[string]any) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "core.aktis.ai/v1alpha1",
+			"kind":       "Skill",
+			"metadata":   map[string]any{"name": "s"},
+			"spec":       spec,
+		}}
+	}
+
+	t.Run("unset stays nil", func(t *testing.T) {
+		skill, err := catalog.DecodeSkill(skillCR(map[string]any{"description": "d", "markdown": "m"}))
+		require.NoError(t, err)
+		require.Nil(t, skill.AllowCallerTools)
+	})
+
+	t.Run("explicit false is distinguishable from unset", func(t *testing.T) {
+		skill, err := catalog.DecodeSkill(skillCR(map[string]any{"description": "d", "markdown": "m", "allowCallerTools": false}))
+		require.NoError(t, err)
+		require.NotNil(t, skill.AllowCallerTools)
+		require.False(t, *skill.AllowCallerTools)
+	})
+}
+
+func TestDecodeMissingSpec(t *testing.T) {
+	_, err := catalog.DecodeTool(&unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"name": "broken"},
+	}})
+	require.Error(t, err)
+}
+
+func TestDeriveSkillAccess(t *testing.T) {
+	tools := map[string]catalog.ToolDescriptor{
+		"scraper":   {ID: "scraper", AllowedRoles: []string{"cook", "admin"}},
+		"publisher": {ID: "publisher", AllowedRoles: []string{"admin", "cook", "editor"}},
+		"nobody":    {ID: "nobody", AllowedRoles: []string{}},
+	}
+	agents := map[string]catalog.AgentDescriptor{
+		"swe": {ID: "swe", AllowedRoles: []string{"admin"}},
+	}
+
+	t.Run("no refs is unrestricted", func(t *testing.T) {
+		s := catalog.DeriveSkillAccess(catalog.SkillDescriptor{ID: "chat"}, tools, agents)
+		require.True(t, s.Unrestricted)
+		require.Nil(t, s.EffectiveRoles)
+	})
+
+	t.Run("intersection of tool roles", func(t *testing.T) {
+		s := catalog.DeriveSkillAccess(catalog.SkillDescriptor{
+			ID: "recipes", ToolIDs: []string{"scraper", "publisher"},
+		}, tools, agents)
+		require.False(t, s.Unrestricted)
+		require.ElementsMatch(t, []string{"cook", "admin"}, s.EffectiveRoles)
+	})
+
+	t.Run("agent ref narrows the intersection", func(t *testing.T) {
+		s := catalog.DeriveSkillAccess(catalog.SkillDescriptor{
+			ID: "coding", ToolIDs: []string{"scraper"}, AgentIDs: []string{"swe"},
+		}, tools, agents)
+		require.Equal(t, []string{"admin"}, s.EffectiveRoles)
+	})
+
+	t.Run("dangling ref fails closed", func(t *testing.T) {
+		s := catalog.DeriveSkillAccess(catalog.SkillDescriptor{
+			ID: "broken", ToolIDs: []string{"scraper", "missing"},
+		}, tools, agents)
+		require.False(t, s.Unrestricted)
+		require.Empty(t, s.EffectiveRoles)
+		require.NotNil(t, s.EffectiveRoles)
+	})
+
+	t.Run("disjoint roles fail closed", func(t *testing.T) {
+		s := catalog.DeriveSkillAccess(catalog.SkillDescriptor{
+			ID: "impossible", ToolIDs: []string{"scraper", "nobody"},
+		}, tools, agents)
+		require.Empty(t, s.EffectiveRoles)
+	})
+}

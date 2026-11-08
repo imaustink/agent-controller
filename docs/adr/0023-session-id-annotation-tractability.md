@@ -12,7 +12,7 @@ A single Open WebUI conversation can fan out into an arbitrary number of
 ToolRun/AgentRun Jobs across a turn (a tool call, a skill's agent delegation,
 a sub-agent's own tool calls, etc. — ADR 0010/0021). None of those Jobs or
 Pods carried any link back to the conversation that spawned them: `kubectl
-get pods`/`kubectl describe` showed only the `core.controller-agent.dev/
+get pods`/`kubectl describe` showed only the `core.aktis.ai/
 {toolrun,agentrun,tool,agent}` labels (ADR 0010), which identify *which*
 Tool/Agent ran, not *which conversation* asked for it.
 
@@ -26,14 +26,14 @@ cluster for exactly this conversation's Jobs; nothing in the system provided
 one.
 
 The session id itself already exists — `x-openwebui-chat-id`
-(`CHAT_ID_HEADER`, `apps/agent-orchestrator/src/server.ts`) or the `/invoke`
+(`CHAT_ID_HEADER`, `orchestrator/apps/agent-orchestrator/src/server.ts`) or the `/invoke`
 `session_id` body field, the same id ADR 0012's `SessionStore` is keyed by —
 it just never propagated past `buildGraphInput`.
 
 ## Decision
 
 1. **`AgentGraphInput`/`AgentStateAnnotation` gain a plain `sessionId` field**
-   (`apps/agent-orchestrator/src/server.ts`, `src/agent/graph.ts`), set
+   (`orchestrator/apps/agent-orchestrator/src/server.ts`, `src/agent/graph.ts`), set
    whenever the caller supplied one — independent of whether a `SessionStore`
    is configured at all (unlike `sessionSubject`/`activeSkillId`/etc., which
    only exist when session continuity, ADR 0012, is active). This is a
@@ -44,12 +44,12 @@ it just never propagated past `buildGraphInput`.
    `AgentRunLauncherPort.launch` (`src/k8s/{container-tool,agentrun}-
    launcher.ts`).
 3. **`ToolRunLauncher`/`AgentRunLauncher` set it as a CR annotation**,
-   `controller-agent.dev/session-id`, on the `ToolRun`/`AgentRun` custom
+   `aktis.ai/session-id`, on the `ToolRun`/`AgentRun` custom
    resource's own `metadata.annotations` — not a new typed CRD spec field, so
    no CRD schema/regeneration was needed for something that carries no
    validated shape and no reconciliation behavior.
 4. **The Go core-controller copies just that one annotation onto the Job it
-   builds — and its Pod template** (`controllers/core-controller/internal/
+   builds — and its Pod template** (`orchestrator/controllers/core-controller/internal/
    controller/run_job.go`'s `buildRunJob`, via a new `sessionIDAnnotations`
    helper called from both `toolrun_controller.go` and
    `agentrun_controller.go`). Deliberately narrow — it copies only the

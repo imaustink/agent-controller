@@ -8,7 +8,7 @@ Every Tool-calling loop that exists today lives in the PARENT orchestrator's
 own graph (`agent/graph.ts`): a Skill's `toolRefs`/`agentRefs` (ADR 0008, ADR
 0021) are resolved and dispatched by the orchestrator's `planAction`/`runTool`
 nodes, never by the sub-agent process itself. A sub-agent launched as an
-`AgentRun` Job (`packages/agent-runtime`'s `runAgent(handler)` contract) can
+`AgentRun` Job (`framework/agent-runtime`'s `runAgent(handler)` contract) can
 narrate progress, ask the user a question, and reply — but has no way to call
 a `Tool` CR from within its own internal loop. `AgentSpec` has `skillRefs`
 (markdown the agent may load into its own prompt) but nothing analogous for
@@ -16,7 +16,7 @@ Tools.
 
 `claude-code-swe-agent`/`opencode-swe-agent` don't need this (their "tools"
 are the coding CLI's own built-ins: bash, git, file edits). But a sub-agent
-built directly on `packages/agent-runtime` — a generic reasoning loop that
+built directly on `framework/agent-runtime` — a generic reasoning loop that
 isn't wrapping an existing coding CLI — has no way to reach the same `Tool`
 catalog (`kubectl-readonly`, `web-fetch`, `web-search`, a recipe tool, ...)
 that the parent orchestrator's Skills already call, short of reimplementing
@@ -24,7 +24,7 @@ each tool's container/execution logic itself.
 
 ## Decision
 
-**`AgentSpec.ToolRefs []string`** (`controllers/core-controller/api/v1alpha1/agent_types.go`)
+**`AgentSpec.ToolRefs []string`** (`orchestrator/controllers/core-controller/api/v1alpha1/agent_types.go`)
 names `Tool` CRs (same namespace) this Agent's OWN internal loop may call —
 mirrors `Skill.spec.toolRefs` exactly, but scopes the sub-agent's capability
 list instead of the orchestrator's. `AgentReconciler` validates the refs
@@ -35,7 +35,7 @@ check in this codebase, this is a static-config sanity check, not the
 authorization boundary itself — the live `tool_call` handler below
 re-validates against `toolRefs` at call time regardless of CRD status.
 
-**Protocol** (`packages/messaging/src/agent-protocol.ts`): two new messages,
+**Protocol** (`framework/messaging/src/agent-protocol.ts`): two new messages,
 same request/response shape as the existing `opencode_request`/
 `opencode_response` pair (ADR 0026) but for tool calls instead of live-session
 HTTP forwarding:
@@ -46,7 +46,7 @@ HTTP forwarding:
 Correlated by `callId`, not by a fixed one-in-flight-at-a-time slot (unlike
 `ask()`/`pendingAsk`) — an agent may have more than one call outstanding.
 
-**SDK** (`packages/agent-runtime`): `AgentSession.callTool(name, input):
+**SDK** (`framework/agent-runtime`): `AgentSession.callTool(name, input):
 Promise<unknown>` publishes `tool_call` and resolves/rejects off a
 `callId`-keyed pending map, exactly like `ask()` resolves off `pendingAsk` but
 without the single-slot restriction. Resolves with the tool's raw result on
@@ -56,7 +56,7 @@ outstanding. This is the "abstract it away in the SDK" ask from the issue —
 the agent author writes `await session.callTool("kubectl-readonly", "get pods
 -n default")` and never sees the NATS round-trip underneath.
 
-**Orchestrator dispatch** (`apps/agent-orchestrator`): `AgentDescriptor`
+**Orchestrator dispatch** (`orchestrator/apps/agent-orchestrator`): `AgentDescriptor`
 gains `toolRefs?: string[]` (populated from the Agent CR's `spec.toolRefs`,
 `crd-agent-registry.ts`). `AgentOrchestratorChannel.awaitReply` gains an
 `onToolCall` callback invoked for every `tool_call` up-message seen while
@@ -118,7 +118,7 @@ sub-agent tool call either; each `callTool()` is a one-shot request/response.
 
 ## Consequences
 
-- A sub-agent built on `packages/agent-runtime` can call any Tool its launching
+- A sub-agent built on `framework/agent-runtime` can call any Tool its launching
   Agent CR declares in `toolRefs`, through one SDK method, with the dispatch
   mechanics (ToolRun launch vs. LocalTool exec, NATS vs. HTTP callback mode)
   entirely hidden.
@@ -135,7 +135,7 @@ sub-agent tool call either; each `callTool()` is a one-shot request/response.
   path, same as before this ADR.
 - `dispatchResolvedTool`'s container-Job branch deliberately does NOT subscribe
   to `jobResultReceiver.onJobProgress`, unlike the otherwise-equivalent branch
-  in `runTool`: `AgentSession.callTool()` (`packages/agent-runtime`) resolves to
+  in `runTool`: `AgentSession.callTool()` (`framework/agent-runtime`) resolves to
   a single result with no progress channel back to the calling sub-agent, so
   there is nowhere to route progress events. The omission is intentional, not
   copy-paste drift; it can be revisited if/when the two dispatch paths converge

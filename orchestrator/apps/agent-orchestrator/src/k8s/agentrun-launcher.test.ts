@@ -1,0 +1,338 @@
+import { describe, expect, it, vi } from "vitest";
+import type { AgentRunTemplate } from "../agents/types.js";
+import { AgentRunLauncher } from "./agentrun-launcher.js";
+
+const template: AgentRunTemplate = { namespace: "default", agentRef: "software-engineering-agent" };
+
+describe("AgentRunLauncher", () => {
+  it("creates an AgentRun CR referencing the Agent by name, with the goal and a callback secretRef", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api);
+
+    const launched = await launcher.launch(template, "run-1", {
+      goal: "add a health check endpoint",
+      callbackUrl: "http://agent-orchestrator-callback.default.svc.cluster.local:8080/callback/abc",
+      callbackSecretRef: { name: "agent-orchestrator-secrets", key: "AGENT_CALLBACK_SECRET" },
+      timeoutSeconds: 1800,
+    });
+
+    expect(launched.namespace).toBe("default");
+    expect(launched.name).toBe("run-1");
+    expect(createNamespacedCustomObject).toHaveBeenCalledTimes(1);
+    const [request] = createNamespacedCustomObject.mock.calls[0] as [Record<string, unknown>];
+    expect(request).toMatchObject({
+      group: "core.aktis.ai",
+      version: "v1alpha1",
+      namespace: "default",
+      plural: "agentruns",
+    });
+
+    const body = request.body as { metadata: { name: string }; spec: Record<string, unknown> };
+    expect(body.metadata.name).toBe("run-1");
+    expect(body.spec).toEqual({
+      agentRef: "software-engineering-agent",
+      goal: "add a health check endpoint",
+      callback: {
+        url: "http://agent-orchestrator-callback.default.svc.cluster.local:8080/callback/abc",
+        secretRef: { name: "agent-orchestrator-secrets", key: "AGENT_CALLBACK_SECRET" },
+      },
+      timeoutSeconds: 1800,
+    });
+  });
+
+  // docs/event-triggers.md §6: the controller turns these into AGENT_READ_ONLY /
+  // AGENT_PARAMS. Written only when meaningful -- readOnly is never `false`.
+  it("carries readOnly and params onto AgentRun.spec, and omits them when unset/empty", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", {
+      listNamespacedCustomObject: vi.fn(),
+      createNamespacedCustomObject,
+    });
+    const base = { goal: "review", callbackUrl: "http://x", callbackSecretRef: { name: "s", key: "k" } };
+
+    await launcher.launch(template, "run-ro", { ...base, readOnly: true, params: { repo: "acme/widgets", number: "7" } });
+    await launcher.launch(template, "run-rw", { ...base, readOnly: false, params: {} });
+
+    const specs = createNamespacedCustomObject.mock.calls.map(([r]) => (r as { body: { spec: Record<string, unknown> } }).body.spec);
+    expect(specs[0]).toMatchObject({ readOnly: true, params: { repo: "acme/widgets", number: "7" } });
+    expect(specs[1]).not.toHaveProperty("readOnly");
+    expect(specs[1]).not.toHaveProperty("params");
+  });
+
+  it("uses a natsSubject callback (no secretRef) when natsUrl is set, so the CR passes controller validation even with an empty callbackSecretRef", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api);
+
+    await launcher.launch(template, "run-3", {
+      goal: "add a health check endpoint",
+      callbackUrl: "http://unused",
+      // Legitimately empty in NATS mode -- config.ts only requires
+      // AGENT_CALLBACK_SECRET_REF_NAME when AGENT_NATS_URL is absent.
+      callbackSecretRef: { name: "", key: "AGENT_CALLBACK_SECRET" },
+      natsUrl: "nats://nats:4222",
+      natsSubject: "callbacks.run-3",
+    });
+
+    const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { spec: Record<string, unknown> } }];
+    expect(request.body.spec.callback).toEqual({
+      natsSubject: "callbacks.run-3",
+      natsUrl: "nats://nats:4222",
+    });
+  });
+
+  it("omits timeoutSeconds when not provided (controller default applies)", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api);
+
+    await launcher.launch(template, "run-2", {
+      goal: "add a health check endpoint",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+    });
+
+    const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { spec: Record<string, unknown> } }];
+    expect(request.body.spec.timeoutSeconds).toBeUndefined();
+  });
+
+  it("launch() without options.secretEnv never touches the Secret API", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({ metadata: { uid: "uid-1" } });
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const createNamespacedSecret = vi.fn();
+    const patchNamespacedSecret = vi.fn();
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, {
+      createNamespacedSecret,
+      patchNamespacedSecret,
+    });
+
+    await launcher.launch(template, "run-4", {
+      goal: "add a health check endpoint",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+    });
+
+    expect(createNamespacedSecret).not.toHaveBeenCalled();
+    expect(patchNamespacedSecret).not.toHaveBeenCalled();
+    const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { spec: Record<string, unknown> } }];
+    expect(request.body.spec.secretEnv).toBeUndefined();
+  });
+
+  it("launch() with options.secretEnv creates a Secret, references it from the AgentRun spec, and patches ownerReferences using the created AgentRun's uid", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({ metadata: { uid: "agentrun-uid-123" } });
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const createNamespacedSecret = vi.fn().mockResolvedValue({ metadata: { name: "run-5-identity" } });
+    const patchNamespacedSecret = vi.fn().mockResolvedValue({});
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, {
+      createNamespacedSecret,
+      patchNamespacedSecret,
+    });
+
+    const launched = await launcher.launch(template, "run-5", {
+      goal: "open a PR",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+      secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_super-secret-value" }],
+    });
+
+    expect(launched.name).toBe("run-5");
+
+    expect(createNamespacedSecret).toHaveBeenCalledTimes(1);
+    const [secretRequest] = createNamespacedSecret.mock.calls[0] as [
+      { namespace: string; body: { metadata: { name: string }; stringData: Record<string, string> } },
+    ];
+    expect(secretRequest.namespace).toBe("default");
+    expect(secretRequest.body.metadata.name).toBe("run-5-identity");
+    expect(secretRequest.body.stringData).toEqual({ GITHUB_TOKEN: "gho_super-secret-value" });
+    // The plaintext token must never appear in the AgentRun CR body.
+    expect(JSON.stringify(secretRequest.body)).toContain("gho_super-secret-value");
+
+    const [crRequest] = createNamespacedCustomObject.mock.calls[0] as [{ body: { spec: Record<string, unknown> } }];
+    expect(crRequest.body.spec.secretEnv).toEqual([
+      { name: "GITHUB_TOKEN", secretRef: { name: "run-5-identity", key: "GITHUB_TOKEN" } },
+    ]);
+    expect(JSON.stringify(crRequest.body)).not.toContain("gho_super-secret-value");
+
+    expect(patchNamespacedSecret).toHaveBeenCalledTimes(1);
+    const [patchRequest] = patchNamespacedSecret.mock.calls[0] as [
+      { name: string; namespace: string; body: unknown },
+    ];
+    expect(patchRequest.name).toBe("run-5-identity");
+    expect(patchRequest.namespace).toBe("default");
+    expect(JSON.stringify(patchRequest.body)).toContain("agentrun-uid-123");
+    expect(JSON.stringify(patchRequest.body)).toContain("run-5");
+  });
+
+  // docs/adr/0034: the write-back grant is a Secret the GATEWAY created before
+  // this launch, and Kubernetes has no TTL on a Secret -- so the run adopts it
+  // and the controller's retention sweep reclaims it along with the run. Without
+  // this, every claude-remote launch leaves a grant object behind forever.
+  it("makes the AgentRun the owner of Secrets created for this launch elsewhere", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({ metadata: { uid: "agentrun-uid-777" } });
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const createNamespacedSecret = vi.fn().mockResolvedValue({ metadata: { name: "run-6-identity" } });
+    const patchNamespacedSecret = vi.fn().mockResolvedValue({});
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, {
+      createNamespacedSecret,
+      patchNamespacedSecret,
+    });
+
+    await launcher.launch(template, "run-6", {
+      goal: "open a PR",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+      secretEnv: [{ name: "CLAUDE_LOGIN_CREDENTIALS_JSON", value: "{}" }],
+      ownedSecretNames: ["claude-writeback-grant-abc123"],
+    });
+
+    const patched = patchNamespacedSecret.mock.calls.map(
+      (call) => (call[0] as { name: string }).name,
+    );
+    expect(patched).toEqual(["run-6-identity", "claude-writeback-grant-abc123"]);
+    for (const [request] of patchNamespacedSecret.mock.calls as [{ body: unknown }][]) {
+      expect(JSON.stringify(request.body)).toContain("agentrun-uid-777");
+    }
+  });
+
+  it("adopts a Secret created elsewhere even when this launch has no secretEnv of its own", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({ metadata: { uid: "agentrun-uid-888" } });
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const createNamespacedSecret = vi.fn();
+    const patchNamespacedSecret = vi.fn().mockResolvedValue({});
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, {
+      createNamespacedSecret,
+      patchNamespacedSecret,
+    });
+
+    await launcher.launch(template, "run-7", {
+      goal: "open a PR",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+      ownedSecretNames: ["claude-writeback-grant-def456"],
+    });
+
+    expect(createNamespacedSecret).not.toHaveBeenCalled();
+    expect(patchNamespacedSecret).toHaveBeenCalledTimes(1);
+    expect((patchNamespacedSecret.mock.calls[0]![0] as { name: string }).name).toBe(
+      "claude-writeback-grant-def456",
+    );
+  });
+
+  // Ownership is a cleanup optimization: an un-owned grant is a stray object that
+  // still expires on its own terms, whereas a failed launch is an outage. Trading
+  // the former for the latter would be strictly worse.
+  it("still launches when a Secret cannot be adopted", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({ metadata: { uid: "agentrun-uid-999" } });
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const createNamespacedSecret = vi.fn().mockResolvedValue({ metadata: { name: "run-8-identity" } });
+    const patchNamespacedSecret = vi.fn().mockRejectedValue(new Error("forbidden"));
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, {
+      createNamespacedSecret,
+      patchNamespacedSecret,
+    });
+
+    const launched = await launcher.launch(template, "run-8", {
+      goal: "open a PR",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+      secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_x" }],
+      ownedSecretNames: ["claude-writeback-grant-ghi789"],
+    });
+
+    expect(launched.name).toBe("run-8");
+  });
+
+  it("sets the session-id annotation on the AgentRun CR when options.sessionId is given", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api);
+
+    await launcher.launch(template, "run-7", {
+      goal: "add a health check endpoint",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+      sessionId: "chat-42",
+    });
+
+    const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { metadata: Record<string, unknown> } }];
+    expect(request.body.metadata.annotations).toEqual({ "aktis.ai/session-id": "chat-42" });
+  });
+
+  it("omits annotations on the AgentRun CR when no sessionId is given", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api);
+
+    await launcher.launch(template, "run-8", {
+      goal: "add a health check endpoint",
+      callbackUrl: "http://x",
+      callbackSecretRef: { name: "s", key: "k" },
+    });
+
+    const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { metadata: Record<string, unknown> } }];
+    expect(request.body.metadata.annotations).toBeUndefined();
+  });
+
+  it("launch() throws if options.secretEnv is non-empty but no SecretApiLike was configured", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api);
+
+    await expect(
+      launcher.launch(template, "run-6", {
+        goal: "open a PR",
+        callbackUrl: "http://x",
+        callbackSecretRef: { name: "s", key: "k" },
+        secretEnv: [{ name: "GITHUB_TOKEN", value: "gho_x" }],
+      }),
+    ).rejects.toThrow(/SecretApiLike/);
+    expect(createNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+
+  describe("whenFailed", () => {
+    const settled = async (p: Promise<unknown>) => {
+      let done = false;
+      void p.then(() => (done = true));
+      await new Promise((r) => setTimeout(r, 30));
+      return done;
+    };
+
+    it("resolves with the controller's status message once the run goes Failed, polling through a not-yet-created CR", async () => {
+      const oom = 'Job failed: container "run" was OOMKilled (exit code 137, memory limit 4Gi)';
+      const getNamespacedCustomObject = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("agentruns.core.aktis.ai \"run-1\" not found"))
+        .mockResolvedValueOnce({ status: { phase: "Running" } })
+        .mockResolvedValue({ status: { phase: "Failed", message: oom } });
+      const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject: vi.fn(), getNamespacedCustomObject };
+      const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, undefined, 1);
+
+      await expect(launcher.whenFailed("run-1", "default", new AbortController().signal)).resolves.toBe(oom);
+      expect(getNamespacedCustomObject).toHaveBeenCalledTimes(3);
+      expect(getNamespacedCustomObject).toHaveBeenLastCalledWith({
+        group: "core.aktis.ai",
+        version: "v1alpha1",
+        namespace: "default",
+        plural: "agentruns",
+        name: "run-1",
+      });
+    });
+
+    it("never settles for a run that succeeds, and stops polling once aborted", async () => {
+      const getNamespacedCustomObject = vi.fn().mockResolvedValue({ status: { phase: "Succeeded" } });
+      const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject: vi.fn(), getNamespacedCustomObject };
+      const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, undefined, 1);
+      const stop = new AbortController();
+
+      const failed = launcher.whenFailed("run-1", "default", stop.signal);
+      expect(await settled(failed)).toBe(false);
+      stop.abort();
+      await new Promise((r) => setTimeout(r, 10));
+      const calls = getNamespacedCustomObject.mock.calls.length;
+      await new Promise((r) => setTimeout(r, 20));
+      expect(getNamespacedCustomObject.mock.calls.length).toBe(calls);
+      expect(await settled(failed)).toBe(false);
+    });
+  });
+});

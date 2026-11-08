@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startFake, type FakeProvider } from "../support/fake-provider.js";
-import { SlackDriver } from "../../apps/connection-broker/src/drivers/slack.js";
-import { PermissionDeniedError } from "../../apps/connection-broker/src/drivers/types.js";
+import { SlackDriver } from "../../orchestrator/apps/connection-broker/src/drivers/slack.js";
+import { PermissionDeniedError } from "../../orchestrator/apps/connection-broker/src/drivers/types.js";
 
 /**
  * The fake Slack, driven by the REAL Slack driver.

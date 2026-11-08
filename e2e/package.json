@@ -1,5 +1,5 @@
 {
-  "name": "@controller-agent/e2e",
+  "name": "@aktis/e2e",
   "private": true,
   "type": "module",
   "scripts": {

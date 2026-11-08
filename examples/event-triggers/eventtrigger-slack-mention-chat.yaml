@@ -6,7 +6,7 @@
 # There is no Slack reply adapter yet (docs/event-triggers.md §7 ships github and
 # http), so the answer is not posted back to the channel; uncomment `reply`
 # below to have the outcome POSTed to a bridge that does.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventTrigger
 metadata:
   name: slack-mention-chat

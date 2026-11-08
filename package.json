@@ -1,19 +1,23 @@
 {
-  "name": "controller-agent",
+  "name": "aktis",
   "private": true,
   "version": "0.0.0",
   "workspaces": [
-    "packages/*",
-    "apps/*",
-    "tools/*",
-    "tools-local/http-get-node",
+    "framework/*",
+    "catalog/agents/*",
+    "catalog/tools/*",
+    "catalog/tools-local/http-get-node",
+    "orchestrator/apps/*",
+    "orchestrator/packages/*",
     "e2e"
   ],
   "scripts": {
-    "build:libs": "npm run build -w @controller-agent/messaging -w @controller-agent/github-app-auth -w @controller-agent/event-triggers -w @controller-agent/agent-runtime",
+    "build:libs": "npm run build -w @aktis/protocol -w @aktis/messaging -w @aktis/github-app-auth -w @aktis/event-triggers -w @aktis/agent-runtime",
     "build": "npm run build:libs && npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "e2e": "npm run e2e -w e2e"
+    "e2e": "npm run e2e -w e2e",
+    "check:boundaries": "node scripts/check-boundaries.mjs",
+    "test:scripts": "node --test scripts/*.test.mjs"
   }
 }

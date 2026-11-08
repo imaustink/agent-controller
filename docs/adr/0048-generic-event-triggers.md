@@ -17,7 +17,7 @@ to a target by id, bypassing RAG. In practice it drifted into exactly the narrow
 hardcoded thing it set out to avoid, and the `ai-triage`/`ai-review` flows are the
 evidence:
 
-- **Ingestion is GitHub-only and label-only.** `apps/integration-gateway`'s
+- **Ingestion is GitHub-only and label-only.** `orchestrator/apps/integration-gateway`'s
   `parseGithubEvent` special-cases exactly two actionable shapes
   (`issues.labeled`, `pull_request.labeled`) and drops everything else. Adding
   any other source — Slack, a CI webhook, Stripe, a timer — means new gateway

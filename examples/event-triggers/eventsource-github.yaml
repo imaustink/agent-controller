@@ -9,7 +9,7 @@
 # GitHub provider verifies the login against team/collaborator roles on
 # `repositoryFrom`; bot-authored deliveries are dropped (dropBots defaults to
 # true), so an agent cannot label its own PR/issue to re-trigger itself.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventSource
 metadata:
   name: github

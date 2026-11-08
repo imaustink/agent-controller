@@ -26,7 +26,7 @@ OUT="${1:?usage: pin-image-digests.sh <out.yaml>}"
 REGISTRY="${REGISTRY:-ghcr.io}"
 PREFIX="${IMAGE_PREFIX:-imaustink/agent-controller}"
 
-# <values key in charts/agent-controller> <image name under PREFIX>
+# <values key in orchestrator/charts/agent-controller> <image name under PREFIX>
 IMAGES=(
   "agent-orchestrator agent-orchestrator"
   "core-controller core-controller"

@@ -145,7 +145,7 @@ Direct links remain wherever the page cannot help:
 - a caller that explicitly asked for the device flow;
 - any deployment with the page off.
 
-**Both engines.** The Temporal engine (`engines/temporal`) does the same:
+**Both engines.** The Temporal engine (`orchestrator/engines/temporal`) does the same:
 `authz.Authorize` and the knowledge-base activity emit the one deep link under
 the same three conditions (URL configured, `openwebui:` subject, not device
 flow). It reads the same `AGENT_CONNECTIONS_URL`, set by the temporal-engine

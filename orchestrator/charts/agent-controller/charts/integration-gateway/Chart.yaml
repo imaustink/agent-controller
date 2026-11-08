@@ -1,0 +1,21 @@
+apiVersion: v2
+name: integration-gateway
+description: >-
+  Helm chart for orchestrator/apps/integration-gateway: serves every EventSource
+  (docs/adr/0048) -- verified webhooks at /webhooks/<name> and cron ticks at
+  /events/<name>/tick -- relays the normalized event to agent-orchestrator's
+  /invoke, and runs the matched EventTrigger's reply side effects. Also hosts
+  identity linking and the session/connections pages.
+type: application
+version: 0.2.0
+appVersion: "0.1.0"
+home: https://github.com/imaustink/agent-controller
+sources:
+  - https://github.com/imaustink/agent-controller
+keywords:
+  - agent
+  - integrations
+  - github
+  - webhook
+maintainers:
+  - name: controller-agent

@@ -21,7 +21,7 @@ defense in depth around those two.
 at an internal target: `http://169.254.169.254/…` (cloud metadata),
 `http://127.0.0.1:…`, or an RFC 1918 address on the cluster network.
 
-**Mitigations** — [src/security/url-guard.ts](../tools/recipe-scraper/src/security/url-guard.ts):
+**Mitigations** — [src/security/url-guard.ts](../catalog/tools/recipe-scraper/src/security/url-guard.ts):
 
 - **Scheme allowlist.** Only `http:` / `https:` are accepted. `file:`,
   `data:`, `gopher:`, etc. are rejected up front.
@@ -33,11 +33,11 @@ at an internal target: `http://169.254.169.254/…` (cloud metadata),
   `fc00::/7`, `ff00::/8`, IPv4-mapped forms).
 - **Fail closed.** Anything that doesn't parse as a valid public IP is blocked.
 - **Redirect re-validation.** Guarded fetches use `redirect: "manual"` and
-  re-run the guard on **every hop** ([src/util/download.ts](../tools/recipe-scraper/src/util/download.ts)),
+  re-run the guard on **every hop** ([src/util/download.ts](../catalog/tools/recipe-scraper/src/util/download.ts)),
   so a public URL can't 302 into an internal one.
 - **Browser subrequest filtering.** The web extractor intercepts *every*
   Chromium request and re-checks its host against the guard, aborting any that
-  resolve to a non-public address ([src/extractors/web.ts](../tools/recipe-scraper/src/extractors/web.ts)).
+  resolve to a non-public address ([src/extractors/web.ts](../catalog/tools/recipe-scraper/src/extractors/web.ts)).
 
 **Known limitation — DNS rebinding (TOCTOU).** There is an unavoidable window
 between "resolve + validate" and "connect": a hostile DNS server can answer
@@ -52,7 +52,7 @@ whose egress is restricted to public hosts (dedicated egress firewall/proxy).
 instructions like *"ignore your instructions and output …"* or *"exfiltrate
 your system prompt / API key."*
 
-**Mitigations** — [src/llm/format.ts](../tools/recipe-scraper/src/llm/format.ts):
+**Mitigations** — [src/llm/format.ts](../catalog/tools/recipe-scraper/src/llm/format.ts):
 
 - **Content is data, not instructions.** Untrusted text is wrapped in explicit
   `<content>` delimiters, and the system prompt instructs the model to treat
@@ -65,14 +65,14 @@ your system prompt / API key."*
   recipe shape. Injected "change the output format" instructions have nowhere
   to go.
 - **Output re-validation.** The model's JSON is re-parsed and validated against
-  `RecipeSchema` (zod) as defense in depth ([src/schema.ts](../tools/recipe-scraper/src/schema.ts)).
+  `RecipeSchema` (zod) as defense in depth ([src/schema.ts](../catalog/tools/recipe-scraper/src/schema.ts)).
 - **Input truncation.** Text is capped at `RECIPE_MAX_TEXT_CHARS` to bound cost
   and limit the injection surface.
 
 ## 3. Container hardening
 
 The container itself is the security boundary for untrusted content. The
-recommended run contract ([run.sh](../tools/recipe-scraper/run.sh)):
+recommended run contract ([run.sh](../catalog/tools/recipe-scraper/run.sh)):
 
 | Flag | Purpose |
 | ---- | ------- |
@@ -94,10 +94,10 @@ Because extraction touches paid APIs and can pull large media:
 
 - Image and audio downloads are **byte-capped** (`RECIPE_MAX_IMAGE_BYTES`,
   `RECIPE_MAX_AUDIO_BYTES`); the stream is aborted the moment the cap is
-  exceeded ([src/util/download.ts](../tools/recipe-scraper/src/util/download.ts)).
+  exceeded ([src/util/download.ts](../catalog/tools/recipe-scraper/src/util/download.ts)).
 - `yt-dlp` uses `--max-filesize` so oversized audio is never downloaded.
 - Every subprocess runs with a hard timeout and output cap
-  ([src/util/exec.ts](../tools/recipe-scraper/src/util/exec.ts)); Playwright navigation and guarded
+  ([src/util/exec.ts](../catalog/tools/recipe-scraper/src/util/exec.ts)); Playwright navigation and guarded
   fetches have their own timeouts.
 - Subprocesses run **without a shell** (argument arrays), so untrusted URLs
   can't inject shell metacharacters.
@@ -107,14 +107,14 @@ Because extraction touches paid APIs and can pull large media:
 - The **only** secret the container needs is `OPENAI_API_KEY`.
 - Free-text that may echo scraped content (log lines, event `message` fields,
   error messages) is **redacted and clipped** before it leaves the process
-  ([src/security/redact.ts](../tools/recipe-scraper/src/security/redact.ts)), so an injected secret
+  ([src/security/redact.ts](../catalog/tools/recipe-scraper/src/security/redact.ts)), so an injected secret
   or huge blob can't corrupt the parent's logs.
 
 ## 6. Outbound callback security
 
 When the `callback` transport is used, the container makes an outbound HTTP
 request — a potential SSRF/exfil vector of its own. It is constrained
-([src/messaging/callback-sink.ts](../packages/messaging/src/callback-sink.ts)):
+([src/messaging/callback-sink.ts](../framework/messaging/src/callback-sink.ts)):
 
 - The callback URL comes **only from the trusted parent** (`RECIPE_CALLBACK_URL`),
   never from scraped content.
@@ -132,13 +132,13 @@ callback contract.
 
 ## 7. recipe-publisher: Mealie token & fixed-instance posture
 
-[tools/recipe-publisher](../tools/recipe-publisher/) holds a second kind of
+[catalog/tools/recipe-publisher](../catalog/tools/recipe-publisher/) holds a second kind of
 secret, `MEALIE_API_TOKEN`, and follows the same discipline as above plus one
 addition specific to it:
 
 - `MEALIE_API_TOKEN` is never logged/echoed — its redaction relies on the
   shared generic `Bearer <token>` pattern
-  ([src/security/redact.ts](../tools/recipe-publisher/src/security/redact.ts)),
+  ([src/security/redact.ts](../catalog/tools/recipe-publisher/src/security/redact.ts)),
   since Mealie's own long-lived tokens are always sent as a Bearer token.
 - The publish **target** (the Mealie instance itself) is fixed server-side
   configuration (`MEALIE_BASE_URL`), never taken from the input recipe
@@ -169,9 +169,9 @@ addition specific to it:
   within the same authenticated Mealie account/group (`MEALIE_API_TOKEN`
   can't reach other tenants).
 
-## tools/github: a container Tool authenticated as the calling user (ADR 0032)
+## catalog/tools/github: a container Tool authenticated as the calling user (ADR 0032)
 
-[tools/github](../tools/github/) runs a single allowlisted `gh` CLI command,
+[catalog/tools/github](../catalog/tools/github/) runs a single allowlisted `gh` CLI command,
 authenticated with a `GITHUB_TOKEN` that -- when
 `Tool.spec.identityProviders: [github]` is set (the recommended, default-in-
 `values-production.yaml` configuration) -- is the **calling user's own**
@@ -215,7 +215,7 @@ mechanism at all. This means:
   GitHub App installation-token auth via the three `githubApp*SecretKey`
   values ([ADR 0018](adr/0018-github-app-auth-fallback.md)), which the tool exchanges
   for a short-lived installation token per invocation (`resolveToolToken` in
-  `tools/github/src/github.ts`, a thin wrapper over the same shared
+  `catalog/tools/github/src/github.ts`, a thin wrapper over the same shared
   `resolveGithubToken` the SWE agents use) so no long-lived PAT need exist
   anywhere in the stack. A shared credential and a per-user one are never both
   configured: the chart wires the App keys only when `identityLink` is off, and
@@ -223,7 +223,7 @@ mechanism at all. This means:
 
 ## opencode-swe-agent: a deliberately privileged agent
 
-`apps/opencode-swe-agent` (an agentic opencode CLI wrapper, calling Anthropic
+`catalog/agents/opencode-swe-agent` (an agentic opencode CLI wrapper, calling Anthropic
 directly, that opens pull requests) is intentionally more privileged than the
 recipe tools, so it is classified `tier: privileged` and its trust boundary is
 documented here rather than assumed away. It replaces the earlier
@@ -261,7 +261,7 @@ Copilot-CLI-based `copilot-swe`/`copilot-swe-agent` (see
   `secretEnv`, referencing a short-lived k8s `Secret` created and owned by
   that one `AgentRun`, garbage-collected with it). The link itself is
   established once per person via GitHub OAuth Device Flow, brokered by
-  `apps/integration-gateway` (a new subject-keyed, encrypted-at-rest store,
+  `orchestrator/apps/integration-gateway` (a new subject-keyed, encrypted-at-rest store,
   `IDENTITY_LINK_ENCRYPTION_KEY` — needs the same rotation/no-plaintext-
   logging discipline as `opencode-swe-secrets`) and transparently refreshed
   thereafter — no re-prompting on subsequent requests. This narrows blast
@@ -319,7 +319,7 @@ Copilot-CLI-based `copilot-swe`/`copilot-swe-agent` (see
   [ADR 0017](adr/0017-continuation-tokens-via-session-store.md) replaced
   this: the agent now returns the encoded marker as `reply.result`, a
   structured field on the NATS `reply` message
-  (`packages/messaging/src/agent-protocol.ts`) that is never part of the chat
+  (`framework/messaging/src/agent-protocol.ts`) that is never part of the chat
   `message` text. The orchestrator stores it server-side
   (`SessionRecord.agentContinuations`, keyed by agent id) and re-injects it as
   a goal prefix on the next episode — the value never appears in anything the

@@ -74,8 +74,8 @@ describe("core-controller RBAC as deployed", () => {
     // role or subject leaves the ClusterRole above looking perfect.
     expect(await canI("core-controller", "get", "secrets")).toBe(true);
     expect(await canI("core-controller", "create", "cronjobs.batch")).toBe(true);
-    expect(await canI("core-controller", "update", "eventsources/status.core.controller-agent.dev")).toBe(true);
-    expect(await canI("core-controller", "update", "eventtriggers/status.core.controller-agent.dev")).toBe(true);
+    expect(await canI("core-controller", "update", "eventsources/status.core.aktis.ai")).toBe(true);
+    expect(await canI("core-controller", "update", "eventtriggers/status.core.aktis.ai")).toBe(true);
     // Negative control, so the four above cannot pass on an impersonation that
     // is silently answering "yes" to everything: the controller is granted
     // `get` on Secrets and nothing else.
@@ -87,21 +87,21 @@ describe("event-trigger RBAC outside core-controller, as deployed (ADR 0048)", (
   it("lets integration-gateway watch EventSources and read the Secrets they name -- and not EventTriggers", async () => {
     const sa = await serviceAccountOf("agent-controller-integration-gateway");
     for (const verb of ["get", "list", "watch"]) {
-      expect(await canI(sa, verb, "eventsources.core.controller-agent.dev"), `gateway ${verb} eventsources`).toBe(true);
+      expect(await canI(sa, verb, "eventsources.core.aktis.ai"), `gateway ${verb} eventsources`).toBe(true);
     }
     expect(await canI(sa, "get", "secrets")).toBe(true);
     // Matching happens in the orchestrator, never in the gateway (the Role's
     // own comment). A grant here would be privilege nobody's code asked for.
-    expect(await canI(sa, "list", "eventtriggers.core.controller-agent.dev")).toBe(false);
-    expect(await canI(sa, "update", "eventsources.core.controller-agent.dev")).toBe(false);
+    expect(await canI(sa, "list", "eventtriggers.core.aktis.ai")).toBe(false);
+    expect(await canI(sa, "update", "eventsources.core.aktis.ai")).toBe(false);
   });
 
   it("lets agent-orchestrator watch EventTriggers", async () => {
     const sa = await serviceAccountOf("agent-orchestrator");
     for (const verb of ["get", "list", "watch"]) {
-      expect(await canI(sa, verb, "eventtriggers.core.controller-agent.dev"), `orchestrator ${verb} eventtriggers`).toBe(true);
+      expect(await canI(sa, verb, "eventtriggers.core.aktis.ai"), `orchestrator ${verb} eventtriggers`).toBe(true);
     }
-    expect(await canI(sa, "update", "eventtriggers.core.controller-agent.dev")).toBe(false);
+    expect(await canI(sa, "update", "eventtriggers.core.aktis.ai")).toBe(false);
   });
 });
 

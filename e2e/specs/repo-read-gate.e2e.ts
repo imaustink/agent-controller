@@ -47,7 +47,7 @@ const RUN_ID = Date.now() % 100000;
 /** The e2e agent that declares `github`, and so passes through the gate. */
 const GATED_AGENT = "stub-swe-agent";
 
-// The read gate is the Temporal engine's (engines/temporal/internal/authz/
+// The read gate is the Temporal engine's (orchestrator/engines/temporal/internal/authz/
 // repository.go); the LangGraph engine has none, so under
 // E2E_ENGINE=langgraph this file is skipped rather than failing on a refusal
 // that engine never issues.

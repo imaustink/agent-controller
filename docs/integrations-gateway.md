@@ -42,7 +42,7 @@ extensible without touching the orchestrator's reasoning graph.
 
 - Reuse the existing catalog (`Tool`/`Skill`/`Agent` CRs), launch mechanism
   (`ToolRun`/`AgentRun` + core-controller), and event protocol
-  (`@controller-agent/messaging`) — this is new **entry points**, not a new
+  (`@aktis/messaging`) — this is new **entry points**, not a new
   execution model.
 - One new component owns *all* channel-specific concerns (auth verification,
   payload parsing, reply formatting) so `agent-orchestrator`'s graph stays
@@ -82,7 +82,7 @@ graph TD
     Job[CI / job webhook\ne.g. GitHub Actions, Argo]
     FAAS[Direct FAAS call\nPOST /fn/:toolOrAgentId]
 
-    subgraph GW["apps/integration-gateway (new, long-lived)"]
+    subgraph GW["orchestrator/apps/integration-gateway (new, long-lived)"]
         Verify[Per-adapter signature/\nauth verification]
         Normalize[Adapters normalize to\nInboundEvent]
         Router[Router: conversational vs. one-off,\nresolve identity, resolve session id]
@@ -112,11 +112,11 @@ graph TD
     Reply --> FAAS
 ```
 
-### 1. `apps/integration-gateway` — a new long-lived service
+### 1. `orchestrator/apps/integration-gateway` — a new long-lived service
 
 A new app, following the existing convention (own image, own hardened run
 contract, no direct imports from `agent-orchestrator` or any `tools/*`/
-`apps/*` sibling — only from `packages/*`). It is the **only** thing that
+`orchestrator/apps/*` sibling — only from `packages/*`). It is the **only** thing that
 knows about Slack/email/webhook specifics; `agent-orchestrator`'s graph is
 never modified to accommodate a new channel.
 
@@ -142,7 +142,7 @@ this is an additive sibling, not a rework:
 
 ### 2. `InboundEvent` — the shared normalized shape
 
-A small package-level type (candidate: a new `@controller-agent/messaging`
+A small package-level type (candidate: a new `@aktis/messaging`
 addition, or a sibling package if it grows independent versioning needs —
 see [Open questions](#open-questions)) that every adapter produces and every
 router/reply path consumes:
@@ -247,10 +247,10 @@ turning a reply path into a new SSRF/exfil surface.
 | Tool/Skill/Agent catalog, RBAC filtering | `Tool`/`Skill`/`Agent` CRs, `CrdToolRegistry`, `resolveIdentity` | — |
 | Skill retrieval, action planning | LangGraph graph, `VectorStore` | — |
 | Job launching, hardening | `ToolRun`/`AgentRun` + core-controller | — |
-| Container ↔ parent event protocol | `@controller-agent/messaging` (`Sink`, `CallbackSink`, `EventSchema`) | — |
+| Container ↔ parent event protocol | `@aktis/messaging` (`Sink`, `CallbackSink`, `EventSchema`) | — |
 | Session continuity, continuation tokens | `SessionStore`, ADR 0012, ADR 0017 mechanism | New producer of `session_id` (external thread id) |
 | Consumer-facing HTTP pattern | ADR 0006 async accept/poll shape | Reused for the `faas` channel's `POST /fn/:id` |
-| Channel-specific auth/parsing/reply | — | Per-adapter code in `apps/integration-gateway` |
+| Channel-specific auth/parsing/reply | — | Per-adapter code in `orchestrator/apps/integration-gateway` |
 | Direct-by-id tool/agent invocation | `ToolRun`/`AgentRun` launch mechanics | New "launch by id, skip retrieval" component |
 
 ## Security considerations (extends `security.md` and `orchestrator.md`)
@@ -317,7 +317,7 @@ turning a reply path into a new SSRF/exfil surface.
   polling; that's a stand-in, not the intended long-term answer.
 - **Where `InboundEvent` and adapter interfaces live** — a new
   `packages/integrations` shared package (parse/reply contracts only, no
-  channel SDKs) vs. keeping them inside `apps/integration-gateway` until a
+  channel SDKs) vs. keeping them inside `orchestrator/apps/integration-gateway` until a
   second consumer needs them. Given `packages/*` is meant for logic reused
   across workspace members (per repo conventions) and today there's exactly
   one consumer, starting inside the app and extracting later is likely
@@ -337,7 +337,7 @@ turning a reply path into a new SSRF/exfil surface.
 
 ## Suggested phasing
 
-1. **FAAS path first** (`apps/integration-gateway` with only the `faas`
+1. **FAAS path first** (`orchestrator/apps/integration-gateway` with only the `faas`
    adapter): validates the direct-by-id `ToolRun`/`AgentRun` launch
    component and the async accept/poll extension in isolation, with no new
    external-trust surface (caller is already an authenticated API client).
@@ -361,7 +361,7 @@ convention (see [docs/adr/](adr/)).
 
 ## Implementation status
 
-**Implemented:** [apps/integration-gateway](../apps/integration-gateway) as a
+**Implemented:** [orchestrator/apps/integration-gateway](../orchestrator/apps/integration-gateway) as a
 **generic event ingress** driven by two CRDs
 ([ADR 0048](adr/0048-generic-event-triggers.md); the authoritative contract is
 [docs/event-triggers.md](event-triggers.md); field reference in
@@ -427,7 +427,7 @@ hardcoded in the gateway any more.
 - Result delivery is **polling** `GET /invoke/:id`, not push — the "Polling
   vs. push" open question above is still worked around with a bounded poll
   timeout.
-- `@controller-agent/github-app-auth` is shared with the SWE agents for GitHub
+- `@aktis/github-app-auth` is shared with the SWE agents for GitHub
   App JWT signing / installation-token minting (ADR 0018).
 
 **Not implemented:** reply adapters other than `github` and `http` (a Slack
@@ -448,5 +448,5 @@ email channel, and `sender` providers other than `github`.
   [0017](adr/0017-continuation-tokens-via-session-store.md) — the session/
   continuation mechanisms the conversational path reuses unchanged.
 - [docs/adr/0018](adr/0018-github-app-auth-fallback.md) — the GitHub App
-  auth mechanism `@controller-agent/github-app-auth` shares between
-  `apps/opencode-swe-agent` and `apps/integration-gateway`.
+  auth mechanism `@aktis/github-app-auth` shares between
+  `catalog/agents/opencode-swe-agent` and `orchestrator/apps/integration-gateway`.

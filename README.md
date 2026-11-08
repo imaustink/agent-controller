@@ -1,8 +1,42 @@
-# agent-controller
+# Aktis
 
 > [github.com/imaustink/agent-controller](https://github.com/imaustink/agent-controller)
 
-A Kubernetes-native framework for building production AI agents. Tools, Skills,
+**Agents that work as your people, managed like your infrastructure.**
+
+**Aktis** is an open-source, modular platform for building and running AI
+agents in the enterprise:
+
+- **They act as the person who asked.** Each user links their own GitHub,
+  Atlassian, Google Drive or Slack account, and an agent works with that
+  user's access rather than a shared service token, so an answer only cites
+  what that person can read. Tool calls pass authorization checks and
+  approval policies first.
+- **You run them like the rest of your cluster.** Agents, tools and skills are
+  Kubernetes custom resources you deploy through GitOps, and every tool call
+  runs in its own short-lived pod with only the secrets it needs.
+- **Long work survives.** On the default [Temporal](https://temporal.io) engine
+  ([ADR 0036](docs/adr/0036-temporal-execution-engine.md)) every turn is a
+  durable workflow, so a pod restart, a deploy or a day-long wait for approval
+  loses nothing.
+
+Take the whole platform or only the parts you need
+([ADR 0047](docs/adr/0047-decouple-framework-from-orchestrator.md)):
+
+- **Aktis SDK** ([`framework/`](framework/)): the wire protocol, agent runtime
+  and messaging transports you build an agent or tool with. It runs anywhere,
+  in-process included.
+- **Aktis orchestrator** ([`orchestrator/`](orchestrator/)): runs agents in
+  production on Kubernetes: the controller and CRDs, the execution engines, the
+  gateways and brokers, and the Helm charts.
+- **Aktis catalog** ([`catalog/`](catalog/)): ready-made agents and tools to use
+  as they are or copy.
+
+The name is the Greek *aktís*, a ray of light. The project was called
+agent-controller; the repository, chart and image names still carry that name
+until the repository split.
+
+The Aktis orchestrator is a Kubernetes-native way to run production AI agents. Tools, Skills,
 and Agents are declared as **custom resources** and launched as one-shot Jobs by
 a dedicated controller — so operators manage the catalog declaratively and the
 orchestrator stays focused on reasoning, not infrastructure.
@@ -42,7 +76,7 @@ graph TD
     Orchestrator[agent-orchestrator\nDeployment]
     Controller[core-controller\nDeployment]
 
-    subgraph CRDs["Custom Resources (core.controller-agent.dev/v1alpha1)"]
+    subgraph CRDs["Custom Resources (core.aktis.ai/v1alpha1)"]
         ToolCR[Tool CR\nimage · SA · secretEnv · allowedRoles]
         SkillCR[Skill CR\nmarkdown · toolRefs]
         AgentCR[Agent CR\nimage · SA · skillRefs · toolRefs]
@@ -73,48 +107,55 @@ graph TD
 > all 14 kinds across tools, agents, knowledge bases, MCP, events and identity —
 > is in **[docs/crds.md](docs/crds.md)**.
 
-This is an **npm workspace** monorepo: `packages/` holds shared libraries,
-`tools/` holds on-demand tool containers, `apps/` holds the long-lived
-orchestrator service, and `controllers/` holds the Go controller.
+This is an **npm workspace** monorepo (plus standalone Go modules) in three
+layers ([ADR 0047](docs/adr/0047-decouple-framework-from-orchestrator.md)):
+the **framework** you build agents and tools with, a **catalog** of reference
+agents and tools built on it, and the **orchestrator** that runs them on
+Kubernetes. Either half can be adopted without the other.
 
 ## Repository layout
 
 ```
 .
 ├── README.md                   # this file — general overview & conventions
-├── package.json                # npm workspaces root (packages/* + tools/* + apps/*)
-├── docs/                       # shared standards every tool follows
-│   ├── messaging.md            # event protocol & transports
-│   ├── security.md             # threat model & mitigations
-│   ├── orchestrator.md         # orchestrator architecture
-│   ├── integrations-gateway.md # event integrations proposal (GitHub Issues implemented)
-│   └── adr/                    # Architecture Decision Records
-├── packages/
-│   ├── messaging/              # @controller-agent/messaging — shared event protocol
-│   └── github-app-auth/        # @controller-agent/github-app-auth — GitHub App JWT/token auth
-├── tools/                      # on-demand tool containers (example implementations)
-│   ├── recipe-scraper/         # URL → recipe Markdown
-│   ├── recipe-publisher/       # recipe Markdown → Mealie instance
-│   └── github/                 # gh CLI command → GitHub, as the calling user's own identity
-├── apps/
-│   ├── agent-orchestrator/     # RAG skill selection + ToolRun/AgentRun creator
-│   └── integration-gateway/    # event ingress: EventSource webhooks/cron ticks → agent-orchestrator (ADR 0048)
-├── controllers/
-│   └── core-controller/        # Go controller — watches CRDs, launches Jobs
-│       ├── api/v1alpha1/        # Tool, Skill, Agent, ToolRun, AgentRun types
-│       └── internal/controller/ # reconciliation logic
-├── examples/
-│   └── event-triggers/         # bare EventSource/EventTrigger manifests (webhooks, cron) — not in any chart
-└── charts/                     # Helm charts
-    ├── agent-controller/       # system chart: orchestrator + core-controller (+ CRDs) + optional Redis/Qdrant/NATS/Open WebUI/integration-gateway
-    └── community-components/   # catalog chart: Tool/Skill/Agent custom resources
+├── package.json                # npm workspaces root
+├── boundaries.json             # which layer every component belongs to (CI-enforced)
+├── docs/                       # cross-cutting docs + Architecture Decision Records (adr/)
+├── framework/                  # depends on nothing else in this repo
+│   ├── protocol/               # the canonical wire contract (.proto) + generated TS/Go + conformance fixtures
+│   ├── messaging/              # @aktis/messaging — tool event stream, sinks, zod schemas
+│   ├── agent-runtime/          # @aktis/agent-runtime — the agent SDK (runAgent, in-process runs)
+│   └── github-app-auth/        # @aktis/github-app-auth — GitHub App JWT/token auth
+├── catalog/                    # built on the framework; deployed by the orchestrator
+│   ├── agents/                 # stub-agent, claude-code-swe-agent, opencode-swe-agent
+│   ├── tools/                  # on-demand tool containers (recipe-scraper, github, web-search, …)
+│   └── tools-local/            # in-pod LocalTool examples (Go, Node, Python, shell)
+├── orchestrator/               # runs agents at scale; depends only on the framework
+│   ├── apps/                   # agent-orchestrator (LangGraph engine), integration-gateway, connection-broker, mcp-broker
+│   ├── engines/temporal/       # the Temporal execution engine (Go)
+│   ├── controllers/core-controller/  # Go controller — CRDs + reconcilers, launches Jobs
+│   ├── packages/event-triggers/      # EventSource/EventTrigger contract: envelope, CEL, matching (ADR 0048)
+│   ├── sidecars/localtool-executor/  # in-pod LocalTool executor
+│   └── charts/                 # Helm: agent-controller (system) + community-components (catalog CRs)
+├── examples/event-triggers/     # bare EventSource/EventTrigger manifests (webhooks, cron), not in any chart
+├── e2e/                        # end-to-end suites across every layer
+└── scripts/                    # dev and CI helpers
 ```
 
 General, cross-cutting documentation lives at the repo root (`README.md` and
 `docs/`). Anything specific to a single tool — its inputs, configuration,
 build/run steps, and troubleshooting — lives in that tool's own `README.md`.
-Code shared by more than one tool belongs in `packages/`, not copied between
+Code shared by more than one tool belongs in `framework/`, not copied between
 tools.
+
+Every component belongs to one layer — **framework**, **catalog** or
+**orchestrator** ([ADR 0047](docs/adr/0047-decouple-framework-from-orchestrator.md)) —
+assigned in [`boundaries.json`](boundaries.json). The framework depends on
+nothing else in the repo; the catalog and the orchestrator may depend only on the
+framework. `npm run check:boundaries` enforces this in CI across package.json
+dependencies, imports, tsconfig paths, Go imports and Dockerfile `COPY`s, and
+also fails on a new workspace, Go module or Dockerfile that hasn't been assigned
+a layer.
 
 ## Components
 
@@ -122,17 +163,17 @@ tools.
 
 | Component | Language | Docs |
 | --------- | -------- | ---- |
-| **core-controller** | Go (kubebuilder) | [controllers/core-controller/README.md](controllers/core-controller/README.md) |
+| **core-controller** | Go (kubebuilder) | [orchestrator/controllers/core-controller/README.md](orchestrator/controllers/core-controller/README.md) |
 
 The controller watches `Tool`, `Skill`, `Agent`, `ToolRun`, and `AgentRun` CRs
-(API group `core.controller-agent.dev/v1alpha1`) and manages all Job creation,
+(API group `core.aktis.ai/v1alpha1`) and manages all Job creation,
 secret injection, and lifecycle tracking.
 
 ### Orchestrator
 
 | App | Docs |
 | --- | ---- |
-| **agent-orchestrator** | [apps/agent-orchestrator/README.md](apps/agent-orchestrator/README.md) |
+| **agent-orchestrator** | [orchestrator/apps/agent-orchestrator/README.md](orchestrator/apps/agent-orchestrator/README.md) |
 
 A long-lived LangGraph.js service that handles the agent loop: resolves caller
 identity, selects a Skill via RAG, plans an action, and creates a `ToolRun` or
@@ -142,10 +183,10 @@ identity, selects a Skill via RAG, plans an action, and creates a `ToolRun` or
 
 | Tool | Input | Output | Docs |
 | ---- | ----- | ------ | ---- |
-| **recipe-scraper** | any recipe URL (web page, video, or image) | recipe Markdown | [tools/recipe-scraper/README.md](tools/recipe-scraper/README.md) |
-| **recipe-publisher** | recipe Markdown | published/updated recipe in a Mealie instance | [tools/recipe-publisher/README.md](tools/recipe-publisher/README.md) |
-| **github** | a single `gh` CLI command line | `gh`'s own output, authenticated as the calling user's own linked GitHub identity | [tools/github/README.md](tools/github/README.md) |
-| **glyph** | a JSON note/task command (create/read/update/search) | a Markdown summary of the result, authenticated as the calling user's own linked Glyph identity | [tools/glyph/README.md](tools/glyph/README.md) |
+| **recipe-scraper** | any recipe URL (web page, video, or image) | recipe Markdown | [catalog/tools/recipe-scraper/README.md](catalog/tools/recipe-scraper/README.md) |
+| **recipe-publisher** | recipe Markdown | published/updated recipe in a Mealie instance | [catalog/tools/recipe-publisher/README.md](catalog/tools/recipe-publisher/README.md) |
+| **github** | a single `gh` CLI command line | `gh`'s own output, authenticated as the calling user's own linked GitHub identity | [catalog/tools/github/README.md](catalog/tools/github/README.md) |
+| **glyph** | a JSON note/task command (create/read/update/search) | a Markdown summary of the result, authenticated as the calling user's own linked Glyph identity | [catalog/tools/glyph/README.md](catalog/tools/glyph/README.md) |
 
 ## Shared standards
 
@@ -154,7 +195,7 @@ Every tool container is expected to conform to these repo-wide standards:
 - **[Message passing](docs/messaging.md)** — the event protocol
   (`accepted → progress* / warning* → succeeded | failed`), the transports
   (stdout / file / HTTP callback), and the correlation/idempotency rules.
-  Implemented once as the [@controller-agent/messaging](packages/messaging/) package.
+  Implemented once as the [@aktis/messaging](framework/messaging/) package.
 - **[Security model](docs/security.md)** — SSRF defense, prompt-injection
   containment, the hardened container run contract, and secret handling.
 
@@ -166,23 +207,28 @@ Two independent Helm charts cover the full system:
 
 | Chart | What it installs |
 | ----- | ---------------- |
-| [charts/agent-controller](charts/agent-controller/) | The system: CRDs + core-controller operator Deployment/RBAC, the agent-orchestrator Deployment/Services, and optional Redis/Qdrant/NATS/Open WebUI |
-| [charts/community-components](charts/community-components/) | The catalog: Tool/Skill/Agent custom resources (recipe-scraper, recipe-publisher, recipe-refining skill, opencode-swe-agent) |
+| [orchestrator/charts/agent-controller](orchestrator/charts/agent-controller/) | The system: CRDs + core-controller operator Deployment/RBAC, the agent-orchestrator Deployment/Services, and optional Redis/Qdrant/NATS/Open WebUI |
+| [orchestrator/charts/community-components](orchestrator/charts/community-components/) | The catalog: Tool/Skill/Agent custom resources (recipe-scraper, recipe-publisher, recipe-refining skill, opencode-swe-agent) |
 
 Install `agent-controller` first (it owns the CRDs), then
 `community-components` on top of it. See each chart's README for
 prerequisites and values. Tools are never deployed as long-running pods — the
 controller launches them as one-shot Jobs via `ToolRun`/`AgentRun` CRs.
 
+> **Upgrading a cluster installed before the Aktis rename?** The CRD API
+> group moved from `core.controller-agent.dev` to `core.aktis.ai`. Follow
+> [docs/aktis-migration.md](docs/aktis-migration.md) **before** upgrading,
+> or the new release starts with an empty catalog and no linked accounts.
+
 From a local checkout:
 
 ```bash
-helm install agent-controller charts/agent-controller -n controller-agent --create-namespace
-helm install community-components charts/community-components -n controller-agent
+helm install agent-controller orchestrator/charts/agent-controller -n controller-agent --create-namespace
+helm install community-components orchestrator/charts/community-components -n controller-agent
 ```
 
 Both charts are also published as OCI artifacts to GitHub Container Registry
-on every merge to `main` that touches `charts/**` (see
+on every merge to `main` that touches `orchestrator/charts/**` (see
 [.github/workflows/release.yml](.github/workflows/release.yml)),
 so you can install without cloning the repo:
 
@@ -205,28 +251,28 @@ paths (as `values-production.yaml` does).
 
 | Image | Built from |
 | ----- | ---------- |
-| `ghcr.io/imaustink/agent-controller/agent-orchestrator` | [apps/agent-orchestrator/Dockerfile](apps/agent-orchestrator/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/opencode-swe-agent` | [apps/opencode-swe-agent/Dockerfile](apps/opencode-swe-agent/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/claude-code-swe-agent` | [apps/claude-code-swe-agent/Dockerfile](apps/claude-code-swe-agent/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/integration-gateway` | [apps/integration-gateway/Dockerfile](apps/integration-gateway/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/recipe-scraper` | [tools/recipe-scraper/Dockerfile](tools/recipe-scraper/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/recipe-publisher` | [tools/recipe-publisher/Dockerfile](tools/recipe-publisher/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/web-search` | [tools/web-search/Dockerfile](tools/web-search/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/web-fetch` | [tools/web-fetch/Dockerfile](tools/web-fetch/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/image-gen` | [tools/image-gen/Dockerfile](tools/image-gen/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/kubectl-readonly` | [tools/kubectl-readonly/Dockerfile](tools/kubectl-readonly/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/signoz-query` | [tools/signoz-query/Dockerfile](tools/signoz-query/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/github` | [tools/github/Dockerfile](tools/github/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/glyph` | [tools/glyph/Dockerfile](tools/glyph/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/ssh` | [tools/ssh/Dockerfile](tools/ssh/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/core-controller` | [controllers/core-controller/Dockerfile](controllers/core-controller/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/temporal-engine-worker` | [engines/temporal/Dockerfile.worker](engines/temporal/Dockerfile.worker) |
-| `ghcr.io/imaustink/agent-controller/temporal-engine-gateway` | [engines/temporal/Dockerfile.gateway](engines/temporal/Dockerfile.gateway) |
-| `ghcr.io/imaustink/agent-controller/temporal-engine-catalog-sync` | [engines/temporal/Dockerfile.catalog-sync](engines/temporal/Dockerfile.catalog-sync) |
-| `ghcr.io/imaustink/agent-controller/localtool-executor-node` | [sidecars/localtool-executor/Dockerfile](sidecars/localtool-executor/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/localtool-executor-python` | [sidecars/localtool-executor/Dockerfile](sidecars/localtool-executor/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/localtool-executor-go` | [sidecars/localtool-executor/Dockerfile](sidecars/localtool-executor/Dockerfile) |
-| `ghcr.io/imaustink/agent-controller/localtool-executor-shell` | [sidecars/localtool-executor/Dockerfile](sidecars/localtool-executor/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/agent-orchestrator` | [orchestrator/apps/agent-orchestrator/Dockerfile](orchestrator/apps/agent-orchestrator/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/opencode-swe-agent` | [catalog/agents/opencode-swe-agent/Dockerfile](catalog/agents/opencode-swe-agent/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/claude-code-swe-agent` | [catalog/agents/claude-code-swe-agent/Dockerfile](catalog/agents/claude-code-swe-agent/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/integration-gateway` | [orchestrator/apps/integration-gateway/Dockerfile](orchestrator/apps/integration-gateway/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/recipe-scraper` | [catalog/tools/recipe-scraper/Dockerfile](catalog/tools/recipe-scraper/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/recipe-publisher` | [catalog/tools/recipe-publisher/Dockerfile](catalog/tools/recipe-publisher/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/web-search` | [catalog/tools/web-search/Dockerfile](catalog/tools/web-search/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/web-fetch` | [catalog/tools/web-fetch/Dockerfile](catalog/tools/web-fetch/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/image-gen` | [catalog/tools/image-gen/Dockerfile](catalog/tools/image-gen/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/kubectl-readonly` | [catalog/tools/kubectl-readonly/Dockerfile](catalog/tools/kubectl-readonly/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/signoz-query` | [catalog/tools/signoz-query/Dockerfile](catalog/tools/signoz-query/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/github` | [catalog/tools/github/Dockerfile](catalog/tools/github/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/glyph` | [catalog/tools/glyph/Dockerfile](catalog/tools/glyph/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/ssh` | [catalog/tools/ssh/Dockerfile](catalog/tools/ssh/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/core-controller` | [orchestrator/controllers/core-controller/Dockerfile](orchestrator/controllers/core-controller/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/temporal-engine-worker` | [orchestrator/engines/temporal/Dockerfile.worker](orchestrator/engines/temporal/Dockerfile.worker) |
+| `ghcr.io/imaustink/agent-controller/temporal-engine-gateway` | [orchestrator/engines/temporal/Dockerfile.gateway](orchestrator/engines/temporal/Dockerfile.gateway) |
+| `ghcr.io/imaustink/agent-controller/temporal-engine-catalog-sync` | [orchestrator/engines/temporal/Dockerfile.catalog-sync](orchestrator/engines/temporal/Dockerfile.catalog-sync) |
+| `ghcr.io/imaustink/agent-controller/localtool-executor-node` | [orchestrator/sidecars/localtool-executor/Dockerfile](orchestrator/sidecars/localtool-executor/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/localtool-executor-python` | [orchestrator/sidecars/localtool-executor/Dockerfile](orchestrator/sidecars/localtool-executor/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/localtool-executor-go` | [orchestrator/sidecars/localtool-executor/Dockerfile](orchestrator/sidecars/localtool-executor/Dockerfile) |
+| `ghcr.io/imaustink/agent-controller/localtool-executor-shell` | [orchestrator/sidecars/localtool-executor/Dockerfile](orchestrator/sidecars/localtool-executor/Dockerfile) |
 
 The list comes from [.github/release-images.json](.github/release-images.json);
 adding an entry there publishes a new image.
@@ -276,17 +322,17 @@ and must be re-created before running the script again.
 
 ## Adding a new tool
 
-1. Create `tools/<tool-name>/` with its own `Dockerfile`, source, and `README.md`.
-2. Add it to the root `package.json` workspaces (covered by the `tools/*` glob)
-   and depend on [@controller-agent/messaging](packages/messaging/) for the
+1. Create `catalog/tools/<tool-name>/` with its own `Dockerfile`, source, and `README.md`.
+2. Add it to the root `package.json` workspaces (covered by the `catalog/tools/*` glob)
+   and depend on [@aktis/messaging](framework/messaging/) for the
    [event protocol](docs/messaging.md) — see
-   `tools/recipe-scraper/src/messaging/index.ts` for the wiring pattern.
+   `catalog/tools/recipe-scraper/src/messaging/index.ts` for the wiring pattern.
 3. Follow the [security model](docs/security.md): treat all input as untrusted,
    guard outbound requests (SSRF), constrain any LLM output, ship a hardened
    `run.sh`.
-4. If the Dockerfile depends on a `packages/*` library, build from the **repo
-   root**: `docker build -f tools/<tool-name>/Dockerfile -t <name>:latest .`
-5. Create a `Tool` CR in `tools/<tool-name>/tool.yaml` referencing the image
+4. If the Dockerfile depends on a `framework/*` library, build from the **repo
+   root**: `docker build -f catalog/tools/<tool-name>/Dockerfile -t <name>:latest .`
+5. Create a `Tool` CR in `catalog/tools/<tool-name>/tool.yaml` referencing the image
    and any required `secretEnv` entries, then `kubectl apply -f` it — the
    controller picks it up immediately, and the orchestrator indexes it on next
    restart. No manifest file, no orchestrator rebuild required (ADR 0010).

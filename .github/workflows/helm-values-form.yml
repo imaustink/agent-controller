@@ -3,7 +3,7 @@ name: helm-values-form
 on:
   pull_request:
     paths:
-      - "tools/helm-values-form/**"
+      - "catalog/tools/helm-values-form/**"
       - ".github/workflows/helm-values-form.yml"
 
 permissions:
@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: tools/helm-values-form
+        working-directory: catalog/tools/helm-values-form
     steps:
       - uses: actions/checkout@v4
 

@@ -21,12 +21,12 @@
 # No toolRefs/agentRefs: an UNRESTRICTED skill (ADR 0011) -- reachable by the
 # gateway's own service identity, which is what a CI event (a source with no
 # `sender`) runs as, and needing no authorization pre-flight.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: Skill
 metadata:
   name: e2e-ci-failure-skill
   labels:
-    e2e.controller-agent.dev/fixture: event-triggers
+    e2e.aktis.ai/fixture: event-triggers
 spec:
   description: >-
     Acknowledges an e2e-ci-fixture pipeline failure notice by echoing a fixed
