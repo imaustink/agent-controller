@@ -13,8 +13,9 @@ export interface SessionTurn {
 
 /**
  * Server-rendered "session page" (issue #81): a minimal interactive page,
- * scoped to one GitHub-issue session, that a "starting work" comment links
- * to so a caller can watch a triage run's turn history and send it follow-up
+ * scoped to one session, that a trigger's ack comment links to (when the
+ * trigger declares `reply.github.sessionPage`) so a caller can watch the
+ * run's turn history and send it follow-up
  * prompts without posting another GitHub comment. `token` is the page's
  * unguessable capability credential -- anyone holding the URL can view the
  * history and add prompts, same trust model as e.g. a calendar ICS share
@@ -51,9 +52,12 @@ export interface AddedTurn {
 }
 
 /**
- * Keyed by `sessionId` (`github:<owner>/<repo>#<issueNumber>`, see
- * `sessionIdFor` in server.ts) for lookups from the webhook path, and by
- * `token` for lookups from the page's own routes.
+ * Keyed by `sessionId` (the accepted trigger's `trigger.sessionId`, whatever
+ * shape its `sessionKey` renders to) for lookups from the event path, and by
+ * `token` for lookups from the page's own routes. The GitHub issue a session's
+ * follow-ups reply to is STORED on the entry (`owner`/`repo`/`issueNumber`,
+ * from the trigger's `reply.github`), never parsed back out of the session id
+ * -- a session id is an operator-chosen template, not a GitHub address.
  */
 export interface SessionPageStore {
   /** Creates the page the first time a session is seen; a no-op returning the existing entry on every later call for the same `sessionId`. */
@@ -61,10 +65,9 @@ export interface SessionPageStore {
   getByToken(token: string): Promise<SessionPageEntry | undefined>;
   /**
    * Appends a pending turn to an EXISTING entry. Deliberately does not
-   * create one -- a plain (non-triage) issue comment/opened event has no
-   * page unless/until that issue has actually been through the labeled
-   * triage trigger at least once, and this must not create one just because
-   * a session id happens to match.
+   * create one -- a session has a page only once a trigger declaring
+   * `reply.github.sessionPage` has run on it, and this must not create one
+   * just because a session id happens to match.
    */
   addTurn(sessionId: string, request: string): Promise<AddedTurn | undefined>;
   completeTurn(sessionId: string, turnIndex: number, outcome: CompletedOutcome): Promise<void>;

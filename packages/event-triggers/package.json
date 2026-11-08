@@ -1,0 +1,22 @@
+{
+  "name": "@controller-agent/event-triggers",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "EventSource/EventTrigger contract (ADR 0048, docs/event-triggers.md): the normalized event envelope, the shared CEL environment, trigger matching, params and template rendering. Pure logic, no Kubernetes client.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@marcbachmann/cel-js": "8.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.5",
+    "typescript": "^5.6.2",
+    "vitest": "^4.0.0"
+  }
+}

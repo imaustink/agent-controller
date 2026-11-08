@@ -44,6 +44,7 @@ const { privateKey: APP_PEM } = generateKeyPairSync("rsa", {
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
+    readOnly: false,
     transport: "stdout",
     jobId: "job-1",
     eventsPath: "/tmp/x.ndjson",

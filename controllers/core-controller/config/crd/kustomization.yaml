@@ -11,6 +11,8 @@ resources:
 - bases/core.controller-agent.dev_knowledgebases.yaml
 - bases/core.controller-agent.dev_mcpservers.yaml
 - bases/core.controller-agent.dev_mcptools.yaml
+- bases/core.controller-agent.dev_eventsources.yaml
+- bases/core.controller-agent.dev_eventtriggers.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

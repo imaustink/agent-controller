@@ -171,6 +171,7 @@ func main() {
 		w.RegisterActivityWithOptions(retrieval.RetrieveTools, activity.RegisterOptions{Name: activities.RetrieveToolsActivityName})
 		w.RegisterActivityWithOptions(retrieval.ResolveSkillTools, activity.RegisterOptions{Name: activities.ResolveSkillToolsActivityName})
 		w.RegisterActivityWithOptions(retrieval.ResolveAgent, activity.RegisterOptions{Name: activities.ResolveAgentActivityName})
+		w.RegisterActivityWithOptions(retrieval.ResolveTool, activity.RegisterOptions{Name: activities.ResolveToolActivityName})
 		w.RegisterActivityWithOptions(retrieval.ResolveAgentTools, activity.RegisterOptions{Name: activities.ResolveAgentToolsActivityName})
 		// Knowledge bases (ADR 0039, 0040, 0043). Registered here because they
 		// need the same Qdrant client: a corpus is a per-Corpus collection

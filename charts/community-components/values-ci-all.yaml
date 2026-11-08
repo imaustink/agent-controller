@@ -139,16 +139,6 @@ skills:
   ssh:
     enabled: true
 
-integrationRoutes:
-  githubIssueLabeledReview:
-    enabled: true
-  githubIssueLabeledTriage:
-    enabled: true
-  githubPrLabeledReview:
-    enabled: true
-  githubPrLabeledTriage:
-    enabled: true
-
 # The e2e MCP server fixture (fake-mcp-server.yaml). Enabled here so the
 # "every template renders" validate job covers it, mirroring stubAgent. The
 # image is irrelevant to a render-only check.

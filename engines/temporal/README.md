@@ -16,7 +16,7 @@ design and milestone plan.
 
 | Path | What it is |
 | ---- | ---------- |
-| `cmd/gateway` | Stateless HTTP front door: OpenAI Chat Completions-compatible facade and the `/invoke` accept/poll pair, both → per-session conversation workflow via update-with-start. Also hosts the HMAC callback→signal bridge for tool Jobs, and watches `IntegrationRoute` CRs for deterministic event dispatch. |
+| `cmd/gateway` | Stateless HTTP front door: OpenAI Chat Completions-compatible facade and the `/invoke` accept/poll pair, both → per-session conversation workflow via update-with-start. Also hosts the HMAC callback→signal bridge for tool Jobs, and watches `EventTrigger` CRs to match event envelopes posted by direct callers (ADR 0048). |
 | `cmd/worker` | Temporal worker hosting workflows and activities. |
 | `cmd/catalog-sync` | Watches agent-controller's Tool/Skill/Agent CRs (dynamic informers) and mirrors them into Qdrant with derived skill access roles. |
 | `internal/catalog` | CR decoding, skill-access derivation (ADR 0011 port), indexer. |
@@ -71,26 +71,39 @@ enter another's candidate set. A skill can refuse them with
 
 ## Event-driven turns (`/invoke`)
 
-An adapter (agent-controller's integration-gateway) posts
-`{request, sessionId, event}` and polls:
+`/invoke` takes one of two shapes (agent-controller ADR 0048,
+`docs/event-triggers.md` §5):
+
+- **A resolved turn** from agent-orchestrator, which matched the event
+  itself: `request` (the rendered prompt), `sessionId`, and
+  `forcedSkillId | forcedAgentId | forcedToolId`, `toolInput`, `readOnly`,
+  `params`, `triggerName`, `targetRepository`. Nothing is matched here.
+- **A raw event envelope** from a direct caller, matched here against
+  `EventTrigger` CRs (CEL via `cel-go`):
 
 ```bash
 curl -s -XPOST localhost:8080/invoke -H 'Content-Type: application/json' -d '{
-  "request": "an issue was labeled",
-  "sessionId": "github:acme/widgets#7",
-  "event": {"source":"github","event":"issues","action":"labeled",
-            "labelName":"ai-triage","owner":"acme","repo":"widgets",
-            "issueNumber":7,"title":"Crash on save"}
+  "event": {"source":"github","kind":"webhook","id":"d-1","time":"2026-10-13T12:00:00Z",
+            "headers":{"x-github-event":"pull_request"},
+            "body":{"action":"labeled","label":{"name":"ai-review"},
+                    "pull_request":{"number":42},"repository":{"full_name":"acme/widgets"}},
+            "sender":{"login":"octocat","isBot":false},"repository":"acme/widgets"}
 }'
-# {"id":"conversation-github-acme-widgets-7.<uuid>","status":"pending"}
+# 202 {"id":"conversation-github-acme-widgets-42.<uuid>","status":"pending",
+#      "trigger":{"name":"github-pr-review","sessionId":"github:acme/widgets#42","reply":{...}}}
+# 200 {"status":"ignored"}                 — no trigger matched: no turn, no RAG fallback
+# 422 {"status":"failed","error":"..."}    — matched, but params/templates failed
 
 curl -s localhost:8080/invoke/<id>
 # {"id":"...","status":"succeeded","result":"..."}
 ```
 
-When the `event` matches an `IntegrationRoute` CR, its `promptTemplate` is
-rendered and the named Skill/Agent is dispatched directly — no RAG retrieval
-(upstream ADR 0024). No match behaves exactly as before the field existed.
+A forced target is re-resolved under the caller's roles and a miss fails the
+turn. A `toolRef` runs its tool once with `toolInput`, skipping the planner.
+`readOnly` is sticky for the conversation: every AgentRun/ToolRun the turn
+(and every later turn in that session) launches gets `spec.readOnly`, and the
+caller's GitHub token is withheld from the run. Set `EVENT_TRIGGERS=false` to
+skip the trigger watch (envelopes are then refused with 503).
 
 The invocation id names a workflow update, so a poll is answered from
 Temporal rather than from process memory: any replica can serve it, and a
@@ -98,12 +111,12 @@ gateway that dies mid-turn costs the caller nothing. This is upstream's
 ADR 0006 restart/scale-out gap, and the "durable invocation records, which
 this does not attempt" that ADR 0033 closes on.
 
-`event.senderLogin` says which human triggered the turn, and therefore which
+`event.sender.login` says which human triggered the turn, and therefore which
 stored credentials the run may receive. Set
 `GATEWAY_SENDER_ASSERTION_SECRET` on both this gateway and
 integration-gateway to require it signed (`x-gateway-user-assertion`,
-wire-compatible with upstream); unset, the unsigned body field is trusted and
-both processes warn at startup.
+wire-compatible with upstream); unset, the unsigned envelope field is trusted
+and both processes warn at startup.
 
 For cluster-less development: `go run ./cmd/dev-seed` populates Qdrant with
 a sample catalog, `TOOLRUN_MODE=fake` logs tool launches instead of creating

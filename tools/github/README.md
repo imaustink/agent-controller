@@ -97,7 +97,13 @@ as `GITHUB_TOKEN`.
    `src/allowlist.ts`'s header comment (this tool's ServiceAccount/RBAC
    grants nothing broader than a fixed set of GitHub permissions; GitHub's
    own authorization on the delegated token is what actually gates a
-   write).
+   write). When the `ToolRun` is read-only (`spec.readOnly` ->
+   `TOOL_READ_ONLY=true`, ADR 0048) a second, narrower allowlist of
+   read-only subcommands applies on top (`issue view/list`, `pr
+   view/list/diff/checks/status`, ...); every write subcommand (`create`,
+   `comment`, `edit`, `close`, `reopen`, `merge`, `review`, ...) is refused
+   before `gh` runs. It is an allowlist too, so a newly allowed subcommand
+   counts as a write until listed as read-only.
 3. **No shell** -- the validated argv is passed straight to
    `child_process.spawn`, never interpolated into a shell string
    (`src/github.ts`).

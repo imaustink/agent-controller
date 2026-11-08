@@ -31,7 +31,7 @@ async function run(emitter: JobEmitter, commandLine: string): Promise<void> {
   await emitter.progress("validate");
   let argv: string[];
   try {
-    argv = validateCommand(tokenize(commandLine));
+    argv = validateCommand(tokenize(commandLine), { readOnly: config.readOnly });
   } catch (err) {
     if (err instanceof BlockedCommandError) {
       fail("blocked_command", EXIT.blockedCommand, err.message);

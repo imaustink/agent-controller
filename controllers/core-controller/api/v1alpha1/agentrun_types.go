@@ -57,6 +57,18 @@ type AgentRunSpec struct {
 	// be baked into the Agent template.
 	// +optional
 	SecretEnv []SecretEnvVar `json:"secretEnv,omitempty"`
+
+	// readOnly runs the agent read-only (AGENT_READ_ONLY=true): it may not
+	// push, open/merge/edit pull requests, or hold a write credential. Set
+	// from an EventTrigger's target.readOnly (docs/event-triggers.md §6) —
+	// a structured field, never a marker in the goal.
+	// +optional
+	ReadOnly bool `json:"readOnly,omitempty"`
+
+	// params are an EventTrigger's rendered params, handed to the agent as
+	// AGENT_PARAMS (a JSON object of strings).
+	// +optional
+	Params map[string]string `json:"params,omitempty"`
 }
 
 // AgentRunStatus defines the observed state of AgentRun — identical shape

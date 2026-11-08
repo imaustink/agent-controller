@@ -1,0 +1,72 @@
+# The triage label on a PR means "pick this PR back up": address the review
+# feedback on it, push the updates, and sync it with its base branch. Same label
+# as issue triage -- what it means is decided by what got labeled (the
+# x-github-event header). Unlike github-pr-review this one DOES push, so it is
+# not readOnly.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: EventTrigger
+metadata:
+  name: github-pr-triage
+spec:
+  sourceRef: github
+  match:
+    cel: >-
+      headers["x-github-event"] == "pull_request" &&
+      body.action == "labeled" &&
+      body.label.name == "ai-triage"
+  params:
+    repository: body.repository.full_name
+    number: body.pull_request.number
+    title: body.pull_request.title
+    description: body.pull_request.body
+    label: body.label.name
+  sessionKey: "github:{{repository}}#{{number}}"
+  target:
+    agentRef: "opencode-swe-agent"
+    promptTemplate: |
+      Pull request {{repository}}#{{number}} was labeled "{{label}}": "{{title}}"
+
+      {{description}}
+
+      Pick this pull request back up and get it ready to merge. Work only in
+      {{repository}} and only on this PR's existing branch -- do
+      not open a second pull request, do not create a repository, and do not
+      substitute any other repository or branch.
+
+      1. Check out the PR's branch (`gh pr checkout {{number}}`).
+      2. Read ALL the feedback on it: the PR description, every review
+         (`gh pr view {{number}} --comments`, `gh api` for review
+         comments), and any failing checks (`gh pr checks {{number}}`).
+      3. Address that feedback in code. Fix the failing checks too. Where you
+         disagree with a comment, reply to it explaining why instead of silently
+         ignoring it.
+      4. Sync the branch with its base branch, resolving any conflicts
+         (`gh pr view {{number}} --json baseRefName`, then rebase or
+         merge the base in -- match whatever this repository's history already
+         does). Push the result to the same branch so the PR itself updates.
+      5. Update the PR description if what it says no longer matches what the
+         branch does, and post one comment summarizing what you changed in
+         response to which feedback, plus anything you deliberately did not do.
+
+      Resolve every review comment you addressed. If something is genuinely
+      blocking you -- a comment you cannot act on without a decision, a conflict
+      you cannot resolve safely, missing permission -- stop and post a comment
+      saying exactly what you need, rather than guessing or working around it
+      somewhere else.
+
+      You get exactly one turn to do this -- you cannot pause partway through
+      and wait for a CI check, build, or test run to finish, and nothing will
+      re-invoke you automatically when one does. Push your work and post your
+      summary now. If a check is still running when you finish, say so in one
+      line -- do not let it block or delay pushing and summarizing, and do not
+      say you'll "finalize" or "resume" later. (The triage label is removed once
+      this run ends, so a maintainer can simply re-apply it to have you pick the
+      PR up again.)
+  reply:
+    github:
+      repository: "{{repository}}"
+      issueNumber: "{{number}}"
+      ack: "🤖 Starting work on this now."
+      sessionPage: true
+      result: true
+      removeLabel: "{{label}}"
