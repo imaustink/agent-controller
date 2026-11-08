@@ -85,7 +85,7 @@ export async function upsertSecret(name: string, key: string, value: string, lab
     JSON.stringify({
       apiVersion: "v1",
       kind: "Secret",
-      metadata: { name, labels: { "e2e.controller-agent.dev/fixture": "event-triggers", ...labels } },
+      metadata: { name, labels: { "e2e.aktis.ai/fixture": "event-triggers", ...labels } },
       type: "Opaque",
       stringData: { [key]: value },
     }),
@@ -118,7 +118,7 @@ export const replySigningSecret = () => secretValue(EVENT_SECRETS.reply.name, EV
 // ── per-test CRs ─────────────────────────────────────────────────────────────
 
 /** Label on every CR a spec creates, so `deleteEventFixtures` can sweep a whole file's worth. */
-export const FIXTURE_LABEL = "e2e.controller-agent.dev/event-fixture";
+export const FIXTURE_LABEL = "e2e.aktis.ai/event-fixture";
 
 /** A short, DNS-safe, per-process suffix for per-test CR names (EventSource names become URL paths and CronJob names). */
 export function runSuffix(): string {
@@ -128,7 +128,7 @@ export function runSuffix(): string {
 export async function applyEventSource(name: string, spec: Record<string, unknown>, fixture: string): Promise<void> {
   await kubectlApplyStdin(
     JSON.stringify({
-      apiVersion: "core.controller-agent.dev/v1alpha1",
+      apiVersion: "core.aktis.ai/v1alpha1",
       kind: "EventSource",
       metadata: { name, labels: { [FIXTURE_LABEL]: fixture } },
       spec,
@@ -139,7 +139,7 @@ export async function applyEventSource(name: string, spec: Record<string, unknow
 export async function applyEventTrigger(name: string, spec: Record<string, unknown>, fixture: string): Promise<void> {
   await kubectlApplyStdin(
     JSON.stringify({
-      apiVersion: "core.controller-agent.dev/v1alpha1",
+      apiVersion: "core.aktis.ai/v1alpha1",
       kind: "EventTrigger",
       metadata: { name, labels: { [FIXTURE_LABEL]: fixture } },
       spec,
@@ -366,7 +366,7 @@ export interface AgentRunDetail {
   params: Record<string, string>;
   jobName?: string;
   /**
-   * `controller-agent.dev/session-id`. Written by the LangGraph launcher only
+   * `aktis.ai/session-id`. Written by the LangGraph launcher only
    * (the Temporal launcher sets no annotations), so assert on it only when
    * `deployedEngine() === "langgraph"`.
    */
@@ -397,7 +397,7 @@ export async function agentRunDetailsSince(since: Date): Promise<AgentRunDetail[
       readOnly: i.spec?.readOnly === true,
       params: i.spec?.params ?? {},
       jobName: i.status?.jobName,
-      sessionAnnotation: i.metadata.annotations?.["controller-agent.dev/session-id"],
+      sessionAnnotation: i.metadata.annotations?.["aktis.ai/session-id"],
     }));
 }
 

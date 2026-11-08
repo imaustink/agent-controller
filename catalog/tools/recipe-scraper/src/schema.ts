@@ -83,7 +83,7 @@ export type Envelope = z.infer<typeof EnvelopeSchema>;
  * of which transport delivered the event. Plain TS union (not zod): these
  * values are only ever constructed by this tool's own code, never parsed from
  * untrusted input, so runtime validation belongs to the shared
- * `@roverkit/messaging` package's generic `EventSchema` instead.
+ * `@aktis/messaging` package's generic `EventSchema` instead.
  */
 export type ErrorCode = "usage" | "blocked_url" | "extraction" | "formatting" | "general";
 

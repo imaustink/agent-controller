@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/corpus"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/corpus"
 )
 
 // QueryCorpusActivityName is the LIVE structured query face a knowledge base

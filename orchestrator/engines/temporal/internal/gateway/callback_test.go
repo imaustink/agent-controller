@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/api/serviceerror"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/gateway"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/messaging"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/gateway"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/messaging"
 )
 
 type fakeSignaler struct {

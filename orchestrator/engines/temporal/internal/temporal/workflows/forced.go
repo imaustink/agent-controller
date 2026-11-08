@@ -5,9 +5,9 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/controller-agent/temporal-engine/internal/approval"
-	"github.com/controller-agent/temporal-engine/internal/catalog"
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/approval"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/activities"
 )
 
 // forcedTarget names the turn's forced target, if any, and its kind. An

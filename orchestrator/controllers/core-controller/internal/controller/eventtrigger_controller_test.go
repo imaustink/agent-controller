@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	corev1alpha1 "github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 // statusWriteCounter counts status writes. The API server does not bump

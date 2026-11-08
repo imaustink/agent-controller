@@ -9,7 +9,7 @@
 # App credential (git/gh operations), and a Claude model credential -- either
 # an Anthropic API key or a delegated Claude Code OAuth token (from
 # `claude setup-token`), independent secrets from the GitHub one. The agent
-# runtime (@roverkit/agent-runtime) connects to NATS (AGENT_NATS_URL)
+# runtime (@aktis/agent-runtime) connects to NATS (AGENT_NATS_URL)
 # and receives its run id + initial goal via env (AGENT_RUN_ID, AGENT_GOAL)
 # -- injected by the Go core-controller into the k8s Job when it reconciles
 # the AgentRun CR.
@@ -42,25 +42,25 @@ COPY framework/github-app-auth framework/github-app-auth
 COPY catalog/agents/claude-code-swe-agent/tsconfig.json catalog/agents/claude-code-swe-agent/tsconfig.json
 COPY catalog/agents/claude-code-swe-agent/src           catalog/agents/claude-code-swe-agent/src
 
-RUN npm run build --workspace=@roverkit/messaging \
-  && npm run build --workspace=@roverkit/agent-runtime \
-  && npm run build --workspace=@roverkit/github-app-auth \
+RUN npm run build --workspace=@aktis/messaging \
+  && npm run build --workspace=@aktis/agent-runtime \
+  && npm run build --workspace=@aktis/github-app-auth \
   && npm run build --workspace=claude-code-swe-agent \
   && npm prune --omit=dev \
   # Materialize workspace packages as real directories (not symlinks) so they
   # survive the copy into the runtime stage.
-  && rm -rf node_modules/@roverkit/messaging \
-  && mkdir -p node_modules/@roverkit/messaging \
-  && cp -r framework/messaging/dist        node_modules/@roverkit/messaging/dist \
-  && cp framework/messaging/package.json   node_modules/@roverkit/messaging/package.json \
-  && rm -rf node_modules/@roverkit/agent-runtime \
-  && mkdir -p node_modules/@roverkit/agent-runtime \
-  && cp -r framework/agent-runtime/dist    node_modules/@roverkit/agent-runtime/dist \
-  && cp framework/agent-runtime/package.json node_modules/@roverkit/agent-runtime/package.json \
-  && rm -rf node_modules/@roverkit/github-app-auth \
-  && mkdir -p node_modules/@roverkit/github-app-auth \
-  && cp -r framework/github-app-auth/dist        node_modules/@roverkit/github-app-auth/dist \
-  && cp framework/github-app-auth/package.json   node_modules/@roverkit/github-app-auth/package.json
+  && rm -rf node_modules/@aktis/messaging \
+  && mkdir -p node_modules/@aktis/messaging \
+  && cp -r framework/messaging/dist        node_modules/@aktis/messaging/dist \
+  && cp framework/messaging/package.json   node_modules/@aktis/messaging/package.json \
+  && rm -rf node_modules/@aktis/agent-runtime \
+  && mkdir -p node_modules/@aktis/agent-runtime \
+  && cp -r framework/agent-runtime/dist    node_modules/@aktis/agent-runtime/dist \
+  && cp framework/agent-runtime/package.json node_modules/@aktis/agent-runtime/package.json \
+  && rm -rf node_modules/@aktis/github-app-auth \
+  && mkdir -p node_modules/@aktis/github-app-auth \
+  && cp -r framework/github-app-auth/dist        node_modules/@aktis/github-app-auth/dist \
+  && cp framework/github-app-auth/package.json   node_modules/@aktis/github-app-auth/package.json
 
 ############################
 # Runtime stage

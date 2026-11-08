@@ -1,7 +1,7 @@
 # Custom resource reference
 
 Every workload and every piece of catalog in this system is a Kubernetes custom
-resource in the group **`core.roverkit.io/v1alpha1`**. They are all
+resource in the group **`core.aktis.ai/v1alpha1`**. They are all
 **namespaced**. The CRD definitions ship in the `core-controller` chart's
 install-only `crds/` directory (generated from
 `orchestrator/controllers/core-controller/api/v1alpha1/*_types.go`), so installing that chart
@@ -361,7 +361,7 @@ a cron source becomes a core-controller-owned `CronJob` that ticks
 - **Sample:** `config/samples/core_v1alpha1_eventsource.yaml`.
 
 ```yaml
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventSource
 metadata: { name: github }              # POST /webhooks/github
 spec:
@@ -378,7 +378,7 @@ spec:
     isBotFrom: body.sender.type == "Bot"
     repositoryFrom: body.repository.full_name
 ---
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventSource
 metadata: { name: nightly-sweep }
 spec:
@@ -407,7 +407,7 @@ fallback.
 - **Sample:** `config/samples/core_v1alpha1_eventtrigger.yaml`; the shipped examples are bare manifests in `examples/event-triggers/` (not part of any chart).
 
 ```yaml
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventTrigger
 metadata: { name: github-pr-review }
 spec:

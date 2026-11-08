@@ -14,10 +14,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/callertools"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/rbac"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/callertools"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/rbac"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/activities"
 )
 
 const assertionSecret = "shared-with-integration-gateway"

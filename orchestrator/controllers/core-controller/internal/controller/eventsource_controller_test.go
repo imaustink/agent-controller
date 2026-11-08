@@ -29,7 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	corev1alpha1 "github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 const testTickURL = "http://integration-gateway.default.svc:8080"
@@ -133,7 +133,7 @@ var _ = Describe("EventSource Controller", func() {
 			Expect(cj.Spec.ConcurrencyPolicy).To(Equal(batchv1.ForbidConcurrent))
 			Expect(cj.Spec.SuccessfulJobsHistoryLimit).To(HaveValue(Equal(int32(1))))
 			Expect(cj.Spec.FailedJobsHistoryLimit).To(HaveValue(Equal(int32(3))))
-			Expect(cj.Labels).To(HaveKeyWithValue("core.controller-agent.dev/eventsource", "nightly"))
+			Expect(cj.Labels).To(HaveKeyWithValue("core.aktis.ai/eventsource", "nightly"))
 
 			owner := metav1.GetControllerOf(cj)
 			Expect(owner).NotTo(BeNil())

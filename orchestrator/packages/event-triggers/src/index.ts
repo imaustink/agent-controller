@@ -1,4 +1,4 @@
-// @controller-agent/event-triggers — the EventSource/EventTrigger contract
+// @aktis/event-triggers — the EventSource/EventTrigger contract
 // (ADR 0048, docs/event-triggers.md): envelope, CEL environment, matching,
 // params and templates. Pure logic; no Kubernetes client.
 

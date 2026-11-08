@@ -14,7 +14,7 @@ describe("ToolRunLauncher", () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
     const launcher = new ToolRunLauncher(
-      "core.roverkit.io",
+      "core.aktis.ai",
       "v1alpha1",
       { name: "agent-orchestrator-secrets", key: "AGENT_CALLBACK_SECRET" },
       api,
@@ -30,7 +30,7 @@ describe("ToolRunLauncher", () => {
     expect(createNamespacedCustomObject).toHaveBeenCalledTimes(1);
     const [request] = createNamespacedCustomObject.mock.calls[0] as [Record<string, unknown>];
     expect(request).toMatchObject({
-      group: "core.roverkit.io",
+      group: "core.aktis.ai",
       version: "v1alpha1",
       namespace: "default",
       plural: "toolruns",
@@ -52,7 +52,7 @@ describe("ToolRunLauncher", () => {
   it("carries readOnly onto ToolRun.spec, and omits it otherwise", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
-    const launcher = new ToolRunLauncher("core.controller-agent.dev", "v1alpha1", { name: "s", key: "k" }, api);
+    const launcher = new ToolRunLauncher("core.aktis.ai", "v1alpha1", { name: "s", key: "k" }, api);
     const base = { args: ["u"], callbackUrl: "http://x", callbackSecret: "s" };
 
     await launcher.launch(template, { ...base, readOnly: true });
@@ -66,7 +66,7 @@ describe("ToolRunLauncher", () => {
   it("sets the session-id annotation on the ToolRun CR when options.sessionId is given", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
-    const launcher = new ToolRunLauncher("core.roverkit.io", "v1alpha1", { name: "s", key: "k" }, api);
+    const launcher = new ToolRunLauncher("core.aktis.ai", "v1alpha1", { name: "s", key: "k" }, api);
 
     await launcher.launch(template, {
       args: ["https://example.com/recipe"],
@@ -76,13 +76,13 @@ describe("ToolRunLauncher", () => {
     });
 
     const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { metadata: Record<string, unknown> } }];
-    expect(request.body.metadata.annotations).toEqual({ "roverkit.io/session-id": "chat-42" });
+    expect(request.body.metadata.annotations).toEqual({ "aktis.ai/session-id": "chat-42" });
   });
 
   it("omits annotations on the ToolRun CR when no sessionId is given", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
-    const launcher = new ToolRunLauncher("core.roverkit.io", "v1alpha1", { name: "s", key: "k" }, api);
+    const launcher = new ToolRunLauncher("core.aktis.ai", "v1alpha1", { name: "s", key: "k" }, api);
 
     await launcher.launch(template, { args: ["https://example.com/recipe"], callbackUrl: "http://x", callbackSecret: "s" });
 
@@ -92,7 +92,7 @@ describe("ToolRunLauncher", () => {
 
   it("throws if the template has no toolRef (i.e. was not resolved by CrdToolRegistry)", async () => {
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject: vi.fn() };
-    const launcher = new ToolRunLauncher("core.roverkit.io", "v1alpha1", { name: "s", key: "k" }, api);
+    const launcher = new ToolRunLauncher("core.aktis.ai", "v1alpha1", { name: "s", key: "k" }, api);
 
     await expect(
       launcher.launch(
@@ -109,7 +109,7 @@ describe("ToolRunLauncher", () => {
       const createNamespacedSecret = vi.fn();
       const patchNamespacedSecret = vi.fn();
       const launcher = new ToolRunLauncher(
-        "core.roverkit.io",
+        "core.aktis.ai",
         "v1alpha1",
         { name: "s", key: "k" },
         api,
@@ -130,7 +130,7 @@ describe("ToolRunLauncher", () => {
       const createNamespacedSecret = vi.fn().mockResolvedValue({});
       const patchNamespacedSecret = vi.fn().mockResolvedValue({});
       const launcher = new ToolRunLauncher(
-        "core.roverkit.io",
+        "core.aktis.ai",
         "v1alpha1",
         { name: "s", key: "k" },
         api,
@@ -175,7 +175,7 @@ describe("ToolRunLauncher", () => {
     it("launch() throws if options.secretEnv is non-empty but no SecretApiLike was configured", async () => {
       const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
       const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
-      const launcher = new ToolRunLauncher("core.roverkit.io", "v1alpha1", { name: "s", key: "k" }, api);
+      const launcher = new ToolRunLauncher("core.aktis.ai", "v1alpha1", { name: "s", key: "k" }, api);
 
       await expect(
         launcher.launch(template, {

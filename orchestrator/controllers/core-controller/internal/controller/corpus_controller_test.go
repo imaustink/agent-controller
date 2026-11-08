@@ -30,7 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1"
+	corev1alpha1 "github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 const providerSlack = "slack"
@@ -288,7 +288,7 @@ var _ = Describe("Corpus sync CronJob", func() {
 	})
 
 	It("adopts a CronJob another owner left behind", func() {
-		// The roverkit API-group move (ADR 0047) recreates every Corpus under
+		// The aktis API-group move (ADR 0047) recreates every Corpus under
 		// the new group while the old-group Corpus still owns the CronJob of
 		// the same name. Keeping that owner would let deleting the old Corpus
 		// garbage-collect the live schedule.
@@ -302,7 +302,7 @@ var _ = Describe("Corpus sync CronJob", func() {
 				Name:      SyncCronJobName("cron-adopt"),
 				Namespace: "default",
 				OwnerReferences: []metav1.OwnerReference{{
-					APIVersion: "core.controller-agent.dev/v1alpha1",
+					APIVersion: "core.aktis.ai/v1alpha1",
 					Kind:       "Corpus",
 					Name:       "cron-adopt",
 					UID:        types.UID("00000000-0000-0000-0000-00000000dead"),

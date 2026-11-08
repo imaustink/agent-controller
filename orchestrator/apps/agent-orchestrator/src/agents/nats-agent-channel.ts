@@ -9,7 +9,7 @@ import {
   agentSubjects,
   type AgentDownMessage,
   type AgentUpMessage,
-} from "@roverkit/messaging";
+} from "@aktis/messaging";
 
 /** Accumulated result of awaiting one agent turn (see {@link AgentOrchestratorChannel.awaitReply}). */
 export interface AgentTurnResult {
@@ -91,7 +91,7 @@ export interface OpencodeProxyResult {
 }
 
 /**
- * Orchestrator-side counterpart to `@roverkit/agent-runtime`'s
+ * Orchestrator-side counterpart to `@aktis/agent-runtime`'s
  * `NatsChannel` — subscribes to an agent run's up subject and publishes to
  * its down subject. One shared connection for the whole process (the
  * orchestrator is long-lived); subjects are deterministic per run id

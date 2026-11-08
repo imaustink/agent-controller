@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Build from the REPO ROOT (this tool depends on the shared
-# @roverkit/messaging and @roverkit/github-app-auth workspace
+# @aktis/messaging and @aktis/github-app-auth workspace
 # packages):
 #
 #   docker build -f catalog/tools/github/Dockerfile -t github:latest .
@@ -23,21 +23,21 @@ COPY framework/github-app-auth framework/github-app-auth
 COPY catalog/tools/github/tsconfig.json catalog/tools/github/tsconfig.json
 COPY catalog/tools/github/src catalog/tools/github/src
 
-RUN npm run build --workspace=@roverkit/messaging \
-  && npm run build --workspace=@roverkit/github-app-auth \
+RUN npm run build --workspace=@aktis/messaging \
+  && npm run build --workspace=@aktis/github-app-auth \
   && npm run build --workspace=github \
   && npm prune --omit=dev \
   # Materialize the workspace packages into real directories (not the
   # npm-created symlinks) so they survive being copied into the runtime stage
   # below.
-  && rm -rf node_modules/@roverkit/messaging \
-  && mkdir -p node_modules/@roverkit/messaging \
-  && cp -r framework/messaging/dist node_modules/@roverkit/messaging/dist \
-  && cp framework/messaging/package.json node_modules/@roverkit/messaging/package.json \
-  && rm -rf node_modules/@roverkit/github-app-auth \
-  && mkdir -p node_modules/@roverkit/github-app-auth \
-  && cp -r framework/github-app-auth/dist node_modules/@roverkit/github-app-auth/dist \
-  && cp framework/github-app-auth/package.json node_modules/@roverkit/github-app-auth/package.json
+  && rm -rf node_modules/@aktis/messaging \
+  && mkdir -p node_modules/@aktis/messaging \
+  && cp -r framework/messaging/dist node_modules/@aktis/messaging/dist \
+  && cp framework/messaging/package.json node_modules/@aktis/messaging/package.json \
+  && rm -rf node_modules/@aktis/github-app-auth \
+  && mkdir -p node_modules/@aktis/github-app-auth \
+  && cp -r framework/github-app-auth/dist node_modules/@aktis/github-app-auth/dist \
+  && cp framework/github-app-auth/package.json node_modules/@aktis/github-app-auth/package.json
 
 ############################
 # Runtime stage

@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/controller-agent/temporal-engine/internal/authz"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/authz"
 )
 
 // A read-only run (ADR 0048) gets no write-capable credential from this

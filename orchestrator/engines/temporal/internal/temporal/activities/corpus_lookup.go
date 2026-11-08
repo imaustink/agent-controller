@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/corpus"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/corpus"
 )
 
 // LookupCorpusActivityName is the LIVE search face a knowledge base exposes.

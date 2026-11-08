@@ -40,8 +40,8 @@ export class K8sSecretClaudeTokenStore implements ClaudeTokenStore {
     this.grants = new SecretRecordStore({
       namespace: opts.namespace,
       namePrefix: "claude-writeback-grant",
-      keyLabel: "roverkit.io/grant",
-      commonLabels: { "roverkit.io/credential": "claude-writeback-grant" },
+      keyLabel: "aktis.ai/grant",
+      commonLabels: { "aktis.ai/credential": "claude-writeback-grant" },
       api: opts.api,
     });
   }
@@ -52,10 +52,10 @@ export class K8sSecretClaudeTokenStore implements ClaudeTokenStore {
     const created = new SecretRecordStore({
       namespace: this.opts.namespace,
       namePrefix: kind === "login" ? "claude-auth-login" : "claude-auth-setup-token",
-      keyLabel: "roverkit.io/subject",
+      keyLabel: "aktis.ai/subject",
       commonLabels: {
-        "roverkit.io/credential": "claude-auth",
-        "roverkit.io/claude-auth-kind": kind,
+        "aktis.ai/credential": "claude-auth",
+        "aktis.ai/claude-auth-kind": kind,
       },
       api: this.opts.api,
       ...(this.opts.watch ? { watch: this.opts.watch } : {}),

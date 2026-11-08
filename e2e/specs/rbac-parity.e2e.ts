@@ -70,7 +70,7 @@ describe("core-controller RBAC parity (no cluster)", () => {
       "tools",
     ]) {
       expect(sorted(markers), `markers for ${kind}`).toContain(
-        `core.roverkit.io/${kind}:list`,
+        `core.aktis.ai/${kind}:list`,
       );
     }
   });

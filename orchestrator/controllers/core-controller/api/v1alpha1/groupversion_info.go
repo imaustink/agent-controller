@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package v1alpha1 contains API Schema definitions for the tool v1alpha1 API group.
 // +kubebuilder:object:generate=true
-// +groupName=core.roverkit.io
+// +groupName=core.aktis.ai
 package v1alpha1
 
 import (
@@ -27,7 +27,7 @@ import (
 var (
 	// SchemeGroupVersion is group version used to register these objects.
 	// This name is used by applyconfiguration generators (e.g. controller-gen).
-	SchemeGroupVersion = schema.GroupVersion{Group: "core.roverkit.io", Version: "v1alpha1"}
+	SchemeGroupVersion = schema.GroupVersion{Group: "core.aktis.ai", Version: "v1alpha1"}
 
 	// GroupVersion is an alias for SchemeGroupVersion, for backward compatibility.
 	GroupVersion = SchemeGroupVersion

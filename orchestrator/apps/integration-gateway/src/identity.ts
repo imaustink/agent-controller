@@ -1,4 +1,4 @@
-import { resolveGithubToken, type GithubAuthConfig } from "@roverkit/github-app-auth";
+import { resolveGithubToken, type GithubAuthConfig } from "@aktis/github-app-auth";
 
 /** Resolved caller identity, forwarded to agent-orchestrator's /invoke as the bearer subject/role context. */
 export interface Identity {

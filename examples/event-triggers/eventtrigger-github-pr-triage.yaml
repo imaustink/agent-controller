@@ -3,7 +3,7 @@
 # as issue triage -- what it means is decided by what got labeled (the
 # x-github-event header). Unlike github-pr-review this one DOES push, so it is
 # not readOnly.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventTrigger
 metadata:
   name: github-pr-triage

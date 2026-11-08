@@ -35,7 +35,7 @@ rbac:
 # this release's namespace and POST /events/<name>/tick for cron ones.
 events:
   # Group/version of the EventSource CRD the gateway watches.
-  crdGroup: core.controller-agent.dev
+  crdGroup: core.aktis.ai
   crdVersion: v1alpha1
   # Cron ticks need no configuration here: each tick authenticates as its
   # source's own ServiceAccount, verified against the cluster's issuer keys

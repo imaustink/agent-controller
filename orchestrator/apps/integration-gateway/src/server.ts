@@ -9,7 +9,7 @@ import {
   type Envelope,
   type JsonValue,
   type RenderedReply,
-} from "@controller-agent/event-triggers";
+} from "@aktis/event-triggers";
 import type { GithubReplyClient } from "./github-client.js";
 import type { GithubDeviceFlowLinker } from "./identity-link/device-flow-linker.js";
 import { IdentityLinkApi } from "./identity-link/api.js";

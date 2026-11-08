@@ -47,7 +47,7 @@ func (s *Qdrant) EnsureCollection(ctx context.Context) error {
 
 // pointID derives a stable UUID for a record id (Qdrant point ids must be
 // UUIDs or integers; the real id lives in the payload). The seed is this
-// module's pre-roverkit path and must never change: it is part of every point
+// module's pre-aktis path and must never change: it is part of every point
 // id already on disk, and the connection broker derives the same ids
 // (point-id.ts).
 func (s *Qdrant) pointID(id string) string {

@@ -3,9 +3,9 @@ package activities
 import (
 	"context"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/localtool"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/messaging"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/localtool"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/messaging"
 )
 
 const RunLocalToolActivityName = "RunLocalTool"

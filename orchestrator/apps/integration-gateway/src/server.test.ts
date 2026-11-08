@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseBody, type Envelope, type EventSourceResource } from "@controller-agent/event-triggers";
+import { parseBody, type Envelope, type EventSourceResource } from "@aktis/event-triggers";
 import type { ClaudeTokenStore } from "./claude-auth/store.js";
 import { StaticEventSourceRegistry, type SecretLookup } from "./event-sources.js";
 import { StaticEventTriggerTable } from "./event-triggers.js";
@@ -14,8 +14,8 @@ import { InMemorySessionPageStore } from "./session-page-store.js";
 
 // Wrapped so a test can prove verification rejected a request BEFORE anything
 // parsed it -- the property the whole handler order exists for.
-vi.mock("@controller-agent/event-triggers", async (importOriginal) => {
-  const mod = await importOriginal<typeof import("@controller-agent/event-triggers")>();
+vi.mock("@aktis/event-triggers", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@aktis/event-triggers")>();
   return { ...mod, parseBody: vi.fn(mod.parseBody) };
 });
 

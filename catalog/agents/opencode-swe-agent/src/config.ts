@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { normalizePem } from "@roverkit/github-app-auth";
+import { normalizePem } from "@aktis/github-app-auth";
 
 /**
  * Tool-specific configuration for the opencode-swe-agent. The generic agent
  * runtime config (NATS connection, run id, goal) is handled by
- * `@roverkit/agent-runtime`'s `loadConfig()` and injected by the Go
+ * `@aktis/agent-runtime`'s `loadConfig()` and injected by the Go
  * core-controller into the Job's environment (Phase 7). This only covers the
  * tool-specific settings that are fixed via the Agent CR's `env`/`secretEnv`.
  */
@@ -32,7 +32,7 @@ export interface AgentToolConfig {
   /**
    * GitHub App credentials, used instead of `githubToken` when all three are
    * set: a short-lived installation access token is minted per run (see
-   * @roverkit/github-app-auth) rather than using a long-lived static
+   * @aktis/github-app-auth) rather than using a long-lived static
    * PAT. Empty strings
    * when unset — `resolveGithubToken` falls back to `githubToken` in that
    * case, so existing PAT-based deployments keep working unmodified.

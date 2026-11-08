@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	toolv1alpha1 "github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1"
+	toolv1alpha1 "github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 // AgentRunReconciler reconciles a AgentRun object
@@ -41,7 +41,7 @@ type AgentRunReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	// NatsConfig holds the NATS connection settings injected into every agent
-	// Job so the @roverkit/agent-runtime SDK can connect on startup.
+	// Job so the @aktis/agent-runtime SDK can connect on startup.
 	// Set from the controller manager's own env at startup (cmd/main.go).
 	NatsConfig AgentNatsConfig
 	// Retention is how long a terminal AgentRun (and the Secret it owns) is
@@ -65,10 +65,10 @@ type AgentNatsConfig struct {
 	SubjectPrefix string
 }
 
-// +kubebuilder:rbac:groups=core.roverkit.io,resources=agentruns,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core.roverkit.io,resources=agentruns/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=core.roverkit.io,resources=agentruns/finalizers,verbs=update
-// +kubebuilder:rbac:groups=core.roverkit.io,resources=agents,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=agentruns,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=agentruns/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=agentruns/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=agents,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=pods,verbs=list
@@ -169,8 +169,8 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 		namespace:   run.Namespace,
 		annotations: sessionIDAnnotations(run.Annotations),
 		labels: map[string]string{
-			"core.roverkit.io/agentrun": run.Name,
-			"core.roverkit.io/agent":    agent.Name,
+			"core.aktis.ai/agentrun": run.Name,
+			"core.aktis.ai/agent":    agent.Name,
 		},
 		image:              agent.Spec.Image,
 		serviceAccountName: agent.Spec.ServiceAccountName,
@@ -290,7 +290,7 @@ func (r *AgentRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// agentRuntimeEnv returns the env vars the @roverkit/agent-runtime SDK
+// agentRuntimeEnv returns the env vars the @aktis/agent-runtime SDK
 // needs to boot: the run's own identity (AGENT_RUN_ID, AGENT_GOAL) and the
 // NATS connection details (AGENT_NATS_URL, AGENT_NATS_SUBJECT_PREFIX).
 func (r *AgentRunReconciler) agentRuntimeEnv(runName, goal string) []toolv1alpha1.EnvVar {

@@ -91,7 +91,7 @@ spec:
       annotations:
         # Substituted at apply time by ensureFakeSink() with a hash of THIS
         # FILE; see the header and fake-github.yaml for why.
-        e2e.controller-agent.dev/config-checksum: "REPLACED_AT_APPLY"
+        e2e.aktis.ai/config-checksum: "REPLACED_AT_APPLY"
     spec:
       containers:
         - name: fake-sink

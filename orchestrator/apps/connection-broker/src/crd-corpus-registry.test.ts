@@ -47,7 +47,7 @@ function registryWith(
   };
   const registry = new CrdCorpusRegistry({
     namespace: "clients",
-    group: "core.roverkit.io",
+    group: "core.aktis.ai",
     version: "v1alpha1",
     api,
     core,

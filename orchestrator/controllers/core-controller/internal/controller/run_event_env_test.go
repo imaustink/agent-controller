@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	toolv1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
+	toolv1alpha1 "github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 // The event-trigger fields of a run reach its container as env

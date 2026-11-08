@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentDownMessage, AgentUpMessage } from "@roverkit/messaging";
+import type { AgentDownMessage, AgentUpMessage } from "@aktis/messaging";
 import type { AgentChannel } from "./channel.js";
 import { AgentFailure, runAgent, ToolCallError, type AgentRuntimeConfig } from "./index.js";
 

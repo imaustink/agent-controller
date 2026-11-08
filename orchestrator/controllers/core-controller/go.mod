@@ -1,4 +1,4 @@
-module github.com/roverkit/orchestrator/controllers/core-controller
+module github.com/aktisai/orchestrator/controllers/core-controller
 
 go 1.25.7
 

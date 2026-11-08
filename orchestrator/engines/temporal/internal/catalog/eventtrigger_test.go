@@ -12,12 +12,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
-	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
 )
 
 func triggerCR(name string, spec map[string]any, ready string) *unstructured.Unstructured {
 	obj := map[string]any{
-		"apiVersion": "core.controller-agent.dev/v1alpha1",
+		"apiVersion": "core.aktis.ai/v1alpha1",
 		"kind":       "EventTrigger",
 		"metadata":   map[string]any{"name": name, "namespace": "ns", "generation": int64(1)},
 		"spec":       spec,

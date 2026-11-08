@@ -12,7 +12,7 @@
  * follow-up, not built in this phase.
  */
 
-import type { Envelope, RenderedReply } from "@controller-agent/event-triggers";
+import type { Envelope, RenderedReply } from "@aktis/event-triggers";
 import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "./sender-assertion.js";
 
 // Bounds retrying the initial POST past a transient connection failure (a

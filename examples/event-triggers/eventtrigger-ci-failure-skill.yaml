@@ -4,7 +4,7 @@
 #   {"status": "failure", "repository": "owner/name", "branch": "...",
 #    "job": "...", "url": "<run url>"}
 # Uncomment `reply` below to have the outcome POSTed somewhere.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventTrigger
 metadata:
   name: ci-failure-skill

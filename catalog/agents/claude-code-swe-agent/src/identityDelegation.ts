@@ -8,7 +8,7 @@ import {
   resolveDelegatedWriteToken,
   resolveGithubToken,
   type GithubAppCredentials,
-} from "@roverkit/github-app-auth";
+} from "@aktis/github-app-auth";
 import type { AgentToolConfig } from "./config.js";
 
 export { AuthorizationError };

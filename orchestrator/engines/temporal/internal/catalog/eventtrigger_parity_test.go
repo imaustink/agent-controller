@@ -10,11 +10,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/controller-agent/temporal-engine/internal/catalog"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
 )
 
 // The shared cross-engine CEL-parity suite (docs/event-triggers.md §3–§4).
-// The SAME file runs in @controller-agent/event-triggers' tests against the
+// The SAME file runs in @aktis/event-triggers' tests against the
 // JS evaluator; both engines must produce every listed verdict/value, or one
 // of them disagrees with the contract.
 

@@ -14,16 +14,16 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/controller-agent/temporal-engine/internal/agentrun"
-	"github.com/controller-agent/temporal-engine/internal/approval"
-	"github.com/controller-agent/temporal-engine/internal/authz"
-	"github.com/controller-agent/temporal-engine/internal/callertools"
-	"github.com/controller-agent/temporal-engine/internal/catalog"
-	"github.com/controller-agent/temporal-engine/internal/corpus"
-	"github.com/controller-agent/temporal-engine/internal/messaging"
-	"github.com/controller-agent/temporal-engine/internal/temporal/activities"
-	"github.com/controller-agent/temporal-engine/internal/temporal/workflows"
-	"github.com/controller-agent/temporal-engine/internal/toolrun"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/agentrun"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/approval"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/authz"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/callertools"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/corpus"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/messaging"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/activities"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/workflows"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/toolrun"
 )
 
 // registerOpts names an activity registration.

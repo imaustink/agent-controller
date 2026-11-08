@@ -1,5 +1,5 @@
 {
-  "$comment": "Executable definition of docs/event-triggers.md §3-§4. Every case runs in BOTH the TS package (@controller-agent/event-triggers) and the Temporal engine (cel-go). expect.value is compared as JSON; expect.type pins int vs double where JSON cannot ('int'|'double'|'string'|'bool'|'list'|'map'|'null'). expect.error=true means evaluation must fail. In `matching`, expect.toolInput (when present) is the tool's single string input (docs/event-triggers.md §1); fields absent from expect are not asserted.",
+  "$comment": "Executable definition of docs/event-triggers.md §3-§4. Every case runs in BOTH the TS package (@aktis/event-triggers) and the Temporal engine (cel-go). expect.value is compared as JSON; expect.type pins int vs double where JSON cannot ('int'|'double'|'string'|'bool'|'list'|'map'|'null'). expect.error=true means evaluation must fail. In `matching`, expect.toolInput (when present) is the tool's single string input (docs/event-triggers.md §1); fields absent from expect are not asserted.",
   "envelopes": {
     "gh_pr_labeled": {
       "source": "github",

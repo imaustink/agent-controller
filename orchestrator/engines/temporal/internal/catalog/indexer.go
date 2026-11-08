@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/vectorstore"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/vectorstore"
 )
 
 // Indexer keeps in-memory mirrors of the catalog and pushes changes into the

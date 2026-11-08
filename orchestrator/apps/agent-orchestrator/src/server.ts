@@ -15,7 +15,7 @@ import type { ToolDescriptor } from "./tool-descriptor.js";
 import type { SessionStore } from "./session/types.js";
 import { InMemoryInvocationStore, type InvocationStore } from "./invocation/types.js";
 import { parseEnvelope, type EventTriggerSelector } from "./routing/crd-event-trigger-registry.js";
-import type { Envelope, RenderedReply } from "@controller-agent/event-triggers";
+import type { Envelope, RenderedReply } from "@aktis/event-triggers";
 import {
   buildAgentRequest,
   chatCompletionChunk,
@@ -38,7 +38,7 @@ import {
 import { SENDER_ASSERTION_HEADER, verifySenderAssertion } from "./rbac/sender-assertion.js";
 import type { TaskCompleter } from "./openai/task-completer.js";
 import { withHeartbeat } from "./openai/with-heartbeat.js";
-import { renderTurnEvent, type TurnEvent, type TurnEventKind } from "@roverkit/messaging";
+import { renderTurnEvent, type TurnEvent, type TurnEventKind } from "@aktis/messaging";
 
 /**
  * Builds a {@link TurnEvent} for a lifecycle point the orchestrator narrates

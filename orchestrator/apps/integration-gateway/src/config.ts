@@ -1,4 +1,4 @@
-import { normalizePem } from "@roverkit/github-app-auth";
+import { normalizePem } from "@aktis/github-app-auth";
 
 /** Central configuration for the integration gateway (generic EventSource ingestion, ADR 0048). */
 export interface AppConfig {
@@ -29,7 +29,7 @@ export interface AppConfig {
    * `/login/oauth/access_token`). Distinct from `githubApiUrl`: on GitHub
    * Enterprise Server the REST API lives at `https://<host>/api/v3` while
    * these OAuth routes stay on `https://<host>`, so one value cannot serve
-   * both. Defaults to github.com, matching `@roverkit/github-app-auth`'s
+   * both. Defaults to github.com, matching `@aktis/github-app-auth`'s
    * own default, so existing deployments are unaffected.
    */
   githubBaseUrl: string;
@@ -221,7 +221,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     httpPort: num(env.GATEWAY_HTTP_PORT, 8090),
     crdNamespace: env.CRD_NAMESPACE ?? "",
-    crdGroup: env.CRD_GROUP || "core.controller-agent.dev",
+    crdGroup: env.CRD_GROUP || "core.aktis.ai",
     crdVersion: env.CRD_VERSION || "v1alpha1",
     githubAppId: env.GITHUB_APP_ID ?? "",
     githubAppPrivateKey: normalizePem(env.GITHUB_APP_PRIVATE_KEY),

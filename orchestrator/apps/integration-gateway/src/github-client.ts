@@ -1,4 +1,4 @@
-import { resolveGithubToken, type GithubAuthConfig } from "@roverkit/github-app-auth";
+import { resolveGithubToken, type GithubAuthConfig } from "@aktis/github-app-auth";
 
 /**
  * Marker prefixed onto every comment this gateway posts. Lets

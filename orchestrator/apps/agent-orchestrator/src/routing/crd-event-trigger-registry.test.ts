@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Envelope, EventTriggerResource } from "@controller-agent/event-triggers";
+import type { Envelope, EventTriggerResource } from "@aktis/event-triggers";
 import type { WatchCrdFn } from "../k8s/crd-watcher.js";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 import { CrdEventTriggerRegistry, parseEnvelope } from "./crd-event-trigger-registry.js";
 
-const GROUP = "core.controller-agent.dev";
+const GROUP = "core.aktis.ai";
 
 /** What core-controller writes once CEL compiles and the refs resolve, for generation 1. */
 const READY: EventTriggerResource["status"] = { conditions: [{ type: "Ready", status: "True", observedGeneration: 1 }] };

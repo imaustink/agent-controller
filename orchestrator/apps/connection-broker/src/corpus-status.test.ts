@@ -23,7 +23,7 @@ function writer(patch = vi.fn().mockResolvedValue({}), onError = vi.fn()) {
     writer: new CorpusStatusWriter({
       api: { patchNamespacedCustomObjectStatus: patch },
       namespace: "clients",
-      group: "core.roverkit.io",
+      group: "core.aktis.ai",
       version: "v1alpha1",
       plural: "corpora",
       now: () => NOW,

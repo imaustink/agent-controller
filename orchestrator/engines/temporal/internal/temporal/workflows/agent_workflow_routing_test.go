@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
 )
 
 // TestAgentWorkflowNameFor pins agentWorkflowNameFor's routing contract: a
@@ -51,7 +51,7 @@ func TestPodAgentsRouteBridged(t *testing.T) {
 	for _, agentID := range []string{"claude-code-swe-agent", "opencode-swe-agent"} {
 		t.Run(agentID, func(t *testing.T) {
 			obj := &unstructured.Unstructured{Object: map[string]any{
-				"apiVersion": "core.roverkit.io/v1alpha1",
+				"apiVersion": "core.aktis.ai/v1alpha1",
 				"kind":       "Agent",
 				"metadata": map[string]any{
 					"name": agentID,

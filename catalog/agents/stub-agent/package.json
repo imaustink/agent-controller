@@ -13,8 +13,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@roverkit/agent-runtime": "0.1.0",
-    "@roverkit/messaging": "0.1.0"
+    "@aktis/agent-runtime": "0.1.0",
+    "@aktis/messaging": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.16.5",

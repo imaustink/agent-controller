@@ -19,13 +19,13 @@ metadata:
   labels:
     {{- include "temporal-engine.labels" . | nindent 4 }}
 rules:
-  - apiGroups: ["core.roverkit.io"]
+  - apiGroups: ["core.aktis.ai"]
     resources: ["toolruns"]
     verbs: ["create", "get"]
   {{- if .Values.nats.url }}
   # Bridged pod agents (docs/pod-agents.md) launch the ordinary AgentRun an
   # unmodified upstream agent expects. Only granted when the bridge is enabled.
-  - apiGroups: ["core.roverkit.io"]
+  - apiGroups: ["core.aktis.ai"]
     resources: ["agentruns"]
     verbs: ["create", "get"]
   {{- end }}
@@ -93,7 +93,7 @@ metadata:
   labels:
     {{- include "temporal-engine.labels" . | nindent 4 }}
 rules:
-  - apiGroups: ["core.controller-agent.dev"]
+  - apiGroups: ["core.aktis.ai"]
     resources: ["eventtriggers"]
     verbs: ["get", "list", "watch"]
 ---

@@ -31,7 +31,7 @@ We want two things the current shape does not give us:
 
 The good news is that the seam is already physical. Nothing on the agent or tool
 side imports Kubernetes or Temporal; everything crosses the boundary through the
-JSON wire protocols defined in `@roverkit/messaging`. The orchestration
+JSON wire protocols defined in `@aktis/messaging`. The orchestration
 machinery sits entirely on the far side of those protocols. So this is not a
 teardown — it is naming a boundary that mostly exists and paying down the debts
 that keep either half from standing alone.
@@ -95,7 +95,7 @@ The repository is regrouped physically into three top-level trees:
 
 The allowed import directions are **catalog → framework** and
 **orchestrator → framework**; **framework → anything** and **catalog ↔
-orchestrator** are violations. npm package names (`@roverkit/*`) are
+orchestrator** are violations. npm package names (`@aktis/*`) are
 unchanged — the directory and the check are the boundary, not the scope.
 
 The move lands *last* in its implementation sequence, so every earlier step can
@@ -133,8 +133,8 @@ Specifics, chosen deliberately:
   discriminated-union types authors actually use. This keeps the wire
   byte-compatible with every running agent and tool — no dual-read, no cutover.
   Moving to `oneof` later is a versioned (`v2`) decision, not a prerequisite.
-- **Package `roverkit.protocol.v1`**, under
-  `framework/protocol/proto/roverkit/protocol/v1/`, beside the
+- **Package `aktis.protocol.v1`**, under
+  `framework/protocol/proto/aktis/protocol/v1/`, beside the
   generated TypeScript package, the generated Go module and the shared
   conformance fixtures. The package name is permanent once third
   parties depend on it.
@@ -249,17 +249,17 @@ once a third party depends on it:
 
 | Was | Now |
 |-|-|
-| proto package `agentcontroller.protocol.v1` | `roverkit.protocol.v1` |
-| npm scope `@controller-agent/*` | `@roverkit/*` |
-| Go modules `github.com/controller-agent/<module>` | `github.com/roverkit/<repo>/<path>` (the future repo layout) |
-| CRD API group `core.controller-agent.dev` | `core.roverkit.io` |
-| label/annotation/finalizer keys under `controller-agent.dev`, `controller-agent.io` | `roverkit.io` |
+| proto package `agentcontroller.protocol.v1` | `aktis.protocol.v1` |
+| npm scope `@aktis/*` | `@aktis/*` |
+| Go modules `github.com/controller-agent/<module>` | `github.com/aktisai/<repo>/<path>` (the future repo layout) |
+| CRD API group `core.aktis.ai` | `core.aktis.ai` |
+| label/annotation/finalizer keys under `controller-agent.dev`, `controller-agent.io` | `aktis.ai` |
 
 The proto rename is invisible on the wire (proto3 JSON never carries the package
 name; `buf breaking` at WIRE_JSON passes). The API group rename is not: every
 cluster recreates its CRs under the new group and relabels its credential
-Secrets, via `scripts/migrate-to-roverkit.sh` (see
-[the migration guide](../roverkit-migration.md)).
+Secrets, via `scripts/migrate-to-aktis.sh` (see
+[the migration guide](../aktis-migration.md)).
 
 Deliberately **unchanged**:
 

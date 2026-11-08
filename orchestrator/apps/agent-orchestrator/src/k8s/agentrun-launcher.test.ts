@@ -8,7 +8,7 @@ describe("AgentRunLauncher", () => {
   it("creates an AgentRun CR referencing the Agent by name, with the goal and a callback secretRef", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
-    const launcher = new AgentRunLauncher("core.roverkit.io", "v1alpha1", api);
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api);
 
     const launched = await launcher.launch(template, "run-1", {
       goal: "add a health check endpoint",
@@ -22,7 +22,7 @@ describe("AgentRunLauncher", () => {
     expect(createNamespacedCustomObject).toHaveBeenCalledTimes(1);
     const [request] = createNamespacedCustomObject.mock.calls[0] as [Record<string, unknown>];
     expect(request).toMatchObject({
-      group: "core.roverkit.io",
+      group: "core.aktis.ai",
       version: "v1alpha1",
       namespace: "default",
       plural: "agentruns",
@@ -45,7 +45,7 @@ describe("AgentRunLauncher", () => {
   // AGENT_PARAMS. Written only when meaningful -- readOnly is never `false`.
   it("carries readOnly and params onto AgentRun.spec, and omits them when unset/empty", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
-    const launcher = new AgentRunLauncher("core.controller-agent.dev", "v1alpha1", {
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", {
       listNamespacedCustomObject: vi.fn(),
       createNamespacedCustomObject,
     });
@@ -63,7 +63,7 @@ describe("AgentRunLauncher", () => {
   it("uses a natsSubject callback (no secretRef) when natsUrl is set, so the CR passes controller validation even with an empty callbackSecretRef", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
-    const launcher = new AgentRunLauncher("core.roverkit.io", "v1alpha1", api);
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api);
 
     await launcher.launch(template, "run-3", {
       goal: "add a health check endpoint",
@@ -85,7 +85,7 @@ describe("AgentRunLauncher", () => {
   it("omits timeoutSeconds when not provided (controller default applies)", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
-    const launcher = new AgentRunLauncher("core.roverkit.io", "v1alpha1", api);
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api);
 
     await launcher.launch(template, "run-2", {
       goal: "add a health check endpoint",
@@ -102,7 +102,7 @@ describe("AgentRunLauncher", () => {
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
     const createNamespacedSecret = vi.fn();
     const patchNamespacedSecret = vi.fn();
-    const launcher = new AgentRunLauncher("core.roverkit.io", "v1alpha1", api, {
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, {
       createNamespacedSecret,
       patchNamespacedSecret,
     });
@@ -124,7 +124,7 @@ describe("AgentRunLauncher", () => {
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
     const createNamespacedSecret = vi.fn().mockResolvedValue({ metadata: { name: "run-5-identity" } });
     const patchNamespacedSecret = vi.fn().mockResolvedValue({});
-    const launcher = new AgentRunLauncher("core.roverkit.io", "v1alpha1", api, {
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, {
       createNamespacedSecret,
       patchNamespacedSecret,
     });
@@ -173,7 +173,7 @@ describe("AgentRunLauncher", () => {
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
     const createNamespacedSecret = vi.fn().mockResolvedValue({ metadata: { name: "run-6-identity" } });
     const patchNamespacedSecret = vi.fn().mockResolvedValue({});
-    const launcher = new AgentRunLauncher("core.roverkit.io", "v1alpha1", api, {
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, {
       createNamespacedSecret,
       patchNamespacedSecret,
     });
@@ -200,7 +200,7 @@ describe("AgentRunLauncher", () => {
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
     const createNamespacedSecret = vi.fn();
     const patchNamespacedSecret = vi.fn().mockResolvedValue({});
-    const launcher = new AgentRunLauncher("core.roverkit.io", "v1alpha1", api, {
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, {
       createNamespacedSecret,
       patchNamespacedSecret,
     });
@@ -227,7 +227,7 @@ describe("AgentRunLauncher", () => {
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
     const createNamespacedSecret = vi.fn().mockResolvedValue({ metadata: { name: "run-8-identity" } });
     const patchNamespacedSecret = vi.fn().mockRejectedValue(new Error("forbidden"));
-    const launcher = new AgentRunLauncher("core.roverkit.io", "v1alpha1", api, {
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, {
       createNamespacedSecret,
       patchNamespacedSecret,
     });
@@ -246,7 +246,7 @@ describe("AgentRunLauncher", () => {
   it("sets the session-id annotation on the AgentRun CR when options.sessionId is given", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
-    const launcher = new AgentRunLauncher("core.roverkit.io", "v1alpha1", api);
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api);
 
     await launcher.launch(template, "run-7", {
       goal: "add a health check endpoint",
@@ -256,13 +256,13 @@ describe("AgentRunLauncher", () => {
     });
 
     const [request] = createNamespacedCustomObject.mock.calls[0] as [{ body: { metadata: Record<string, unknown> } }];
-    expect(request.body.metadata.annotations).toEqual({ "roverkit.io/session-id": "chat-42" });
+    expect(request.body.metadata.annotations).toEqual({ "aktis.ai/session-id": "chat-42" });
   });
 
   it("omits annotations on the AgentRun CR when no sessionId is given", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
-    const launcher = new AgentRunLauncher("core.roverkit.io", "v1alpha1", api);
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api);
 
     await launcher.launch(template, "run-8", {
       goal: "add a health check endpoint",
@@ -277,7 +277,7 @@ describe("AgentRunLauncher", () => {
   it("launch() throws if options.secretEnv is non-empty but no SecretApiLike was configured", async () => {
     const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
     const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject };
-    const launcher = new AgentRunLauncher("core.roverkit.io", "v1alpha1", api);
+    const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api);
 
     await expect(
       launcher.launch(template, "run-6", {
@@ -302,16 +302,16 @@ describe("AgentRunLauncher", () => {
       const oom = 'Job failed: container "run" was OOMKilled (exit code 137, memory limit 4Gi)';
       const getNamespacedCustomObject = vi
         .fn()
-        .mockRejectedValueOnce(new Error("agentruns.core.roverkit.io \"run-1\" not found"))
+        .mockRejectedValueOnce(new Error("agentruns.core.aktis.ai \"run-1\" not found"))
         .mockResolvedValueOnce({ status: { phase: "Running" } })
         .mockResolvedValue({ status: { phase: "Failed", message: oom } });
       const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject: vi.fn(), getNamespacedCustomObject };
-      const launcher = new AgentRunLauncher("core.roverkit.io", "v1alpha1", api, undefined, 1);
+      const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, undefined, 1);
 
       await expect(launcher.whenFailed("run-1", "default", new AbortController().signal)).resolves.toBe(oom);
       expect(getNamespacedCustomObject).toHaveBeenCalledTimes(3);
       expect(getNamespacedCustomObject).toHaveBeenLastCalledWith({
-        group: "core.roverkit.io",
+        group: "core.aktis.ai",
         version: "v1alpha1",
         namespace: "default",
         plural: "agentruns",
@@ -322,7 +322,7 @@ describe("AgentRunLauncher", () => {
     it("never settles for a run that succeeds, and stops polling once aborted", async () => {
       const getNamespacedCustomObject = vi.fn().mockResolvedValue({ status: { phase: "Succeeded" } });
       const api = { listNamespacedCustomObject: vi.fn(), createNamespacedCustomObject: vi.fn(), getNamespacedCustomObject };
-      const launcher = new AgentRunLauncher("core.roverkit.io", "v1alpha1", api, undefined, 1);
+      const launcher = new AgentRunLauncher("core.aktis.ai", "v1alpha1", api, undefined, 1);
       const stop = new AbortController();
 
       const failed = launcher.whenFailed("run-1", "default", stop.signal);

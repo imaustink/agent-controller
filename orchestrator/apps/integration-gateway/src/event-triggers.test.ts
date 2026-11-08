@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Envelope, EventTriggerResource } from "@controller-agent/event-triggers";
+import type { Envelope, EventTriggerResource } from "@aktis/event-triggers";
 import { CrdEventTriggerRegistry, couldMatchBeforeSender, readsResolvedFields, StaticEventTriggerTable } from "./event-triggers.js";
 import type { CrdWatchApi } from "./crd-table.js";
 

@@ -34,8 +34,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
-	"github.com/controller-agent/core-controller/internal/eventcel"
+	corev1alpha1 "github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1"
+	"github.com/aktisai/orchestrator/controllers/core-controller/internal/eventcel"
 )
 
 const eventTriggerConditionReady = "Ready"
@@ -46,13 +46,13 @@ type EventTriggerReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=eventtriggers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=eventtriggers/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=eventtriggers/finalizers,verbs=update
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=eventsources,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=skills,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=agents,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=tools,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=eventtriggers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=eventtriggers/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=eventtriggers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=eventsources,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=skills,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=agents,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=tools,verbs=get;list;watch
 
 // Reconcile sets an EventTrigger's Ready condition: its CEL compiles, its
 // sourceRef (if any) names an existing EventSource, and its single target ref

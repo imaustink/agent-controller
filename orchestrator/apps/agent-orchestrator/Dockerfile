@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Build from the REPO ROOT (this tool depends on the shared
-# @roverkit/messaging workspace package):
+# @aktis/messaging workspace package):
 #
 #   docker build -f orchestrator/apps/agent-orchestrator/Dockerfile -t agent-orchestrator:latest .
 
@@ -11,7 +11,7 @@
 FROM node:20-bookworm-slim AS build
 WORKDIR /repo
 
-# Install across the whole workspace so the local @roverkit/messaging
+# Install across the whole workspace so the local @aktis/messaging
 # package resolves without hitting the registry.
 COPY package.json package-lock.json* ./
 COPY framework/messaging/package.json framework/messaging/package.json
@@ -24,20 +24,20 @@ COPY orchestrator/packages/event-triggers orchestrator/packages/event-triggers
 COPY orchestrator/apps/agent-orchestrator/tsconfig.json orchestrator/apps/agent-orchestrator/tsconfig.json
 COPY orchestrator/apps/agent-orchestrator/src orchestrator/apps/agent-orchestrator/src
 
-RUN npm run build --workspace=@controller-agent/messaging \
-  && npm run build --workspace=@controller-agent/event-triggers \
+RUN npm run build --workspace=@aktis/messaging \
+  && npm run build --workspace=@aktis/event-triggers \
   && npm run build --workspace=agent-orchestrator \
   && npm prune --omit=dev \
   # Materialize the workspace package into a real directory (not the npm-created
   # symlink) so it survives being copied into the runtime stage below.
-  && rm -rf node_modules/@controller-agent/messaging \
-  && mkdir -p node_modules/@controller-agent/messaging \
-  && cp -r framework/messaging/dist node_modules/@controller-agent/messaging/dist \
-  && cp framework/messaging/package.json node_modules/@controller-agent/messaging/package.json \
-  && rm -rf node_modules/@controller-agent/event-triggers \
-  && mkdir -p node_modules/@controller-agent/event-triggers \
-  && cp -r orchestrator/packages/event-triggers/dist node_modules/@controller-agent/event-triggers/dist \
-  && cp orchestrator/packages/event-triggers/package.json node_modules/@controller-agent/event-triggers/package.json
+  && rm -rf node_modules/@aktis/messaging \
+  && mkdir -p node_modules/@aktis/messaging \
+  && cp -r framework/messaging/dist node_modules/@aktis/messaging/dist \
+  && cp framework/messaging/package.json node_modules/@aktis/messaging/package.json \
+  && rm -rf node_modules/@aktis/event-triggers \
+  && mkdir -p node_modules/@aktis/event-triggers \
+  && cp -r orchestrator/packages/event-triggers/dist node_modules/@aktis/event-triggers/dist \
+  && cp orchestrator/packages/event-triggers/package.json node_modules/@aktis/event-triggers/package.json
 
 ############################
 # Runtime stage

@@ -11,8 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
-	"github.com/controller-agent/temporal-engine/internal/agentrun"
-	"github.com/controller-agent/temporal-engine/internal/toolrun"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/agentrun"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/toolrun"
 )
 
 // readOnly and params are structured CR fields (ADR 0048) — what the SWE

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Build from the REPO ROOT (this tool depends on the shared
-# @roverkit/messaging workspace package):
+# @aktis/messaging workspace package):
 #
 #   docker build -f catalog/tools/recipe-scraper/Dockerfile -t recipe-scraper:latest .
 
@@ -14,7 +14,7 @@ WORKDIR /repo
 # Browsers already ship in the runtime image; don't download them here.
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
-# Install across the whole workspace so the local @roverkit/messaging
+# Install across the whole workspace so the local @aktis/messaging
 # package resolves without hitting the registry.
 COPY package.json package-lock.json* ./
 COPY framework/messaging/package.json framework/messaging/package.json
@@ -25,15 +25,15 @@ COPY framework/messaging framework/messaging
 COPY catalog/tools/recipe-scraper/tsconfig.json catalog/tools/recipe-scraper/tsconfig.json
 COPY catalog/tools/recipe-scraper/src catalog/tools/recipe-scraper/src
 
-RUN npm run build --workspace=@roverkit/messaging \
+RUN npm run build --workspace=@aktis/messaging \
   && npm run build --workspace=recipe-scraper \
   && npm prune --omit=dev \
   # Materialize the workspace package into a real directory (not the npm-created
   # symlink) so it survives being copied into the runtime stage below.
-  && rm -rf node_modules/@roverkit/messaging \
-  && mkdir -p node_modules/@roverkit/messaging \
-  && cp -r framework/messaging/dist node_modules/@roverkit/messaging/dist \
-  && cp framework/messaging/package.json node_modules/@roverkit/messaging/package.json
+  && rm -rf node_modules/@aktis/messaging \
+  && mkdir -p node_modules/@aktis/messaging \
+  && cp -r framework/messaging/dist node_modules/@aktis/messaging/dist \
+  && cp framework/messaging/package.json node_modules/@aktis/messaging/package.json
 
 ############################
 # Runtime stage

@@ -66,7 +66,7 @@ graph TD
     Orchestrator[agent-orchestrator\nDeployment]
     Controller[core-controller\nDeployment]
 
-    subgraph CRDs["Custom Resources (core.roverkit.io/v1alpha1)"]
+    subgraph CRDs["Custom Resources (core.aktis.ai/v1alpha1)"]
         ToolCR[Tool CR\nimage · SA · secretEnv · allowedRoles]
         SkillCR[Skill CR\nmarkdown · toolRefs]
         AgentCR[Agent CR\nimage · SA · skillRefs · toolRefs]
@@ -113,9 +113,9 @@ Kubernetes. Either half can be adopted without the other.
 ├── docs/                       # cross-cutting docs + Architecture Decision Records (adr/)
 ├── framework/                  # depends on nothing else in this repo
 │   ├── protocol/               # the canonical wire contract (.proto) + generated TS/Go + conformance fixtures
-│   ├── messaging/              # @roverkit/messaging — tool event stream, sinks, zod schemas
-│   ├── agent-runtime/          # @roverkit/agent-runtime — the agent SDK (runAgent, in-process runs)
-│   └── github-app-auth/        # @roverkit/github-app-auth — GitHub App JWT/token auth
+│   ├── messaging/              # @aktis/messaging — tool event stream, sinks, zod schemas
+│   ├── agent-runtime/          # @aktis/agent-runtime — the agent SDK (runAgent, in-process runs)
+│   └── github-app-auth/        # @aktis/github-app-auth — GitHub App JWT/token auth
 ├── catalog/                    # built on the framework; deployed by the orchestrator
 │   ├── agents/                 # stub-agent, claude-code-swe-agent, opencode-swe-agent
 │   ├── tools/                  # on-demand tool containers (recipe-scraper, github, web-search, …)
@@ -156,7 +156,7 @@ a layer.
 | **core-controller** | Go (kubebuilder) | [orchestrator/controllers/core-controller/README.md](orchestrator/controllers/core-controller/README.md) |
 
 The controller watches `Tool`, `Skill`, `Agent`, `ToolRun`, and `AgentRun` CRs
-(API group `core.roverkit.io/v1alpha1`) and manages all Job creation,
+(API group `core.aktis.ai/v1alpha1`) and manages all Job creation,
 secret injection, and lifecycle tracking.
 
 ### Orchestrator
@@ -185,7 +185,7 @@ Every tool container is expected to conform to these repo-wide standards:
 - **[Message passing](docs/messaging.md)** — the event protocol
   (`accepted → progress* / warning* → succeeded | failed`), the transports
   (stdout / file / HTTP callback), and the correlation/idempotency rules.
-  Implemented once as the [@roverkit/messaging](framework/messaging/) package.
+  Implemented once as the [@aktis/messaging](framework/messaging/) package.
 - **[Security model](docs/security.md)** — SSRF defense, prompt-injection
   containment, the hardened container run contract, and secret handling.
 
@@ -206,8 +206,8 @@ prerequisites and values. Tools are never deployed as long-running pods — the
 controller launches them as one-shot Jobs via `ToolRun`/`AgentRun` CRs.
 
 > **Upgrading a cluster installed before the roverkit rename?** The CRD API
-> group moved from `core.controller-agent.dev` to `core.roverkit.io`. Follow
-> [docs/roverkit-migration.md](docs/roverkit-migration.md) **before** upgrading,
+> group moved from `core.aktis.ai` to `core.aktis.ai`. Follow
+> [docs/aktis-migration.md](docs/aktis-migration.md) **before** upgrading,
 > or the new release starts with an empty catalog and no linked accounts.
 
 From a local checkout:
@@ -314,7 +314,7 @@ and must be re-created before running the script again.
 
 1. Create `catalog/tools/<tool-name>/` with its own `Dockerfile`, source, and `README.md`.
 2. Add it to the root `package.json` workspaces (covered by the `catalog/tools/*` glob)
-   and depend on [@roverkit/messaging](framework/messaging/) for the
+   and depend on [@aktis/messaging](framework/messaging/) for the
    [event protocol](docs/messaging.md) — see
    `catalog/tools/recipe-scraper/src/messaging/index.ts` for the wiring pattern.
 3. Follow the [security model](docs/security.md): treat all input as untrusted,

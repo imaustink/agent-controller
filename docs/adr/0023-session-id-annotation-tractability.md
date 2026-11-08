@@ -12,7 +12,7 @@ A single Open WebUI conversation can fan out into an arbitrary number of
 ToolRun/AgentRun Jobs across a turn (a tool call, a skill's agent delegation,
 a sub-agent's own tool calls, etc. — ADR 0010/0021). None of those Jobs or
 Pods carried any link back to the conversation that spawned them: `kubectl
-get pods`/`kubectl describe` showed only the `core.roverkit.io/
+get pods`/`kubectl describe` showed only the `core.aktis.ai/
 {toolrun,agentrun,tool,agent}` labels (ADR 0010), which identify *which*
 Tool/Agent ran, not *which conversation* asked for it.
 
@@ -44,7 +44,7 @@ it just never propagated past `buildGraphInput`.
    `AgentRunLauncherPort.launch` (`src/k8s/{container-tool,agentrun}-
    launcher.ts`).
 3. **`ToolRunLauncher`/`AgentRunLauncher` set it as a CR annotation**,
-   `roverkit.io/session-id`, on the `ToolRun`/`AgentRun` custom
+   `aktis.ai/session-id`, on the `ToolRun`/`AgentRun` custom
    resource's own `metadata.annotations` — not a new typed CRD spec field, so
    no CRD schema/regeneration was needed for something that carries no
    validated shape and no reconciliation behavior.

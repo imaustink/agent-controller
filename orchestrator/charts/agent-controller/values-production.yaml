@@ -679,7 +679,7 @@ searxng:
 extraManifests:
   # eventsource-github
   - |
-    apiVersion: core.controller-agent.dev/v1alpha1
+    apiVersion: core.aktis.ai/v1alpha1
     kind: EventSource
     metadata:
       name: github
@@ -700,7 +700,7 @@ extraManifests:
         repositoryFrom: body.repository.full_name
   # eventtrigger-github-issue-triage
   - |
-    apiVersion: core.controller-agent.dev/v1alpha1
+    apiVersion: core.aktis.ai/v1alpha1
     kind: EventTrigger
     metadata:
       name: github-issue-triage
@@ -753,7 +753,7 @@ extraManifests:
           removeLabel: "{{`{{label}}`}}"
   # eventtrigger-github-issue-review
   - |
-    apiVersion: core.controller-agent.dev/v1alpha1
+    apiVersion: core.aktis.ai/v1alpha1
     kind: EventTrigger
     metadata:
       name: github-issue-review
@@ -810,7 +810,7 @@ extraManifests:
           removeLabel: "{{`{{label}}`}}"
   # eventtrigger-github-pr-triage
   - |
-    apiVersion: core.controller-agent.dev/v1alpha1
+    apiVersion: core.aktis.ai/v1alpha1
     kind: EventTrigger
     metadata:
       name: github-pr-triage
@@ -879,7 +879,7 @@ extraManifests:
           removeLabel: "{{`{{label}}`}}"
   # eventtrigger-github-pr-review
   - |
-    apiVersion: core.controller-agent.dev/v1alpha1
+    apiVersion: core.aktis.ai/v1alpha1
     kind: EventTrigger
     metadata:
       name: github-pr-review

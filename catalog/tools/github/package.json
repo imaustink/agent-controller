@@ -18,8 +18,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@roverkit/github-app-auth": "0.1.0",
-    "@roverkit/messaging": "0.1.0"
+    "@aktis/github-app-auth": "0.1.0",
+    "@aktis/messaging": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.16.5",

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Event } from "@roverkit/messaging";
+import type { Event } from "@aktis/messaging";
 import { buildAgentGraph, type AgentGraphDeps } from "./graph.js";
 import type { IdentityResolver } from "../rbac/types.js";
 import type { SkillStore } from "../skills/types.js";

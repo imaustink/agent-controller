@@ -45,7 +45,7 @@ const FULL_USER = "kb-full";
 const LIMITED_USER = "kb-limited";
 
 const manifests = `
-apiVersion: core.roverkit.io/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: Connection
 metadata:
   name: ${CONNECTION}
@@ -64,7 +64,7 @@ spec:
   identityProviders:
     - atlassian
 ---
-apiVersion: core.roverkit.io/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: Corpus
 metadata:
   name: ${CORPUS}
@@ -82,7 +82,7 @@ spec:
   api:
     enabled: true
 ---
-apiVersion: core.roverkit.io/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: KnowledgeBase
 metadata:
   name: ${KB}
@@ -107,7 +107,7 @@ async function syncNow(): Promise<void> {
       "get",
       "cronjob",
       "-l",
-      `core.roverkit.io/corpus=${CORPUS}`,
+      `core.aktis.ai/corpus=${CORPUS}`,
       "-o",
       "jsonpath={.items[0].metadata.name}",
     ])

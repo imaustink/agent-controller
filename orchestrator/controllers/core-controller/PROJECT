@@ -3,116 +3,116 @@
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
 cliVersion: 4.14.0
-domain: roverkit.io
+domain: aktis.ai
 layout:
 - go.kubebuilder.io/v4
 projectName: core-controller
-repo: github.com/roverkit/orchestrator/controllers/core-controller
+repo: github.com/aktisai/orchestrator/controllers/core-controller
 resources:
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: roverkit.io
+  domain: aktis.ai
   group: core
   kind: Tool
-  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
+  path: github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: roverkit.io
+  domain: aktis.ai
   group: core
   kind: Skill
-  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
+  path: github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: roverkit.io
+  domain: aktis.ai
   group: core
   kind: ToolRun
-  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
+  path: github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: roverkit.io
+  domain: aktis.ai
   group: core
   kind: Agent
-  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
+  path: github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: roverkit.io
+  domain: aktis.ai
   group: core
   kind: AgentRun
-  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
+  path: github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: roverkit.io
+  domain: aktis.ai
   group: core
   kind: LocalTool
-  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
+  path: github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: roverkit.io
+  domain: aktis.ai
   group: core
   kind: Connection
-  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
+  path: github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: roverkit.io
+  domain: aktis.ai
   group: core
   kind: KnowledgeBase
-  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
+  path: github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
-  domain: roverkit.io
+  domain: aktis.ai
   group: core
   kind: MCPServer
-  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
+  path: github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
-  domain: roverkit.io
+  domain: aktis.ai
   group: core
   kind: MCPTool
-  path: github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1
+  path: github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: controller-agent.dev
+  domain: aktis.ai
   group: core
   kind: EventSource
-  path: github.com/controller-agent/core-controller/api/v1alpha1
+  path: github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: controller-agent.dev
+  domain: aktis.ai
   group: core
   kind: EventTrigger
-  path: github.com/controller-agent/core-controller/api/v1alpha1
+  path: github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1
   version: v1alpha1
 version: "3"

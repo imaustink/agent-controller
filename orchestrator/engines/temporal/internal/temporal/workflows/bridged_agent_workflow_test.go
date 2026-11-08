@@ -7,10 +7,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/agentrun"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/workflows"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/agentrun"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/activities"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/workflows"
 )
 
 func bridgedAgent() catalog.AgentDescriptor {

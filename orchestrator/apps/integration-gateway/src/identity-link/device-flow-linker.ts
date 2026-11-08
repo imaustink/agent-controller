@@ -7,7 +7,7 @@ import {
   signState,
   startDeviceFlow,
   verifyState,
-} from "@roverkit/github-app-auth";
+} from "@aktis/github-app-auth";
 import type { IdentityLinkStore } from "./store.js";
 
 const PROVIDER = "github";

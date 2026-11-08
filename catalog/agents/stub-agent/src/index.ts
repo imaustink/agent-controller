@@ -1,4 +1,4 @@
-import { runAgent } from "@roverkit/agent-runtime";
+import { runAgent } from "@aktis/agent-runtime";
 import { buildReply, observedCredentialEnv } from "./reply.js";
 import { isImmediate, readPacing } from "./pacing.js";
 

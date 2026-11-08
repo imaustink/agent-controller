@@ -6,7 +6,7 @@ import {
   type Envelope,
   type EventTriggerResource,
   type SelectResult,
-} from "@controller-agent/event-triggers";
+} from "@aktis/event-triggers";
 import { makeCrdWatcher, type WatchCrdFn } from "../k8s/crd-watcher.js";
 import type { CustomObjectsApiLike } from "../registry/crd-tool-registry.js";
 
@@ -93,7 +93,7 @@ export function parseEnvelope(raw: unknown): Envelope | { error: string } {
  * special-cased here.
  *
  * Every CR is compiled once, on arrival, with the shared
- * `@controller-agent/event-triggers` package — the SAME compile the
+ * `@aktis/event-triggers` package — the SAME compile the
  * core-controller runs for the `Ready` condition and the Temporal engine runs
  * in Go (cross-engine parity is pinned by the package's CEL fixture suite).
  * A trigger whose CEL or target does not compile is kept in the table but is

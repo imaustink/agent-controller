@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Build from the REPO ROOT (this tool depends on the shared
-# @roverkit/messaging workspace package):
+# @aktis/messaging workspace package):
 #
 #   docker build -f catalog/tools/web-search/Dockerfile -t web-search:latest .
 
@@ -11,7 +11,7 @@
 FROM node:20-bookworm-slim AS build
 WORKDIR /repo
 
-# Install across the whole workspace so the local @roverkit/messaging
+# Install across the whole workspace so the local @aktis/messaging
 # package resolves without hitting the registry.
 COPY package.json package-lock.json* ./
 COPY framework/messaging/package.json framework/messaging/package.json
@@ -22,15 +22,15 @@ COPY framework/messaging framework/messaging
 COPY catalog/tools/web-search/tsconfig.json catalog/tools/web-search/tsconfig.json
 COPY catalog/tools/web-search/src catalog/tools/web-search/src
 
-RUN npm run build --workspace=@roverkit/messaging \
+RUN npm run build --workspace=@aktis/messaging \
   && npm run build --workspace=web-search \
   && npm prune --omit=dev \
   # Materialize the workspace package into a real directory (not the npm-created
   # symlink) so it survives being copied into the runtime stage below.
-  && rm -rf node_modules/@roverkit/messaging \
-  && mkdir -p node_modules/@roverkit/messaging \
-  && cp -r framework/messaging/dist node_modules/@roverkit/messaging/dist \
-  && cp framework/messaging/package.json node_modules/@roverkit/messaging/package.json
+  && rm -rf node_modules/@aktis/messaging \
+  && mkdir -p node_modules/@aktis/messaging \
+  && cp -r framework/messaging/dist node_modules/@aktis/messaging/dist \
+  && cp framework/messaging/package.json node_modules/@aktis/messaging/package.json
 
 ############################
 # Runtime stage

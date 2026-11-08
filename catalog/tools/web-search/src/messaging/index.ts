@@ -5,12 +5,12 @@ import {
   NatsSink,
   StdoutSink,
   type Sink,
-} from "@roverkit/messaging";
+} from "@aktis/messaging";
 import type { AppConfig } from "../config.js";
 import type { SearchErrorCode, SearchStage } from "../schema.js";
 import { clip } from "../security/redact.js";
 
-export type { Sink } from "@roverkit/messaging";
+export type { Sink } from "@aktis/messaging";
 
 /**
  * This tool's concrete emitter: a plain Markdown string as the `succeeded`

@@ -4,7 +4,7 @@
 # §1), which is exactly what web-fetch expects -- a bare URL. Send
 #   {"url": "https://example.com/page"}
 # signed with x-signature-256. Uncomment `reply` below to receive the result.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventTrigger
 metadata:
   name: generic-hmac-tool

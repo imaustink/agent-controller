@@ -37,8 +37,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	corev1alpha1 "github.com/controller-agent/core-controller/api/v1alpha1"
-	"github.com/controller-agent/core-controller/internal/eventcel"
+	corev1alpha1 "github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1"
+	"github.com/aktisai/orchestrator/controllers/core-controller/internal/eventcel"
 )
 
 const (
@@ -83,9 +83,9 @@ type EventSourceReconciler struct {
 	TickURL string
 }
 
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=eventsources,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=eventsources/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=core.controller-agent.dev,resources=eventsources/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=eventsources,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=eventsources/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=eventsources/finalizers,verbs=update
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
@@ -221,7 +221,7 @@ func (r *EventSourceReconciler) applyTickServiceAccount(ctx context.Context, sou
 			Name:      name,
 			Namespace: source.Namespace,
 			Labels: map[string]string{
-				"core.controller-agent.dev/eventsource": source.Name,
+				"core.aktis.ai/eventsource": source.Name,
 			},
 		},
 		// Only the projected, audience-bound token is ever mounted.
@@ -268,7 +268,7 @@ func (r *EventSourceReconciler) applyTickCronJob(ctx context.Context, source *co
 			Name:      name,
 			Namespace: source.Namespace,
 			Labels: map[string]string{
-				"core.controller-agent.dev/eventsource": source.Name,
+				"core.aktis.ai/eventsource": source.Name,
 			},
 		},
 		Spec: batchv1.CronJobSpec{
@@ -294,7 +294,7 @@ func (r *EventSourceReconciler) applyTickCronJob(ctx context.Context, source *co
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
-								"core.controller-agent.dev/eventsource": source.Name,
+								"core.aktis.ai/eventsource": source.Name,
 							},
 						},
 						Spec: corev1.PodSpec{

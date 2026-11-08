@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/continuation"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/continuation"
 )
 
 func TestExtract(t *testing.T) {

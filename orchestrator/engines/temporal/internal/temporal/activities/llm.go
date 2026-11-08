@@ -6,7 +6,7 @@ package activities
 import (
 	"context"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/llm"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/llm"
 )
 
 const CompleteTurnActivityName = "CompleteTurn"

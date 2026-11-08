@@ -48,7 +48,7 @@ rules:
   verbs:
   - get
 - apiGroups:
-  - core.roverkit.io
+  - core.aktis.ai
   resources:
   - agentruns
   - agents
@@ -71,7 +71,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - core.roverkit.io
+  - core.aktis.ai
   resources:
   - agentruns/finalizers
   - agents/finalizers
@@ -88,7 +88,7 @@ rules:
   verbs:
   - update
 - apiGroups:
-  - core.roverkit.io
+  - core.aktis.ai
   resources:
   - agentruns/status
   - agents/status

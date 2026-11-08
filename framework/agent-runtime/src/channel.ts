@@ -5,7 +5,7 @@ import {
   agentSubjects,
   type AgentDownMessage,
   type AgentUpMessage,
-} from "@roverkit/messaging";
+} from "@aktis/messaging";
 import { AgentConfigError, type AgentRuntimeConfig } from "./config.js";
 
 /**

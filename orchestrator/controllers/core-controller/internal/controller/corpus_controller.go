@@ -39,7 +39,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/roverkit/orchestrator/controllers/core-controller/api/v1alpha1"
+	corev1alpha1 "github.com/aktisai/orchestrator/controllers/core-controller/api/v1alpha1"
 )
 
 const corpusConditionReady = "Ready"
@@ -79,10 +79,10 @@ type CorpusReconciler struct {
 	SyncTokenSecret string
 }
 
-// +kubebuilder:rbac:groups=core.roverkit.io,resources=corpora,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core.roverkit.io,resources=corpora/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=core.roverkit.io,resources=corpora/finalizers,verbs=update
-// +kubebuilder:rbac:groups=core.roverkit.io,resources=connections,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=corpora,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=corpora/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=corpora/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.aktis.ai,resources=connections,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile assigns a Corpus its collection and resolves what it inherits from
@@ -277,7 +277,7 @@ func (r *CorpusReconciler) reconcileSyncCronJob(ctx context.Context, corpus *cor
 			Name:      name.Name,
 			Namespace: name.Namespace,
 			Labels: map[string]string{
-				"core.roverkit.io/corpus": corpus.Name,
+				"core.aktis.ai/corpus": corpus.Name,
 			},
 		},
 		Spec: batchv1.CronJobSpec{
@@ -339,7 +339,7 @@ func (r *CorpusReconciler) reconcileSyncCronJob(ctx context.Context, corpus *cor
 	existing.Spec = desired.Spec
 	existing.Labels = desired.Labels
 	// Re-adopt: a CronJob left owned by something else (the old-group Corpus
-	// during the roverkit API-group migration, ADR 0047) would be
+	// during the aktis API-group migration, ADR 0047) would be
 	// garbage-collected along with that owner, taking the live schedule too.
 	existing.OwnerReferences = desired.OwnerReferences
 	return r.Update(ctx, &existing)

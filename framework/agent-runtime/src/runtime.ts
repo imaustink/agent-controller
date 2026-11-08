@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentDownMessage, AgentUpMessage } from "@roverkit/messaging";
+import type { AgentDownMessage, AgentUpMessage } from "@aktis/messaging";
 import { AgentConfigError, loadConfig, type AgentRuntimeConfig } from "./config.js";
 import { NatsChannel, type AgentChannel } from "./channel.js";
 

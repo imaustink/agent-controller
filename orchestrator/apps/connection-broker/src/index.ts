@@ -34,7 +34,7 @@ function required(name: string): string {
 
 async function main(): Promise<void> {
   const namespace = process.env.NAMESPACE ?? "default";
-  const group = process.env.CRD_GROUP ?? "core.roverkit.io";
+  const group = process.env.CRD_GROUP ?? "core.aktis.ai";
   const version = process.env.CRD_VERSION ?? "v1alpha1";
   const port = Number(process.env.PORT ?? 8080);
 

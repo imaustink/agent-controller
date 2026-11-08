@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Build from the REPO ROOT (this tool depends on the shared
-# @roverkit/messaging workspace package):
+# @aktis/messaging workspace package):
 #
 #   docker build -f catalog/tools/ssh/Dockerfile -t ssh:latest .
 
@@ -20,15 +20,15 @@ COPY framework/messaging framework/messaging
 COPY catalog/tools/ssh/tsconfig.json catalog/tools/ssh/tsconfig.json
 COPY catalog/tools/ssh/src catalog/tools/ssh/src
 
-RUN npm run build --workspace=@roverkit/messaging \
+RUN npm run build --workspace=@aktis/messaging \
   && npm run build --workspace=ssh \
   && npm prune --omit=dev \
   # Materialize the workspace package into a real directory (not the npm-created
   # symlink) so it survives being copied into the runtime stage below.
-  && rm -rf node_modules/@roverkit/messaging \
-  && mkdir -p node_modules/@roverkit/messaging \
-  && cp -r framework/messaging/dist node_modules/@roverkit/messaging/dist \
-  && cp framework/messaging/package.json node_modules/@roverkit/messaging/package.json
+  && rm -rf node_modules/@aktis/messaging \
+  && mkdir -p node_modules/@aktis/messaging \
+  && cp -r framework/messaging/dist node_modules/@aktis/messaging/dist \
+  && cp framework/messaging/package.json node_modules/@aktis/messaging/package.json
 
 ############################
 # Runtime stage

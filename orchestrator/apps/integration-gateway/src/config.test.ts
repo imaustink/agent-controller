@@ -5,17 +5,17 @@ describe("loadConfig event sources (ADR 0048)", () => {
   it("defaults the CRD group/version; namespace has no default", () => {
     const config = loadConfig({});
     expect(config.crdNamespace).toBe("");
-    expect(config.crdGroup).toBe("core.controller-agent.dev");
+    expect(config.crdGroup).toBe("core.aktis.ai");
     expect(config.crdVersion).toBe("v1alpha1");
   });
 
   it("reads CRD_NAMESPACE / CRD_GROUP / CRD_VERSION", () => {
     const config = loadConfig({
       CRD_NAMESPACE: "agents",
-      CRD_GROUP: "core.roverkit.io",
+      CRD_GROUP: "core.aktis.ai",
       CRD_VERSION: "v1beta1",
     });
-    expect([config.crdNamespace, config.crdGroup, config.crdVersion]).toEqual(["agents", "core.roverkit.io", "v1beta1"]);
+    expect([config.crdNamespace, config.crdGroup, config.crdVersion]).toEqual(["agents", "core.aktis.ai", "v1beta1"]);
   });
 });
 

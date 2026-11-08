@@ -6,8 +6,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/authz"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/llm"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/authz"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/llm"
 )
 
 const ExtractTargetRepositoryActivityName = "ExtractTargetRepository"

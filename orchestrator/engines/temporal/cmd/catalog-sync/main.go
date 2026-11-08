@@ -14,10 +14,10 @@ import (
 
 	"k8s.io/client-go/dynamic"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/kubeconfig"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/llm"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/vectorstore"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/kubeconfig"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/llm"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/vectorstore"
 )
 
 func main() {

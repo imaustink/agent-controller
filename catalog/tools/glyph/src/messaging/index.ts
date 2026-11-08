@@ -5,12 +5,12 @@ import {
   NatsSink,
   StdoutSink,
   type Sink,
-} from "@roverkit/messaging";
+} from "@aktis/messaging";
 import type { AppConfig } from "../config.js";
 import type { ErrorCode, Stage } from "../schema.js";
 import { clip } from "../security/redact.js";
 
-export type { Sink } from "@roverkit/messaging";
+export type { Sink } from "@aktis/messaging";
 
 /** This tool's concrete emitter: the result is a Markdown string summarizing
  * the note/task operation, built by index.ts before it reaches `succeeded`. */

@@ -5,7 +5,7 @@ import { InvokeServer, type AgentGraphLike, type InvocationRecord } from "./serv
 import type { AgentState } from "./agent/graph.js";
 import type { AgentOrchestratorChannel } from "./agents/nats-agent-channel.js";
 import { InMemorySessionStore } from "./session/in-memory-session-store.js";
-import type { Envelope, EventTriggerResource } from "@controller-agent/event-triggers";
+import type { Envelope, EventTriggerResource } from "@aktis/event-triggers";
 import { CrdEventTriggerRegistry } from "./routing/crd-event-trigger-registry.js";
 
 /**
@@ -60,7 +60,7 @@ function envelope(overrides: Partial<Envelope> = {}): Envelope {
  */
 async function triggerRegistry(triggers: EventTriggerResource[]): Promise<CrdEventTriggerRegistry> {
   const ready = triggers.map((t) => ({ ...t, status: { conditions: [{ type: "Ready", status: "True" as const }] } }));
-  const registry = new CrdEventTriggerRegistry("default", "core.controller-agent.dev", "v1alpha1", {
+  const registry = new CrdEventTriggerRegistry("default", "core.aktis.ai", "v1alpha1", {
     listNamespacedCustomObject: vi.fn().mockResolvedValue({ items: ready }),
   });
   await registry.listAll();

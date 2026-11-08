@@ -62,7 +62,7 @@ See `src/config.ts` for the full list. Notable ones:
 - `CRD_NAMESPACE` (required for the event routes) — namespace of the
   `EventSource` CRs and the Secrets they reference. Unset: no sources, every
   event route 404s.
-- `CRD_GROUP` / `CRD_VERSION` — default `core.controller-agent.dev` /
+- `CRD_GROUP` / `CRD_VERSION` — default `core.aktis.ai` /
   `v1alpha1`.
 - RBAC: `get,list,watch` on `eventsources.<group>` and `get` on `secrets` in
   `CRD_NAMESPACE` (on top of the credential-store Secret grants). No
@@ -74,7 +74,7 @@ See `src/config.ts` for the full list. Notable ones:
   identity resolver, to a role allowed to reach the SWE agent).
 - `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_APP_INSTALLATION_ID`
   (preferred) or `GITHUB_TOKEN` (PAT fallback) — used only to post issue
-  comments (`@roverkit/github-app-auth`, ADR 0018). Reuses the same
+  comments (`@aktis/github-app-auth`, ADR 0018). Reuses the same
   App as `catalog/agents/opencode-swe-agent` if you extend it with `Issues: read &
   write` and subscribe it to the `issues`/`issue_comment` webhook events,
   rather than registering a second App.

@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/roverkit/orchestrator/sidecars/localtool-executor/internal/executor"
+	"github.com/aktisai/orchestrator/sidecars/localtool-executor/internal/executor"
 )
 
 func main() {

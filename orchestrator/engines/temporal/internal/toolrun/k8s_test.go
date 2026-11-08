@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/toolrun"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/toolrun"
 )
 
 func newFakeDynamic() *dynamicfake.FakeDynamicClient {
@@ -140,7 +140,7 @@ func TestGetStatus(t *testing.T) {
 
 	t.Run("mirrors status fields", func(t *testing.T) {
 		_, err := client.Resource(toolrun.ToolRunGVR).Namespace("ns").Create(context.Background(), &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "core.roverkit.io/v1alpha1",
+			"apiVersion": "core.aktis.ai/v1alpha1",
 			"kind":       "ToolRun",
 			"metadata":   map[string]any{"name": "done", "namespace": "ns"},
 			"status":     map[string]any{"phase": "Failed", "message": "Job deadline exceeded", "jobName": "toolrun-done"},

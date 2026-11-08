@@ -5,7 +5,7 @@ import {
   type CronSource,
   type EventSourceResource,
   type WebhookSource,
-} from "@controller-agent/event-triggers";
+} from "@aktis/event-triggers";
 import { CrdTable, crdApisFromKubeConfig, type CrdTableOptions } from "./crd-table.js";
 
 /**

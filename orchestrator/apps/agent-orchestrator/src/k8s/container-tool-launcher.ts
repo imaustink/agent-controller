@@ -56,7 +56,7 @@ export interface LaunchOptions {
 }
 
 /** Well-known annotation key mirroring `SessionIDAnnotation` in orchestrator/controllers/core-controller/internal/controller/run_job.go. */
-export const SESSION_ID_ANNOTATION = "roverkit.io/session-id";
+export const SESSION_ID_ANNOTATION = "aktis.ai/session-id";
 
 export interface LaunchedJob {
   name: string;

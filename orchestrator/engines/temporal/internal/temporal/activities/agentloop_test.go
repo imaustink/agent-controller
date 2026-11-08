@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/llm"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/llm"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/activities"
 )
 
 // fakeLLM returns a canned JSON payload and records the last prompt.

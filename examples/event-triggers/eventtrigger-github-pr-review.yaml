@@ -7,7 +7,7 @@
 # target.readOnly is the deterministic write gate (AgentRun.spec.readOnly ->
 # AGENT_READ_ONLY): the SWE agent denies `git push` / `gh pr create|merge|...`
 # and mints a contents:read token. It does not depend on the prompt.
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventTrigger
 metadata:
   name: github-pr-review

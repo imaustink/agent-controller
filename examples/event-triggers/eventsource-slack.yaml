@@ -8,7 +8,7 @@
 # event runs as the gateway's own service identity -- never as the Slack user.
 #
 #   kubectl create secret generic slack-event-source --from-literal=signingSecret=<Signing Secret>
-apiVersion: core.controller-agent.dev/v1alpha1
+apiVersion: core.aktis.ai/v1alpha1
 kind: EventSource
 metadata:
   name: slack

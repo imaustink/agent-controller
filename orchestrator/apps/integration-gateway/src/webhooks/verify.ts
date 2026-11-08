@@ -1,6 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
-import type { WebhookVerify } from "@controller-agent/event-triggers";
+import type { WebhookVerify } from "@aktis/event-triggers";
 
 /**
  * Webhook verification for an `EventSource` (ADR 0048, docs/event-triggers.md

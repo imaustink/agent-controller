@@ -3,9 +3,9 @@ package workflows
 import (
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/roverkit/orchestrator/engines/temporal/internal/authz"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/catalog"
-	"github.com/roverkit/orchestrator/engines/temporal/internal/temporal/activities"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/authz"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/activities"
 )
 
 // credentials is a resolved credential REFERENCE: the Secret the pre-flight

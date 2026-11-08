@@ -2,17 +2,17 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/core.controller-agent.dev_tools.yaml
-- bases/core.controller-agent.dev_skills.yaml
-- bases/core.controller-agent.dev_toolruns.yaml
-- bases/core.controller-agent.dev_agents.yaml
-- bases/core.controller-agent.dev_agentruns.yaml
-- bases/core.controller-agent.dev_connections.yaml
-- bases/core.controller-agent.dev_knowledgebases.yaml
-- bases/core.controller-agent.dev_mcpservers.yaml
-- bases/core.controller-agent.dev_mcptools.yaml
-- bases/core.controller-agent.dev_eventsources.yaml
-- bases/core.controller-agent.dev_eventtriggers.yaml
+- bases/core.aktis.ai_tools.yaml
+- bases/core.aktis.ai_skills.yaml
+- bases/core.aktis.ai_toolruns.yaml
+- bases/core.aktis.ai_agents.yaml
+- bases/core.aktis.ai_agentruns.yaml
+- bases/core.aktis.ai_connections.yaml
+- bases/core.aktis.ai_knowledgebases.yaml
+- bases/core.aktis.ai_mcpservers.yaml
+- bases/core.aktis.ai_mcptools.yaml
+- bases/core.aktis.ai_eventsources.yaml
+- bases/core.aktis.ai_eventtriggers.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
