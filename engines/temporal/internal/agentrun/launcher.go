@@ -36,6 +36,13 @@ type LaunchSpec struct {
 	// SecretEnv carries caller-scoped credentials by REFERENCE. Values live in
 	// the Secret the authorization pre-flight wrote; nothing here is plaintext.
 	SecretEnv []toolrun.SecretEnvVar
+	// ReadOnly sets spec.readOnly (AGENT_READ_ONLY=true in the pod; ADR
+	// 0048): the SWE agents deny pushes/PR mutations and mint a read-only
+	// token from this alone — never from the goal text.
+	ReadOnly bool
+	// Params sets spec.params (AGENT_PARAMS=<json>): the matched
+	// EventTrigger's params in their string form.
+	Params map[string]string
 }
 
 // Launcher creates AgentRun CRs. The core-controller reconciles each into a
@@ -74,6 +81,16 @@ func (l *K8sLauncher) Launch(ctx context.Context, spec LaunchSpec) error {
 	}
 	if spec.TimeoutSeconds > 0 {
 		crSpec["timeoutSeconds"] = int64(spec.TimeoutSeconds)
+	}
+	if spec.ReadOnly {
+		crSpec["readOnly"] = true
+	}
+	if len(spec.Params) > 0 {
+		params := make(map[string]any, len(spec.Params))
+		for k, v := range spec.Params {
+			params[k] = v
+		}
+		crSpec["params"] = params
 	}
 	if len(spec.SecretEnv) > 0 {
 		entries := make([]any, len(spec.SecretEnv))

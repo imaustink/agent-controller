@@ -191,6 +191,44 @@ type Request struct {
 	// extraction can do is point the run at another repository that caller
 	// can already read.
 	TargetRepository string `json:"targetRepository,omitempty"`
+
+	// ReadOnly marks a launch for a turn its EventTrigger made read-only (ADR
+	// 0048). It withholds the run's write-capable credential; see
+	// suppressWriteCredentials. It can only restrict.
+	ReadOnly bool `json:"readOnly,omitempty"`
+}
+
+// suppressWriteCredentials removes, from a read-only run's credential set,
+// every credential this package resolves that can write to a repository.
+//
+// That is the caller's own GitHub token (GITHUB_TOKEN). Under ADR 0041 it is
+// the run's READ credential, but it is a user-to-server token carrying
+// whatever write access that human has — and git applies an `insteadOf`
+// rewrite to pushes too whenever no `pushInsteadOf` is configured, which is
+// exactly a read-only run's git config. Leaving it in would make the
+// read-only guarantee rest on the agent declining to push, i.e. on the
+// command filter alone. Withheld, nothing this engine provisions can write:
+// the run reads with the App token, which the agent mints contents:read from
+// spec.readOnly, and the repository read gate has ALREADY run on the caller's
+// own token (gateRepository, before this), so the caller's read access is
+// still what decided whether the run launches.
+//
+// What stays: model credentials (Claude) and the claude-remote write-back
+// grant. The grant writes to the identity-link store, not to a repository —
+// it only persists a token the CLI itself rotated — and withholding it would
+// break the next run's Claude credential (one-strike rotation) without
+// making this one any less able to write code.
+//
+// Deletion rather than a never-add flag: one place, after every provider has
+// settled, so no later path can re-add the token past it. Fail closed.
+func suppressWriteCredentials(req Request, credentials map[string]string) {
+	if !req.ReadOnly {
+		return
+	}
+	if _, ok := credentials[ProviderEnvVar[identitylink.ProviderGitHub]]; ok {
+		delete(credentials, ProviderEnvVar[identitylink.ProviderGitHub])
+		log.Printf("[authorization] read-only run for %s: withholding %s", req.AgentID, ProviderEnvVar[identitylink.ProviderGitHub])
+	}
 }
 
 // Kind is the verdict's discriminator.
@@ -239,6 +277,11 @@ type PendingLink struct {
 	// subject. Nil on anchors written before this existed, which resume as
 	// they always did so replaying their history takes the same path.
 	RequestedBy *LinkOwner `json:"requestedBy,omitempty"`
+	// ReadOnly records that the parked turn was read-only (ADR 0048). The
+	// resume replays Request, possibly on a turn that is NOT read-only (a
+	// chat "done, linked it"), and must not thereby gain write credentials
+	// the original request never had.
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // LinkOwner is the part of a turn's identity that decides whose credentials
@@ -676,6 +719,10 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 		credentials[TargetRepositoryEnv] = req.TargetRepository
 	}
 
+	// After the read gate, which needs the caller's token to check access,
+	// and before anything is persisted.
+	suppressWriteCredentials(req, credentials)
+
 	actorLogin := firstNonEmpty(actorLoginFromLoop, principalLogin, s.resolveActorLogin(ctx, req))
 	if actorLogin != "" {
 		credentials[ActorLoginEnv] = actorLogin
@@ -734,6 +781,19 @@ func (s *Service) ResolveLinked(ctx context.Context, req Request) (Verdict, erro
 	}
 	if s.deps.Links == nil {
 		return s.misconfigured(req, "", "no identity-link gateway is configured")
+	}
+
+	// A read-only turn refuses a TOOL that declares github outright, rather
+	// than running it with the token withheld as an agent run does
+	// (suppressWriteCredentials). A tool's per-run secretEnv entry OVERRIDES
+	// its template's same-named static entry, so withholding the per-run
+	// GITHUB_TOKEN would expose whatever static token the Tool template
+	// carries — an operator credential, typically broader than the caller's.
+	// An agent pod has no such fallback; a tool Job may. Fail closed.
+	if req.ReadOnly && containsString(req.IdentityProviders, identitylink.ProviderGitHub) {
+		msg := fmt.Sprintf("%s acts on GitHub as you, which this read-only request does not allow, so I didn't run it.", req.AgentID)
+		logVerdict(KindRefused, req.AgentID, map[string]any{"readOnly": true})
+		return Verdict{Kind: KindRefused, Message: msg, Error: msg}, nil
 	}
 
 	principal := s.principalOf(req)

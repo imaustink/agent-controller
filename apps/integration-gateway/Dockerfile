@@ -28,14 +28,17 @@ RUN apt-get update \
 
 COPY package.json package-lock.json* ./
 COPY packages/github-app-auth/package.json packages/github-app-auth/package.json
+COPY packages/event-triggers/package.json packages/event-triggers/package.json
 COPY apps/integration-gateway/package.json apps/integration-gateway/package.json
 RUN npm ci
 
 COPY packages/github-app-auth packages/github-app-auth
+COPY packages/event-triggers packages/event-triggers
 COPY apps/integration-gateway/tsconfig.json apps/integration-gateway/tsconfig.json
 COPY apps/integration-gateway/src         apps/integration-gateway/src
 
 RUN npm run build --workspace=@controller-agent/github-app-auth \
+  && npm run build --workspace=@controller-agent/event-triggers \
   && npm run build --workspace=integration-gateway \
   && npm prune --omit=dev \
   # Materialize the workspace package as a real directory (not a symlink) so
@@ -43,7 +46,11 @@ RUN npm run build --workspace=@controller-agent/github-app-auth \
   && rm -rf node_modules/@controller-agent/github-app-auth \
   && mkdir -p node_modules/@controller-agent/github-app-auth \
   && cp -r packages/github-app-auth/dist        node_modules/@controller-agent/github-app-auth/dist \
-  && cp packages/github-app-auth/package.json   node_modules/@controller-agent/github-app-auth/package.json
+  && cp packages/github-app-auth/package.json   node_modules/@controller-agent/github-app-auth/package.json \
+  && rm -rf node_modules/@controller-agent/event-triggers \
+  && mkdir -p node_modules/@controller-agent/event-triggers \
+  && cp -r packages/event-triggers/dist         node_modules/@controller-agent/event-triggers/dist \
+  && cp packages/event-triggers/package.json    node_modules/@controller-agent/event-triggers/package.json
 
 ############################
 # Runtime stage

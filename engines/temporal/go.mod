@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	buf.build/go/protovalidate v1.4.0
 	github.com/gin-gonic/gin v1.12.0
+	github.com/google/cel-go v0.26.0
 	github.com/google/uuid v1.6.0
 	github.com/imaustink/agent-controller/framework/protocol/go v0.0.0-20261008042517-c8a087c2cb9f
 	github.com/nats-io/nats.go v1.52.0
@@ -66,6 +67,7 @@ require (
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/robfig/cron v1.2.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
+	github.com/stoewer/go-strcase v1.3.0 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
