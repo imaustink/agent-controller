@@ -467,6 +467,26 @@ describe("runClaudeTurnRemoteControlled (interactive)", () => {
     expect(result.failureDetail).toBe("Login expired · Please run /login");
   });
 
+  // Newer CLI builds lead with the "/login" hint and append the API error, so
+  // the trailing-"/login" pattern no longer matched and a triage run reported
+  // "no pushable repository" instead of prompting a re-link.
+  it("treats the newer 'Please run /login · API Error: 401' notice as an auth failure", async () => {
+    const notice = "Please run /login · API Error: 401 OAuth access token has expired. Re-authenticate to continue.";
+    const result = await runClaudeTurnRemoteControlled("do the thing", {
+      cwd,
+      env: env({ FAKE_ASSISTANT_TEXT: notice }),
+      settings: {},
+      runId: "run-auth-401",
+      pollIntervalMs: 20,
+      maxWaitMs: 5000,
+    });
+
+    expect(result.failed).toBe(true);
+    expect(result.authError).toBe(true);
+    expect(result.finalMessage).toBeNull();
+    expect(result.failureDetail).toBe(notice);
+  });
+
   it("does not mistake a long summary that merely mentions credentials for an auth failure", async () => {
     const summary = `Reviewed the diff. ${"The auth handling looks correct; note the invalid API key branch is untested. ".repeat(4)}`;
     const result = await runClaudeTurnRemoteControlled("review the thing", {
