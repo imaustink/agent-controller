@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { OrchestratorClient } from "./orchestrator-client.js";
 
@@ -303,7 +304,7 @@ describe("OrchestratorClient.invoke", () => {
     });
     const onRunning = vi.fn();
 
-    const result = await client.invoke("do the thing", "session-1", "device", undefined, onRunning);
+    const result = await client.invoke("do the thing", "session-1", "device", { onRunning });
 
     expect(result.status).toBe("succeeded");
     expect(onRunning).toHaveBeenCalledTimes(1);
@@ -335,7 +336,7 @@ describe("OrchestratorClient.invoke", () => {
     });
     const onRunning = vi.fn();
 
-    const result = await client.invoke("triage this", "session-1", "device", { source: "github" }, onRunning);
+    const result = await client.invoke("triage this", "session-1", "device", { onRunning });
 
     expect(onRunning).not.toHaveBeenCalled();
     expect(result.identityLinkPending).toBe(true);
@@ -367,7 +368,7 @@ describe("OrchestratorClient.invoke", () => {
     const onRunning = vi.fn();
     const onRemoteControlUrl = vi.fn();
 
-    const result = await client.invoke("do the thing", "session-1", "device", undefined, onRunning, onRemoteControlUrl);
+    const result = await client.invoke("do the thing", "session-1", "device", { onRunning, onRemoteControlUrl });
 
     expect(result.status).toBe("succeeded");
     expect(onRemoteControlUrl).toHaveBeenCalledTimes(1);
@@ -390,7 +391,7 @@ describe("OrchestratorClient.invoke", () => {
     });
     const onRemoteControlUrl = vi.fn();
 
-    await client.invoke("do the thing", "session-1", "device", undefined, undefined, onRemoteControlUrl);
+    await client.invoke("do the thing", "session-1", "device", { onRemoteControlUrl });
 
     expect(onRemoteControlUrl).not.toHaveBeenCalled();
   });
@@ -514,5 +515,73 @@ describe("OrchestratorClient live-session tunnel (ADR 0026)", () => {
     const client = new OrchestratorClient({ baseUrl: "http://orchestrator:8081", token: "tok", pollIntervalMs: 1, pollTimeoutMs: 1000, fetchImpl });
 
     await expect(client.forwardOpencode("run-42", "s1", { method: "GET", path: "/session" })).rejects.toThrow(/502/);
+  });
+});
+
+describe("OrchestratorClient.submitEvent (docs/event-triggers.md §5)", () => {
+  const envelope = {
+    source: "github",
+    kind: "webhook" as const,
+    id: "d-1",
+    time: "2026-10-13T12:00:00Z",
+    headers: { "x-github-event": "issues" },
+    body: { action: "labeled" },
+    sender: { login: "alice", isBot: false },
+    repository: "acme/widgets",
+  };
+  const client = (fetchImpl: typeof fetch, senderAssertionSecret?: string): OrchestratorClient =>
+    new OrchestratorClient({
+      baseUrl: "http://orchestrator:8081",
+      token: "tok",
+      pollIntervalMs: 1,
+      pollTimeoutMs: 1000,
+      sleep: noopSleep,
+      fetchImpl,
+      ...(senderAssertionSecret ? { senderAssertionSecret } : {}),
+    });
+
+  it("posts { event, identity_link_flow: device } and does NOT poll", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "ignored" }), { status: 200 }));
+    expect(await client(fetchImpl).submitEvent(envelope)).toEqual({ kind: "ignored" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const init = fetchImpl.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toEqual({ event: envelope, identity_link_flow: "device" });
+  });
+
+  it("maps 422 to rejected with the orchestrator's error", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ status: "failed", error: "param number: no such key" }), { status: 422 }));
+    expect(await client(fetchImpl).submitEvent(envelope)).toEqual({ kind: "rejected", error: "param number: no such key" });
+  });
+
+  it("maps 202 to accepted with the trigger (reply already rendered)", async () => {
+    const trigger = { name: "review", sessionId: "github:acme/widgets#7", reply: { github: { repository: "acme/widgets", issueNumber: 7 } } };
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "inv-1", status: "pending", trigger }), { status: 202 }));
+    expect(await client(fetchImpl).submitEvent(envelope)).toEqual({ kind: "accepted", id: "inv-1", trigger });
+  });
+
+  it("treats any other answer as failed (never as accepted)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("nope", { status: 401 }));
+    expect(await client(fetchImpl).submitEvent(envelope)).toEqual({ kind: "failed", error: "/invoke answered 401: nope" });
+  });
+
+  it("signs a sender assertion only when given a verified login AND a secret", async () => {
+    const ok = (): Response => new Response(JSON.stringify({ status: "ignored" }), { status: 200 });
+    const headerOf = (f: ReturnType<typeof vi.fn>): string | undefined =>
+      ((f.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>)["x-gateway-user-assertion"];
+
+    const withLogin = vi.fn().mockImplementation(async () => ok());
+    await client(withLogin, "s3cret").submitEvent(envelope, "alice");
+    const assertion = headerOf(withLogin);
+    expect(assertion).toBeDefined();
+    const [payload, sig] = assertion!.split(".");
+    expect(JSON.parse(Buffer.from(payload!, "base64url").toString("utf8")).login).toBe("alice");
+    expect(sig).toBe(createHmac("sha256", "s3cret").update(payload!).digest("base64url"));
+
+    // envelope.sender.login is present, but no VERIFIED login was passed: no assertion.
+    const noLogin = vi.fn().mockImplementation(async () => ok());
+    await client(noLogin, "s3cret").submitEvent(envelope);
+    expect(headerOf(noLogin)).toBeUndefined();
   });
 });

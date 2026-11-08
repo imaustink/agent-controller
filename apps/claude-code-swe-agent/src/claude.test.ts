@@ -6,9 +6,8 @@ import {
   buildClaudeSettings,
   buildPrompt,
   DENY_BASH_PATTERNS,
-  isReviewMode,
-  REVIEW_DENY_BASH_PATTERNS,
-  REVIEW_MODE_MARKER,
+  isReadOnly,
+  READ_ONLY_DENY_BASH_PATTERNS,
 } from "./claude.js";
 
 describe("buildClaudeSettings", () => {
@@ -20,24 +19,24 @@ describe("buildClaudeSettings", () => {
     expect(settings.permissions.deny).toEqual(DENY_BASH_PATTERNS);
   });
 
-  // FIX 1: a review run is CODE-ENFORCED read-only -- the deny list, not the
-  // prompt, is what stops a push/PR. Without the reviewMode branch these
+  // FIX 1: a read-only run is CODE-ENFORCED -- the deny list, not the
+  // prompt, is what stops a push/PR. Without the readOnly branch these
   // assertions fail (buildClaudeSettings used to ignore its argument).
-  describe("review mode (read-only enforcement)", () => {
-    const denyOf = (reviewMode: boolean): string[] =>
-      (buildClaudeSettings(reviewMode) as { permissions: { deny: string[] } }).permissions.deny;
+  describe("read-only enforcement", () => {
+    const denyOf = (readOnly: boolean): string[] =>
+      (buildClaudeSettings(readOnly) as { permissions: { deny: string[] } }).permissions.deny;
 
-    it("denies git push, gh pr create, and gh pr merge on a review run", () => {
+    it("denies git push, gh pr create, and gh pr merge on a read-only run", () => {
       const deny = denyOf(true);
       expect(deny).toContain("Bash(git push:*)");
       expect(deny).toContain("Bash(gh pr create:*)");
       expect(deny).toContain("Bash(gh pr merge:*)");
       // and keeps every baseline guardrail
       for (const pattern of DENY_BASH_PATTERNS) expect(deny).toContain(pattern);
-      for (const pattern of REVIEW_DENY_BASH_PATTERNS) expect(deny).toContain(pattern);
+      for (const pattern of READ_ONLY_DENY_BASH_PATTERNS) expect(deny).toContain(pattern);
     });
 
-    it("does NOT add the review denies on a change run (push/PR-create stay allowed)", () => {
+    it("does NOT add the read-only denies on a change run (push/PR-create stay allowed)", () => {
       const deny = denyOf(false);
       expect(deny).not.toContain("Bash(git push:*)");
       expect(deny).not.toContain("Bash(gh pr create:*)");
@@ -47,31 +46,44 @@ describe("buildClaudeSettings", () => {
   });
 });
 
-describe("isReviewMode", () => {
-  it("detects the exact sentinel a review IntegrationRoute injects into the goal", () => {
-    const goal = `${REVIEW_MODE_MARKER}\nPull request acme/widgets#7 was labeled "ai-review": "Add health check"\n\nReview this pull request.`;
-    expect(isReviewMode(goal)).toBe(true);
+// ADR 0048: read-only comes from the structured session.readOnly flag
+// (AgentRun.spec.readOnly) and nothing else. The goal is attacker-influenced
+// event text, so it must have no say in the mode either way.
+describe("isReadOnly", () => {
+  const LEGACY_SENTINEL = "SWE-ENFORCED-MODE: review-only";
+  const sentinelGoal = `${LEGACY_SENTINEL}\nPull request acme/widgets#7 was labeled "ai-review"\n\nReview this pull request.`;
+  const denyFor = (session: { readOnly: boolean; goal: string }): string[] =>
+    (buildClaudeSettings(isReadOnly(session)) as { permissions: { deny: string[] } }).permissions.deny;
+
+  it("is enabled by session.readOnly with an ordinary goal", () => {
+    const session = { readOnly: true, goal: "Review this pull request." };
+    expect(isReadOnly(session)).toBe(true);
+    expect(denyFor(session)).toEqual([...DENY_BASH_PATTERNS, ...READ_ONLY_DENY_BASH_PATTERNS]);
   });
 
-  it("is false for an ordinary change/triage goal", () => {
-    expect(isReviewMode("Pick this pull request back up and get it ready to merge.")).toBe(false);
+  it("is NOT enabled by the old goal sentinel when session.readOnly is false", () => {
+    const session = { readOnly: false, goal: sentinelGoal };
+    expect(isReadOnly(session)).toBe(false);
+    expect(denyFor(session)).not.toContain("Bash(git push:*)");
+    expect(denyFor(session)).toEqual(DENY_BASH_PATTERNS);
   });
 
-  it("keeps the marker constant byte-for-byte identical to what the review chart templates emit", () => {
-    expect(REVIEW_MODE_MARKER).toBe("SWE-ENFORCED-MODE: review-only");
-    // Guard against the agent's marker and the chart's sentinel drifting apart
-    // -- the only per-route signal that reaches this container is this string.
-    const templatesDir = join(
-      dirname(fileURLToPath(import.meta.url)),
-      "../../../charts/community-components/templates",
-    );
-    for (const file of [
-      "integrationroute-github-pr-labeled-review.yaml",
-      "integrationroute-github-issue-labeled-review.yaml",
-    ]) {
-      const yaml = readFileSync(join(templatesDir, file), "utf8");
-      expect(yaml, `${file} must emit the review sentinel`).toContain(REVIEW_MODE_MARKER);
-    }
+  it("treats a non-boolean truthy readOnly as a normal run (strict === true)", () => {
+    expect(isReadOnly({ readOnly: "true" as unknown as boolean })).toBe(false);
+  });
+
+  // Wiring guard: the handler in index.ts can't be imported in a test (it
+  // boots runAgent at module load), so assert on its source that every guard
+  // is fed from session.readOnly and that the sentinel is gone. Fails if
+  // someone reintroduces goal-text detection or drops the session wiring.
+  it("index.ts derives read-only from the session, never the goal", () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "index.ts"), "utf8");
+    expect(src).toContain("const readOnly = isReadOnly(session);");
+    expect(src).toContain("buildClaudeSettings(readOnly)");
+    expect(src).toContain("resolveUndelegatedToken(toolConfig, readOnly)");
+    expect(src).toMatch(/resolveDelegatedToken\(toolConfig, [^,]+, readOnly,/);
+    expect(src).not.toContain(LEGACY_SENTINEL);
+    expect(src).not.toMatch(/isReviewMode|REVIEW_MODE_MARKER/);
   });
 });
 

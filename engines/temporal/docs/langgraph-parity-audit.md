@@ -57,7 +57,8 @@ Three areas were compared in parallel:
 3. **Caller-tools/routing/pod-agent-bridge** — `caller-tools/*`,
    `routing/crd-integration-route-registry.ts`, `dispatch-tool.ts`, the k8s
    launchers, `nats-agent-channel.ts` vs. `internal/callertools/*`,
-   `internal/catalog/integrationroute.go`, `internal/agentrun/*`,
+   `internal/catalog/integrationroute.go` (since replaced by
+   `internal/catalog/eventtrigger.go`, ADR 0048), `internal/agentrun/*`,
    `internal/toolrun/*`, `workflows/{bridged_agent_workflow,pod_agent_workflow,
    toolrun_workflow,callertools}.go`.
 
@@ -142,8 +143,10 @@ rendering; `isInternalUiTaskRequest` short-circuiting before workflow start;
 the `PendingToolCalls` terminal state rendered in all three surfaces
 (blocking, streaming, `/invoke` poll); integration-route match precedence
 (`action+labelName > action > labelName > neither`) and `{{field}}` template
-substitution; route re-resolution under the caller's current roles inside the
-loop; sub-agent `toolRefs` non-RBAC gating, including agent-backed tools
+substitution — both since superseded by `EventTrigger` (ADR 0048: CEL match,
+priority-then-name winner, typed params, held to parity by the shared
+`packages/event-triggers/fixtures/cel-parity.json` suite); route re-resolution
+under the caller's current roles inside the loop; sub-agent `toolRefs` non-RBAC gating, including agent-backed tools
 correctly staying unreachable from it; the container-tool identity gate
 applied to sub-agent calls too. Also confirmed the documented-intentional
 differences — pod agents reusing the existing NATS bridge, `reply_ack`

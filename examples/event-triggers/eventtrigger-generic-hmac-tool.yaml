@@ -1,0 +1,29 @@
+# Example: a signed webhook runs one Tool directly (target.toolRef -- the
+# FAAS/direct-invoke path; no planner, no prompt). Tools take one string input:
+# a single param named `input` is passed as that string (docs/event-triggers.md
+# §1), which is exactly what web-fetch expects -- a bare URL. Send
+#   {"url": "https://example.com/page"}
+# signed with x-signature-256. Uncomment `reply` below to receive the result.
+apiVersion: core.controller-agent.dev/v1alpha1
+kind: EventTrigger
+metadata:
+  name: generic-hmac-tool
+spec:
+  sourceRef: generic-hmac
+  match:
+    cel: >-
+      has(body.url) && body.url.startsWith("https://")
+  params:
+    input: body.url
+  target:
+    toolRef: "web-fetch"
+    readOnly: true
+  # Optional: POST the outcome to a URL you run (a literal, never templated, so
+  # event content cannot redirect it), signed with x-event-signature when
+  # secretRef is set:
+  # reply:
+  #   http:
+  #     url: https://bridge.example.com/results
+  #     secretRef:
+  #       name: event-reply
+  #       key: secret

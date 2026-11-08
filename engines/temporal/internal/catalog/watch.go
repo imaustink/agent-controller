@@ -209,44 +209,48 @@ func RunWatch(ctx context.Context, client dynamic.Interface, namespace, kbNamesp
 	return nil
 }
 
-// RunRouteWatch keeps a RouteRegistry current from IntegrationRoute CRs.
+// RunEventTriggerWatch keeps an EventTriggerRegistry current from EventTrigger
+// CRs (ADR 0048).
 //
 // Separate from RunWatch because the two have different consumers: the
-// catalog sync process needs Qdrant and no routes, while whichever process
-// terminates inbound events needs routes and no Qdrant. Folding routes into
-// RunWatch would make the route table depend on a vector store it never
-// touches. Blocks until ctx is done.
-func RunRouteWatch(ctx context.Context, client dynamic.Interface, namespace string, reg *RouteRegistry) error {
+// catalog sync process needs Qdrant and no triggers, while whichever process
+// terminates inbound events needs triggers and no Qdrant. Folding triggers
+// into RunWatch would make the trigger table depend on a vector store it
+// never touches. Blocks until ctx is done.
+func RunEventTriggerWatch(ctx context.Context, client dynamic.Interface, namespace string, reg *EventTriggerRegistry) error {
 	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(client, resyncPeriod, namespace, nil)
 
-	informer := factory.ForResource(IntegrationRouteGVR).Informer()
-	handler := eventHandler(ctx, IntegrationRouteGVR,
+	informer := factory.ForResource(EventTriggerGVR).Informer()
+	handler := eventHandler(ctx, EventTriggerGVR,
 		func(_ context.Context, obj *unstructured.Unstructured) error {
-			route, err := DecodeIntegrationRoute(obj)
+			trigger, err := DecodeEventTrigger(obj)
 			if err != nil {
-				// A malformed route must not take the whole table down with
-				// it: the others keep routing and this one is skipped, which
-				// is the same "falls back to retrieval" outcome as no route
-				// at all.
+				// An unreadable spec. Drop any previous version rather than
+				// leave it dispatching: the operator's latest intent is "not
+				// that", and a stale trigger matching events is worse than a
+				// missing one, which is a clean no-op.
+				reg.Delete(obj.GetName())
 				return err
 			}
-			reg.Upsert(route)
+			// A trigger whose CEL does not compile is upserted anyway, as a
+			// descriptor that never matches — for the same reason.
+			reg.Upsert(trigger)
 			return nil
 		},
-		func(_ context.Context, id string) error {
-			reg.Delete(id)
+		func(_ context.Context, name string) error {
+			reg.Delete(name)
 			return nil
 		},
 	)
 	if _, err := informer.AddEventHandler(handler); err != nil {
-		return fmt.Errorf("add %s event handler: %w", IntegrationRouteGVR.Resource, err)
+		return fmt.Errorf("add %s event handler: %w", EventTriggerGVR.Resource, err)
 	}
 
 	factory.Start(ctx.Done())
 	if err := waitForCacheSync(ctx, factory.WaitForCacheSync(ctx.Done())); err != nil {
 		return err
 	}
-	log.Printf("integration route watch established: namespace=%s routes=%d", namespace, reg.Len())
+	log.Printf("event trigger watch established: namespace=%s triggers=%d", namespace, reg.Len())
 
 	<-ctx.Done()
 	return nil

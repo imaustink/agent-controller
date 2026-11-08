@@ -1,0 +1,84 @@
+# The shipped examples (examples/event-triggers), as the e2e suite runs them.
+# e2e/scripts/up.sh applies this with `kubectl apply -n <ns> -k`; the
+# event-trigger specs drive every verification scheme and target kind against
+# these exact CRs, so a change to an example is exercised here unchanged. Only
+# what the hermetic cluster needs differs, each patch saying why.
+#
+# Secrets keep the examples' names and are created with FIXED throwaway values
+# by e2e/scripts/bootstrap-secrets.sh; the specs read them back to sign.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../examples/event-triggers
+patches:
+  # The suite signs and posts GitHub deliveries itself with the same HMAC
+  # secret the gateway verifies (bootstrap-secrets.sh's
+  # e2e-integration-gateway-secrets, key GITHUB_WEBHOOK_SECRET), so the
+  # signature path is exercised for real.
+  - target: { kind: EventSource, name: github }
+    patch: |
+      - op: replace
+        path: /spec/webhook/verify/secretRef/name
+        value: e2e-integration-gateway-secrets
+  # SUSPENDED, so nothing ticks on its own mid-run: event-triggers-cron.e2e.ts
+  # drives ticks explicitly (`kubectl create job --from=cronjob/
+  # eventsource-nightly-sweep`), which runs the exact Job template the schedule
+  # would. A per-test every-minute source covers the scheduler itself. The
+  # payload IS the envelope body; the spec asserts these come back as the
+  # AgentRun's params ("3" -- params are string forms, §4).
+  - target: { kind: EventSource, name: nightly-sweep }
+    patch: |
+      - op: add
+        path: /spec/cron/suspend
+        value: true
+      - op: replace
+        path: /spec/cron/payload
+        value: { repo: e2e-org/e2e-repo, limit: 3 }
+  # stub-agent, not the examples' opencode-swe-agent and not
+  # claude-code-swe-agent: it carries the same Claude identityProviders (so the
+  # credential gate is exercised exactly as production exercises it) AND
+  # terminates hermetically (so the chain past the launch -- reply, relay,
+  # issue comment -- is assertable). Both PR triggers use it too: the readOnly
+  # spec contrasts them (same event, same agent, different label -> read-only
+  # vs writable).
+  - target: { kind: EventTrigger, name: "github-issue-triage|github-pr-triage|github-pr-review|nightly-stale-sweep" }
+    patch: |
+      - op: replace
+        path: /spec/target/agentRef
+        value: stub-agent
+  # The webhook half of the read gate: a labeled issue dispatched to the
+  # GitHub-acting stub, whose repository comes from the event (the one
+  # integration-gateway verified the sender on) rather than the prompt. Also
+  # the readOnly spec's issue case: same stub image, so its reply carries the
+  # `readOnly=... params=...` line.
+  - target: { kind: EventTrigger, name: github-issue-review }
+    patch: |
+      - op: replace
+        path: /spec/target/agentRef
+        value: stub-swe-agent
+  # A fixture Skill, not cluster-debug-skill: that one's audience needs
+  # kubectl-readonly + signoz-query, which this profile neither builds nor
+  # backs. e2e/manifests/event-trigger-skill.yaml defines it; the CI spec
+  # applies it (the trigger is TargetNotFound until then -- see that file).
+  # The reply goes to fake-sink, signed, so the spec can verify it.
+  - target: { kind: EventTrigger, name: ci-failure-skill }
+    patch: |
+      - op: replace
+        path: /spec/target/skillRef
+        value: e2e-ci-failure-skill
+      - op: add
+        path: /spec/reply
+        value:
+          http:
+            url: http://fake-sink.controller-agent.svc.cluster.local/reply/ci-failure-skill
+            secretRef: { name: e2e-event-reply, key: secret }
+  # web-fetch is enabled by values-minikube-demo.yaml; its image is built into
+  # minikube by e2e/scripts/up.sh (the e2e skaffold profile does not build it).
+  - target: { kind: EventTrigger, name: generic-hmac-tool }
+    patch: |
+      - op: add
+        path: /spec/reply
+        value:
+          http:
+            url: http://fake-sink.controller-agent.svc.cluster.local/reply/generic-hmac-tool
+            secretRef: { name: e2e-event-reply, key: secret }

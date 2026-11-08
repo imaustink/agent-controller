@@ -101,6 +101,11 @@ type ToolRunSpec struct {
 	// that must not be baked into the Tool template.
 	// +optional
 	SecretEnv []SecretEnvVar `json:"secretEnv,omitempty"`
+
+	// readOnly runs the tool read-only (TOOL_READ_ONLY=true), set from an
+	// EventTrigger's target.readOnly (docs/event-triggers.md §6).
+	// +optional
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // ToolRunPhase is the coarse lifecycle state of a ToolRun, mirrored from its
