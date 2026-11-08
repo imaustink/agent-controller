@@ -56,8 +56,13 @@ describe("core-controller RBAC parity (no cluster)", () => {
       "agentruns",
       "agents",
       "connections",
+      "corpora",
+      // ADR 0048: the two kinds that replaced integrationroutes. A refactor
+      // that dropped either reconciler's markers would otherwise pass every
+      // assertion below while the installed controller lost the grant.
+      "eventsources",
+      "eventtriggers",
       "identityproviders",
-      "integrationroutes",
       "knowledgebases",
       "localtools",
       "skills",
@@ -68,6 +73,20 @@ describe("core-controller RBAC parity (no cluster)", () => {
         `core.controller-agent.dev/${kind}:list`,
       );
     }
+  });
+
+  it("declares the non-CRD grants the event-trigger reconcilers need", () => {
+    // EventSource verification reads `webhook.verify.secretRef` (Ready reasons
+    // SecretNotFound / SecretKeyMissing) and a cron source materializes an
+    // owned CronJob (docs/event-triggers.md §8). Neither is a CRD kind, so the
+    // loop above cannot see them go missing.
+    for (const g of ["core/secrets:get", "batch/cronjobs:create", "batch/cronjobs:update", "batch/cronjobs:delete"]) {
+      expect(sorted(markers), g).toContain(g);
+    }
+    // ...and the chart has nothing BEYOND get on secrets: this ClusterRole is
+    // cluster-wide, so a list/watch slipped in here would let the controller
+    // read every Secret in the cluster.
+    expect(sorted(grantsFromChart()).filter((g) => g.startsWith("core/secrets:"))).toEqual(["core/secrets:get"]);
   });
 
   it("generated role.yaml grants everything the markers declare", () => {

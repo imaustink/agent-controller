@@ -62,6 +62,14 @@ export interface SessionRecord {
    */
   activeAgentRunAwaitingReply?: boolean;
   /**
+   * `activeAgentRunId` was launched read-only (`AgentRun.spec.readOnly`). Kept
+   * beside the anchor and cleared with it, because a read-only turn may only be
+   * forwarded into a read-only run (graph.ts `checkActiveAgentRun`): the pod of a
+   * run launched writable already holds write credentials. Absent means
+   * writable, so an anchor written without it fails closed.
+   */
+  activeAgentRunReadOnly?: boolean;
+  /**
    * The most recent AgentRun id this conversation delegated to, kept even
    * after the run concludes and `activeAgentRunId` is cleared (ADR 0026) --
    * NOT used for routing/continuation (that's `activeAgentRunId`/
@@ -119,6 +127,23 @@ export interface SessionRecord {
    * background sweeper (see {@link SessionStore.listSubAgentApprovals}).
    */
   subAgentApprovalPending?: SubAgentApprovalPending;
+  /**
+   * The conversation ran a read-only turn (an EventTrigger with
+   * `target.readOnly`, docs/event-triggers.md §1), so every later turn in it is
+   * read-only too -- a session-page follow-up, a continuation, a re-attach.
+   * Monotonic: may become `true`, never back to `false`; every writer carries
+   * the existing value forward (server.ts `persistSession`, and the
+   * read-modify-write helpers in inflight-agent-run.ts spread the record).
+   *
+   * Unlike the rest of this record it is NOT a routing hint: it is honored
+   * regardless of `subject` (restricting a turn is never a leak) and written
+   * eagerly when the turn is accepted, before any run exists, so a pod killed
+   * mid-turn cannot leave a read-only conversation's next turn write-capable.
+   * Losing the record (TTL, Redis outage) still drops it -- the session store
+   * is soft-failing by contract -- which is why the trigger re-asserts it on
+   * every event it matches rather than relying on this alone.
+   */
+  readOnly?: boolean;
   /** Last touch time (ms since epoch); used for sliding TTL expiry. */
   updatedAt: number;
 }

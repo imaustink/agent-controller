@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildReply, CREDENTIAL_ENV_NAMES, observedCredentialEnv, STUB_REPLY_MARKER } from "./reply.js";
+import { buildReply, CREDENTIAL_ENV_NAMES, observedCredentialEnv, runFlagsLine, STUB_REPLY_MARKER } from "./reply.js";
+
+const plain = { readOnly: false, params: {} };
 
 describe("observedCredentialEnv", () => {
   it("reports the names of credential vars that are set", () => {
@@ -29,15 +31,15 @@ describe("observedCredentialEnv", () => {
 
 describe("buildReply", () => {
   it("carries the marker the happy-path spec matches on", () => {
-    expect(buildReply("do a thing", [])).toContain(STUB_REPLY_MARKER);
+    expect(buildReply("do a thing", [], plain)).toContain(STUB_REPLY_MARKER);
   });
 
   it("echoes the goal so the spec can prove it survived the whole path", () => {
-    expect(buildReply("triage issue #7", ["AGENT_ACTOR_LOGIN"])).toContain("triage issue #7");
+    expect(buildReply("triage issue #7", ["AGENT_ACTOR_LOGIN"], plain)).toContain("triage issue #7");
   });
 
   it("truncates a long goal rather than mirroring an entire issue body into a comment", () => {
-    const reply = buildReply("x".repeat(500), []);
+    const reply = buildReply("x".repeat(500), [], plain);
     expect(reply).toContain("...");
     expect(reply.length).toBeLessThan(400);
   });
@@ -45,11 +47,28 @@ describe("buildReply", () => {
   it("says so explicitly when no credential env arrived", () => {
     // Distinguishes "injection delivered nothing" from "the stub forgot to
     // look", which an empty list in the comment would not.
-    expect(buildReply("g", [])).toContain("(none)");
+    expect(buildReply("g", [], plain)).toContain("(none)");
   });
 
   it("lists every credential env name it was given", () => {
-    const reply = buildReply("g", [...CREDENTIAL_ENV_NAMES]);
+    const reply = buildReply("g", [...CREDENTIAL_ENV_NAMES], plain);
     for (const name of CREDENTIAL_ENV_NAMES) expect(reply).toContain(name);
+  });
+});
+
+describe("runFlagsLine (ADR 0048 readOnly/params, asserted on by e2e)", () => {
+  it("renders the exact documented format", () => {
+    expect(runFlagsLine({ readOnly: true, params: { repo: "acme/widgets" } })).toBe('readOnly=true params={"repo":"acme/widgets"}');
+    expect(runFlagsLine({ readOnly: false, params: {} })).toBe("readOnly=false params={}");
+  });
+
+  it("sorts params keys so the line is deterministic", () => {
+    expect(runFlagsLine({ readOnly: false, params: { z: "1", a: "2" } })).toBe('readOnly=false params={"a":"2","z":"1"}');
+  });
+
+  it("is its own line in the reply, reflecting the run's flags", () => {
+    const lines = buildReply("g", [], { readOnly: true, params: { pr: "7" } }).split("\n");
+    expect(lines).toContain('readOnly=true params={"pr":"7"}');
+    expect(buildReply("g", [], plain).split("\n")).toContain("readOnly=false params={}");
   });
 });

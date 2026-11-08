@@ -124,18 +124,42 @@ type TurnInput struct {
 	// conversation workflow idled out and completed).
 	SeedHistory []ChatMessage `json:"seedHistory,omitempty"`
 
-	// ForcedSkillID / ForcedAgentID name a target chosen deterministically
-	// from an inbound event descriptor rather than inferred by retrieval
-	// (upstream ADR 0024). The gateway sets one of these when the event
-	// matched an IntegrationRoute CR; Message already carries that route's
-	// rendered promptTemplate.
+	// ForcedSkillID / ForcedAgentID / ForcedToolID name a target chosen
+	// deterministically from an inbound event rather than inferred by
+	// retrieval (ADR 0048). Set when the event matched an EventTrigger CR —
+	// by this engine's gateway for a direct caller, or by agent-orchestrator,
+	// which matches and forwards the resolved turn. Message already carries
+	// the trigger's rendered promptTemplate.
 	//
-	// These are a ROUTING hint, never an authorization one: the workflow
-	// re-resolves the named target under the caller's current roles and
-	// falls through to ordinary retrieval on a miss. An unmatched or
-	// role-invisible target is not an error.
+	// These are dispatch instructions, never an authorization: the workflow
+	// re-resolves the named target under the caller's CURRENT roles. A
+	// target the caller cannot see (or that no longer exists) FAILS the turn
+	// (docs/event-triggers.md §1) — never a fallback to retrieval, which
+	// would interpret an event-shaped prompt as free text.
 	ForcedSkillID string `json:"forcedSkillId,omitempty"`
 	ForcedAgentID string `json:"forcedAgentId,omitempty"`
+	ForcedToolID  string `json:"forcedToolId,omitempty"`
+
+	// ToolInput is the forced tool's one string input (§1: params.input's
+	// string form, or the params object as compact sorted-key JSON). The
+	// tool runs ONCE with exactly this, skipping the planner.
+	ToolInput string `json:"toolInput,omitempty"`
+
+	// ReadOnly is a turn property set by the matched trigger: every AgentRun
+	// and ToolRun this turn launches — including ones a forced skill or a
+	// sub-agent launches — gets spec.readOnly, and write-capable credentials
+	// are withheld (authz.suppressWriteCredentials). It can only restrict.
+	ReadOnly bool `json:"readOnly,omitempty"`
+
+	// Params are the trigger's params in string form, carried onto every
+	// AgentRun.spec.params the turn launches.
+	Params map[string]string `json:"params,omitempty"`
+
+	// TriggerName is the EventTrigger that produced this turn. Besides logs
+	// and narration, it marks the turn as trigger-produced, which makes its
+	// ReadOnly the conversation's mode (ConversationState.applyReadOnly). Set
+	// only from a matched trigger, never from a request body.
+	TriggerName string `json:"triggerName,omitempty"`
 
 	// SenderLogin is the human an adapter vouched for, taken from a verified
 	// sender assertion (upstream ADR 0030 §6) — the gateway authenticates as
@@ -219,6 +243,25 @@ type ConversationState struct {
 	// this conversation's next message.
 	ActiveAgentID         string `json:"activeAgentId,omitempty"`
 	ActiveAgentWorkflowID string `json:"activeAgentWorkflowId,omitempty"`
+	// ActiveAgentReadOnly records that the active episode was launched
+	// read-only. A read-only turn may only be forwarded into a read-only
+	// episode: feeding it to a write-capable one would let a trigger marked
+	// readOnly drive writes (see runAgentTurn step 0).
+	ActiveAgentReadOnly bool `json:"activeAgentReadOnly,omitempty"`
+
+	// ReadOnly is the conversation's mode, set by the most recent turn an
+	// EventTrigger produced and inherited by every other turn. A trigger's
+	// session key routes follow-ups (a plain chat prompt, no event) into this
+	// same workflow, and without inheritance such a follow-up would launch a
+	// fresh, writable AgentRun against the very work the trigger meant to
+	// keep read-only.
+	//
+	// A trigger turn REPLACES the mode rather than ratcheting it: triggers
+	// with different modes share a session key (a read-only review and a
+	// writable triage both use github:<repo>#<n>), and a ratchet would leave
+	// every later triage on that issue read-only for good. Survives
+	// continue-as-new with the rest of the state. See applyReadOnly.
+	ReadOnly bool `json:"readOnly,omitempty"`
 
 	// AgentListenGeneration and agentListenPreempt together guarantee only
 	// ONE handleAgentUp call ever consumes a given episode's up-signal
@@ -367,6 +410,11 @@ func ConversationWorkflow(ctx workflow.Context, state *ConversationState) error 
 			state.History = append(state.History, in.SeedHistory...)
 		}
 		state.History = append(state.History, ChatMessage{Role: "user", Content: in.Message})
+
+		// The conversation's read-only mode (see ConversationState.ReadOnly).
+		// Decided here, before anything in the turn reads in.ReadOnly, so no
+		// launch path can see an undecided value.
+		in.ReadOnly = state.applyReadOnly(in)
 
 		// Whether an episode was ALREADY running before this turn -- decides
 		// whether a stale state.RemoteControlUrl belongs to the conversation
@@ -524,4 +572,18 @@ func trimHistory(history []ChatMessage, max int) []ChatMessage {
 		return history
 	}
 	return history[len(history)-max:]
+}
+
+// applyReadOnly decides a turn's read-only mode and records the
+// conversation's. A trigger-produced turn sets the mode to its trigger's
+// readOnly, writable included; any other turn (a follow-up, a chat prompt)
+// may only restrict: it runs read-only if it asked to or the conversation
+// is, and asking makes the conversation read-only from then on.
+func (s *ConversationState) applyReadOnly(in TurnInput) bool {
+	if in.TriggerName != "" {
+		s.ReadOnly = in.ReadOnly
+	} else if in.ReadOnly {
+		s.ReadOnly = true
+	}
+	return s.ReadOnly
 }

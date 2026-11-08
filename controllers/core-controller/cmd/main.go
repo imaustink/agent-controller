@@ -239,13 +239,6 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "localtool")
 		os.Exit(1)
 	}
-	if err := (&controller.IntegrationRouteReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "integrationroute")
-		os.Exit(1)
-	}
 	if err := (&controller.IdentityProviderReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -277,6 +270,29 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "knowledgebase")
+		os.Exit(1)
+	}
+	if err := (&controller.EventSourceReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		// Uncached: a cached read would watch every Secret in the cluster to
+		// confirm one webhook secret exists (and need list/watch to do it).
+		SecretReader: mgr.GetAPIReader(),
+		// A cron source's CronJob only needs curl (>= 8.3): it ticks
+		// integration-gateway as the source's own ServiceAccount, and the
+		// gateway reads the payload from the CR (docs/event-triggers.md §8).
+		// Without a tick URL, cron sources report Ready=False.
+		TickImage: envOr("EVENT_TICK_IMAGE", "curlimages/curl:8.11.1"),
+		TickURL:   os.Getenv("EVENT_TICK_URL"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "eventsource")
+		os.Exit(1)
+	}
+	if err := (&controller.EventTriggerReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "eventtrigger")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

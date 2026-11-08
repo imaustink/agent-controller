@@ -13,6 +13,7 @@ import { deleteCredentials, seedAllClaudeCredentials, seedGithubLink } from "../
 import { deleteRedisKeys } from "../support/redis.js";
 import { fakeGithubRequests, resetFakeGithub, webhookSecret } from "../support/fixtures.js";
 import { issueLabeledPayload, postGithubWebhook } from "../support/webhook.js";
+import { isTemporal } from "../support/engine.js";
 
 requireMinikubeContext();
 
@@ -46,7 +47,11 @@ const RUN_ID = Date.now() % 100000;
 /** The e2e agent that declares `github`, and so passes through the gate. */
 const GATED_AGENT = "stub-swe-agent";
 
-describe("an agent that acts on GitHub launches only into a repository its caller can read", () => {
+// The read gate is the Temporal engine's (engines/temporal/internal/authz/
+// repository.go); the LangGraph engine has none, so under
+// E2E_ENGINE=langgraph this file is skipped rather than failing on a refusal
+// that engine never issues.
+describe.skipIf(!isTemporal())("an agent that acts on GitHub launches only into a repository its caller can read", () => {
   const CHAT_USER = `e2e-gate-${RUN_ID}`;
   let suiteStartedAt: Date;
 

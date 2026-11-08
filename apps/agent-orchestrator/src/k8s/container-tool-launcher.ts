@@ -46,6 +46,13 @@ export interface LaunchOptions {
    * when building the Job. Mirrors `AgentLaunchOptions.secretEnv` exactly.
    */
   secretEnv?: { name: string; value: string }[];
+  /**
+   * Runs the tool read-only (`ToolRun.spec.readOnly` -> `TOOL_READ_ONLY=true`,
+   * docs/event-triggers.md §6) -- set on every ToolRun a read-only turn
+   * launches, including a sub-agent's own tool calls. Written as `true` or
+   * omitted, never `false`.
+   */
+  readOnly?: boolean;
 }
 
 /** Well-known annotation key mirroring `SessionIDAnnotation` in controllers/core-controller/internal/controller/run_job.go. */

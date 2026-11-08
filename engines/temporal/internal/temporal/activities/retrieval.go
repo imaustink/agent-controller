@@ -15,6 +15,7 @@ const (
 	RetrieveToolsActivityName     = "RetrieveTools"
 	ResolveSkillToolsActivityName = "ResolveSkillTools"
 	ResolveAgentActivityName      = "ResolveAgent"
+	ResolveToolActivityName       = "ResolveTool"
 	ResolveAgentToolsActivityName = "ResolveAgentTools"
 )
 
@@ -155,10 +156,10 @@ func (a *RetrievalActivities) RetrieveTools(ctx context.Context, in RetrieveInpu
 // ResolveAgent fetches one agent by id under the caller's CURRENT roles,
 // returning nil when it is gone or no longer visible — never an error.
 //
-// Used by the IntegrationRoute bypass (upstream ADR 0024), which names an
-// agent directly instead of retrieving one. The RBAC re-check is the point:
-// a route is operator config, and config saying "dispatch to this agent"
-// must not become a way around the roles that gate reaching it normally.
+// Used by EventTrigger dispatch (ADR 0048), which names an agent directly
+// instead of retrieving one. The RBAC re-check is the point: a trigger is
+// operator config, and config saying "dispatch to this agent" must not become
+// a way around the roles that gate reaching it normally.
 func (a *RetrievalActivities) ResolveAgent(ctx context.Context, in ResolveAgentInput) (*catalog.AgentDescriptor, error) {
 	if in.Caller.Subject == "" || in.AgentID == "" {
 		return nil, nil
@@ -175,6 +176,35 @@ func (a *RetrievalActivities) ResolveAgent(ctx context.Context, in ResolveAgentI
 		return nil, err
 	}
 	return &agents[0], nil
+}
+
+type ResolveToolInput struct {
+	Caller Caller `json:"caller"`
+	ToolID string `json:"toolId"`
+}
+
+// ResolveTool fetches one tool by id under the caller's CURRENT roles,
+// returning nil when it is gone or no longer visible — never an error.
+//
+// The EventTrigger toolRef counterpart of ResolveAgent (ADR 0048): a trigger
+// naming a tool is operator config, not a grant, so the caller must be able
+// to reach the tool exactly as they would through retrieval.
+func (a *RetrievalActivities) ResolveTool(ctx context.Context, in ResolveToolInput) (*catalog.ToolDescriptor, error) {
+	if in.Caller.Subject == "" || in.ToolID == "" {
+		return nil, nil
+	}
+	hits, err := a.Collections.Tools.GetByIDs(ctx, []string{in.ToolID}, in.Caller.Roles)
+	if err != nil {
+		return nil, err
+	}
+	if len(hits) == 0 {
+		return nil, nil
+	}
+	tools, err := decodeHits[catalog.ToolDescriptor](hits)
+	if err != nil {
+		return nil, err
+	}
+	return &tools[0], nil
 }
 
 // ResolveAgentToolsInput names the Tool CRs an Agent declared for its own loop.

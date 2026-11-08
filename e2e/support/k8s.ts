@@ -341,7 +341,7 @@ export async function withPortForward<T>(
  * The Agent a launched AgentRun is for (`spec.agentRef`).
  *
  * Needed by any spec whose turn reaches an agent through the PLANNER rather
- * than an IntegrationRoute: a wrong selection otherwise fails as a bare
+ * than an EventTrigger's forced `agentRef`: a wrong selection otherwise fails as a bare
  * assertion about missing env vars, or as a wait that times out, with nothing
  * saying which agent actually ran.
  */
