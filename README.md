@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/aktis-lockup-white.svg">
+  <img alt="Aktis" src="docs/brand/aktis-lockup.svg" width="320">
+</picture>
+
 # Aktis
 
 > [github.com/imaustink/agent-controller](https://github.com/imaustink/agent-controller)
