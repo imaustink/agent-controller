@@ -19,6 +19,7 @@ import (
 	"github.com/aktisai/orchestrator/engines/temporal/internal/kubeconfig"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/llm"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/localtool"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/telemetry"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/activities"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/workflows"
@@ -28,6 +29,12 @@ import (
 
 func main() {
 	cfg := temporal.ConfigFromEnv()
+	shutdownTracing := telemetry.Setup(context.Background(), "temporal-engine-worker")
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracing(ctx)
+	}()
 
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {

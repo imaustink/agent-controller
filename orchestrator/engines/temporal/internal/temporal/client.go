@@ -14,7 +14,10 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	temporalotel "go.temporal.io/sdk/contrib/opentelemetry"
 	"google.golang.org/protobuf/types/known/durationpb"
+
+	"github.com/aktisai/orchestrator/engines/temporal/internal/telemetry"
 )
 
 type Config struct {
@@ -54,10 +57,23 @@ func NewClient(cfg Config) (client.Client, error) {
 	if err := ensureNamespace(cfg); err != nil {
 		return nil, err
 	}
-	return client.Dial(client.Options{
+	opts := client.Options{
 		HostPort:  cfg.Address,
 		Namespace: cfg.Namespace,
-	})
+	}
+	// docs/adr/0050 §3a: workflow and activity spans come from the SDK's own
+	// tracing interceptor, which is replay-safe, so workflow code never
+	// touches a tracer. It also carries trace context from the gateway's
+	// /invoke span into the workflow. A worker built from this client
+	// inherits it. Only installed when traces go somewhere.
+	if telemetry.Enabled() {
+		interceptor, err := temporalotel.NewTracingInterceptor(temporalotel.TracerOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("tracing interceptor: %w", err)
+		}
+		opts.Interceptors = append(opts.Interceptors, interceptor)
+	}
+	return client.Dial(opts)
 }
 
 // ensureNamespace registers cfg.Namespace if it doesn't exist and waits for

@@ -43,3 +43,19 @@ knowledge bases from a namespace of their own.
 {{- $g := .Values.global | default dict -}}
 {{- .Values.knowledgeBases.namespace | default $g.knowledgeBaseNamespace | default (.Values.catalog.namespace | default .Release.Namespace) -}}
 {{- end -}}
+
+{{/*
+OpenTelemetry export (docs/adr/0050): on when the umbrella chart's
+global.observability.enabled is, pointing at its collector. Unset, the
+engine's tracer is a no-op.
+*/}}
+{{- define "temporal-engine.otelEnv" -}}
+{{- $g := .Values.global | default dict }}
+{{- $obs := $g.observability | default dict }}
+{{- if $obs.enabled }}
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: {{ printf "http://%s-otel-collector:4318" .Release.Name | quote }}
+- name: OTEL_SERVICE_NAME
+  value: {{ .serviceName | quote }}
+{{- end }}
+{{- end -}}

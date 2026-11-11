@@ -39,6 +39,7 @@ spec:
               drop: ["ALL"]
           env:
             {{- include "temporal-engine.temporalEnv" . | nindent 12 }}
+            {{- include "temporal-engine.otelEnv" (merge (dict "serviceName" "temporal-engine-worker") .) | nindent 12 }}
             - name: OPENAI_BASE_URL
               value: {{ .Values.llm.baseURL | quote }}
             - name: OPENAI_MODEL

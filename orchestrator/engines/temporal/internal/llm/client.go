@@ -53,10 +53,19 @@ type chatResponse struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error,omitempty"`
+	// Usage is token accounting, recorded on the call's generation span
+	// (docs/adr/0050). Absent from some OpenAI-compatible servers.
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage,omitempty"`
 }
 
 // Complete sends one chat-completions request and returns the assistant text.
-func (c *Client) Complete(ctx context.Context, messages []Message) (string, error) {
+func (c *Client) Complete(ctx context.Context, messages []Message) (_ string, err error) {
+	ctx, span := c.startGeneration(ctx, "chat", "")
+	defer func() { endGeneration(span, err) }()
+
 	body, err := json.Marshal(chatRequest{Model: c.model, Messages: messages})
 	if err != nil {
 		return "", fmt.Errorf("marshal chat request: %w", err)
@@ -84,6 +93,7 @@ func (c *Client) Complete(ctx context.Context, messages []Message) (string, erro
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return "", fmt.Errorf("decode chat response (status %d): %w", resp.StatusCode, err)
 	}
+	recordUsage(span, parsed)
 	if resp.StatusCode != http.StatusOK {
 		msg := string(raw)
 		if parsed.Error != nil {

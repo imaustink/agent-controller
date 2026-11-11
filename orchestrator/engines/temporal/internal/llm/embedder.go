@@ -9,6 +9,11 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/aktisai/orchestrator/engines/temporal/internal/telemetry"
 )
 
 // DefaultEmbedModel matches agent-controller's index (1536 dims).
@@ -55,10 +60,16 @@ type embeddingResponse struct {
 }
 
 // Embed returns one vector per input, in input order.
-func (e *Embedder) Embed(ctx context.Context, inputs []string) ([][]float32, error) {
+func (e *Embedder) Embed(ctx context.Context, inputs []string) (_ [][]float32, err error) {
 	if len(inputs) == 0 {
 		return nil, nil
 	}
+	ctx, span := telemetry.Tracer().Start(ctx, "llm.embed", trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(
+		attribute.String(telemetry.AttrGenAIOperation, "embeddings"),
+		attribute.String(telemetry.AttrGenAIRequestModel, e.model),
+		attribute.Int("aktis.llm.inputs", len(inputs)),
+	))
+	defer func() { endGeneration(span, err) }()
 	body, err := json.Marshal(embeddingRequest{Model: e.model, Input: inputs})
 	if err != nil {
 		return nil, fmt.Errorf("marshal embedding request: %w", err)

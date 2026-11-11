@@ -20,6 +20,11 @@
 # connection-broker.knowledgeBaseNamespace.
 global:
   knowledgeBaseNamespace: ""
+  # Agent observability (docs/adr/0050): the ONE switch. Global because every
+  # emitter (the engine subcharts, agent pods) must learn the collector's
+  # address from it. Configure where traces go under `observability:` below.
+  observability:
+    enabled: false
 
 # ---------------------------------------------------------------------------
 # Parent orchestrator (charts/agent-orchestrator). Bundles an optional Qdrant
@@ -303,7 +308,7 @@ mcp-broker:
 # Langfuse Cloud is not a supported target: traces carry user subjects.
 # ---------------------------------------------------------------------------
 observability:
-  enabled: false
+  # (The switch is global.observability.enabled.)
   langfuse:
     # Base URL of the Langfuse to export to. Empty: the bundled one.
     endpoint: ""
@@ -320,6 +325,14 @@ observability:
   # Langfuse or, with Langfuse disabled and no endpoint, instead of it.
   # name -> collector `otlphttp` exporter config.
   extraExporters: {}
+  # The in-cluster OpenTelemetry Collector: the only component holding
+  # Langfuse keys or egress to it. Emitters send OTLP here.
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    replicas: 1
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { memory: 512Mi }
 
 # Bundled self-hosted Langfuse (the upstream chart, aliased). Upstream values
 # pass through unchanged under this key: see

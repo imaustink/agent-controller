@@ -106,6 +106,7 @@ func (a *AuthorizeActivities) Authorize(ctx context.Context, in AuthorizeInput) 
 		return v, err
 	}
 	v.DecisionID = decisionID(ctx)
+	annotatePreflightSpan(ctx, in, v)
 	info := activity.GetInfo(ctx)
 	audit.Emit(audit.Record{
 		Kind:         audit.KindAuthorization,

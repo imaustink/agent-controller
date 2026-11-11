@@ -3,9 +3,9 @@ Fail the render, rather than deploy a collector with nowhere to send traces
 (docs/adr/0050 §6): observability on, no bundled Langfuse, no endpoint for an
 existing one, and no other exporter.
 */ -}}
-{{- if .Values.observability.enabled }}
+{{- if .Values.global.observability.enabled }}
 {{- if and (not (include "agent-controller.langfuseEndpoint" .)) (empty .Values.observability.extraExporters) }}
-{{- fail "observability.enabled needs somewhere to send traces: set langfuse.enabled=true (bundled Langfuse), or observability.langfuse.endpoint to an existing Langfuse, or observability.extraExporters" }}
+{{- fail "global.observability.enabled needs somewhere to send traces: set langfuse.enabled=true (bundled Langfuse), or observability.langfuse.endpoint to an existing Langfuse, or observability.extraExporters" }}
 {{- end }}
 {{- if and (include "agent-controller.langfuseEndpoint" .) (not .Values.observability.langfuse.keysSecretRef.name) }}
 {{- fail "observability.langfuse.keysSecretRef.name is required to export to Langfuse" }}

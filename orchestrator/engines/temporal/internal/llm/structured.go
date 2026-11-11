@@ -34,7 +34,10 @@ type jsonSchema struct {
 
 // CompleteJSON runs one chat completion constrained to the given schema and
 // returns the raw JSON content for the caller to decode.
-func (c *Client) CompleteJSON(ctx context.Context, messages []Message, schema ResponseSchema) (json.RawMessage, error) {
+func (c *Client) CompleteJSON(ctx context.Context, messages []Message, schema ResponseSchema) (_ json.RawMessage, err error) {
+	ctx, span := c.startGeneration(ctx, "chat", schema.Name)
+	defer func() { endGeneration(span, err) }()
+
 	body, err := json.Marshal(structuredRequest{
 		Model:    c.model,
 		Messages: messages,
@@ -69,6 +72,7 @@ func (c *Client) CompleteJSON(ctx context.Context, messages []Message, schema Re
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("decode structured response (status %d): %w", resp.StatusCode, err)
 	}
+	recordUsage(span, parsed)
 	if resp.StatusCode != http.StatusOK {
 		msg := string(raw)
 		if parsed.Error != nil {

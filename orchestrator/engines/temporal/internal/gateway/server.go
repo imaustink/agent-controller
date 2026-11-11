@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 
@@ -127,7 +128,23 @@ func (s *Server) Handler() http.Handler {
 	router.POST("/invoke", s.handleInvoke)
 	router.POST("/invoke/check", s.handleInvokeCheck)
 	router.GET("/invoke/:id", s.handleInvokeStatus)
-	return router
+	// docs/adr/0050 §4: one server span per request, continuing an inbound W3C
+	// traceparent (agent-orchestrator's, and integration-gateway's before it),
+	// so a webhook delivery and the turn it starts are one trace. Health
+	// checks are not traced. A no-op until telemetry.Setup installs a provider.
+	return otelhttp.NewHandler(router, "temporal-engine-gateway",
+		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/healthz" }),
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return r.Method + " " + routeOf(r.URL.Path) }),
+	)
+}
+
+// routeOf collapses an invocation id out of a span name, keeping span names
+// low-cardinality.
+func routeOf(path string) string {
+	if strings.HasPrefix(path, "/invoke/") && path != "/invoke/check" {
+		return "/invoke/:id"
+	}
+	return path
 }
 
 // --- OpenAI wire types (only the fields we use) ---
