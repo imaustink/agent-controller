@@ -37,6 +37,7 @@ import {
 } from "./openai/chat-completions.js";
 import { SENDER_ASSERTION_HEADER, verifySenderClaims, type SenderClaims } from "./rbac/sender-assertion.js";
 import type { IdentityRefusal } from "./engine/temporal-engine.js";
+import { TRACEPARENT_HEADER, traceIdOf } from "./traceparent.js";
 import type { TaskCompleter } from "./openai/task-completer.js";
 import { withHeartbeat } from "./openai/with-heartbeat.js";
 import { renderTurnEvent, type TurnEvent, type TurnEventKind } from "@aktis/messaging";
@@ -238,6 +239,12 @@ export interface AgentGraphInput {
    * Re-signed onto the engine hop; `senderLogin` stays the login.
    */
   senderClaims?: SenderClaims;
+  /**
+   * W3C trace context this turn joins (docs/adr/0050 §4): the inbound
+   * request's `traceparent` (integration-gateway's delivery trace), forwarded
+   * to the engine so the delivery and the turn are one trace.
+   */
+  traceparent?: string;
   /** The trigger's params in §4 string form -> `AgentRun.spec.params` of the targeted agent. */
   params?: Record<string, string>;
   /** Name of the EventTrigger that started this turn. */
@@ -941,6 +948,7 @@ export class InvokeServer {
     let identityLinkFlow: "device" | "authcode" | undefined;
     let senderLogin: string | undefined;
     let senderClaims: SenderClaims | undefined;
+    const traceparent = traceIdOf(headerValue(req.headers[TRACEPARENT_HEADER])) ? headerValue(req.headers[TRACEPARENT_HEADER]) : undefined;
     let envelope: Envelope | undefined;
     // Consumer-supplied tools (docs/adr/0035), accepted here too so a
     // programmatic `/invoke` caller has parity with the chat facade. The raw
@@ -1079,6 +1087,7 @@ export class InvokeServer {
         ...(trigger.readOnly ? { readOnly: true } : {}),
         ...(Object.keys(trigger.params).length > 0 ? { params: trigger.params } : {}),
         ...(trigger.identity ? { identityOverride: trigger.identity } : {}),
+        ...(traceparent ? { traceparent } : {}),
       } as AgentGraphInput);
       if (refusal) {
         res.writeHead(403, { "content-type": "application/json" }).end(
@@ -1127,6 +1136,7 @@ export class InvokeServer {
     ).then(async (graphInput) => {
       if (targetRepository) graphInput.targetRepository = targetRepository;
       if (senderClaims) graphInput.senderClaims = senderClaims;
+      if (traceparent) graphInput.traceparent = traceparent;
       // Persist the turn's read-only mode BEFORE anything launches (see
       // `setSessionReadOnly`): a read-only turn's, and a trigger turn's
       // either way. Awaited, and a failure fails the turn: the flag's job is

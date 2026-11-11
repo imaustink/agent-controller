@@ -691,3 +691,19 @@ describe("TemporalEngine sender claims and the accept-phase check (docs/adr/0049
     }
   });
 });
+
+describe("TemporalEngine trace context (docs/adr/0050 §4)", () => {
+  it("sends a child of the turn's inbound traceparent, or a fresh root", async () => {
+    for (const inbound of ["00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", undefined]) {
+      const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+      const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+      await engine.invoke(input(inbound ? { traceparent: inbound } : {}));
+      const sent = (calls[0]!.init!.headers as Record<string, string>)["traceparent"]!;
+      expect(sent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+      if (inbound) {
+        expect(sent.slice(3, 35)).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+        expect(sent).not.toBe(inbound);
+      }
+    }
+  });
+});

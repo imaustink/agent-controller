@@ -115,13 +115,21 @@ turn                                  (Temporal ConversationWorkflow)
 - The gateway's `/invoke` starts the root span. Its context is propagated
   into the workflow by the interceptor.
 
-**b. Sub-agent activity, with no instrumentation in the pod.** Sub-agents
-already stream TurnEvents (`tool-*`, `approval-*`, `warning`, `narration`,
-`turn-completed`) back to the engine
-(`internal/messaging/turnevent.go`, consumed in `workflows/agentloop.go`). The
-engine turns that stream into child spans under the `agent_run` span. That
-gives tool-level visibility for **every** agent image immediately, with no
-image changes and no telemetry egress from pods.
+**b. Sub-agent activity, with no instrumentation in the pod.** Spans are never
+made in workflow code, which must stay deterministic. Two sources cover it:
+
+- **The agent-run bridge** (`internal/agentrun`). It runs in the worker
+  process and sees every up-message a pod agent sends. It opens an
+  `agent_run` span under the launching activity's span, then:
+  - a child span per `tool_call`, closed by the `tool_result` sent back down
+    (a call still open when the run ends is closed as failed);
+  - `progress`, `warning` and `reply` as span events;
+  - `failed` as the span's error status.
+- **The Temporal interceptor** already traces activities (the parent's tool
+  runs) and update/signal handling (tool approvals).
+
+That gives tool-level visibility for **every** agent image immediately, with
+no image changes and no telemetry egress from pods.
 
 **c. Model calls inside the pod.** This is a later phase. The SWE agents run
 the Claude Code CLI and opencode as subprocesses, so `@aktis/agent-runtime`
@@ -143,7 +151,11 @@ never sees their model calls.
 The context passes integration-gateway → agent-orchestrator → the Temporal
 gateway `/invoke` → workflow → AgentRun → pod.
 
-- Every HTTP hop uses the W3C `traceparent` header.
+- Every HTTP hop uses the W3C `traceparent` header. integration-gateway and
+  agent-orchestrator export no spans of their own: the gateway mints a
+  `traceparent` per delivery (or continues a valid inbound one), and
+  agent-orchestrator forwards a child of it on `/invoke` and `/invoke/check`.
+  The engine's spans are the first ones exported in the trace.
 - The Temporal interceptor carries it from the gateway into the workflow.
 - The AgentRun carries it as `spec.launch.traceparent` (0049's `spec.launch`)
   and the controller passes it to the pod as `TRACEPARENT`.

@@ -1,5 +1,6 @@
 import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "../rbac/sender-assertion.js";
 import { CALLER_IDENTITY_HEADER, mintCallerIdentityAssertion } from "../rbac/caller-identity-assertion.js";
+import { TRACEPARENT_HEADER, nextTraceparent } from "../traceparent.js";
 import { DISPATCH_ASSERTION_HEADER, mintDispatchAssertion } from "../rbac/dispatch-assertion.js";
 import type { AgentGraphInput, AgentGraphLike } from "../server.js";
 import type { AgentState } from "../agent/graph.js";
@@ -379,6 +380,9 @@ export class TemporalEngine implements AgentGraphLike {
 
   private invokeRequest(input: AgentGraphInput, caller: ForwardedCaller | undefined): { headers: Record<string, string>; body: string } {
     const headers = this.headers();
+    // docs/adr/0050 §4: a child of the inbound trace, or the root of a new
+    // one, so the engine's spans for this turn join the delivery's trace.
+    headers[TRACEPARENT_HEADER] = nextTraceparent(input.traceparent);
 
     // The sender login travels as a SIGNED assertion, not a body field —
     // reusing the same `x-gateway-user-assertion` contract integration-gateway

@@ -14,6 +14,7 @@
 
 import type { Envelope, RenderedReply } from "@aktis/event-triggers";
 import { SENDER_ASSERTION_HEADER, mintSenderAssertion, type SenderClaims } from "./sender-assertion.js";
+import { TRACEPARENT_HEADER } from "./traceparent.js";
 
 // Bounds retrying the initial POST past a transient connection failure (a
 // rolling orchestrator restart) -- a few seconds total, not a general-purpose
@@ -290,6 +291,7 @@ export class OrchestratorClient {
   private async postInvoke(
     body: Record<string, unknown>,
     sender?: string | SenderClaims,
+    traceparent?: string,
   ): Promise<{ res: Response } | { networkError: unknown }> {
     const senderLogin = typeof sender === "string" ? sender : sender?.login;
     const postAccept = async (): Promise<Response> =>
@@ -306,6 +308,8 @@ export class OrchestratorClient {
           // any holder of the token could set. Only ever minted for a login the
           // source's sender provider VERIFIED (server.ts) -- never for a login
           // merely read out of an event body.
+          // docs/adr/0050 §4: the delivery's trace, so the turn joins it.
+          ...(traceparent ? { [TRACEPARENT_HEADER]: traceparent } : {}),
           ...(this.options.senderAssertionSecret && senderLogin
             ? { [SENDER_ASSERTION_HEADER]: mintSenderAssertion(this.options.senderAssertionSecret, sender!) }
             : {}),
@@ -339,8 +343,8 @@ export class OrchestratorClient {
    * `senderLogin` must be a VERIFIED login (the source's sender provider
    * resolved it) or absent; it is what the signed sender assertion carries.
    */
-  async submitEvent(event: Envelope, sender?: string | SenderClaims): Promise<EventSubmitResult> {
-    const sent = await this.postInvoke({ event, identity_link_flow: "device" }, sender);
+  async submitEvent(event: Envelope, sender?: string | SenderClaims, traceparent?: string): Promise<EventSubmitResult> {
+    const sent = await this.postInvoke({ event, identity_link_flow: "device" }, sender, traceparent);
     if (!("res" in sent)) return { kind: "failed", error: `/invoke unreachable: ${errorText(sent.networkError)}` };
     const res = sent.res;
     const text = await res.text();
