@@ -215,3 +215,44 @@ var _ = Describe("Agent Controller", func() {
 		})
 	})
 })
+
+var _ = Describe("Agent identity mode validation (docs/adr/0049)", func() {
+	ctx := context.Background()
+
+	agentWith := func(name string, def toolv1alpha1.IdentityMode, allowed ...toolv1alpha1.IdentityMode) *toolv1alpha1.Agent {
+		return &toolv1alpha1.Agent{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: toolv1alpha1.AgentSpec{
+				Description:        "identity mode agent",
+				Input:              "a goal",
+				Output:             "a result",
+				AllowedRoles:       []string{"reader"},
+				Image:              "example.com/agent:latest",
+				ServiceAccountName: "agent",
+				IdentityProviders:  []string{"github"},
+				DefaultIdentity:    def,
+				AllowedIdentities:  allowed,
+			},
+		}
+	}
+
+	It("accepts a defaultIdentity that is one of allowedIdentities", func() {
+		a := agentWith("identity-ok", toolv1alpha1.IdentityModeHybrid, toolv1alpha1.IdentityModeHybrid, toolv1alpha1.IdentityModeAgent)
+		Expect(k8sClient.Create(ctx, a)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, a) })
+	})
+
+	It("rejects a defaultIdentity outside allowedIdentities", func() {
+		a := agentWith("identity-bad", toolv1alpha1.IdentityModeDelegated, toolv1alpha1.IdentityModeAgent)
+		err := k8sClient.Create(ctx, a)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("defaultIdentity must be one of allowedIdentities"))
+	})
+
+	It("rejects an unknown mode", func() {
+		a := agentWith("identity-unknown", toolv1alpha1.IdentityMode("user"))
+		err := k8sClient.Create(ctx, a)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("defaultIdentity"))
+	})
+})
