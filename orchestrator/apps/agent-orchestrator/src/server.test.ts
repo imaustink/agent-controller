@@ -2639,3 +2639,28 @@ describe("InvokeServer accept-phase identity check (docs/adr/0049 §6)", () => {
     await server.close();
   });
 });
+
+describe("InvokeServer trace context (docs/adr/0050 §4)", () => {
+  it("carries a valid inbound traceparent into the turn, and drops a malformed one", async () => {
+    for (const [header, expected] of [
+      ["00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"],
+      ["not-a-traceparent", undefined],
+    ] as const) {
+      const graph: AgentGraphLike = {
+        invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "t", skillCandidates: [], result: "done" } as AgentState),
+        stream: vi.fn().mockResolvedValue(noStream()),
+      };
+      const server = new InvokeServer(graph);
+      const port = await listenOn(server);
+      await fetch(`http://127.0.0.1:${port}/invoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer t", traceparent: header },
+        body: JSON.stringify({ request: "hi" }),
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      const arg = (graph.invoke as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { traceparent?: string };
+      expect(arg.traceparent).toBe(expected);
+      await server.close();
+    }
+  });
+});

@@ -80,7 +80,10 @@ func (a *AgentRunActivities) LaunchAgentRun(ctx context.Context, in LaunchAgentR
 		return fmt.Errorf("launch requires runId and workflowId")
 	}
 
-	if err := a.Bridge.Attach(in.RunID, in.WorkflowID); err != nil {
+	// Traced: the run's agent_run span opens under this activity's span
+	// (the Temporal interceptor's), so a pod agent's tool calls land in the
+	// turn's trace (docs/adr/0050 §3b).
+	if err := a.Bridge.AttachTraced(ctx, in.RunID, in.WorkflowID, in.AgentRef); err != nil {
 		return fmt.Errorf("attach bridge for %s: %w", in.RunID, err)
 	}
 

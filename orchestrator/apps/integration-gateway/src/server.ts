@@ -33,6 +33,7 @@ import type {
 } from "./orchestrator-client.js";
 import { parseAcceptedTrigger } from "./orchestrator-client.js";
 import type { SenderClaims } from "./sender-assertion.js";
+import { nextTraceparent, traceIdOf } from "./traceparent.js";
 
 /**
  * How a webhook delivery is answered: a status (and optional JSON body) sent
@@ -545,9 +546,12 @@ export class GatewayServer {
     // a synchronous 403 they can act on (docs/adr/0049 §6). Everything else is
     // the same 202 as before -- a dropped or unmatched event is not the
     // sender's error, and a non-2xx would only make them retry the same drop.
+    // One trace per delivery (docs/adr/0050 §4), continuing the sender's own
+    // traceparent when it sent a valid one.
+    const traceparent = nextTraceparent(typeof req.headers.traceparent === "string" ? req.headers.traceparent : undefined);
     let outcome: WebhookOutcome;
     try {
-      outcome = await this.ingestWebhook(source, { id, headers, body, receivedAt });
+      outcome = await this.ingestWebhook(source, { id, headers, body, receivedAt }, traceparent);
     } catch (error) {
       this.report(error);
       outcome = { status: 202 };
@@ -563,6 +567,7 @@ export class GatewayServer {
   private async ingestWebhook(
     source: Extract<CompiledEventSource, { kind: "webhook" }>,
     input: { id: string; headers: Record<string, string>; body: JsonValue; receivedAt: Date },
+    traceparent?: string,
   ): Promise<WebhookOutcome> {
     let senderClaims: SenderClaims | undefined;
     let sender: Envelope["sender"] | undefined;
@@ -598,7 +603,7 @@ export class GatewayServer {
       ...(repository ? { repository } : {}),
       now: input.receivedAt,
     });
-    return this.relayEvent(envelope, senderClaims);
+    return this.relayEvent(envelope, senderClaims, traceparent);
   }
 
   /**
@@ -707,7 +712,7 @@ export class GatewayServer {
     }
     const envelope = buildCronEnvelope({ source: source.name, ...(source.cron.payload !== undefined ? { payload: source.cron.payload } : {}), now: this.now() });
     res.writeHead(202).end();
-    this.relayEvent(envelope, undefined)
+    this.relayEvent(envelope, undefined, nextTraceparent())
       .then((outcome) => outcome.after?.())
       .catch(this.report);
   }
@@ -743,8 +748,10 @@ export class GatewayServer {
    * an accepted event has side effects, and only the ones its trigger's
    * `reply` declares.
    */
-  private async relayEvent(envelope: Envelope, sender: SenderClaims | undefined): Promise<WebhookOutcome> {
-    const submitted = await this.options.orchestratorClient.submitEvent(envelope, sender);
+  private async relayEvent(envelope: Envelope, sender: SenderClaims | undefined, traceparent?: string): Promise<WebhookOutcome> {
+    const submitted = await this.options.orchestratorClient.submitEvent(envelope, sender, traceparent);
+    const trace = traceIdOf(traceparent);
+    if (trace) this.log(`event ${envelope.source}/${envelope.id}: trace ${trace}`);
     switch (submitted.kind) {
       case "ignored":
         this.log(`event ${envelope.source}/${envelope.id}: no trigger matched (ignored)`);
@@ -765,7 +772,7 @@ export class GatewayServer {
       case "accepted":
         return {
           status: 202,
-          after: () => this.runAcceptedEvent(envelope, sender, submitted.id, submitted.trigger),
+          after: () => this.runAcceptedEvent(envelope, sender, submitted.id, submitted.trigger, traceparent),
         };
     }
   }
@@ -821,6 +828,7 @@ export class GatewayServer {
     sender: SenderClaims | undefined,
     invocationId: string,
     trigger: AcceptedTrigger,
+    traceparent?: string,
   ): Promise<void> {
     const gh = this.githubReplyTarget(trigger);
     const http = trigger.reply?.http;
@@ -875,7 +883,8 @@ export class GatewayServer {
         await this.completeTurn(sessionId, tracked, outcome);
         if (gh) await best(() => this.options.githubReplyClient.postIssueComment(gh.owner, gh.repo, gh.issueNumber, outcome.result ?? ""));
         const resumed = await this.waitAndResume(outcome.identityLink, async () => {
-          const again = await this.options.orchestratorClient.submitEvent(envelope, sender);
+          // The resumed turn stays in the delivery's trace.
+          const again = await this.options.orchestratorClient.submitEvent(envelope, sender, nextTraceparent(traceparent));
           if (again.kind !== "accepted") {
             const why =
               again.kind === "ignored" ? "no trigger matched" : again.kind === "identity-required" ? again.body.error.code : again.error;

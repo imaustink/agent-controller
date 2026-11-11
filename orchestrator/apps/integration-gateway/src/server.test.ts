@@ -947,3 +947,28 @@ describe("webhook sender -> delegated subject (docs/adr/0049 §5-§6)", () => {
   });
 });
 
+describe("webhook trace context (docs/adr/0050 §4)", () => {
+  it("relays the delivery in the sender's trace when it sent one, else a new one", async () => {
+    const h = await start();
+    const body = JSON.stringify(GITHUB_PAYLOAD);
+    await fetch(`http://localhost:${h.port}/webhooks/github`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": "pull_request",
+        "x-github-delivery": "d-trace",
+        "x-hub-signature-256": `sha256=${hmacHex("gh-secret", body)}`,
+        traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      },
+      body,
+    });
+    const traced = h.submitEvent.mock.calls[0] as unknown as [unknown, unknown, string];
+    expect(traced[2]).toMatch(/^00-4bf92f3577b34da6a3ce929d0e0e4736-[0-9a-f]{16}-01$/);
+
+    await postGithub(h);
+    const fresh = h.submitEvent.mock.calls[1] as unknown as [unknown, unknown, string];
+    expect(fresh[2]).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    expect(fresh[2].slice(3, 35)).not.toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+  });
+});
+

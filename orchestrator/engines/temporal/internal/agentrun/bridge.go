@@ -10,6 +10,7 @@ import (
 
 	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/aktis/protocol/v1"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/aktisai/orchestrator/engines/temporal/internal/messaging"
 )
@@ -61,6 +62,9 @@ type bridgedRun struct {
 	seenSeq map[int]bool
 	// downSeq is our own monotonic per-direction counter.
 	downSeq int
+	// trace is this run's spans (docs/adr/0050 §3b); nil when the run was
+	// attached without a trace context (a re-attach after a worker restart).
+	trace *runTrace
 }
 
 func NewBridge(conn Conn, signaler Signaler, subjectPrefix string) *Bridge {
@@ -76,6 +80,12 @@ func NewBridge(conn Conn, signaler Signaler, subjectPrefix string) *Bridge {
 // already-attached run rebinds it to the given workflow, which is what a worker
 // that restarted mid-run needs.
 func (b *Bridge) Attach(agentRunID, workflowID string) error {
+	return b.AttachTraced(context.Background(), agentRunID, workflowID, "")
+}
+
+// AttachTraced is Attach, also opening the run's agent_run span under the
+// span in ctx (the launching activity's) when tracing is on.
+func (b *Bridge) AttachTraced(ctx context.Context, agentRunID, workflowID, agentRef string) error {
 	b.mu.Lock()
 	if existing, ok := b.runs[agentRunID]; ok {
 		existing.workflowID = workflowID
@@ -87,6 +97,9 @@ func (b *Bridge) Attach(agentRunID, workflowID string) error {
 		subjects:   SubjectsFor(agentRunID, b.prefix),
 		seenSeq:    map[int]bool{},
 	}
+	if agentRef != "" && trace.SpanContextFromContext(ctx).IsValid() {
+		run.trace = startRunTrace(ctx, agentRunID, agentRef)
+	}
 	b.runs[agentRunID] = run
 	b.mu.Unlock()
 
@@ -97,6 +110,7 @@ func (b *Bridge) Attach(agentRunID, workflowID string) error {
 		b.mu.Lock()
 		delete(b.runs, agentRunID)
 		b.mu.Unlock()
+		run.trace.end()
 		return fmt.Errorf("subscribe to %s: %w", run.subjects.Up, err)
 	}
 
@@ -114,6 +128,9 @@ func (b *Bridge) Detach(agentRunID string) {
 	b.mu.Unlock()
 	if ok && run.sub != nil {
 		_ = run.sub.Unsubscribe()
+	}
+	if ok {
+		run.trace.end()
 	}
 }
 
@@ -148,7 +165,11 @@ func (b *Bridge) handleUp(agentRunID string, data []byte) {
 	workflowID := run.workflowID
 	duplicate := run.seenSeq[msg.Seq]
 	run.seenSeq[msg.Seq] = true
+	rt := run.trace
 	b.mu.Unlock()
+	if !duplicate {
+		rt.up(msg)
+	}
 
 	if duplicate {
 		// A re-offer of something already signalled. Re-ack rather than
@@ -206,6 +227,11 @@ func (b *Bridge) Cancel(agentRunID, reason string) error {
 
 // ToolResult answers a sub-agent's tool_call (ADR 0028).
 func (b *Bridge) ToolResult(agentRunID, callID string, ok bool, result string, errText string) error {
+	b.mu.Lock()
+	if run, attached := b.runs[agentRunID]; attached {
+		defer run.trace.toolResult(callID, ok, errText)
+	}
+	b.mu.Unlock()
 	msg := DownMessage{Type: DownToolResult, CallID: callID, OK: &ok, Error: errText}
 	if ok {
 		encoded, err := json.Marshal(result)
