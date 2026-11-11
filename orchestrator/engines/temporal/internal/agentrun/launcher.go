@@ -47,6 +47,9 @@ type LaunchSpec struct {
 	// Launch sets spec.identityMode (AGENT_IDENTITY_MODE) and the immutable
 	// spec.launch audit record (docs/adr/0049). Zero sets neither.
 	Launch audit.Launch
+	// ContentCapture sets spec.contentCapture (docs/adr/0050 §5): "content"
+	// lets the run's own telemetry record text. Empty writes nothing.
+	ContentCapture string
 }
 
 // Launcher creates AgentRun CRs. The core-controller reconciles each into a
@@ -98,6 +101,9 @@ func (l *K8sLauncher) Launch(ctx context.Context, spec LaunchSpec) error {
 	}
 	if spec.Launch.IdentityMode != "" {
 		crSpec["identityMode"] = spec.Launch.IdentityMode
+	}
+	if spec.ContentCapture != "" {
+		crSpec["contentCapture"] = spec.ContentCapture
 	}
 	if launch := launchSpec(spec.Launch); launch != nil {
 		crSpec["launch"] = launch

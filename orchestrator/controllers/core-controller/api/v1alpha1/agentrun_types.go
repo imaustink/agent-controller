@@ -79,6 +79,14 @@ type AgentRunSpec struct {
 	// +optional
 	IdentityMode IdentityMode `json:"identityMode,omitempty"`
 
+	// contentCapture is what this run's own telemetry may record (docs/adr/
+	// 0050 §5), decided by the launching engine from the deployment ceiling,
+	// the Agent's opt-in and what the run can reach. "content" maps to
+	// AGENT_TRACE_CONTENT=true; anything else records metadata only.
+	// +optional
+	// +kubebuilder:validation:Enum=metadata;content
+	ContentCapture string `json:"contentCapture,omitempty"`
+
 	// launch records who launched this run and as what (docs/adr/0049 §3),
 	// for anyone inspecting the run while it exists. The durable copy is the
 	// engine's audit log line; this mirrors it. Immutable once set.

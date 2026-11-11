@@ -268,6 +268,23 @@ spec:
                   model is the LLM model id the agent loop should use (advisory; the
                   agent image decides how to interpret it).
                 type: string
+              observability:
+                description: observability tunes this agent's traces (docs/adr/0050).
+                  Optional.
+                properties:
+                  capture:
+                    default: metadata
+                    description: |-
+                      capture opts this agent's runs in to recording prompt and output text
+                      on their traces ("content"), up to the deployment's ceiling. Default
+                      "metadata": structure, timing, model and token counts, no text. A run
+                      that acts with a caller's credentials (delegated/hybrid) or can reach a
+                      knowledge base or MCP tool is always metadata, whatever this says.
+                    enum:
+                    - metadata
+                    - content
+                    type: string
+                type: object
               orchestratorPrompt:
                 description: |-
                   orchestratorPrompt is guidance injected into the PARENT orchestrator's

@@ -176,14 +176,25 @@ people can read than the source system allows would undo 0040.
 - **`metadata` (default):** spans carry structure, timing, model, token
   counts, tool ids, outcomes and error codes. No prompt or output text.
 - **`content`:** also capture prompts and outputs, truncated to a size limit.
-- **Precedence:**
-  - The chart's global `observability.contentCapture` is the ceiling.
-  - `Agent.spec.observability.capture` can opt an agent in, up to that
-    ceiling.
-  - A turn that touched a knowledge base, or ran in `delegated`/`hybrid`
-    mode, is forced to `metadata`. Content read with a user's own
+- **Precedence (as built):**
+  - The chart's `global.observability.contentCapture` is the ceiling
+    (`AGENT_TRACE_CONTENT_CEILING` on the worker).
+  - `Agent.spec.observability.capture: content` opts an agent's **runs** in,
+    up to that ceiling.
+  - A run is forced to `metadata` when it acts with a caller's credentials
+    (`delegated`/`hybrid`, or no decided mode), or when it can reach a tool
+    that does: a knowledge base (always per-user hydrated), an MCP tool, or
+    any tool declaring identity providers. Content read with a user's own
     credentials stays out of a shared backend. Same "only restricts" rule as
     `readOnly`.
+  - The workflow decides eligibility from its own inputs
+    (`contentEligible`). The launch activity applies the ceiling, because
+    env is not readable in workflow code. The decision is recorded as
+    `AgentRun.spec.contentCapture`, which becomes `AGENT_TRACE_CONTENT=true`
+    in the pod.
+  - **The engine's own planner calls are always `metadata`.** Their prompts
+    mix catalog text, knowledge-base results and the caller's request, and
+    no per-turn signal says which was present, so they never record text.
 - **Never captured at any level:** credential env values, `secretEnv`,
   `Authorization` headers, assertion headers, identity-link tokens. This is
   enforced twice: an allowlist of attributes at the emitter, and an

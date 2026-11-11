@@ -196,6 +196,11 @@ type AgentDescriptor struct {
 	DefaultIdentity   string   `json:"defaultIdentity,omitempty"`
 	AllowedIdentities []string `json:"allowedIdentities,omitempty"`
 
+	// ContentCapture is the Agent's trace opt-in (observability.capture,
+	// docs/adr/0050 §5): "content" asks for prompt/output text on its runs'
+	// traces, up to the deployment ceiling. Anything else is metadata.
+	ContentCapture string `json:"contentCapture,omitempty"`
+
 	// ToolRefs names the Tool CRs this agent's OWN loop may call (upstream
 	// ADR 0028), as opposed to SkillRefs, which is prompt material. Resolved
 	// by id against the whole catalog rather than through RBAC-filtered

@@ -25,6 +25,14 @@ global:
   # address from it. Configure where traces go under `observability:` below.
   observability:
     enabled: false
+    # The ceiling on recording prompt/output TEXT in traces (docs/adr/0050
+    # §5): "metadata" (default) records structure, timing, model and token
+    # counts only. "content" lets an Agent that opts in
+    # (spec.observability.capture: content) record its runs' text -- never
+    # for a run acting with a caller's credentials or able to reach a
+    # knowledge base or MCP tool. The engine's own planner calls are always
+    # metadata. Raise it only with Langfuse access restricted accordingly.
+    contentCapture: metadata
 
 # ---------------------------------------------------------------------------
 # Parent orchestrator (charts/agent-orchestrator). Bundles an optional Qdrant

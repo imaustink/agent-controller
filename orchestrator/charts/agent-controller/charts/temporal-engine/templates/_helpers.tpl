@@ -57,5 +57,7 @@ engine's tracer is a no-op.
   value: {{ printf "http://%s-otel-collector:4318" .Release.Name | quote }}
 - name: OTEL_SERVICE_NAME
   value: {{ .serviceName | quote }}
+- name: AGENT_TRACE_CONTENT_CEILING
+  value: {{ $obs.contentCapture | default "metadata" | quote }}
 {{- end }}
 {{- end -}}
