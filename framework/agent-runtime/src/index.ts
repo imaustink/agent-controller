@@ -1,4 +1,4 @@
-export { loadConfig, AgentConfigError, type AgentRuntimeConfig } from "./config.js";
+export { loadConfig, AgentConfigError, type AgentRuntimeConfig, type AgentTelemetry } from "./config.js";
 export { NatsChannel, type AgentChannel } from "./channel.js";
 export {
   createInProcessChannel,

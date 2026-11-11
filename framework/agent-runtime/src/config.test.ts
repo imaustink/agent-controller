@@ -56,3 +56,18 @@ describe("loadConfig readOnly / params (ADR 0048)", () => {
     }
   });
 });
+
+// docs/adr/0050 §3c: telemetry config, and content only on the exact opt-in.
+describe("loadConfig telemetry", () => {
+  const base = { AGENT_NATS_URL: "nats://n", AGENT_RUN_ID: "r", AGENT_GOAL: "g" };
+  it("is absent without an endpoint", () => {
+    expect(loadConfig(base, []).telemetry).toBeUndefined();
+  });
+  it("carries endpoint, traceparent and the content opt-in", () => {
+    const tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    expect(
+      loadConfig({ ...base, OTEL_EXPORTER_OTLP_ENDPOINT: "http://c:4318/", TRACEPARENT: tp, AGENT_TRACE_CONTENT: "true" }, []).telemetry,
+    ).toEqual({ otlpEndpoint: "http://c:4318", traceparent: tp, captureContent: true });
+    expect(loadConfig({ ...base, OTEL_EXPORTER_OTLP_ENDPOINT: "http://c:4318", AGENT_TRACE_CONTENT: "yes" }, []).telemetry?.captureContent).toBe(false);
+  });
+});

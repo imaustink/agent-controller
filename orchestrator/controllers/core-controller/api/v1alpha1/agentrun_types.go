@@ -87,12 +87,28 @@ type AgentRunSpec struct {
 	// +kubebuilder:validation:Enum=metadata;content
 	ContentCapture string `json:"contentCapture,omitempty"`
 
+	// telemetry is where this run's own OpenTelemetry goes (docs/adr/0050
+	// §3c), set by the launching engine when tracing is on. The controller
+	// maps it, with spec.launch.traceparent, to the standard OTEL_* env and
+	// TRACEPARENT, which the run's CLI subprocesses inherit.
+	// +optional
+	Telemetry *AgentRunTelemetry `json:"telemetry,omitempty"`
+
 	// launch records who launched this run and as what (docs/adr/0049 §3),
 	// for anyone inspecting the run while it exists. The durable copy is the
 	// engine's audit log line; this mirrors it. Immutable once set.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="launch is immutable"
 	Launch *AgentRunLaunch `json:"launch,omitempty"`
+}
+
+// AgentRunTelemetry is an AgentRun's telemetry export target.
+type AgentRunTelemetry struct {
+	// otlpEndpoint is the in-cluster collector's OTLP/HTTP base URL. Never a
+	// trace backend directly: only the collector holds backend keys.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^https?://`
+	OTLPEndpoint string `json:"otlpEndpoint,omitempty"`
 }
 
 // AgentRunLaunch is an AgentRun's launch audit record (docs/adr/0049 §3).

@@ -50,6 +50,9 @@ type LaunchSpec struct {
 	// ContentCapture sets spec.contentCapture (docs/adr/0050 §5): "content"
 	// lets the run's own telemetry record text. Empty writes nothing.
 	ContentCapture string
+	// OTLPEndpoint sets spec.telemetry.otlpEndpoint (docs/adr/0050 §3c): the
+	// collector the run exports to. Empty: the run exports nothing.
+	OTLPEndpoint string
 }
 
 // Launcher creates AgentRun CRs. The core-controller reconciles each into a
@@ -104,6 +107,9 @@ func (l *K8sLauncher) Launch(ctx context.Context, spec LaunchSpec) error {
 	}
 	if spec.ContentCapture != "" {
 		crSpec["contentCapture"] = spec.ContentCapture
+	}
+	if spec.OTLPEndpoint != "" {
+		crSpec["telemetry"] = map[string]any{"otlpEndpoint": spec.OTLPEndpoint}
 	}
 	if launch := launchSpec(spec.Launch); launch != nil {
 		crSpec["launch"] = launch

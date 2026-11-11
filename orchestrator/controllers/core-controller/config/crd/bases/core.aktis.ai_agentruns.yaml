@@ -290,6 +290,20 @@ spec:
                   - secretRef
                   type: object
                 type: array
+              telemetry:
+                description: |-
+                  telemetry is where this run's own OpenTelemetry goes (docs/adr/0050
+                  §3c), set by the launching engine when tracing is on. The controller
+                  maps it, with spec.launch.traceparent, to the standard OTEL_* env and
+                  TRACEPARENT, which the run's CLI subprocesses inherit.
+                properties:
+                  otlpEndpoint:
+                    description: |-
+                      otlpEndpoint is the in-cluster collector's OTLP/HTTP base URL. Never a
+                      trace backend directly: only the collector holds backend keys.
+                    pattern: ^https?://
+                    type: string
+                type: object
               timeoutSeconds:
                 description: timeoutSeconds bounds the Job's activeDeadlineSeconds.
                   Defaults to 300 if unset.

@@ -83,6 +83,10 @@ type AgentRunActivities struct {
 	// §5): only "content" lets an eligible run record text. Read once from
 	// AGENT_TRACE_CONTENT_CEILING at startup, never in workflow code.
 	ContentCeiling string
+	// OTLPEndpoint is the collector agent runs export to (docs/adr/0050 §3c):
+	// this worker's own OTEL_EXPORTER_OTLP_ENDPOINT. Empty: runs export
+	// nothing.
+	OTLPEndpoint string
 }
 
 func (a *AgentRunActivities) LaunchAgentRun(ctx context.Context, in LaunchAgentRunInput) error {
@@ -120,6 +124,7 @@ func (a *AgentRunActivities) LaunchAgentRun(ctx context.Context, in LaunchAgentR
 		Params:         in.Params,
 		Launch:         in.Launch,
 		ContentCapture: contentCapture(a.ContentCeiling, in.ContentEligible),
+		OTLPEndpoint:   a.OTLPEndpoint,
 	})
 	if err != nil {
 		a.Bridge.Detach(in.RunID)
