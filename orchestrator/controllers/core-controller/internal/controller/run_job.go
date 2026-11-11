@@ -280,6 +280,7 @@ func agentEventEnv(spec toolv1alpha1.AgentRunSpec) []toolv1alpha1.EnvVar {
 	if spec.ContentCapture == "content" {
 		env = append(env, toolv1alpha1.EnvVar{Name: "AGENT_TRACE_CONTENT", Value: "true"})
 	}
+	env = append(env, agentTelemetryEnv(spec)...)
 	return env
 }
 
@@ -513,4 +514,24 @@ func parseResourceList(m map[string]string) (corev1.ResourceList, error) {
 		out[corev1.ResourceName(k)] = qty
 	}
 	return out, nil
+}
+
+// agentTelemetryEnv is a run's OpenTelemetry export env (docs/adr/0050 §3c):
+// the standard OTEL_* variables plus W3C TRACEPARENT, so the run -- and every
+// CLI subprocess it spawns, which inherit its env -- exports into the
+// launching turn's trace. Nothing when the engine set no endpoint.
+func agentTelemetryEnv(spec toolv1alpha1.AgentRunSpec) []toolv1alpha1.EnvVar {
+	if spec.Telemetry == nil || spec.Telemetry.OTLPEndpoint == "" {
+		return nil
+	}
+	env := []toolv1alpha1.EnvVar{
+		{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: spec.Telemetry.OTLPEndpoint},
+		{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: "http/protobuf"},
+		{Name: "OTEL_SERVICE_NAME", Value: spec.AgentRef},
+		{Name: "OTEL_RESOURCE_ATTRIBUTES", Value: "aktis.agent=" + spec.AgentRef},
+	}
+	if spec.Launch != nil && spec.Launch.Traceparent != "" {
+		env = append(env, toolv1alpha1.EnvVar{Name: "TRACEPARENT", Value: spec.Launch.Traceparent})
+	}
+	return env
 }

@@ -41,6 +41,27 @@ export interface AgentRuntimeConfig {
    */
   replyAckTimeoutMs?: number;
   replyAckRetryMs?: number;
+  /**
+   * Where this run's telemetry goes (docs/adr/0050 §3c), from the
+   * OTEL_EXPORTER_OTLP_ENDPOINT / TRACEPARENT / AGENT_TRACE_CONTENT env the
+   * controller sets. Absent when the run exports nothing.
+   */
+  telemetry?: AgentTelemetry;
+}
+
+/**
+ * A run's OpenTelemetry target. Deliberately just configuration: the runtime
+ * pulls in no OpenTelemetry SDK (agent pods are memory-tight, and the CLIs
+ * the SWE agents drive export on their own). An agent hands these to
+ * whatever it runs.
+ */
+export interface AgentTelemetry {
+  /** The in-cluster collector's OTLP/HTTP base URL. */
+  otlpEndpoint: string;
+  /** The launching turn's W3C trace context, to parent the run's spans. */
+  traceparent?: string;
+  /** Whether the run may record prompt/output TEXT (AGENT_TRACE_CONTENT, ADR 0050 §5). */
+  captureContent: boolean;
 }
 
 export class AgentConfigError extends Error {}
@@ -73,6 +94,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, argv: string[] 
     params: parseParams(env.AGENT_PARAMS),
     ...numeric("replyAckTimeoutMs", env.AGENT_REPLY_ACK_TIMEOUT_MS),
     ...numeric("replyAckRetryMs", env.AGENT_REPLY_ACK_RETRY_MS),
+    ...telemetryFrom(env),
+  };
+}
+
+function telemetryFrom(env: NodeJS.ProcessEnv): { telemetry?: AgentTelemetry } {
+  const otlpEndpoint = env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
+  if (!otlpEndpoint) return {};
+  return {
+    telemetry: {
+      otlpEndpoint: otlpEndpoint.replace(/\/+$/, ""),
+      ...(env.TRACEPARENT ? { traceparent: env.TRACEPARENT } : {}),
+      // Only the exact opt-in: anything else records metadata.
+      captureContent: env.AGENT_TRACE_CONTENT === "true",
+    },
   };
 }
 

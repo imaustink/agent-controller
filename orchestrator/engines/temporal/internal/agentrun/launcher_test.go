@@ -94,3 +94,29 @@ func TestLaunchCarriesIdentityModeAndLaunchRecord(t *testing.T) {
 		}, launch)
 	}
 }
+
+// docs/adr/0050 §3c: a run's telemetry target and content decision ride the
+// CR; absent, it writes neither.
+func TestLaunchCarriesTelemetryTargetAndContentCapture(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+			map[schema.GroupVersionResource]string{agentrun.GVR: "AgentRunList"})
+		launcher := agentrun.NewK8sLauncher(client, "ns", toolrun.SecretRef{Name: "cb", Key: "k"})
+		spec := agentrun.LaunchSpec{Name: "agentrun-swe-1", AgentRef: "swe", Goal: "g", CallbackURL: "http://gw/cb"}
+		if on {
+			spec.OTLPEndpoint = "http://t-otel-collector:4318"
+			spec.ContentCapture = "metadata"
+		}
+		require.NoError(t, launcher.Launch(context.Background(), spec))
+		obj, err := client.Resource(agentrun.GVR).Namespace("ns").Get(context.Background(), "agentrun-swe-1", metav1.GetOptions{})
+		require.NoError(t, err)
+		endpoint, found, _ := unstructured.NestedString(obj.Object, "spec", "telemetry", "otlpEndpoint")
+		capture, captureFound, _ := unstructured.NestedString(obj.Object, "spec", "contentCapture")
+		require.Equal(t, on, found)
+		require.Equal(t, on, captureFound)
+		if on {
+			require.Equal(t, "http://t-otel-collector:4318", endpoint)
+			require.Equal(t, "metadata", capture)
+		}
+	}
+}

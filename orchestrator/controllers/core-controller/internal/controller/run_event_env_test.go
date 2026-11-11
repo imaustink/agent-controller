@@ -143,6 +143,27 @@ var _ = Describe("Run event env", func() {
 			Expect(envOf(jobFor(run.Name))).To(HaveKeyWithValue("AGENT_TRACE_CONTENT", "true"))
 		})
 
+		It("exports the run's telemetry into the launching turn's trace (docs/adr/0050 §3c)", func() {
+			const tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+			run := &toolv1alpha1.AgentRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "agentrun-telemetry", Namespace: "default"},
+				Spec: toolv1alpha1.AgentRunSpec{
+					AgentRef: agentName, Goal: "g", Callback: callback,
+					Telemetry: &toolv1alpha1.AgentRunTelemetry{OTLPEndpoint: "http://t-otel-collector:4318"},
+					Launch:    &toolv1alpha1.AgentRunLaunch{Traceparent: tp},
+				},
+			}
+			Expect(k8sClient.Create(ctx, run)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, run) })
+			r := &AgentRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: run.Name, Namespace: "default"}})
+			Expect(err).NotTo(HaveOccurred())
+			env := envOf(jobFor(run.Name))
+			Expect(env).To(HaveKeyWithValue("OTEL_EXPORTER_OTLP_ENDPOINT", "http://t-otel-collector:4318"))
+			Expect(env).To(HaveKeyWithValue("OTEL_SERVICE_NAME", agentName))
+			Expect(env).To(HaveKeyWithValue("TRACEPARENT", tp))
+		})
+
 		It("refuses to change spec.launch once set", func() {
 			run := &toolv1alpha1.AgentRun{
 				ObjectMeta: metav1.ObjectMeta{Name: "agentrun-launch-immutable", Namespace: "default"},
@@ -167,6 +188,7 @@ var _ = Describe("Run event env", func() {
 			Expect(env).NotTo(HaveKey("AGENT_READ_ONLY"))
 			Expect(env).NotTo(HaveKey("AGENT_PARAMS"))
 			Expect(env).NotTo(HaveKey("AGENT_IDENTITY_MODE"))
+			Expect(env).NotTo(HaveKey("OTEL_EXPORTER_OTLP_ENDPOINT"), "no telemetry unless the engine set it")
 			// The run still launched normally.
 			Expect(env).To(HaveKeyWithValue("AGENT_GOAL", "review the pull request"))
 		})

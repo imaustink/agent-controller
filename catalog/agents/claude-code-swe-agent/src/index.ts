@@ -20,6 +20,7 @@ import {
 import { extractContinuationToken } from "./continuation.js";
 import { decodeSweContinuation, encodeSweContinuation, type SweMarker } from "./marker.js";
 import { loadToolConfig } from "./config.js";
+import { claudeCodeTelemetryEnv } from "./telemetry.js";
 import { createCredentialsWritebackWatcher, credentialExpiry } from "./credentialsWriteback.js";
 import {
   AuthorizationError,
@@ -181,6 +182,8 @@ async function handler(session: AgentSession): Promise<AgentReply> {
     GH_TOKEN: readToken,
     GITHUB_TOKEN: readToken,
     GIT_TERMINAL_PROMPT: "0",
+    // The CLI's own spans join the turn's trace (docs/adr/0050 §3c).
+    ...claudeCodeTelemetryEnv(session.telemetry),
   };
   if (delegating) {
     const shim = await installGhShim({ homeDir: toolConfig.homeDir });

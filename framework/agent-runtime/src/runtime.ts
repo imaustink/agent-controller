@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentDownMessage, AgentUpMessage } from "@aktis/messaging";
-import { AgentConfigError, loadConfig, type AgentRuntimeConfig } from "./config.js";
+import { AgentConfigError, loadConfig, type AgentRuntimeConfig, type AgentTelemetry } from "./config.js";
 import { NatsChannel, type AgentChannel } from "./channel.js";
 
 /**
@@ -23,6 +23,8 @@ export interface AgentSession {
   readonly readOnly: boolean;
   /** Structured run parameters (AgentRun.spec.params, ADR 0048); `{}` when unset. */
   readonly params: Readonly<Record<string, string>>;
+  /** Where this run's telemetry goes (ADR 0050 §3c), or undefined when it exports nothing. */
+  readonly telemetry?: Readonly<AgentTelemetry>;
   /** Fires when the orchestrator sends `cancel` (user abandoned, timeout, etc.). */
   readonly signal: AbortSignal;
   /** Emit incremental progress narration (surfaced to the user as streaming deltas). */
@@ -313,6 +315,7 @@ export async function runAgent(handler: AgentHandler, opts: RunAgentOptions = {}
     goal: config.goal,
     readOnly: config.readOnly,
     params: Object.freeze({ ...config.params }),
+    ...(config.telemetry ? { telemetry: Object.freeze({ ...config.telemetry }) } : {}),
     signal: abort.signal,
     progress: (message, o) => publishUp({ type: "progress", message, stage: o?.stage, pct: o?.pct }),
     warn: (message) => publishUp({ type: "warning", message }),

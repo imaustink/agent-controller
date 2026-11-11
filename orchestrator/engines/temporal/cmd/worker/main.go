@@ -268,6 +268,8 @@ func main() {
 		agentRuns := &activities.AgentRunActivities{
 			// docs/adr/0050 §5: the platform's ceiling on recording run text.
 			ContentCeiling: os.Getenv("AGENT_TRACE_CONTENT_CEILING"),
+			// docs/adr/0050 §3c: runs export to the same collector.
+			OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 			Launcher: agentrun.NewK8sLauncher(
 				dynamicClient,
 				getenv("TOOLRUN_NAMESPACE", "controller-agent"),

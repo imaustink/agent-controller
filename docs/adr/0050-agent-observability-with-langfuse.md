@@ -131,7 +131,21 @@ made in workflow code, which must stay deterministic. Two sources cover it:
 That gives tool-level visibility for **every** agent image immediately, with
 no image changes and no telemetry egress from pods.
 
-**c. Model calls inside the pod.** This is a later phase. The SWE agents run
+**c. Model calls inside the pod.** *As built:* the engine sets
+`AgentRun.spec.telemetry.otlpEndpoint` (its own collector endpoint). The
+controller maps that, plus `spec.launch.traceparent`, to `OTEL_EXPORTER_OTLP_*`,
+`OTEL_SERVICE_NAME` and `TRACEPARENT`. `@aktis/agent-runtime` exposes them as
+`session.telemetry` without pulling in an OpenTelemetry SDK.
+
+claude-code-swe-agent turns on the CLI's beta span export
+(`CLAUDE_CODE_ENABLE_TELEMETRY` + `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` +
+`OTEL_TRACES_EXPORTER=otlp`, with an explicit traces endpoint). Its `-p` runs
+parent on `TRACEPARENT`. Metrics and logs are off, and text flags are set
+only for a run cleared for content.
+
+opencode documents no OpenTelemetry export, so it is not wired.
+
+The original plan for this phase: The SWE agents run
 the Claude Code CLI and opencode as subprocesses, so `@aktis/agent-runtime`
 never sees their model calls.
 - The launcher passes `TRACEPARENT` and `OTEL_EXPORTER_OTLP_ENDPOINT` into the
