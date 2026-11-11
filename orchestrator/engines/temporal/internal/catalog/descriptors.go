@@ -188,6 +188,14 @@ type AgentDescriptor struct {
 	MaxIterations      int32    `json:"maxIterations,omitempty"`
 	IdentityProviders  []string `json:"identityProviders,omitempty"`
 
+	// DefaultIdentity / AllowedIdentities are the Agent's identity mode
+	// declarations (docs/adr/0049): which identity its runs act as on their
+	// resource providers, and which modes an EventTrigger may override to.
+	// Raw strings; authz.ResolveMode validates them, so a value the CRD
+	// would have rejected is still refused rather than trusted.
+	DefaultIdentity   string   `json:"defaultIdentity,omitempty"`
+	AllowedIdentities []string `json:"allowedIdentities,omitempty"`
+
 	// ToolRefs names the Tool CRs this agent's OWN loop may call (upstream
 	// ADR 0028), as opposed to SkillRefs, which is prompt material. Resolved
 	// by id against the whole catalog rather than through RBAC-filtered

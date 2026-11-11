@@ -3,6 +3,7 @@ package workflows
 import (
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/aktisai/orchestrator/engines/temporal/internal/audit"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/authz"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/activities"
@@ -145,9 +146,10 @@ func authorizeAgent(
 	in TurnInput,
 	agent catalog.AgentDescriptor,
 	pending *authz.PendingLink,
-) (authz.Verdict, error) {
-	if len(agent.IdentityProviders) == 0 {
-		return authz.Verdict{Kind: authz.KindAuthorized}, nil
+) (authz.Verdict, audit.Launch, error) {
+	if workflow.GetVersion(ctx, versionIdentityModePreflight, workflow.DefaultVersion, 1) == workflow.DefaultVersion &&
+		len(agent.IdentityProviders) == 0 {
+		return authz.Verdict{Kind: authz.KindAuthorized}, audit.Launch{}, nil
 	}
 
 	// Flow and Live are independent questions: Flow is which OAuth flow to
@@ -161,8 +163,7 @@ func authorizeAgent(
 		flow = "authcode"
 	}
 
-	var verdict authz.Verdict
-	err := workflow.ExecuteActivity(actx, activities.AuthorizeActivityName, activities.AuthorizeInput{
+	input := activities.AuthorizeInput{
 		AgentID:           agent.ID,
 		IdentityProviders: agent.IdentityProviders,
 		Caller:            in.Caller,
@@ -180,6 +181,18 @@ func authorizeAgent(
 		// Withholds the run's write-capable credential (ADR 0048); see
 		// authz.suppressWriteCredentials.
 		ReadOnly: in.ReadOnly,
-	}).Get(ctx, &verdict)
-	return verdict, err
+		// docs/adr/0049: the Agent's identity mode, and the trigger's
+		// override from the signed dispatch assertion.
+		DefaultIdentity:   agent.DefaultIdentity,
+		AllowedIdentities: agent.AllowedIdentities,
+		TriggerName:       in.TriggerName,
+	}
+	var verdict authz.Verdict
+	err := workflow.ExecuteActivity(actx, activities.AuthorizeActivityName, input).Get(ctx, &verdict)
+	if err != nil {
+		return verdict, audit.Launch{}, err
+	}
+	// The same pure builder the activity recorded with, so the AgentRun's
+	// spec.launch says exactly what the audit line said.
+	return verdict, activities.LaunchRecord(input, verdict), nil
 }

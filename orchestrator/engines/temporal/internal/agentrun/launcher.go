@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
+	"github.com/aktisai/orchestrator/engines/temporal/internal/audit"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/toolrun"
 )
@@ -43,6 +44,9 @@ type LaunchSpec struct {
 	// Params sets spec.params (AGENT_PARAMS=<json>): the matched
 	// EventTrigger's params in their string form.
 	Params map[string]string
+	// Launch sets spec.identityMode (AGENT_IDENTITY_MODE) and the immutable
+	// spec.launch audit record (docs/adr/0049). Zero sets neither.
+	Launch audit.Launch
 }
 
 // Launcher creates AgentRun CRs. The core-controller reconciles each into a
@@ -91,6 +95,12 @@ func (l *K8sLauncher) Launch(ctx context.Context, spec LaunchSpec) error {
 			params[k] = v
 		}
 		crSpec["params"] = params
+	}
+	if spec.Launch.IdentityMode != "" {
+		crSpec["identityMode"] = spec.Launch.IdentityMode
+	}
+	if launch := launchSpec(spec.Launch); launch != nil {
+		crSpec["launch"] = launch
 	}
 	if len(spec.SecretEnv) > 0 {
 		entries := make([]any, len(spec.SecretEnv))
@@ -144,4 +154,57 @@ func (l *K8sLauncher) GetStatus(ctx context.Context, name string) (toolrun.Statu
 	message, _, _ := unstructured.NestedString(obj.Object, "status", "message")
 	jobName, _, _ := unstructured.NestedString(obj.Object, "status", "jobName")
 	return toolrun.Status{Phase: phase, Message: message, JobName: jobName}, nil
+}
+
+// launchSpec renders AgentRun.spec.launch (docs/adr/0049 §3) from the
+// pre-flight's audit view. Nil when no decision covered this launch.
+//
+// Built field by field rather than marshalled whole: identityMode is its own
+// spec field, readOnly is too, and an unknown key would be pruned by the
+// CRD's structural schema anyway, so naming exactly what the CRD has keeps
+// the two from drifting silently.
+func launchSpec(l audit.Launch) map[string]any {
+	if l.DecisionID == "" && l.LaunchedBy == "" {
+		return nil
+	}
+	out := map[string]any{}
+	set := func(k, v string) {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	set("decisionId", l.DecisionID)
+	set("entryPoint", l.EntryPoint)
+	set("launchedBy", l.LaunchedBy)
+	set("delegatedSubject", l.DelegatedSubject)
+	set("trigger", l.Trigger)
+	set("requestedIdentityMode", l.RequestedIdentityMode)
+	set("identityModeSource", l.IdentityModeSource)
+	set("targetRepository", l.TargetRepository)
+	if l.Sender != nil {
+		sender := map[string]any{}
+		for k, v := range map[string]string{"provider": l.Sender.Provider, "login": l.Sender.Login, "accountId": l.Sender.AccountID} {
+			if v != "" {
+				sender[k] = v
+			}
+		}
+		if len(sender) > 0 {
+			out["sender"] = sender
+		}
+	}
+	if len(l.Credentials) > 0 {
+		creds := make([]any, len(l.Credentials))
+		for i, c := range l.Credentials {
+			entry := map[string]any{"provider": c.Provider}
+			if c.Read != "" {
+				entry["read"] = c.Read
+			}
+			if c.Write != "" {
+				entry["write"] = c.Write
+			}
+			creds[i] = entry
+		}
+		out["credentials"] = creds
+	}
+	return out
 }

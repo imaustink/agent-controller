@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/activity"
 
 	"github.com/aktisai/orchestrator/engines/temporal/internal/agentrun"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/audit"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/toolrun"
 )
 
@@ -37,6 +38,11 @@ type LaunchAgentRunInput struct {
 	// 0048): turn properties set by the matched EventTrigger.
 	ReadOnly bool              `json:"readOnly,omitempty"`
 	Params   map[string]string `json:"params,omitempty"`
+
+	// Launch is the pre-flight's audit view of this launch (docs/adr/0049):
+	// it becomes spec.identityMode + spec.launch, and the agent-launch audit
+	// line. Zero for a launch no Authorize decision covered.
+	Launch audit.Launch `json:"launch,omitempty"`
 }
 
 // AgentDownInput sends one message down to a running agent.
@@ -99,10 +105,24 @@ func (a *AgentRunActivities) LaunchAgentRun(ctx context.Context, in LaunchAgentR
 		SecretEnv:      secretEnv,
 		ReadOnly:       in.ReadOnly,
 		Params:         in.Params,
+		Launch:         in.Launch,
 	})
 	if err != nil {
 		a.Bridge.Detach(in.RunID)
 		return err
+	}
+	if in.Launch.DecisionID != "" {
+		// Joined to its agent-authorization record by decisionId. A retry
+		// after a successful create can repeat this line; both copies are
+		// identical and name the same agentRun.
+		audit.Emit(audit.Record{
+			Kind:         audit.KindLaunch,
+			Agent:        in.AgentRef,
+			AgentRun:     in.RunID,
+			Outcome:      "launched",
+			Conversation: workflowIDFromContext(ctx),
+			Launch:       in.Launch,
+		})
 	}
 	return nil
 }

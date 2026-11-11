@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/aktisai/orchestrator/engines/temporal/internal/approval"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/audit"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/continuation"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/messaging"
@@ -99,6 +100,14 @@ type AgentWorkflowInput struct {
 	// restricted than the turn that started it.
 	ReadOnly bool              `json:"readOnly,omitempty"`
 	Params   map[string]string `json:"params,omitempty"`
+
+	// Launch is the parent pre-flight's audit view of this launch (docs/adr/
+	// 0049 §3): the identity mode the run was given and who launched it. A
+	// pod-backed episode stamps it on its AgentRun. Empty for a nested
+	// sub-agent or an agent-backed tool, which no Authorize decision covers:
+	// their runs carry no identity mode and the agent infers its own, as
+	// before 0049.
+	Launch audit.Launch `json:"launch,omitempty"`
 }
 
 // AgentWorkflow runs one agent episode. It reports everything to the parent
