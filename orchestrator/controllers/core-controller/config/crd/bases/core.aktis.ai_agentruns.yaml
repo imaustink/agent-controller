@@ -205,6 +205,16 @@ spec:
                     description: targetRepository is the "owner/name" the run was
                       gated on and scoped to.
                     type: string
+                  traceId:
+                    description: |-
+                      traceId is the W3C trace id of the turn that launched this run
+                      (docs/adr/0050 §1): the join from this record to its trace.
+                    type: string
+                  traceparent:
+                    description: |-
+                      traceparent is the W3C trace context the run's own telemetry continues
+                      (docs/adr/0050 §4).
+                    type: string
                   trigger:
                     description: trigger is the EventTrigger that produced the launching
                       turn.

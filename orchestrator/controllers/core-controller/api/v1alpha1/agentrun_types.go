@@ -136,6 +136,16 @@ type AgentRunLaunch struct {
 	// targetRepository is the "owner/name" the run was gated on and scoped to.
 	// +optional
 	TargetRepository string `json:"targetRepository,omitempty"`
+
+	// traceId is the W3C trace id of the turn that launched this run
+	// (docs/adr/0050 §1): the join from this record to its trace.
+	// +optional
+	TraceID string `json:"traceId,omitempty"`
+
+	// traceparent is the W3C trace context the run's own telemetry continues
+	// (docs/adr/0050 §4).
+	// +optional
+	Traceparent string `json:"traceparent,omitempty"`
 }
 
 // LaunchSender identifies a webhook sender.

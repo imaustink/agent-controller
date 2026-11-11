@@ -84,6 +84,10 @@ type Launch struct {
 	Credentials           []Credential `json:"credentials,omitempty"`
 	TargetRepository      string       `json:"targetRepository,omitempty"`
 	ReadOnly              bool         `json:"readOnly,omitempty"`
+	// TraceID joins this record to the turn's trace (docs/adr/0050 §1);
+	// Traceparent is what the launched run's own telemetry continues.
+	TraceID     string `json:"traceId,omitempty"`
+	Traceparent string `json:"traceparent,omitempty"`
 }
 
 // Record is one audit line.
