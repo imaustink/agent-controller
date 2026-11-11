@@ -31,3 +31,13 @@ export {
 export { buildAuthorizeUrl, exchangeCodeForToken } from "./authCodeFlow.js";
 
 export { signState, verifyState, type OAuthStatePayload } from "./oauthState.js";
+
+export {
+  IDENTITY_MODES,
+  IDENTITY_MODE_ENV,
+  IdentityModeError,
+  readsAsCaller,
+  resolveIdentityMode,
+  type IdentityMode,
+  type IdentityModeInputs,
+} from "./identityMode.js";

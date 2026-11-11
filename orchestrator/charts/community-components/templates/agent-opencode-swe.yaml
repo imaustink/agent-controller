@@ -153,12 +153,8 @@ spec:
         name: {{ .Values.opencodeSweAgent.secretName }}
         key: {{ .Values.opencodeSweAgent.githubAppInstallationIdSecretKey }}
     {{- end }}
-  {{- if or .Values.opencodeSweAgent.identityLink.enabled .Values.opencodeSweAgent.githubAppSlug }}
+  {{- if .Values.opencodeSweAgent.githubAppSlug }}
   env:
-    {{- if .Values.opencodeSweAgent.identityLink.enabled }}
-    - name: GITHUB_IDENTITY_DELEGATION
-      value: "true"
-    {{- end }}
     {{- if .Values.opencodeSweAgent.githubAppSlug }}
     - name: GITHUB_APP_SLUG
       value: {{ .Values.opencodeSweAgent.githubAppSlug | quote }}

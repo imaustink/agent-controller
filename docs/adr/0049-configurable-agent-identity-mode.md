@@ -374,9 +374,9 @@ ignore a mode it doesn't implement:
 
 - **Unchanged behaviour when nothing is set.** With no `defaultIdentity` and no
   trigger `identity`, it runs exactly as today. The mode is inferred, and
-  `github` declared means `hybrid`. Its launcher sets `AGENT_IDENTITY_MODE`
-  from that inferred mode, which lets the agent images drop `isDelegating()`
-  for both engines.
+  `github` declared means `hybrid`. Its launcher sets no
+  `AGENT_IDENTITY_MODE`: the images infer the same mode when it is absent
+  (§2), so there is nothing to plumb.
 - **An explicit mode is refused.** If an Agent's `defaultIdentity` is set, or a
   trigger sets `target.identity`, the run gets a `misconfigured` verdict and
   launches nothing. The error says the field requires the Temporal engine.

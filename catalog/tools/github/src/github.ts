@@ -33,7 +33,7 @@ export class GhExecError extends Error {
  * exclusivity is enforced there, in one place, rather than by inverting the
  * precedence here. If App-as-fallback-for-an-unlinked-caller is ever wanted,
  * it needs an explicit signal the way the SWE agents use
- * `GITHUB_IDENTITY_DELEGATION` (see their `isDelegating`), not an implicit
+ * `AGENT_IDENTITY_MODE` (docs/adr/0049; see their `identityModeOf`), not an implicit
  * ordering that can't tell a per-user token from a static PAT.
  */
 export async function resolveToolToken(cfg: AppConfig, now?: number): Promise<string> {

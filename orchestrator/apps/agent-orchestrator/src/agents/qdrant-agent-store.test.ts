@@ -53,6 +53,7 @@ describe("QdrantAgentStore", () => {
             tier: "privileged",
             orchestratorPrompt: "Delegate the whole request verbatim as the goal.",
             identityProviders: null,
+            defaultIdentity: null,
             namespace: "default",
             agentRef: "software-engineering-agent",
           },
@@ -73,6 +74,16 @@ describe("QdrantAgentStore", () => {
       "agents",
       expect.objectContaining({ points: [expect.objectContaining({ payload: expect.objectContaining({ identityProviders: ["github"] }) })] }),
     );
+  });
+
+  // docs/adr/0049: the LangGraph engine refuses an Agent that set a mode, so
+  // the field must survive the vector store or the refusal would fail open.
+  it("round-trips defaultIdentity so the LangGraph engine can refuse it", async () => {
+    const client = { upsert: vi.fn().mockResolvedValue(true) } as unknown as QdrantClient;
+    const store = new QdrantAgentStore({ url: "http://q", collection: "agents", vectorSize: 3 }, fakeEmbedder([1, 2, 3]), client);
+    await store.upsert([{ ...agent, defaultIdentity: "agent" }]);
+    const payload = (client.upsert as ReturnType<typeof vi.fn>).mock.calls[0]![1].points[0].payload;
+    expect(payload.defaultIdentity).toBe("agent");
   });
 
   it("round-trips identityProviders back into the AgentDescriptor returned by getByIds (regression: this used to be silently dropped)", async () => {

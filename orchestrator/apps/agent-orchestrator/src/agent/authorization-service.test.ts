@@ -14,8 +14,13 @@ import { ACTOR_LOGIN_ENV, AuthorizationService } from "./authorization-service.j
  * previously only observable through a launched AgentRun.
  */
 
+/**
+ * A chat caller, as the Open WebUI resolver produces one: `perUser` is what
+ * the resolver asserts for a subject that is ONE human. A shared subject (a
+ * webhook relay's service account) is built with `perUser: false` explicitly.
+ */
 const identity = (over: Partial<Identity> = {}): Identity =>
-  ({ subject: "openwebui:alice", roles: ["writer"], ...over }) as Identity;
+  ({ subject: "openwebui:alice", roles: ["writer"], perUser: true, ...over }) as Identity;
 
 /** A gateway whose per-provider behaviour is declared up front. */
 function gateway(
@@ -553,7 +558,7 @@ describe("AuthorizationService.authorize principal pre-flight", () => {
 
     const verdict = await svc.authorize({
       agent: { id: "swe", identityProviders: ["claude"] },
-      identity: identity({ subject: "client-integration-gateway" }),
+      identity: identity({ subject: "client-integration-gateway", perUser: false }),
       request: "r",
     });
 
@@ -669,7 +674,7 @@ describe("AuthorizationService.authorize pre-principal adoption", () => {
 
     const verdict = await svc.authorize({
       agent: { id: "swe", identityProviders: ["claude"] },
-      identity: identity({ subject: "client-integration-gateway", principal: "github:sender" }),
+      identity: identity({ subject: "client-integration-gateway", principal: "github:sender", perUser: false }),
       request: "r",
       senderLogin: "sender",
     });
@@ -1022,7 +1027,7 @@ describe("AuthorizationService with a Connections page -- one link per turn", ()
 
     const verdict = await svc.authorize({
       agent: { id: "swe", identityProviders: ["github", "claude"] },
-      identity: identity(),
+      identity: identity({ principal: "github:alice" }),
       request: "r",
       progressListener: progress,
     });
@@ -1030,7 +1035,7 @@ describe("AuthorizationService with a Connections page -- one link per turn", ()
     expect(progress).toHaveBeenCalledTimes(1);
     expect(progress.mock.calls[0]![1]).toContain(`${PAGE}/link?need=github%2Cclaude`);
     expect(github.waitForCompletion).toHaveBeenCalledWith("github", "openwebui:alice", 600_000);
-    expect(claude.waitForCompletion).toHaveBeenCalledWith("claude", "openwebui:alice", 600_000);
+    expect(claude.waitForCompletion).toHaveBeenCalledWith("claude", "github:alice", 600_000);
     if (verdict.kind !== "authorized") throw new Error(verdict.kind);
     expect(verdict.secretEnv?.map((e) => e.name)).toEqual(["GITHUB_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", ACTOR_LOGIN_ENV]);
   });
@@ -1042,7 +1047,7 @@ describe("AuthorizationService with a Connections page -- one link per turn", ()
 
     const verdict = await svc.authorize({
       agent: { id: "swe", identityProviders: ["github", "claude"] },
-      identity: identity(),
+      identity: identity({ principal: "github:alice" }),
       request: "r",
       progressListener: vi.fn(),
     });
@@ -1178,5 +1183,47 @@ describe("AuthorizationService read-only turns (docs/event-triggers.md §1)", ()
     });
 
     expect(await svc.resolveLinkedCredentials({ identity: identity(), readOnly: true })).toEqual({ kind: "resolved" });
+  });
+});
+
+describe("AuthorizationService.authorize -- identity modes are Temporal-only (docs/adr/0049)", () => {
+  it("refuses an agent that sets defaultIdentity rather than ignoring it", async () => {
+    const github = gateway({ github: { token: { token: "gho_x", githubLogin: "alice" } } });
+    const svc = new AuthorizationService({ identityLinkGateway: github });
+
+    const verdict = await svc.authorize({
+      agent: { id: "swe", identityProviders: ["github"], defaultIdentity: "agent" },
+      identity: identity(),
+      request: "r",
+    });
+
+    if (verdict.kind !== "misconfigured") throw new Error(verdict.kind);
+    expect(verdict.error).toContain("needs the Temporal engine");
+    expect(github.getToken).not.toHaveBeenCalled();
+  });
+
+  // A shared subject's github link would be every sender's GitHub identity.
+  // The per-user case alongside is what proves the assertion can fail.
+  it("never resolves a github token for a shared subject", async () => {
+    for (const perUser of [true, false]) {
+      const github = gateway({ github: { token: { token: "gho_someone", githubLogin: "someone" } } });
+      const svc = new AuthorizationService({ identityLinkGateway: github });
+
+      const verdict = await svc.authorize({
+        agent: { id: "swe", identityProviders: ["github"] },
+        identity: identity({ subject: perUser ? "openwebui:alice" : "client-integration-gateway", perUser }),
+        request: "r",
+      });
+
+      if (verdict.kind !== "authorized") throw new Error(verdict.kind);
+      const names = verdict.secretEnv?.map((e) => e.name) ?? [];
+      if (perUser) {
+        expect(names).toContain("GITHUB_TOKEN");
+      } else {
+        expect(names).not.toContain("GITHUB_TOKEN");
+        expect(github.getToken).not.toHaveBeenCalledWith("github", "client-integration-gateway");
+        expect(github.start).not.toHaveBeenCalled();
+      }
+    }
   });
 });

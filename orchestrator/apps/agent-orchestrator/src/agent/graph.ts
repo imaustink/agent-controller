@@ -2480,7 +2480,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // credentials" is answered by one call with a total return type rather
       // than by reading the node.
       const verdict = await authorization.authorize({
-        agent: { id: agent.id, identityProviders: agent.identityProviders },
+        agent: { id: agent.id, identityProviders: agent.identityProviders, defaultIdentity: agent.defaultIdentity },
         identity: state.identity,
         request: state.request,
         senderLogin: state.senderLogin,

@@ -24,7 +24,8 @@ import { createCredentialsWritebackWatcher, credentialExpiry } from "./credentia
 import {
   AuthorizationError,
   finalizeDelegatedWrite,
-  isDelegating,
+  identityModeOf,
+  IdentityModeError,
   resolveDelegatedToken,
   resolveUndelegatedToken,
 } from "./identityDelegation.js";
@@ -128,14 +129,34 @@ async function handler(session: AgentSession): Promise<AgentReply> {
   const apiHost =
     new URL(toolConfig.githubApiUrl).host === "api.github.com" ? "github.com" : new URL(toolConfig.githubApiUrl).host;
 
-  const delegating = isDelegating(toolConfig);
-  // Two credentials when delegating (docs/adr/0041): reads run as the human
-  // who asked, writes run as the App. They collapse to one token otherwise,
+  // The engine decided the identity this run acts as (docs/adr/0049). Fail
+  // before any work when it can't be honoured, rather than quietly running
+  // with a different credential than the one the operator chose.
+  let mode: ReturnType<typeof identityModeOf>;
+  try {
+    mode = identityModeOf(toolConfig);
+  } catch (err) {
+    if (err instanceof IdentityModeError) return { message: `I couldn't start: ${err.message}` };
+    throw err;
+  }
+  if (mode === "delegated" && readOnly) {
+    // The engine narrows a read-only caller-mode run to agent mode; a run
+    // that still arrives as delegated would hold a user token that can
+    // write. Fail closed rather than rest read-only on the deny list alone.
+    return { message: "I couldn't start: a read-only run can't act fully as the caller (AGENT_IDENTITY_MODE=delegated)." };
+  }
+  console.error(`[identity] mode=${mode}${readOnly ? " (read-only)" : ""}`);
+  // hybrid: two credentials (docs/adr/0041) -- reads run as the human who
+  // asked, writes as the App. delegated: the human's token for both, so
+  // commits and the PR are theirs. agent: the agent's own credential for both,
   // which is exactly the pre-existing single-token behaviour.
+  const delegating = mode === "hybrid";
   let readToken: string;
   let writeToken: string;
   let attribution: { githubLogin: string; githubId?: number } | null = null;
-  if (delegating) {
+  if (mode === "delegated") {
+    readToken = writeToken = toolConfig.githubToken;
+  } else if (delegating) {
     try {
       const resolved = await resolveDelegatedToken(toolConfig, marker?.repo ?? null, readOnly, turnStartedAt);
       readToken = resolved.readToken;

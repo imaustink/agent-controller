@@ -3,7 +3,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   AuthorizationError,
   finalizeDelegatedWrite,
-  isDelegating,
+  identityModeOf,
+  IdentityModeError,
   resolveDelegatedToken,
   resolveUndelegatedToken,
 } from "./identityDelegation.js";
@@ -31,7 +32,7 @@ function baseConfig(overrides: Partial<AgentToolConfig> = {}): AgentToolConfig {
     githubAppPrivateKey: privateKey,
     githubAppInstallationId: "999",
     githubAppSlug: "my-app",
-    identityDelegationEnabled: true,
+    identityMode: "",
     anthropicApiKey: "sk-ant",
     model: "anthropic/claude-sonnet-5",
     githubApiUrl: "https://api.github.com",
@@ -65,21 +66,28 @@ async function withTokenEndpoint<T>(run: (mints: unknown[]) => Promise<T>): Prom
   }
 }
 
-describe("isDelegating", () => {
-  it("is true when the flag, App creds, and a user token are all present", () => {
-    expect(isDelegating(baseConfig())).toBe(true);
+describe("identityModeOf", () => {
+  // A run no pre-flight decided keeps the pre-0049 inference.
+  it("infers hybrid when App creds and a user token are both present", () => {
+    expect(identityModeOf(baseConfig())).toBe("hybrid");
   });
 
-  it("is false when the flag is off", () => {
-    expect(isDelegating(baseConfig({ identityDelegationEnabled: false }))).toBe(false);
+  it("infers agent when App creds are only partially configured", () => {
+    expect(identityModeOf(baseConfig({ githubAppInstallationId: "" }))).toBe("agent");
   });
 
-  it("is false when App creds are only partially configured", () => {
-    expect(isDelegating(baseConfig({ githubAppInstallationId: "" }))).toBe(false);
+  it("infers agent when there is no user token", () => {
+    expect(identityModeOf(baseConfig({ githubToken: "" }))).toBe("agent");
   });
 
-  it("is false when there is no user token", () => {
-    expect(isDelegating(baseConfig({ githubToken: "" }))).toBe(false);
+  // docs/adr/0049: the engine's decision wins over what the env looks like.
+  it("honours AGENT_IDENTITY_MODE", () => {
+    expect(identityModeOf(baseConfig({ identityMode: "agent" }))).toBe("agent");
+    expect(identityModeOf(baseConfig({ identityMode: "delegated", githubAppId: "" }))).toBe("delegated");
+  });
+
+  it("refuses a caller mode it cannot honour", () => {
+    expect(() => identityModeOf(baseConfig({ identityMode: "hybrid", githubToken: "" }))).toThrow(IdentityModeError);
   });
 });
 

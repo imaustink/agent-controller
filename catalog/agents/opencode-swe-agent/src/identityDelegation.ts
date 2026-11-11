@@ -7,11 +7,14 @@ import {
   mintInstallationToken,
   resolveDelegatedWriteToken,
   resolveGithubToken,
+  resolveIdentityMode,
   type GithubAppCredentials,
+  type IdentityMode,
 } from "@aktis/github-app-auth";
 import type { AgentToolConfig } from "./config.js";
 
 export { AuthorizationError };
+export { IdentityModeError, type IdentityMode } from "@aktis/github-app-auth";
 
 /**
  * The permission ceiling for a read-only run's GitHub token (session.readOnly,
@@ -35,14 +38,17 @@ function appCredsFrom(config: AgentToolConfig): GithubAppCredentials | null {
 }
 
 /**
- * Whether this turn should run the dual-token pattern: a full GitHub App
- * configuration plus a per-user OAuth token (only present when identity-link
- * actually supplied `GITHUB_TOKEN`, signaled by
- * `identityDelegationEnabled` — see ./config.ts and the Helm template's
- * `GITHUB_IDENTITY_DELEGATION` env var).
+ * The identity mode this run acts in (docs/adr/0049): the engine's decision
+ * from `AGENT_IDENTITY_MODE`, or the pre-0049 inference for a run no
+ * pre-flight decided. Throws `IdentityModeError` when the declared mode
+ * cannot be honoured -- never a silent fallback to the App.
  */
-export function isDelegating(config: AgentToolConfig): boolean {
-  return Boolean(config.identityDelegationEnabled && appCredsFrom(config) && config.githubToken);
+export function identityModeOf(config: AgentToolConfig): IdentityMode {
+  return resolveIdentityMode({
+    declared: config.identityMode,
+    githubToken: config.githubToken,
+    hasAppCredentials: appCredsFrom(config) !== null,
+  });
 }
 
 /**

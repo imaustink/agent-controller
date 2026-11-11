@@ -59,6 +59,12 @@ export interface AgentDescriptor {
    */
   identityProviders?: string[];
   /**
+   * `Agent.spec.defaultIdentity` (docs/adr/0049). Carried only so this
+   * engine can REFUSE it: identity modes are a Temporal-engine feature, and an
+   * Agent that set one must not launch here on a mode this engine ignores.
+   */
+  defaultIdentity?: string;
+  /**
    * Names of `Tool` CRs this Agent's OWN internal loop may call at run time
    * (`AgentSpec.ToolRefs`, docs/adr/0028) — NOT a retrieval-relevant field
    * (unlike `description`), only consulted while a launched AgentRun is live,
