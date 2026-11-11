@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { setupGitAuth } from "./git.js";
-import { isDelegating, resolveDelegatedToken, resolveUndelegatedToken } from "./identityDelegation.js";
+import { identityModeOf, IdentityModeError, resolveDelegatedToken, resolveUndelegatedToken } from "./identityDelegation.js";
 import type { AgentToolConfig } from "./config.js";
 
 const IDENTITY = { name: "agent[bot]", email: "1+agent[bot]@users.noreply.github.com" };
@@ -42,7 +42,7 @@ const { privateKey } = generateKeyPairSync("rsa", {
 
 function config(over: Partial<AgentToolConfig> = {}): AgentToolConfig {
   return {
-    identityDelegationEnabled: true,
+    identityMode: "",
     githubToken: "user-token",
     githubAppId: "1",
     githubAppPrivateKey: privateKey,
@@ -53,15 +53,25 @@ function config(over: Partial<AgentToolConfig> = {}): AgentToolConfig {
   } as AgentToolConfig;
 }
 
-describe("isDelegating", () => {
-  // The gate that kept this whole path dead: without a per-user GITHUB_TOKEN
-  // (i.e. without `github` in the Agent's identityProviders) every run fell
-  // back to the plain installation token for reads AND writes.
-  it("requires app credentials, the feature flag, and a per-user token", () => {
-    expect(isDelegating(config())).toBe(true);
-    expect(isDelegating(config({ githubToken: "" }))).toBe(false);
-    expect(isDelegating(config({ identityDelegationEnabled: false }))).toBe(false);
-    expect(isDelegating(config({ githubAppPrivateKey: "" }))).toBe(false);
+describe("identityModeOf", () => {
+  // A run no pre-flight decided keeps the pre-0049 inference: the gate that
+  // kept this path dead without a per-user GITHUB_TOKEN (i.e. without `github`
+  // in the Agent's identityProviders) still holds.
+  it("infers hybrid from a caller token plus app credentials when undeclared", () => {
+    expect(identityModeOf(config())).toBe("hybrid");
+    expect(identityModeOf(config({ githubToken: "" }))).toBe("agent");
+    expect(identityModeOf(config({ githubAppPrivateKey: "" }))).toBe("agent");
+  });
+
+  // docs/adr/0049: the engine's decision wins over what the env looks like.
+  it("honours AGENT_IDENTITY_MODE over inference", () => {
+    expect(identityModeOf(config({ identityMode: "agent" }))).toBe("agent");
+    expect(identityModeOf(config({ identityMode: "delegated", githubAppPrivateKey: "" }))).toBe("delegated");
+  });
+
+  it("refuses a caller mode it cannot honour instead of falling back to the App", () => {
+    expect(() => identityModeOf(config({ identityMode: "hybrid", githubToken: "" }))).toThrow(IdentityModeError);
+    expect(() => identityModeOf(config({ identityMode: "delegated", githubToken: "" }))).toThrow(IdentityModeError);
   });
 });
 

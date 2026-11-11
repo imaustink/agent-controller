@@ -69,7 +69,7 @@ the chart wires the App keys only when `identityLink` is off, and per-user
 injection only happens when it's on. That exclusivity is enforced in the
 chart, in one place. If App-as-fallback-for-an-unlinked-caller is ever
 wanted, it needs an explicit signal the way the SWE agents use
-`GITHUB_IDENTITY_DELEGATION` (see their `isDelegating`) -- token precedence
+`AGENT_IDENTITY_MODE` (docs/adr/0049; see their `identityModeOf`) -- token precedence
 alone can't distinguish a per-user token from a static PAT, since both arrive
 as `GITHUB_TOKEN`.
 

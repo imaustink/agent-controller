@@ -25,6 +25,8 @@ interface AgentPayload {
   tier: string | null;
   orchestratorPrompt: string | null;
   identityProviders: string[] | null;
+  /** AgentDescriptor.defaultIdentity; absent on points written before ADR 0049. */
+  defaultIdentity?: string | null;
   namespace: string;
   agentRef: string;
 }
@@ -75,6 +77,7 @@ export class QdrantAgentStore implements AgentStore {
           tier: agent.tier ?? null,
           orchestratorPrompt: agent.orchestratorPrompt ?? null,
           identityProviders: agent.identityProviders ?? null,
+          defaultIdentity: agent.defaultIdentity ?? null,
           namespace: agent.agentRunTemplate.namespace,
           agentRef: agent.agentRunTemplate.agentRef,
         } satisfies AgentPayload,
@@ -132,6 +135,7 @@ function toAgentDescriptor(payload: AgentPayload): AgentDescriptor {
     tier: payload.tier ?? undefined,
     orchestratorPrompt: payload.orchestratorPrompt ?? undefined,
     identityProviders: payload.identityProviders ?? undefined,
+    defaultIdentity: payload.defaultIdentity ?? undefined,
     agentRunTemplate: { namespace: payload.namespace, agentRef: payload.agentRef },
   };
 }

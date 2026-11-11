@@ -2514,6 +2514,9 @@ describe("buildAgentGraph per-caller identity linking (GitHub OAuth Device Flow)
       getToken: vi.fn().mockResolvedValue(undefined),
     };
     return baseDeps({
+      // A chat caller: the per-user resolver asserts perUser. A shared subject
+      // never gets a github token (authorization-service.ts).
+      identityResolver: { resolve: vi.fn().mockResolvedValue({ subject: "alice", roles: ["reader"], perUser: true }) },
       agentStore,
       delegateSelector,
       agentChannel,
@@ -3911,6 +3914,10 @@ describe("buildAgentGraph batch authorization pre-flight (docs/adr/0030)", () =>
       getByIds: vi.fn().mockResolvedValue([twoProviderAgent]),
     };
     return baseDeps({
+      // A chat caller (perUser, so github resolves at all) whose GitHub link
+      // exists but has no usable token: the login establishes the principal,
+      // so no principal-only step precedes the providers under test.
+      identityResolver: { resolve: vi.fn().mockResolvedValue({ subject: "alice", roles: ["reader"], perUser: true }) },
       agentStore,
       delegateSelector: { select: vi.fn().mockResolvedValue({ type: "agent", agent: twoProviderAgent }) },
       agentChannel: {
@@ -3919,7 +3926,13 @@ describe("buildAgentGraph batch authorization pre-flight (docs/adr/0030)", () =>
         close: vi.fn(),
       },
       agentRunLauncher: { launch: vi.fn().mockResolvedValue({ name: "run-1", namespace: "default" }) },
-      identityLinkGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue(undefined), ...github } as IdentityLinkPort,
+      identityLinkGateway: {
+        start: vi.fn(),
+        poll: vi.fn(),
+        getToken: vi.fn().mockResolvedValue(undefined),
+        getLinkedLogin: vi.fn().mockResolvedValue("alice"),
+        ...github,
+      } as IdentityLinkPort,
       claudeAuthGateway: { start: vi.fn(), poll: vi.fn(), getToken: vi.fn().mockResolvedValue(undefined), ...claude } as IdentityLinkPort,
       callbackBaseUrl: "http://orchestrator",
       callbackSecretRef: { name: "secret", key: "token" },

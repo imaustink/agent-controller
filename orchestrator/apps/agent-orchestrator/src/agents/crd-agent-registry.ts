@@ -20,6 +20,8 @@ export interface AgentCustomResource {
     orchestratorPrompt?: string;
     /** Mirrors AgentDescriptor.identityProviders — see that field's doc comment. */
     identityProviders?: string[];
+    /** Mirrors AgentDescriptor.defaultIdentity — see that field's doc comment. */
+    defaultIdentity?: string;
     /** Mirrors AgentDescriptor.toolRefs — see that field's doc comment. */
     toolRefs?: string[];
     // agentPrompt, image, serviceAccountName, env, secretEnv, resources,
@@ -117,6 +119,7 @@ export function toAgentDescriptor(cr: AgentCustomResource, namespace: string): A
     approvalTimeoutSeconds: spec.approvalTimeoutSeconds,
     orchestratorPrompt: spec.orchestratorPrompt,
     identityProviders: spec.identityProviders,
+    defaultIdentity: spec.defaultIdentity,
     toolRefs: spec.toolRefs,
     agentRunTemplate: {
       namespace,

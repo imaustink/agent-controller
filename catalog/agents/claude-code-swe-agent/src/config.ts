@@ -51,7 +51,7 @@ export interface AgentToolConfig {
   githubAppInstallationId: string;
   /**
    * The App's slug (from its GitHub settings page, e.g. "my-cool-app"),
-   * public/non-secret. When set alongside `identityDelegationEnabled` and a
+   * public/non-secret. When set on a hybrid-mode run (writes as the App) with a
    * full App configuration, used to construct the bot's commit identity
    * directly (`${slug}[bot]`) rather than deriving it from a token's own
    * `/user` response — installation tokens can't call `/user` (403, App
@@ -60,14 +60,12 @@ export interface AgentToolConfig {
    */
   githubAppSlug: string;
   /**
-   * Set when this Agent's identity-link is enabled (i.e. `GITHUB_TOKEN` is
-   * the initiating human's own per-run OAuth token, not a shared static
-   * credential) AND a full GitHub App configuration is also present — the
-   * combination that unlocks the dual-token pattern: verify the human's own
-   * access, but write with a freshly minted, repo-scoped installation token
-   * so commits/PRs attribute to the App bot.
+   * `AGENT_IDENTITY_MODE` as received (docs/adr/0049): the identity the
+   * launching engine decided this run acts as — `agent`, `delegated` or
+   * `hybrid`. Empty for a run no pre-flight decided, which then infers its
+   * mode the pre-0049 way. Resolved by `identityModeOf` (./identityDelegation.ts).
    */
-  identityDelegationEnabled: boolean;
+  identityMode: string;
   /**
    * Anthropic API key, used when no `claudeCodeOAuthToken` is present.
    * Inject via secretEnv/secretKeyRef.
@@ -173,7 +171,7 @@ export function loadToolConfig(env: NodeJS.ProcessEnv = process.env): AgentToolC
     githubAppPrivateKey: normalizePem(env.GITHUB_APP_PRIVATE_KEY),
     githubAppInstallationId: env.GITHUB_APP_INSTALLATION_ID ?? "",
     githubAppSlug: env.GITHUB_APP_SLUG ?? "",
-    identityDelegationEnabled: env.GITHUB_IDENTITY_DELEGATION === "true",
+    identityMode: env.AGENT_IDENTITY_MODE ?? "",
     anthropicApiKey: env.ANTHROPIC_API_KEY ?? "",
     claudeCodeOAuthToken: env.CLAUDE_CODE_OAUTH_TOKEN ?? "",
     model: env.CLAUDE_CODE_MODEL ?? "",
