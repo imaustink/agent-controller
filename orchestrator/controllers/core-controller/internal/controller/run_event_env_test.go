@@ -125,6 +125,22 @@ var _ = Describe("Run event env", func() {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: run.Name, Namespace: "default"}})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(envOf(jobFor(run.Name))).To(HaveKeyWithValue("AGENT_IDENTITY_MODE", "hybrid"))
+			Expect(envOf(jobFor(run.Name))).NotTo(HaveKey("AGENT_TRACE_CONTENT"), "metadata unless the engine decided content")
+		})
+
+		It("carries spec.contentCapture=content as AGENT_TRACE_CONTENT (docs/adr/0050 §5)", func() {
+			run := &toolv1alpha1.AgentRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "agentrun-content-capture", Namespace: "default"},
+				Spec: toolv1alpha1.AgentRunSpec{
+					AgentRef: agentName, Goal: "g", Callback: callback, ContentCapture: "content",
+				},
+			}
+			Expect(k8sClient.Create(ctx, run)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, run) })
+			r := &AgentRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: run.Name, Namespace: "default"}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(envOf(jobFor(run.Name))).To(HaveKeyWithValue("AGENT_TRACE_CONTENT", "true"))
 		})
 
 		It("refuses to change spec.launch once set", func() {

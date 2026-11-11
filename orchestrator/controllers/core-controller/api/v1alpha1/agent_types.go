@@ -38,6 +38,19 @@ const (
 	IdentityModeHybrid IdentityMode = "hybrid"
 )
 
+// AgentObservability is an agent's trace settings (docs/adr/0050 §5).
+type AgentObservability struct {
+	// capture opts this agent's runs in to recording prompt and output text
+	// on their traces ("content"), up to the deployment's ceiling. Default
+	// "metadata": structure, timing, model and token counts, no text. A run
+	// that acts with a caller's credentials (delegated/hybrid) or can reach a
+	// knowledge base or MCP tool is always metadata, whatever this says.
+	// +optional
+	// +kubebuilder:validation:Enum=metadata;content
+	// +kubebuilder:default=metadata
+	Capture string `json:"capture,omitempty"`
+}
+
 // AgentSpec defines the desired state of Agent. An Agent is a full agent
 // loop launched as a one-shot Job (same execution architecture as Tool):
 // given a goal at run time (AgentRun.spec.goal), it iterates internally and
@@ -187,6 +200,10 @@ type AgentSpec struct {
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=3
 	AllowedIdentities []IdentityMode `json:"allowedIdentities,omitempty"`
+
+	// observability tunes this agent's traces (docs/adr/0050). Optional.
+	// +optional
+	Observability *AgentObservability `json:"observability,omitempty"`
 
 	// initContainers are Job pod init containers run before the main "run"
 	// container starts (e.g. to seed a shared /tmp volume with a credential

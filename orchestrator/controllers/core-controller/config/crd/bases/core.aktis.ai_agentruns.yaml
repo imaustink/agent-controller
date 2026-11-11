@@ -94,6 +94,16 @@ spec:
                       Required when natsSubject is empty.
                     type: string
                 type: object
+              contentCapture:
+                description: |-
+                  contentCapture is what this run's own telemetry may record (docs/adr/
+                  0050 §5), decided by the launching engine from the deployment ceiling,
+                  the Agent's opt-in and what the run can reach. "content" maps to
+                  AGENT_TRACE_CONTENT=true; anything else records metadata only.
+                enum:
+                - metadata
+                - content
+                type: string
               goal:
                 description: |-
                   goal is the scoped natural-language objective handed to the agent loop

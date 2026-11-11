@@ -275,6 +275,11 @@ func agentEventEnv(spec toolv1alpha1.AgentRunSpec) []toolv1alpha1.EnvVar {
 	if spec.IdentityMode != "" {
 		env = append(env, toolv1alpha1.EnvVar{Name: "AGENT_IDENTITY_MODE", Value: string(spec.IdentityMode)})
 	}
+	// Only the opt-in is an env var: absent means metadata, so a run the
+	// engine did not decide can never default to recording text.
+	if spec.ContentCapture == "content" {
+		env = append(env, toolv1alpha1.EnvVar{Name: "AGENT_TRACE_CONTENT", Value: "true"})
+	}
 	return env
 }
 
