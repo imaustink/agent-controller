@@ -287,3 +287,83 @@ connection-broker:
 # MCP namespace (global.knowledgeBaseNamespace, or mcp-broker.mcpNamespace).
 mcp-broker:
   enabled: false
+
+# ---------------------------------------------------------------------------
+# Agent observability (docs/adr/0050): OpenTelemetry traces from the engines
+# and agent runs, through an in-cluster collector, into self-hosted Langfuse.
+# Off by default. The launch AUDIT record (docs/adr/0049) does not go through
+# this pipeline and is written whether or not this is enabled.
+#
+# Two ways to get a Langfuse:
+#   - bundled:      langfuse.enabled=true, observability.langfuse.endpoint "".
+#                   The endpoint is derived (http://<release>-langfuse-web:3000).
+#   - bring your own: langfuse.enabled=false, set observability.langfuse.endpoint
+#                   to your deployment's base URL, and keysSecretRef to a
+#                   Secret holding a project key pair you created there.
+# Langfuse Cloud is not a supported target: traces carry user subjects.
+# ---------------------------------------------------------------------------
+observability:
+  enabled: false
+  langfuse:
+    # Base URL of the Langfuse to export to. Empty: the bundled one.
+    endpoint: ""
+    # The project key pair the collector authenticates with (OTLP Basic
+    # public:secret). On the bundled path the SAME Secret seeds Langfuse's
+    # headless init (langfuse.langfuse.additionalEnv below), so the project
+    # and its keys exist on first boot with no UI step -- change both
+    # together. Only the collector (and bundled Langfuse) ever mount it.
+    keysSecretRef:
+      name: langfuse-project-keys
+      publicKey: public-key
+      secretKey: secret-key
+  # Further OTLP exporters (Tempo, Honeycomb, another collector), alongside
+  # Langfuse or, with Langfuse disabled and no endpoint, instead of it.
+  # name -> collector `otlphttp` exporter config.
+  extraExporters: {}
+
+# Bundled self-hosted Langfuse (the upstream chart, aliased). Upstream values
+# pass through unchanged under this key: see
+# https://github.com/langfuse/langfuse-k8s/blob/main/charts/langfuse/values.yaml
+#
+# The defaults below are a DEV profile: everything in-release (Postgres,
+# Valkey, SeaweedFS S3; ClickHouse via the ClickHouse operator, whose CRDs
+# must already be installed). For production, override at least:
+#
+#   langfuse:
+#     langfuse:
+#       nextauth: { url: https://langfuse.example.com }
+#       auth:
+#         disableUsernamePassword: true
+#         providers:
+#           custom:                          # the deployment's own OIDC IdP
+#             name: SSO
+#             issuer: https://id.example.com
+#             clientId: langfuse
+#             clientSecret: { secretKeyRef: { name: langfuse-oidc, key: client-secret } }
+#     postgresql: { deploy: false, host: <managed postgres>, ... }
+#     redis:      { deploy: false, host: <managed redis>, ... }
+#     s3:         { deploy: false, bucket: <ACK-provisioned bucket>, ... }   # IRSA on EKS
+#     clickhouse: { resources: ..., ... }   # sized explicitly; or deploy: false + host
+#
+# Set a data retention in Langfuse shorter than the audit log's: traces are
+# operational, the audit record is what's kept.
+langfuse:
+  enabled: false
+  langfuse:
+    # Headless init: create the org/project and its API keys from the shared
+    # Secret on first boot. Must match observability.langfuse.keysSecretRef.
+    additionalEnv:
+      - name: LANGFUSE_INIT_ORG_ID
+        value: aktis
+      - name: LANGFUSE_INIT_ORG_NAME
+        value: Aktis
+      - name: LANGFUSE_INIT_PROJECT_ID
+        value: aktis-agents
+      - name: LANGFUSE_INIT_PROJECT_NAME
+        value: Agents
+      - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
+        valueFrom:
+          secretKeyRef: { name: langfuse-project-keys, key: public-key }
+      - name: LANGFUSE_INIT_PROJECT_SECRET_KEY
+        valueFrom:
+          secretKeyRef: { name: langfuse-project-keys, key: secret-key }

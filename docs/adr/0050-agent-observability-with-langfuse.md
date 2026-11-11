@@ -230,7 +230,8 @@ subchart, so a pre-existing Langfuse in another namespace, another cluster,
 or behind an ingress is just a URL. It only has to be reachable from the
 collector.
 
-**The bundled path is not a toy, but its defaults are.** Langfuse v3 needs
+**The bundled path is not a toy, but its defaults are.** Langfuse (v4; chart
+`langfuse-k8s` 2.2.4, pinned) needs
 Postgres, ClickHouse, Redis and S3-compatible blob storage. Its chart can run
 each one in-release, or point each at an external service. We don't build an
 opinion on top. Our `values.yaml` shows:
@@ -239,10 +240,13 @@ opinion on top. Our `values.yaml` shows:
   Postgres and Redis. S3 from an ACK-provisioned bucket, the same pattern as
   image-gen, with IRSA on EKS rather than static keys.
 
-The upstream chart's datastore subcharts and images must be checked before
-pinning. Some upstream datastore images have changed registries or
-licensing terms. Pin images we can keep pulling, rather than whatever the
-subchart defaults to.
+Checked at pinning (chart 2.2.4): its datastores are groundhog2k Postgres,
+Valkey and SeaweedFS, none of them Bitnami, so the registry and licensing
+concern does not apply. ClickHouse is deployed through ClickHouse-operator
+CRDs, which must already be installed (the chart refuses to render
+otherwise). Offline renders pass `langfuse.clickhouse.crdCheck=false`. The
+headless-init variables (`LANGFUSE_INIT_*`) are wired from the shared key
+Secret but still need verifying against a running v4 instance.
 
 **Upstream values pass through untouched** under `langfuse:`, the same as
 `openwebui:`. Only three things are wired for the operator:
