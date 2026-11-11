@@ -69,6 +69,99 @@ type AgentRunSpec struct {
 	// AGENT_PARAMS (a JSON object of strings).
 	// +optional
 	Params map[string]string `json:"params,omitempty"`
+
+	// identityMode is the identity this run acts as, decided once by the
+	// launching engine's authorization pre-flight (docs/adr/0049) and handed
+	// to the agent as AGENT_IDENTITY_MODE. It describes the credentials this
+	// run was actually given, so a read-only run of a hybrid agent (whose
+	// caller token was withheld) is "agent". Unset: the agent infers its
+	// mode the pre-0049 way.
+	// +optional
+	IdentityMode IdentityMode `json:"identityMode,omitempty"`
+
+	// launch records who launched this run and as what (docs/adr/0049 §3),
+	// for anyone inspecting the run while it exists. The durable copy is the
+	// engine's audit log line; this mirrors it. Immutable once set.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="launch is immutable"
+	Launch *AgentRunLaunch `json:"launch,omitempty"`
+}
+
+// AgentRunLaunch is an AgentRun's launch audit record (docs/adr/0049 §3).
+// Identifiers only: it never holds credential material.
+type AgentRunLaunch struct {
+	// decisionId joins this run to the engine's authorization audit record.
+	// +optional
+	DecisionID string `json:"decisionId,omitempty"`
+
+	// entryPoint is how the launching turn arrived.
+	// +optional
+	// +kubebuilder:validation:Enum=chat;webhook;event;api
+	EntryPoint string `json:"entryPoint,omitempty"`
+
+	// launchedBy is the authenticated caller's subject (e.g.
+	// "openwebui:<id>", or a webhook relay's service identity).
+	// +optional
+	LaunchedBy string `json:"launchedBy,omitempty"`
+
+	// delegatedSubject is the subject a webhook sender resolved to, whose
+	// links this run's caller credentials came from.
+	// +optional
+	DelegatedSubject string `json:"delegatedSubject,omitempty"`
+
+	// sender is the human an adapter vouched for on a webhook turn.
+	// +optional
+	Sender *LaunchSender `json:"sender,omitempty"`
+
+	// trigger is the EventTrigger that produced the launching turn.
+	// +optional
+	Trigger string `json:"trigger,omitempty"`
+
+	// requestedIdentityMode is the mode resolved from the trigger override,
+	// the Agent's defaultIdentity, or inference, before read-only or a
+	// shared caller narrowed it to spec.identityMode.
+	// +optional
+	RequestedIdentityMode IdentityMode `json:"requestedIdentityMode,omitempty"`
+
+	// identityModeSource says where requestedIdentityMode came from.
+	// +optional
+	// +kubebuilder:validation:Enum=default;trigger;inferred
+	IdentityModeSource string `json:"identityModeSource,omitempty"`
+
+	// credentials lists, per provider, whose credential the run reads and
+	// writes with. Names only.
+	// +optional
+	Credentials []LaunchCredential `json:"credentials,omitempty"`
+
+	// targetRepository is the "owner/name" the run was gated on and scoped to.
+	// +optional
+	TargetRepository string `json:"targetRepository,omitempty"`
+}
+
+// LaunchSender identifies a webhook sender.
+type LaunchSender struct {
+	// +optional
+	Provider string `json:"provider,omitempty"`
+	// +optional
+	Login string `json:"login,omitempty"`
+	// accountId is the provider's immutable account id.
+	// +optional
+	AccountID string `json:"accountId,omitempty"`
+}
+
+// LaunchCredential records whose credential a provider's reads and writes use.
+type LaunchCredential struct {
+	// +required
+	Provider string `json:"provider"`
+	// read is "caller" (the caller's own linked credential) or "agent" (the
+	// agent's own, e.g. the GitHub App).
+	// +optional
+	// +kubebuilder:validation:Enum=caller;agent
+	Read string `json:"read,omitempty"`
+	// write is "caller", "agent", or "none" (read-only).
+	// +optional
+	// +kubebuilder:validation:Enum=caller;agent;none
+	Write string `json:"write,omitempty"`
 }
 
 // AgentRunStatus defines the observed state of AgentRun — identical shape

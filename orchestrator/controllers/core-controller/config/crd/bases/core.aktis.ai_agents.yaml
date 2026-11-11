@@ -46,6 +46,24 @@ spec:
                   the agent's persona, method, and constraints. Optional: absent -> the
                   agent image's built-in default prompt applies.
                 type: string
+              allowedIdentities:
+                description: |-
+                  allowedIdentities restricts which modes an EventTrigger's
+                  target.identity may select for this agent. Unset allows all three.
+                  Setting it lets an agent author forbid, e.g., a trigger downgrading a
+                  delegated agent to agent mode, which would widen what it can reach.
+                items:
+                  description: |-
+                    IdentityMode is the identity an agent run acts as on the external systems
+                    its resource providers reach (docs/adr/0049).
+                  enum:
+                  - agent
+                  - delegated
+                  - hybrid
+                  type: string
+                maxItems: 3
+                type: array
+                x-kubernetes-list-type: set
               allowedRoles:
                 description: allowedRoles gates RAG retrieval (RBAC filter), same
                   semantics as Tool.
@@ -74,6 +92,26 @@ spec:
                 format: int32
                 minimum: 1
                 type: integer
+              defaultIdentity:
+                description: |-
+                  defaultIdentity is the identity this agent acts as on the systems its
+                  resource providers (e.g. "github") reach (docs/adr/0049):
+                    - agent: the agent's own credential (e.g. the GitHub App) for reads
+                      and writes; the caller needs no provider link.
+                    - delegated: the caller's own linked credential for reads and writes.
+                    - hybrid: the caller's credential for reads, the agent's for writes
+                      (docs/adr/0041).
+                  Runtime providers (the model credential: "claude", "claude-remote")
+                  resolve the same way in every mode. Unset infers the pre-0049
+                  behaviour: hybrid when "github" is declared, agent otherwise. An
+                  EventTrigger's target.identity may override it within
+                  allowedIdentities. Honoured by the Temporal engine only; the LangGraph
+                  engine refuses a launch that sets it.
+                enum:
+                - agent
+                - delegated
+                - hybrid
+                type: string
               description:
                 description: description is fed to the orchestrator's embedder for
                   RAG retrieval.
@@ -329,6 +367,10 @@ spec:
             - output
             - serviceAccountName
             type: object
+            x-kubernetes-validations:
+            - message: defaultIdentity must be one of allowedIdentities
+              rule: '!has(self.defaultIdentity) || !has(self.allowedIdentities) ||
+                self.defaultIdentity in self.allowedIdentities'
           status:
             description: status defines the observed state of Agent
             properties:

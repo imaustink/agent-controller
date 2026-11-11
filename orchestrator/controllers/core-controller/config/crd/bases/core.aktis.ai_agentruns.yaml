@@ -100,6 +100,119 @@ spec:
                   (passed as the Job container's argument).
                 minLength: 1
                 type: string
+              identityMode:
+                description: |-
+                  identityMode is the identity this run acts as, decided once by the
+                  launching engine's authorization pre-flight (docs/adr/0049) and handed
+                  to the agent as AGENT_IDENTITY_MODE. It describes the credentials this
+                  run was actually given, so a read-only run of a hybrid agent (whose
+                  caller token was withheld) is "agent". Unset: the agent infers its
+                  mode the pre-0049 way.
+                enum:
+                - agent
+                - delegated
+                - hybrid
+                type: string
+              launch:
+                description: |-
+                  launch records who launched this run and as what (docs/adr/0049 §3),
+                  for anyone inspecting the run while it exists. The durable copy is the
+                  engine's audit log line; this mirrors it. Immutable once set.
+                properties:
+                  credentials:
+                    description: |-
+                      credentials lists, per provider, whose credential the run reads and
+                      writes with. Names only.
+                    items:
+                      description: LaunchCredential records whose credential a provider's
+                        reads and writes use.
+                      properties:
+                        provider:
+                          type: string
+                        read:
+                          description: |-
+                            read is "caller" (the caller's own linked credential) or "agent" (the
+                            agent's own, e.g. the GitHub App).
+                          enum:
+                          - caller
+                          - agent
+                          type: string
+                        write:
+                          description: write is "caller", "agent", or "none" (read-only).
+                          enum:
+                          - caller
+                          - agent
+                          - none
+                          type: string
+                      required:
+                      - provider
+                      type: object
+                    type: array
+                  decisionId:
+                    description: decisionId joins this run to the engine's authorization
+                      audit record.
+                    type: string
+                  delegatedSubject:
+                    description: |-
+                      delegatedSubject is the subject a webhook sender resolved to, whose
+                      links this run's caller credentials came from.
+                    type: string
+                  entryPoint:
+                    description: entryPoint is how the launching turn arrived.
+                    enum:
+                    - chat
+                    - webhook
+                    - event
+                    - api
+                    type: string
+                  identityModeSource:
+                    description: identityModeSource says where requestedIdentityMode
+                      came from.
+                    enum:
+                    - default
+                    - trigger
+                    - inferred
+                    type: string
+                  launchedBy:
+                    description: |-
+                      launchedBy is the authenticated caller's subject (e.g.
+                      "openwebui:<id>", or a webhook relay's service identity).
+                    type: string
+                  requestedIdentityMode:
+                    description: |-
+                      requestedIdentityMode is the mode resolved from the trigger override,
+                      the Agent's defaultIdentity, or inference, before read-only or a
+                      shared caller narrowed it to spec.identityMode.
+                    enum:
+                    - agent
+                    - delegated
+                    - hybrid
+                    type: string
+                  sender:
+                    description: sender is the human an adapter vouched for on a webhook
+                      turn.
+                    properties:
+                      accountId:
+                        description: accountId is the provider's immutable account
+                          id.
+                        type: string
+                      login:
+                        type: string
+                      provider:
+                        type: string
+                    type: object
+                  targetRepository:
+                    description: targetRepository is the "owner/name" the run was
+                      gated on and scoped to.
+                    type: string
+                  trigger:
+                    description: trigger is the EventTrigger that produced the launching
+                      turn.
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: launch is immutable
+                  rule: self == oldSelf
               params:
                 additionalProperties:
                   type: string

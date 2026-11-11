@@ -270,6 +270,11 @@ func agentEventEnv(spec toolv1alpha1.AgentRunSpec) []toolv1alpha1.EnvVar {
 		raw, _ := json.Marshal(spec.Params)
 		env = append(env, toolv1alpha1.EnvVar{Name: "AGENT_PARAMS", Value: string(raw)})
 	}
+	// The engine's decided identity mode (docs/adr/0049): the agent switches
+	// on this instead of inferring delegation from which tokens are present.
+	if spec.IdentityMode != "" {
+		env = append(env, toolv1alpha1.EnvVar{Name: "AGENT_IDENTITY_MODE", Value: string(spec.IdentityMode)})
+	}
 	return env
 }
 

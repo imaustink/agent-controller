@@ -176,7 +176,8 @@ mirrors `Tool` so agents join the same RBAC-scoped retrieval
   - `skillRefs` ([]string) — `Skill` CRs this agent may load.
   - `toolRefs` ([]string) — `Tool` CRs this agent's own loop may call ([ADR 0028](adr/0028-agent-tool-refs-sub-agent-tool-calls.md)).
   - `model` (advisory), `maxIterations`, `env` / `secretEnv` / `resources`, `initContainers`.
-  - `identityProviders` ([]string).
+  - `identityProviders` ([]string) — providers this agent can use on the caller's behalf.
+  - `defaultIdentity` (`agent` | `delegated` | `hybrid`) — whose credential the agent reads and writes with on its resource providers; unset infers `hybrid` when `github` is declared, else `agent`. `allowedIdentities` limits which modes an `EventTrigger` may override to; CEL requires `defaultIdentity ∈ allowedIdentities` ([ADR 0049](adr/0049-configurable-agent-identity-mode.md)). Temporal engine only.
 - **Status:** `Ready` condition.
 - **Referenced by:** `Tool.agentRef`, `Skill.agentRefs`, `EventTrigger.target.agentRef`, `AgentRun.agentRef`.
 - **Acted on by:** `agent_controller.go`; launched via `AgentRun` by the orchestrator.
@@ -188,7 +189,7 @@ mirrors `Tool` so agents join the same RBAC-scoped retrieval
 natural-language `goal` and the target is an `Agent`.
 
 - **Authored by:** system — created by the orchestrator (or another caller).
-- **Key spec fields:** `agentRef` (**required**), `goal` (string, **required**), `callback` (**required**, reuses the ToolRun HMAC/NATS protocol), `secretEnv` (merged over the Agent's), `timeoutSeconds`.
+- **Key spec fields:** `agentRef` (**required**), `goal` (string, **required**), `callback` (**required**, reuses the ToolRun HMAC/NATS protocol), `secretEnv` (merged over the Agent's), `timeoutSeconds`, `readOnly` (`AGENT_READ_ONLY`), `params` (`AGENT_PARAMS`), `identityMode` (`AGENT_IDENTITY_MODE`: the mode the engine decided, describing the credentials actually given), `launch` (immutable launch audit record: entry point, launcher, sender, trigger, requested mode and source, per-provider read/write credential owner, target repository; [ADR 0049](adr/0049-configurable-agent-identity-mode.md) §3).
 - **Status:** same shape as `ToolRun` — `phase`, `jobName`, timings, `message`, `conditions`.
 - **Acted on by:** `agentrun_controller.go` (owns a `batch/v1` Job).
 - **Sample:** `config/samples/tool_v1alpha1_agentrun.yaml`.
