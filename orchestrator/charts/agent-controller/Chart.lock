@@ -23,5 +23,8 @@ dependencies:
 - name: mcp-broker
   repository: file://charts/mcp-broker
   version: 0.1.0
-digest: sha256:3287f636707a296d539584311ebf1db81def745234e8351b68d8683b6c14af86
-generated: "2026-10-13T12:00:00.000000-07:00"
+- name: langfuse
+  repository: https://langfuse.github.io/langfuse-k8s
+  version: 2.2.4
+digest: sha256:8d96d9518d0038275b27d0bd82df5d4619f660da49213580dfc98c74d5321fdd
+generated: "2026-11-11T15:17:50.882966-07:00"

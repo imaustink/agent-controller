@@ -118,3 +118,15 @@ dependencies:
     version: "0.1.0"
     repository: "file://charts/mcp-broker"
     condition: mcp-broker.enabled
+  # Optional self-hosted Langfuse (docs/adr/0050), the trace backend for agent
+  # observability. Off by default, wired like openwebui: a remote dependency,
+  # pinned exact, upstream values passed through under `langfuse:`. To use a
+  # Langfuse you already run instead, leave this off and set
+  # observability.langfuse.endpoint + keysSecretRef. Its bundled ClickHouse is
+  # deployed through ClickHouse operator CRDs, which must already be installed
+  # (or point `langfuse.clickhouse` at an external ClickHouse). Bump
+  # deliberately after reading https://github.com/langfuse/langfuse-k8s.
+  - name: langfuse
+    version: "2.2.4"
+    repository: https://langfuse.github.io/langfuse-k8s
+    condition: langfuse.enabled
